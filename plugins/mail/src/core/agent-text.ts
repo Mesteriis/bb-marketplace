@@ -3,6 +3,7 @@
 // so it is a single forward scan with indexOf over a capped input: no DOM, no
 // regular expression that can backtrack over an unclosed "<", and no index
 // computed on a lowercased copy (lowercasing can change the length).
+import { decodeHtmlEntities, removeInvisible } from "./html-entities.ts";
 import type { MailAddress, MessageBody, MessageHeader, MessageSummary } from "./model.ts";
 
 export const UNTRUSTED_NOTICE =
@@ -22,36 +23,8 @@ const PARAGRAPH_ELEMENTS = new Set([
 const LINE_ELEMENTS = new Set(["div", "li", "tr", "section", "article", "header", "footer"]);
 const CELL_ELEMENTS = new Set(["td", "th"]);
 
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-  nbsp: " ",
-  ndash: "–",
-  mdash: "—",
-  hellip: "…",
-  lsquo: "‘",
-  rsquo: "’",
-  ldquo: "“",
-  rdquo: "”",
-  laquo: "«",
-  raquo: "»",
-  copy: "©",
-  reg: "®",
-  trade: "™",
-  euro: "€",
-  bull: "•",
-  middot: "·",
-  zwnj: "",
-  zwj: "",
-  shy: "",
-};
 type OpenLink = { href: string | null; start: TextMark };
 type TextMark = { index: number; length: number };
-
-const ENTITY = /&(#[xX][0-9a-fA-F]{1,6}|#[0-9]{1,7}|[a-zA-Z][a-zA-Z0-9]{1,15});/g;
 
 /** Plain text of an HTML document, bounded to the first 200,000 characters. */
 export function htmlToText(html: string): string {
@@ -163,7 +136,7 @@ function tagName(input: string, from: number): string {
 function hrefOf(tag: string): string | null {
   const match = /\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i.exec(tag);
   if (!match) return null;
-  const href = decodeEntities(match[1] ?? match[2] ?? match[3] ?? "").trim();
+  const href = decodeHtmlEntities(match[1] ?? match[2] ?? match[3] ?? "").trim();
   return href === "" ? null : href;
 }
 
@@ -175,20 +148,6 @@ function isNameChar(code: number): boolean {
   return isAsciiLetter(code) || (code >= 0x30 && code <= 0x39);
 }
 
-function decodeEntities(text: string): string {
-  return text.replace(ENTITY, (whole, body: string) => {
-    if (body[0] === "#") {
-      const hex = body[1] === "x" || body[1] === "X";
-      const code = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
-      if (code === 0xa0) return " ";
-      return code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
-        ? String.fromCodePoint(code)
-        : "";
-    }
-    return NAMED_ENTITIES[body.toLowerCase()] ?? whole;
-  });
-}
-
 /** Collects text with collapsed whitespace and tracks trailing line breaks. */
 class TextBuffer {
   private readonly parts: string[] = [];
@@ -198,7 +157,7 @@ class TextBuffer {
 
   text(raw: string): void {
     if (raw === "") return;
-    let text = decodeEntities(raw.replace(/\s+/g, " ")).replace(/ /g, " ");
+    let text = removeInvisible(decodeHtmlEntities(raw)).replace(/\s+/g, " ");
     if (this.trailingBreaks > 0 || this.endsWithSpace) text = text.replace(/^ +/, "");
     if (text === "") return;
     this.parts.push(text);

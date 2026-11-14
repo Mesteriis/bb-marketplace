@@ -170,6 +170,12 @@ describe("htmlToText", () => {
     );
   });
 
+  it("decodes all references and drops invisible padding", () => {
+    expect(
+      htmlToText("Sale &rarr; " + "&zwnj;&nbsp;".repeat(30) + "&#x1F600; &#0; &amp;zwnj; &bogus;&ensp;end"),
+    ).toBe("Sale → 😀 \ufffd &zwnj; &bogus; end");
+  });
+
   it("collapses blank lines", () => {
     expect(htmlToText("<p>a</p><p></p><p></p><div></div><p>b</p>")).toBe("a\n\nb");
   });
