@@ -6,3 +6,4 @@ export * from "./ports.ts";
 export * from "./presets.ts";
 export * from "./contract.ts";
 export * from "./threading.ts";
+export * from "./sync.ts";
