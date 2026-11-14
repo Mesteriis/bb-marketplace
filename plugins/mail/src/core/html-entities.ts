@@ -99,6 +99,11 @@ export function removeInvisible(text: string): string {
   return text.replace(INVISIBLE, "");
 }
 
+/** Removes control characters other than tab, line feed and carriage return (C0, DEL and C1). */
+export function removeControls(text: string): string {
+  return text.replace(CONTROLS, "");
+}
+
 /** One line for a list preview: invisible and control characters gone, whitespace (nbsp included) collapsed. */
 export function collapseForSnippet(text: string): string {
   return removeInvisible(text).replace(CONTROLS, "").replace(/\s+/g, " ").trim();

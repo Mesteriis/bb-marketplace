@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collapseForSnippet, decodeHtmlEntities, removeInvisible, truncateText } from "./html-entities.ts";
+import { collapseForSnippet, decodeHtmlEntities, removeInvisible } from "./html-entities.ts";
 
 describe("decodeHtmlEntities", () => {
   it("decodes named entities seen in real mail", () => {

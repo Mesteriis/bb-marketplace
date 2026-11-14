@@ -118,6 +118,24 @@ describe("renderMessageForAgent", () => {
       "Message id: m_1",
     ]);
   });
+  it("agent text shows the folder", () => {
+    expect(renderMessageForAgent(header(), body(), 20_000)).toContain("\nFolder: INBOX\n");
+    const named = renderMessageForAgent(header({ folder: "[Gmail]/Spam" }), body(), 20_000, "Spam");
+    expect(named).toContain("\nFolder: Spam\n");
+    expect(named).not.toContain("[Gmail]");
+  });
+
+  it("strips control and invisible characters from headers and body", () => {
+    const out = renderMessageForAgent(
+      header({ subject: "Pay\u001b[31m now\u202e", folder: "Wo\u0007rk" }),
+      body({ text: "Line one\u0000\u009b\u200b\tend\r\nLine two" }),
+      20_000,
+    );
+    expect(out).toContain("Subject: Pay[31m now");
+    expect(out).toContain("Folder: Work");
+    expect(out).toContain("Line one\tend\r\nLine two");
+    expect(out).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b\u202e]/);
+  });
 });
 
 describe("renderSearchHits", () => {
@@ -143,6 +161,17 @@ describe("renderSearchHits", () => {
     expect(out).toContain("Subject: Invented hit");
     expect(out).toContain("Snippet: Invented snippet");
     expect(out).toContain("Date: 2026-11-09T08:00:00.000Z");
+    expect(out).toContain("   Folder: INBOX\n");
+  });
+
+  it("shows the folder name the caller resolves", () => {
+    const out = renderSearchHits([{ ...hit, folder: "[Gmail]/All Mail" }], () => "All Mail");
+    expect(out).toContain("   Folder: All Mail\n");
+  });
+
+  it("strips control characters from hit fields", () => {
+    const out = renderSearchHits([{ ...hit, snippet: "a\u001b]8;;x\u0007b" }]);
+    expect(out).toContain("Snippet: a]8;;xb");
   });
 
   it("says when nothing matched", () => {

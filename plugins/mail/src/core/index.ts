@@ -11,3 +11,6 @@ export * from "./search.ts";
 export * from "./agent-text.ts";
 export * from "./accounts.ts";
 export * from "./store-rules.ts";
+export * from "./actions.ts";
+export * from "./inline-html.ts";
+export { removeControls, removeInvisible } from "./html-entities.ts";
