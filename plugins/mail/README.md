@@ -19,13 +19,17 @@ it only when you click; it cannot send.
   that sanitizes HTML. A message Gmail keeps in several folders is counted
   and listed once.
 - Images: inline images that are part of the message (`cid:`, up to 512 KB
-  each and 2 MB per message) always show. Remote images are hidden; a bar
+  each and 2 MB per message) always show. Mail synced by an earlier version
+  has no stored inline images: they show only once that message is fetched
+  again, which does not happen automatically. Remote images are hidden; a bar
   offers **Show images** for that message or **Always show from** its
   sender. Only `https:` images load, even when allowed.
 - **Spam**, **Not spam** (in Spam only), **Archive** and **Delete** in the
   reading pane move the open conversation's messages in the folder you are
   viewing. Delete moves to Trash; nothing is ever permanently deleted.
-  Archive on Gmail moves Inbox copies to All Mail. Moves are pushed by the
+  Archive on Gmail moves Inbox copies to All Mail and is offered only in the
+  Inbox; on other servers it is offered everywhere but Archive, All Mail and
+  Trash. Moves are pushed by the
   sync loop and only to servers that support `MOVE` or `UIDPLUS`; a refused
   move is retried and cancelled after 3 refusals, the mail returns to its
   folder and the account shows the error.

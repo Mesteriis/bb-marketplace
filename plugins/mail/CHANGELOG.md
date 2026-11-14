@@ -31,7 +31,9 @@ All notable changes to Makosh Mail are recorded here. The format follows
   click only. Delete moves to Trash and never deletes permanently. Moves are
   pushed only to servers with `MOVE` or `UIDPLUS`; a refused move is retried
   and cancelled after 3 refusals with an error on the account.
-- Inline (`cid:`) images always show. Remote images stay hidden, with
+- Inline (`cid:`) images always show for mail synced from this release on;
+  mail synced earlier shows them only once it is fetched again, which does
+  not happen automatically. Remote images stay hidden, with
   **Show images** for one message and **Always show from** a sender.
 - Agent tools, mentions and CLI search all folders and name each message's
   folder.
