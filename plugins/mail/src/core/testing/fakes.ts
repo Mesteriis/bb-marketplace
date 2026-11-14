@@ -21,6 +21,7 @@ import type {
   ThreadSummary,
 } from "../model.ts";
 import { ImapAuthError } from "../ports.ts";
+import { snippetOf as snippetFromBody } from "../snippet.ts";
 import type {
   ChangeNotifier,
   Clock,
@@ -134,8 +135,6 @@ type StoreState = {
   nextId: number;
 };
 
-const SNIPPET_LENGTH = 200;
-
 function stateKey(accountId: string, folder: string): string {
   return `${accountId}\u0000${folder}`;
 }
@@ -147,7 +146,7 @@ function timeOf(date: string | null): number | null {
 }
 
 function snippetOf(message: FetchedMessage): string {
-  return (message.bodyText ?? "").replace(/\s+/g, " ").trim().slice(0, SNIPPET_LENGTH);
+  return snippetFromBody(message.bodyText, message.bodyHtml);
 }
 
 export class InMemoryMailStore implements MailStore {
@@ -414,6 +413,11 @@ export class InMemoryMailStore implements MailStore {
       .sort((a, b) => oldestFirst(b, a))
       .slice(0, limit)
       .map((r) => this.summary(r));
+  }
+
+  /** Snippets here are computed on read, so nothing stored can be stale. */
+  repairSnippets(): number {
+    return 0;
   }
 
   unreadCount(accountId: string | null): number {

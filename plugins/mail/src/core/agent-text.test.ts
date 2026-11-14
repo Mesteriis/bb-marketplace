@@ -176,6 +176,12 @@ describe("htmlToText", () => {
     ).toBe("Sale → 😀 \ufffd &zwnj; &bogus; end");
   });
 
+  it("decodes a link url once", () => {
+    expect(htmlToText('<a href="https://example.org/?q=&amp;amp;x">go</a>')).toBe(
+      "go (https://example.org/?q=&amp;x)",
+    );
+  });
+
   it("collapses blank lines", () => {
     expect(htmlToText("<p>a</p><p></p><p></p><div></div><p>b</p>")).toBe("a\n\nb");
   });

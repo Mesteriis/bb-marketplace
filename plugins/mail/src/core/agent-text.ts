@@ -89,7 +89,7 @@ function handleTag(
     } else if (links.length > 0) {
       const { href, start } = links.pop()!;
       if (href !== null && !out.textSinceIs(start, [href, href.replace(/^mailto:/i, "")])) {
-        out.text(` (${href})`);
+        out.decodedText(` (${href})`); // hrefOf already decoded it.
       }
     }
   }
@@ -155,9 +155,15 @@ class TextBuffer {
   private endsWithSpace = false;
   private length = 0;
 
+  /** Text from the document: references are decoded here. */
   text(raw: string): void {
-    if (raw === "") return;
-    let text = removeInvisible(decodeHtmlEntities(raw)).replace(/\s+/g, " ");
+    this.decodedText(decodeHtmlEntities(raw));
+  }
+
+  /** Text whose references are already decoded, so it is not decoded twice. */
+  decodedText(decoded: string): void {
+    if (decoded === "") return;
+    let text = removeInvisible(decoded).replace(/\s+/g, " ");
     if (this.trailingBreaks > 0 || this.endsWithSpace) text = text.replace(/^ +/, "");
     if (text === "") return;
     this.parts.push(text);

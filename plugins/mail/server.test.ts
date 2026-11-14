@@ -10,10 +10,16 @@ import {
   NEEDS_KEY_MESSAGE,
   REMOVE_IN_THREAD_MESSAGE,
 } from "./server.ts";
+import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
 import { generateVaultKey } from "./src/adapters/bb/vault.ts";
 import { ImapAuthError, MAIL_CHANGED_CHANNEL, UNTRUSTED_NOTICE } from "./src/core/index.ts";
 import type { MessageSummary, ThreadDetail } from "./src/core/index.ts";
-import { FixedClock, ScriptedImapGateway } from "./src/core/testing/fakes.ts";
+import {
+  FixedClock,
+  ScriptedImapGateway,
+  makeFetchedMessage,
+  makeStoredAccount,
+} from "./src/core/testing/fakes.ts";
 
 const PLUGIN_ID = "makosh-mail";
 const PASSWORD = "Pa55-word-never-leaks";
@@ -30,6 +36,8 @@ type LoadOptions = {
   settings?: Record<string, string | number | boolean>;
   /** Wraps the bb handed to the plugin, to simulate a host that refuses writes. */
   wrap?: (bb: BbPluginApi) => BbPluginApi;
+  /** Runs against the host's database before the plugin loads. */
+  seed?: (bb: BbPluginApi) => void;
 };
 
 async function load(options: LoadOptions = {}) {
@@ -45,6 +53,7 @@ async function load(options: LoadOptions = {}) {
     agentSkillIds: ["mail"],
   });
   const bb = options.wrap ? options.wrap(host.bb) : host.bb;
+  options.seed?.(host.bb);
   await createMailPlugin({ gateway, clock: new FixedClock(NOW) })(bb);
   return { ...host, gateway };
 }
@@ -112,6 +121,29 @@ function sealedPasswords(host: Host): string[] {
 }
 
 describe("makosh-mail server", () => {
+  it("load repairs snippets stored before entities were fully decoded", async () => {
+    const stale = "Sale &rarr; &zwnj; &zwnj; today";
+    const host = await load({
+      seed: (bb) => {
+        const db = bb.storage.database();
+        bb.storage.migrate(db, MIGRATIONS);
+        const seeded = createSqliteStore(db);
+        seeded.saveAccount(makeStoredAccount());
+        seeded.upsertMessages("acc_1", "INBOX", [
+          makeFetchedMessage(1, { bodyText: null, bodyHtml: "<p>Sale &rarr; &zwnj;&nbsp;today</p>" }),
+        ]);
+        db.prepare("UPDATE messages SET snippet = ?").run(stale);
+      },
+    });
+    const db = host.bb.storage.database();
+    expect((db.prepare("SELECT snippet FROM messages").get() as { snippet: string }).snippet).toBe(
+      "Sale \u2192 today",
+    );
+    expect(host.harness.inspection.logEntries.map((e) => e.message)).toContain(
+      "repaired 1 message snippets",
+    );
+  });
+
   it("generates and stores a vault key on first load", async () => {
     const host = await load({ settings: {} });
 
