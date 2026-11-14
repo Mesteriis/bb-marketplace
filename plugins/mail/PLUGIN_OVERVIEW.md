@@ -15,7 +15,9 @@ with it.
   are skipped. A message Gmail keeps in several folders is counted once.
 - **Spam**, **Not spam**, **Archive** and **Delete** in the reading pane move
   the open conversation's messages in the folder you are viewing.
-- Images that are part of a message show. Remote images stay hidden until
+- Images that are part of a message show (mail synced before this version
+  shows them only once it is fetched again, not automatically). Remote
+  images stay hidden until
   you click **Show images** for that message or **Always show from** its
   sender.
 - **Hand to agent** opens a new thread draft that mentions the open message,
