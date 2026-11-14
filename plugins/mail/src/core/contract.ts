@@ -51,6 +51,11 @@ export const rpcSchemas = {
     input: z.object({ messageId: z.string() }),
     output: messageBodySchema,
   },
+  /** One message as agent text (untrusted notice first); never marks it read. */
+  message_agent_text: {
+    input: z.object({ messageId: z.string() }),
+    output: z.object({ text: z.string() }),
+  },
   message_open: {
     input: z.object({ messageId: z.string() }),
     output: z.object({ ok: z.boolean() }),

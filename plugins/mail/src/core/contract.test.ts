@@ -31,6 +31,7 @@ describe("rpcSchemas", () => {
         "threads_list",
         "thread_get",
         "message_body",
+        "message_agent_text",
         "message_open",
         "search",
       ].sort(),

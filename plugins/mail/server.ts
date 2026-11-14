@@ -52,6 +52,9 @@ export const NEEDS_KEY_MESSAGE =
 export const AGENT_MAIL_OFF_MESSAGE =
   "Mail access for agents is off. The owner can enable it with: bb plugin config makosh-mail set agentTools true";
 
+export const REMOVE_IN_THREAD_MESSAGE =
+  "Removing an account works only in the owner's own terminal, not inside an agent thread.";
+
 export const MESSAGE_GONE_CONTEXT = "This email is no longer available in Makosh Mail.";
 
 const FETCH_BATCH_SIZE = 50;
@@ -59,6 +62,7 @@ const AGENT_TEXT_CAP = 20_000;
 const TOOL_SEARCH_DEFAULT = 10;
 const MENTION_LIMIT = 20;
 const QUERY_MAX = 500;
+const SYNC_INTERVAL_MAX = 1440;
 const TOOL_NAMES = ["mail_search", "mail_read"] as const;
 const SKILL_NAME = "mail";
 
@@ -97,7 +101,7 @@ function defineSettings(bb: BbPluginApi) {
       type: "number",
       label: "Sync interval (minutes)",
       default: 5,
-      experimental_schema: z.number().int().min(1),
+      experimental_schema: z.number().int().min(1).max(SYNC_INTERVAL_MAX),
     },
     syncWindowDays: {
       type: "number",
@@ -153,6 +157,11 @@ function describeAccount(account: Account): string {
     : (account.lastError ??
       (account.lastSyncAt ? `synced ${account.lastSyncAt}` : "not synced yet"));
   return `${account.id}  ${account.email}  ${state}`;
+}
+
+/** 1..1440 minutes, also for a value stored before the schema had a maximum. */
+function clampInterval(minutes: number): number {
+  return Number.isFinite(minutes) ? Math.min(Math.max(minutes, 1), SYNC_INTERVAL_MAX) : 1;
 }
 
 function json(value: unknown): string {
@@ -212,7 +221,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       () => ({
         windowDays: current.syncWindowDays,
         batchSize: FETCH_BATCH_SIZE,
-        intervalMinutes: current.syncIntervalMinutes,
+        intervalMinutes: clampInterval(current.syncIntervalMinutes),
       }),
       { log: (line) => bb.log.info(line), isReady: () => vault !== null },
     );
@@ -241,6 +250,8 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     registerAgentSurfaces(bb, store, () => current.agentTools);
     registerCli(bb, store, {
       loop,
+      accountDeps,
+      publishChanged,
       vaultReady: () => vault !== null,
       agentTools: () => current.agentTools,
     });
@@ -286,8 +297,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     },
     sync_now: ({ accountId }) => {
       if (!deps.vaultReady()) return { started: false };
-      if (accountId !== null && store.getAccount(accountId) === null) {
-        throw refuse("not_found", "Unknown account");
+      if (accountId !== null) {
+        const account = store.getAccount(accountId);
+        if (account === null) throw refuse("not_found", "Unknown account");
+        // The loop skips it until the password is re-entered.
+        if (account.authFailed) return { started: false };
       }
       deps.loop.wake(accountId);
       return { started: true };
@@ -302,6 +316,13 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       const body = store.getBody(messageId);
       if (body === null) throw refuse("not_found", "Unknown message");
       return body;
+    },
+    // Hand to agent without a mention: the text goes into the owner's prompt.
+    // Like the tools and mentions, it never marks the message read.
+    message_agent_text: ({ messageId }) => {
+      const text = readForAgent(store, messageId, AGENT_TEXT_CAP);
+      if (text === null) throw refuse("not_found", "Unknown message");
+      return { text };
     },
     // The only path that marks mail read: the owner opened it in the Mail page.
     message_open: ({ messageId }) => {
@@ -369,13 +390,13 @@ function registerAgentSurfaces(
       };
     },
   });
-  // Registered tools reach a thread only when configure selects them
+  // Registered tools and skills reach a thread only when configure selects them
   // (bb-plugin-sdk.d.ts:21208-21227, 20826-20836): with agentTools off the
-  // selection is empty, so neither tool nor its instructions are sent.
-  bb.agents.configure(() => ({
-    tools: agentTools() ? [...TOOL_NAMES] : [],
-    skills: [SKILL_NAME],
-  }));
+  // selection is empty, so no tool, instructions or skill is offered.
+  bb.agents.configure(() => {
+    const on = agentTools();
+    return { tools: on ? [...TOOL_NAMES] : [], skills: on ? [SKILL_NAME] : [] };
+  });
 
   bb.ui.registerMentionProvider({
     id: "mail",
@@ -401,15 +422,29 @@ function registerAgentSurfaces(
 
 const jsonOption = { json: { type: "boolean", description: "Emit machine-readable JSON" } } as const;
 
-function registerCli(
-  bb: BbPluginApi,
-  store: MailStore,
-  deps: { loop: SyncLoop; vaultReady: () => boolean; agentTools: () => boolean },
-): void {
+type CliDeps = {
+  loop: SyncLoop;
+  accountDeps: AccountDeps;
+  publishChanged: (accountId: string | null) => void;
+  vaultReady: () => boolean;
+  agentTools: () => boolean;
+};
+
+function unknownAccount(accountId: string): PluginCliError {
+  return new PluginCliError(`unknown account '${accountId}'`, {
+    code: "account_not_found",
+    hint: "Run `bb makosh-mail accounts` to list account ids.",
+  });
+}
+
+function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
   const { loop, agentTools } = deps;
   /**
    * Inside an agent thread (ctx.threadId, PluginCliContext in bb-plugin-sdk.d.ts:20554-20562)
-   * mail content follows agentTools, like the tools; the owner's own terminal has no thread.
+   * mail and account data follow agentTools, like the tools; the owner's own
+   * terminal has no thread. The thread id comes from the agent's environment,
+   * so this decides what agents are offered; it is not a barrier against an
+   * agent with shell access to the BB server machine.
    */
   const requireMailAccess = (ctx: PluginCliContext) => {
     if (ctx.threadId !== undefined && !agentTools()) {
@@ -424,7 +459,8 @@ function registerCli(
         accounts: cliCommand({
           summary: "List connected accounts and their sync state",
           options: jsonOption,
-          run: ({ options }) => {
+          run: ({ options }, ctx) => {
+            requireMailAccess(ctx);
             const accounts = store.listAccounts().map(toPublicAccount);
             if (options.json) return { exitCode: 0, stdout: json({ accounts }) };
             const lines =
@@ -500,10 +536,7 @@ function registerCli(
             }
             const accountId = positionals.accountId ?? null;
             if (accountId !== null && store.getAccount(accountId) === null) {
-              throw new PluginCliError(`unknown account '${accountId}'`, {
-                code: "account_not_found",
-                hint: "Run `bb makosh-mail accounts` to list account ids.",
-              });
+              throw unknownAccount(accountId);
             }
             loop.wake(accountId);
             if (options.json) return { exitCode: 0, stdout: json({ started: true, accountId }) };
@@ -514,6 +547,21 @@ function registerCli(
                   ? "Sync started for all accounts.\n"
                   : `Sync started for ${accountId}.\n`,
             };
+          },
+        }),
+        remove: cliCommand({
+          summary: "Remove an account and its synced mail (owner's terminal only)",
+          positionals: [{ name: "accountId", description: "Account id", required: true }],
+          options: jsonOption,
+          run: ({ positionals, options }, ctx) => {
+            if (ctx.threadId !== undefined) {
+              throw new PluginCliError(REMOVE_IN_THREAD_MESSAGE, { code: "owner_terminal_only" });
+            }
+            const { accountId } = positionals;
+            if (!removeAccount(deps.accountDeps, accountId)) throw unknownAccount(accountId);
+            deps.publishChanged(accountId);
+            if (options.json) return { exitCode: 0, stdout: json({ removed: true, accountId }) };
+            return { exitCode: 0, stdout: `Removed ${accountId}.\n` };
           },
         }),
       },
