@@ -273,6 +273,10 @@ const MOVE_MAX_FAILURES = 3;
 const IN_INBOX = `(upper(m.folder) = 'INBOX' OR m.folder IN (
   SELECT f.path FROM folders f WHERE f.account_id = m.account_id AND f.special_use = 'inbox'))`;
 
+/** True for a row (alias m) in the account's All Mail folder. */
+const IN_ALL_MAIL = `(m.folder IN (
+  SELECT f.path FROM folders f WHERE f.account_id = m.account_id AND f.special_use = 'all'))`;
+
 /** Oldest first; an undated message sorts after every dated one. */
 const OLDEST_FIRST = "date IS NULL, date, id";
 
@@ -918,22 +922,26 @@ export function createSqliteStore(db: Database.Database): MailStore {
     },
 
     /**
-     * Each message once: of the rows sharing a dedup key, prefer a copy not
-     * waiting to move, then the Inbox copy, then the most recently stored row.
+     * Each message once: of the rows sharing a dedup key, prefer the copy in
+     * the viewed folder unless it is waiting to move, then a copy not waiting
+     * to move, the Inbox copy, a copy outside All Mail, the most recently
+     * stored row.
      */
-    getThread(threadId): ThreadDetail | null {
+    getThread(threadId, folder): ThreadDetail | null {
       const thread = threadById.get(threadId);
       if (!thread) return null;
       const messages = db
-        .prepare<[string], HeaderRow>(
+        .prepare<[{ threadId: string; folder: string }], HeaderRow>(
           `SELECT * FROM (
              SELECT ${SUMMARY_COLUMNS}, m.to_json, m.cc_json,
                row_number() OVER (PARTITION BY m.dedup_key
-                 ORDER BY m.move_pending IS NULL DESC, ${IN_INBOX} DESC, m.seq DESC) AS rn
-             FROM messages m WHERE m.thread_id = ?)
+                 ORDER BY (m.folder = @folder AND m.move_pending IS NULL) DESC,
+                   m.move_pending IS NULL DESC, ${IN_INBOX} DESC, ${IN_ALL_MAIL} ASC,
+                   m.seq DESC) AS rn
+             FROM messages m WHERE m.thread_id = @threadId)
            WHERE rn = 1 ORDER BY date IS NULL, date, id`,
         )
-        .all(threadId)
+        .all({ threadId, folder })
         .map(header);
       return { thread: toThread(thread), messages };
     },

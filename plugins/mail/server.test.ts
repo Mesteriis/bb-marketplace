@@ -225,6 +225,7 @@ async function threadOf(host: Host, messageId: string): Promise<ThreadDetail> {
   const hit = hits.find((h) => h.id === messageId)!;
   return (await host.harness.behavior.callRpc("thread_get", {
     threadId: hit.threadId,
+    folder: "INBOX",
   })) as ThreadDetail;
 }
 

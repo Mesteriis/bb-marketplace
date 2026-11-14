@@ -373,8 +373,8 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       },
       threads_list: ({ accountId, folder, cursor, limit }) =>
         store.listThreads(accountId, folder, cursor, limit),
-      thread_get: ({ threadId }) => {
-        const thread = store.getThread(threadId);
+      thread_get: ({ threadId, folder }) => {
+        const thread = store.getThread(threadId, folder);
         if (thread === null) throw refuse("not_found", "Unknown thread");
         return thread;
       },

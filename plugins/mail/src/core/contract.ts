@@ -53,7 +53,11 @@ export const rpcSchemas = {
     }),
   },
   thread_get: {
-    input: z.object({ threadId: z.string() }),
+    input: z.object({
+      threadId: z.string(),
+      /** The folder being viewed: each message shows its copy there when it has one. */
+      folder: idInput,
+    }),
     output: threadDetailSchema,
   },
   message_body: {
