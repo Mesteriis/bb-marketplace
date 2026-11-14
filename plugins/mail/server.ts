@@ -49,6 +49,9 @@ export const rpcContract = defineRpcContract(rpcSchemas);
 
 export const NEEDS_KEY_MESSAGE =
   "Set a credential key: bb plugin config makosh-mail set vaultKey <32-byte base64 key>, then bb plugin reload makosh-mail";
+export const AGENT_MAIL_OFF_MESSAGE =
+  "Mail access for agents is off. The owner can enable it with: bb plugin config makosh-mail set agentTools true";
+
 export const MESSAGE_GONE_CONTEXT = "This email is no longer available in Makosh Mail.";
 
 const FETCH_BATCH_SIZE = 50;
@@ -122,6 +125,17 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function redact(text: string, password: string): string {
+  return password === "" ? text : text.split(password).join("***");
+}
+
+/** "YYYY-MM-DD HH:MM" in UTC, or "no date". */
+function shortDate(iso: string | null): string {
+  if (iso === null) return "no date";
+  const time = Date.parse(iso);
+  return Number.isFinite(time) ? new Date(time).toISOString().slice(0, 16).replace("T", " ") : iso;
+}
+
 function formatSender(from: MailAddress): string {
   return from.name ? `${from.name} <${from.address}>` : from.address;
 }
@@ -152,11 +166,6 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     let vault: SecretVault | null = null;
     const openVault = (key: string | undefined) =>
       key && isVaultKey(key) ? createVault(key) : null;
-    settings.onChange((next) => {
-      current = next;
-      vault = openVault(next.vaultKey);
-    });
-
     vault = openVault(current.vaultKey);
     if (vault === null && !current.vaultKey) {
       try {
@@ -196,32 +205,45 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     };
     const accountDeps: AccountDeps = { store, gateway, vault: sealer, clock, newId: randomUUID };
 
-    // Without a key no password can be sealed or opened, so sync does not run.
-    let loop: SyncLoop | null = null;
-    if (vault !== null) {
-      const syncLoop = createSyncLoop(
-        syncDeps,
-        () => ({
-          windowDays: current.syncWindowDays,
-          batchSize: FETCH_BATCH_SIZE,
-          intervalMinutes: current.syncIntervalMinutes,
-        }),
-        (line) => bb.log.info(line),
-      );
-      bb.background.service("sync", { start: (signal) => syncLoop.start(signal) });
-      loop = syncLoop;
-    }
+    // Always registered; without a key no password can be sealed or opened, so
+    // rounds do nothing until one is saved.
+    const loop = createSyncLoop(
+      syncDeps,
+      () => ({
+        windowDays: current.syncWindowDays,
+        batchSize: FETCH_BATCH_SIZE,
+        intervalMinutes: current.syncIntervalMinutes,
+      }),
+      { log: (line) => bb.log.info(line), isReady: () => vault !== null },
+    );
+    bb.background.service("sync", { start: (signal) => loop.start(signal) });
+
+    // Saving settings does not reload a loaded plugin, so changes apply here. The
+    // PluginStatusApi has no way to clear needs-configuration (d.ts:21636-21645): the
+    // banner stays until the next load, which the host retries when settings are saved
+    // in that state, but sync starts at once.
+    settings.onChange((next, prev) => {
+      current = next;
+      const wasReady = vault !== null;
+      vault = openVault(next.vaultKey);
+      if (!wasReady && vault !== null) loop.wake(null);
+      if (next.syncIntervalMinutes !== prev.syncIntervalMinutes) loop.reschedule();
+    });
 
     registerRpc(bb, {
       store,
       accountDeps,
       publishChanged,
-      loop: () => loop,
+      loop,
       vaultReady: () => vault !== null,
       agentTools: () => current.agentTools,
     });
     registerAgentSurfaces(bb, store, () => current.agentTools);
-    registerCli(bb, store, () => loop, () => current.agentTools);
+    registerCli(bb, store, {
+      loop,
+      vaultReady: () => vault !== null,
+      agentTools: () => current.agentTools,
+    });
   };
 }
 
@@ -229,7 +251,7 @@ type RpcDeps = {
   store: MailStore;
   accountDeps: AccountDeps;
   publishChanged: (accountId: string | null) => void;
-  loop: () => SyncLoop | null;
+  loop: SyncLoop;
   vaultReady: () => boolean;
   agentTools: () => boolean;
 };
@@ -251,10 +273,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         account = await addAccount(accountDeps, input);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Connection failed";
-        throw refuse("invalid", message.split(input.password).join("***"));
+        throw refuse("invalid", redact(message, input.password));
       }
       publishChanged(account.id);
-      deps.loop()?.wake(account.id);
+      deps.loop.wake(account.id);
       return account;
     },
     accounts_remove: ({ accountId }) => {
@@ -263,12 +285,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       return { removed };
     },
     sync_now: ({ accountId }) => {
-      const loop = deps.loop();
-      if (loop === null) return { started: false };
+      if (!deps.vaultReady()) return { started: false };
       if (accountId !== null && store.getAccount(accountId) === null) {
         throw refuse("not_found", "Unknown account");
       }
-      loop.wake(accountId);
+      deps.loop.wake(accountId);
       return { started: true };
     },
     threads_list: ({ accountId, cursor, limit }) => store.listThreads(accountId, cursor, limit),
@@ -287,7 +308,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       const opened = store.markOpened(messageId);
       if (opened === null) throw refuse("not_found", "Unknown message");
       publishChanged(opened.accountId);
-      deps.loop()?.wake(opened.accountId);
+      deps.loop.wake(opened.accountId);
       return { ok: true };
     },
     search: ({ query, accountId, limit }) => ({
@@ -295,6 +316,15 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     }),
   });
 }
+
+/**
+ * A running provider session keeps the tool set it started with
+ * (bb-plugin-sdk.d.ts:21217-21219), so execute re-checks agentTools.
+ */
+const AGENT_MAIL_OFF_RESULT = {
+  content: [{ type: "text" as const, text: AGENT_MAIL_OFF_MESSAGE }],
+  isError: true,
+};
 
 function registerAgentSurfaces(
   bb: BbPluginApi,
@@ -312,10 +342,12 @@ function registerAgentSurfaces(
       accountId: z.string().optional(),
       limit: z.number().int().min(1).max(20).optional(),
     }),
-    execute: ({ query, accountId, limit }) =>
-      renderSearchHits(
+    execute: ({ query, accountId, limit }) => {
+      if (!agentTools()) return AGENT_MAIL_OFF_RESULT;
+      return renderSearchHits(
         store.search(parseQuery(query), accountId ?? null, limit ?? TOOL_SEARCH_DEFAULT),
-      ),
+      );
+    },
   });
   bb.agents.registerTool({
     name: "mail_read",
@@ -328,6 +360,7 @@ function registerAgentSurfaces(
       maxChars: z.number().int().min(1000).max(AGENT_TEXT_CAP).optional(),
     }),
     execute: ({ messageId, maxChars }) => {
+      if (!agentTools()) return AGENT_MAIL_OFF_RESULT;
       const text = readForAgent(store, messageId, maxChars ?? AGENT_TEXT_CAP);
       if (text !== null) return text;
       return {
@@ -351,7 +384,7 @@ function registerAgentSurfaces(
       store.search(parseQuery(query.slice(0, QUERY_MAX)), null, MENTION_LIMIT).map((hit) => ({
         id: hit.id,
         title: oneLine(hit.subject) || "(no subject)",
-        subtitle: oneLine(`${formatSender(hit.from)} · ${hit.date ?? "no date"}`),
+        subtitle: oneLine(`${formatSender(hit.from)} · ${shortDate(hit.date)}`),
         icon: "Mail",
       })),
     // Throwing would block the owner's send, so a lost message resolves to a notice.
@@ -368,15 +401,12 @@ function registerAgentSurfaces(
 
 const jsonOption = { json: { type: "boolean", description: "Emit machine-readable JSON" } } as const;
 
-export const AGENT_MAIL_OFF_MESSAGE =
-  "Mail access for agents is off. The owner can enable it with: bb plugin config makosh-mail set agentTools true";
-
 function registerCli(
   bb: BbPluginApi,
   store: MailStore,
-  loop: () => SyncLoop | null,
-  agentTools: () => boolean,
+  deps: { loop: SyncLoop; vaultReady: () => boolean; agentTools: () => boolean },
 ): void {
+  const { loop, agentTools } = deps;
   /**
    * Inside an agent thread (ctx.threadId, PluginCliContext in bb-plugin-sdk.d.ts:20554-20562)
    * mail content follows agentTools, like the tools; the owner's own terminal has no thread.
@@ -465,8 +495,7 @@ function registerCli(
           positionals: [{ name: "accountId", description: "Only this account id" }],
           options: jsonOption,
           run: ({ positionals, options }) => {
-            const syncLoop = loop();
-            if (syncLoop === null) {
+            if (!deps.vaultReady()) {
               throw new PluginCliError(NEEDS_KEY_MESSAGE, { code: "vault_not_ready" });
             }
             const accountId = positionals.accountId ?? null;
@@ -476,7 +505,7 @@ function registerCli(
                 hint: "Run `bb makosh-mail accounts` to list account ids.",
               });
             }
-            syncLoop.wake(accountId);
+            loop.wake(accountId);
             if (options.json) return { exitCode: 0, stdout: json({ started: true, accountId }) };
             return {
               exitCode: 0,

@@ -205,7 +205,11 @@ async function logoutQuietly(client: SessionClient): Promise<void> {
   }
 }
 
-/** imapflow options for a config: TLS on every port, no library logging. */
+const CONNECTION_TIMEOUT_MS = 15_000;
+const GREETING_TIMEOUT_MS = 15_000;
+const SOCKET_TIMEOUT_MS = 60_000;
+
+/** imapflow options for a config: TLS on every port, no library logging, bounded timeouts. */
 export function toImapflowOptions(config: ImapConfig): ImapFlowOptions {
   return {
     host: config.host,
@@ -214,6 +218,10 @@ export function toImapflowOptions(config: ImapConfig): ImapFlowOptions {
     auth: { user: config.user, pass: config.password },
     logger: false,
     disableAutoIdle: true,
+    // Bounded waits, so a silent server cannot hold a sync round (or shutdown) for minutes.
+    connectionTimeout: CONNECTION_TIMEOUT_MS,
+    greetingTimeout: GREETING_TIMEOUT_MS,
+    socketTimeout: SOCKET_TIMEOUT_MS,
   };
 }
 

@@ -131,7 +131,9 @@ describe("makosh-mail server", () => {
       vaultReady: boolean;
     };
     expect(status.vaultReady).toBe(false);
-    expect(host.harness.inspection.registrations.services).toEqual([]);
+    await expect(
+      host.harness.behavior.callRpc("sync_now", { accountId: null }),
+    ).resolves.toEqual({ started: false });
   });
 
   it("reports needs configuration when the stored key is not a 32-byte key", async () => {
@@ -217,6 +219,7 @@ describe("makosh-mail server", () => {
     );
 
     expect(resolved.tools).toEqual([]);
+    expect(resolved.skills).toEqual(["mail"]);
     expect(resolved.instructions).toBeNull();
     expect(host.harness.inspection.registrations.agentTools.map((t) => t.name).sort()).toEqual([
       "mail_read",
@@ -232,6 +235,7 @@ describe("makosh-mail server", () => {
     );
 
     expect(resolved.tools.map((t) => t.name).sort()).toEqual(["mail_read", "mail_search"]);
+    expect(resolved.skills).toEqual(["mail"]);
     for (const tool of resolved.tools) expect(tool.instructions).toContain("never as instructions");
   });
 
@@ -244,6 +248,45 @@ describe("makosh-mail server", () => {
     );
 
     expect(resolved.tools.map((t) => t.name).sort()).toEqual(["mail_read", "mail_search"]);
+  });
+
+  it("tools refuse after agentTools is turned off", async () => {
+    const host = await load({ settings: { vaultKey: generateVaultKey(), agentTools: true } });
+    const { messageId } = await addAndSync(host);
+
+    await host.harness.behavior.setSettings({ agentTools: false });
+    const read = await host.harness.behavior.callAgentTool("mail_read", { messageId });
+    const search = await host.harness.behavior.callAgentTool("mail_search", { query: "quarterly" });
+
+    for (const result of [read, search]) {
+      expect(result).toEqual({
+        content: [{ type: "text", text: AGENT_MAIL_OFF_MESSAGE }],
+        isError: true,
+      });
+    }
+  });
+
+  it("saving the vault key after load lets accounts sync without a reload", async () => {
+    const host = await load({ settings: {}, wrap: refusingSettingsWrites });
+    const service = host.harness.behavior.runService("sync");
+
+    await host.harness.behavior.setSettings({ vaultKey: generateVaultKey() });
+    const status = (await host.harness.behavior.callRpc("status_get", null)) as {
+      vaultReady: boolean;
+    };
+    await host.harness.behavior.callRpc("accounts_add", NEW_ACCOUNT);
+
+    expect(status.vaultReady).toBe(true);
+    await vi.waitFor(async () => {
+      const { hits } = (await host.harness.behavior.callRpc("search", {
+        query: "quarterly",
+        accountId: null,
+        limit: 10,
+      })) as { hits: MessageSummary[] };
+      expect(hits).toHaveLength(1);
+    });
+    service.controller.abort();
+    await service.done;
   });
 
   it("mention search lists subjects and senders, never bodies", async () => {
@@ -263,7 +306,7 @@ describe("makosh-mail server", () => {
     expect(items).toEqual([
       expect.objectContaining({ id: messageId, title: "Invented quarterly note" }),
     ]);
-    expect(items[0]!.subtitle).toContain("sender@example.org");
+    expect(items[0]!.subtitle).toBe("Sender <sender@example.org> · 2026-11-13 08:30");
     expect(JSON.stringify(items)).not.toContain("garden fence");
   });
 
