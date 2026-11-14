@@ -1,12 +1,16 @@
 import PostalMime from "postal-mime";
-import type { FetchMessageObject } from "imapflow";
+import type { Email } from "postal-mime";
+import type { FetchMessageObject, ListResponse } from "imapflow";
 import { describe, expect, it } from "vitest";
 import { ImapAuthError } from "../../core/index.ts";
 import {
   SafeImapError,
   createSession,
   describeImapError,
+  listRemoteFolders,
   toFetchedMessage,
+  toInlineParts,
+  toRemoteFolders,
   toImapflowOptions,
   type SessionClient,
 } from "./imapflow-gateway.ts";
@@ -264,6 +268,7 @@ describe("describeImapError", () => {
 type StubOptions = {
   search?: unknown;
   stored?: boolean;
+  moved?: unknown;
   fetched?: FetchMessageObject[];
   mailbox?: unknown;
 };
@@ -283,6 +288,10 @@ function stubClient(options: StubOptions = {}) {
     messageFlagsAdd: async (...args: unknown[]) => {
       calls.push({ method: "messageFlagsAdd", args });
       return options.stored ?? true;
+    },
+    messageMove: async (...args: unknown[]) => {
+      calls.push({ method: "messageMove", args });
+      return options.moved;
     },
     logout: async () => {},
     close: () => {},
@@ -351,5 +360,270 @@ describe("createSession", () => {
       attachments: [],
       references: [],
     });
+  });
+  it("moveMessages moves by uid and maps COPYUID to a Map of numbers", async () => {
+    const { client, calls } = stubClient({
+      moved: { path: "INBOX", destination: "Trash", uidMap: new Map([[4, 104], [5, 105]]) },
+    });
+    const result = await createSession(client, false).moveMessages([4, 5], "Trash");
+    expect(calls).toEqual([{ method: "messageMove", args: [[4, 5], "Trash", { uid: true }] }]);
+    expect(result.moved).toBeInstanceOf(Map);
+    expect([...result.moved!]).toEqual([[4, 104], [5, 105]]);
+  });
+
+  it("moveMessages returns null without a uid map", async () => {
+    const { client } = stubClient({ moved: { path: "INBOX", destination: "Trash" } });
+    expect(await createSession(client, false).moveMessages([4], "Trash")).toEqual({ moved: null });
+  });
+
+  it("moveMessages throws a safe error when the server refuses the move", async () => {
+    for (const refused of [false, undefined]) {
+      const { client } = stubClient({ moved: refused });
+      const move = createSession(client, false).moveMessages([4], "Trash");
+      await expect(move).rejects.toBeInstanceOf(SafeImapError);
+      await expect(createSession(client, false).moveMessages([4], "Trash")).rejects.toThrow(
+        "IMAP error (MoveFailed)",
+      );
+    }
+  });
+
+  it("moveMessages maps a thrown imapflow error from codes only", async () => {
+    const client = {
+      ...stubClient().client,
+      messageMove: async () => {
+        throw Object.assign(new Error("A5 NO [TRYCREATE] invented-password"), { code: "ETIMEOUT" });
+      },
+    } as unknown as SessionClient;
+    const move = createSession(client, false).moveMessages([4], "Trash");
+    await expect(move).rejects.toThrow("IMAP error (ETIMEOUT)");
+  });
+
+  it("moveMessages refuses a read-only session without calling the server", async () => {
+    const { client, calls } = stubClient({ moved: { uidMap: new Map() } });
+    await expect(createSession(client, true).moveMessages([4], "Trash")).rejects.toMatchObject({
+      code: "ReadOnly",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("fetchMessages and fetchFlags carry the Gmail message id", async () => {
+    const fetched = [
+      imapMessage({ uid: 1, emailId: "1789000000000000101" }),
+      imapMessage({ uid: 2, emailId: undefined, flags: new Set(["\\Seen"]) }),
+    ];
+    const { client, calls } = stubClient({ fetched });
+    const session = createSession(client, true);
+    const messages = await session.fetchMessages([1, 2]);
+    expect(messages.map((m) => m.gmMsgId)).toEqual(["1789000000000000101", null]);
+    const flags = await session.fetchFlags([1, 2]);
+    expect(flags).toEqual([
+      { uid: 1, seen: true, flagged: true, gmMsgId: "1789000000000000101" },
+      { uid: 2, seen: true, flagged: false, gmMsgId: null },
+    ]);
+    const flagsQuery = calls.filter((c) => c.method === "fetch")[1]!.args[1];
+    expect(flagsQuery).toMatchObject({ uid: true, flags: true, emailId: true });
+    expect(flagsQuery).not.toHaveProperty("source");
+  });
+
+  it("fetchMessages extracts inline images", async () => {
+    const session = createSession(stubClient({ fetched: [imapMessage()] }).client, true);
+    const [message] = await session.fetchMessages([42]);
+    expect(message!.inlineParts).toHaveLength(1);
+    expect(message!.inlineParts[0]).toMatchObject({ contentId: "logo@example.org", mimeType: "image/png" });
+    expect(message!.inlineParts[0]!.data).toBeInstanceOf(Uint8Array);
+    expect(Buffer.from(message!.inlineParts[0]!.data).toString("base64")).toBe("iVBORw0KGgo=");
+  });
+});
+
+function listEntry(
+  path: string,
+  flags: string[],
+  specialUse?: string,
+  specialUseSource?: ListResponse["specialUseSource"],
+  extra: Partial<ListResponse> = {},
+): ListResponse {
+  const parts = path.split("/");
+  return {
+    path,
+    pathAsListed: path,
+    name: parts[parts.length - 1]!,
+    delimiter: "/",
+    parent: parts.slice(0, -1),
+    parentPath: parts.slice(0, -1).join("/"),
+    flags: new Set(flags),
+    specialUse,
+    specialUseSource,
+    listed: true,
+    subscribed: true,
+    ...extra,
+  };
+}
+
+const GMAIL_LIST: ListResponse[] = [
+  listEntry("INBOX", ["\\HasNoChildren"], "\\Inbox", "name"),
+  listEntry("[Gmail]", ["\\HasChildren", "\\Noselect"]),
+  listEntry("[Gmail]/All Mail", ["\\All", "\\HasNoChildren"], "\\All", "extension"),
+  listEntry("[Gmail]/Drafts", ["\\Drafts", "\\HasNoChildren"], "\\Drafts", "extension"),
+  listEntry("[Gmail]/Important", ["\\HasNoChildren", "\\Important"]),
+  listEntry("[Gmail]/Sent Mail", ["\\HasNoChildren", "\\Sent"], "\\Sent", "extension"),
+  listEntry("[Gmail]/Spam", ["\\HasNoChildren", "\\Junk"], "\\Junk", "extension"),
+  listEntry("[Gmail]/Starred", ["\\Flagged", "\\HasNoChildren"], "\\Flagged", "extension"),
+  listEntry("[Gmail]/Trash", ["\\HasNoChildren", "\\Trash"], "\\Trash", "extension"),
+  listEntry("Work", ["\\HasNoChildren"]),
+];
+
+const ICLOUD_LIST: ListResponse[] = [
+  listEntry("INBOX", [], "\\Inbox", "name"),
+  listEntry("Sent Messages", [], "\\Sent", "name"),
+  listEntry("Drafts", [], "\\Drafts", "name"),
+  listEntry("Junk", [], "\\Junk", "name"),
+  listEntry("Deleted Messages", [], "\\Trash", "name"),
+  listEntry("Archive", [], "\\Archive", "name"),
+  listEntry("Notes", []),
+];
+
+describe("toRemoteFolders", () => {
+  it("maps a Gmail listing and skips the virtual Starred and Important folders", () => {
+    expect(toRemoteFolders(GMAIL_LIST)).toEqual([
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+      { path: "[Gmail]", name: "[Gmail]", delimiter: "/", specialUse: null, selectable: false },
+      { path: "[Gmail]/All Mail", name: "All Mail", delimiter: "/", specialUse: "all", selectable: true },
+      { path: "[Gmail]/Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true },
+      { path: "[Gmail]/Sent Mail", name: "Sent Mail", delimiter: "/", specialUse: "sent", selectable: true },
+      { path: "[Gmail]/Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true },
+      { path: "[Gmail]/Trash", name: "Trash", delimiter: "/", specialUse: "trash", selectable: true },
+      { path: "Work", name: "Work", delimiter: "/", specialUse: null, selectable: true },
+    ]);
+  });
+
+  it("maps an iCloud listing whose special use comes from folder names", () => {
+    expect(toRemoteFolders(ICLOUD_LIST).map((f) => [f.path, f.specialUse, f.selectable])).toEqual([
+      ["INBOX", "inbox", true],
+      ["Sent Messages", "sent", true],
+      ["Drafts", "drafts", true],
+      ["Junk", "junk", true],
+      ["Deleted Messages", "trash", true],
+      ["Archive", "archive", true],
+      ["Notes", null, true],
+    ]);
+  });
+
+  it("treats INBOX as the Inbox in any case, even without a special-use flag", () => {
+    const folders = toRemoteFolders([listEntry("Inbox", []), listEntry("inbox.child", [])]);
+    expect(folders.map((f) => f.specialUse)).toEqual(["inbox", null]);
+  });
+
+  it("marks \\Noselect and \\NonExistent folders not selectable", () => {
+    const folders = toRemoteFolders([
+      listEntry("Parent", ["\\Noselect"]),
+      listEntry("Phantom", ["\\NonExistent"]),
+      listEntry("Lower", ["\\noselect"]),
+    ]);
+    expect(folders.map((f) => f.selectable)).toEqual([false, false, false]);
+  });
+
+  it("ignores special uses it does not model and entries LIST did not report", () => {
+    const folders = toRemoteFolders([
+      listEntry("Flagged", [], "\\Flagged", "name"),
+      listEntry("Odd", [], "\\Something"),
+      listEntry("Gone", [], undefined, undefined, { listed: false }),
+    ]);
+    expect(folders).toEqual([
+      { path: "Flagged", name: "Flagged", delimiter: "/", specialUse: null, selectable: true },
+      { path: "Odd", name: "Odd", delimiter: "/", specialUse: null, selectable: true },
+    ]);
+  });
+});
+
+describe("listRemoteFolders", () => {
+  it("lists with special-use resolution and maps the result", async () => {
+    const calls: unknown[][] = [];
+    const client = {
+      list: async (...args: unknown[]) => {
+        calls.push(args);
+        return ICLOUD_LIST;
+      },
+    };
+    const folders = await listRemoteFolders(client);
+    expect(folders).toHaveLength(7);
+    expect(calls).toEqual([[]]);
+  });
+
+  it("maps a LIST failure from codes only", async () => {
+    const client = {
+      list: async () => {
+        throw Object.assign(new Error("A1 BAD invented-password"), { code: "ECONNRESET" });
+      },
+    };
+    await expect(listRemoteFolders(client)).rejects.toThrow("IMAP error (ECONNRESET)");
+  });
+});
+
+function attachment(overrides: Partial<Email["attachments"][number]> = {}): Email["attachments"][number] {
+  return {
+    filename: null,
+    mimeType: "image/png",
+    disposition: "inline",
+    contentId: "<part@example.org>",
+    content: new Uint8Array(16).buffer,
+    ...overrides,
+  };
+}
+
+describe("toInlineParts", () => {
+  it("keeps image parts with a content id, strips the brackets and copies the bytes", () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const parts = toInlineParts([
+      attachment({ contentId: "<a@example.org>", content: bytes.buffer }),
+      attachment({ contentId: " b@example.org ", disposition: null, related: true, mimeType: "image/jpeg" }),
+      attachment({ contentId: "<c@example.org>", disposition: "attachment", mimeType: "image/gif" }),
+    ]);
+    expect(parts.map((p) => [p.contentId, p.mimeType])).toEqual([
+      ["a@example.org", "image/png"],
+      ["b@example.org", "image/jpeg"],
+      ["c@example.org", "image/gif"],
+    ]);
+    expect(parts[0]!.data).toBeInstanceOf(Uint8Array);
+    expect([...parts[0]!.data]).toEqual([1, 2, 3]);
+  });
+
+  it("drops non-images, parts without a content id and string content", () => {
+    expect(
+      toInlineParts([
+        attachment({ mimeType: "application/pdf" }),
+        attachment({ mimeType: "text/html", contentId: "<h@example.org>" }),
+        attachment({ contentId: undefined }),
+        attachment({ contentId: "<>" }),
+        attachment({ content: "aGVsbG8=", encoding: "base64" }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("drops parts over 512 KB and stops at 2 MB per message", () => {
+    const kb = 1024;
+    const parts = toInlineParts([
+      attachment({ contentId: "<big@example.org>", content: new Uint8Array(512 * kb + 1).buffer }),
+      ...[1, 2, 3, 4].map((n) =>
+        attachment({ contentId: `<p${n}@example.org>`, content: new Uint8Array(512 * kb).buffer }),
+      ),
+      attachment({ contentId: "<over@example.org>", content: new Uint8Array(1).buffer }),
+    ]);
+    expect(parts.map((p) => p.contentId)).toEqual([
+      "p1@example.org",
+      "p2@example.org",
+      "p3@example.org",
+      "p4@example.org",
+    ]);
+    expect(parts.reduce((sum, p) => sum + p.data.byteLength, 0)).toBe(2 * 1024 * kb);
+  });
+
+  it("never throws on odd attachment shapes", () => {
+    const odd = [
+      { mimeType: undefined, contentId: "<x@example.org>", content: null },
+      attachment({ mimeType: "IMAGE/PNG", contentId: "<upper@example.org>" }),
+    ] as unknown as Email["attachments"];
+    expect(toInlineParts(odd).map((p) => [p.contentId, p.mimeType])).toEqual([
+      ["upper@example.org", "image/png"],
+    ]);
   });
 });
