@@ -235,6 +235,61 @@ describe("describeImapError", () => {
     }
   });
 
+  it("maps a login refused with an ALERT code to a retryable error", () => {
+    const refused = Object.assign(new Error("Command failed"), {
+      authenticationFailed: true,
+      serverResponseCode: "ALERT",
+      response: `[ALERT] Invented notice ${password}`,
+    });
+    const mapped = describeImapError(refused);
+    expect(mapped).not.toBeInstanceOf(ImapAuthError);
+    expect(mapped).toBeInstanceOf(SafeImapError);
+    expect(mapped.message).toBe("IMAP error (ALERT)");
+  });
+
+  it("maps a throttled login to a retryable error without passing on its text", () => {
+    const replies = [
+      "Too many simultaneous connections. (Failure)",
+      "Login rate limit exceeded",
+      "Account throttled",
+      "Please try again later",
+      "Temporary system problem",
+    ];
+    for (const text of replies) {
+      for (const field of ["response", "responseText"] as const) {
+        const refused = Object.assign(new Error("Command failed"), {
+          authenticationFailed: true,
+          [field]: `${text} ${password}`,
+        });
+        const mapped = describeImapError(refused);
+        expect(mapped, `${field}: ${text}`).not.toBeInstanceOf(ImapAuthError);
+        expect(mapped).toBeInstanceOf(SafeImapError);
+        expect(mapped.message).toBe("IMAP error (LoginThrottled)");
+        for (const leaked of [mapped.message, JSON.stringify({ ...mapped }), String(mapped.stack)]) {
+          expect(leaked).not.toContain(password);
+          expect(leaked).not.toContain(text);
+        }
+      }
+    }
+  });
+
+  it("keeps a credential refusal an auth error whatever its text says", () => {
+    for (const response of ["Invalid credentials (Failure)", "Too many failed attempts, bad password"]) {
+      const refused = Object.assign(new Error("Command failed"), {
+        authenticationFailed: true,
+        serverResponseCode: "AUTHENTICATIONFAILED",
+        response,
+      });
+      expect(describeImapError(refused), response).toBeInstanceOf(ImapAuthError);
+    }
+    // A plain wrong password, no code, no throttle words ("separate" is not "rate").
+    const plain = Object.assign(new Error("Command failed"), {
+      authenticationFailed: true,
+      response: "Use a separate app password",
+    });
+    expect(describeImapError(plain)).toBeInstanceOf(ImapAuthError);
+  });
+
   it("builds messages from codes, never from the error text", () => {
     const withCode = Object.assign(new Error(`server said ${password}`), {
       code: "ETIMEOUT",

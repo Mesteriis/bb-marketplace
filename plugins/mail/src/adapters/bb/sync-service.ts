@@ -2,8 +2,10 @@
 // time; the next full round is due syncIntervalMinutes (at least one minute)
 // after the last one finished. wake(accountId) runs a targeted round now
 // without moving that deadline, wake(null) runs a full round now, and a wake
-// during a round queues another round right after it. While the vault is not
-// ready, rounds do nothing.
+// during a round queues another round right after it. Wakes are coalesced: at
+// most one extra round starts within WAKE_WINDOW_MS of the last round's start;
+// later wakes wait for the window to end and then share one round. While the
+// vault is not ready, rounds do nothing.
 //
 // Nothing here rejects: every account is synced inside its own try/catch, and
 // the logger and settings are guarded, so one failing account (or a store
@@ -24,6 +26,9 @@ import {
 export const DECRYPT_ERROR = "Cannot decrypt credential — re-enter the password";
 
 const MINUTE_MS = 60_000;
+
+/** Opens and actions come in bursts; this bounds how often they start a round. */
+const WAKE_WINDOW_MS = 10_000;
 
 export type SyncLoopSettings = SyncOptions & { intervalMinutes: number };
 
@@ -68,6 +73,21 @@ export function createSyncLoop(
   /** Date.now() when the last full round finished; null before the first. */
   let lastFullAt: number | null = null;
   let cutSleep: (() => void) | null = null;
+  /** Date.now() when the last round started, and whether it was itself the extra one. */
+  let lastStartAt: number | null = null;
+  let lastWasExtra = false;
+
+  /** When a woken round may start: now, unless the window's one extra round is used. */
+  function wokenStartAt(now: number): number {
+    if (lastStartAt === null || now - lastStartAt >= WAKE_WINDOW_MS || !lastWasExtra) return now;
+    return lastStartAt + WAKE_WINDOW_MS;
+  }
+
+  /** A woken round inside the last round's window is that window's extra one. */
+  function markStart(now: number, woken: boolean): void {
+    lastWasExtra = woken && lastStartAt !== null && now - lastStartAt < WAKE_WINDOW_MS;
+    lastStartAt = now;
+  }
 
   function wake(accountId: string | null): void {
     if (accountId === null || pending === "all") {
@@ -124,8 +144,9 @@ export function createSyncLoop(
       }
     }
 
-    async function round(target: "all" | Set<string>): Promise<void> {
-      if (!isReady()) return;
+    /** True when the round had accounts to sync (only those count toward the wake window). */
+    async function round(target: "all" | Set<string>): Promise<boolean> {
+      if (!isReady()) return false;
       let ids: string[];
       let syncOptions: SyncOptions;
       try {
@@ -134,30 +155,35 @@ export function createSyncLoop(
         syncOptions = { windowDays, batchSize };
       } catch {
         log("sync: cannot start a round");
-        return;
+        return false;
       }
       if (target !== "all") ids = ids.filter((id) => target.has(id));
       for (const id of ids) {
-        if (signal.aborted) return;
+        if (signal.aborted) break;
         await Promise.race([syncOne(id, syncOptions), aborted]);
       }
+      return ids.length > 0;
     }
 
     while (!signal.aborted) {
-      if (pending !== null) {
-        const target = pending;
-        pending = null;
-        await round(target);
-        if (target === "all") lastFullAt = Date.now();
-        continue;
-      }
-      const due = lastFullAt === null ? 0 : lastFullAt + intervalMs() - Date.now();
+      const now = Date.now();
+      const due = lastFullAt === null ? 0 : lastFullAt + intervalMs() - now;
       if (due <= 0) {
-        await round("all");
+        // A scheduled full round covers every queued wake.
+        pending = null;
+        if (await round("all")) markStart(now, false);
         lastFullAt = Date.now();
         continue;
       }
-      await sleep(due, signal);
+      const wokenAt = pending === null ? null : wokenStartAt(now);
+      if (pending !== null && wokenAt !== null && wokenAt <= now) {
+        const target = pending;
+        pending = null;
+        if (await round(target)) markStart(now, true);
+        if (target === "all") lastFullAt = Date.now();
+        continue;
+      }
+      await sleep(wokenAt === null ? due : Math.min(due, wokenAt - now), signal);
     }
   }
 
