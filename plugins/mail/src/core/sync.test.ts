@@ -78,7 +78,8 @@ describe("syncAccount", () => {
     expect(batches.map((b) => b.length)).toEqual([50, 50, 20]);
     expect(batches[0]![0]).toBe(120);
     expect(batches.flat()).toEqual([...Array.from({ length: 120 }, (_, i) => 120 - i)]);
-    expect(saved).toEqual([120, 120, 120]);
+    // After each batch, then once more when the whole window is stored.
+    expect(saved).toEqual([120, 120, 120, 120]);
     expect(store.getSyncState(ACCOUNT_ID, INBOX)).toEqual({
       uidValidity: 7,
       lastUid: 120,
@@ -192,6 +193,51 @@ describe("syncAccount", () => {
 
     expect(outcome).toMatchObject({ status: "ok", removed: 0 });
     expect(store.localFolderIndex(ACCOUNT_ID, INBOX, "1970-01-01T00:00:00.000Z")).toHaveLength(3);
+  });
+
+  it("an initial round that fetches nothing for its search hits never leaves lastUid at 0", async () => {
+    const { store, gateway, deps } = setup(mailbox(3));
+    const open = gateway.openInbox.bind(gateway);
+    const openInbox = vi.spyOn(gateway, "openInbox").mockImplementation(async (config, options) => {
+      const session = await open(config, options);
+      // The hits are expunged before the fetch, and the round then fails in reconcile.
+      const searchSince = session.searchSince;
+      let searches = 0;
+      session.fetchMessages = async () => [];
+      session.searchSince = async (date) => {
+        if (++searches === 2) throw new Error("connection lost");
+        return searchSince(date);
+      };
+      return session;
+    });
+
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "error" });
+    expect(store.getSyncState(ACCOUNT_ID, INBOX)?.lastUid).toBe(3);
+    openInbox.mockRestore();
+
+    const next = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    // Incremental from 3, not from 0 (which would pull the whole mailbox);
+    // the window is backfilled by reconcile.
+    expect(gateway.sessions[1]!.calls.find((c) => c.method === "uidsAfter")?.uid).toBe(3);
+    expect(next).toMatchObject({ status: "ok", fetched: 3 });
+  });
+
+  it("a completed initial round starts incremental sync at the end of the mailbox", async () => {
+    const box = mailbox(2);
+    // Older mail outside the window ends at uid 9.
+    box.uidNext = 10;
+    const { store, gateway, deps } = setup(box);
+    const open = gateway.openInbox.bind(gateway);
+    vi.spyOn(gateway, "openInbox").mockImplementationOnce(async (config, options) => {
+      const session = await open(config, options);
+      session.fetchMessages = async () => [];
+      return session;
+    });
+
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok" });
+
+    expect(store.getSyncState(ACCOUNT_ID, INBOX)?.lastUid).toBe(9);
   });
 
   it("reconcile applies server flags but keeps a pending local read", async () => {

@@ -157,13 +157,18 @@ async function syncInbox(
         .sort((a, b) => a - b);
 
   let lastUid = baseState.lastUid;
-  /** Fetches uids in batches; each batch is stored with the sync state in one transaction. */
+  /**
+   * Fetches uids in batches; each batch is stored with the sync state in one
+   * transaction. lastUid covers every requested uid, fetched or not: one the
+   * server no longer returns was expunged, and a window message missed by an
+   * interrupted round is backfilled by reconcile whatever lastUid says.
+   */
   const fetchAndStore = async (batchUids: number[]): Promise<number> => {
     let count = 0;
     for (let i = 0; i < batchUids.length; i += options.batchSize) {
-      const messages: FetchedMessage[] = await session.fetchMessages(
-        batchUids.slice(i, i + options.batchSize),
-      );
+      const batch = batchUids.slice(i, i + options.batchSize);
+      const messages: FetchedMessage[] = await session.fetchMessages(batch);
+      for (const uid of batch) lastUid = Math.max(lastUid, uid);
       for (const message of messages) lastUid = Math.max(lastUid, message.uid);
       count += messages.length;
       store.transaction(() => {
@@ -175,15 +180,15 @@ async function syncInbox(
   };
 
   let fetched = await fetchAndStore(uids);
-  if (initial && uids.length === 0) {
-    // Nothing in the window: start incremental sync from the current end of
-    // the mailbox rather than from uid 0, which would pull in old mail.
-    lastUid = Math.max(0, status.uidNext - 1);
-    store.saveSyncState(accountId, INBOX, { ...baseState, lastUid });
-  }
-
   const reconciled = await reconcile(store, session, accountId, since, fetchAndStore);
   fetched += reconciled.backfilled;
+  if (initial) {
+    // The window is stored: start incremental sync from the end of the
+    // mailbox, never from a lower uid, which would pull in old mail. Saved
+    // even for an empty window, so the next round is incremental.
+    lastUid = Math.max(lastUid, status.uidNext - 1);
+    store.saveSyncState(accountId, INBOX, { ...baseState, lastUid });
+  }
   // Every successful round, not only the one that saw the change: a reset
   // round that failed midway has already saved the new UIDVALIDITY, so the
   // rows it detached are only cleaned up here.
