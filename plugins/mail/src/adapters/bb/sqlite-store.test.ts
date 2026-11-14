@@ -109,6 +109,7 @@ describe("createSqliteStore", () => {
     expect(detail.messages[1]).toEqual({
       id: second,
       accountId: "acc_1",
+      folder: "INBOX",
       threadId,
       date: "2026-11-12T10:00:00.000Z",
       from: { name: "Second", address: "second@example.org" },
@@ -278,7 +279,7 @@ describe("createSqliteStore", () => {
         [m4!, "t_undated"],
       ]),
     );
-    const { threads } = store.listThreads("acc_1", null, 10);
+    const { threads } = store.listThreads("acc_1", "INBOX", null, 10);
     expect(threads.map((t) => [t.id, t.lastDate])).toEqual([
       ["t_mixed", "2026-11-09T00:00:00.000Z"],
       ["t_older", "2026-11-01T00:00:00.000Z"],
@@ -402,14 +403,14 @@ describe("createSqliteStore", () => {
     let cursor: string | null = null;
     let pages = 0;
     do {
-      const page = store.listThreads("acc_1", cursor, 2);
+      const page = store.listThreads("acc_1", "INBOX", cursor, 2);
       seen.push(...page.threads.map((t) => t.id));
       cursor = page.nextCursor;
       pages++;
     } while (cursor !== null && pages < 10);
     expect(seen).toEqual(expected);
     expect(pages).toBe(3);
-    expect(store.listThreads("acc_1", null, 5).nextCursor).toBeNull();
+    expect(store.listThreads("acc_1", "INBOX", null, 5).nextCursor).toBeNull();
   });
 
   it("search finds a Cyrillic subject", () => {
@@ -548,7 +549,7 @@ describe("createSqliteStore", () => {
       store.pendingSeenUids("acc_1", INBOX),
       store.markOpened(id),
       store.threadingInputs("acc_1"),
-      store.listThreads("acc_1", null, 10),
+      store.listThreads("acc_1", "INBOX", null, 10),
       store.getThread(threadId),
       store.getMessage(id),
       store.getBody(id),

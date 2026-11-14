@@ -1,10 +1,13 @@
 // Ports: what the core needs from its host. Each host supplies adapters.
 import type {
   FetchedMessage,
+  Folder,
+  InlinePart,
   MessageBody,
   MessageHeader,
   MessageSummary,
   ParsedQuery,
+  RemoteFolder,
   StoredAccount,
   SyncState,
   ThreadDetail,
@@ -25,18 +28,34 @@ export type ImapTestResult =
 
 export interface ImapGateway {
   test(config: ImapConfig): Promise<ImapTestResult>;
-  openInbox(config: ImapConfig, options: { readOnly: boolean }): Promise<InboxSession>;
+  listFolders(config: ImapConfig): Promise<RemoteFolder[]>;
+  openFolder(
+    config: ImapConfig,
+    path: string,
+    options: { readOnly: boolean },
+  ): Promise<FolderSession>;
 }
 
-/** An open INBOX. Every fetch uses BODY.PEEK, so reading never marks mail read. */
-export interface InboxSession {
+/** An open folder. Every fetch uses BODY.PEEK, so reading never marks mail read. */
+export interface FolderSession {
   status(): Promise<{ uidValidity: number; uidNext: number; exists: number }>;
   searchSince(date: Date): Promise<number[]>;
   uidsAfter(uid: number): Promise<number[]>;
   fetchMessages(uids: number[]): Promise<FetchedMessage[]>;
-  fetchFlags(uids: number[]): Promise<{ uid: number; seen: boolean; flagged: boolean }[]>;
+  fetchFlags(
+    uids: number[],
+  ): Promise<{ uid: number; seen: boolean; flagged: boolean; gmMsgId: string | null }[]>;
   /** Throws on a read-only session. */
   markSeen(uids: number[]): Promise<void>;
+  /**
+   * Moves the uids to `destination`. `moved` maps source uid to destination
+   * uid (COPYUID), or is null when the server returned none. Throws when the
+   * server refuses the move, and on a read-only session.
+   */
+  moveMessages(
+    uids: number[],
+    destination: string,
+  ): Promise<{ moved: Map<number, number> | null }>;
   close(): Promise<void>;
 }
 
@@ -94,12 +113,18 @@ export interface MailStore {
   deleteByUids(accountId: string, folder: string, uids: number[]): number;
   pendingSeenUids(accountId: string, folder: string): number[];
   clearSeenPending(accountId: string, folder: string, uids: number[]): void;
+  /**
+   * Marks every row with the same dedup key read locally; `seen_pending`
+   * only on the given row.
+   */
   markOpened(messageId: string): { accountId: string } | null;
   threadingInputs(accountId: string): ThreadingInput[];
   /** Assigns messages to threads, then recomputes the thread rows. */
   assignThreads(accountId: string, threadOf: Map<string, string>): void;
+  /** Threads with at least one message in `folder`. */
   listThreads(
     accountId: string,
+    folder: string,
     cursor: string | null,
     limit: number,
   ): { threads: ThreadSummary[]; nextCursor: string | null };
@@ -107,7 +132,38 @@ export interface MailStore {
   getMessage(messageId: string): MessageHeader | null;
   getBody(messageId: string): MessageBody | null;
   search(query: ParsedQuery, accountId: string | null, limit: number): MessageSummary[];
+  /** Distinct unread messages (by dedup key) in Inbox folders. */
   unreadCount(accountId: string | null): number;
+  /** Upserts the folders; drops folders not listed, with their rows; returns removed paths. */
+  saveFolders(accountId: string, folders: RemoteFolder[]): { removed: string[] };
+  /**
+   * System order inbox, sent, drafts, junk, archive, all, trash, then others
+   * by name; counts by distinct dedup key in the local window.
+   */
+  listFolders(accountId: string): Folder[];
+  pendingMoves(
+    accountId: string,
+    folder: string,
+  ): { uid: number; id: string; destination: string }[];
+  /** Marks the messages move-pending; null when none can be queued. */
+  queueMove(
+    messageIds: string[],
+    destination: string,
+  ): { accountId: string; folder: string } | null;
+  /** Re-homes moved rows to the destination; detaches them when `moved` is null. */
+  completeMove(
+    accountId: string,
+    folder: string,
+    destination: string,
+    moved: Map<number, number> | null,
+    uids: number[],
+  ): void;
+  /** Counts a refusal; cancels at 3 (clears move_pending) and returns cancelled ids. */
+  failMove(accountId: string, folder: string, uids: number[]): { cancelled: string[] };
+  inlineParts(messageId: string): InlinePart[];
+  isImageSenderAllowed(accountId: string, address: string): boolean;
+  allowImageSender(accountId: string, address: string): void;
+  disallowImageSender(accountId: string, address: string): void;
   /**
    * Recomputes stored snippets written before entities were fully decoded,
    * with their thread rows; returns how many changed. Idempotent.

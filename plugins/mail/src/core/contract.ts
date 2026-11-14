@@ -3,6 +3,8 @@
 import { z } from "zod";
 import {
   accountSchema,
+  folderSchema,
+  messageActionSchema,
   messageBodySchema,
   messageSummarySchema,
   newAccountInputSchema,
@@ -35,6 +37,8 @@ export const rpcSchemas = {
   threads_list: {
     input: z.object({
       accountId: z.string(),
+      /** Folder path; the UI passes the account's inbox path by default. */
+      folder: z.string(),
       cursor: z.string().nullable(),
       limit: z.number().int().min(1).max(100),
     }),
@@ -67,6 +71,27 @@ export const rpcSchemas = {
       limit: z.number().int().min(1).max(50),
     }),
     output: z.object({ hits: z.array(messageSummarySchema) }),
+  },
+  folders_list: {
+    input: z.object({ accountId: z.string() }),
+    output: z.object({ folders: z.array(folderSchema) }),
+  },
+  /** Owner-clicked moves only; never exposed to agents, mentions or CLI. */
+  message_action: {
+    input: z.object({
+      messageIds: z.array(z.string()).min(1).max(200),
+      action: messageActionSchema,
+    }),
+    output: z.object({ queued: z.number().int(), destination: z.string() }),
+  },
+  /** Allows remote images from the message's sender. */
+  images_allow_sender: {
+    input: z.object({ messageId: z.string() }),
+    output: z.object({ address: z.string() }),
+  },
+  images_disallow_sender: {
+    input: z.object({ accountId: z.string(), address: z.string() }),
+    output: z.object({ removed: z.boolean() }),
   },
 } as const;
 

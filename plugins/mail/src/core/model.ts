@@ -48,9 +48,39 @@ export const attachmentMetaSchema = z.object({
 });
 export type AttachmentMeta = z.infer<typeof attachmentMetaSchema>;
 
+/** The role a folder plays, from its special-use flag or a name fallback. */
+export const specialUseSchema = z.enum([
+  "inbox",
+  "sent",
+  "drafts",
+  "junk",
+  "trash",
+  "archive",
+  "all",
+]);
+export type SpecialUse = z.infer<typeof specialUseSchema>;
+
+/** A synced folder as the UI sees it. Counts cover the local sync window. */
+export const folderSchema = z.object({
+  accountId: z.string(),
+  path: z.string(),
+  name: z.string(),
+  specialUse: specialUseSchema.nullable(),
+  selectable: z.boolean(),
+  unreadCount: z.number().int(),
+  totalCount: z.number().int(),
+});
+export type Folder = z.infer<typeof folderSchema>;
+
+/** A move the owner asks for. Delete moves to Trash; nothing is expunged. */
+export const messageActionSchema = z.enum(["spam", "not_spam", "archive", "delete"]);
+export type MessageAction = z.infer<typeof messageActionSchema>;
+
 export const messageSummarySchema = z.object({
   id: z.string(),
   accountId: z.string(),
+  /** Path of the folder this copy lives in. */
+  folder: z.string(),
   threadId: z.string(),
   date: z.string().nullable(),
   from: mailAddressSchema,
@@ -91,8 +121,11 @@ export type ThreadDetail = z.infer<typeof threadDetailSchema>;
 export const messageBodySchema = z.object({
   messageId: z.string(),
   text: z.string().nullable(),
+  /** `cid:` references already replaced by `data:` URIs. */
   html: z.string().nullable(),
   htmlTruncated: z.boolean(),
+  /** The owner allowed remote images from this sender. */
+  remoteImagesAllowed: z.boolean(),
 });
 export type MessageBody = z.infer<typeof messageBodySchema>;
 
@@ -107,13 +140,18 @@ export type StatusView = z.infer<typeof statusViewSchema>;
 /** An account as the store keeps it. Never leaves the server. */
 export type StoredAccount = Account & { passwordSealed: string };
 
-/** One INBOX message as the IMAP gateway returns it. */
+/** An inline (cid-referenced) image part of a message. */
+export type InlinePart = { contentId: string; mimeType: string; data: Uint8Array };
+
+/** One message of a folder as the IMAP gateway returns it. */
 export type FetchedMessage = {
   uid: number;
   messageId: string | null;
   inReplyTo: string | null;
   references: string[];
   gmThreadId: string | null;
+  /** Gmail X-GM-MSGID, when the server has it. */
+  gmMsgId: string | null;
   date: string | null;
   from: MailAddress;
   to: MailAddress[];
@@ -125,6 +163,16 @@ export type FetchedMessage = {
   bodyText: string | null;
   bodyHtml: string | null;
   attachments: AttachmentMeta[];
+  inlineParts: InlinePart[];
+};
+
+/** A folder as the server lists it. */
+export type RemoteFolder = {
+  path: string;
+  name: string;
+  delimiter: string;
+  specialUse: SpecialUse | null;
+  selectable: boolean;
 };
 
 /** What threading needs to know about one stored message. */

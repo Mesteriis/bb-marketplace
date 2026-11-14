@@ -199,7 +199,12 @@ describe("makosh-mail server", () => {
     const outputs = [
       added,
       await host.harness.behavior.callRpc("status_get", null),
-      await host.harness.behavior.callRpc("threads_list", { accountId, cursor: null, limit: 50 }),
+      await host.harness.behavior.callRpc("threads_list", {
+        accountId,
+        folder: "INBOX",
+        cursor: null,
+        limit: 50,
+      }),
       host.harness.inspection.realtimeSignals,
       host.harness.inspection.logEntries,
     ];
