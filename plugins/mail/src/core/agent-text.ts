@@ -221,8 +221,8 @@ const END_LINE = "\n--- end of untrusted email ---";
  * The notice, then headers and the body as plain text, then the end line.
  * Everything after the notice line is cut to fit maxChars, marker and end
  * line included. `folderName` is the folder's display name (default: its
- * path). Control and invisible characters are removed: the text is the
- * sender's and may reach a terminal.
+ * path). Control characters are removed everywhere (the text is the
+ * sender's and may reach a terminal), invisible ones from header fields.
  */
 export function renderMessageForAgent(
   header: MessageHeader,
@@ -247,7 +247,7 @@ export function renderMessageForAgent(
     lines.push(`Attachments: ${list}`);
   }
   lines.push(`Message id: ${header.id}`);
-  const rest = `${lines.join("\n")}\n\n${clean(bodyText(body))}`;
+  const rest = `${lines.join("\n")}\n\n${removeControls(bodyText(body))}`;
   const budget = Math.max(0, maxChars - 1 - END_LINE.length);
   return `${UNTRUSTED_NOTICE}\n${truncate(rest, budget)}${END_LINE}`;
 }
@@ -271,6 +271,10 @@ export function renderSearchHits(
   return `${UNTRUSTED_NOTICE}\n${entries.join("\n")}`;
 }
 
+/**
+ * A plain-text body keeps joiners (emoji sequences such as 👩‍💻 need them);
+ * HTML-derived text already lost invisible characters in TextBuffer.
+ */
 function bodyText(body: MessageBody | null): string {
   if (body === null) return "(body not available)";
   if (body.text !== null && body.text.trim() !== "") return body.text;

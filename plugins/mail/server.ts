@@ -16,6 +16,7 @@ import {
   defineRpcContract,
   experimental_PluginRpcRefusal,
   type BbPluginApi,
+  type ExperimentalPluginRpcHandlerContext,
   type PluginCliContext,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -125,8 +126,31 @@ function defineSettings(bb: BbPluginApi) {
   });
 }
 
-function refuse(code: "conflict" | "invalid" | "not_found", message: string): Error {
+function refuse(
+  code: "conflict" | "forbidden" | "invalid" | "not_found",
+  message: string,
+): Error {
   return new experimental_PluginRpcRefusal({ code, message });
+}
+
+export const PLUGIN_CALLER_MESSAGE = "Only the owner's Mail page can change mail or accounts.";
+export const PASSWORD_NEEDED_MESSAGE = "This account needs its password re-entered";
+
+/**
+ * Writes refuse other plugins calling through bb.sdk.plugins.callRpc (the
+ * host verifies that caller kind); every client caller is let through.
+ */
+function refusePluginCaller(context: ExperimentalPluginRpcHandlerContext): void {
+  if (context.experimental_caller.kind === "plugin") throw refuse("forbidden", PLUGIN_CALLER_MESSAGE);
+}
+
+/** Name and SQLite code of a failure, never its message (it may quote stored content). */
+function errorKind(error: unknown): string {
+  if (!(error instanceof Error)) return "unknown";
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && /^[A-Z0-9_]{1,64}$/.test(code)
+    ? `${error.name} ${code}`
+    : error.name;
 }
 
 /** Header text is attacker-controlled; menu rows get it on one line, without control characters. */
@@ -230,8 +254,8 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     try {
       const repaired = store.repairSnippets();
       if (repaired > 0) bb.log.info(`repaired ${repaired} message snippets`);
-    } catch {
-      bb.log.warn("snippet repair failed");
+    } catch (error) {
+      bb.log.warn(`snippet repair failed (${errorKind(error)})`);
     }
     const clock: Clock = overrides.clock ?? { now: () => new Date() };
     const gateway =
@@ -302,8 +326,10 @@ type RpcDeps = {
 
 function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const { store, accountDeps, publishChanged } = deps;
-  // Owner page only: no method is published as discoverable (message_action and
-  // the image methods least of all); none is a tool, CLI command or mention.
+  // No method is published as discoverable, and none (message_action and the
+  // image methods included) is exposed as a tool, CLI command or mention. They
+  // are still reachable by anything that can call local plugin RPC as a client,
+  // an agent with shell access included; other plugins are refused on writes.
   bb.rpc.register(
     rpcContract,
     {
@@ -314,7 +340,8 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         unreadCount: store.unreadCount(null),
       }),
       accounts_test: (input) => testAccount(accountDeps, input),
-      accounts_add: async (input) => {
+      accounts_add: async (input, context) => {
+        refusePluginCaller(context);
         if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
         let account: Account;
         try {
@@ -327,7 +354,8 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         deps.loop.wake(account.id);
         return account;
       },
-      accounts_remove: ({ accountId }) => {
+      accounts_remove: ({ accountId }, context) => {
+        refusePluginCaller(context);
         const removed = removeAccount(accountDeps, accountId);
         if (removed) publishChanged(accountId);
         return { removed };
@@ -377,11 +405,14 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       }),
       folders_list: ({ accountId }) => ({ folders: store.listFolders(accountId) }),
       // Owner-clicked moves; the sync loop pushes them to the server.
-      message_action: ({ messageIds, folder, action }) => {
+      message_action: ({ messageIds, folder, action }, context) => {
+        refusePluginCaller(context);
+        if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
         const first = store.getMessage(messageIds[0]!);
         if (first === null) throw refuse("not_found", "Unknown message");
         const account = store.getAccount(first.accountId);
         if (account === null) throw refuse("not_found", "Unknown message");
+        if (account.authFailed) throw refuse("conflict", PASSWORD_NEEDED_MESSAGE);
         const folders = store.listFolders(account.id);
         const sourceName = folders.find((f) => f.path === folder)?.name ?? folder;
         const notAllIn = () => refuse("conflict", `These messages are not all in ${sourceName}`);
@@ -396,7 +427,8 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         deps.loop.wake(queued.accountId);
         return { queued: new Set(messageIds).size, destination: destination.name };
       },
-      images_allow_sender: ({ messageId }) => {
+      images_allow_sender: ({ messageId }, context) => {
+        refusePluginCaller(context);
         const message = store.getMessage(messageId);
         if (message === null) throw refuse("not_found", "Unknown message");
         if (message.from.address.trim() === "") {
@@ -405,9 +437,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         store.allowImageSender(message.accountId, message.from.address);
         return { address: message.from.address };
       },
-      images_disallow_sender: ({ accountId, address }) => ({
-        removed: store.disallowImageSender(accountId, address),
-      }),
+      images_disallow_sender: ({ accountId, address }, context) => {
+        refusePluginCaller(context);
+        return { removed: store.disallowImageSender(accountId, address) };
+      },
     },
     { experimental_discoverable: false },
   );

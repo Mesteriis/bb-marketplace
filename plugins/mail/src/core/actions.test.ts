@@ -108,6 +108,25 @@ describe("resolveActionDestination", () => {
     });
   });
 
+  it("refuses a move between two folders with the same role", () => {
+    const folders = [
+      folder("INBOX", "inbox"),
+      folder("Junk", "junk"),
+      folder("Bulk Mail", "junk", { name: "Bulk" }),
+      folder("Trash", "trash"),
+      folder("Old Trash", "trash"),
+    ];
+    expect(resolveActionDestination("spam", "Bulk Mail", folders, "other")).toEqual({
+      refusal: "Already in Bulk",
+    });
+    expect(resolveActionDestination("delete", "Old Trash", folders, "other")).toEqual({
+      refusal: "Already in Old Trash",
+    });
+    expect(resolveActionDestination("not_spam", "Bulk Mail", folders, "other")).toEqual({
+      destination: folders[0],
+    });
+  });
+
   it("refuses an unknown source folder", () => {
     expect(resolveActionDestination("delete", "Gone", ICLOUD, "icloud")).toEqual({
       refusal: "Unknown folder",

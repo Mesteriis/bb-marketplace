@@ -8,6 +8,8 @@ import {
   AGENT_MAIL_OFF_MESSAGE,
   createMailPlugin,
   NEEDS_KEY_MESSAGE,
+  PASSWORD_NEEDED_MESSAGE,
+  PLUGIN_CALLER_MESSAGE,
   REMOVE_IN_THREAD_MESSAGE,
 } from "./server.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
@@ -144,7 +146,11 @@ function failingSnippetRepair(bb: BbPluginApi): BbPluginApi {
             const value = Reflect.get(dbTarget, dbKey);
             if (dbKey !== "prepare") return typeof value === "function" ? value.bind(dbTarget) : value;
             return (sql: string) => {
-              if (sql.includes("SELECT seq, snippet FROM messages")) throw new Error("disk I/O error");
+              if (sql.includes("SELECT seq, snippet FROM messages")) {
+                throw Object.assign(new Error("disk I/O error near 'Sale today'"), {
+                  code: "SQLITE_IOERR",
+                });
+              }
               return dbTarget.prepare(sql);
             };
           },
@@ -658,9 +664,9 @@ describe("makosh-mail server", () => {
   it("load goes on when the snippet repair throws", async () => {
     const host = await load({ wrap: failingSnippetRepair });
 
-    expect(host.harness.inspection.logEntries.map((e) => e.message)).toContain(
-      "snippet repair failed",
-    );
+    const messages = host.harness.inspection.logEntries.map((e) => e.message);
+    expect(messages).toContain("snippet repair failed (Error SQLITE_IOERR)");
+    expect(JSON.stringify(messages)).not.toContain("Sale today");
     expect(host.harness.inspection.registrations.rpcMethods).toContain("message_action");
     await expect(host.harness.behavior.callRpc("status_get", null)).resolves.toMatchObject({
       vaultReady: true,
@@ -897,6 +903,72 @@ describe("makosh-mail server", () => {
 
     await expect(action(host, [id], "Junk", "spam")).rejects.toThrow("Already in Junk");
     expect(movePending(host, id)).toBeNull();
+  });
+
+  it("write methods refuse other plugins and change nothing", async () => {
+    const host = await load({
+      seed: (bb) =>
+        seedMail(bb, {
+          folders: ICLOUD_FOLDERS,
+          messages: [{ folder: "INBOX", message: makeFetchedMessage(1) }],
+        }),
+    });
+    const messageId = messageIdAt(host, "INBOX", 1);
+    const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    const call = (method: string, input: unknown) =>
+      host.harness.behavior.callRpc(method, input, asPlugin);
+
+    const calls = [
+      call("message_action", { messageIds: [messageId], folder: "INBOX", action: "delete" }),
+      call("images_allow_sender", { messageId }),
+      call("images_disallow_sender", { accountId: "acc_1", address: "sender@example.org" }),
+      call("accounts_remove", { accountId: "acc_1" }),
+      call("accounts_add", NEW_ACCOUNT),
+    ];
+    for (const result of calls) await expect(result).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+
+    expect(movePending(host, messageId)).toBeNull();
+    expect(sealedPasswords(host)).toEqual(["sealed-password"]);
+    const body = (await call("message_body", { messageId })) as MessageBody;
+    expect(body.remoteImagesAllowed).toBe(false);
+  });
+
+  it("message_action refuses while the password needs re-entering", async () => {
+    const host = await load({
+      seed: (bb) => {
+        seedMail(bb, {
+          folders: ICLOUD_FOLDERS,
+          messages: [{ folder: "INBOX", message: makeFetchedMessage(1) }],
+        });
+        createSqliteStore(bb.storage.database()).recordSyncResult("acc_1", {
+          lastSyncAt: null,
+          lastError: "Authentication failed",
+          authFailed: true,
+        });
+      },
+    });
+    const messageId = messageIdAt(host, "INBOX", 1);
+
+    await expect(action(host, [messageId], "INBOX", "delete")).rejects.toThrow(
+      PASSWORD_NEEDED_MESSAGE,
+    );
+    expect(movePending(host, messageId)).toBeNull();
+  });
+
+  it("message_action refuses without a credential key", async () => {
+    const host = await load({
+      settings: {},
+      wrap: refusingSettingsWrites,
+      seed: (bb) =>
+        seedMail(bb, {
+          folders: ICLOUD_FOLDERS,
+          messages: [{ folder: "INBOX", message: makeFetchedMessage(1) }],
+        }),
+    });
+    const messageId = messageIdAt(host, "INBOX", 1);
+
+    await expect(action(host, [messageId], "INBOX", "delete")).rejects.toThrow(NEEDS_KEY_MESSAGE);
+    expect(movePending(host, messageId)).toBeNull();
   });
 
   it("actions are not exposed as tools or CLI", async () => {

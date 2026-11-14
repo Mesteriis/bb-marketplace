@@ -33,12 +33,13 @@ export function inlineCidImages(
   parts: InlinePart[],
   budget: number = INLINE_HTML_DATA_BUDGET,
 ): string {
+  // Exact ids first, so a lower-case fallback never shadows another part's exact id.
+  const allowed = parts.filter((part) => mimeOf(part) !== null);
   const byId = new Map<string, InlinePart>();
-  for (const part of parts) {
-    if (mimeOf(part) === null) continue;
-    for (const key of [part.contentId, part.contentId.toLowerCase()]) {
-      if (!byId.has(key)) byId.set(key, part);
-    }
+  for (const part of allowed) if (!byId.has(part.contentId)) byId.set(part.contentId, part);
+  for (const part of allowed) {
+    const lower = part.contentId.toLowerCase();
+    if (!byId.has(lower)) byId.set(lower, part);
   }
   if (byId.size === 0 || !/cid:/i.test(html)) return html;
   const urls = new Map<InlinePart, string>();

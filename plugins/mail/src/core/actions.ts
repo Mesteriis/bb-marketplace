@@ -54,6 +54,8 @@ export function resolveActionDestination(
       missing = MISSING_NAME.trash;
       break;
   }
+  // Another folder with the same role (two Junk folders) is no move at all.
+  if (source.specialUse === use) return { refusal: `Already in ${source.name}` };
   const destination = byUse(use);
   if (destination === undefined) return { refusal: `This account has no ${missing} folder` };
   if (!destination.selectable) return { refusal: `${destination.name} cannot hold messages` };
