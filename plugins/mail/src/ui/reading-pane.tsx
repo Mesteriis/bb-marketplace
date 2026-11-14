@@ -37,6 +37,8 @@ export interface ReadingPaneProps {
   folderPath: string;
   /** Special use of that folder: it decides which actions apply. */
   folderUse: SpecialUse | null;
+  /** Whether the server would archive from this folder (core archiveAllowedFrom). */
+  archiveAllowed: boolean;
   /** Display name of a folder path, for messages that live in another folder. */
   folderName: (path: string) => string;
   onAction: (action: MessageAction) => void;
@@ -58,12 +60,12 @@ interface ToolbarAction {
 
 /**
  * The moves that make sense from a folder: Spam except in Spam, Not spam only
- * there, Archive except in Archive / All Mail, Delete except in Trash.
+ * there, Archive where the server allows it, Delete except in Trash.
  */
-export function actionsFor(use: SpecialUse | null): ToolbarAction[] {
+export function actionsFor(use: SpecialUse | null, archiveAllowed: boolean): ToolbarAction[] {
   const actions: ToolbarAction[] = [];
   if (use === "junk") actions.push({ action: "not_spam", label: "Not spam", icon: "SecurityCheck" });
-  if (use !== "archive" && use !== "all") {
+  if (archiveAllowed) {
     actions.push({ action: "archive", label: "Archive", icon: "Archive" });
   }
   if (use !== "junk") actions.push({ action: "spam", label: "Spam", icon: "AlertTriangle" });
@@ -240,6 +242,7 @@ export function ReadingPane({
   onBack,
   folderPath,
   folderUse,
+  archiveAllowed,
   folderName,
   onAction,
   actionPending,
@@ -284,7 +287,7 @@ export function ReadingPane({
       >
         {back}
         {inFolder
-          ? actionsFor(folderUse).map(({ action, label, icon }) => (
+          ? actionsFor(folderUse, archiveAllowed).map(({ action, label, icon }) => (
               <Button
                 key={action}
                 variant="ghost"

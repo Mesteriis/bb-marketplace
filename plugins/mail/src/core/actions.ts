@@ -12,11 +12,32 @@ const MISSING_NAME: Record<"junk" | "archive" | "trash" | "inbox", string> = {
   inbox: "Inbox",
 };
 
+/** Gmail-style: the gmail preset, or an All Mail folder and no Archive folder. */
+function isGmailStyle(folders: Folder[], preset: AccountPreset): boolean {
+  const has = (use: SpecialUse) => folders.some((f) => f.specialUse === use);
+  return preset === "gmail" || (has("all") && !has("archive"));
+}
+
+/**
+ * Whether Archive applies to messages in a folder of this special use:
+ * on Gmail-style accounts only in the Inbox, elsewhere anywhere but Archive,
+ * All Mail and Trash. The server refuses exactly where this is false; the UI
+ * hides the button there.
+ */
+export function archiveAllowedFrom(
+  sourceUse: SpecialUse | null,
+  folders: Folder[],
+  preset: AccountPreset,
+): boolean {
+  if (isGmailStyle(folders, preset)) return sourceUse === "inbox";
+  return sourceUse !== "archive" && sourceUse !== "all" && sourceUse !== "trash";
+}
+
 /**
  * The destination for moving messages out of `sourcePath`:
  * spam → junk; not spam → inbox (only from junk); archive → All Mail from the
- * Inbox on Gmail-style accounts (the gmail preset, or an All Mail folder and
- * no Archive folder), else the archive folder; delete → trash. Refuses when
+ * Inbox on Gmail-style accounts, else the archive folder (where
+ * archiveAllowedFrom allows it); delete → trash. Refuses when
  * the folder is missing, cannot hold messages, or is the source itself.
  */
 export function resolveActionDestination(
@@ -42,9 +63,12 @@ export function resolveActionDestination(
       missing = MISSING_NAME.inbox;
       break;
     case "archive": {
-      const gmailStyle =
-        preset === "gmail" || (byUse("all") !== undefined && byUse("archive") === undefined);
-      if (gmailStyle && source.specialUse !== "inbox") return { refusal: "Already archived" };
+      const gmailStyle = isGmailStyle(folders, preset);
+      if (!archiveAllowedFrom(source.specialUse, folders, preset)) {
+        if (source.specialUse === "trash") return { refusal: "Archive does not work in Trash" };
+        // Archive itself keeps the same-role refusal below ("Already in Archive").
+        if (gmailStyle || source.specialUse !== "archive") return { refusal: "Already archived" };
+      }
       use = gmailStyle ? "all" : "archive";
       missing = MISSING_NAME.archive;
       break;
