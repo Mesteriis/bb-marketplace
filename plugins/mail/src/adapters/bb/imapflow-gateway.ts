@@ -1,8 +1,7 @@
 // ImapGateway on imapflow. TLS only (secure: true whatever the port, never
 // STARTTLS or plaintext), one folder per session, every body fetch is
 // BODY.PEEK (imapflow fetches `source` with PEEK), and the only writes are
-// \Seen on owner-opened mail (markSeen) and owner-clicked moves (moveMessages,
-// which lands in slice 2, Task 3).
+// \Seen on owner-opened mail (markSeen) and owner-clicked moves (moveMessages).
 // Errors leaving this file are rebuilt from codes: imapflow errors can carry
 // server responses and the sent command, so their text is never passed on.
 import { ImapFlow } from "imapflow";
@@ -10,18 +9,23 @@ import type {
   FetchMessageObject,
   FetchQueryObject,
   ImapFlowOptions,
+  ListResponse,
   MessageAddressObject,
 } from "imapflow";
 import PostalMime from "postal-mime";
-import type { Address, Email } from "postal-mime";
+import type { Address, Attachment, Email } from "postal-mime";
 import {
   ImapAuthError,
+  capInlineParts,
   type AttachmentMeta,
   type FetchedMessage,
   type ImapConfig,
   type ImapGateway,
   type FolderSession,
+  type InlinePart,
   type MailAddress,
+  type RemoteFolder,
+  type SpecialUse,
 } from "../../core/index.ts";
 
 export interface ImapflowGatewayOptions {
@@ -38,7 +42,11 @@ const MESSAGE_QUERY: FetchQueryObject = {
   bodyStructure: true,
   source: true,
   threadId: true,
+  // imapflow asks for EMAILID / X-GM-MSGID whenever the server supports it; explicit anyway.
+  emailId: true,
 };
+
+const FLAGS_QUERY: FetchQueryObject = { uid: true, flags: true, emailId: true };
 
 const SAFE_CODE = /^[A-Za-z][A-Za-z0-9_]{0,40}$/;
 
@@ -56,7 +64,7 @@ export class SafeImapError extends Error {
 /** What a session needs from an imapflow client; tests pass a stub. */
 export type SessionClient = Pick<
   ImapFlow,
-  "mailbox" | "search" | "fetch" | "messageFlagsAdd" | "logout" | "close"
+  "mailbox" | "search" | "fetch" | "messageFlagsAdd" | "messageMove" | "logout" | "close"
 >;
 
 export type ParseMail = (source: Buffer | string) => Promise<Email>;
@@ -95,8 +103,13 @@ export function createImapflowGateway(options: ImapflowGatewayOptions = {}): Ima
       }
     },
 
-    async listFolders() {
-      throw new Error("not implemented: listFolders");
+    async listFolders(config) {
+      const client = await connect(config);
+      try {
+        return await listRemoteFolders(client);
+      } finally {
+        await logoutQuietly(client);
+      }
     },
 
     async openFolder(config, path, { readOnly }) {
@@ -173,13 +186,12 @@ export function createSession(
       if (uids.length === 0) return [];
       const flags: { uid: number; seen: boolean; flagged: boolean; gmMsgId: string | null }[] =
         [];
-      for await (const message of client.fetch(uids, { uid: true, flags: true }, { uid: true })) {
+      for await (const message of client.fetch(uids, FLAGS_QUERY, { uid: true })) {
         flags.push({
           uid: message.uid,
           seen: message.flags?.has("\\Seen") ?? false,
           flagged: message.flags?.has("\\Flagged") ?? false,
-          // X-GM-MSGID mapping lands with the folder gateway (slice 2, Task 3).
-          gmMsgId: null,
+          gmMsgId: nonEmpty(message.emailId),
         });
       }
       return flags;
@@ -192,12 +204,30 @@ export function createSession(
       if (!stored) throw new SafeImapError("StoreFailed");
     }),
 
-    moveMessages: guarded(async (_uids: number[], _destination: string) => {
-      throw new Error("not implemented: moveMessages");
+    moveMessages: guarded(async (uids: number[], destination: string) => {
+      if (readOnly) throw new SafeImapError("ReadOnly", "IMAP error (mailbox is read-only)");
+      if (uids.length === 0) return { moved: new Map<number, number>() };
+      // imapflow resolves false when the server refuses (MOVE, or COPY/EXPUNGE
+      // without the MOVE extension) and undefined when it could not even try.
+      const result = await client.messageMove(uids, destination, { uid: true });
+      if (!result) throw new SafeImapError("MoveFailed");
+      if (!(result.uidMap instanceof Map)) return { moved: null };
+      const moved = new Map<number, number>();
+      for (const [from, to] of result.uidMap) moved.set(Number(from), Number(to));
+      return { moved };
     }),
 
     close: () => logoutQuietly(client),
   };
+}
+
+/** LIST (with imapflow's special-use resolution, incl. its name fallback) mapped to RemoteFolder. */
+export async function listRemoteFolders(client: Pick<ImapFlow, "list">): Promise<RemoteFolder[]> {
+  try {
+    return toRemoteFolders(await client.list());
+  } catch (error) {
+    throw describeImapError(error);
+  }
 }
 
 async function searchUids(
@@ -295,8 +325,7 @@ export function toFetchedMessage(message: FetchMessageObject, parsed: Email): Fe
     inReplyTo: nonEmpty(envelope?.inReplyTo) ?? nonEmpty(parsed.inReplyTo),
     references: splitReferences(parsed.references),
     gmThreadId: nonEmpty(message.threadId),
-    // X-GM-MSGID and inline parts land with the folder gateway (slice 2, Task 3).
-    gmMsgId: null,
+    gmMsgId: nonEmpty(message.emailId),
     date: toIso(envelope?.date) ?? toIso(message.internalDate),
     from: fromList[0] ?? { name: null, address: "" },
     to: envelope?.to ? envelope.to.map(fromImapflow) : flatten(parsed.to ?? []),
@@ -316,8 +345,81 @@ export function toFetchedMessage(message: FetchMessageObject, parsed: Email): Fe
         isInline: attachment.disposition === "inline" || attachment.related === true,
       }),
     ),
-    inlineParts: [],
+    inlineParts: toInlineParts(parsed.attachments),
   };
+}
+
+const SPECIAL_USE: Record<string, SpecialUse> = {
+  "\\inbox": "inbox",
+  "\\sent": "sent",
+  "\\drafts": "drafts",
+  "\\junk": "junk",
+  "\\trash": "trash",
+  "\\archive": "archive",
+  "\\all": "all",
+};
+
+/** Gmail's \Flagged (Starred) and \Important folders only repeat mail held elsewhere. */
+const VIRTUAL_FOLDER_FLAGS = new Set(["\\flagged", "\\important"]);
+const NOT_SELECTABLE_FLAGS = new Set(["\\noselect", "\\nonexistent"]);
+
+/**
+ * Folders as the server lists them, in listing order. Entries LIST did not
+ * report (LSUB-only) and Gmail's virtual folders are left out; special use
+ * comes from imapflow (SPECIAL-USE/XLIST flags, else its name fallback), and
+ * INBOX in any case is always the Inbox.
+ */
+export function toRemoteFolders(entries: ListResponse[]): RemoteFolder[] {
+  const folders: RemoteFolder[] = [];
+  for (const entry of entries) {
+    if (entry.listed === false) continue;
+    const flags = new Set([...(entry.flags ?? [])].map((flag) => flag.toLowerCase()));
+    if ([...flags].some((flag) => VIRTUAL_FOLDER_FLAGS.has(flag))) continue;
+    const specialUse =
+      entry.path.toUpperCase() === "INBOX"
+        ? "inbox"
+        : (SPECIAL_USE[(entry.specialUse ?? "").toLowerCase()] ?? null);
+    folders.push({
+      path: entry.path,
+      name: entry.name || entry.path,
+      delimiter: entry.delimiter ?? "",
+      specialUse,
+      selectable: ![...flags].some((flag) => NOT_SELECTABLE_FLAGS.has(flag)),
+    });
+  }
+  return folders;
+}
+
+/**
+ * Inline image parts a message's HTML can reference by `cid:`: image parts
+ * with a Content-ID (brackets stripped), capped per part and per message by
+ * the store rules. Anything unusable is skipped; this never throws.
+ */
+export function toInlineParts(attachments: Attachment[]): InlinePart[] {
+  const parts: InlinePart[] = [];
+  for (const attachment of attachments) {
+    try {
+      const part = toInlinePart(attachment);
+      if (part) parts.push(part);
+    } catch {
+      // A malformed part is dropped; the image shows as broken.
+    }
+  }
+  return capInlineParts(parts);
+}
+
+function toInlinePart(attachment: Attachment): InlinePart | null {
+  const mimeType = typeof attachment.mimeType === "string" ? attachment.mimeType.toLowerCase() : "";
+  if (!mimeType.startsWith("image/")) return null;
+  const contentId =
+    typeof attachment.contentId === "string" ? attachment.contentId.trim().replace(/^<|>$/g, "").trim() : "";
+  if (contentId === "") return null;
+  const content = attachment.content;
+  let data: Uint8Array;
+  if (content instanceof Uint8Array) data = content.slice();
+  else if (content instanceof ArrayBuffer) data = new Uint8Array(content.slice(0));
+  else return null;
+  return { contentId, mimeType, data };
 }
 
 function fromImapflow(address: MessageAddressObject): MailAddress {
