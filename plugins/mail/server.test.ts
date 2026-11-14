@@ -4,9 +4,14 @@ import {
   makePluginAgentConfigurationContext,
 } from "@get-bb/plugin-sdk/testing";
 import { describe, expect, it, vi } from "vitest";
-import { AGENT_MAIL_OFF_MESSAGE, createMailPlugin, NEEDS_KEY_MESSAGE } from "./server.ts";
+import {
+  AGENT_MAIL_OFF_MESSAGE,
+  createMailPlugin,
+  NEEDS_KEY_MESSAGE,
+  REMOVE_IN_THREAD_MESSAGE,
+} from "./server.ts";
 import { generateVaultKey } from "./src/adapters/bb/vault.ts";
-import { MAIL_CHANGED_CHANNEL, UNTRUSTED_NOTICE } from "./src/core/index.ts";
+import { ImapAuthError, MAIL_CHANGED_CHANNEL, UNTRUSTED_NOTICE } from "./src/core/index.ts";
 import type { MessageSummary, ThreadDetail } from "./src/core/index.ts";
 import { FixedClock, ScriptedImapGateway } from "./src/core/testing/fakes.ts";
 
@@ -137,7 +142,7 @@ describe("makosh-mail server", () => {
   });
 
   it("reports needs configuration when the stored key is not a 32-byte key", async () => {
-    const host = await load({ settings: { vaultKey: "dG9vLXNob3J0" } });
+    const host = await load({ settings: { vaultKey: "dG9vLXNob3J0" } }); // gitleaks:allow (deliberately invalid key)
 
     expect(host.harness.inspection.needsConfigurationMessages).toEqual([NEEDS_KEY_MESSAGE]);
   });
@@ -200,6 +205,51 @@ describe("makosh-mail server", () => {
     ).rejects.toThrow("Unknown message");
   });
 
+  it("message_agent_text returns the untrusted text and does not mark the message read", async () => {
+    const host = await load();
+    const { messageId } = await addAndSync(host);
+
+    const { text } = (await host.harness.behavior.callRpc("message_agent_text", { messageId })) as {
+      text: string;
+    };
+
+    expect(text.startsWith(UNTRUSTED_NOTICE)).toBe(true);
+    expect(text).toContain("garden fence");
+    expect((await threadOf(host, messageId)).messages[0]!.isRead).toBe(false);
+    await expect(
+      host.harness.behavior.callRpc("message_agent_text", { messageId: "missing" }),
+    ).rejects.toThrow("Unknown message");
+  });
+
+  it("sync_now does not start an account whose login was rejected", async () => {
+    const host = await load();
+    const { accountId } = await addAndSync(host);
+    host.gateway.failOpen(new ImapAuthError());
+    const service = host.harness.behavior.runService("sync");
+    await host.harness.behavior.callRpc("sync_now", { accountId });
+    await vi.waitFor(async () => {
+      const status = (await host.harness.behavior.callRpc("status_get", null)) as {
+        accounts: { authFailed: boolean }[];
+      };
+      expect(status.accounts[0]!.authFailed).toBe(true);
+    });
+    service.controller.abort();
+    await service.done;
+
+    await expect(host.harness.behavior.callRpc("sync_now", { accountId })).resolves.toEqual({
+      started: false,
+    });
+  });
+
+  it("refuses a sync interval above 1440 minutes", async () => {
+    const host = await load();
+
+    await expect(host.harness.behavior.setSettings({ syncIntervalMinutes: 1441 })).rejects.toThrow();
+    await expect(
+      host.harness.behavior.setSettings({ syncIntervalMinutes: 1440 }),
+    ).resolves.toBeUndefined();
+  });
+
   it("mail_read does not mark the message read", async () => {
     const host = await load({ settings: { vaultKey: generateVaultKey(), agentTools: true } });
     const { messageId } = await addAndSync(host);
@@ -219,7 +269,7 @@ describe("makosh-mail server", () => {
     );
 
     expect(resolved.tools).toEqual([]);
-    expect(resolved.skills).toEqual(["mail"]);
+    expect(resolved.skills).toEqual([]);
     expect(resolved.instructions).toBeNull();
     expect(host.harness.inspection.registrations.agentTools.map((t) => t.name).sort()).toEqual([
       "mail_read",
@@ -248,6 +298,7 @@ describe("makosh-mail server", () => {
     );
 
     expect(resolved.tools.map((t) => t.name).sort()).toEqual(["mail_read", "mail_search"]);
+    expect(resolved.skills).toEqual(["mail"]);
   });
 
   it("tools refuse after agentTools is turned off", async () => {
@@ -343,7 +394,7 @@ describe("makosh-mail server", () => {
     expect((await threadOf(host, messageId)).messages[0]!.isRead).toBe(false);
   });
 
-  it("cli search and read refuse inside a thread when agentTools is off", async () => {
+  it("cli search, read and accounts refuse inside a thread when agentTools is off", async () => {
     const host = await load();
     const { messageId } = await addAndSync(host);
     const ctx = { threadId: "thread-1" };
@@ -352,13 +403,48 @@ describe("makosh-mail server", () => {
     const read = await host.harness.behavior.runCli(["read", messageId], ctx);
     const accounts = await host.harness.behavior.runCli(["accounts"], ctx);
 
-    for (const result of [search, read]) {
+    for (const result of [search, read, accounts]) {
       expect(result.exitCode).toBe(1);
       expect(result.stderr).toContain(AGENT_MAIL_OFF_MESSAGE);
       expect(result.stdout).not.toContain("garden fence");
       expect(result.stdout).not.toContain("quarterly");
+      expect(result.stdout).not.toContain("owner@example.org");
     }
-    expect(accounts.exitCode).toBe(0);
+  });
+
+  it("cli accounts works inside a thread when agentTools is on", async () => {
+    const host = await load({ settings: { vaultKey: generateVaultKey(), agentTools: true } });
+    await addAndSync(host);
+
+    const result = await host.harness.behavior.runCli(["accounts"], { threadId: "thread-1" });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("owner@example.org");
+  });
+
+  it("cli remove deletes an account from the owner's terminal only", async () => {
+    const host = await load({ settings: { vaultKey: generateVaultKey(), agentTools: true } });
+    const { accountId } = await addAndSync(host);
+
+    const inThread = await host.harness.behavior.runCli(["remove", accountId], {
+      threadId: "thread-1",
+    });
+    expect(inThread.exitCode).toBe(1);
+    expect(inThread.stderr).toContain(REMOVE_IN_THREAD_MESSAGE);
+    expect(sealedPasswords(host)).toHaveLength(1);
+
+    const removed = await host.harness.behavior.runCli(["remove", accountId]);
+    expect(removed.exitCode).toBe(0);
+    expect(removed.stdout).toBe(`Removed ${accountId}.\n`);
+    expect(sealedPasswords(host)).toEqual([]);
+    expect(host.harness.inspection.realtimeSignals.at(-1)).toEqual({
+      channel: MAIL_CHANGED_CHANNEL,
+      payload: { accountId },
+    });
+
+    const again = await host.harness.behavior.runCli(["remove", accountId]);
+    expect(again.exitCode).toBe(1);
+    expect(again.stderr).toContain(`unknown account '${accountId}'`);
   });
 
   it("cli read works inside a thread when agentTools is on", async () => {
