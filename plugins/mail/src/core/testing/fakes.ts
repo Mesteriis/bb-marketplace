@@ -5,8 +5,8 @@
 //   - beginFolderReset detaches uids but keeps message ids, upsertMessages
 //     reattaches a detached row with the same non-null Message-ID, and
 //     finishFolderReset deletes the rows still detached;
-//   - markOpened marks every copy (same dedup key) read, and sets pending
-//     only on the given row when it was unread;
+//   - markOpened marks every unread copy (same dedup key) read and pending;
+//     a detached copy (no uid to push) is only marked read;
 //   - localFolderIndex treats a message without a date as inside the window;
 //   - thread, folder, badge and search counts count distinct dedup keys, and
 //     rows waiting to move out are hidden from their folder, the badge and
@@ -282,7 +282,7 @@ export class InMemoryMailStore implements MailStore {
         row.isRead = row.seenPending || message.seen;
         row.isFlagged = message.flagged;
         row.gmMsgId = message.gmMsgId ?? row.gmMsgId;
-        row.dedupKey = dedupKeyOf(row.gmMsgId, message.messageId, row.id);
+        row.dedupKey = dedupKeyOf(row.gmMsgId, message.messageId, message.size, row.id);
         row.inlineParts = inlineParts;
         continue;
       }
@@ -298,7 +298,7 @@ export class InMemoryMailStore implements MailStore {
         isFlagged: message.flagged,
         threadId: `t_${id}`,
         gmMsgId: message.gmMsgId,
-        dedupKey: dedupKeyOf(message.gmMsgId, message.messageId, id),
+        dedupKey: dedupKeyOf(message.gmMsgId, message.messageId, message.size, id),
         movePending: null,
         moveFailures: 0,
         inlineParts,
@@ -337,7 +337,7 @@ export class InMemoryMailStore implements MailStore {
         rowChanged = true;
       }
       if (flag.gmMsgId !== undefined && flag.gmMsgId !== null) {
-        const key = dedupKeyOf(flag.gmMsgId, null, row.id);
+        const key = dedupKeyOf(flag.gmMsgId, null, row.message.size, row.id);
         if (row.gmMsgId !== flag.gmMsgId || row.dedupKey !== key) {
           row.gmMsgId = flag.gmMsgId;
           row.dedupKey = key;
@@ -380,7 +380,9 @@ export class InMemoryMailStore implements MailStore {
       row.seenPending = true;
     }
     for (const copy of this.state.rows) {
-      if (copy.accountId === row.accountId && copy.dedupKey === row.dedupKey) copy.isRead = true;
+      if (copy.accountId !== row.accountId || copy.dedupKey !== row.dedupKey || copy.isRead) continue;
+      copy.isRead = true;
+      if (copy.uid !== null) copy.seenPending = true;
     }
     return { accountId: row.accountId };
   }
@@ -501,15 +503,13 @@ export class InMemoryMailStore implements MailStore {
   // Folders ------------------------------------------------------------------
 
   saveFolders(accountId: string, folders: RemoteFolder[]): { removed: string[] } {
-    const listed = new Set(folders.map((f) => f.path));
+    // Like the SQLite upsert: one entry per path, the last listing wins.
+    const byPath = new Map(folders.map((f) => [f.path, { ...f }]));
     const removed = (this.state.folders.get(accountId) ?? [])
       .map((f) => f.path)
-      .filter((path) => !listed.has(path))
+      .filter((path) => !byPath.has(path))
       .sort();
-    this.state.folders.set(
-      accountId,
-      folders.map((f) => ({ ...f })),
-    );
+    this.state.folders.set(accountId, [...byPath.values()]);
     for (const path of removed) {
       this.state.rows = this.state.rows.filter((r) => !(r.accountId === accountId && r.folder === path));
       this.state.syncStates.delete(stateKey(accountId, path));
@@ -576,32 +576,44 @@ export class InMemoryMailStore implements MailStore {
     moved: Map<number, number> | null,
     uids: number[],
   ): void {
-    for (const uid of uids) {
-      const row: Row | undefined = this.attachedRows(accountId, folder).find(
-        (r) => r.uid === uid && r.movePending !== null,
-      );
-      if (!row) continue;
+    const takeOver = (row: Row, occupant: Row | undefined, uid: number | null) => {
       row.movePending = null;
       row.moveFailures = 0;
-      if (moved === null) {
-        row.folder = destination;
+      row.folder = destination;
+      if (occupant === undefined || occupant === row) {
+        row.uid = uid;
+      } else if (occupant.movePending !== null) {
         row.uid = null;
-        continue;
-      }
-      const newUid = moved.get(uid);
-      if (newUid === undefined) continue;
-      const early = this.attachedRows(accountId, destination).find(
-        (r) => r.uid === newUid && r.id !== row.id,
-      );
-      if (early) {
-        if (early.seenPending) {
+      } else {
+        if (occupant.seenPending) {
           row.seenPending = true;
           row.isRead = true;
         }
-        this.state.rows = this.state.rows.filter((r) => r !== early);
+        row.uid = occupant.uid;
+        this.state.rows = this.state.rows.filter((r) => r !== occupant);
       }
-      row.folder = destination;
-      row.uid = newUid;
+    };
+    for (const uid of uids) {
+      const row: Row | undefined = this.attachedRows(accountId, folder).find(
+        (r) => r.uid === uid && r.movePending === destination,
+      );
+      if (!row) continue;
+      if (moved === null) {
+        const copy = row.dedupKey.startsWith("id:")
+          ? undefined
+          : this.attachedRows(accountId, destination).find(
+              (r) => r.dedupKey === row.dedupKey && r.movePending === null && r !== row,
+            );
+        takeOver(row, copy, null);
+        continue;
+      }
+      const newUid = moved.get(uid);
+      if (newUid === undefined) {
+        row.movePending = null;
+        row.moveFailures = 0;
+        continue;
+      }
+      takeOver(row, this.attachedRows(accountId, destination).find((r) => r.uid === newUid), newUid);
     }
   }
 
@@ -645,11 +657,15 @@ export class InMemoryMailStore implements MailStore {
 
   /** INBOX, or a folder saved with the inbox special use. */
   private isInbox(accountId: string, path: string): boolean {
+    if (path.toUpperCase() === "INBOX") return true;
     const saved = (this.state.folders.get(accountId) ?? []).find((f) => f.path === path);
-    return effectiveSpecialUse(path, saved?.specialUse ?? null) === "inbox";
+    return saved?.specialUse === "inbox";
   }
 
-  /** One row per key: the Inbox copy, else the most recently stored row. */
+  /**
+   * One row per key: a copy not waiting to move, then the Inbox copy, then
+   * the most recently stored row.
+   */
   private onePerKey(rows: Row[], keyOf: (row: Row) => string): Row[] {
     const order = new Map(this.state.rows.map((r, index) => [r, index]));
     const best = new Map<string, Row>();
@@ -660,7 +676,8 @@ export class InMemoryMailStore implements MailStore {
         best.set(key, row);
         continue;
       }
-      const rank = (r: Row) => (this.isInbox(r.accountId, r.folder) ? 1 : 0);
+      const rank = (r: Row) =>
+        (r.movePending === null ? 2 : 0) + (this.isInbox(r.accountId, r.folder) ? 1 : 0);
       if (
         rank(row) > rank(current) ||
         (rank(row) === rank(current) && order.get(row)! > order.get(current)!)

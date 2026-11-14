@@ -174,7 +174,7 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE messages ADD COLUMN dedup_key TEXT NOT NULL DEFAULT '';
   ALTER TABLE messages ADD COLUMN move_pending TEXT;
   ALTER TABLE messages ADD COLUMN move_failures INTEGER NOT NULL DEFAULT 0;
-  UPDATE messages SET dedup_key = CASE WHEN message_id IS NOT NULL THEN 'mid:' || message_id ELSE 'id:' || id END;
+  UPDATE messages SET dedup_key = CASE WHEN message_id IS NOT NULL THEN 'mid:' || message_id || ':' || size ELSE 'id:' || id END;
   CREATE INDEX messages_dedup ON messages(account_id, dedup_key);
   CREATE INDEX messages_folder_pending ON messages(account_id, folder, move_pending);
 
@@ -404,7 +404,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
        gm_msgid = COALESCE(@gmMsgId, gm_msgid),
        dedup_key = CASE
          WHEN COALESCE(@gmMsgId, gm_msgid) IS NOT NULL THEN 'gm:' || COALESCE(@gmMsgId, gm_msgid)
-         WHEN @messageId IS NOT NULL THEN 'mid:' || @messageId
+         WHEN @messageId IS NOT NULL THEN 'mid:' || @messageId || ':' || @size
          ELSE 'id:' || id END
      WHERE id = @id`,
   );
@@ -693,7 +693,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
               ...params,
               id,
               threadId: `t_${id}`,
-              dedupKey: dedupKeyOf(message.gmMsgId, message.messageId, id),
+              dedupKey: dedupKeyOf(message.gmMsgId, message.messageId, message.size, id),
             });
           }
           deleteAttachmentsOf.run(id);
@@ -812,10 +812,13 @@ export function createSqliteStore(db: Database.Database): MailStore {
           db.prepare("UPDATE messages SET is_read = 1, seen_pending = 1 WHERE id = ?").run(messageId);
           touched.add(row.thread_id);
         }
-        // Other copies are read locally only; the server propagates the flag.
+        // Unread copies in other folders are read too: attached ones are
+        // pushed like the opened row; detached ones (no uid to push) are read
+        // locally only.
         const copies = db
           .prepare<[string, string], { thread_id: string }>(
-            `UPDATE messages SET is_read = 1
+            `UPDATE messages SET is_read = 1,
+               seen_pending = CASE WHEN uid IS NOT NULL THEN 1 ELSE seen_pending END
              WHERE account_id = ? AND dedup_key = ? AND is_read = 0 RETURNING thread_id`,
           )
           .all(row.account_id, row.dedup_key);
@@ -873,9 +876,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
     listThreads(accountId, folder, cursor, limit) {
       const after = cursor === null ? null : decodeCursor(cursor);
       // Whole (account-wide) threads with a row in the folder that is not
-      // waiting to move out.
-      const inFolder = `EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = threads.id
-        AND m.account_id = threads.account_id AND m.folder = @folder AND m.move_pending IS NULL)`;
+      // waiting to move out. An uncorrelated IN list is built once from the
+      // (account_id, folder, move_pending) index, so the cost stays linear.
+      const inFolder = `threads.id IN (SELECT m.thread_id FROM messages m
+        WHERE m.account_id = @accountId AND m.folder = @folder AND m.move_pending IS NULL)`;
       let rows: ThreadRow[];
       if (after === null) {
         rows = db
@@ -914,8 +918,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
     },
 
     /**
-     * Each message once: of the rows sharing a dedup key, the Inbox copy,
-     * else the most recently stored row.
+     * Each message once: of the rows sharing a dedup key, prefer a copy not
+     * waiting to move, then the Inbox copy, then the most recently stored row.
      */
     getThread(threadId): ThreadDetail | null {
       const thread = threadById.get(threadId);
@@ -924,7 +928,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
         .prepare<[string], HeaderRow>(
           `SELECT * FROM (
              SELECT ${SUMMARY_COLUMNS}, m.to_json, m.cc_json,
-               row_number() OVER (PARTITION BY m.dedup_key ORDER BY ${IN_INBOX} DESC, m.seq DESC) AS rn
+               row_number() OVER (PARTITION BY m.dedup_key
+                 ORDER BY m.move_pending IS NULL DESC, ${IN_INBOX} DESC, m.seq DESC) AS rn
              FROM messages m WHERE m.thread_id = ?)
            WHERE rn = 1 ORDER BY date IS NULL, date, id`,
         )
@@ -1209,14 +1214,30 @@ export function createSqliteStore(db: Database.Database): MailStore {
 
     completeMove(accountId, folder, destination, moved, uids) {
       return atomic(() => {
-        const find = db.prepare<[string, string, number], { id: string; thread_id: string }>(
-          `SELECT id, thread_id FROM messages
-           WHERE account_id = ? AND folder = ? AND uid = ? AND move_pending IS NOT NULL`,
+        const find = db.prepare<
+          [string, string, number, string],
+          { id: string; thread_id: string; dedup_key: string }
+        >(
+          `SELECT id, thread_id, dedup_key FROM messages
+           WHERE account_id = ? AND folder = ? AND uid = ? AND move_pending = ?`,
         );
-        const occupant = db.prepare<
-          [string, string, number],
-          { id: string; thread_id: string; seen_pending: number }
-        >("SELECT id, thread_id, seen_pending FROM messages WHERE account_id = ? AND folder = ? AND uid = ?");
+        type Occupant = {
+          id: string;
+          thread_id: string;
+          uid: number;
+          seen_pending: number;
+          move_pending: string | null;
+        };
+        const atUid = db.prepare<[string, string, number], Occupant>(
+          `SELECT id, thread_id, uid, seen_pending, move_pending FROM messages
+           WHERE account_id = ? AND folder = ? AND uid = ?`,
+        );
+        const sameMessage = db.prepare<[string, string, string, string], Occupant>(
+          `SELECT id, thread_id, uid, seen_pending, move_pending FROM messages
+           WHERE account_id = ? AND folder = ? AND dedup_key = ? AND uid IS NOT NULL
+             AND move_pending IS NULL AND id != ?
+           ORDER BY seq LIMIT 1`,
+        );
         const rehome = db.prepare(
           `UPDATE messages SET folder = @destination, uid = @uid, move_pending = NULL,
              move_failures = 0,
@@ -1228,12 +1249,33 @@ export function createSqliteStore(db: Database.Database): MailStore {
           "UPDATE messages SET move_pending = NULL, move_failures = 0 WHERE id = ?",
         );
         const touched = new Set<string>();
+        /**
+         * The destination already holds this message (synced before the move
+         * completed): the moved row keeps its id and takes that copy's uid,
+         * carrying a pending read. An occupant that is itself waiting to move
+         * is left alone and the moved row is detached instead.
+         */
+        const takeOver = (row: { id: string }, occupant: Occupant | undefined, uid: number | null) => {
+          if (occupant === undefined || occupant.id === row.id) {
+            rehome.run({ destination, uid, carriedPending: 0, id: row.id });
+          } else if (occupant.move_pending !== null) {
+            rehome.run({ destination, uid: null, carriedPending: 0, id: row.id });
+          } else {
+            for (const threadId of deleteRows([occupant])) touched.add(threadId);
+            rehome.run({ destination, uid: occupant.uid, carriedPending: occupant.seen_pending, id: row.id });
+          }
+        };
         for (const uid of uids) {
-          const row = find.get(accountId, folder, uid);
+          const row = find.get(accountId, folder, uid, destination);
           if (!row) continue;
           touched.add(row.thread_id);
           if (moved === null) {
-            rehome.run({ destination, uid: null, carriedPending: 0, id: row.id });
+            // No uid map: merge into a destination copy of the same message
+            // when there is one, else wait detached for the folder's sync.
+            const copy = row.dedup_key.startsWith("id:")
+              ? undefined
+              : sameMessage.get(accountId, destination, row.dedup_key, row.id);
+            takeOver(row, copy, null);
             continue;
           }
           const newUid = moved.get(uid);
@@ -1242,15 +1284,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
             settle.run(row.id);
             continue;
           }
-          // The destination copy may have been synced before the move
-          // completed: the moved row keeps its id and takes that copy's place.
-          const early = occupant.get(accountId, destination, newUid);
-          let carriedPending = 0;
-          if (early && early.id !== row.id) {
-            carriedPending = early.seen_pending;
-            for (const threadId of deleteRows([early])) touched.add(threadId);
-          }
-          rehome.run({ destination, uid: newUid, carriedPending, id: row.id });
+          takeOver(row, atUid.get(accountId, destination, newUid), newUid);
         }
         refreshThreads(accountId, touched);
       });

@@ -9,12 +9,18 @@ export const INLINE_PART_MAX_BYTES = 512 * 1024;
 export const INLINE_MESSAGE_MAX_BYTES = 2 * 1024 * 1024;
 
 /**
- * Identity of a message across folders: Gmail X-GM-MSGID, else Message-ID,
- * else the row itself.
+ * Identity of a message across folders: Gmail X-GM-MSGID, else Message-ID
+ * with the RFC822 size (two deliveries can share a Message-ID; exact copies
+ * in other folders have the same size), else the row itself.
  */
-export function dedupKeyOf(gmMsgId: string | null, messageId: string | null, rowId: string): string {
+export function dedupKeyOf(
+  gmMsgId: string | null,
+  messageId: string | null,
+  size: number,
+  rowId: string,
+): string {
   if (gmMsgId !== null) return `gm:${gmMsgId}`;
-  if (messageId !== null) return `mid:${messageId}`;
+  if (messageId !== null) return `mid:${messageId}:${size}`;
   return `id:${rowId}`;
 }
 
