@@ -284,7 +284,7 @@ export class InMemoryMailStore implements MailStore {
   applyFlags(
     accountId: string,
     folder: string,
-    flags: { uid: number; seen: boolean; flagged: boolean }[],
+    flags: { uid: number; seen: boolean; flagged: boolean; gmMsgId?: string | null }[],
   ): number {
     let changed = 0;
     for (const flag of flags) {
@@ -483,7 +483,7 @@ export class InMemoryMailStore implements MailStore {
     throw new Error("not implemented: allowImageSender");
   }
 
-  disallowImageSender(_accountId: string, _address: string): void {
+  disallowImageSender(_accountId: string, _address: string): boolean {
     throw new Error("not implemented: disallowImageSender");
   }
 
@@ -587,7 +587,13 @@ export type FakeMailbox = {
 
 type SessionMethod = Exclude<keyof FolderSession, "close">;
 
-export type SessionCall = { method: SessionMethod; uids?: number[]; date?: Date; uid?: number };
+export type SessionCall = {
+  method: SessionMethod;
+  uids?: number[];
+  date?: Date;
+  uid?: number;
+  destination?: string;
+};
 
 export type OpenedSession = {
   path: string;
@@ -717,8 +723,8 @@ export class ScriptedImapGateway implements ImapGateway {
           if (uids.includes(message.uid)) message.seen = true;
         }
       },
-      moveMessages: async (uids) => {
-        record({ method: "moveMessages", uids: [...uids] });
+      moveMessages: async (uids, destination) => {
+        record({ method: "moveMessages", uids: [...uids], destination });
         throw new Error("not implemented: moveMessages");
       },
       close: async () => {

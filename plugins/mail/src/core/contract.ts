@@ -13,6 +13,11 @@ import {
   threadSummarySchema,
 } from "./model.ts";
 
+/** An id, folder path or account id coming in from the page. */
+const idInput = z.string().min(1).max(256);
+/** An email address coming in from the page. */
+const addressInput = z.string().min(3).max(320);
+
 export const rpcSchemas = {
   status_get: {
     input: z.null(),
@@ -38,7 +43,7 @@ export const rpcSchemas = {
     input: z.object({
       accountId: z.string(),
       /** Folder path; the UI passes the account's inbox path by default. */
-      folder: z.string(),
+      folder: idInput,
       cursor: z.string().nullable(),
       limit: z.number().int().min(1).max(100),
     }),
@@ -73,24 +78,29 @@ export const rpcSchemas = {
     output: z.object({ hits: z.array(messageSummarySchema) }),
   },
   folders_list: {
-    input: z.object({ accountId: z.string() }),
+    input: z.object({ accountId: idInput }),
     output: z.object({ folders: z.array(folderSchema) }),
   },
-  /** Owner-clicked moves only; never exposed to agents, mentions or CLI. */
+  /**
+   * Owner-clicked moves only; never exposed to agents, mentions or CLI. One
+   * batch shares one account and one source folder (the folder being viewed):
+   * the server refuses ids that are unknown or not in `folder`.
+   */
   message_action: {
     input: z.object({
-      messageIds: z.array(z.string()).min(1).max(200),
+      messageIds: z.array(idInput).min(1).max(200),
+      folder: idInput,
       action: messageActionSchema,
     }),
-    output: z.object({ queued: z.number().int(), destination: z.string() }),
+    output: z.object({ queued: z.number().int().min(0), destination: z.string() }),
   },
   /** Allows remote images from the message's sender. */
   images_allow_sender: {
-    input: z.object({ messageId: z.string() }),
+    input: z.object({ messageId: idInput }),
     output: z.object({ address: z.string() }),
   },
   images_disallow_sender: {
-    input: z.object({ accountId: z.string(), address: z.string() }),
+    input: z.object({ accountId: idInput, address: addressInput }),
     output: z.object({ removed: z.boolean() }),
   },
 } as const;

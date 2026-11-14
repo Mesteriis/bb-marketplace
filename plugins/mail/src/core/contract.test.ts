@@ -87,12 +87,21 @@ describe("rpcSchemas", () => {
   it("bounds message_action to 1..200 ids and the four actions", () => {
     const ids = (n: number) => Array.from({ length: n }, (_, i) => `m_${i}`);
     const parse = (messageIds: string[], action: string) =>
-      rpcSchemas.message_action.input.safeParse({ messageIds, action }).success;
+      rpcSchemas.message_action.input.safeParse({ messageIds, folder: "INBOX", action }).success;
     expect(parse(ids(1), "spam")).toBe(true);
     expect(parse(ids(200), "delete")).toBe(true);
     expect(parse([], "archive")).toBe(false);
     expect(parse(ids(201), "not_spam")).toBe(false);
     expect(parse(ids(1), "expunge")).toBe(false);
+    expect(parse([""], "spam")).toBe(false);
+    expect(parse(["x".repeat(257)], "spam")).toBe(false);
+    expect(
+      rpcSchemas.message_action.input.safeParse({ messageIds: ["m"], action: "spam" }).success,
+    ).toBe(false);
+    expect(
+      rpcSchemas.message_action.input.safeParse({ messageIds: ["m"], folder: "", action: "spam" })
+        .success,
+    ).toBe(false);
     expect(messageActionSchema.options).toEqual(["spam", "not_spam", "archive", "delete"]);
   });
 
@@ -123,6 +132,27 @@ describe("rpcSchemas", () => {
     expect(
       rpcSchemas.message_action.output.safeParse({ queued: 2, destination: "Trash" }).success,
     ).toBe(true);
+    expect(
+      rpcSchemas.message_action.output.safeParse({ queued: -1, destination: "Trash" }).success,
+    ).toBe(false);
+  });
+
+  it("bounds the new string inputs", () => {
+    expect(rpcSchemas.folders_list.input.safeParse({ accountId: "" }).success).toBe(false);
+    expect(rpcSchemas.folders_list.input.safeParse({ accountId: "a".repeat(257) }).success).toBe(
+      false,
+    );
+    expect(rpcSchemas.images_allow_sender.input.safeParse({ messageId: "" }).success).toBe(false);
+    const disallow = (accountId: string, address: string) =>
+      rpcSchemas.images_disallow_sender.input.safeParse({ accountId, address }).success;
+    expect(disallow("a", "a@b")).toBe(true);
+    expect(disallow("a", "ab")).toBe(false);
+    expect(disallow("a", `${"x".repeat(310)}@example.org`)).toBe(false);
+    expect(disallow("", "a@example.org")).toBe(false);
+    expect(
+      rpcSchemas.threads_list.input.safeParse({ accountId: "a", folder: "", cursor: null, limit: 1 })
+        .success,
+    ).toBe(false);
   });
 
   it("names the realtime channel", () => {
