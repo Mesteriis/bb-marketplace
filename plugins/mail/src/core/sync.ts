@@ -72,7 +72,7 @@ export async function syncAccount(
     const session = await gateway.openFolder(config, INBOX, { readOnly: true });
     let counts: { fetched: number; removed: number; flagsChanged: number };
     try {
-      counts = await syncInbox(store, session, accountId, clock.now(), options);
+      counts = await syncFolder(store, session, accountId, clock.now(), options);
     } finally {
       await closeQuietly(session);
     }
@@ -133,7 +133,7 @@ async function pushPendingSeen(
   }
 }
 
-async function syncInbox(
+async function syncFolder(
   store: MailStore,
   session: FolderSession,
   accountId: string,

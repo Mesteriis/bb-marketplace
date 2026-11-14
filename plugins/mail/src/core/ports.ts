@@ -108,7 +108,8 @@ export interface MailStore {
   applyFlags(
     accountId: string,
     folder: string,
-    flags: { uid: number; seen: boolean; flagged: boolean }[],
+    /** `gmMsgId` (when given) backfills the row's Gmail id and dedup key. */
+    flags: { uid: number; seen: boolean; flagged: boolean; gmMsgId?: string | null }[],
   ): number;
   deleteByUids(accountId: string, folder: string, uids: number[]): number;
   pendingSeenUids(accountId: string, folder: string): number[];
@@ -145,12 +146,21 @@ export interface MailStore {
     accountId: string,
     folder: string,
   ): { uid: number; id: string; destination: string }[];
-  /** Marks the messages move-pending; null when none can be queued. */
+  /**
+   * Marks the messages move-pending. All ids must share one account and one
+   * source folder; returns null when any id is unknown or they span accounts
+   * or folders (nothing is queued then).
+   */
   queueMove(
     messageIds: string[],
     destination: string,
   ): { accountId: string; folder: string } | null;
-  /** Re-homes moved rows to the destination; detaches them when `moved` is null. */
+  /**
+   * Re-homes moved rows to the destination with their new uids; detaches them
+   * (uid NULL in the destination) when `moved` is null. A map that lacks some
+   * of `uids` means those messages vanished from the source: the move counts
+   * as done for them and reconcile removes their rows.
+   */
   completeMove(
     accountId: string,
     folder: string,
@@ -163,7 +173,8 @@ export interface MailStore {
   inlineParts(messageId: string): InlinePart[];
   isImageSenderAllowed(accountId: string, address: string): boolean;
   allowImageSender(accountId: string, address: string): void;
-  disallowImageSender(accountId: string, address: string): void;
+  /** Returns whether the sender was allowed before. */
+  disallowImageSender(accountId: string, address: string): boolean;
   /**
    * Recomputes stored snippets written before entities were fully decoded,
    * with their thread rows; returns how many changed. Idempotent.

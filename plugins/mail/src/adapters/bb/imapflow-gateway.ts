@@ -1,7 +1,8 @@
 // ImapGateway on imapflow. TLS only (secure: true whatever the port, never
 // STARTTLS or plaintext), one folder per session, every body fetch is
-// BODY.PEEK (imapflow fetches `source` with PEEK), and the only write is \Seen
-// in markSeen.
+// BODY.PEEK (imapflow fetches `source` with PEEK), and the only writes are
+// \Seen on owner-opened mail (markSeen) and owner-clicked moves (moveMessages,
+// which lands in slice 2, Task 3).
 // Errors leaving this file are rebuilt from codes: imapflow errors can carry
 // server responses and the sent command, so their text is never passed on.
 import { ImapFlow } from "imapflow";
