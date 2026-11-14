@@ -3,10 +3,27 @@
 // Turns untrusted email HTML into a document for a sandboxed iframe: no
 // scripts, forms, handlers or remote loads (images, CSS imports and CSS
 // url()s are tracking pixels too), and a CSP that blocks anything missed.
+// When the owner allows remote images, `https:` `<img src>` is the one
+// remote load kept; everything else stays blocked.
 import DOMPurify from "dompurify";
 
 /** The policy inside every rendered message: only data: images, only inline styles. */
 export const EMAIL_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'";
+/** The policy when the owner allowed remote images: https: images too, nothing else. */
+export const EMAIL_CSP_REMOTE_IMAGES =
+  "default-src 'none'; img-src data: https:; style-src 'unsafe-inline'";
+
+export interface SanitizeOptions {
+  /** Keep `https:` `<img src>` (the owner allowed remote images for this message). */
+  remoteImages: boolean;
+}
+
+export interface SanitizedEmail {
+  /** A complete document for `<iframe sandbox="allow-same-origin" srcDoc>`. */
+  html: string;
+  /** Some remote image (src, srcset, background, CSS url()) was removed. */
+  blockedRemoteImages: boolean;
+}
 
 const FORBID_TAGS = [
   "script",
@@ -39,6 +56,12 @@ const LOADING_ATTRIBUTES = [
 
 const LINK_ATTRIBUTES = ["href", "xlink:href"];
 
+/** Removed only when remote images are allowed: they would load more than an <img src>. */
+const REMOTE_MODE_FORBID_TAGS = ["picture", "source", "video", "audio", "track"];
+
+/** Elements whose href is a link the owner can click; anywhere else (svg <image>, <use>) it loads. */
+const LINK_ELEMENTS = new Set(["a", "area"]);
+
 // Email is designed for a light page. System colors keep the frame free of
 // hard-coded values while following the light scheme the email expects.
 const BASE_STYLE = [
@@ -66,6 +89,27 @@ export function isAllowedLinkUrl(value: string): boolean {
 
 function isDataUrl(value: string): boolean {
   return /^\s*data:/i.test(value);
+}
+
+/** A data: URL of a raster image; SVG is left out (it is a document, not a picture). */
+function isRasterDataUrl(value: string): boolean {
+  return /^\s*data:image\/(?:png|gif|jpe?g|pjpeg|webp|avif|bmp|x-icon|vnd\.microsoft\.icon)[;,]/i.test(
+    value,
+  );
+}
+
+/** An absolute or protocol-relative http(s) URL: something a browser would fetch. */
+function isRemoteUrl(value: string): boolean {
+  return /^\s*(?:https?:)?\/\//i.test(value);
+}
+
+/** True for an absolute `https:` URL, the only remote image source ever kept. */
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value.trim()).protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -161,6 +205,12 @@ function readImageSet(text: string, start: number): { end: number; urls: string[
  * construct left unclosed is replaced together with the rest of the text.
  */
 export function cleanEmailCss(css: string): string {
+  return cleanCss(css).css;
+}
+
+/** cleanEmailCss, also saying whether a remote url() was among what it removed. */
+function cleanCss(css: string): { css: string; removedRemote: boolean } {
+  let removedRemote = false;
   const text = decodeLetterEscapes(stripComments(css.slice(0, MAX_CSS_CHARS)));
   const keyword = /@import|(?:-webkit-)?image-set\(|url\(/gi;
   let out = "";
@@ -176,42 +226,79 @@ export function cleanEmailCss(css: string): string {
     } else if (word === "url(") {
       const call = readUrlCall(text, keyword.lastIndex);
       end = call?.end ?? text.length;
-      replacement = call !== null && isDataUrl(call.url) ? text.slice(match.index, end) : "none";
+      const kept = call !== null && isDataUrl(call.url);
+      if (!kept && (call === null || !/^\s*#/.test(call.url))) removedRemote = true;
+      replacement = kept ? text.slice(match.index, end) : "none";
     } else {
       const set = readImageSet(text, keyword.lastIndex);
       end = set?.end ?? text.length;
-      replacement =
-        set !== null && set.urls.every(isDataUrl) ? text.slice(match.index, end) : "none";
+      const kept = set !== null && set.urls.every(isDataUrl);
+      if (!kept) removedRemote = true;
+      replacement = kept ? text.slice(match.index, end) : "none";
     }
     out += text.slice(from, match.index) + replacement;
     from = end;
     keyword.lastIndex = end;
   }
-  return out + text.slice(from);
+  return { css: out + text.slice(from), removedRemote };
 }
 
 type Purifier = ReturnType<typeof DOMPurify>;
 let purifier: Purifier | null = null;
 
+/**
+ * The call in progress. DOMPurify runs its hooks synchronously inside
+ * sanitize(), so the hooks read the mode and report what they blocked here.
+ */
+const run = { remoteImages: false, blockedRemoteImages: false };
+
 function emailPurifier(): Purifier {
   if (purifier !== null) return purifier;
   const instance = DOMPurify(window);
   instance.addHook("uponSanitizeElement", (node, data) => {
-    if (data.tagName === "style") node.textContent = cleanEmailCss(node.textContent ?? "");
+    if (data.tagName !== "style") return;
+    const cleaned = cleanCss(node.textContent ?? "");
+    if (cleaned.removedRemote) run.blockedRemoteImages = true;
+    node.textContent = cleaned.css;
   });
   instance.addHook("afterSanitizeAttributes", (node) => {
     for (const { name } of Array.from(node.attributes)) {
       if (name.toLowerCase().startsWith("on")) node.removeAttribute(name);
     }
-    for (const name of LOADING_ATTRIBUTES) node.removeAttribute(name);
+    for (const name of LOADING_ATTRIBUTES) {
+      const value = node.getAttribute(name);
+      if (value === null) continue;
+      if (name === "srcset" || isRemoteUrl(value)) run.blockedRemoteImages = true;
+      node.removeAttribute(name);
+    }
     const src = node.getAttribute("src");
-    if (src !== null && !isDataUrl(src)) node.removeAttribute("src");
+    if (src !== null) {
+      const isImg = node.nodeName.toLowerCase() === "img";
+      const keepRemote = run.remoteImages && isImg && isHttpsUrl(src);
+      if (keepRemote) {
+        node.setAttribute("referrerpolicy", "no-referrer");
+      } else if (!isRasterDataUrl(src)) {
+        if (isRemoteUrl(src)) run.blockedRemoteImages = true;
+        node.removeAttribute("src");
+      }
+    }
+    const isLink = LINK_ELEMENTS.has(node.nodeName.toLowerCase());
     for (const name of LINK_ATTRIBUTES) {
       const href = node.getAttribute(name);
-      if (href !== null && !isAllowedLinkUrl(href)) node.removeAttribute(name);
+      if (href === null) continue;
+      if (!isLink) {
+        if (isRemoteUrl(href)) run.blockedRemoteImages = true;
+        node.removeAttribute(name);
+      } else if (!isAllowedLinkUrl(href)) {
+        node.removeAttribute(name);
+      }
     }
     const style = node.getAttribute("style");
-    if (style !== null) node.setAttribute("style", cleanEmailCss(style));
+    if (style !== null) {
+      const cleaned = cleanCss(style);
+      if (cleaned.removedRemote) run.blockedRemoteImages = true;
+      node.setAttribute("style", cleaned.css);
+    }
   });
   purifier = instance;
   return instance;
@@ -221,17 +308,28 @@ function emailPurifier(): Purifier {
  * Sanitizes email HTML and wraps it in a complete document with the CSP meta,
  * ready for `<iframe sandbox="allow-same-origin" srcDoc>`.
  */
-export function sanitizeEmailHtml(html: string): string {
-  const body = emailPurifier().sanitize(html, {
-    FORBID_TAGS,
-    FORCE_BODY: true,
-    ALLOW_UNKNOWN_PROTOCOLS: false,
-  });
-  return (
-    "<!doctype html><html><head>" +
-    `<meta http-equiv="Content-Security-Policy" content="${EMAIL_CSP}">` +
-    `<meta http-equiv="x-dns-prefetch-control" content="off">` +
-    `<style>${BASE_STYLE}</style>` +
-    `</head><body>${body}</body></html>`
-  );
+export function sanitizeEmailHtml(html: string, options: SanitizeOptions): SanitizedEmail {
+  run.remoteImages = options.remoteImages;
+  run.blockedRemoteImages = false;
+  let body: string;
+  try {
+    body = emailPurifier().sanitize(html, {
+      FORBID_TAGS: options.remoteImages ? [...FORBID_TAGS, ...REMOTE_MODE_FORBID_TAGS] : FORBID_TAGS,
+      FORCE_BODY: true,
+      ALLOW_UNKNOWN_PROTOCOLS: false,
+    });
+  } finally {
+    run.remoteImages = false;
+  }
+  const csp = options.remoteImages ? EMAIL_CSP_REMOTE_IMAGES : EMAIL_CSP;
+  return {
+    html:
+      "<!doctype html><html><head>" +
+      `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
+      `<meta http-equiv="x-dns-prefetch-control" content="off">` +
+      `<meta name="referrer" content="no-referrer">` +
+      `<style>${BASE_STYLE}</style>` +
+      `</head><body>${body}</body></html>`,
+    blockedRemoteImages: run.blockedRemoteImages,
+  };
 }

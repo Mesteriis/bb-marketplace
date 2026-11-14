@@ -1,6 +1,15 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { cleanEmailCss, EMAIL_CSP, isAllowedLinkUrl, sanitizeEmailHtml } from "./sanitize.ts";
+import {
+  cleanEmailCss,
+  EMAIL_CSP,
+  EMAIL_CSP_REMOTE_IMAGES,
+  isAllowedLinkUrl,
+  sanitizeEmailHtml,
+} from "./sanitize.ts";
+
+/** The document in the default mode (no remote images). */
+const clean = (html: string) => sanitizeEmailHtml(html, { remoteImages: false }).html;
 
 const HOSTILE = `<!doctype html>
 <html>
@@ -26,7 +35,7 @@ const HOSTILE = `<!doctype html>
 
 describe("sanitizeEmailHtml", () => {
   it("strips scripts, handlers, forms, base, meta refresh and remote images", () => {
-    const out = sanitizeEmailHtml(HOSTILE);
+    const out = clean(HOSTILE);
 
     for (const banned of [
       "<script",
@@ -54,7 +63,7 @@ describe("sanitizeEmailHtml", () => {
   });
 
   it("keeps data: images and inline styles", () => {
-    const out = sanitizeEmailHtml(
+    const out = clean(
       `<style>.note { color: green; }</style>` +
         `<p class="note" style="font-weight: bold">styled</p>` +
         `<img src="data:image/png;base64,iVBORw0KGgo=" alt="inline">`,
@@ -66,7 +75,7 @@ describe("sanitizeEmailHtml", () => {
   });
 
   it("keeps a style element from the head of a full document", () => {
-    const out = sanitizeEmailHtml(
+    const out = clean(
       `<html><head><style>h1 { margin: 0; }</style></head><body><h1>Hi</h1></body></html>`,
     );
 
@@ -75,7 +84,7 @@ describe("sanitizeEmailHtml", () => {
   });
 
   it("drops remote url() and @import from style elements and style attributes", () => {
-    const out = sanitizeEmailHtml(
+    const out = clean(
       `<style>@import url("https://tracker.example.org/i.css");` +
         `.a { background: url(https://tracker.example.org/x.png) no-repeat; }` +
         `.b { background-image: url('data:image/png;base64,AAAA'); }` +
@@ -93,10 +102,144 @@ describe("sanitizeEmailHtml", () => {
   });
 
   it("adds the DNS prefetch opt-out next to the CSP meta", () => {
-    expect(sanitizeEmailHtml("<p>x</p>")).toContain(
+    expect(clean("<p>x</p>")).toContain(
       `<meta http-equiv="Content-Security-Policy" content="${EMAIL_CSP}">` +
         `<meta http-equiv="x-dns-prefetch-control" content="off">`,
     );
+  });
+});
+
+const ALLOWED_HOSTILE = `<div>
+  <p>Invented newsletter</p>
+  <img src="https://images.example.org/kept.png" onerror="alert(1)" alt="kept">
+  <img src="http://images.example.org/plain.png" alt="plain">
+  <img src="https://images.example.org/base.png" srcset="https://tracker.example.org/set.png 2x" alt="set">
+  <picture><source srcset="https://tracker.example.org/source.webp"><img src="https://images.example.org/pic.png" alt="pic"></picture>
+  <img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" alt="svg">
+  <img src="//tracker.example.org/relative.png" alt="relative">
+  <div style="background: url(https://tracker.example.org/bg.png)">styled</div>
+  <style>.a { background-image: url("https://tracker.example.org/css.png"); }</style>
+  <table background="https://tracker.example.org/table.png"><tr><td>cell</td></tr></table>
+  <svg><image href="https://tracker.example.org/svg-image.png"></image></svg>
+  <video poster="https://tracker.example.org/poster.png" src="https://tracker.example.org/v.mp4"></video>
+</div>`;
+
+describe("sanitizeEmailHtml modes", () => {
+  it("default mode reports blocked remote images and uses the data:-only CSP", () => {
+    const result = sanitizeEmailHtml(
+      `<p>x</p><img src="https://images.example.org/a.png" alt="a">`,
+      { remoteImages: false },
+    );
+
+    expect(result.blockedRemoteImages).toBe(true);
+    expect(result.html).not.toContain("images.example.org");
+    expect(result.html).toContain(`content="${EMAIL_CSP}"`);
+  });
+
+  it("reports nothing blocked for a message without remote images", () => {
+    const result = sanitizeEmailHtml(
+      `<p>x</p><img src="data:image/png;base64,iVBORw0KGgo=" alt="inline">` +
+        `<a href="https://example.org/link">link</a>`,
+      { remoteImages: false },
+    );
+
+    expect(result.blockedRemoteImages).toBe(false);
+    expect(result.html).toContain('src="data:image/png;base64,iVBORw0KGgo="');
+  });
+
+  it("counts remote CSS urls, srcset and background attributes as blocked images", () => {
+    for (const html of [
+      `<div style="background: url(https://tracker.example.org/x.png)">x</div>`,
+      `<style>.a { background: url('https://tracker.example.org/x.png') }</style>`,
+      `<img srcset="https://tracker.example.org/a.png 1x" alt="set">`,
+      `<table background="https://tracker.example.org/bg.png"><tr><td>c</td></tr></table>`,
+    ]) {
+      expect(sanitizeEmailHtml(html, { remoteImages: false }).blockedRemoteImages).toBe(true);
+    }
+  });
+
+  it("drops svg data: images in both modes and keeps raster ones", () => {
+    for (const remoteImages of [false, true]) {
+      const { html } = sanitizeEmailHtml(
+        `<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" alt="svg">` +
+          `<img src="data:image/gif;base64,R0lGODlh" alt="gif">`,
+        { remoteImages },
+      );
+      expect(html).not.toContain("image/svg+xml");
+      expect(html).toContain('src="data:image/gif;base64,R0lGODlh"');
+    }
+  });
+
+  it("the slice-1 hostile fixture stays clean in allowed mode except its https image", () => {
+    const { html, blockedRemoteImages } = sanitizeEmailHtml(HOSTILE, { remoteImages: true });
+
+    expect(html).toContain('src="https://tracker.example.org/pixel.gif"');
+    const rest = html.replace('src="https://tracker.example.org/pixel.gif"', "");
+    for (const banned of [
+      "<script",
+      "onload",
+      "onerror",
+      "javascript:",
+      "<form",
+      "<input",
+      "<button",
+      "<base",
+      "<link",
+      "<iframe",
+      'http-equiv="refresh"',
+      "https://tracker.example.org",
+      "srcset",
+    ]) {
+      expect(rest).not.toContain(banned);
+    }
+    // The srcset and background images stay blocked.
+    expect(blockedRemoteImages).toBe(true);
+  });
+
+  it("allowed mode keeps only https img src", () => {
+    const { html, blockedRemoteImages } = sanitizeEmailHtml(ALLOWED_HOSTILE, { remoteImages: true });
+
+    expect(html).toContain('src="https://images.example.org/kept.png"');
+    expect(html).toContain('src="https://images.example.org/base.png"');
+    expect(html).toContain('src="https://images.example.org/pic.png"');
+    for (const banned of [
+      "onerror",
+      "http://images.example.org",
+      "srcset",
+      "<picture",
+      "<source",
+      "image/svg+xml",
+      "tracker.example.org",
+      "<video",
+      "poster",
+      "background=",
+    ]) {
+      expect(html).not.toContain(banned);
+    }
+    expect(html).toContain("styled");
+    expect(html).toContain("cell");
+    expect(html).toContain(`content="${EMAIL_CSP_REMOTE_IMAGES}"`);
+    expect(html).not.toContain(`content="${EMAIL_CSP}"`);
+    expect(EMAIL_CSP_REMOTE_IMAGES).toBe(
+      "default-src 'none'; img-src data: https:; style-src 'unsafe-inline'",
+    );
+    expect(blockedRemoteImages).toBe(true);
+  });
+
+  it("allowed mode sends no referrer with the images it loads", () => {
+    const { html } = sanitizeEmailHtml(`<img src="https://images.example.org/a.png" alt="a">`, {
+      remoteImages: true,
+    });
+
+    expect(html).toContain('<meta name="referrer" content="no-referrer">');
+    expect(html).toMatch(/<img[^>]*referrerpolicy="no-referrer"/);
+  });
+
+  it("allowed mode with only https images reports nothing blocked", () => {
+    const result = sanitizeEmailHtml(`<img src="https://images.example.org/a.png" alt="a">`, {
+      remoteImages: true,
+    });
+    expect(result.blockedRemoteImages).toBe(false);
   });
 });
 
@@ -118,7 +261,7 @@ describe("cleanEmailCss", () => {
   it("cleans a 300 KB unterminated style attribute and element quickly", () => {
     const hostile = repeated('url("');
     const started = performance.now();
-    const out = sanitizeEmailHtml(`<style>${hostile}</style><div style='${hostile}'>x</div>`);
+    const out = clean(`<style>${hostile}</style><div style='${hostile}'>x</div>`);
     const elapsed = performance.now() - started;
 
     expect(elapsed).toBeLessThan(1000);

@@ -1,9 +1,11 @@
-// The Mail page: header (account, search, sync), the conversation list and the
-// reading pane. Data and actions arrive through props; nothing here knows the
+// The Mail page: header (account, search, sync), the folder rail, the
+// conversation list and the reading pane. Data and actions arrive through props; nothing here knows the
 // host, so the same page renders in BB and in any other shell.
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type {
   Account,
+  Folder,
+  MessageAction,
   MessageHeader,
   MessageSummary,
   NewAccountInput,
@@ -24,7 +26,7 @@ import {
 import { cn } from "@/lib/utils";
 import { AccountForm, type AccountFormInitial, type AccountFormProps } from "./account-form.tsx";
 import {
-  EmptyInbox,
+  EmptyFolder,
   LoadingState,
   NoSearchResults,
   NothingSelected,
@@ -32,6 +34,7 @@ import {
   SyncingState,
   VaultNotReady,
 } from "./empty-states.tsx";
+import { FolderList, FolderSelect } from "./folder-list.tsx";
 import { ReadingPane, type BodyState } from "./reading-pane.tsx";
 import { formatListDate, SearchResultList, ThreadList } from "./thread-list.tsx";
 
@@ -58,6 +61,10 @@ export interface ReadingState {
   error: string | null;
   expandedIds: ReadonlySet<string>;
   bodies: Readonly<Record<string, BodyState>>;
+  /** Messages whose remote images the owner chose to show this time. */
+  remoteImageIds: ReadonlySet<string>;
+  /** Lowercased senders the owner allowed while this conversation was open. */
+  imageSenders: ReadonlySet<string>;
 }
 
 /** null: the form is closed; otherwise what it opens with. */
@@ -69,6 +76,11 @@ export interface MailPageProps {
   statusError: string | null;
   account: Account | null;
   onSelectAccount: (accountId: string) => void;
+  /** The account's folders; null while they load. */
+  folders: Folder[] | null;
+  /** Path of the folder the list shows. */
+  folderPath: string;
+  onSelectFolder: (path: string) => void;
   list: ThreadListState;
   onLoadMore: () => void;
   search: SearchState;
@@ -81,6 +93,10 @@ export interface MailPageProps {
   onToggleMessage: (messageId: string) => void;
   onOpenLink: (url: string) => void;
   onHandToAgent: (message: MessageHeader) => void;
+  onAction: (action: MessageAction) => void;
+  actionPending: boolean;
+  onShowImages: (messageId: string) => void;
+  onAlwaysShowImages: (message: MessageHeader) => void;
   accountForm: AccountFormRequest;
   onOpenAccountForm: (request: { initial?: AccountFormInitial }) => void;
   onCloseAccountForm: () => void;
@@ -150,9 +166,16 @@ export function MailPage(props: MailPageProps) {
   return <Mailbox {...props} account={account} status={status} />;
 }
 
+/** The folder's display name; the path itself when the folder is unknown. */
+function nameOf(folders: Folder[] | null, path: string): string {
+  return folders?.find((f) => f.path === path)?.name ?? (path === "INBOX" ? "Inbox" : path);
+}
+
 function Mailbox(props: MailPageProps & { account: Account; status: StatusView }) {
-  const { account, reading } = props;
+  const { account, reading, folders, folderPath } = props;
   const threadOpen = reading.threadId !== null;
+  const folder = folders?.find((f) => f.path === folderPath) ?? null;
+  const folderUse = folder?.specialUse ?? (folderPath === "INBOX" ? "inbox" : null);
 
   return (
     <div className="@container flex h-full min-h-0 flex-1 flex-col">
@@ -184,10 +207,23 @@ function Mailbox(props: MailPageProps & { account: Account; status: StatusView }
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1">
+        <nav
+          aria-label="Folders"
+          className="hidden min-h-0 w-48 shrink-0 flex-col overflow-y-auto border-r border-border @4xl:flex @6xl:w-56"
+        >
+          <div className="px-1.5 pb-1 pt-2">
+            <AccountChooser {...props} className="w-full max-w-none" />
+          </div>
+          <FolderList
+            folders={folders ?? []}
+            selectedPath={folderPath}
+            onSelect={props.onSelectFolder}
+          />
+        </nav>
         <section
-          aria-label="Inbox"
+          aria-label={nameOf(folders, folderPath)}
           className={cn(
-            "min-h-0 w-full shrink-0 flex-col overflow-y-auto @3xl:flex @3xl:w-80 @3xl:border-r @3xl:border-border @5xl:w-96",
+            "min-h-0 w-full shrink-0 flex-col overflow-y-auto @3xl:flex @3xl:w-80 @3xl:border-r @3xl:border-border @6xl:w-96",
             threadOpen ? "hidden" : "flex",
           )}
         >
@@ -211,6 +247,15 @@ function Mailbox(props: MailPageProps & { account: Account; status: StatusView }
               onOpenLink={props.onOpenLink}
               onHandToAgent={props.onHandToAgent}
               onBack={props.onCloseThread}
+              folderPath={folderPath}
+              folderUse={folderUse}
+              folderName={(path) => nameOf(folders, path)}
+              onAction={props.onAction}
+              actionPending={props.actionPending}
+              remoteImageIds={reading.remoteImageIds}
+              imageSenders={reading.imageSenders}
+              onShowImages={props.onShowImages}
+              onAlwaysShowImages={props.onAlwaysShowImages}
             />
           ) : (
             <NothingSelected />
@@ -246,7 +291,7 @@ function ListColumn(props: MailPageProps & { account: Account }) {
   if (list.threads.length === 0) {
     if (account.lastError !== null) return <SyncErrorState message={account.lastError} />;
     if (account.lastSyncAt === null || props.syncing) return <SyncingState />;
-    return <EmptyInbox />;
+    return <EmptyFolder name={nameOf(props.folders, props.folderPath)} />;
   }
   return (
     <ThreadList
@@ -272,9 +317,44 @@ function ListMessage({ text, role = "status" }: { text: string; role?: "status" 
   );
 }
 
+/** The account select (several accounts) or the account's name. */
+function AccountChooser(
+  props: MailPageProps & { account: Account; status: StatusView; className?: string },
+) {
+  const { account, status } = props;
+  if (status.accounts.length > 1) {
+    return (
+      <Select value={account.id} onValueChange={props.onSelectAccount}>
+        <SelectTrigger aria-label="Account" className={cn("h-8 w-auto max-w-56", props.className)}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {status.accounts.map((item) => (
+            <SelectItem key={item.id} value={item.id}>
+              {item.displayName ?? item.email}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
+  }
+  return (
+    <span
+      className={cn("block max-w-56 truncate px-2 text-sm font-medium text-foreground", props.className)}
+    >
+      {account.displayName ?? account.email}
+    </span>
+  );
+}
+
 function MailHeader(props: MailPageProps & { account: Account; status: StatusView }) {
-  const { account, status, syncing } = props;
+  const { account, syncing } = props;
   const [draft, setDraft] = useState(props.search.query);
+
+  // The page may end a search (a folder was chosen); the box follows.
+  useEffect(() => {
+    setDraft(props.search.query);
+  }, [props.search.query]);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -288,24 +368,14 @@ function MailHeader(props: MailPageProps & { account: Account; status: StatusVie
 
   return (
     <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
-      {status.accounts.length > 1 ? (
-        <Select value={account.id} onValueChange={props.onSelectAccount}>
-          <SelectTrigger aria-label="Account" className="w-auto max-w-56">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {status.accounts.map((item) => (
-              <SelectItem key={item.id} value={item.id}>
-                {item.displayName ?? item.email}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      ) : (
-        <span className="max-w-56 truncate text-sm font-medium text-foreground">
-          {account.displayName ?? account.email}
-        </span>
-      )}
+      <div className="flex items-center gap-2 @4xl:hidden">
+        <AccountChooser {...props} />
+        <FolderSelect
+          folders={props.folders ?? []}
+          selectedPath={props.folderPath}
+          onSelect={props.onSelectFolder}
+        />
+      </div>
 
       <form role="search" onSubmit={submit} className="flex min-w-40 flex-1 items-center gap-1">
         <Input

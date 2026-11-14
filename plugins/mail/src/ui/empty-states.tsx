@@ -62,7 +62,7 @@ export function VaultNotReady() {
 
 export function SyncingState() {
   return (
-    <EmptyState icon="Mail" title="Syncing your inbox…">
+    <EmptyState icon="Mail" title="Syncing your mail…">
       Messages appear here as they arrive.
     </EmptyState>
   );
@@ -76,10 +76,10 @@ export function SyncErrorState({ message }: { message: string }) {
   );
 }
 
-export function EmptyInbox() {
+export function EmptyFolder({ name }: { name: string }) {
   return (
     <EmptyState icon="MailOpen" title="No mail">
-      Nothing in the inbox for the period Mail syncs.
+      Nothing in {name} for the period Mail syncs.
     </EmptyState>
   );
 }
