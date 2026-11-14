@@ -6,7 +6,8 @@
 //   - a folder reset detaches uids (uid = NULL) and keeps message ids; a
 //     detached row with the same Message-ID is reattached on upsert;
 //   - an undated message counts as inside the sync window and sorts as the
-//     newest message of its thread;
+//     newest message of its thread, but a thread's last_date is its latest
+//     non-null date (null only when every message is undated);
 //   - the threads table is derived from messages and rebuilt whenever the
 //     rows it summarizes change, so nothing durable is keyed on a thread id.
 import { randomBytes } from "node:crypto";
@@ -30,7 +31,8 @@ import type { MailStore } from "../../core/ports.ts";
 /**
  * Append-only migrations for bb.storage.migrate (index = migration id). Each
  * element is one step and may hold several statements; all unapplied steps run
- * in one transaction.
+ * in one transaction. BB hashes each statement and rejects a changed one:
+ * never edit or reformat a shipped element (whitespace included), only append.
  */
 export const MIGRATIONS: string[] = [
   // 0: schema. `seq` is the stable rowid the external-content FTS index uses.
@@ -220,10 +222,43 @@ function normalizeDate(raw: string | null | undefined): string | null {
   return Number.isFinite(time) ? new Date(time).toISOString() : null;
 }
 
+/** Only the start of an HTML body feeds the snippet; this bounds the work. */
+const SNIPPET_HTML_SCAN = 20_000;
+const SKIPPED_ELEMENTS = new Set(["script", "style", "head"]);
+
+/**
+ * Strips tags in one forward pass (untrusted input: no backtracking regex).
+ * script/style/head contents are dropped; an unclosed tag or element drops the
+ * rest of the input.
+ */
+function stripTags(html: string): string {
+  const lower = html.toLowerCase();
+  let out = "";
+  let pos = 0;
+  while (pos < html.length) {
+    const open = html.indexOf("<", pos);
+    if (open < 0) {
+      out += html.slice(pos);
+      break;
+    }
+    out += html.slice(pos, open) + " ";
+    const close = html.indexOf(">", open + 1);
+    if (close < 0) break;
+    const name = /^[a-z]+/.exec(lower.slice(open + 1, Math.min(close, open + 9)))?.[0] ?? "";
+    pos = close + 1;
+    if (SKIPPED_ELEMENTS.has(name)) {
+      const end = lower.indexOf(`</${name}`, pos);
+      if (end < 0) break;
+      const endClose = html.indexOf(">", end);
+      if (endClose < 0) break;
+      pos = endClose + 1;
+    }
+  }
+  return out;
+}
+
 function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style|head)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
-    .replace(/<[^>]*>/g, " ")
+  return stripTags(html.slice(0, SNIPPET_HTML_SCAN))
     .replace(/&nbsp;/gi, " ")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
@@ -321,6 +356,10 @@ function toAttachment(row: AttachmentRow): AttachmentMeta {
 export function createSqliteStore(db: Database.Database): MailStore {
   /** Runs fn atomically; nests as a savepoint inside a caller's transaction. */
   const atomic = <T>(fn: () => T): T => db.transaction(fn)();
+  // SQLite's LIKE folds ASCII case only; this folds Cyrillic and the rest.
+  db.function("mail_lower", { deterministic: true }, (value: unknown) =>
+    value === null || value === undefined ? null : String(value).toLowerCase(),
+  );
   const accountById = db.prepare<[string], AccountRow>("SELECT * FROM accounts WHERE id = ?");
 
   const findAttached = db.prepare<[string, string, number], { id: string }>(
@@ -354,7 +393,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
      VALUES (?, ?, ?, ?, ?, NULL, ?)`,
   );
   const attachmentsOf = db.prepare<[string], AttachmentRow>(
-    "SELECT * FROM attachments WHERE message_id = ? ORDER BY part_id",
+    "SELECT * FROM attachments WHERE message_id = ? ORDER BY rowid",
   );
   const threadById = db.prepare<[string], ThreadRow>("SELECT * FROM threads WHERE id = ?");
   const threadIdOf = db.prepare<[string], { thread_id: string }>(
@@ -411,6 +450,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
     );
     for (const [threadId, group] of groups) {
       const latest = group[group.length - 1]!;
+      const dated = group.filter((m) => m.date !== null);
+      const lastDate = dated.length > 0 ? dated[dated.length - 1]!.date : null;
       const participants: MailAddress[] = [];
       for (const m of group) {
         if (!participants.some((p) => p.address === m.from_address)) {
@@ -421,7 +462,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         threadId,
         accountId,
         group[0]!.subject,
-        latest.date,
+        lastDate,
         group.length,
         group.filter((m) => m.is_read === 0).length,
         JSON.stringify(participants),
@@ -842,7 +883,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
       const params: unknown[] = [];
       let from = "FROM messages m";
 
-      const text = query.text.trim();
+      // Control characters make MATCH throw and never occur in indexed text.
+      const text = query.text.replace(/[\u0000-\u001f\u007f]/g, "").trim();
       if (Array.from(text).length >= FTS_MIN_CHARS) {
         from = "FROM messages_fts JOIN messages m ON m.seq = messages_fts.rowid";
         where.push("messages_fts MATCH ?");
@@ -850,7 +892,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
       } else if (text !== "") {
         const pattern = likePattern(text);
         where.push(
-          "(m.subject LIKE ? ESCAPE '\\' OR m.from_name LIKE ? ESCAPE '\\' OR m.from_address LIKE ? ESCAPE '\\')",
+          "(mail_lower(m.subject) LIKE mail_lower(?) ESCAPE '\\' OR mail_lower(m.from_name) LIKE mail_lower(?) ESCAPE '\\' OR mail_lower(m.from_address) LIKE mail_lower(?) ESCAPE '\\')",
         );
         params.push(pattern, pattern, pattern);
       }
@@ -860,11 +902,13 @@ export function createSqliteStore(db: Database.Database): MailStore {
       }
       if (query.from) {
         const pattern = likePattern(query.from);
-        where.push("(m.from_address LIKE ? ESCAPE '\\' OR m.from_name LIKE ? ESCAPE '\\')");
+        where.push(
+          "(mail_lower(m.from_address) LIKE mail_lower(?) ESCAPE '\\' OR mail_lower(m.from_name) LIKE mail_lower(?) ESCAPE '\\')",
+        );
         params.push(pattern, pattern);
       }
       if (query.subject) {
-        where.push("m.subject LIKE ? ESCAPE '\\'");
+        where.push("mail_lower(m.subject) LIKE mail_lower(?) ESCAPE '\\'");
         params.push(likePattern(query.subject));
       }
       if (query.unread !== undefined) {

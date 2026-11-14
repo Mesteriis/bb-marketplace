@@ -157,6 +157,71 @@ describe("createSqliteStore", () => {
     expect(fits.htmlTruncated).toBe(false);
   });
 
+  it("snippet of pathological html is computed quickly", () => {
+    for (const bodyHtml of ["<".repeat(200_000), "<script" + "x".repeat(200_000), "<b>" + "<i".repeat(100_000)]) {
+      const started = performance.now();
+      store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { bodyText: null, bodyHtml })]);
+      expect(performance.now() - started).toBeLessThan(200);
+    }
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(2, {
+        bodyText: null,
+        bodyHtml: "<head><title>T</title></head><style>p{}</style><p>Visible &amp; kept</p><script>x()</script>",
+      }),
+    ]);
+    expect(store.getMessage(idOf(store, 2))!.snippet).toBe("Visible & kept");
+  });
+
+  it("localFolderIndex excludes a dated row older than sinceIso", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { date: "2026-10-01T00:00:00.000Z" }),
+      makeFetchedMessage(2, { date: "2026-11-10T00:00:00.000Z" }),
+      makeFetchedMessage(3, { date: null }),
+    ]);
+    expect(
+      store.localFolderIndex("acc_1", INBOX, "2026-11-01T00:00:00.000Z").map((e) => e.uid),
+    ).toEqual([2, 3]);
+  });
+
+  it("returns attachments in fetch order", () => {
+    const attachment = (partId: string) => ({
+      partId,
+      filename: `${partId}.txt`,
+      mimeType: "text/plain",
+      size: 1,
+      isInline: false,
+    });
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { attachments: [attachment("2"), attachment("10"), attachment("3")] }),
+    ]);
+    expect(store.getMessage(idOf(store, 1))!.attachments.map((a) => a.partId)).toEqual(["2", "10", "3"]);
+  });
+
+  it("a thread whose newest message is undated sorts by its latest dated message", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { date: "2026-11-09T00:00:00.000Z" }),
+      makeFetchedMessage(2, { date: null }),
+      makeFetchedMessage(3, { date: "2026-11-01T00:00:00.000Z" }),
+      makeFetchedMessage(4, { date: null }),
+    ]);
+    const [m1, m2, m3, m4] = [1, 2, 3, 4].map((uid) => idOf(store, uid));
+    store.assignThreads(
+      "acc_1",
+      new Map([
+        [m1!, "t_mixed"],
+        [m2!, "t_mixed"],
+        [m3!, "t_older"],
+        [m4!, "t_undated"],
+      ]),
+    );
+    const { threads } = store.listThreads("acc_1", null, 10);
+    expect(threads.map((t) => [t.id, t.lastDate])).toEqual([
+      ["t_mixed", "2026-11-09T00:00:00.000Z"],
+      ["t_older", "2026-11-01T00:00:00.000Z"],
+      ["t_undated", null],
+    ]);
+  });
+
   it("folder reset reattaches a reappearing message under its old id", () => {
     store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { messageId: "keep@example.org" })]);
     const id = idOf(store, 1);
@@ -305,6 +370,49 @@ describe("createSqliteStore", () => {
     expect(store.search({ text: "omega" }, null, 50).map((r) => r.id)).toEqual([id]);
   });
 
+  it("search ignores control characters in the text", () => {
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { subject: "Invented hello" })]);
+    expect(store.search({ text: "hel\u0000lo\u001f\u007f" }, null, 50).map((r) => r.id)).toEqual([
+      idOf(store, 1),
+    ]);
+    expect(() => store.search({ text: "\u0000\u0001" }, null, 50)).not.toThrow();
+  });
+
+  it("subject: filter matches Cyrillic regardless of case", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { subject: "Отчёт за квартал" }),
+      makeFetchedMessage(2, { subject: "Invented other" }),
+    ]);
+    expect(store.search({ text: "", subject: "отчёт" }, null, 50).map((r) => r.id)).toEqual([
+      idOf(store, 1),
+    ]);
+    expect(store.search({ text: "", subject: "КВАРТАЛ" }, null, 50).map((r) => r.id)).toEqual([
+      idOf(store, 1),
+    ]);
+  });
+
+  it("from: filter matches Cyrillic regardless of case", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { from: { name: "Иван Петров", address: "ivan@example.org" } }),
+      makeFetchedMessage(2),
+    ]);
+    expect(store.search({ text: "", from: "иван" }, null, 50).map((r) => r.id)).toEqual([
+      idOf(store, 1),
+    ]);
+    expect(store.search({ text: "", from: "ПЕТРОВ" }, null, 50).map((r) => r.id)).toEqual([
+      idOf(store, 1),
+    ]);
+  });
+
+  it("2-character Cyrillic query matches regardless of case", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { subject: "Юг и север" }),
+      makeFetchedMessage(2, { subject: "Invented other" }),
+    ]);
+    expect(store.search({ text: "юг" }, null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
+    expect(store.search({ text: "ЮГ" }, null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
+  });
+
   it("search with a 2-character query falls back to LIKE", () => {
     store.upsertMessages("acc_1", INBOX, [
       makeFetchedMessage(1, { subject: "Hi there" }),
@@ -320,7 +428,8 @@ describe("createSqliteStore", () => {
     store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { subject: 'Say "hello" now' })]);
     expect(store.search({ text: '"hello"' }, null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
     expect(() => store.search({ text: 'a"b OR c' }, null, 50)).not.toThrow();
-    expect(store.search({ text: "hello NOT now" }, null, 50)).toEqual([]);
+    // "zzzz" occurs nowhere: a live OR operator would still match on "hello".
+    expect(store.search({ text: "hello OR zzzz" }, null, 50)).toEqual([]);
   });
 
   it("search applies operators, orders newest first and honours the limit", () => {
