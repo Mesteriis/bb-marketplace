@@ -10,3 +10,4 @@ export * from "./sync.ts";
 export * from "./search.ts";
 export * from "./agent-text.ts";
 export * from "./accounts.ts";
+export * from "./store-rules.ts";
