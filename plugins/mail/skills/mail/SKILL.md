@@ -40,11 +40,9 @@ that message, with the same untrusted notice.
 
 ## CLI
 
-Add `--json` for machine-readable output. Inside an agent thread, `search`
-and `read` follow the same `agentTools` setting as the tools: while it is off
-they refuse with "Mail access for agents is off". `accounts` and `sync` show
-no mail content and always work. In the owner's own terminal (no thread) every
-command works.
+Add `--json` for machine-readable output. Inside an agent thread, `accounts`,
+`search` and `read` follow the same `agentTools` setting as the tools: while it
+is off they refuse with "Mail access for agents is off".
 
 - `bb makosh-mail accounts` — connected accounts and their last sync or error.
 - `bb makosh-mail search <query…> [--account <id>] [--limit 1-50]` — same
@@ -52,7 +50,9 @@ command works.
 - `bb makosh-mail read <messageId> [--max-chars 1000-20000]` — one message as
   text.
 - `bb makosh-mail sync [accountId]` — start a sync round now.
+- `bb makosh-mail remove <accountId>` — the owner's own command; it refuses
+  inside agent threads. Do not try to run it.
 
 Reading through the tools, mentions or the CLI never marks a message read;
 only the owner opening it on the Mail page does. Nothing here sends, deletes
-or moves mail.
+or moves mail on the server.

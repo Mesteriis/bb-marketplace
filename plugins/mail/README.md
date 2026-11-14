@@ -7,20 +7,26 @@ message to an agent.
 **Status: experimental, read-only first slice.** Plugin id: `makosh-mail`.
 
 - Connects IMAP accounts with an app password: iCloud, Gmail or another
-  server, TLS on port 993 only.
+  server, TLS only (port 993 by default).
 - Syncs each account's INBOX on the BB server every `syncIntervalMinutes`
   (default 5), covering the last `syncWindowDays` (default 30).
 - A **Mail** page in the sidebar: thread list, search, unread badge and a
   reading pane that sanitizes HTML and blocks remote content.
 - Opening a message on the Mail page marks it read on the server. That
   `\Seen` flag is the only write; every other fetch uses `BODY.PEEK`.
-- Agent tools `mail_search` and `mail_read`, off by default behind the
-  `agentTools` setting, which also gates `bb makosh-mail search` and
-  `bb makosh-mail read` inside agent threads.
+- Agent tools `mail_search` and `mail_read` and the `mail` skill, off by
+  default behind the `agentTools` setting, which also gates
+  `bb makosh-mail accounts`, `search` and `read` inside agent threads.
+  `agentTools` controls what agents are offered; it is not a barrier against
+  an agent that has shell access to the machine running the BB server.
 - An `@` mention provider (**Mail**) and a **Hand to agent** button that give
   an agent one message you picked.
-- CLI: `bb makosh-mail accounts|search|read|sync`. The `mail` skill in
-  `skills/mail/SKILL.md` documents the agent surfaces.
+- CLI: `bb makosh-mail accounts|search|read|sync|remove`. `remove <accountId>`
+  deletes an account and its synced mail and works only in your own terminal,
+  never inside an agent thread. The `mail` skill in `skills/mail/SKILL.md`
+  documents the agent surfaces.
+- Text handed to an agent (a mention, Hand to agent, or the tools) is sent to
+  that agent's model provider.
 
 Account passwords are sealed with AES-256-GCM under the `vaultKey` secret
 setting, generated on first load. Mail and credentials stay on the machine
