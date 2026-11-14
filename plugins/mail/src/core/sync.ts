@@ -1,21 +1,33 @@
 // Portions ported from Velo (https://github.com/avihaymenahem/velo), src/services/imap/imapSync.ts, commit ec47a7a5095bb5deffc24e9b6812e39107508dbe, Apache-2.0. Modified for Makosh Mail.
 //
-// One sync round for one account, INBOX only, over the core ports:
-//   1. push reads the owner made in BB (the only server write: \Seen);
-//   2. initial (window search, newest first) or incremental (uids after lastUid)
-//      fetch in batches, each persisted with the sync state in one transaction;
-//   3. reconcile the window: fetch what is missing locally (so an interrupted
-//      initial sync resumes), delete what left the server, take server flags;
-//   4. rebuild threads, record the result, notify.
+// One sync round for one account, every selectable folder, over the core ports:
+//   1. list the server's folders (one session-less call) and save them; folders
+//      gone from the server are dropped locally with their rows;
+//   2. per selectable folder, in store order: when it has pending reads or
+//      moves, push them on a writable session after the UIDVALIDITY check:
+//      \Seen first (the owner's reads), then the owner's moves grouped by
+//      destination (the only server writes);
+//   3. then the read-only folder sync: initial (window search, newest first) or
+//      incremental (uids after lastUid) fetch in batches, each persisted with
+//      the folder's sync state in one transaction; reconcile the window: fetch
+//      what is missing locally (so an interrupted initial sync resumes), delete
+//      what left the server, take server flags;
+//   4. rebuild threads once, record the result, notify.
 // A UIDVALIDITY change detaches the folder's rows and resyncs it as initial;
 // rows whose Message-ID reappears keep their ids; rows still detached after a
-// successful round are deleted. Never throws; error text is
-// built from error classes and codes, so it never carries the password.
-import type { FetchedMessage } from "./model.ts";
+// successful round are deleted. A completed move re-homes rows in the store,
+// so the destination's own sync neither refetches nor deletes them; without a
+// uid map they are detached there and reattached by that folder's sync (in
+// this round when the destination comes later in the folder order, else in
+// the next). One failing folder is recorded and the round goes on; a rejected
+// login stops the account. Never throws; error text is built from error
+// classes and codes, so it never carries the password.
+import type { FetchedMessage, Folder } from "./model.ts";
 import {
   ImapAuthError,
   type ChangeNotifier,
   type Clock,
+  type ImapConfig,
   type ImapGateway,
   type FolderSession,
   type MailStore,
@@ -28,6 +40,9 @@ export const INBOX = "INBOX";
 const FLAG_BATCH_SIZE = 500;
 const DAY_MS = 86_400_000;
 const EPOCH_ISO = new Date(0).toISOString();
+/** Gateway error codes for moves (see FolderSession.moveMessages). */
+const MOVE_REFUSED = "MoveFailed";
+const MOVE_UNSUPPORTED = "MoveUnsupported";
 
 export interface SyncDeps {
   store: MailStore;
@@ -43,8 +58,36 @@ export interface SyncOptions {
 }
 
 export type SyncOutcome =
-  | { status: "ok"; fetched: number; removed: number; flagsChanged: number; pushedSeen: number }
-  | { status: "error"; error: string; authFailed: boolean };
+  | {
+      status: "ok";
+      fetched: number;
+      removed: number;
+      flagsChanged: number;
+      pushedSeen: number;
+      /** Selectable folders synced successfully this round. */
+      folders: number;
+      /** Ids of messages whose move was cancelled this round (they stay put). */
+      movesCancelled: string[];
+    }
+  | {
+      status: "error";
+      error: string;
+      authFailed: boolean;
+      /** Present when the round cancelled moves before it failed. */
+      movesCancelled?: string[];
+    };
+
+type FolderCounts = { fetched: number; removed: number; flagsChanged: number };
+
+/** What a round has done so far, kept across folders and failures. */
+type RoundProgress = {
+  pushedSeen: number;
+  movesCancelled: string[];
+  /** Local rows changed (moves completed or cancelled, folders synced). */
+  changed: boolean;
+  /** Text for lastError: cancelled moves and failed folders. */
+  problems: string[];
+};
 
 export async function syncAccount(
   deps: SyncDeps,
@@ -63,88 +106,226 @@ export async function syncAccount(
   }
 
   let password: string | null = null;
+  const progress: RoundProgress = {
+    pushedSeen: 0,
+    movesCancelled: [],
+    changed: false,
+    problems: [],
+  };
   try {
     password = vault.open(account.passwordSealed);
     const config = { host: account.host, port: account.port, user: account.username, password };
-    const pushedSeen = await pushPendingSeen(deps, accountId, () =>
-      gateway.openFolder(config, INBOX, { readOnly: false }),
-    );
-    const session = await gateway.openFolder(config, INBOX, { readOnly: true });
-    let counts: { fetched: number; removed: number; flagsChanged: number };
-    try {
-      counts = await syncFolder(store, session, accountId, clock.now(), options);
-    } finally {
-      await closeQuietly(session);
+    store.saveFolders(accountId, await gateway.listFolders(config));
+    const folders = store.listFolders(accountId).filter((folder) => folder.selectable);
+
+    const totals: FolderCounts = { fetched: 0, removed: 0, flagsChanged: 0 };
+    let synced = 0;
+    for (const folder of folders) {
+      try {
+        const counts = await syncOneFolder(deps, config, accountId, folder, options, progress);
+        totals.fetched += counts.fetched;
+        totals.removed += counts.removed;
+        totals.flagsChanged += counts.flagsChanged;
+        synced++;
+        progress.changed = true;
+      } catch (error) {
+        if (error instanceof ImapAuthError) throw error;
+        progress.problems.push(`${folder.name}: ${redact(describeError(error), password)}`);
+      }
     }
+
     store.assignThreads(accountId, buildThreads(store.threadingInputs(accountId)));
+    const lastError = progress.problems.length > 0 ? progress.problems.join("; ") : null;
+    if (folders.length > 0 && synced === 0) {
+      // Every folder failed: like a failed slice-1 round, lastSyncAt stays.
+      const error = lastError ?? describeError(null);
+      store.recordSyncResult(accountId, {
+        lastSyncAt: account.lastSyncAt,
+        lastError: error,
+        authFailed: false,
+      });
+      if (progress.changed) notifier.mailChanged(accountId);
+      return {
+        status: "error",
+        error,
+        authFailed: false,
+        ...cancelledField(progress),
+      };
+    }
     store.recordSyncResult(accountId, {
       lastSyncAt: clock.now().toISOString(),
-      lastError: null,
+      lastError,
       authFailed: false,
     });
     notifier.mailChanged(accountId);
-    return { status: "ok", ...counts, pushedSeen };
+    return {
+      status: "ok",
+      ...totals,
+      pushedSeen: progress.pushedSeen,
+      folders: synced,
+      movesCancelled: progress.movesCancelled,
+    };
   } catch (error) {
     const authFailed = error instanceof ImapAuthError;
     const message = redact(describeError(error), password);
     try {
+      if (progress.changed) {
+        store.assignThreads(accountId, buildThreads(store.threadingInputs(accountId)));
+      }
       store.recordSyncResult(accountId, {
         lastSyncAt: account.lastSyncAt,
-        lastError: message,
+        lastError: [message, ...progress.problems].join("; "),
         authFailed,
       });
+      if (progress.changed) notifier.mailChanged(accountId);
     } catch {
       // The outcome still carries the error; the next round records it again.
     }
-    return { status: "error", error: message, authFailed };
+    return { status: "error", error: message, authFailed, ...cancelledField(progress) };
+  }
+}
+
+function cancelledField(progress: RoundProgress): { movesCancelled?: string[] } {
+  return progress.movesCancelled.length > 0 ? { movesCancelled: progress.movesCancelled } : {};
+}
+
+/** Pushes the folder's pending writes, then syncs it read-only. */
+async function syncOneFolder(
+  deps: SyncDeps,
+  config: ImapConfig,
+  accountId: string,
+  folder: Folder,
+  options: SyncOptions,
+  progress: RoundProgress,
+): Promise<FolderCounts> {
+  await pushPending(deps, accountId, folder, progress, () =>
+    deps.gateway.openFolder(config, folder.path, { readOnly: false }),
+  );
+  const session = await deps.gateway.openFolder(config, folder.path, { readOnly: true });
+  try {
+    return await syncFolder(deps.store, session, accountId, folder.path, deps.clock.now(), options);
+  } finally {
+    await closeQuietly(session);
   }
 }
 
 /**
- * Pushes reads the owner made in BB with a writable session. The push is
- * skipped while the stored UIDVALIDITY does not match the server's: the
- * pending uids would name other messages. Pending flags stay on their rows
- * and are pushed with the new uids once the folder is resynced. Any failure
- * except a rejected login keeps the flags and lets the main sync run; an
- * ImapAuthError is rethrown so the round stops without a second login.
+ * Pushes what the owner did in BB with a writable session: reads, then moves.
+ * The push is skipped while the stored UIDVALIDITY does not match the
+ * server's: the pending uids would name other messages. Pending reads and
+ * moves stay on their rows and are pushed with the new uids once the folder
+ * is resynced. Any failure except a rejected login keeps them and lets the
+ * folder sync run; an ImapAuthError is rethrown so the round stops without
+ * another login.
  */
-async function pushPendingSeen(
+async function pushPending(
   deps: SyncDeps,
   accountId: string,
+  folder: Folder,
+  progress: RoundProgress,
   openWritable: () => Promise<FolderSession>,
-): Promise<number> {
-  const uids = deps.store.pendingSeenUids(accountId, INBOX);
-  if (uids.length === 0) return 0;
-  const stored = deps.store.getSyncState(accountId, INBOX);
-  if (stored === null) return 0;
+): Promise<void> {
+  const { store } = deps;
+  const path = folder.path;
+  const seen = store.pendingSeenUids(accountId, path);
+  const moves = store.pendingMoves(accountId, path);
+  if (seen.length === 0 && moves.length === 0) return;
+  const stored = store.getSyncState(accountId, path);
+  if (stored === null) return;
   let session: FolderSession | null = null;
   try {
     session = await openWritable();
     const status = await session.status();
-    if (status.uidValidity !== stored.uidValidity) return 0;
-    await session.markSeen(uids);
-    deps.store.clearSeenPending(accountId, INBOX, uids);
-    return uids.length;
+    if (status.uidValidity !== stored.uidValidity) return;
+    if (seen.length > 0) {
+      try {
+        await session.markSeen(seen);
+        store.clearSeenPending(accountId, path, seen);
+        progress.pushedSeen += seen.length;
+      } catch (error) {
+        // The reads stay pending; a moved row carries them to its destination.
+        if (error instanceof ImapAuthError) throw error;
+      }
+    }
+    if (moves.length > 0) await pushMoves(store, session, accountId, folder, moves, progress);
   } catch (error) {
     if (error instanceof ImapAuthError) throw error;
-    return 0;
   } finally {
     if (session) await closeQuietly(session);
   }
+}
+
+/**
+ * Moves pending rows, one server call per destination. A refusal counts
+ * toward the store's cancel limit; a server that cannot move safely cancels
+ * the move at once; anything else (a dropped connection) leaves every
+ * remaining move pending, uncounted, and ends the push.
+ */
+async function pushMoves(
+  store: MailStore,
+  session: FolderSession,
+  accountId: string,
+  folder: Folder,
+  moves: { uid: number; id: string; destination: string }[],
+  progress: RoundProgress,
+): Promise<void> {
+  const byDestination = new Map<string, { uid: number; id: string }[]>();
+  for (const move of moves) {
+    const group = byDestination.get(move.destination);
+    if (group) group.push(move);
+    else byDestination.set(move.destination, [move]);
+  }
+  const cancelled: string[] = [];
+  try {
+    for (const [destination, group] of byDestination) {
+      const uids = group.map((entry) => entry.uid);
+      try {
+        const { moved } = await session.moveMessages(uids, destination);
+        store.completeMove(accountId, folder.path, destination, moved, uids);
+        progress.changed = true;
+      } catch (error) {
+        const code = errorCode(error);
+        if (code === MOVE_REFUSED) {
+          cancelled.push(...store.failMove(accountId, folder.path, uids).cancelled);
+        } else if (code === MOVE_UNSUPPORTED) {
+          // Nothing reached the server. A uid map without these uids settles
+          // the rows where they are: move_pending cleared, no failure counted.
+          store.completeMove(accountId, folder.path, destination, new Map(), uids);
+          cancelled.push(...group.map((entry) => entry.id));
+        } else {
+          throw error;
+        }
+      }
+    }
+  } finally {
+    if (cancelled.length > 0) {
+      progress.changed = true;
+      progress.movesCancelled.push(...cancelled);
+      progress.problems.push(
+        `Could not move ${cancelled.length} message(s); they were returned to ${folder.name}`,
+      );
+    }
+  }
+}
+
+function errorCode(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : null;
 }
 
 async function syncFolder(
   store: MailStore,
   session: FolderSession,
   accountId: string,
+  path: string,
   now: Date,
   options: SyncOptions,
 ): Promise<{ fetched: number; removed: number; flagsChanged: number }> {
   const since = new Date(now.getTime() - options.windowDays * DAY_MS);
   const status = await session.status();
-  const stored = store.getSyncState(accountId, INBOX);
+  const stored = store.getSyncState(accountId, path);
   const resetting = stored !== null && stored.uidValidity !== status.uidValidity;
-  if (resetting) store.beginFolderReset(accountId, INBOX);
+  if (resetting) store.beginFolderReset(accountId, path);
   const initial = stored === null || resetting;
 
   const baseState = initial
@@ -172,27 +353,35 @@ async function syncFolder(
       for (const message of messages) lastUid = Math.max(lastUid, message.uid);
       count += messages.length;
       store.transaction(() => {
-        store.upsertMessages(accountId, INBOX, messages);
-        store.saveSyncState(accountId, INBOX, { ...baseState, lastUid });
+        store.upsertMessages(accountId, path, messages);
+        store.saveSyncState(accountId, path, { ...baseState, lastUid });
       });
     }
     return count;
   };
 
-  let fetched = await fetchAndStore(uids);
-  const reconciled = await reconcile(store, session, accountId, since, fetchAndStore);
+  // A uid already stored here is a message a completed move re-homed into this
+  // folder with its new uid: it is not fetched again, but lastUid covers it.
+  const known = new Set(store.localFolderIndex(accountId, path, EPOCH_ISO).map((e) => e.uid));
+  let fetched = await fetchAndStore(uids.filter((uid) => !known.has(uid)));
+  const highest = uids.reduce((max, uid) => Math.max(max, uid), lastUid);
+  if (highest > lastUid) {
+    lastUid = highest;
+    store.saveSyncState(accountId, path, { ...baseState, lastUid });
+  }
+  const reconciled = await reconcile(store, session, accountId, path, since, fetchAndStore);
   fetched += reconciled.backfilled;
   if (initial) {
     // The window is stored: start incremental sync from the end of the
     // mailbox, never from a lower uid, which would pull in old mail. Saved
     // even for an empty window, so the next round is incremental.
     lastUid = Math.max(lastUid, status.uidNext - 1);
-    store.saveSyncState(accountId, INBOX, { ...baseState, lastUid });
+    store.saveSyncState(accountId, path, { ...baseState, lastUid });
   }
   // Every successful round, not only the one that saw the change: a reset
   // round that failed midway has already saved the new UIDVALIDITY, so the
   // rows it detached are only cleaned up here.
-  const resetRemoved = store.finishFolderReset(accountId, INBOX);
+  const resetRemoved = store.finishFolderReset(accountId, path);
   return {
     fetched,
     removed: reconciled.removed + resetRemoved,
@@ -214,6 +403,7 @@ async function reconcile(
   store: MailStore,
   session: FolderSession,
   accountId: string,
+  path: string,
   since: Date,
   fetchAndStore: (uids: number[]) => Promise<number>,
 ): Promise<{ backfilled: number; removed: number; flagsChanged: number }> {
@@ -221,26 +411,26 @@ async function reconcile(
   // Every stored uid, not only the window's: a message whose stored date falls
   // outside the window but whose server date is inside it is already here.
   const stored = new Set(
-    store.localFolderIndex(accountId, INBOX, EPOCH_ISO).map((entry) => entry.uid),
+    store.localFolderIndex(accountId, path, EPOCH_ISO).map((entry) => entry.uid),
   );
   const missing = serverUids.filter((uid) => !stored.has(uid)).sort((a, b) => b - a);
   const backfilled = await fetchAndStore(missing);
 
   // Includes the messages just backfilled, whose flags are already current.
   const local = store
-    .localFolderIndex(accountId, INBOX, since.toISOString())
+    .localFolderIndex(accountId, path, since.toISOString())
     .map((entry) => entry.uid);
   const onServer = new Set<number>();
   let flagsChanged = 0;
   for (let i = 0; i < local.length; i += FLAG_BATCH_SIZE) {
     const flags = await session.fetchFlags(local.slice(i, i + FLAG_BATCH_SIZE));
     for (const entry of flags) onServer.add(entry.uid);
-    flagsChanged += store.applyFlags(accountId, INBOX, flags);
+    flagsChanged += store.applyFlags(accountId, path, flags);
   }
   // Every flag batch succeeded (a failure throws and ends the round), so a uid
   // the server returned nothing for is gone from it.
   const gone = local.filter((uid) => !onServer.has(uid));
-  const removed = gone.length > 0 ? store.deleteByUids(accountId, INBOX, gone) : 0;
+  const removed = gone.length > 0 ? store.deleteByUids(accountId, path, gone) : 0;
   return { backfilled, removed, flagsChanged };
 }
 

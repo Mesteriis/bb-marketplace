@@ -807,22 +807,90 @@ export type OpenedSession = {
 };
 
 /**
- * Serves a FakeMailbox. Failures are scripted per method with `failNext`
- * (one call) or `failAlways`; `failOpen` makes openFolder throw.
+ * An error shaped like the BB gateway's SafeImapError: a safe `code`, no
+ * server text. Codes the sync reads: "MoveFailed" (the server refused a move)
+ * and "MoveUnsupported" (the server cannot move without a plain EXPUNGE).
+ */
+export function imapError(code: string): Error {
+  return Object.assign(new Error(`IMAP error (${code})`), { name: "SafeImapError", code });
+}
+
+const ANY_PATH = "\u0000any";
+
+function failureKey(method: SessionMethod, path: string | undefined): string {
+  return `${path ?? ANY_PATH}\u0000${method}`;
+}
+
+/**
+ * Serves one FakeMailbox per folder path; a new gateway lists only INBOX,
+ * which reproduces the slice-1 single-folder server. Folders are listed in
+ * `folders` order (the store sorts them). Failures are scripted per method
+ * with `failNext` (one call) or `failAlways`, optionally for one path only;
+ * `failOpen` makes every login (listFolders and openFolder) throw and
+ * `failOpenFolder` only the opening of one path. Moves move messages between
+ * the mailboxes with new destination uids and return the uid map, or null
+ * when `moveUidMap` is false (a server without UIDPLUS).
  */
 export class ScriptedImapGateway implements ImapGateway {
   readonly sessions: OpenedSession[] = [];
+  readonly mailboxes = new Map<string, FakeMailbox>();
+  folders: RemoteFolder[] = [
+    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+  ];
+  listFoldersCalls = 0;
+  moveUidMap = true;
   private openFailure: Error | null = null;
-  private readonly onceFailures = new Map<SessionMethod, Error>();
-  private readonly alwaysFailures = new Map<SessionMethod, Error>();
+  private readonly openFolderFailures = new Map<string, Error>();
+  private readonly onceFailures = new Map<string, Error>();
+  private readonly alwaysFailures = new Map<string, Error>();
 
-  constructor(public mailbox: FakeMailbox) {}
+  constructor(mailbox: FakeMailbox) {
+    this.mailboxes.set("INBOX", mailbox);
+  }
 
-  /** Adds a message to the mailbox with the next uid. */
-  deliver(overrides: Partial<FetchedMessage> = {}): FetchedMessage {
-    const message = makeFetchedMessage(this.mailbox.uidNext, overrides);
-    message.uid = this.mailbox.uidNext++;
-    this.mailbox.messages.push(message);
+  /** The INBOX mailbox (slice-1 tests replace it whole). */
+  get mailbox(): FakeMailbox {
+    return this.mailboxes.get("INBOX")!;
+  }
+
+  set mailbox(mailbox: FakeMailbox) {
+    this.mailboxes.set("INBOX", mailbox);
+  }
+
+  /**
+   * Lists a folder; a selectable one gets a mailbox (empty unless given).
+   * Returns the folder's mailbox, or undefined for a \Noselect folder.
+   */
+  addFolder(
+    folder: Partial<RemoteFolder> & { path: string },
+    mailbox?: FakeMailbox,
+  ): FakeMailbox | undefined {
+    const listed: RemoteFolder = {
+      name: folder.path.split("/").pop() ?? folder.path,
+      delimiter: "/",
+      specialUse: null,
+      selectable: true,
+      ...folder,
+    };
+    this.folders = [...this.folders.filter((f) => f.path !== listed.path), listed];
+    if (listed.selectable) {
+      this.mailboxes.set(listed.path, mailbox ?? { uidValidity: 1, uidNext: 1, messages: [] });
+    }
+    return this.mailboxes.get(listed.path);
+  }
+
+  /** The folder is deleted on the server. */
+  removeFolder(path: string): void {
+    this.folders = this.folders.filter((f) => f.path !== path);
+    this.mailboxes.delete(path);
+  }
+
+  /** Adds a message to the folder's mailbox with the next uid. */
+  deliver(overrides: Partial<FetchedMessage> = {}, path = "INBOX"): FetchedMessage {
+    const box = this.mailboxes.get(path)!;
+    const message = makeFetchedMessage(box.uidNext, overrides);
+    message.uid = box.uidNext++;
+    box.messages.push(message);
     return message;
   }
 
@@ -830,12 +898,17 @@ export class ScriptedImapGateway implements ImapGateway {
     this.openFailure = error;
   }
 
-  failNext(method: SessionMethod, error: Error): void {
-    this.onceFailures.set(method, error);
+  failOpenFolder(path: string, error: Error | null): void {
+    if (error) this.openFolderFailures.set(path, error);
+    else this.openFolderFailures.delete(path);
   }
 
-  failAlways(method: SessionMethod, error: Error): void {
-    this.alwaysFailures.set(method, error);
+  failNext(method: SessionMethod, error: Error, path?: string): void {
+    this.onceFailures.set(failureKey(method, path), error);
+  }
+
+  failAlways(method: SessionMethod, error: Error, path?: string): void {
+    this.alwaysFailures.set(failureKey(method, path), error);
   }
 
   async test(): Promise<ImapTestResult> {
@@ -849,16 +922,20 @@ export class ScriptedImapGateway implements ImapGateway {
   }
 
   async listFolders(_config: ImapConfig): Promise<RemoteFolder[]> {
-    throw new Error("not implemented: listFolders");
+    this.listFoldersCalls++;
+    if (this.openFailure) throw this.openFailure;
+    return this.folders.map((f) => ({ ...f }));
   }
 
-  /** Serves `mailbox` for every path (slice-1 tests use only INBOX). */
   async openFolder(
     config: ImapConfig,
     path: string,
     options: { readOnly: boolean },
   ): Promise<FolderSession> {
     if (this.openFailure) throw this.openFailure;
+    const pathFailure = this.openFolderFailures.get(path);
+    if (pathFailure) throw pathFailure;
+    if (!this.mailboxes.has(path)) throw imapError("NoSuchMailbox");
     const opened: OpenedSession = {
       path,
       readOnly: options.readOnly,
@@ -867,17 +944,29 @@ export class ScriptedImapGateway implements ImapGateway {
       closed: false,
     };
     this.sessions.push(opened);
+    const take = (method: SessionMethod): Error | undefined => {
+      for (const key of [failureKey(method, path), failureKey(method, undefined)]) {
+        const once = this.onceFailures.get(key);
+        if (once) {
+          this.onceFailures.delete(key);
+          return once;
+        }
+        const always = this.alwaysFailures.get(key);
+        if (always) return always;
+      }
+      return undefined;
+    };
     const record = (call: SessionCall) => {
       opened.calls.push(call);
-      const once = this.onceFailures.get(call.method);
-      if (once) {
-        this.onceFailures.delete(call.method);
-        throw once;
-      }
-      const always = this.alwaysFailures.get(call.method);
-      if (always) throw always;
+      const failure = take(call.method);
+      if (failure) throw failure;
     };
-    const box = () => this.mailbox;
+    // Looked up on every call, so a test may replace a mailbox mid-session.
+    const box = () => {
+      const mailbox = this.mailboxes.get(path);
+      if (!mailbox) throw imapError("NoSuchMailbox");
+      return mailbox;
+    };
     return {
       status: async () => {
         record({ method: "status" });
@@ -928,7 +1017,21 @@ export class ScriptedImapGateway implements ImapGateway {
       },
       moveMessages: async (uids, destination) => {
         record({ method: "moveMessages", uids: [...uids], destination });
-        throw new Error("not implemented: moveMessages");
+        if (options.readOnly) throw new Error("Mailbox is read-only");
+        const target = this.mailboxes.get(destination);
+        if (!target) throw imapError("MoveFailed");
+        const source = box();
+        const moved = new Map<number, number>();
+        for (const uid of uids) {
+          const index = source.messages.findIndex((m) => m.uid === uid);
+          // A uid no longer in the folder is skipped, as servers do.
+          if (index < 0) continue;
+          const [message] = source.messages.splice(index, 1);
+          const newUid = target.uidNext++;
+          target.messages.push({ ...message!, uid: newUid });
+          moved.set(uid, newUid);
+        }
+        return { moved: this.moveUidMap ? moved : null };
       },
       close: async () => {
         opened.closed = true;
