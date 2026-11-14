@@ -1,0 +1,25 @@
+name: Feature request
+description: Something a Makosh plugin should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What you want to be able to do
+      description: Describe the outcome, not the implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+  - type: dropdown
+    id: who
+    attributes:
+      label: Who does it
+      options:
+        - Me, in the BB interface
+        - An agent, through a tool or command
+        - Both
+    validations:
+      required: true

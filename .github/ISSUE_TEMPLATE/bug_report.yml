@@ -1,0 +1,39 @@
+name: Bug report
+description: Something a Makosh plugin does wrong.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Mail is private. Do not paste real addresses, message text, tokens, or
+        passwords. For a security problem, use private vulnerability reporting
+        instead of an issue (see SECURITY.md).
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Plugin
+      options:
+        - makosh-mail
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Plugin version and `bb --version`.
+      placeholder: makosh-mail 0.1.0, bb 0.49.0, macOS 15
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Plugin log
+      description: Relevant lines of `bb plugin logs <id>`, with private data removed.
+      render: text

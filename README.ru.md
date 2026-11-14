@@ -1,0 +1,73 @@
+# Макошь для BB
+
+Плагины семейства «Макошь» для [BB](https://github.com/get-bb/bb), IDE для
+работы с агентами. Они приносят личные коммуникации в IDE: вы читаете и
+отвечаете рядом с тредами, агенты получают ограниченный доступ к переписке, а
+письмо может стать началом работы агента.
+
+[English version](README.md)
+
+> **Статус: предрелиз.** Репозиторий настроен, первый плагин — каркас.
+> Релизных тегов ещё нет, в каталоге BB Community ничего не опубликовано.
+
+## Плагины
+
+| Плагин | Id | Что умеет сейчас |
+| --- | --- | --- |
+| [Makosh Mail](plugins/mail) | `makosh-mail` | Добавляет страницу **Mail** со списком подключённых почтовых ящиков. Подключить ящик, прочитать или отправить письмо пока нельзя. |
+
+## Установка
+
+Нужен BB 0.49 или новее.
+
+Из клона:
+
+```sh
+git clone https://github.com/Mesteriis/makosh-bb.git
+cd makosh-bb/plugins/mail
+npm install
+bb plugin install .
+```
+
+Из релизного тега — когда появится первый:
+
+```sh
+bb plugin install git:https://github.com/Mesteriis/makosh-bb.git@^0.1.0 --plugin mail --tag-prefix mail/
+```
+
+Или через маркетплейс «Макошь», где перечислены все плагины репозитория:
+
+```sh
+bb marketplace add git:github.com/Mesteriis/makosh-bb@main
+bb plugin install makosh-mail@makosh
+```
+
+Плагины BB выполняются с полным доверием. Читайте то, что устанавливаете.
+
+## Разработка
+
+Каждый плагин разрабатывается из своего каталога:
+
+```sh
+cd plugins/mail
+npm install
+npm run check        # типы + тесты
+npm run build        # bb plugin build
+bb plugin install .  # зарегистрировать в своём BB
+bb plugin dev        # пересборка и перезагрузка при сохранении
+```
+
+Из корня `node scripts/check-manifests.mjs` проверяет, что манифест коллекции,
+каталог маркетплейса и манифесты плагинов согласованы.
+
+Код хоста в плагинах вынесен на край, чтобы плагин переезжал с BB на другой
+хост без переписывания. Правило описано в
+[docs/architecture.md](docs/architecture.md) и проверяется тестом в каждом
+плагине. Порядок работы и добавление плагина — в
+[CONTRIBUTING.md](CONTRIBUTING.md), релизы — в
+[docs/releasing.md](docs/releasing.md). Эти документы написаны по-английски.
+
+## Лицензия
+
+[MIT](LICENSE). Сторонний код сохраняет свои уведомления в
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
