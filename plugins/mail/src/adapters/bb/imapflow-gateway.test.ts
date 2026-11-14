@@ -200,6 +200,37 @@ describe("describeImapError", () => {
     expect(describeImapError(coded)).toBeInstanceOf(ImapAuthError);
   });
 
+  it("keeps a refused login an auth error for credential codes and for no code", () => {
+    for (const serverResponseCode of [
+      "AUTHENTICATIONFAILED",
+      "AUTHORIZATIONFAILED",
+      "EXPIRED",
+      "PRIVACYREQUIRED",
+      "CONTACTADMIN",
+      undefined,
+    ]) {
+      const refused = Object.assign(new Error(`NO LOGIN ${password}`), {
+        authenticationFailed: true,
+        serverResponseCode,
+      });
+      expect(describeImapError(refused), String(serverResponseCode)).toBeInstanceOf(ImapAuthError);
+    }
+  });
+
+  it("maps a login refused for a transient reason to a retryable error", () => {
+    for (const serverResponseCode of ["UNAVAILABLE", "INUSE", "LIMIT", "SERVERBUG"]) {
+      const refused = Object.assign(new Error(`NO [${serverResponseCode}] ${password}`), {
+        authenticationFailed: true,
+        serverResponseCode,
+      });
+      const mapped = describeImapError(refused);
+      expect(mapped, serverResponseCode).not.toBeInstanceOf(ImapAuthError);
+      expect(mapped).toBeInstanceOf(SafeImapError);
+      expect(mapped.message).toBe(`IMAP error (${serverResponseCode})`);
+      expect(mapped.message).not.toContain(password);
+    }
+  });
+
   it("builds messages from codes, never from the error text", () => {
     const withCode = Object.assign(new Error(`server said ${password}`), {
       code: "ETIMEOUT",
