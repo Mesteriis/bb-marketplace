@@ -198,7 +198,7 @@ describe("Mail page", () => {
     fireEvent.click(row);
 
     await waitFor(() => expect(callsTo(slot, "thread_get")).toHaveLength(1));
-    expect(callsTo(slot, "thread_get")[0]?.input).toEqual({ threadId: "th-a" });
+    expect(callsTo(slot, "thread_get")[0]?.input).toEqual({ threadId: "th-a", folder: "INBOX" });
     expect(await slot.findByRole("heading", { name: "Quarterly plan" })).toBeTruthy();
     await waitFor(() =>
       expect(callsTo(slot, "message_body").map((call) => call.input)).toEqual([{ messageId: "m-new" }]),
@@ -793,11 +793,14 @@ describe("Fix round 1", () => {
     await waitFor(() => expect(slot.getByRole("combobox", { name: "Folder" }).textContent).toContain("Spam (4)"));
   });
 
-  it("hides the moves when no message of the conversation is in the viewed folder", async () => {
+  it("hides the moves when the conversation has no copy in the viewed folder", async () => {
+    // The server shows the viewed folder's copy whenever one exists, so this
+    // is a conversation (say a search hit) that lives only elsewhere.
     const slot = render(folderRpc({ thread_get: () => detailIn("Projects/Alpha") }));
 
     fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
     await slot.findByRole("heading", { name: "Quarterly plan" });
+    expect(callsTo(slot, "thread_get").at(-1)?.input).toEqual({ threadId: "th-a", folder: "INBOX" });
 
     const labels = toolbar(slot)
       .getAllByRole("button")
@@ -903,5 +906,40 @@ describe("Fix round 1", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("Final fixes", () => {
+  it("in Gmail Sent Mail the reply shows its Sent copy, so the moves appear", async () => {
+    const SENT = "[Gmail]/Sent Mail";
+    // Like the server: each message's copy in the viewed folder, else Inbox,
+    // else All Mail. Without a folder only the Inbox / All Mail copies come.
+    const thread_get = ({ folder: viewed }: { folder?: string }) => ({
+      thread: threadA,
+      messages: [
+        message({ id: "m-old", folder: "INBOX", date: "2026-11-13T08:00:00.000Z", snippet: "First note" }),
+        message({
+          id: "m-sent",
+          folder: viewed === SENT ? SENT : "[Gmail]/All Mail",
+          date: "2026-11-13T09:00:00.000Z",
+          from: { name: null, address: "owner@example.org" },
+          snippet: "My reply",
+        }),
+      ],
+    });
+    const slot = render(folderRpc({ thread_get }));
+
+    await openFolder(slot, /Sent Mail/);
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+
+    expect(callsTo(slot, "thread_get").at(-1)?.input).toEqual({ threadId: "th-a", folder: SENT });
+    expect(toolbar(slot).getByRole("button", { name: "Spam" })).toBeTruthy();
+    expect(toolbar(slot).getByRole("button", { name: "Delete" })).toBeTruthy();
+    // The received message is chipped with its folder; the reply is in the viewed one.
+    const reply = within(slot.getByRole("article", { name: "Message from owner@example.org" }));
+    expect(reply.queryByText("All Mail")).toBeNull();
+    const received = within(slot.getByRole("article", { name: /^Message from (?!owner)/ }));
+    expect(received.getByText("Inbox")).toBeTruthy();
   });
 });

@@ -348,7 +348,10 @@ function MailPanel() {
     async (threadId: string, open: { focusId: string | null } | null) => {
       const token = ++requests.current.thread;
       try {
-        const detail = await rpc.call("thread_get", { threadId });
+        const detail = await rpc.call("thread_get", {
+          threadId,
+          folder: latest.current.folderPath,
+        });
         if (token !== requests.current.thread) return;
         setReading((prev) => ({ ...prev, detail, loading: false, error: null }));
         if (open !== null) {

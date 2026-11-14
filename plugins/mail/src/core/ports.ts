@@ -131,7 +131,13 @@ export interface MailStore {
     cursor: string | null,
     limit: number,
   ): { threads: ThreadSummary[]; nextCursor: string | null };
-  getThread(threadId: string): ThreadDetail | null;
+  /**
+   * Each message once. Of the copies sharing a dedup key, prefer the one in
+   * `folder` (the folder being viewed) unless it is waiting to move, then a
+   * copy not waiting to move, the Inbox copy, a copy outside All Mail, and
+   * the most recently stored row.
+   */
+  getThread(threadId: string, folder: string): ThreadDetail | null;
   getMessage(messageId: string): MessageHeader | null;
   getBody(messageId: string): MessageBody | null;
   search(query: ParsedQuery, accountId: string | null, limit: number): MessageSummary[];

@@ -423,11 +423,11 @@ export class InMemoryMailStore implements MailStore {
     return { threads, nextCursor: next < all.length ? String(next) : null };
   }
 
-  getThread(threadId: string): ThreadDetail | null {
+  getThread(threadId: string, folder: string): ThreadDetail | null {
     const rows = this.state.rows.filter((r) => r.threadId === threadId);
     if (rows.length === 0) return null;
     const thread = this.summarize(threadId, rows);
-    const messages = this.onePerKey(rows, (r) => r.dedupKey)
+    const messages = this.onePerKey(rows, (r) => r.dedupKey, folder)
       .sort(oldestFirst)
       .map((r) => this.header(r));
     return { thread, messages };
@@ -656,6 +656,11 @@ export class InMemoryMailStore implements MailStore {
   // Helpers ----------------------------------------------------------------
 
   /** INBOX, or a folder saved with the inbox special use. */
+  private isAllMail(accountId: string, path: string): boolean {
+    const saved = (this.state.folders.get(accountId) ?? []).find((f) => f.path === path);
+    return saved?.specialUse === "all";
+  }
+
   private isInbox(accountId: string, path: string): boolean {
     if (path.toUpperCase() === "INBOX") return true;
     const saved = (this.state.folders.get(accountId) ?? []).find((f) => f.path === path);
@@ -664,9 +669,11 @@ export class InMemoryMailStore implements MailStore {
 
   /**
    * One row per key: a copy not waiting to move, then the Inbox copy, then
-   * the most recently stored row.
+   * the most recently stored row. For a thread view (`viewed` set, as the
+   * SQLite getThread), the copy in `viewed` not waiting to move comes first
+   * and a copy outside All Mail beats one in it.
    */
-  private onePerKey(rows: Row[], keyOf: (row: Row) => string): Row[] {
+  private onePerKey(rows: Row[], keyOf: (row: Row) => string, viewed: string | null = null): Row[] {
     const order = new Map(this.state.rows.map((r, index) => [r, index]));
     const best = new Map<string, Row>();
     for (const row of rows) {
@@ -677,7 +684,10 @@ export class InMemoryMailStore implements MailStore {
         continue;
       }
       const rank = (r: Row) =>
-        (r.movePending === null ? 2 : 0) + (this.isInbox(r.accountId, r.folder) ? 1 : 0);
+        (r.folder === viewed && r.movePending === null ? 8 : 0) +
+        (r.movePending === null ? 4 : 0) +
+        (this.isInbox(r.accountId, r.folder) ? 2 : 0) +
+        (viewed !== null && !this.isAllMail(r.accountId, r.folder) ? 1 : 0);
       if (
         rank(row) > rank(current) ||
         (rank(row) === rank(current) && order.get(row)! > order.get(current)!)

@@ -97,7 +97,7 @@ describe("createSqliteStore", () => {
 
     const threadId = store.getMessage(first)!.threadId;
     expect(store.getMessage(second)!.threadId).toBe(threadId);
-    const detail = store.getThread(threadId)!;
+    const detail = store.getThread(threadId, INBOX)!;
     expect(detail.messages.map((m) => m.id)).toEqual([first, second]);
     expect(detail.thread).toEqual({
       id: threadId,
@@ -226,7 +226,7 @@ describe("createSqliteStore", () => {
     expect(store.getMessage(idOf(store, 3))!.snippet).toBe("Old \u2014 gone");
     expect(store.getMessage(idOf(store, 2))!.snippet).toBe(cleanBefore.snippet);
     const threadSnippet = (id: string) =>
-      store.getThread(store.getMessage(id)!.threadId)!.thread.snippet;
+      store.getThread(store.getMessage(id)!.threadId, INBOX)!.thread.snippet;
     expect(threadSnippet(idOf(store, 1))).toBe("Sale \u2192 today");
     expect(threadSnippet(idOf(store, 3))).toBe("Old \u2014 gone");
     expect(store.repairSnippets()).toBe(0);
@@ -355,7 +355,7 @@ describe("createSqliteStore", () => {
     store.assignThreads("acc_1", new Map());
     const id = idOf(store, 1);
     store.markOpened(id);
-    expect(store.getThread(store.getMessage(id)!.threadId)?.thread.unreadCount).toBe(0);
+    expect(store.getThread(store.getMessage(id)!.threadId, INBOX)?.thread.unreadCount).toBe(0);
   });
 
   it("deleteByUids removes the rows and their attachment metadata", () => {
@@ -556,7 +556,7 @@ describe("createSqliteStore", () => {
       store.markOpened(id),
       store.threadingInputs("acc_1"),
       store.listThreads("acc_1", "INBOX", null, 10),
-      store.getThread(threadId),
+      store.getThread(threadId, INBOX),
       store.getMessage(id),
       store.getBody(id),
       store.search({ text: "Invented" }, null, 10),
@@ -800,7 +800,7 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
     ]);
     expect(s.unreadCount("acc_1")).toBe(1);
     expect(s.unreadCount(null)).toBe(1);
-    const detail = s.getThread(inbox[0]!.id)!;
+    const detail = s.getThread(inbox[0]!.id, INBOX)!;
     expect(detail.messages.map((m) => m.folder)).toEqual([INBOX]);
   });
 
@@ -1141,9 +1141,43 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
     s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
     const inboxCopy = idIn(s, INBOX, 1);
     const threadId = s.getMessage(inboxCopy)!.threadId;
-    expect(s.getThread(threadId)!.messages.map((m) => m.id)).toEqual([inboxCopy]);
+    expect(s.getThread(threadId, INBOX)!.messages.map((m) => m.id)).toEqual([inboxCopy]);
     s.queueMove([inboxCopy], "Spam");
-    expect(s.getThread(threadId)!.messages.map((m) => m.id)).toEqual([idIn(s, ALL_MAIL, 60)]);
+    // Even viewed from the Inbox, the copy waiting to move gives way.
+    expect(s.getThread(threadId, INBOX)!.messages.map((m) => m.id)).toEqual([idIn(s, ALL_MAIL, 60)]);
+  });
+
+  it("getThread shows each message's copy in the viewed folder (Gmail Sent, All Mail)", () => {
+    const SENT = "[Gmail]/Sent Mail";
+    s.saveFolders("acc_1", [
+      remoteFolder(INBOX, "inbox"),
+      remoteFolder(SENT, "sent"),
+      remoteFolder(ALL_MAIL, "all"),
+    ]);
+    const received = { gmMsgId: "5", gmThreadId: "T", messageId: "r@example.org", date: "2026-11-10T09:00:00.000Z" };
+    const reply = { gmMsgId: "6", gmThreadId: "T", messageId: "s@example.org", date: "2026-11-11T09:00:00.000Z" };
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, received)]);
+    s.upsertMessages("acc_1", SENT, [makeFetchedMessage(3, reply)]);
+    // All Mail is stored last, so "most recently stored" alone would pick it.
+    s.upsertMessages("acc_1", ALL_MAIL, [makeFetchedMessage(60, received), makeFetchedMessage(61, reply)]);
+    s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+    const threadId = s.getMessage(idIn(s, INBOX, 1))!.threadId;
+    const shown = (folder: string) =>
+      s.getThread(threadId, folder)!.messages.map((m) => [m.id, m.folder]);
+
+    expect(shown(SENT)).toEqual([
+      [idIn(s, INBOX, 1), INBOX],
+      [idIn(s, SENT, 3), SENT],
+    ]);
+    expect(shown(ALL_MAIL)).toEqual([
+      [idIn(s, ALL_MAIL, 60), ALL_MAIL],
+      [idIn(s, ALL_MAIL, 61), ALL_MAIL],
+    ]);
+    // Elsewhere: the Inbox copy, then a copy outside All Mail.
+    expect(shown(INBOX)).toEqual([
+      [idIn(s, INBOX, 1), INBOX],
+      [idIn(s, SENT, 3), SENT],
+    ]);
   });
 
   it("a folder named INBOX is the Inbox without a saved special use", () => {
