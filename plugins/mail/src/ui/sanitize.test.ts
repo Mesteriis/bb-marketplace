@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { EMAIL_CSP, isAllowedLinkUrl, sanitizeEmailHtml } from "./sanitize.ts";
+import { cleanEmailCss, EMAIL_CSP, isAllowedLinkUrl, sanitizeEmailHtml } from "./sanitize.ts";
 
 const HOSTILE = `<!doctype html>
 <html>
@@ -90,6 +90,66 @@ describe("sanitizeEmailHtml", () => {
     expect(out).toContain("url('data:image/png;base64,AAAA')");
     expect(out).toContain("no-repeat");
     expect(out).toContain("color: red");
+  });
+
+  it("adds the DNS prefetch opt-out next to the CSP meta", () => {
+    expect(sanitizeEmailHtml("<p>x</p>")).toContain(
+      `<meta http-equiv="Content-Security-Policy" content="${EMAIL_CSP}">` +
+        `<meta http-equiv="x-dns-prefetch-control" content="off">`,
+    );
+  });
+});
+
+describe("cleanEmailCss", () => {
+  const SIZE = 300_000;
+  const repeated = (unit: string) => unit.repeat(Math.ceil(SIZE / unit.length));
+
+  for (const unit of ["url(", 'url("', "@import", "image-set(", "/*", "url(x)"]) {
+    it(`cleans 300 KB of ${JSON.stringify(unit)} in linear time`, () => {
+      const started = performance.now();
+      const out = cleanEmailCss(repeated(unit));
+      const elapsed = performance.now() - started;
+
+      expect(elapsed).toBeLessThan(250);
+      expect(out).not.toMatch(/url\(|@import/i);
+    });
+  }
+
+  it("cleans a 300 KB unterminated style attribute and element quickly", () => {
+    const hostile = repeated('url("');
+    const started = performance.now();
+    const out = sanitizeEmailHtml(`<style>${hostile}</style><div style='${hostile}'>x</div>`);
+    const elapsed = performance.now() - started;
+
+    expect(elapsed).toBeLessThan(1000);
+    expect(out).not.toContain("url(");
+    expect(out).toContain(">x</div>");
+  });
+
+  it("keeps data: urls and removes remote ones, quoted or not", () => {
+    expect(cleanEmailCss(`a { background: url( "data:image/png;base64,AAAA" ) }`)).toBe(
+      `a { background: url( "data:image/png;base64,AAAA" ) }`,
+    );
+    expect(cleanEmailCss(`a { background: URL(https://example.org/x.png) red }`)).toBe(
+      `a { background: none red }`,
+    );
+    expect(cleanEmailCss(`a { b: url('https://example.org/x.png') }`)).toBe(`a { b: none }`);
+    expect(cleanEmailCss(`@import "https://example.org/a.css"; p { c: d }`)).toBe(` p { c: d }`);
+    expect(cleanEmailCss(`p { c: d } /* note */ q { e: f }`)).toBe(`p { c: d }  q { e: f }`);
+    expect(
+      cleanEmailCss(`a { b: image-set(url(data:image/png;base64,AA) 1x, "data:image/png;base64,BB" 2x) }`),
+    ).toBe(`a { b: image-set(url(data:image/png;base64,AA) 1x, "data:image/png;base64,BB" 2x) }`);
+    expect(cleanEmailCss(`a { b: -webkit-image-set(url(data:a) 1x, "https://example.org/b" 2x) }`)).toBe(
+      `a { b: none }`,
+    );
+    // An unterminated remote url() or comment drops the rest of the block.
+    expect(cleanEmailCss(`p { c: d } a { b: url(https://example.org/x`)).toBe(`p { c: d } a { b: none`);
+    expect(cleanEmailCss(`p { c: d } /* open`)).toBe(`p { c: d } `);
+  });
+
+  it("caps a style block at 100,000 characters", () => {
+    const out = cleanEmailCss("a".repeat(150_000));
+    expect(out).toHaveLength(100_000);
   });
 });
 
