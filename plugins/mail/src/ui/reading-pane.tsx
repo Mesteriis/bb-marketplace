@@ -185,7 +185,7 @@ export function ReadingPane({
 
   const { thread, messages } = detail;
   return (
-    <div className="mx-auto box-border flex w-full max-w-4xl flex-col gap-3 px-4 pb-6 pt-3">
+    <div className="box-border flex w-full min-w-0 flex-col gap-3 px-4 pb-6 pt-3">
       <div className="flex flex-col gap-1">
         {back}
         <h2 className="text-lg font-semibold text-foreground">
