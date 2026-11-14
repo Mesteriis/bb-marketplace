@@ -262,6 +262,45 @@ describe("createSyncLoop", () => {
       await done;
     });
 
+    it("a burst of wakes starts at most one extra round within 10 s of the last start", async () => {
+      vi.useFakeTimers();
+      const t0 = Date.now();
+      const until = (ms: number) => vi.advanceTimersByTimeAsync(t0 + ms - Date.now());
+      const { store, notifier, deps } = setup();
+      store.saveAccount(account("acc_1"));
+      const loop = createSyncLoop(deps, SETTINGS);
+      const controller = new AbortController();
+      const done = loop.start(controller.signal);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(notifier.changes).toHaveLength(1); // The first round, at 0 s.
+
+      await until(1_000);
+      loop.wake("acc_1"); // 1 s: the one extra round starts now.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(notifier.changes).toHaveLength(2);
+
+      for (const at of [2_000, 5_000, 9_000]) {
+        await until(at);
+        loop.wake("acc_1");
+        loop.wake(null);
+      }
+      // Held until 10 s after the extra round started (11 s), then one round for all of them.
+      await until(10_999);
+      expect(notifier.changes).toHaveLength(2);
+      await until(11_000);
+      expect(notifier.changes).toHaveLength(3);
+      await until(16_000);
+      expect(notifier.changes).toHaveLength(3);
+
+      // After a quiet window a wake runs at once again.
+      await until(30_000);
+      loop.wake("acc_1");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(notifier.changes).toHaveLength(4);
+      controller.abort();
+      await done;
+    });
+
     it("rounds are skipped while the vault is not ready, and run once it is", async () => {
       vi.useFakeTimers();
       const { store, notifier, deps } = setup();

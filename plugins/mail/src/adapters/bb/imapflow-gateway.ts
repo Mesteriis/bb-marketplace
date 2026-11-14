@@ -297,10 +297,36 @@ export function toImapflowOptions(config: ImapConfig): ImapFlowOptions {
 }
 
 /**
- * RFC 5530 codes for a login the server refused for its own, passing reason:
- * the credentials may be fine, so the account must keep retrying.
+ * RFC 5530 codes (and ALERT, which Gmail sends when throttling) for a login
+ * the server refused for its own, passing reason: the credentials may be
+ * fine, so the account must keep retrying.
  */
-const TRANSIENT_LOGIN_CODES = new Set(["UNAVAILABLE", "INUSE", "LIMIT", "SERVERBUG"]);
+const TRANSIENT_LOGIN_CODES = new Set(["UNAVAILABLE", "INUSE", "LIMIT", "SERVERBUG", "ALERT"]);
+
+/** Codes that say the credentials themselves were refused, whatever the text adds. */
+const CREDENTIAL_CODES = new Set([
+  "AUTHENTICATIONFAILED",
+  "AUTHORIZATIONFAILED",
+  "EXPIRED",
+  "PRIVACYREQUIRED",
+  "CONTACTADMIN",
+]);
+
+/**
+ * Words of a throttled login (Gmail: "Too many simultaneous connections").
+ * imapflow flags any tagged NO to LOGIN as authenticationFailed, so the reply
+ * text is read to classify it, and only that: it is never logged or passed on.
+ */
+const THROTTLED_LOGIN = /too many|simultaneous|\brate\b|rate[- ]?limit|throttl|try again|temporar/i;
+
+function loginThrottled(fields: { serverResponseCode?: unknown; response?: unknown; responseText?: unknown }): boolean {
+  if (typeof fields.serverResponseCode === "string" && CREDENTIAL_CODES.has(fields.serverResponseCode)) {
+    return false;
+  }
+  return [fields.response, fields.responseText].some(
+    (text) => typeof text === "string" && THROTTLED_LOGIN.test(text),
+  );
+}
 
 /**
  * A safe error for anything imapflow throws: ImapAuthError for a rejected
@@ -313,6 +339,8 @@ export function describeImapError(error: unknown): Error {
   const fields = (error ?? {}) as {
     authenticationFailed?: unknown;
     serverResponseCode?: unknown;
+    response?: unknown;
+    responseText?: unknown;
     code?: unknown;
     tlsFailed?: unknown;
   };
@@ -321,6 +349,9 @@ export function describeImapError(error: unknown): Error {
     TRANSIENT_LOGIN_CODES.has(fields.serverResponseCode)
   ) {
     return new SafeImapError(fields.serverResponseCode);
+  }
+  if (fields.authenticationFailed === true && loginThrottled(fields)) {
+    return new SafeImapError("LoginThrottled");
   }
   if (fields.authenticationFailed === true || fields.serverResponseCode === "AUTHENTICATIONFAILED") {
     return new ImapAuthError();
