@@ -20,11 +20,14 @@ import {
 import { toast } from "sonner";
 import type { rpcContract } from "./server.ts";
 import type {
+  Folder,
   MAIL_CHANGED_CHANNEL as MailChangedChannel,
+  MessageAction,
   MessageHeader,
   NewAccountInput,
   StatusView,
 } from "./src/core/index.ts";
+import { DEFAULT_FOLDER_PATH, inboxPath } from "./src/ui/folder-list.tsx";
 import {
   MailPage,
   type AccountFormRequest,
@@ -42,6 +45,11 @@ const PAGE_SIZE = 50;
 const MAX_PAGE = 100;
 const SEARCH_LIMIT = 50;
 const SYNC_INDICATOR_MS = 60_000;
+/**
+ * mail-changed events closer together than this cause one refresh: opening a
+ * conversation with N unread messages publishes N of them.
+ */
+const REFRESH_DEBOUNCE_MS = 250;
 
 const EMPTY_LIST: ThreadListState = {
   threads: [],
@@ -58,6 +66,8 @@ const NO_READING: ReadingState = {
   error: null,
   expandedIds: new Set(),
   bodies: {},
+  remoteImageIds: new Set(),
+  imageSenders: new Set(),
 };
 
 function messageOf(error: unknown): string {
@@ -76,6 +86,33 @@ function handToAgentPrompt(agentText: string): string {
   return `Help me with this email.\n\n${agentText}`;
 }
 
+/**
+ * Calls `run` once per burst of realtime events on `channel`, REFRESH_DEBOUNCE_MS
+ * after the last one, with every payload of the burst.
+ */
+function useDebouncedRealtime(channel: string, run: (payloads: unknown[]) => void) {
+  const runRef = useRef(run);
+  runRef.current = run;
+  const pending = useRef<unknown[]>([]);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) clearTimeout(timer.current);
+    },
+    [],
+  );
+  useRealtime(channel, (payload) => {
+    pending.current.push(payload);
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      const payloads = pending.current;
+      pending.current = [];
+      runRef.current(payloads);
+    }, REFRESH_DEBOUNCE_MS);
+  });
+}
+
 function MailPanel() {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
@@ -84,6 +121,14 @@ function MailPanel() {
   const [status, setStatus] = useState<StatusView | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [chosenAccountId, setChosenAccountId] = useState<string | null>(null);
+  /** Folders and the chosen folder, each tagged with the account they belong to. */
+  const [folderState, setFolderState] = useState<{ accountId: string; folders: Folder[] } | null>(
+    null,
+  );
+  const [chosenFolder, setChosenFolder] = useState<{ accountId: string; path: string } | null>(
+    null,
+  );
+  const [actionPending, setActionPending] = useState(false);
   const [list, setList] = useState<ThreadListState>(EMPTY_LIST);
   const [search, setSearch] = useState<SearchState>(NO_SEARCH);
   const [reading, setReading] = useState<ReadingState>(NO_READING);
@@ -93,13 +138,24 @@ function MailPanel() {
   const accounts = status?.accounts ?? [];
   const account = accounts.find((a) => a.id === chosenAccountId) ?? accounts[0] ?? null;
   const accountId = status?.vaultReady ? (account?.id ?? null) : null;
+  const folders =
+    folderState !== null && folderState.accountId === accountId ? folderState.folders : null;
+  const chosenPath =
+    chosenFolder !== null && chosenFolder.accountId === accountId ? chosenFolder.path : null;
+  // The chosen folder while it still exists, else the account's inbox.
+  const folderPath =
+    (chosenPath !== null && folders?.some((f) => f.path === chosenPath && f.selectable)
+      ? chosenPath
+      : null) ??
+    inboxPath(folders) ??
+    DEFAULT_FOLDER_PATH;
 
   // Latest values for callbacks that outlive a render (realtime, async results).
-  const latest = useRef({ accountId, list, search, reading });
-  latest.current = { accountId, list, search, reading };
+  const latest = useRef({ accountId, folderPath, list, search, reading });
+  latest.current = { accountId, folderPath, list, search, reading };
   /** Messages this page already marked opened, so message_open runs once each. */
   const opened = useRef(new Set<string>());
-  const requests = useRef({ list: 0, search: 0, thread: 0 });
+  const requests = useRef({ list: 0, search: 0, thread: 0, folders: 0 });
   const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusLoaded = useRef(false);
 
@@ -120,7 +176,7 @@ function MailPanel() {
    * after page, until it has at least as many threads as are on screen.
    */
   const loadList = useCallback(
-    async (forAccount: string, mode: "reset" | "refresh" | "more") => {
+    async (forAccount: string, folder: string, mode: "reset" | "refresh" | "more") => {
       const token = ++requests.current.list;
       const current = latest.current.list;
       const wanted = mode === "refresh" ? Math.max(current.threads.length, PAGE_SIZE) : PAGE_SIZE;
@@ -136,13 +192,7 @@ function MailPanel() {
         let cursor = mode === "more" ? current.nextCursor : null;
         do {
           const limit = Math.min(wanted - threads.length, MAX_PAGE);
-          // The folder rail (slice 2, Task 6) picks the folder; INBOX until then.
-          const page = await rpc.call("threads_list", {
-            accountId: forAccount,
-            folder: "INBOX",
-            cursor,
-            limit,
-          });
+          const page = await rpc.call("threads_list", { accountId: forAccount, folder, cursor, limit });
           if (token !== requests.current.list) return;
           threads.push(...page.threads);
           cursor = page.nextCursor;
@@ -157,6 +207,24 @@ function MailPanel() {
       } catch (error) {
         if (token !== requests.current.list) return;
         setList((prev) => ({ ...prev, loading: false, loadingMore: false, error: messageOf(error) }));
+      }
+    },
+    [rpc],
+  );
+
+  /** A failed load keeps the folders on screen (or none); the list still shows the inbox. */
+  const loadFolders = useCallback(
+    async (forAccount: string) => {
+      const token = ++requests.current.folders;
+      try {
+        const { folders: next } = await rpc.call("folders_list", { accountId: forAccount });
+        if (token !== requests.current.folders) return;
+        setFolderState({ accountId: forAccount, folders: next });
+      } catch {
+        if (token !== requests.current.folders) return;
+        setFolderState((prev) =>
+          prev !== null && prev.accountId === forAccount ? prev : { accountId: forAccount, folders: [] },
+        );
       }
     },
     [rpc],
@@ -205,28 +273,50 @@ function MailPanel() {
     [rpc],
   );
 
-  /** Marks an unread message read once per page session; only for owner-opened mail. */
+  /**
+   * Marks unread messages read, each once per page session; only for
+   * owner-opened mail. Resolves with the first failure's text, or null. A failed
+   * message can be marked again later.
+   */
   const markOpened = useCallback(
-    (message: MessageHeader) => {
-      if (message.isRead || opened.current.has(message.id)) return;
-      opened.current.add(message.id);
-      rpc.call("message_open", { messageId: message.id }).catch((error: unknown) => {
-        opened.current.delete(message.id);
-        toast.error(`Could not mark the message read: ${messageOf(error)}`);
-      });
+    async (messages: readonly MessageHeader[]): Promise<string | null> => {
+      const unread = messages.filter((m) => !m.isRead && !opened.current.has(m.id));
+      for (const message of unread) opened.current.add(message.id);
+      const failures = await Promise.all(
+        unread.map((message) =>
+          rpc.call("message_open", { messageId: message.id }).then(
+            () => null,
+            (error: unknown) => {
+              opened.current.delete(message.id);
+              return messageOf(error);
+            },
+          ),
+        ),
+      );
+      return failures.find((failure) => failure !== null) ?? null;
     },
     [rpc],
   );
 
-  /** Expands a message the owner chose to read: fetch its body once, mark it opened once. */
-  const openMessage = useCallback(
+  /** Expands a message and fetches its body once (again after an error). */
+  const expandMessage = useCallback(
     (message: MessageHeader) => {
       setReading((prev) => ({ ...prev, expandedIds: new Set(prev.expandedIds).add(message.id) }));
       const body = latest.current.reading.bodies[message.id];
       if (body === undefined || body.status === "error") void loadBody(message.id);
-      markOpened(message);
     },
-    [loadBody, markOpened],
+    [loadBody],
+  );
+
+  /** The owner expanded one message: show it and mark it read if it still is unread. */
+  const openMessage = useCallback(
+    (message: MessageHeader) => {
+      expandMessage(message);
+      void markOpened([message]).then((failure) => {
+        if (failure !== null) toast.error(`Could not mark the message read: ${failure}`);
+      });
+    },
+    [expandMessage, markOpened],
   );
 
   /**
@@ -244,8 +334,15 @@ function MailPanel() {
         if (open !== null) {
           const focus =
             detail.messages.find((m) => m.id === open.focusId) ?? detail.messages.at(-1);
-          if (focus !== undefined) openMessage(focus);
-          for (const message of detail.messages) markOpened(message);
+          if (focus !== undefined) expandMessage(focus);
+          // The expanded message first, then the rest; one toast if any fails.
+          const ordered =
+            focus === undefined
+              ? detail.messages
+              : [focus, ...detail.messages.filter((m) => m !== focus)];
+          void markOpened(ordered).then((failure) => {
+            if (failure !== null) toast.error(`Could not mark the conversation read: ${failure}`);
+          });
         }
       } catch (error) {
         if (token !== requests.current.thread) return;
@@ -258,14 +355,22 @@ function MailPanel() {
         setReading((prev) => ({ ...prev, loading: false, error: messageOf(error) }));
       }
     },
-    [markOpened, openMessage, rpc],
+    [expandMessage, markOpened, rpc],
   );
 
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
 
-  // A new active account starts from its first page with nothing open.
+  // A new active account loads its folders and re-runs the search for it.
+  useEffect(() => {
+    if (accountId === null) return;
+    void loadFolders(accountId);
+    const query = latest.current.search.query;
+    if (query !== "") void runSearch(query, accountId);
+  }, [accountId, loadFolders, runSearch]);
+
+  // A new account or folder starts from its first page with nothing open.
   useEffect(() => {
     requests.current.thread++;
     setReading(NO_READING);
@@ -273,10 +378,8 @@ function MailPanel() {
       setList(EMPTY_LIST);
       return;
     }
-    void loadList(accountId, "reset");
-    const query = latest.current.search.query;
-    if (query !== "") void runSearch(query, accountId);
-  }, [accountId, loadList, runSearch]);
+    void loadList(accountId, folderPath, "reset");
+  }, [accountId, folderPath, loadList]);
 
   useEffect(
     () => () => {
@@ -291,13 +394,23 @@ function MailPanel() {
     setSyncing(false);
   }, []);
 
-  useRealtime(MAIL_CHANGED_CHANNEL, (payload) => {
-    const changed = changedAccount(payload);
+  useDebouncedRealtime(MAIL_CHANGED_CHANNEL, (payloads) => {
     void loadStatus();
-    const { accountId: active, search: currentSearch, reading: currentReading } = latest.current;
-    if (active === null || (changed !== null && changed !== active)) return;
+    const {
+      accountId: active,
+      folderPath: folder,
+      search: currentSearch,
+      reading: currentReading,
+    } = latest.current;
+    if (active === null) return;
+    const touched = payloads.some((payload) => {
+      const changed = changedAccount(payload);
+      return changed === null || changed === active;
+    });
+    if (!touched) return;
     stopSyncing();
-    void loadList(active, "refresh");
+    void loadList(active, folder, "refresh");
+    void loadFolders(active);
     if (currentSearch.query !== "") void runSearch(currentSearch.query, active);
     // A thread still opening loads fresh data anyway; refreshing it now would
     // supersede the open and drop which message to expand.
@@ -318,6 +431,71 @@ function MailPanel() {
     requests.current.thread++;
     setReading(NO_READING);
   }, []);
+
+  /** A folder change resets the list (the effect above) and ends any search. */
+  const selectFolder = useCallback(
+    (path: string) => {
+      if (accountId === null) return;
+      setChosenFolder({ accountId, path });
+      if (latest.current.search.query !== "") void runSearch("", accountId);
+    },
+    [accountId, runSearch],
+  );
+
+  /**
+   * Moves the open conversation's messages in the folder being viewed (copies
+   * in other folders stay). On success the conversation leaves the list at once.
+   */
+  const runAction = useCallback(
+    async (action: MessageAction) => {
+      const { accountId: active, folderPath: folder, reading: current } = latest.current;
+      const threadId = current.threadId;
+      const messageIds = (current.detail?.messages ?? [])
+        .filter((m) => m.folder === folder)
+        .map((m) => m.id);
+      if (active === null || threadId === null || messageIds.length === 0) return;
+      setActionPending(true);
+      try {
+        const { destination } = await rpc.call("message_action", { messageIds, folder, action });
+        toast.success(`Moved to ${destination}`);
+        if (latest.current.reading.threadId === threadId) {
+          requests.current.thread++;
+          setReading(NO_READING);
+        }
+        if (latest.current.accountId === active && latest.current.folderPath === folder) {
+          setList((prev) => ({ ...prev, threads: prev.threads.filter((t) => t.id !== threadId) }));
+          void loadList(active, folder, "refresh");
+        }
+        void loadFolders(active);
+      } catch (error) {
+        toast.error(messageOf(error));
+      } finally {
+        setActionPending(false);
+      }
+    },
+    [loadFolders, loadList, rpc],
+  );
+
+  /** "Show images" for one message: page state only, gone when the conversation closes. */
+  const showImages = useCallback((messageId: string) => {
+    setReading((prev) => ({ ...prev, remoteImageIds: new Set(prev.remoteImageIds).add(messageId) }));
+  }, []);
+
+  /** "Always show from …": the server remembers the sender; this page shows them now. */
+  const alwaysShowImages = useCallback(
+    async (message: MessageHeader) => {
+      try {
+        const { address } = await rpc.call("images_allow_sender", { messageId: message.id });
+        setReading((prev) => ({
+          ...prev,
+          imageSenders: new Set(prev.imageSenders).add(address.trim().toLowerCase()),
+        }));
+      } catch (error) {
+        toast.error(`Could not allow images: ${messageOf(error)}`);
+      }
+    },
+    [rpc],
+  );
 
   const toggleMessage = useCallback(
     (messageId: string) => {
@@ -416,8 +594,11 @@ function MailPanel() {
       account={account}
       onSelectAccount={setChosenAccountId}
       list={list}
+      folders={folders}
+      folderPath={folderPath}
+      onSelectFolder={selectFolder}
       onLoadMore={() => {
-        if (accountId !== null) void loadList(accountId, "more");
+        if (accountId !== null) void loadList(accountId, folderPath, "more");
       }}
       search={search}
       onSearch={(query) => void runSearch(query, accountId)}
@@ -429,6 +610,10 @@ function MailPanel() {
       onToggleMessage={toggleMessage}
       onOpenLink={openLink}
       onHandToAgent={(message) => void handToAgent(message)}
+      onAction={(action) => void runAction(action)}
+      actionPending={actionPending}
+      onShowImages={showImages}
+      onAlwaysShowImages={(message) => void alwaysShowImages(message)}
       accountForm={accountForm}
       onOpenAccountForm={setAccountForm}
       onCloseAccountForm={() => setAccountForm(null)}
@@ -450,7 +635,7 @@ function useUnreadBadge(): ExperimentalBadge | null {
     );
   }, [rpc]);
   useEffect(refresh, [refresh]);
-  useRealtime(MAIL_CHANGED_CHANNEL, refresh);
+  useDebouncedRealtime(MAIL_CHANGED_CHANNEL, refresh);
   return count > 0 ? { count, label: "Unread mail" } : null;
 }
 
