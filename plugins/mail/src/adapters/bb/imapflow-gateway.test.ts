@@ -163,7 +163,7 @@ describe("toFetchedMessage", () => {
 });
 
 describe("toImapflowOptions", () => {
-  it("always connects with TLS and never logs", () => {
+  it("always connects with TLS, never logs and bounds every wait", () => {
     for (const port of [993, 143, 1143]) {
       const options = toImapflowOptions({
         host: "imap.example.org",
@@ -177,6 +177,9 @@ describe("toImapflowOptions", () => {
         secure: true,
         logger: false,
         auth: { user: "owner@example.org", pass: "invented-password" },
+        connectionTimeout: 15_000,
+        greetingTimeout: 15_000,
+        socketTimeout: 60_000,
       });
       expect(options.doSTARTTLS).toBeUndefined();
     }
