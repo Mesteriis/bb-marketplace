@@ -16,6 +16,7 @@ import {
   defineRpcContract,
   experimental_PluginRpcRefusal,
   type BbPluginApi,
+  type PluginCliContext,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createImapflowGateway } from "./src/adapters/bb/imapflow-gateway.ts";
@@ -220,7 +221,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       agentTools: () => current.agentTools,
     });
     registerAgentSurfaces(bb, store, () => current.agentTools);
-    registerCli(bb, store, () => loop);
+    registerCli(bb, store, () => loop, () => current.agentTools);
   };
 }
 
@@ -367,7 +368,24 @@ function registerAgentSurfaces(
 
 const jsonOption = { json: { type: "boolean", description: "Emit machine-readable JSON" } } as const;
 
-function registerCli(bb: BbPluginApi, store: MailStore, loop: () => SyncLoop | null): void {
+export const AGENT_MAIL_OFF_MESSAGE =
+  "Mail access for agents is off. The owner can enable it with: bb plugin config makosh-mail set agentTools true";
+
+function registerCli(
+  bb: BbPluginApi,
+  store: MailStore,
+  loop: () => SyncLoop | null,
+  agentTools: () => boolean,
+): void {
+  /**
+   * Inside an agent thread (ctx.threadId, PluginCliContext in bb-plugin-sdk.d.ts:20554-20562)
+   * mail content follows agentTools, like the tools; the owner's own terminal has no thread.
+   */
+  const requireMailAccess = (ctx: PluginCliContext) => {
+    if (ctx.threadId !== undefined && !agentTools()) {
+      throw new PluginCliError(AGENT_MAIL_OFF_MESSAGE, { code: "agent_mail_access_off" });
+    }
+  };
   bb.cli.register(
     defineCli({
       name: "makosh-mail",
@@ -405,7 +423,8 @@ function registerCli(bb: BbPluginApi, store: MailStore, loop: () => SyncLoop | n
             },
             ...jsonOption,
           },
-          run: ({ positionals, options }) => {
+          run: ({ positionals, options }, ctx) => {
+            requireMailAccess(ctx);
             const query = positionals.query.join(" ").slice(0, QUERY_MAX);
             const hits = store.search(parseQuery(query), options.account ?? null, options.limit);
             if (options.json) {
@@ -427,7 +446,8 @@ function registerCli(bb: BbPluginApi, store: MailStore, loop: () => SyncLoop | n
             },
             ...jsonOption,
           },
-          run: ({ positionals, options }) => {
+          run: ({ positionals, options }, ctx) => {
+            requireMailAccess(ctx);
             const { messageId } = positionals;
             const text = readForAgent(store, messageId, options["max-chars"]);
             if (text === null) {

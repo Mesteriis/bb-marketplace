@@ -40,8 +40,11 @@ that message, with the same untrusted notice.
 
 ## CLI
 
-`bb makosh-mail` works whether or not the tools are on; add `--json` for
-machine-readable output.
+Add `--json` for machine-readable output. Inside an agent thread, `search`
+and `read` follow the same `agentTools` setting as the tools: while it is off
+they refuse with "Mail access for agents is off". `accounts` and `sync` show
+no mail content and always work. In the owner's own terminal (no thread) every
+command works.
 
 - `bb makosh-mail accounts` — connected accounts and their last sync or error.
 - `bb makosh-mail search <query…> [--account <id>] [--limit 1-50]` — same

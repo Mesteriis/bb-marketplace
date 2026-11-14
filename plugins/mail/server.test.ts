@@ -4,7 +4,7 @@ import {
   makePluginAgentConfigurationContext,
 } from "@get-bb/plugin-sdk/testing";
 import { describe, expect, it, vi } from "vitest";
-import { createMailPlugin, NEEDS_KEY_MESSAGE } from "./server.ts";
+import { AGENT_MAIL_OFF_MESSAGE, createMailPlugin, NEEDS_KEY_MESSAGE } from "./server.ts";
 import { generateVaultKey } from "./src/adapters/bb/vault.ts";
 import { MAIL_CHANGED_CHANNEL, UNTRUSTED_NOTICE } from "./src/core/index.ts";
 import type { MessageSummary, ThreadDetail } from "./src/core/index.ts";
@@ -298,6 +298,45 @@ describe("makosh-mail server", () => {
     expect(result.stdout.startsWith(UNTRUSTED_NOTICE)).toBe(true);
     expect(result.stdout).toContain("garden fence");
     expect((await threadOf(host, messageId)).messages[0]!.isRead).toBe(false);
+  });
+
+  it("cli search and read refuse inside a thread when agentTools is off", async () => {
+    const host = await load();
+    const { messageId } = await addAndSync(host);
+    const ctx = { threadId: "thread-1" };
+
+    const search = await host.harness.behavior.runCli(["search", "quarterly"], ctx);
+    const read = await host.harness.behavior.runCli(["read", messageId], ctx);
+    const accounts = await host.harness.behavior.runCli(["accounts"], ctx);
+
+    for (const result of [search, read]) {
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain(AGENT_MAIL_OFF_MESSAGE);
+      expect(result.stdout).not.toContain("garden fence");
+      expect(result.stdout).not.toContain("quarterly");
+    }
+    expect(accounts.exitCode).toBe(0);
+  });
+
+  it("cli read works inside a thread when agentTools is on", async () => {
+    const host = await load();
+    const { messageId } = await addAndSync(host);
+    await host.harness.behavior.setSettings({ agentTools: true });
+
+    const result = await host.harness.behavior.runCli(["read", messageId], { threadId: "thread-1" });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("garden fence");
+  });
+
+  it("cli read works without a thread when agentTools is off", async () => {
+    const host = await load();
+    const { messageId } = await addAndSync(host);
+
+    const result = await host.harness.behavior.runCli(["read", messageId]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("garden fence");
   });
 
   it("cli usage on bad input exits 1", async () => {
