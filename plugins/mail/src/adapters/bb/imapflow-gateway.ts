@@ -226,8 +226,16 @@ export function toImapflowOptions(config: ImapConfig): ImapFlowOptions {
 }
 
 /**
+ * RFC 5530 codes for a login the server refused for its own, passing reason:
+ * the credentials may be fine, so the account must keep retrying.
+ */
+const TRANSIENT_LOGIN_CODES = new Set(["UNAVAILABLE", "INUSE", "LIMIT", "SERVERBUG"]);
+
+/**
  * A safe error for anything imapflow throws: ImapAuthError for a rejected
- * login, otherwise an Error whose message names only a code.
+ * login (stops the account until the password changes), a retryable
+ * SafeImapError for a transient refusal, otherwise an Error whose message
+ * names only a code.
  */
 export function describeImapError(error: unknown): Error {
   if (error instanceof ImapAuthError || error instanceof SafeImapError) return error;
@@ -237,6 +245,12 @@ export function describeImapError(error: unknown): Error {
     code?: unknown;
     tlsFailed?: unknown;
   };
+  if (
+    typeof fields.serverResponseCode === "string" &&
+    TRANSIENT_LOGIN_CODES.has(fields.serverResponseCode)
+  ) {
+    return new SafeImapError(fields.serverResponseCode);
+  }
   if (fields.authenticationFailed === true || fields.serverResponseCode === "AUTHENTICATIONFAILED") {
     return new ImapAuthError();
   }
