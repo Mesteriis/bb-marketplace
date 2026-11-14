@@ -52,7 +52,8 @@ export interface FolderSession {
    * uid (COPYUID), or is null when the server returned none. Throws when the
    * server refuses the move (error `code` "MoveFailed"), when the server
    * cannot move without a plain EXPUNGE ("MoveUnsupported", nothing sent),
-   * and on a read-only session.
+   * on a read-only session, and with another code (not a refusal) when the
+   * connection dropped.
    */
   moveMessages(
     uids: number[],

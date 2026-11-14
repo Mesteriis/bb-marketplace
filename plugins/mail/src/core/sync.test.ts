@@ -867,7 +867,11 @@ describe("syncAccount moves", () => {
     store.queueMove([movedId], "Archive");
 
     for (let round = 0; round < 4; round++) {
-      gateway.failNext("moveMessages", new Error("connection reset"));
+      // Rounds alternate a thrown reset and the gateway's dropped-MOVE code.
+      gateway.failNext(
+        "moveMessages",
+        round % 2 === 0 ? new Error("connection reset") : imapError("ConnectionLost"),
+      );
       expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({
         status: "ok",
         movesCancelled: [],
@@ -875,7 +879,7 @@ describe("syncAccount moves", () => {
       expect(store.pendingMoves(ACCOUNT_ID, INBOX)).toEqual([
         { uid: 2, id: movedId, destination: "Archive" },
       ]);
-      expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe("INBOX: Sync failed");
+      expect(store.getAccount(ACCOUNT_ID)?.lastError).toMatch(/^INBOX: Sync failed/);
     }
 
     await syncAccount(deps, ACCOUNT_ID, OPTIONS);

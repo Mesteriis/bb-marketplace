@@ -67,6 +67,7 @@ export type SessionClient = Pick<
   | "mailbox"
   | "capabilities"
   | "enabled"
+  | "usable"
   | "search"
   | "fetch"
   | "messageFlagsAdd"
@@ -222,8 +223,11 @@ export function createSession(
       // pending move, not as a refusal counted toward the 3-strikes limit.
       if (!canMoveSafely(client)) throw new SafeImapError("MoveUnsupported");
       // imapflow resolves false when the server refuses (MOVE, or COPY/EXPUNGE
-      // without the MOVE extension) and undefined when it could not even try.
+      // without the MOVE extension) and undefined when it could not even try;
+      // it does the same when the connection dropped mid-command. That is not
+      // a refusal: sync leaves the move pending without counting a strike.
       const result = await client.messageMove(uids, destination, { uid: true });
+      if (!result && client.usable === false) throw new SafeImapError("ConnectionLost");
       if (!result) throw new SafeImapError("MoveFailed");
       if (!(result.uidMap instanceof Map)) return { moved: null };
       const moved = new Map<number, number>();

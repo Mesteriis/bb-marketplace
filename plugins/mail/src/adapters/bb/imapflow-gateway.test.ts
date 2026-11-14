@@ -328,6 +328,7 @@ type StubOptions = {
   enabled?: string[];
   fetched?: FetchMessageObject[];
   mailbox?: unknown;
+  usable?: boolean;
 };
 
 function stubClient(options: StubOptions = {}) {
@@ -338,6 +339,7 @@ function stubClient(options: StubOptions = {}) {
       (options.capabilities ?? ["IMAP4rev1", "MOVE", "UIDPLUS"]).map((name) => [name, true]),
     ),
     enabled: new Set(options.enabled ?? []),
+    usable: options.usable ?? true,
     search: async (...args: unknown[]) => {
       calls.push({ method: "search", args });
       return options.search;
@@ -443,6 +445,17 @@ describe("createSession", () => {
       const move = createSession(client, false).moveMessages([4], "Trash");
       await expect(move).rejects.toBeInstanceOf(SafeImapError);
       await expect(move).rejects.toThrow("IMAP error (MoveFailed)");
+    }
+  });
+
+  it("moveMessages on a connection that dropped is a connection error, not a refusal", async () => {
+    // imapflow's messageMove also resolves false when the socket closed mid-command.
+    for (const refused of [false, undefined]) {
+      const { client } = stubClient({ moved: refused, usable: false });
+      const move = createSession(client, false).moveMessages([4], "Trash");
+      await expect(move).rejects.toBeInstanceOf(SafeImapError);
+      await expect(move).rejects.toMatchObject({ code: "ConnectionLost" });
+      await expect(move).rejects.toThrow("IMAP error (ConnectionLost)");
     }
   });
 
