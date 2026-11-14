@@ -269,6 +269,8 @@ type StubOptions = {
   search?: unknown;
   stored?: boolean;
   moved?: unknown;
+  capabilities?: string[];
+  enabled?: string[];
   fetched?: FetchMessageObject[];
   mailbox?: unknown;
 };
@@ -277,6 +279,10 @@ function stubClient(options: StubOptions = {}) {
   const calls: { method: string; args: unknown[] }[] = [];
   const client = {
     mailbox: "mailbox" in options ? options.mailbox : { uidValidity: 7n, uidNext: 50, exists: 3 },
+    capabilities: new Map(
+      (options.capabilities ?? ["IMAP4rev1", "MOVE", "UIDPLUS"]).map((name) => [name, true]),
+    ),
+    enabled: new Set(options.enabled ?? []),
     search: async (...args: unknown[]) => {
       calls.push({ method: "search", args });
       return options.search;
@@ -381,10 +387,44 @@ describe("createSession", () => {
       const { client } = stubClient({ moved: refused });
       const move = createSession(client, false).moveMessages([4], "Trash");
       await expect(move).rejects.toBeInstanceOf(SafeImapError);
-      await expect(createSession(client, false).moveMessages([4], "Trash")).rejects.toThrow(
-        "IMAP error (MoveFailed)",
-      );
+      await expect(move).rejects.toThrow("IMAP error (MoveFailed)");
     }
+  });
+
+  it("moveMessages refuses servers with neither MOVE nor UIDPLUS without a server call", async () => {
+    // imapflow's fallback would be COPY + plain EXPUNGE, which also deletes every
+    // other \\Deleted message in the folder.
+    for (const capabilities of [["IMAP4rev1"], ["IMAP4rev1", "IMAP4rev2"]]) {
+      const { client, calls } = stubClient({ capabilities, moved: { uidMap: new Map() } });
+      const move = createSession(client, false).moveMessages([4], "Trash");
+      await expect(move).rejects.toBeInstanceOf(SafeImapError);
+      await expect(move).rejects.toMatchObject({ code: "MoveUnsupported" });
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it("moveMessages calls the server with MOVE, with UIDPLUS only, or on IMAP4rev2", async () => {
+    for (const [capabilities, enabled] of [
+      [["IMAP4rev1", "MOVE"], []],
+      [["IMAP4rev1", "UIDPLUS"], []],
+      [["IMAP4rev2"], []],
+      [["IMAP4rev1", "IMAP4rev2"], ["IMAP4REV2"]],
+    ] as const) {
+      const { client, calls } = stubClient({
+        capabilities: [...capabilities],
+        enabled: [...enabled],
+        moved: { path: "INBOX", destination: "Trash" },
+      });
+      expect(await createSession(client, false).moveMessages([4], "Trash")).toEqual({ moved: null });
+      expect(calls.map((c) => c.method), capabilities.join(" ")).toEqual(["messageMove"]);
+    }
+  });
+
+  it("moveMessages with no uids returns an empty map without a server call", async () => {
+    const { client, calls } = stubClient({ moved: false });
+    const result = await createSession(client, false).moveMessages([], "Trash");
+    expect(result.moved).toEqual(new Map());
+    expect(calls).toEqual([]);
   });
 
   it("moveMessages maps a thrown imapflow error from codes only", async () => {
