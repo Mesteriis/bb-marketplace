@@ -9,20 +9,20 @@
 import { useEffect, useState } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
-import type { MailOverview } from "./src/core/index.ts";
-import { MailHome } from "./src/ui/mail-home.tsx";
+import type { StatusView } from "./src/core/index.ts";
+import { MailPage } from "./src/ui/mail-page.tsx";
 
-function MailPage() {
+function MailPanel() {
   const rpc = useRpc<typeof rpcContract>();
-  const [overview, setOverview] = useState<MailOverview | null>(null);
+  const [status, setStatus] = useState<StatusView | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    rpc.call("overview_get").then(
+    rpc.call("status_get").then(
       (result) => {
         if (cancelled) return;
-        setOverview(result);
+        setStatus(result);
         setError(null);
       },
       (cause: unknown) => {
@@ -35,7 +35,7 @@ function MailPage() {
     };
   }, [rpc]);
 
-  return <MailHome overview={overview} error={error} />;
+  return <MailPage status={status} error={error} />;
 }
 
 // The default export must be definePluginApp(...); BB interprets it after
@@ -47,6 +47,6 @@ export default definePluginApp((app) => {
     title: "Mail",
     icon: "Mail",
     path: "mail",
-    component: MailPage,
+    component: MailPanel,
   });
 });
