@@ -7,3 +7,6 @@ export * from "./presets.ts";
 export * from "./contract.ts";
 export * from "./threading.ts";
 export * from "./sync.ts";
+export * from "./search.ts";
+export * from "./agent-text.ts";
+export * from "./accounts.ts";
