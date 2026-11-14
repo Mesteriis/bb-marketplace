@@ -158,6 +158,42 @@ describe("syncAccount", () => {
     ).toEqual([1, 3, 4]);
   });
 
+  it("does not delete a message whose header date is inside the window but whose internal date is outside", async () => {
+    const { store, gateway, deps } = setup(mailbox(2));
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    // Delivered now (so the incremental fetch picks it up), but the server's
+    // INTERNALDATE, which SEARCH SINCE uses, is older than the window.
+    const late = gateway.deliver({ date: hoursAgo(1) });
+    gateway.mailbox.internalDates = new Map([[late.uid, hoursAgo(24 * 40)]]);
+
+    const second = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const third = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(second).toMatchObject({ status: "ok", fetched: 1, removed: 0 });
+    expect(third).toMatchObject({ status: "ok", fetched: 0, removed: 0 });
+    const uids = store
+      .localFolderIndex(ACCOUNT_ID, INBOX, "1970-01-01T00:00:00.000Z")
+      .map((e) => e.uid)
+      .sort();
+    expect(uids).toEqual([1, 2, 3]);
+  });
+
+  it("a spurious empty search does not delete local mail", async () => {
+    const { store, gateway, deps } = setup(mailbox(3));
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const open = gateway.openInbox.bind(gateway);
+    vi.spyOn(gateway, "openInbox").mockImplementation(async (config, options) => {
+      const session = await open(config, options);
+      session.searchSince = async () => [];
+      return session;
+    });
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toMatchObject({ status: "ok", removed: 0 });
+    expect(store.localFolderIndex(ACCOUNT_ID, INBOX, "1970-01-01T00:00:00.000Z")).toHaveLength(3);
+  });
+
   it("reconcile applies server flags but keeps a pending local read", async () => {
     const { store, gateway, deps } = setup(mailbox(3));
     await syncAccount(deps, ACCOUNT_ID, OPTIONS);

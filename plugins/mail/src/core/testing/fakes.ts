@@ -509,6 +509,8 @@ export type FakeMailbox = {
   uidValidity: number;
   uidNext: number;
   messages: FetchedMessage[];
+  /** INTERNALDATE by uid where it differs from the header date (SEARCH SINCE uses it). */
+  internalDates?: Map<number, string>;
 };
 
 type SessionMethod = Exclude<keyof InboxSession, "close">;
@@ -596,9 +598,13 @@ export class ScriptedImapGateway implements ImapGateway {
       searchSince: async (date) => {
         record({ method: "searchSince", date });
         return box()
-          // SINCE uses the server's internal date, which every message has; an
+          // SINCE uses the server's internal date, which every message has; it
+          // is the header date unless internalDates says otherwise, and an
           // undated fixture stands for a recent one.
-          .messages.filter((m) => (timeOf(m.date) ?? Infinity) >= date.getTime())
+          .messages.filter(
+            (m) =>
+              (timeOf(box().internalDates?.get(m.uid) ?? m.date) ?? Infinity) >= date.getTime(),
+          )
           .map((m) => m.uid);
       },
       uidsAfter: async (uid) => {
