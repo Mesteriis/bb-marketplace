@@ -3,7 +3,7 @@
 // so it is a single forward scan with indexOf over a capped input: no DOM, no
 // regular expression that can backtrack over an unclosed "<", and no index
 // computed on a lowercased copy (lowercasing can change the length).
-import { decodeHtmlEntities, removeInvisible } from "./html-entities.ts";
+import { decodeHtmlEntities, removeControls, removeInvisible } from "./html-entities.ts";
 import type { MailAddress, MessageBody, MessageHeader, MessageSummary } from "./model.ts";
 
 export const UNTRUSTED_NOTICE =
@@ -220,19 +220,26 @@ const END_LINE = "\n--- end of untrusted email ---";
 /**
  * The notice, then headers and the body as plain text, then the end line.
  * Everything after the notice line is cut to fit maxChars, marker and end
- * line included.
+ * line included. `folderName` is the folder's display name (default: its
+ * path). Control and invisible characters are removed: the text is the
+ * sender's and may reach a terminal.
  */
 export function renderMessageForAgent(
   header: MessageHeader,
   body: MessageBody | null,
   maxChars: number,
+  folderName: string = header.folder,
 ): string {
   const lines = [
     `From: ${formatAddress(header.from)}`,
     `To: ${formatAddresses(header.to)}`,
   ];
   if (header.cc.length > 0) lines.push(`Cc: ${formatAddresses(header.cc)}`);
-  lines.push(`Date: ${header.date ?? "unknown"}`, `Subject: ${oneLine(header.subject)}`);
+  lines.push(
+    `Date: ${header.date ?? "unknown"}`,
+    `Subject: ${oneLine(header.subject)}`,
+    `Folder: ${oneLine(folderName)}`,
+  );
   if (header.attachments.length > 0) {
     const list = header.attachments
       .map((a) => `${oneLine(a.filename ?? "unnamed")} (${oneLine(a.mimeType)}, ${a.size} bytes)`)
@@ -240,12 +247,16 @@ export function renderMessageForAgent(
     lines.push(`Attachments: ${list}`);
   }
   lines.push(`Message id: ${header.id}`);
-  const rest = `${lines.join("\n")}\n\n${bodyText(body)}`;
+  const rest = `${lines.join("\n")}\n\n${clean(bodyText(body))}`;
   const budget = Math.max(0, maxChars - 1 - END_LINE.length);
   return `${UNTRUSTED_NOTICE}\n${truncate(rest, budget)}${END_LINE}`;
 }
 
-export function renderSearchHits(hits: MessageSummary[]): string {
+/** `folderName` gives a hit's folder display name (default: its path). */
+export function renderSearchHits(
+  hits: MessageSummary[],
+  folderName: (hit: MessageSummary) => string = (hit) => hit.folder,
+): string {
   if (hits.length === 0) return `${UNTRUSTED_NOTICE}\nNo messages found.`;
   const entries = hits.map((hit, index) =>
     [
@@ -253,6 +264,7 @@ export function renderSearchHits(hits: MessageSummary[]): string {
       `   Date: ${hit.date ?? "unknown"}`,
       `   From: ${formatAddress(hit.from)}`,
       `   Subject: ${oneLine(hit.subject)}`,
+      `   Folder: ${oneLine(folderName(hit))}`,
       `   Snippet: ${oneLine(hit.snippet)}`,
     ].join("\n"),
   );
@@ -296,7 +308,12 @@ function formatAddresses(addresses: MailAddress[]): string {
   return addresses.length === 0 ? "(none)" : addresses.map(formatAddress).join(", ");
 }
 
+/** Sender text without control characters (tab and line breaks kept) or invisible ones. */
+function clean(value: string): string {
+  return removeControls(removeInvisible(value));
+}
+
 /** Header values come from the sender; a newline must not forge another header line. */
 function oneLine(value: string): string {
-  return value.replace(/[\r\n\v\f\u0085\u2028\u2029]+/g, " ").trim();
+  return clean(value.replace(/[\r\n\v\f\u0085\u2028\u2029]+/g, " ")).trim();
 }
