@@ -4,7 +4,8 @@
 //   1. push reads the owner made in BB (the only server write: \Seen);
 //   2. initial (window search, newest first) or incremental (uids after lastUid)
 //      fetch in batches, each persisted with the sync state in one transaction;
-//   3. reconcile the window: delete what left the server, take server flags;
+//   3. reconcile the window: fetch what is missing locally (so an interrupted
+//      initial sync resumes), delete what left the server, take server flags;
 //   4. rebuild threads, record the result, notify.
 // A UIDVALIDITY change detaches the folder's rows and resyncs it as initial;
 // rows whose Message-ID reappears keep their ids. Never throws; error text is
@@ -25,6 +26,7 @@ export const INBOX = "INBOX";
 
 const FLAG_BATCH_SIZE = 500;
 const DAY_MS = 86_400_000;
+const EPOCH_ISO = new Date(0).toISOString();
 
 export interface SyncDeps {
   store: MailStore;
@@ -141,40 +143,63 @@ async function syncInbox(
         .sort((a, b) => a - b);
 
   let lastUid = baseState.lastUid;
-  let fetched = 0;
-  for (let i = 0; i < uids.length; i += options.batchSize) {
-    const messages: FetchedMessage[] = await session.fetchMessages(
-      uids.slice(i, i + options.batchSize),
-    );
-    for (const message of messages) lastUid = Math.max(lastUid, message.uid);
-    fetched += messages.length;
-    store.transaction(() => {
-      store.upsertMessages(accountId, INBOX, messages);
-      store.saveSyncState(accountId, INBOX, { ...baseState, lastUid });
-    });
-  }
+  /** Fetches uids in batches; each batch is stored with the sync state in one transaction. */
+  const fetchAndStore = async (batchUids: number[]): Promise<number> => {
+    let count = 0;
+    for (let i = 0; i < batchUids.length; i += options.batchSize) {
+      const messages: FetchedMessage[] = await session.fetchMessages(
+        batchUids.slice(i, i + options.batchSize),
+      );
+      for (const message of messages) lastUid = Math.max(lastUid, message.uid);
+      count += messages.length;
+      store.transaction(() => {
+        store.upsertMessages(accountId, INBOX, messages);
+        store.saveSyncState(accountId, INBOX, { ...baseState, lastUid });
+      });
+    }
+    return count;
+  };
+
+  let fetched = await fetchAndStore(uids);
   if (initial && uids.length === 0) {
     // Nothing in the window: start incremental sync from the current end of
     // the mailbox rather than from uid 0, which would pull in old mail.
-    store.saveSyncState(accountId, INBOX, {
-      ...baseState,
-      lastUid: Math.max(0, status.uidNext - 1),
-    });
+    lastUid = Math.max(0, status.uidNext - 1);
+    store.saveSyncState(accountId, INBOX, { ...baseState, lastUid });
   }
 
-  const { removed, flagsChanged } = await reconcile(store, session, accountId, since);
+  const reconciled = await reconcile(store, session, accountId, since, fetchAndStore);
+  fetched += reconciled.backfilled;
   const resetRemoved = resetting ? store.finishFolderReset(accountId, INBOX) : 0;
-  return { fetched, removed: removed + resetRemoved, flagsChanged };
+  return {
+    fetched,
+    removed: reconciled.removed + resetRemoved,
+    flagsChanged: reconciled.flagsChanged,
+  };
 }
 
-/** Deletes local messages gone from the server and takes the server's flags. */
+/**
+ * Brings the window in line with the server: fetches window messages missing
+ * locally (an interrupted initial sync resumes here), deletes local messages
+ * gone from the server, and takes the server's flags.
+ */
 async function reconcile(
   store: MailStore,
   session: InboxSession,
   accountId: string,
   since: Date,
-): Promise<{ removed: number; flagsChanged: number }> {
-  const onServer = new Set(await session.searchSince(since));
+  fetchAndStore: (uids: number[]) => Promise<number>,
+): Promise<{ backfilled: number; removed: number; flagsChanged: number }> {
+  const serverUids = await session.searchSince(since);
+  const onServer = new Set(serverUids);
+  // Every stored uid, not only the window's: a message whose stored date falls
+  // outside the window but whose server date is inside it is already here.
+  const stored = new Set(
+    store.localFolderIndex(accountId, INBOX, EPOCH_ISO).map((entry) => entry.uid),
+  );
+  const missing = serverUids.filter((uid) => !stored.has(uid)).sort((a, b) => b - a);
+  const backfilled = await fetchAndStore(missing);
+
   const local = store.localFolderIndex(accountId, INBOX, since.toISOString());
   const gone = local.filter((entry) => !onServer.has(entry.uid)).map((entry) => entry.uid);
   const present = local.filter((entry) => onServer.has(entry.uid)).map((entry) => entry.uid);
@@ -185,7 +210,7 @@ async function reconcile(
     const flags = await session.fetchFlags(present.slice(i, i + FLAG_BATCH_SIZE));
     flagsChanged += store.applyFlags(accountId, INBOX, flags);
   }
-  return { removed, flagsChanged };
+  return { backfilled, removed, flagsChanged };
 }
 
 async function closeQuietly(session: InboxSession): Promise<void> {

@@ -321,4 +321,60 @@ describe("syncAccount", () => {
     expect(store.getSyncState(ACCOUNT_ID, INBOX)?.lastUid).toBe(60);
     expect(store.localFolderIndex(ACCOUNT_ID, INBOX, "1970-01-01T00:00:00.000Z")).toHaveLength(50);
   });
+
+  it("an interrupted initial sync backfills the older window messages on the next round", async () => {
+    const { store, gateway, deps } = setup(mailbox(120));
+    const open = gateway.openInbox.bind(gateway);
+    let fetches = 0;
+    const openInbox = vi.spyOn(gateway, "openInbox").mockImplementation(async (config, options) => {
+      const session = await open(config, options);
+      const fetchMessages = session.fetchMessages;
+      session.fetchMessages = async (uids) => {
+        if (++fetches === 2) throw new Error("connection lost");
+        return fetchMessages(uids);
+      };
+      return session;
+    });
+
+    const interrupted = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(interrupted).toMatchObject({ status: "error" });
+    expect(store.getSyncState(ACCOUNT_ID, INBOX)?.lastUid).toBe(120);
+    openInbox.mockRestore();
+
+    const resumed = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(resumed).toMatchObject({ status: "ok", fetched: 70, removed: 0 });
+    const roundTwo = gateway.sessions[1]!.calls
+      .filter((c) => c.method === "fetchMessages")
+      .map((c) => c.uids!);
+    expect(roundTwo.map((b) => b.length)).toEqual([50, 20]);
+    expect(roundTwo.flat()).toEqual(Array.from({ length: 70 }, (_, i) => 70 - i));
+    expect(store.localFolderIndex(ACCOUNT_ID, INBOX, "1970-01-01T00:00:00.000Z")).toHaveLength(120);
+    expect(store.getSyncState(ACCOUNT_ID, INBOX)?.lastUid).toBe(120);
+  });
+
+  it("reconcile removes an undated message gone from the server", async () => {
+    const box = mailbox(3);
+    box.messages[1]!.date = null;
+    const { store, gateway, deps } = setup(box);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const undatedId = store
+      .localFolderIndex(ACCOUNT_ID, INBOX, "1970-01-01T00:00:00.000Z")
+      .find((e) => e.uid === 2)!.id;
+
+    // While it is on the server it stays and takes the server's flags.
+    gateway.mailbox.messages[1]!.flagged = true;
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({
+      status: "ok",
+      removed: 0,
+      flagsChanged: 1,
+    });
+    expect(store.getMessage(undatedId)).toMatchObject({ isFlagged: true });
+
+    gateway.mailbox.messages = gateway.mailbox.messages.filter((m) => m.uid !== 2);
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toMatchObject({ status: "ok", removed: 1 });
+    expect(store.getMessage(undatedId)).toBeNull();
+  });
 });
