@@ -64,7 +64,15 @@ export class SafeImapError extends Error {
 /** What a session needs from an imapflow client; tests pass a stub. */
 export type SessionClient = Pick<
   ImapFlow,
-  "mailbox" | "search" | "fetch" | "messageFlagsAdd" | "messageMove" | "logout" | "close"
+  | "mailbox"
+  | "capabilities"
+  | "enabled"
+  | "search"
+  | "fetch"
+  | "messageFlagsAdd"
+  | "messageMove"
+  | "logout"
+  | "close"
 >;
 
 export type ParseMail = (source: Buffer | string) => Promise<Email>;
@@ -207,6 +215,12 @@ export function createSession(
     moveMessages: guarded(async (uids: number[], destination: string) => {
       if (readOnly) throw new SafeImapError("ReadOnly", "IMAP error (mailbox is read-only)");
       if (uids.length === 0) return { moved: new Map<number, number>() };
+      // Without MOVE imapflow falls back to COPY + \Deleted + EXPUNGE; without
+      // UIDPLUS that EXPUNGE is a plain one that also permanently deletes every
+      // other \Deleted message in the folder. Such servers get no move at all.
+      // Task 4 (sync) must treat MoveUnsupported as an immediate cancel of the
+      // pending move, not as a refusal counted toward the 3-strikes limit.
+      if (!canMoveSafely(client)) throw new SafeImapError("MoveUnsupported");
       // imapflow resolves false when the server refuses (MOVE, or COPY/EXPUNGE
       // without the MOVE extension) and undefined when it could not even try.
       const result = await client.messageMove(uids, destination, { uid: true });
@@ -219,6 +233,20 @@ export function createSession(
 
     close: () => logoutQuietly(client),
   };
+}
+
+/**
+ * MOVE, or UIDPLUS (imapflow's fallback then runs UID EXPUNGE on the moved
+ * uids only). Both are part of IMAP4rev2, which counts when it is active the
+ * way imapflow decides it (enabled, or rev2 advertised without rev1).
+ */
+function canMoveSafely(client: Pick<SessionClient, "capabilities" | "enabled">): boolean {
+  const capabilities = client.capabilities;
+  if (capabilities?.has("MOVE") || capabilities?.has("UIDPLUS")) return true;
+  const rev2Active =
+    client.enabled?.has("IMAP4REV2") === true ||
+    (capabilities?.has("IMAP4rev2") === true && !capabilities.has("IMAP4rev1"));
+  return rev2Active;
 }
 
 /** LIST (with imapflow's special-use resolution, incl. its name fallback) mapped to RemoteFolder. */
