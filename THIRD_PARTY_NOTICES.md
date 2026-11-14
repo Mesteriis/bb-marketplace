@@ -37,7 +37,9 @@ SOFTWARE.
 - Source: <https://github.com/avihaymenahem/velo>, commit
   `ec47a7a5095bb5deffc24e9b6812e39107508dbe`.
 - Paths: `plugins/mail/src/core/threading.ts`, `plugins/mail/src/core/sync.ts`,
-  `plugins/mail/src/core/search.ts`, `plugins/mail/src/adapters/bb/sqlite-store.ts`.
+  `plugins/mail/src/core/search.ts`, `plugins/mail/src/adapters/bb/sqlite-store.ts`,
+  `plugins/mail/src/ui/sanitize.ts`, `plugins/mail/src/ui/message-frame.tsx`,
+  `plugins/mail/src/ui/reading-pane.tsx`.
   Each ported file names its Velo source path in a header and states that it
   was modified.
 - License: Apache-2.0, Copyright 2025 Velo Mail. Velo ships no NOTICE file.

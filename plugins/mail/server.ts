@@ -114,7 +114,7 @@ function defineSettings(bb: BbPluginApi) {
       type: "boolean",
       label: "Let agents search and read mail in every thread",
       description:
-        "Off: no thread gets the mail tools. Mentions and Hand to agent still give an agent the message you picked.",
+        "Off: no thread gets the mail tools or skill. Mentions and Hand to agent still give an agent the message you picked.",
       default: false,
     },
   });

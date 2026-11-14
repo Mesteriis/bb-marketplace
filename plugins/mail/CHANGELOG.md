@@ -17,8 +17,9 @@ All notable changes to Makosh Mail are recorded here. The format follows
 - Mail page: conversation list, search, unread badge, and a reading pane with
   sanitized HTML and remote content blocked. Opening a message marks it read
   on the server, the plugin's only server write.
-- Agent tools `mail_search` and `mail_read`, off by default behind the
-  `agentTools` setting, and a `mail` skill.
+- Agent tools `mail_search` and `mail_read` and a `mail` skill, all off by
+  default behind the `agentTools` setting.
 - A **Mail** mention provider and a **Hand to agent** button.
-- CLI: `bb makosh-mail accounts`, `search`, `read` and `sync`; inside agent
-  threads `search` and `read` follow `agentTools`.
+- CLI: `bb makosh-mail accounts`, `search`, `read`, `sync` and `remove`; inside
+  agent threads `accounts`, `search` and `read` follow `agentTools`, and
+  `remove` works only in the owner's own terminal.
