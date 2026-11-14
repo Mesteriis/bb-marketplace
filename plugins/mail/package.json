@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-makosh-mail",
   "version": "0.1.0",
-  "description": "Mail for BB, in development. This pre-release adds an empty Mail page and cannot connect an account yet.",
+  "description": "Reads iCloud, Gmail and other IMAP inboxes on a Mail page and hands a chosen message to an agent. Agent mail tools are off by default.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,7 @@
   },
   "bb": {
     "name": "Makosh Mail [Experimental]",
-    "description": "Mail for BB, in development. This pre-release adds an empty Mail page and cannot connect an account yet.",
+    "description": "Reads iCloud, Gmail and other IMAP inboxes on a Mail page and hands a chosen message to an agent. Agent mail tools are off by default.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
