@@ -71,8 +71,9 @@ function changedAccount(payload: unknown): string | null | undefined {
   return typeof value === "string" || value === null ? value : undefined;
 }
 
-function handToAgentPrompt(messageId: string): string {
-  return `Read this email (Makosh Mail message ${messageId}) and help me with it.`;
+/** The fallback prompt carries the message text itself (it starts with the untrusted notice). */
+function handToAgentPrompt(agentText: string): string {
+  return `Help me with this email.\n\n${agentText}`;
 }
 
 function MailPanel() {
@@ -100,23 +101,29 @@ function MailPanel() {
   const opened = useRef(new Set<string>());
   const requests = useRef({ list: 0, search: 0, thread: 0 });
   const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const statusLoaded = useRef(false);
 
+  /** A failed first load replaces the page; a failed refresh keeps the mailbox and toasts. */
   const loadStatus = useCallback(async () => {
     try {
       setStatus(await rpc.call("status_get", null));
+      statusLoaded.current = true;
       setStatusError(null);
     } catch (error) {
-      setStatusError(messageOf(error));
+      if (statusLoaded.current) toast.error(`Could not refresh mail status: ${messageOf(error)}`);
+      else setStatusError(messageOf(error));
     }
   }, [rpc]);
 
+  /**
+   * "reset" and "more" fetch one page; "refresh" re-fetches from the top, page
+   * after page, until it has at least as many threads as are on screen.
+   */
   const loadList = useCallback(
     async (forAccount: string, mode: "reset" | "refresh" | "more") => {
       const token = ++requests.current.list;
       const current = latest.current.list;
-      const cursor = mode === "more" ? current.nextCursor : null;
-      const limit =
-        mode === "refresh" ? Math.min(Math.max(current.threads.length, PAGE_SIZE), MAX_PAGE) : PAGE_SIZE;
+      const wanted = mode === "refresh" ? Math.max(current.threads.length, PAGE_SIZE) : PAGE_SIZE;
       setList((prev) =>
         mode === "reset"
           ? { ...EMPTY_LIST, loading: true }
@@ -125,11 +132,18 @@ function MailPanel() {
             : prev,
       );
       try {
-        const page = await rpc.call("threads_list", { accountId: forAccount, cursor, limit });
-        if (token !== requests.current.list) return;
+        const threads: ThreadListState["threads"] = [];
+        let cursor = mode === "more" ? current.nextCursor : null;
+        do {
+          const limit = Math.min(wanted - threads.length, MAX_PAGE);
+          const page = await rpc.call("threads_list", { accountId: forAccount, cursor, limit });
+          if (token !== requests.current.list) return;
+          threads.push(...page.threads);
+          cursor = page.nextCursor;
+        } while (cursor !== null && threads.length < wanted);
         setList((prev) => ({
-          threads: mode === "more" ? [...prev.threads, ...page.threads] : page.threads,
-          nextCursor: page.nextCursor,
+          threads: mode === "more" ? [...prev.threads, ...threads] : threads,
+          nextCursor: cursor,
           loading: false,
           loadingMore: false,
           error: null,
@@ -267,7 +281,11 @@ function MailPanel() {
     stopSyncing();
     void loadList(active, "refresh");
     if (currentSearch.query !== "") void runSearch(currentSearch.query, active);
-    if (currentReading.threadId !== null) void loadThread(currentReading.threadId, null);
+    // A thread still opening loads fresh data anyway; refreshing it now would
+    // supersede the open and drop which message to expand.
+    if (currentReading.threadId !== null && !currentReading.loading) {
+      void loadThread(currentReading.threadId, null);
+    }
   });
 
   const selectThread = useCallback(
@@ -324,9 +342,10 @@ function MailPanel() {
   // Preferred: a mail mention pill in the new-thread draft, resolved by the
   // mention provider at send time. useComposer() on a nav-panel page binds to
   // the route's draft; when that is not the new-thread draft, or insert
-  // throws, the prompt names the message instead.
+  // throws, the prompt carries the message's agent text instead, so the agent
+  // gets the message even when agentTools is off.
   const handToAgent = useCallback(
-    (message: MessageHeader) => {
+    async (message: MessageHeader) => {
       if (composer.scope.kind === "new-thread") {
         try {
           composer.insert(
@@ -339,9 +358,16 @@ function MailPanel() {
           // Fall through to the prompt.
         }
       }
-      navigate.toCompose({ initialPrompt: handToAgentPrompt(message.id), focusPrompt: true });
+      let text: string;
+      try {
+        ({ text } = await rpc.call("message_agent_text", { messageId: message.id }));
+      } catch (error) {
+        toast.error(`Could not hand the message to an agent: ${messageOf(error)}`);
+        return;
+      }
+      navigate.toCompose({ initialPrompt: handToAgentPrompt(text), focusPrompt: true });
     },
-    [composer, navigate],
+    [composer, navigate, rpc],
   );
 
   const testAccount = useCallback(
@@ -384,7 +410,7 @@ function MailPanel() {
       onCloseThread={closeThread}
       onToggleMessage={toggleMessage}
       onOpenLink={openLink}
-      onHandToAgent={handToAgent}
+      onHandToAgent={(message) => void handToAgent(message)}
       accountForm={accountForm}
       onOpenAccountForm={setAccountForm}
       onCloseAccountForm={() => setAccountForm(null)}
