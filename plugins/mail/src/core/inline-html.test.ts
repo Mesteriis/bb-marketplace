@@ -51,6 +51,19 @@ describe("inlineCidImages", () => {
     );
   });
 
+  it("an exact content id wins over another part's lower-case fallback", () => {
+    const upper = part("A", "image/png", new Uint8Array([1]));
+    const lower = part("a", "image/gif", new Uint8Array([2]));
+    for (const parts of [[upper, lower], [lower, upper]]) {
+      expect(inlineCidImages('<img src="cid:A"><img src="cid:a">', parts)).toBe(
+        '<img src="data:image/png;base64,AQ=="><img src="data:image/gif;base64,Ag==">',
+      );
+    }
+    expect(inlineCidImages('<img src="cid:a">', [upper])).toBe(
+      '<img src="data:image/png;base64,AQ==">',
+    );
+  });
+
   it("never inlines other mime types, svg included", () => {
     const parts = [
       part("vector", "image/svg+xml"),
