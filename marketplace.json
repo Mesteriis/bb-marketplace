@@ -1,0 +1,35 @@
+{
+  "$schema": "https://getbb.app/schemas/marketplace.schema.json",
+  "schemaVersion": 1,
+  "name": "makosh",
+  "displayName": "Makosh",
+  "description": "Plugins of the Makosh family for BB.",
+  "plugins": [
+    {
+      "id": "makosh-mail",
+      "displayName": "Makosh Mail [Experimental]",
+      "description": "Mail for BB, in development. This pre-release adds an empty Mail page and cannot connect an account yet.",
+      "icon": {
+        "url": "./icons/makosh-mail.svg"
+      },
+      "tags": [
+        "mail",
+        "email",
+        "inbox"
+      ],
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/makosh-bb.git",
+          "subdir": "plugins/mail",
+          "range": "^0.1.0",
+          "tagPrefix": "mail/"
+        }
+      }
+    }
+  ]
+}

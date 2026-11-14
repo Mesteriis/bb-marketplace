@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The BB CLI that builds the plugins. Raise it together with engines.bb.
+  BB_APP_VERSION: "0.49.0"
+
+jobs:
+  manifests:
+    name: Manifests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      plugins: ${{ steps.list.outputs.plugins }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Check that the manifests agree
+        run: node scripts/check-manifests.mjs
+      - name: List plugin directories
+        id: list
+        run: |
+          node -e '
+            const { plugins } = require("./.bb/plugins.json");
+            const dirs = plugins.map((plugin) => plugin.source.replace(/^\.\//, ""));
+            console.log("plugins=" + JSON.stringify(dirs));
+          ' >> "$GITHUB_OUTPUT"
+
+  plugin:
+    name: ${{ matrix.directory }}
+    needs: manifests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        directory: ${{ fromJSON(needs.manifests.outputs.plugins) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: ${{ matrix.directory }}/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Cache the BB build toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bb/plugins/toolchain-*
+          key: bb-toolchain-${{ runner.os }}-${{ env.BB_APP_VERSION }}
+      - name: Build with the BB CLI
+        run: npx --yes --package "bb-app@${BB_APP_VERSION}" -- bb plugin build

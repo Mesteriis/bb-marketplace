@@ -1,0 +1,51 @@
+name: Release
+
+# Runs when a plugin release tag (<plugin>/vX.Y.Z) is pushed. It repeats the
+# checks on the tagged commit and publishes a GitHub release. BB itself reads
+# the tag directly; see docs/releasing.md.
+on:
+  push:
+    tags:
+      - "*/v[0-9]+.[0-9]+.[0-9]+"
+
+permissions: {}
+
+env:
+  BB_APP_VERSION: "0.49.0"
+
+jobs:
+  release:
+    name: Release ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Resolve the tag to a plugin
+        id: info
+        env:
+          TAG: ${{ github.ref_name }}
+        run: node scripts/release-info.mjs "$TAG" >> "$GITHUB_OUTPUT"
+      - name: Check that the manifests agree
+        run: node scripts/check-manifests.mjs
+      - name: Install dependencies
+        working-directory: ${{ steps.info.outputs.directory }}
+        run: npm ci
+      - name: Typecheck and test
+        working-directory: ${{ steps.info.outputs.directory }}
+        run: npm run check
+      - name: Build with the BB CLI
+        working-directory: ${{ steps.info.outputs.directory }}
+        run: npx --yes --package "bb-app@${BB_APP_VERSION}" -- bb plugin build
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          PLUGIN: ${{ steps.info.outputs.plugin }}
+          VERSION: ${{ steps.info.outputs.version }}
+        run: gh release create "$TAG" --verify-tag --title "$PLUGIN v$VERSION" --generate-notes

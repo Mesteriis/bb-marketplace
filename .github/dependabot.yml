@@ -1,0 +1,32 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # One block per plugin directory.
+  - package-ecosystem: npm
+    directory: /plugins/mail
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    # Most devDependencies mirror what the BB host provides at runtime, and
+    # `bb plugin types` repins them with the SDK. Dependabot updates only what
+    # the plugin bundles or uses as tooling.
+    allow:
+      - dependency-type: production
+      - dependency-name: vitest
+      - dependency-name: typescript
+    groups:
+      runtime:
+        dependency-type: production
+      tooling:
+        patterns: ["vitest", "typescript"]
