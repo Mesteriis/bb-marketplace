@@ -199,6 +199,11 @@ async function syncInbox(
  * Brings the window in line with the server: fetches window messages missing
  * locally (an interrupted initial sync resumes here), deletes local messages
  * gone from the server, and takes the server's flags.
+ *
+ * SEARCH SINCE matches the server's INTERNALDATE while the local window is
+ * cut by the header date, so absence from the search alone never deletes: a
+ * local window message is deleted only when a UID FETCH of its flags returns
+ * nothing for it.
  */
 async function reconcile(
   store: MailStore,
@@ -208,7 +213,6 @@ async function reconcile(
   fetchAndStore: (uids: number[]) => Promise<number>,
 ): Promise<{ backfilled: number; removed: number; flagsChanged: number }> {
   const serverUids = await session.searchSince(since);
-  const onServer = new Set(serverUids);
   // Every stored uid, not only the window's: a message whose stored date falls
   // outside the window but whose server date is inside it is already here.
   const stored = new Set(
@@ -217,16 +221,21 @@ async function reconcile(
   const missing = serverUids.filter((uid) => !stored.has(uid)).sort((a, b) => b - a);
   const backfilled = await fetchAndStore(missing);
 
-  const local = store.localFolderIndex(accountId, INBOX, since.toISOString());
-  const gone = local.filter((entry) => !onServer.has(entry.uid)).map((entry) => entry.uid);
-  const present = local.filter((entry) => onServer.has(entry.uid)).map((entry) => entry.uid);
-
-  const removed = gone.length > 0 ? store.deleteByUids(accountId, INBOX, gone) : 0;
+  // Includes the messages just backfilled, whose flags are already current.
+  const local = store
+    .localFolderIndex(accountId, INBOX, since.toISOString())
+    .map((entry) => entry.uid);
+  const onServer = new Set<number>();
   let flagsChanged = 0;
-  for (let i = 0; i < present.length; i += FLAG_BATCH_SIZE) {
-    const flags = await session.fetchFlags(present.slice(i, i + FLAG_BATCH_SIZE));
+  for (let i = 0; i < local.length; i += FLAG_BATCH_SIZE) {
+    const flags = await session.fetchFlags(local.slice(i, i + FLAG_BATCH_SIZE));
+    for (const entry of flags) onServer.add(entry.uid);
     flagsChanged += store.applyFlags(accountId, INBOX, flags);
   }
+  // Every flag batch succeeded (a failure throws and ends the round), so a uid
+  // the server returned nothing for is gone from it.
+  const gone = local.filter((uid) => !onServer.has(uid));
+  const removed = gone.length > 0 ? store.deleteByUids(accountId, INBOX, gone) : 0;
   return { backfilled, removed, flagsChanged };
 }
 
