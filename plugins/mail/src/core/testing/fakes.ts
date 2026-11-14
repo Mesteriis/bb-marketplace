@@ -6,7 +6,7 @@
 //     reattaches a detached row with the same non-null Message-ID, and
 //     finishFolderReset deletes the rows still detached;
 //   - markOpened sets read + pending only when the message is unread;
-//   - localFolderIndex compares dates; messages without a date are left out.
+//   - localFolderIndex treats a message without a date as inside the window.
 import type {
   FetchedMessage,
   MailAddress,
@@ -271,7 +271,7 @@ export class InMemoryMailStore implements MailStore {
     return this.attachedRows(accountId, folder)
       .filter((r) => {
         const time = timeOf(r.message.date);
-        return time !== null && time >= since;
+        return time === null || time >= since;
       })
       .map((r) => ({ uid: r.uid, id: r.id }));
   }
@@ -591,7 +591,9 @@ export class ScriptedImapGateway implements ImapGateway {
       searchSince: async (date) => {
         record({ method: "searchSince", date });
         return box()
-          .messages.filter((m) => (timeOf(m.date) ?? -Infinity) >= date.getTime())
+          // SINCE uses the server's internal date, which every message has; an
+          // undated fixture stands for a recent one.
+          .messages.filter((m) => (timeOf(m.date) ?? Infinity) >= date.getTime())
           .map((m) => m.uid);
       },
       uidsAfter: async (uid) => {
