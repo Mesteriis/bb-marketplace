@@ -40,6 +40,31 @@ const MESSAGE_QUERY: FetchQueryObject = {
 
 const SAFE_CODE = /^[A-Za-z][A-Za-z0-9_]{0,40}$/;
 
+/** An error this file built: its message and code are safe to pass on as they are. */
+export class SafeImapError extends Error {
+  constructor(
+    readonly code: string,
+    message = `IMAP error (${code})`,
+  ) {
+    super(message);
+    this.name = "SafeImapError";
+  }
+}
+
+/** What a session needs from an imapflow client; tests pass a stub. */
+export type SessionClient = Pick<
+  ImapFlow,
+  "mailbox" | "search" | "fetch" | "messageFlagsAdd" | "logout" | "close"
+>;
+
+export type ParseMail = (source: Buffer | string) => Promise<Email>;
+
+const EMPTY_MAIL: Email = { headers: [], headerLines: [], attachments: [] };
+
+function parseWithPostalMime(source: Buffer | string): Promise<Email> {
+  return PostalMime.parse(source, { attachmentEncoding: "arraybuffer" });
+}
+
 export function createImapflowGateway(options: ImapflowGatewayOptions = {}): ImapGateway {
   const log = options.logger ?? (() => {});
 
@@ -81,7 +106,17 @@ export function createImapflowGateway(options: ImapflowGatewayOptions = {}): Ima
   };
 }
 
-function createSession(client: ImapFlow, readOnly: boolean): InboxSession {
+/**
+ * An INBOX session over an open client. A refused SEARCH or STORE throws
+ * (never reads as "no messages" or "done"); a message postal-mime cannot
+ * parse is kept with its envelope only, so one crafted email cannot block a
+ * batch.
+ */
+export function createSession(
+  client: SessionClient,
+  readOnly: boolean,
+  parse: ParseMail = parseWithPostalMime,
+): InboxSession {
   const guarded =
     <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
     async (...args: A): Promise<R> => {
@@ -95,7 +130,7 @@ function createSession(client: ImapFlow, readOnly: boolean): InboxSession {
   return {
     status: guarded(async () => {
       const mailbox = client.mailbox;
-      if (!mailbox) throw new Error("INBOX is not open");
+      if (!mailbox) throw new SafeImapError("NoMailboxSelected");
       return {
         uidValidity: Number(mailbox.uidValidity),
         uidNext: mailbox.uidNext,
@@ -104,12 +139,12 @@ function createSession(client: ImapFlow, readOnly: boolean): InboxSession {
     }),
 
     searchSince: guarded(async (date: Date) => {
-      return (await client.search({ since: date }, { uid: true })) || [];
+      return searchUids(client, { since: date });
     }),
 
     uidsAfter: guarded(async (uid: number) => {
       // "N:*" always matches the highest uid, even when it is below N.
-      const uids = (await client.search({ uid: `${uid + 1}:*` }, { uid: true })) || [];
+      const uids = await searchUids(client, { uid: `${uid + 1}:*` });
       return uids.filter((found) => found > uid);
     }),
 
@@ -117,9 +152,12 @@ function createSession(client: ImapFlow, readOnly: boolean): InboxSession {
       if (uids.length === 0) return [];
       const messages: FetchedMessage[] = [];
       for await (const message of client.fetch(uids, MESSAGE_QUERY, { uid: true })) {
-        const parsed = await PostalMime.parse(message.source ?? "", {
-          attachmentEncoding: "arraybuffer",
-        });
+        let parsed: Email;
+        try {
+          parsed = await parse(message.source ?? "");
+        } catch {
+          parsed = EMPTY_MAIL;
+        }
         messages.push(toFetchedMessage(message, parsed));
       }
       return messages;
@@ -139,16 +177,27 @@ function createSession(client: ImapFlow, readOnly: boolean): InboxSession {
     }),
 
     markSeen: guarded(async (uids: number[]) => {
-      if (readOnly) throw new Error("Mailbox is read-only");
+      if (readOnly) throw new SafeImapError("ReadOnly", "IMAP error (mailbox is read-only)");
       if (uids.length === 0) return;
-      await client.messageFlagsAdd(uids, ["\\Seen"], { uid: true });
+      const stored = await client.messageFlagsAdd(uids, ["\\Seen"], { uid: true });
+      if (!stored) throw new SafeImapError("StoreFailed");
     }),
 
     close: () => logoutQuietly(client),
   };
 }
 
-async function logoutQuietly(client: ImapFlow): Promise<void> {
+async function searchUids(
+  client: SessionClient,
+  query: Parameters<ImapFlow["search"]>[0],
+): Promise<number[]> {
+  const result = await client.search(query, { uid: true });
+  // imapflow resolves false when the server refuses the SEARCH.
+  if (!Array.isArray(result)) throw new SafeImapError("SearchFailed");
+  return result;
+}
+
+async function logoutQuietly(client: SessionClient): Promise<void> {
   try {
     await client.logout();
   } catch {
@@ -173,7 +222,7 @@ export function toImapflowOptions(config: ImapConfig): ImapFlowOptions {
  * login, otherwise an Error whose message names only a code.
  */
 export function describeImapError(error: unknown): Error {
-  if (error instanceof ImapAuthError) return error;
+  if (error instanceof ImapAuthError || error instanceof SafeImapError) return error;
   const fields = (error ?? {}) as {
     authenticationFailed?: unknown;
     serverResponseCode?: unknown;
@@ -184,10 +233,10 @@ export function describeImapError(error: unknown): Error {
     return new ImapAuthError();
   }
   if (typeof fields.code === "string" && SAFE_CODE.test(fields.code)) {
-    return Object.assign(new Error(`IMAP error (${fields.code})`), { code: fields.code });
+    return new SafeImapError(fields.code);
   }
-  if (fields.tlsFailed === true) return new Error("IMAP error (TLS failed)");
-  return new Error("IMAP error");
+  if (fields.tlsFailed === true) return new SafeImapError("TLSFailed", "IMAP error (TLS failed)");
+  return new SafeImapError("Unknown", "IMAP error");
 }
 
 // ---------------------------------------------------------------------------

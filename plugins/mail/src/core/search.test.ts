@@ -39,6 +39,14 @@ describe("parseQuery", () => {
     expect(parseQuery("is:starred from: label:x")).toEqual({ text: "is:starred from: label:x" });
   });
 
+  it("splits on any Unicode whitespace", () => {
+    expect(parseQuery("from:a@example.org\u00a0is:unread\u3000hello")).toEqual({
+      text: "hello",
+      from: "a@example.org",
+      unread: true,
+    });
+  });
+
   it("matches operator names case-insensitively", () => {
     expect(parseQuery("FROM:a@example.org IS:UNREAD")).toEqual({
       text: "",

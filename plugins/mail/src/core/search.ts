@@ -87,6 +87,9 @@ function isValidDate(value: string): boolean {
   );
 }
 
+const SPACE = /^\s$/u;
+
+/** Any Unicode whitespace, including NBSP and the ideographic space. */
 function isSpace(char: string): boolean {
-  return char === " " || char === "\t" || char === "\n" || char === "\r";
+  return SPACE.test(char);
 }

@@ -2,7 +2,14 @@ import PostalMime from "postal-mime";
 import type { FetchMessageObject } from "imapflow";
 import { describe, expect, it } from "vitest";
 import { ImapAuthError } from "../../core/index.ts";
-import { describeImapError, toFetchedMessage, toImapflowOptions } from "./imapflow-gateway.ts";
+import {
+  SafeImapError,
+  createSession,
+  describeImapError,
+  toFetchedMessage,
+  toImapflowOptions,
+  type SessionClient,
+} from "./imapflow-gateway.ts";
 
 const RAW = [
   "From: Invented Sender <sender@example.org>",
@@ -171,7 +178,7 @@ describe("toImapflowOptions", () => {
         logger: false,
         auth: { user: "owner@example.org", pass: "invented-password" },
       });
-      expect(options.doSTARTTLS).not.toBe(false);
+      expect(options.doSTARTTLS).toBeUndefined();
     }
   });
 });
@@ -209,5 +216,106 @@ describe("describeImapError", () => {
     expect(describeImapError(tls).message).toBe("IMAP error (TLS failed)");
     const weird = Object.assign(new Error("x"), { code: `bad code ${password}` });
     expect(describeImapError(weird).message).toBe("IMAP error");
+  });
+
+  it("passes errors it already built through unchanged", () => {
+    const tls = describeImapError(Object.assign(new Error("x"), { tlsFailed: true }));
+    expect(describeImapError(tls)).toBe(tls);
+    expect(describeImapError(tls).message).toBe("IMAP error (TLS failed)");
+    const auth = describeImapError({ authenticationFailed: true });
+    expect(describeImapError(auth)).toBe(auth);
+  });
+});
+
+type StubOptions = {
+  search?: unknown;
+  stored?: boolean;
+  fetched?: FetchMessageObject[];
+  mailbox?: unknown;
+};
+
+function stubClient(options: StubOptions = {}) {
+  const calls: { method: string; args: unknown[] }[] = [];
+  const client = {
+    mailbox: "mailbox" in options ? options.mailbox : { uidValidity: 7n, uidNext: 50, exists: 3 },
+    search: async (...args: unknown[]) => {
+      calls.push({ method: "search", args });
+      return options.search;
+    },
+    fetch: async function* (...args: unknown[]) {
+      calls.push({ method: "fetch", args });
+      yield* options.fetched ?? [];
+    },
+    messageFlagsAdd: async (...args: unknown[]) => {
+      calls.push({ method: "messageFlagsAdd", args });
+      return options.stored ?? true;
+    },
+    logout: async () => {},
+    close: () => {},
+  };
+  return { client: client as unknown as SessionClient, calls };
+}
+
+describe("createSession", () => {
+  it("throws when the server refuses a search instead of reporting no mail", async () => {
+    for (const refused of [false, undefined]) {
+      const session = createSession(stubClient({ search: refused }).client, true);
+      await expect(session.searchSince(new Date())).rejects.toThrow("IMAP error (SearchFailed)");
+      await expect(session.uidsAfter(10)).rejects.toBeInstanceOf(SafeImapError);
+    }
+  });
+
+  it("returns search results and drops uids not after the last one", async () => {
+    const session = createSession(stubClient({ search: [9] }).client, true);
+    expect(await session.searchSince(new Date())).toEqual([9]);
+    expect(await session.uidsAfter(9)).toEqual([]);
+  });
+
+  it("markSeen throws when the server rejects the STORE", async () => {
+    const { client, calls } = stubClient({ stored: false });
+    await expect(createSession(client, false).markSeen([1, 2])).rejects.toThrow(
+      "IMAP error (StoreFailed)",
+    );
+    expect(calls).toEqual([
+      { method: "messageFlagsAdd", args: [[1, 2], ["\\Seen"], { uid: true }] },
+    ]);
+  });
+
+  it("markSeen stores \\Seen and refuses a read-only session with a safe code", async () => {
+    const { client, calls } = stubClient({ stored: true });
+    await createSession(client, false).markSeen([3]);
+    expect(calls).toHaveLength(1);
+    const readOnly = createSession(stubClient().client, true).markSeen([3]);
+    await expect(readOnly).rejects.toMatchObject({ code: "ReadOnly" });
+  });
+
+  it("reports a missing mailbox with a safe code", async () => {
+    const session = createSession(stubClient({ mailbox: false }).client, true);
+    await expect(session.status()).rejects.toMatchObject({ code: "NoMailboxSelected" });
+    const open = createSession(stubClient().client, true);
+    expect(await open.status()).toEqual({ uidValidity: 7, uidNext: 50, exists: 3 });
+  });
+
+  it("keeps a message postal-mime cannot parse with its envelope only", async () => {
+    const fetched = [imapMessage({ uid: 1 }), imapMessage({ uid: 2 }), imapMessage({ uid: 3 })];
+    const parse = async (source: Buffer | string) => {
+      if (fetched[1]!.source === source) {
+        throw Object.assign(new Error("too deep"), { code: "EMAXNESTINGDEPTH" });
+      }
+      return PostalMime.parse(source);
+    };
+    const session = createSession(stubClient({ fetched }).client, true, parse);
+    const messages = await session.fetchMessages([1, 2, 3]);
+    expect(messages.map((m) => m.uid)).toEqual([1, 2, 3]);
+    expect(messages[0]!.bodyText?.trim()).toBe("Invented plain body.");
+    expect(messages[1]).toMatchObject({
+      uid: 2,
+      messageId: "<raw-1@example.org>",
+      subject: "Invented subject",
+      bodyText: null,
+      bodyHtml: null,
+      attachments: [],
+      references: [],
+    });
   });
 });
