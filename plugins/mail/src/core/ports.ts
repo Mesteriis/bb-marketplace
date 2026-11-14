@@ -50,7 +50,9 @@ export interface FolderSession {
   /**
    * Moves the uids to `destination`. `moved` maps source uid to destination
    * uid (COPYUID), or is null when the server returned none. Throws when the
-   * server refuses the move, and on a read-only session.
+   * server refuses the move (error `code` "MoveFailed"), when the server
+   * cannot move without a plain EXPUNGE ("MoveUnsupported", nothing sent),
+   * and on a read-only session.
    */
   moveMessages(
     uids: number[],
@@ -115,8 +117,8 @@ export interface MailStore {
   pendingSeenUids(accountId: string, folder: string): number[];
   clearSeenPending(accountId: string, folder: string, uids: number[]): void;
   /**
-   * Marks every row with the same dedup key read locally; `seen_pending`
-   * only on the given row.
+   * Marks every row with the same dedup key read locally, and `seen_pending`
+   * on each such row that has a uid (attached), so every copy is pushed.
    */
   markOpened(messageId: string): { accountId: string } | null;
   threadingInputs(accountId: string): ThreadingInput[];

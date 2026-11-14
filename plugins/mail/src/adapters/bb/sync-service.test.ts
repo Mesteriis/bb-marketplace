@@ -102,7 +102,7 @@ describe("createSyncLoop", () => {
     controller.abort();
     await done;
 
-    expect(getAccount("acc_bad")?.lastError).toBe("Sync failed");
+    expect(getAccount("acc_bad")?.lastError).toBe("INBOX: Sync failed");
     expect(getAccount("acc_sealed")?.lastError).toBe(DECRYPT_ERROR);
     expect(notifier.changes).toContain("acc_sealed");
     expect(getAccount("acc_good")?.lastError).toBeNull();
@@ -178,7 +178,9 @@ describe("createSyncLoop", () => {
     let opened = false;
     const stuck: ImapGateway = {
       test: async () => ({ ok: true }),
-      listFolders: async () => [],
+      listFolders: async () => [
+        { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+      ],
       openFolder: () => {
         opened = true;
         return new Promise<FolderSession>(() => {});
