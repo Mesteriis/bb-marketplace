@@ -243,6 +243,22 @@ export function cleanEmailCss(css: string): string {
   return out + text.slice(from);
 }
 
+/**
+ * True when an attribute value has a url() that is not a same-document
+ * reference (`url(#id)`, quotes and spaces allowed). SVG presentation
+ * attributes (fill, mask, filter, clip-path, marker-*, …) load such URLs.
+ */
+function hasExternalUrl(value: string): boolean {
+  const text = decodeLetterEscapes(value);
+  const call = /url\(/gi;
+  for (let match = call.exec(text); match !== null; match = call.exec(text)) {
+    let i = call.lastIndex;
+    while (i < text.length && /[\s"']/.test(text[i]!)) i++;
+    if (text[i] !== "#") return true;
+  }
+  return false;
+}
+
 type Purifier = ReturnType<typeof DOMPurify>;
 let purifier: Purifier | null = null;
 
@@ -259,8 +275,11 @@ function emailPurifier(): Purifier {
     if (data.tagName === "style") node.textContent = cleanEmailCss(node.textContent ?? "");
   });
   instance.addHook("afterSanitizeAttributes", (node) => {
-    for (const { name } of Array.from(node.attributes)) {
-      if (name.toLowerCase().startsWith("on")) node.removeAttribute(name);
+    for (const { name, value } of Array.from(node.attributes)) {
+      const lower = name.toLowerCase();
+      if (lower.startsWith("on")) node.removeAttribute(name);
+      // style is cleaned below; any other attribute naming a remote url() goes, in both modes.
+      else if (lower !== "style" && hasExternalUrl(value)) node.removeAttribute(name);
     }
     for (const name of LOADING_ATTRIBUTES) node.removeAttribute(name);
     const src = node.getAttribute("src");

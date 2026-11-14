@@ -272,6 +272,29 @@ describe("sanitizeEmailHtml modes", () => {
   });
 });
 
+describe("sanitizeEmailHtml url() in attributes", () => {
+  const SVG =
+    `<svg><defs><linearGradient id="g"></linearGradient></defs>` +
+    `<rect fill="url(https://tracker.example.org/fill.svg#p)" width="1"></rect>` +
+    `<rect mask="url( 'https://tracker.example.org/mask.svg' )"></rect>` +
+    `<rect filter="URL(&quot;https://tracker.example.org/filter.svg&quot;)"></rect>` +
+    `<path marker-start="u\\72l(https://tracker.example.org/marker.svg)" d="M0 0"></path>` +
+    `<rect clip-path="url(//tracker.example.org/clip.svg)"></rect>` +
+    `<rect stroke="url(#g)" fill="url( '#g' )" id="kept"></rect>` +
+    `</svg>`;
+
+  for (const remoteImages of [false, true]) {
+    it(`drops presentation attributes that load a URL (${remoteImages ? "allowed" : "default"} mode)`, () => {
+      const { html } = sanitizeEmailHtml(SVG, { remoteImages });
+
+      expect(html).not.toContain("tracker.example.org");
+      // Same-document references (gradients, clip paths) stay.
+      expect(html).toMatch(/<rect[^>]*stroke="url\(#g\)"/);
+      expect(html).toMatch(/<rect[^>]*fill="url\( '#g' \)"/);
+    });
+  }
+});
+
 describe("cleanEmailCss", () => {
   const SIZE = 300_000;
   const repeated = (unit: string) => unit.repeat(Math.ceil(SIZE / unit.length));
