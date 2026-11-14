@@ -65,7 +65,7 @@ const core: Layer = {
 
 const ui: Layer = {
   directory: "src/ui",
-  packages: ["react", "@/components", "@/lib", "@/hooks"],
+  packages: ["react", "dompurify", "@/components", "@/lib", "@/hooks"],
   reachable: ["src/ui", "src/core"],
 };
 
