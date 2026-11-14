@@ -90,7 +90,8 @@ function ImagesBar({
 }) {
   return (
     <div
-      role="status"
+      role="region"
+      aria-label="Remote images"
       className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-muted px-2 py-1 text-xs text-muted-foreground"
     >
       <Icon name="EyeOff" className="size-3.5 shrink-0" aria-hidden />

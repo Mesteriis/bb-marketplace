@@ -147,15 +147,30 @@ describe("sanitizeEmailHtml modes", () => {
     expect(result.html).toContain('src="data:image/png;base64,iVBORw0KGgo="');
   });
 
-  it("counts remote CSS urls, srcset and background attributes as blocked images", () => {
+  it("reports only what Show images would reveal: an https img src", () => {
     for (const html of [
+      // http: stays blocked even when images are allowed.
+      `<img src="http://tracker.example.org/plain.png" alt="plain">`,
+      // CSS url() stays blocked in both modes.
       `<div style="background: url(https://tracker.example.org/x.png)">x</div>`,
       `<style>.a { background: url('https://tracker.example.org/x.png') }</style>`,
+      // srcset and background attributes stay blocked in both modes.
       `<img srcset="https://tracker.example.org/a.png 1x" alt="set">`,
       `<table background="https://tracker.example.org/bg.png"><tr><td>c</td></tr></table>`,
+      `<img src="//tracker.example.org/relative.png" alt="relative">`,
     ]) {
-      expect(sanitizeEmailHtml(html, { remoteImages: false }).blockedRemoteImages).toBe(true);
+      expect(sanitizeEmailHtml(html, { remoteImages: false }).blockedRemoteImages, html).toBe(false);
     }
+  });
+
+  it("treats https: without slashes the same in both modes", () => {
+    const html = `<img src="https:tracker.example.org/x.png" alt="odd">`;
+    const blocked = sanitizeEmailHtml(html, { remoteImages: false });
+    const allowed = sanitizeEmailHtml(html, { remoteImages: true });
+
+    expect(blocked.blockedRemoteImages).toBe(false);
+    expect(blocked.html).not.toContain("tracker.example.org");
+    expect(allowed.html).not.toContain("tracker.example.org");
   });
 
   it("drops svg data: images in both modes and keeps raster ones", () => {
@@ -192,8 +207,8 @@ describe("sanitizeEmailHtml modes", () => {
     ]) {
       expect(rest).not.toContain(banned);
     }
-    // The srcset and background images stay blocked.
-    expect(blockedRemoteImages).toBe(true);
+    // Allowed mode never reports blocked images: Show images has nothing more to show.
+    expect(blockedRemoteImages).toBe(false);
   });
 
   it("allowed mode keeps only https img src", () => {
@@ -223,7 +238,21 @@ describe("sanitizeEmailHtml modes", () => {
     expect(EMAIL_CSP_REMOTE_IMAGES).toBe(
       "default-src 'none'; img-src data: https:; style-src 'unsafe-inline'",
     );
-    expect(blockedRemoteImages).toBe(true);
+    expect(blockedRemoteImages).toBe(false);
+  });
+
+  it("allowed mode still drops escaped, unterminated and image-set CSS urls", () => {
+    // cleanEmailCss is the only barrier here: the allowed CSP permits https: images.
+    const { html } = sanitizeEmailHtml(
+      `<style>.c { background: \\75 rl(https://tracker.example.org/escaped.png); }` +
+        `.d { background: image-set("https://tracker.example.org/set.png" 1x); }` +
+        `@\\69mport "https://tracker.example.org/escaped.css";</style>` +
+        `<div style="background: url(https://tracker.example.org/open">x</div>`,
+      { remoteImages: true },
+    );
+
+    expect(html).not.toContain("tracker.example.org");
+    expect(html).not.toContain("@import");
   });
 
   it("allowed mode sends no referrer with the images it loads", () => {

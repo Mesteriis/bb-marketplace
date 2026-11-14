@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -119,6 +119,7 @@ function mailRpc(overrides: Record<string, (input: never) => unknown> = {}) {
       remoteImagesAllowed: false,
     }),
     message_open: () => ({ ok: true }),
+    folders_list: () => ({ folders: [] }),
     ...overrides,
   };
 }
@@ -755,5 +756,152 @@ describe("Refreshes and read marks", () => {
     await waitFor(() => expect(callsTo(slot, "message_open")).toHaveLength(2));
     await waitFor(() => expect(toasts.error).toHaveLength(1));
     expect(toasts.error[0]).toContain("Invented store failure");
+  });
+});
+
+describe("Fix round 1", () => {
+  it("a failed folder load says so in the rail and toasts, not the first-sync hint", async () => {
+    const slot = render(
+      folderRpc({
+        folders_list: () => {
+          throw new Error("Invented folder failure");
+        },
+      }),
+    );
+
+    expect(await slot.findByText("Lunch")).toBeTruthy();
+    const rail = await slot.findByRole("navigation", { name: "Folders" });
+    expect(await within(rail).findByText(/Could not load folders: Invented folder failure/)).toBeTruthy();
+    expect(within(rail).queryByText("Folders appear after the first sync.")).toBeNull();
+    await waitFor(() => expect(toasts.error).toEqual(["Could not load folders: Invented folder failure"]));
+  });
+
+  it("an empty folder list keeps the first-sync hint", async () => {
+    const slot = render(folderRpc({ folders_list: () => ({ folders: [] }) }));
+
+    const rail = await slot.findByRole("navigation", { name: "Folders" });
+    expect(await within(rail).findByText("Folders appear after the first sync.")).toBeTruthy();
+  });
+
+  it("the header folder select shows the folder being viewed", async () => {
+    const slot = render(folderRpc());
+
+    const select = await slot.findByRole("combobox", { name: "Folder" });
+    await waitFor(() => expect(select.textContent).toContain("Inbox (2)"));
+
+    await openFolder(slot, /Spam/);
+    await waitFor(() => expect(slot.getByRole("combobox", { name: "Folder" }).textContent).toContain("Spam (4)"));
+  });
+
+  it("hides the moves when no message of the conversation is in the viewed folder", async () => {
+    const slot = render(folderRpc({ thread_get: () => detailIn("Projects/Alpha") }));
+
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+
+    const labels = toolbar(slot)
+      .getAllByRole("button")
+      .map((button) => button.textContent?.trim())
+      .filter((label) => label !== "Back");
+    expect(labels).toEqual(["Hand to agent"]);
+  });
+
+  it("shows Spam and Delete but no Archive in an archive folder", async () => {
+    const slot = render(
+      folderRpc({
+        folders_list: () => ({
+          folders: [
+            folder({ path: "INBOX", name: "Inbox", specialUse: "inbox" }),
+            folder({ path: "Archive", name: "Archive", specialUse: "archive" }),
+          ],
+        }),
+      }),
+    );
+
+    await openFolder(slot, /^Archive/);
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+
+    expect(toolbar(slot).queryByRole("button", { name: "Archive" })).toBeNull();
+    expect(toolbar(slot).getByRole("button", { name: "Spam" })).toBeTruthy();
+    expect(toolbar(slot).getByRole("button", { name: "Delete" })).toBeTruthy();
+  });
+
+  it("a failed Always show toasts and keeps the images hidden", async () => {
+    const slot = render(
+      folderRpc({
+        message_body: ({ messageId }: { messageId: string }) => ({
+          messageId,
+          text: null,
+          html: `<img src="https://images.example.org/invented.png" alt="pic">`,
+          htmlTruncated: false,
+          remoteImagesAllowed: false,
+        }),
+        images_allow_sender: () => {
+          throw new Error("Invented allow failure");
+        },
+      }),
+    );
+
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    expect(await slot.findByRole("region", { name: "Remote images" })).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Always show from ada@example.org" }));
+
+    await waitFor(() => expect(toasts.error).toEqual(["Could not allow images: Invented allow failure"]));
+    expect(slot.getByText("Images are hidden to protect your privacy.")).toBeTruthy();
+  });
+
+  it("an empty folder with a sync error shows the empty state under the banner", async () => {
+    const slot = render(
+      folderRpc({
+        status_get: () => status({ accounts: [{ ...account, lastError: "Invented push failure" }] }),
+        threads_list: () => ({ threads: [], nextCursor: null }),
+      }),
+    );
+
+    expect(await slot.findByText("Invented push failure")).toBeTruthy();
+    expect(await slot.findByText("No mail")).toBeTruthy();
+    expect(slot.queryByText("Mail could not sync")).toBeNull();
+  });
+
+  it("re-runs an active search after an action", async () => {
+    const slot = render(
+      folderRpc({
+        search: () => ({ hits: [{ ...message({ id: "m-new" }) }] }),
+        message_action: () => ({ queued: 2, destination: "Trash" }),
+      }),
+    );
+
+    fireEvent.change(await slot.findByLabelText("Search mail"), { target: { value: "plan" } });
+    fireEvent.submit(slot.getByRole("search"));
+    fireEvent.click(await within(await slot.findByRole("list", { name: "Search results" })).findByRole("button"));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    const searchesBefore = callsTo(slot, "search").length;
+
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(toasts.success).toEqual(["Moved to Trash"]));
+    await waitFor(() => expect(callsTo(slot, "search").length).toBe(searchesBefore + 1));
+  });
+
+  it("a steady stream of mail-changed events still refreshes every 2 seconds", async () => {
+    const slot = render(folderRpc());
+    expect(await slot.findByText("Lunch")).toBeTruthy();
+    await waitFor(() => expect(callsTo(slot, "folders_list")).toHaveLength(1));
+    const listBefore = callsTo(slot, "threads_list").length;
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      // An event every 200 ms for 4.2 s never leaves a 250 ms gap.
+      for (let i = 0; i < 21; i++) {
+        await slot.behavior.emitRealtime(MAIL_CHANGED_CHANNEL, { accountId: "acc-1" });
+        await act(async () => {
+          vi.advanceTimersByTime(200);
+        });
+      }
+      expect(callsTo(slot, "threads_list").length - listBefore).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

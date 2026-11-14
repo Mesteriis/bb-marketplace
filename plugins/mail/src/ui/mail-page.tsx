@@ -30,7 +30,6 @@ import {
   LoadingState,
   NoSearchResults,
   NothingSelected,
-  SyncErrorState,
   SyncingState,
   VaultNotReady,
 } from "./empty-states.tsx";
@@ -78,6 +77,8 @@ export interface MailPageProps {
   onSelectAccount: (accountId: string) => void;
   /** The account's folders; null while they load. */
   folders: Folder[] | null;
+  /** Why the folders could not be loaded; null when they could. */
+  foldersError: string | null;
   /** Path of the folder the list shows. */
   folderPath: string;
   onSelectFolder: (path: string) => void;
@@ -218,6 +219,7 @@ function Mailbox(props: MailPageProps & { account: Account; status: StatusView }
             folders={folders ?? []}
             selectedPath={folderPath}
             onSelect={props.onSelectFolder}
+            error={props.foldersError}
           />
         </nav>
         <section
@@ -289,8 +291,10 @@ function ListColumn(props: MailPageProps & { account: Account }) {
   }
   if (list.loading && list.threads.length === 0) return <ListMessage text="Loading mail…" />;
   if (list.threads.length === 0) {
-    if (account.lastError !== null) return <SyncErrorState message={account.lastError} />;
-    if (account.lastSyncAt === null || props.syncing) return <SyncingState />;
+    // The banner above already shows lastError; the folder is simply empty.
+    if (account.lastError === null && (account.lastSyncAt === null || props.syncing)) {
+      return <SyncingState />;
+    }
     return <EmptyFolder name={nameOf(props.folders, props.folderPath)} />;
   }
   return (
