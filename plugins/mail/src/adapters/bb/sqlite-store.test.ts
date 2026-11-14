@@ -1,8 +1,13 @@
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildThreads } from "../../core/threading.ts";
+import type { RemoteFolder } from "../../core/model.ts";
 import type { MailStore } from "../../core/ports.ts";
-import { makeFetchedMessage, makeStoredAccount } from "../../core/testing/fakes.ts";
+import {
+  InMemoryMailStore,
+  makeFetchedMessage,
+  makeStoredAccount,
+} from "../../core/testing/fakes.ts";
 import { MIGRATIONS, createSqliteStore } from "./sqlite-store.ts";
 
 const INBOX = "INBOX";
@@ -587,5 +592,424 @@ describe("createSqliteStore", () => {
       }),
     ).toThrow("Invented abort");
     expect(store.localFolderIndex("acc_1", INBOX, EPOCH)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 2: folders, cross-folder dedup, moves, inline parts, image senders.
+// ---------------------------------------------------------------------------
+
+const ALL_MAIL = "[Gmail]/All Mail";
+
+function remoteFolder(
+  path: string,
+  specialUse: RemoteFolder["specialUse"] = null,
+  overrides: Partial<RemoteFolder> = {},
+): RemoteFolder {
+  return { path, name: path.split("/").pop()!, delimiter: "/", specialUse, selectable: true, ...overrides };
+}
+
+function idIn(target: MailStore, folder: string, uid: number, accountId = "acc_1"): string {
+  const entry = target.localFolderIndex(accountId, folder, EPOCH).find((e) => e.uid === uid);
+  if (!entry) throw new Error(`uid ${uid} not stored in ${folder}`);
+  return entry.id;
+}
+
+function bytes(length: number, fill: number): Uint8Array {
+  return new Uint8Array(length).fill(fill);
+}
+
+describe("slice-2 migrations (SQLite)", () => {
+  it("migrations append and backfill dedup keys of slice-1 rows", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 2).forEach((s) => old.exec(s)))();
+    old
+      .prepare(
+        `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+         VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner', 'sealed', 'other', ?)`,
+      )
+      .run(EPOCH);
+    const insert = old.prepare(
+      `INSERT INTO messages (id, account_id, folder, uid, message_id, thread_id, from_address, subject, date, snippet)
+       VALUES (?, 'acc_1', 'INBOX', ?, ?, ?, 'sender@example.org', 'Invented', '2026-11-10T00:00:00.000Z', 'Invented')`,
+    );
+    insert.run("m_a", 1, "a@example.org", "t_m_a");
+    insert.run("m_b", 2, null, "t_m_b");
+    old.prepare(
+      `INSERT INTO threads (id, account_id, subject, last_date, message_count, unread_count, participants_json, snippet)
+       VALUES ('t_m_a', 'acc_1', 'Invented', NULL, 1, 1, '[]', ''), ('t_m_b', 'acc_1', 'Invented', NULL, 1, 1, '[]', '')`,
+    ).run();
+    old.prepare(
+      "INSERT INTO sync_state (account_id, folder, uid_validity, last_uid, synced_since) VALUES ('acc_1', 'INBOX', 7, 2, ?)",
+    ).run(EPOCH);
+
+    old.transaction(() => MIGRATIONS.slice(2).forEach((s) => old.exec(s)))();
+
+    const keys = old.prepare("SELECT id, dedup_key, gm_msgid, move_pending, move_failures FROM messages ORDER BY id").all();
+    expect(keys).toEqual([
+      { id: "m_a", dedup_key: "mid:a@example.org", gm_msgid: null, move_pending: null, move_failures: 0 },
+      { id: "m_b", dedup_key: "id:m_b", gm_msgid: null, move_pending: null, move_failures: 0 },
+    ]);
+    const names = (
+      old.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')").all() as { name: string }[]
+    ).map((r) => r.name);
+    expect(names).toEqual(
+      expect.arrayContaining(["folders", "image_senders", "inline_parts", "messages_dedup", "messages_folder_pending"]),
+    );
+    // Earlier elements are untouched: slice 1 shipped exactly two.
+    expect(MIGRATIONS.length).toBeGreaterThan(2);
+
+    const migrated = createSqliteStore(old);
+    expect(migrated.getSyncState("acc_1", INBOX)).toEqual({ uidValidity: 7, lastUid: 2, syncedSince: EPOCH });
+    expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toHaveLength(2);
+    expect(migrated.unreadCount("acc_1")).toBe(2);
+  });
+
+  it("listThreads by folder stays fast for a few thousand messages", () => {
+    const folders = [INBOX, ALL_MAIL, "Spam"];
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder(ALL_MAIL, "all"), remoteFolder("Spam", "junk")]);
+    for (const [index, folder] of folders.entries()) {
+      const n = folder === "Spam" ? 20 : 2_000;
+      store.upsertMessages(
+        "acc_1",
+        folder,
+        Array.from({ length: n }, (_, i) =>
+          makeFetchedMessage(i + 1, {
+            messageId: `perf-${index}-${i}@example.org`,
+            date: new Date(Date.UTC(2026, 9, 1) + i * 60_000).toISOString(),
+          }),
+        ),
+      );
+    }
+    store.assignThreads("acc_1", new Map());
+    const timings: number[] = [];
+    for (const folder of folders) {
+      const started = performance.now();
+      const page = store.listThreads("acc_1", folder, null, 50);
+      timings.push(performance.now() - started);
+      expect(page.threads.length).toBe(folder === "Spam" ? 20 : 50);
+    }
+    const startedFolders = performance.now();
+    store.listFolders("acc_1");
+    store.unreadCount(null);
+    timings.push(performance.now() - startedFolders);
+    // Measured locally (4,020 threads): about 10 ms per listThreads, 3 ms for folders + badge.
+    for (const t of timings) expect(t).toBeLessThan(150);
+  });
+
+  it("inline parts cascade with their message and the account", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { inlineParts: [{ contentId: "a", mimeType: "image/png", data: bytes(10, 1) }] }),
+      makeFetchedMessage(2, { inlineParts: [{ contentId: "b", mimeType: "image/png", data: bytes(10, 2) }] }),
+    ]);
+    store.allowImageSender("acc_1", "sender@example.org");
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox")]);
+    expect(count(db, "inline_parts")).toBe(2);
+    store.deleteByUids("acc_1", INBOX, [1]);
+    expect(count(db, "inline_parts")).toBe(1);
+    store.deleteAccount("acc_1");
+    for (const table of ["inline_parts", "folders", "image_senders", "messages"]) {
+      expect(count(db, table)).toBe(0);
+    }
+  });
+});
+
+const storeKinds: [string, () => MailStore][] = [
+  [
+    "SQLite",
+    () => {
+      const fresh = new Database(":memory:");
+      migrate(fresh);
+      return createSqliteStore(fresh);
+    },
+  ],
+  ["in-memory fake", () => new InMemoryMailStore()],
+];
+
+describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
+  let s: MailStore;
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+  });
+
+  const gmail = () => {
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder(ALL_MAIL, "all")]);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { messageId: "g@example.org", gmMsgId: "100", gmThreadId: "900" })]);
+    s.upsertMessages("acc_1", ALL_MAIL, [
+      makeFetchedMessage(50, { messageId: "g@example.org", gmMsgId: "100", gmThreadId: "900" }),
+      makeFetchedMessage(51, { messageId: "other@example.org", gmMsgId: "101", subject: "Invented archived" }),
+    ]);
+    s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+  };
+
+  it("gmail copies in INBOX and All Mail count once in thread, folder and badge counts", () => {
+    gmail();
+    const inbox = s.listThreads("acc_1", INBOX, null, 10).threads;
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]).toMatchObject({ messageCount: 1, unreadCount: 1 });
+    expect(s.listThreads("acc_1", ALL_MAIL, null, 10).threads.map((t) => t.id)).toContain(inbox[0]!.id);
+    const folders = s.listFolders("acc_1");
+    expect(folders.map((f) => [f.path, f.totalCount, f.unreadCount])).toEqual([
+      [INBOX, 1, 1],
+      [ALL_MAIL, 2, 2],
+    ]);
+    expect(s.unreadCount("acc_1")).toBe(1);
+    expect(s.unreadCount(null)).toBe(1);
+    const detail = s.getThread(inbox[0]!.id)!;
+    expect(detail.messages.map((m) => m.folder)).toEqual([INBOX]);
+  });
+
+  it("applyFlags backfills gmail ids and merges copies", () => {
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder(ALL_MAIL, "all")]);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { messageId: null })]);
+    s.upsertMessages("acc_1", ALL_MAIL, [makeFetchedMessage(9, { messageId: null })]);
+    s.assignThreads("acc_1", new Map([[idIn(s, INBOX, 1), "t_x"], [idIn(s, ALL_MAIL, 9), "t_x"]]));
+    expect(s.listThreads("acc_1", INBOX, null, 10).threads[0]?.messageCount).toBe(2);
+    expect(s.applyFlags("acc_1", INBOX, [{ uid: 1, seen: false, flagged: false, gmMsgId: "7" }])).toBe(1);
+    expect(s.applyFlags("acc_1", ALL_MAIL, [{ uid: 9, seen: false, flagged: false, gmMsgId: "7" }])).toBe(1);
+    expect(s.applyFlags("acc_1", ALL_MAIL, [{ uid: 9, seen: false, flagged: false, gmMsgId: "7" }])).toBe(0);
+    expect(s.listThreads("acc_1", INBOX, null, 10).threads[0]?.messageCount).toBe(1);
+    expect(s.listFolders("acc_1").find((f) => f.path === ALL_MAIL)?.totalCount).toBe(1);
+    // A later fetch without the Gmail id keeps the backfilled one.
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { messageId: null })]);
+    expect(s.listThreads("acc_1", INBOX, null, 10).threads[0]?.messageCount).toBe(1);
+  });
+
+  it("markOpened marks every copy read and only the opened copy pending", () => {
+    gmail();
+    const inboxCopy = idIn(s, INBOX, 1);
+    expect(s.markOpened(inboxCopy)).toEqual({ accountId: "acc_1" });
+    expect(s.getMessage(idIn(s, ALL_MAIL, 50))?.isRead).toBe(true);
+    expect(s.getMessage(idIn(s, ALL_MAIL, 51))?.isRead).toBe(false);
+    expect(s.pendingSeenUids("acc_1", INBOX)).toEqual([1]);
+    expect(s.pendingSeenUids("acc_1", ALL_MAIL)).toEqual([]);
+    expect(s.unreadCount(null)).toBe(0);
+    expect(s.listFolders("acc_1").map((f) => f.unreadCount)).toEqual([0, 1]);
+    expect(s.listThreads("acc_1", INBOX, null, 10).threads[0]?.unreadCount).toBe(0);
+  });
+
+  it("listThreads filters by folder", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { subject: "Invented plan" })]);
+    s.upsertMessages("acc_1", "Sent", [
+      makeFetchedMessage(1, {
+        messageId: "reply@example.org",
+        inReplyTo: "msg-1@example.org",
+        references: ["msg-1@example.org"],
+        subject: "Re: Invented plan",
+        date: "2026-11-11T09:00:00.000Z",
+      }),
+    ]);
+    s.upsertMessages("acc_1", "Spam", [makeFetchedMessage(2, { subject: "Invented spam" })]);
+    s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+    const subjects = (folder: string) =>
+      s.listThreads("acc_1", folder, null, 10).threads.map((t) => [t.subject, t.messageCount]);
+    expect(subjects(INBOX)).toEqual([["Invented plan", 2]]);
+    expect(subjects("Sent")).toEqual([["Invented plan", 2]]);
+    expect(subjects("Spam")).toEqual([["Invented spam", 1]]);
+    expect(subjects("Nowhere")).toEqual([]);
+  });
+
+  it("listFolders orders system folders first", () => {
+    s.saveFolders("acc_1", [
+      remoteFolder("Zeta"),
+      remoteFolder("Trash", "trash"),
+      remoteFolder("All", "all"),
+      remoteFolder("Archive", "archive"),
+      remoteFolder("Alpha", null, { selectable: false }),
+      remoteFolder("Junk", "junk"),
+      remoteFolder("Drafts", "drafts"),
+      remoteFolder("Sent", "sent"),
+      remoteFolder("INBOX"),
+    ]);
+    const folders = s.listFolders("acc_1");
+    expect(folders.map((f) => f.path)).toEqual([
+      "INBOX", "Sent", "Drafts", "Junk", "Archive", "All", "Trash", "Alpha", "Zeta",
+    ]);
+    expect(folders[0]).toEqual({
+      accountId: "acc_1",
+      path: "INBOX",
+      name: "INBOX",
+      specialUse: "inbox",
+      selectable: true,
+      unreadCount: 0,
+      totalCount: 0,
+    });
+    expect(folders.find((f) => f.path === "Alpha")?.selectable).toBe(false);
+  });
+
+  it("saveFolders drops removed folders with their rows", () => {
+    expect(s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Old")])).toEqual({ removed: [] });
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    s.upsertMessages("acc_1", "Old", [makeFetchedMessage(1, { messageId: "old@example.org" })]);
+    s.saveSyncState("acc_1", "Old", { uidValidity: 1, lastUid: 1, syncedSince: EPOCH });
+    const oldId = idIn(s, "Old", 1);
+
+    expect(
+      s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox", { name: "Inbox" }), remoteFolder("New")]),
+    ).toEqual({ removed: ["Old"] });
+    expect(s.getMessage(oldId)).toBeNull();
+    expect(s.getSyncState("acc_1", "Old")).toBeNull();
+    expect(s.localFolderIndex("acc_1", INBOX, EPOCH)).toHaveLength(1);
+    expect(s.listFolders("acc_1").map((f) => [f.path, f.name])).toEqual([
+      [INBOX, "Inbox"],
+      ["New", "New"],
+    ]);
+  });
+
+  it("queueMove hides rows from the source folder without deleting them", () => {
+    s.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org" }));
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)]);
+    s.upsertMessages("acc_1", "Sent", [makeFetchedMessage(3)]);
+    s.upsertMessages("acc_2", INBOX, [makeFetchedMessage(1, { messageId: "x@example.org" })]);
+    s.assignThreads("acc_1", new Map());
+    const [id1, id2, id3] = [idIn(s, INBOX, 1), idIn(s, INBOX, 2), idIn(s, "Sent", 3)];
+
+    expect(s.queueMove([id1], "Spam")).toEqual({ accountId: "acc_1", folder: INBOX });
+    expect(s.listThreads("acc_1", INBOX, null, 10).threads.map((t) => t.id)).toEqual([`t_${id2}`]);
+    expect(s.listFolders("acc_1")).toEqual([]);
+    expect(s.unreadCount("acc_1")).toBe(1);
+    expect(s.search({ text: "Invented subject 1" }, "acc_1", 10)).toEqual([]);
+    expect(s.getMessage(id1)?.folder).toBe(INBOX);
+    expect(s.pendingMoves("acc_1", INBOX)).toEqual([{ uid: 1, id: id1, destination: "Spam" }]);
+
+    // Refused batches change nothing.
+    expect(s.queueMove([id1], "Trash")).toBeNull();
+    expect(s.queueMove([id2, id1], "Trash")).toBeNull();
+    expect(s.queueMove([id2, id3], "Trash")).toBeNull();
+    expect(s.queueMove([id2, idIn(s, INBOX, 1, "acc_2")], "Trash")).toBeNull();
+    expect(s.queueMove([id2, "m_unknown"], "Trash")).toBeNull();
+    expect(s.queueMove([], "Trash")).toBeNull();
+    expect(s.queueMove([id2], INBOX)).toBeNull();
+    expect(s.pendingMoves("acc_1", INBOX)).toEqual([{ uid: 1, id: id1, destination: "Spam" }]);
+    expect(s.pendingMoves("acc_1", "Sent")).toEqual([]);
+  });
+
+  it("completeMove re-homes rows with new uids keeping id and pending read", () => {
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, {
+        messageId: "keep@example.org",
+        inlineParts: [{ contentId: "logo", mimeType: "image/png", data: bytes(4, 9) }],
+      }),
+      makeFetchedMessage(2),
+    ]);
+    // The destination copy was synced before the move completed.
+    s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(77, { messageId: "keep@example.org" })]);
+    const [id1, id2, early] = [idIn(s, INBOX, 1), idIn(s, INBOX, 2), idIn(s, "Archive", 77)];
+    s.markOpened(id1);
+    expect(s.queueMove([id1, id2], "Archive")).not.toBeNull();
+
+    s.completeMove("acc_1", INBOX, "Archive", new Map([[1, 77]]), [1, 2]);
+
+    expect(s.getMessage(id1)).toMatchObject({ folder: "Archive", isRead: true });
+    expect(s.getMessage(early)).toBeNull();
+    expect(s.localFolderIndex("acc_1", "Archive", EPOCH)).toEqual([{ uid: 77, id: id1 }]);
+    expect(s.pendingSeenUids("acc_1", "Archive")).toEqual([77]);
+    expect(s.inlineParts(id1).map((p) => p.contentId)).toEqual(["logo"]);
+    // Uid 2 vanished from the source: done, left for reconcile.
+    expect(s.pendingMoves("acc_1", INBOX)).toEqual([]);
+    expect(s.localFolderIndex("acc_1", INBOX, EPOCH)).toEqual([{ uid: 2, id: id2 }]);
+    s.assignThreads("acc_1", new Map());
+    expect(s.listThreads("acc_1", INBOX, null, 10).threads.map((t) => t.id)).toEqual([`t_${id2}`]);
+    expect(s.listThreads("acc_1", "Archive", null, 10).threads.map((t) => t.id)).toEqual([`t_${id1}`]);
+  });
+
+  it("completeMove without a uid map detaches rows into the destination", () => {
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { messageId: "a@example.org" }),
+      makeFetchedMessage(2, { messageId: null, gmMsgId: "55" }),
+      makeFetchedMessage(3, { messageId: "c@example.org" }),
+    ]);
+    const [id1, id2, id3] = [1, 2, 3].map((uid) => idIn(s, INBOX, uid));
+    s.queueMove([id1, id2, id3], "Trash");
+    s.completeMove("acc_1", INBOX, "Trash", null, [1, 2, 3]);
+
+    expect(s.pendingMoves("acc_1", INBOX)).toEqual([]);
+    expect(s.localFolderIndex("acc_1", INBOX, EPOCH)).toEqual([]);
+    expect(s.localFolderIndex("acc_1", "Trash", EPOCH)).toEqual([]);
+    expect(s.getMessage(id1)?.folder).toBe("Trash");
+
+    // The destination's next round reattaches by Message-ID and by Gmail id.
+    s.upsertMessages("acc_1", "Trash", [
+      makeFetchedMessage(300, { messageId: "a@example.org" }),
+      makeFetchedMessage(301, { messageId: null, gmMsgId: "55" }),
+    ]);
+    expect(s.localFolderIndex("acc_1", "Trash", EPOCH)).toEqual([
+      { uid: 300, id: id1 },
+      { uid: 301, id: id2 },
+    ]);
+    expect(s.finishFolderReset("acc_1", "Trash")).toBe(1);
+    expect(s.getMessage(id3)).toBeNull();
+  });
+
+  it("failMove cancels after 3 refusals and the message reappears", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    s.assignThreads("acc_1", new Map());
+    const id = idIn(s, INBOX, 1);
+    s.queueMove([id], "Spam");
+    expect(s.failMove("acc_1", INBOX, [1])).toEqual({ cancelled: [] });
+    expect(s.failMove("acc_1", INBOX, [1])).toEqual({ cancelled: [] });
+    expect(s.pendingMoves("acc_1", INBOX)).toHaveLength(1);
+    expect(s.listThreads("acc_1", INBOX, null, 10).threads).toEqual([]);
+    expect(s.failMove("acc_1", INBOX, [1, 99])).toEqual({ cancelled: [id] });
+    expect(s.pendingMoves("acc_1", INBOX)).toEqual([]);
+    expect(s.listThreads("acc_1", INBOX, null, 10).threads.map((t) => t.id)).toEqual([`t_${id}`]);
+    // A new request starts counting from zero.
+    s.queueMove([id], "Spam");
+    expect(s.failMove("acc_1", INBOX, [1])).toEqual({ cancelled: [] });
+    expect(s.failMove("acc_1", INBOX, [1])).toEqual({ cancelled: [] });
+    expect(s.pendingMoves("acc_1", INBOX)).toHaveLength(1);
+  });
+
+  it("inline parts are stored within caps and dropped over caps", () => {
+    const part = (contentId: string, size: number) => ({
+      contentId,
+      mimeType: "image/png",
+      data: bytes(size, contentId.charCodeAt(0)),
+    });
+    const parts = [
+      part("a", 100),
+      part("big", 512 * 1024 + 1),
+      ...["c1", "c2", "c3", "c4", "c5"].map((id) => part(id, 512_000)),
+      part("f", 1_000),
+      part("a", 5),
+    ];
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { inlineParts: parts })]);
+    const id = idIn(s, INBOX, 1);
+    const stored = s.inlineParts(id);
+    expect(stored.map((p) => p.contentId)).toEqual(["a", "c1", "c2", "c3", "c4", "f"]);
+    expect(stored[0]).toEqual({ contentId: "a", mimeType: "image/png", data: bytes(100, 97) });
+    expect(stored[0]!.data).toBeInstanceOf(Uint8Array);
+
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { inlineParts: [part("z", 3)] })]);
+    expect(s.inlineParts(id).map((p) => p.contentId)).toEqual(["z"]);
+    expect(s.inlineParts("m_unknown")).toEqual([]);
+  });
+
+  it("image sender allowlist add/remove/check", () => {
+    s.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org" }));
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { from: { name: null, address: "News@Example.org" } })]);
+    const id = idIn(s, INBOX, 1);
+    expect(s.isImageSenderAllowed("acc_1", "news@example.org")).toBe(false);
+    expect(s.getBody(id)?.remoteImagesAllowed).toBe(false);
+
+    s.allowImageSender("acc_1", "NEWS@example.org");
+    s.allowImageSender("acc_1", "news@example.org");
+    expect(s.isImageSenderAllowed("acc_1", "news@EXAMPLE.org")).toBe(true);
+    expect(s.isImageSenderAllowed("acc_2", "news@example.org")).toBe(false);
+    expect(s.getBody(id)?.remoteImagesAllowed).toBe(true);
+
+    expect(s.disallowImageSender("acc_1", "News@example.org")).toBe(true);
+    expect(s.disallowImageSender("acc_1", "news@example.org")).toBe(false);
+    expect(s.isImageSenderAllowed("acc_1", "news@example.org")).toBe(false);
+    expect(s.getBody(id)?.remoteImagesAllowed).toBe(false);
+  });
+
+  it("search returns one hit per dedup key", () => {
+    gmail();
+    const hits = s.search({ text: "Invented" }, null, 10);
+    expect(hits.map((h) => h.folder).sort()).toEqual([ALL_MAIL, INBOX].sort());
+    expect(hits.find((h) => h.subject === "Invented subject 1")?.folder).toBe(INBOX);
+    expect(s.search({ text: "Invented" }, "acc_1", 1)).toHaveLength(1);
   });
 });

@@ -9,17 +9,29 @@
 //     newest message of its thread, but a thread's last_date is its latest
 //     non-null date (null only when every message is undated);
 //   - the threads table is derived from messages and rebuilt whenever the
-//     rows it summarizes change, so nothing durable is keyed on a thread id.
+//     rows it summarizes change, so nothing durable is keyed on a thread id;
+//   - one message can have a row in several folders (Gmail labels); rows of
+//     one message share `dedup_key`, and thread, folder, badge and search
+//     counts count distinct keys (store-rules.ts holds the shared rules);
+//   - threads are account-wide; a thread is listed in a folder when it has a
+//     row there that is not waiting to move out (`move_pending`);
+//   - a move re-homes the row (same id) to the destination; without a uid map
+//     the row waits detached there until that folder's sync reattaches it by
+//     Gmail id or Message-ID, or deletes it at the end of the round.
 import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
   AttachmentMeta,
   FetchedMessage,
+  Folder,
+  InlinePart,
   MailAddress,
   MessageBody,
   MessageHeader,
   MessageSummary,
   ParsedQuery,
+  RemoteFolder,
+  SpecialUse,
   StoredAccount,
   SyncState,
   ThreadDetail,
@@ -28,6 +40,12 @@ import type {
 } from "../../core/model.ts";
 import { cleanSnippet, needsSnippetRepair, snippetOf } from "../../core/snippet.ts";
 import type { MailStore } from "../../core/ports.ts";
+import {
+  capInlineParts,
+  compareFolders,
+  dedupKeyOf,
+  effectiveSpecialUse,
+} from "../../core/store-rules.ts";
 
 /**
  * Append-only migrations for bb.storage.migrate (index = migration id). Each
@@ -148,6 +166,43 @@ export const MIGRATIONS: string[] = [
     VALUES (new.seq, new.subject, new.from_name, new.from_address, new.body_text);
   END;
   `,
+  // 2: slice 2 — folders, cross-folder identity, moves, inline images, image
+  // senders. Slice-1 rows get their dedup key here; their INBOX sync_state
+  // rows stay valid.
+  `
+  ALTER TABLE messages ADD COLUMN gm_msgid TEXT;
+  ALTER TABLE messages ADD COLUMN dedup_key TEXT NOT NULL DEFAULT '';
+  ALTER TABLE messages ADD COLUMN move_pending TEXT;
+  ALTER TABLE messages ADD COLUMN move_failures INTEGER NOT NULL DEFAULT 0;
+  UPDATE messages SET dedup_key = CASE WHEN message_id IS NOT NULL THEN 'mid:' || message_id ELSE 'id:' || id END;
+  CREATE INDEX messages_dedup ON messages(account_id, dedup_key);
+  CREATE INDEX messages_folder_pending ON messages(account_id, folder, move_pending);
+
+  CREATE TABLE folders (
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    name TEXT NOT NULL,
+    delimiter TEXT NOT NULL,
+    special_use TEXT,
+    selectable INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (account_id, path)
+  );
+
+  CREATE TABLE image_senders (
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    address TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, address)
+  );
+
+  CREATE TABLE inline_parts (
+    message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    content_id TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    data BLOB NOT NULL,
+    PRIMARY KEY (message_id, content_id)
+  );
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -210,6 +265,13 @@ type AttachmentRow = {
 
 const SUMMARY_COLUMNS = `m.id, m.account_id, m.folder, m.thread_id, m.date, m.from_name, m.from_address,
   m.subject, m.snippet, m.is_read, m.is_flagged, m.has_attachments`;
+
+/** Refusals after which a queued move is cancelled. */
+const MOVE_MAX_FAILURES = 3;
+
+/** True for a row (alias m) in an Inbox folder of its account. */
+const IN_INBOX = `(upper(m.folder) = 'INBOX' OR m.folder IN (
+  SELECT f.path FROM folders f WHERE f.account_id = m.account_id AND f.special_use = 'inbox'))`;
 
 /** Oldest first; an undated message sorts after every dated one. */
 const OLDEST_FIRST = "date IS NULL, date, id";
@@ -319,13 +381,18 @@ export function createSqliteStore(db: Database.Database): MailStore {
      WHERE account_id = ? AND folder = ? AND uid IS NULL AND message_id = ?
      ORDER BY seq LIMIT 1`,
   );
+  const findDetachedByGmail = db.prepare<[string, string, string], { id: string }>(
+    `SELECT id FROM messages
+     WHERE account_id = ? AND folder = ? AND uid IS NULL AND gm_msgid = ?
+     ORDER BY seq LIMIT 1`,
+  );
   const insertMessage = db.prepare(
     `INSERT INTO messages (id, account_id, folder, uid, message_id, in_reply_to, refs, thread_id,
        from_name, from_address, to_json, cc_json, subject, date, snippet, body_text, body_html,
-       html_truncated, is_read, is_flagged, has_attachments, size, gm_thrid)
+       html_truncated, is_read, is_flagged, has_attachments, size, gm_thrid, gm_msgid, dedup_key)
      VALUES (@id, @accountId, @folder, @uid, @messageId, @inReplyTo, @refs, @threadId,
        @fromName, @fromAddress, @toJson, @ccJson, @subject, @date, @snippet, @bodyText, @bodyHtml,
-       @htmlTruncated, @seen, @flagged, @hasAttachments, @size, @gmThreadId)`,
+       @htmlTruncated, @seen, @flagged, @hasAttachments, @size, @gmThreadId, @gmMsgId, @dedupKey)`,
   );
   const updateMessage = db.prepare(
     `UPDATE messages SET uid = @uid, message_id = @messageId, in_reply_to = @inReplyTo,
@@ -333,8 +400,17 @@ export function createSqliteStore(db: Database.Database): MailStore {
        cc_json = @ccJson, subject = @subject, date = @date, snippet = @snippet,
        body_text = @bodyText, body_html = @bodyHtml, html_truncated = @htmlTruncated,
        is_read = CASE WHEN seen_pending = 1 THEN 1 ELSE @seen END, is_flagged = @flagged,
-       has_attachments = @hasAttachments, size = @size, gm_thrid = @gmThreadId
+       has_attachments = @hasAttachments, size = @size, gm_thrid = @gmThreadId,
+       gm_msgid = COALESCE(@gmMsgId, gm_msgid),
+       dedup_key = CASE
+         WHEN COALESCE(@gmMsgId, gm_msgid) IS NOT NULL THEN 'gm:' || COALESCE(@gmMsgId, gm_msgid)
+         WHEN @messageId IS NOT NULL THEN 'mid:' || @messageId
+         ELSE 'id:' || id END
      WHERE id = @id`,
+  );
+  const deleteInlinePartsOf = db.prepare("DELETE FROM inline_parts WHERE message_id = ?");
+  const insertInlinePart = db.prepare(
+    "INSERT OR IGNORE INTO inline_parts (message_id, content_id, mime_type, data) VALUES (?, ?, ?, ?)",
   );
   const deleteAttachmentsOf = db.prepare("DELETE FROM attachments WHERE message_id = ?");
   const insertAttachment = db.prepare(
@@ -370,19 +446,20 @@ export function createSqliteStore(db: Database.Database): MailStore {
       from_address: string;
       snippet: string;
       is_read: number;
+      dedup_key: string;
     };
     const members =
       ids === null
         ? db
             .prepare<[string], Member>(
-              `SELECT thread_id, subject, date, from_name, from_address, snippet, is_read
+              `SELECT thread_id, subject, date, from_name, from_address, snippet, is_read, dedup_key
                FROM messages WHERE account_id = ? ORDER BY thread_id, ${OLDEST_FIRST}`,
             )
             .all(accountId)
         : ids.flatMap((id) =>
             db
               .prepare<[string, string], Member>(
-                `SELECT thread_id, subject, date, from_name, from_address, snippet, is_read
+                `SELECT thread_id, subject, date, from_name, from_address, snippet, is_read, dedup_key
                  FROM messages WHERE account_id = ? AND thread_id = ? ORDER BY ${OLDEST_FIRST}`,
               )
               .all(accountId, id),
@@ -412,19 +489,20 @@ export function createSqliteStore(db: Database.Database): MailStore {
         accountId,
         group[0]!.subject,
         lastDate,
-        group.length,
-        group.filter((m) => m.is_read === 0).length,
+        new Set(group.map((m) => m.dedup_key)).size,
+        new Set(group.filter((m) => m.is_read === 0).map((m) => m.dedup_key)).size,
         JSON.stringify(participants),
         latest.snippet,
       );
     }
   }
 
-  /** Deletes the given rows with their attachment metadata; returns their thread ids. */
+  /** Deletes the given rows with their attachment metadata and inline parts; returns their thread ids. */
   function deleteRows(rows: { id: string; thread_id: string }[]): Set<string> {
     const remove = db.prepare("DELETE FROM messages WHERE id = ?");
     for (const row of rows) {
       deleteAttachmentsOf.run(row.id);
+      deleteInlinePartsOf.run(row.id);
       remove.run(row.id);
     }
     return new Set(rows.map((r) => r.thread_id));
@@ -509,6 +587,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
         db.prepare(
           "DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE account_id = ?)",
         ).run(id);
+        db.prepare(
+          "DELETE FROM inline_parts WHERE message_id IN (SELECT id FROM messages WHERE account_id = ?)",
+        ).run(id);
+        db.prepare("DELETE FROM folders WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM image_senders WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM messages WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM threads WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM sync_state WHERE account_id = ?").run(id);
@@ -588,9 +671,15 @@ export function createSqliteStore(db: Database.Database): MailStore {
             hasAttachments: message.attachments.some((a) => !a.isInline) ? 1 : 0,
             size: message.size,
             gmThreadId: message.gmThreadId,
+            gmMsgId: message.gmMsgId,
           };
+          // A detached row (folder reset, or a move without a uid map) is
+          // reattached by Gmail id first, then by Message-ID.
           const existing =
             findAttached.get(accountId, folder, message.uid) ??
+            (message.gmMsgId === null
+              ? undefined
+              : findDetachedByGmail.get(accountId, folder, message.gmMsgId)) ??
             (message.messageId === null
               ? undefined
               : findDetached.get(accountId, folder, message.messageId));
@@ -600,11 +689,20 @@ export function createSqliteStore(db: Database.Database): MailStore {
             updateMessage.run({ ...params, id });
           } else {
             id = newMessageId();
-            insertMessage.run({ ...params, id, threadId: `t_${id}` });
+            insertMessage.run({
+              ...params,
+              id,
+              threadId: `t_${id}`,
+              dedupKey: dedupKeyOf(message.gmMsgId, message.messageId, id),
+            });
           }
           deleteAttachmentsOf.run(id);
           for (const a of message.attachments) {
             insertAttachment.run(id, a.partId, a.filename, a.mimeType, a.size, a.isInline ? 1 : 0);
+          }
+          deleteInlinePartsOf.run(id);
+          for (const part of capInlineParts(message.inlineParts)) {
+            insertInlinePart.run(id, part.contentId, part.mimeType, Buffer.from(part.data));
           }
           touched.add(threadIdOf.get(id)!.thread_id);
         }
@@ -635,20 +733,29 @@ export function createSqliteStore(db: Database.Database): MailStore {
              AND (is_read != CASE WHEN seen_pending = 1 THEN 1 ELSE @seen END OR is_flagged != @flagged)
            RETURNING thread_id`,
         );
+        const backfill = db.prepare<
+          [{ gmMsgId: string; accountId: string; folder: string; uid: number }],
+          { thread_id: string }
+        >(
+          `UPDATE messages SET gm_msgid = @gmMsgId, dedup_key = 'gm:' || @gmMsgId
+           WHERE account_id = @accountId AND folder = @folder AND uid = @uid
+             AND (gm_msgid IS NULL OR gm_msgid != @gmMsgId OR dedup_key != 'gm:' || @gmMsgId)
+           RETURNING thread_id`,
+        );
         const touched = new Set<string>();
         let changed = 0;
         for (const flag of flags) {
           // Uids are unique per folder, so a row comes back only when that one message changed.
-          const row = update.get({
-            seen: flag.seen ? 1 : 0,
-            flagged: flag.flagged ? 1 : 0,
-            accountId,
-            folder,
-            uid: flag.uid,
-          });
-          if (row) {
+          const key = { accountId, folder, uid: flag.uid };
+          const row = update.get({ ...key, seen: flag.seen ? 1 : 0, flagged: flag.flagged ? 1 : 0 });
+          // A new Gmail id can merge copies, so it counts as a change too.
+          const merged =
+            flag.gmMsgId === undefined || flag.gmMsgId === null
+              ? undefined
+              : backfill.get({ ...key, gmMsgId: flag.gmMsgId });
+          if (row || merged) {
             changed++;
-            touched.add(row.thread_id);
+            touched.add((row ?? merged)!.thread_id);
           }
         }
         refreshThreads(accountId, touched);
@@ -694,15 +801,26 @@ export function createSqliteStore(db: Database.Database): MailStore {
     markOpened(messageId) {
       return atomic(() => {
         const row = db
-          .prepare<[string], { account_id: string; thread_id: string; is_read: number }>(
-            "SELECT account_id, thread_id, is_read FROM messages WHERE id = ?",
-          )
+          .prepare<
+            [string],
+            { account_id: string; thread_id: string; is_read: number; dedup_key: string }
+          >("SELECT account_id, thread_id, is_read, dedup_key FROM messages WHERE id = ?")
           .get(messageId);
         if (!row) return null;
+        const touched = new Set<string>();
         if (row.is_read === 0) {
           db.prepare("UPDATE messages SET is_read = 1, seen_pending = 1 WHERE id = ?").run(messageId);
-          refreshThreads(row.account_id, [row.thread_id]);
+          touched.add(row.thread_id);
         }
+        // Other copies are read locally only; the server propagates the flag.
+        const copies = db
+          .prepare<[string, string], { thread_id: string }>(
+            `UPDATE messages SET is_read = 1
+             WHERE account_id = ? AND dedup_key = ? AND is_read = 0 RETURNING thread_id`,
+          )
+          .all(row.account_id, row.dedup_key);
+        for (const copy of copies) touched.add(copy.thread_id);
+        refreshThreads(row.account_id, touched);
         return { accountId: row.account_id };
       });
     },
@@ -752,35 +870,40 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
-    // Slice 1 syncs INBOX only, so every thread is an INBOX thread; the folder
-    // filter lands with the folder-aware store (slice 2, Task 2).
-    listThreads(accountId, _folder, cursor, limit) {
+    listThreads(accountId, folder, cursor, limit) {
       const after = cursor === null ? null : decodeCursor(cursor);
+      // Whole (account-wide) threads with a row in the folder that is not
+      // waiting to move out.
+      const inFolder = `EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = threads.id
+        AND m.account_id = threads.account_id AND m.folder = @folder AND m.move_pending IS NULL)`;
       let rows: ThreadRow[];
       if (after === null) {
         rows = db
-          .prepare<[string, number], ThreadRow>(
-            "SELECT * FROM threads WHERE account_id = ? ORDER BY last_date DESC, id DESC LIMIT ?",
+          .prepare<[{ accountId: string; folder: string; limit: number }], ThreadRow>(
+            `SELECT * FROM threads WHERE account_id = @accountId AND ${inFolder}
+             ORDER BY last_date DESC, id DESC LIMIT @limit`,
           )
-          .all(accountId, limit + 1);
+          .all({ accountId, folder, limit: limit + 1 });
       } else if (after.lastDate === null) {
         rows = db
-          .prepare<[string, string, number], ThreadRow>(
-            `SELECT * FROM threads WHERE account_id = ? AND last_date IS NULL AND id < ?
-             ORDER BY id DESC LIMIT ?`,
+          .prepare<[{ accountId: string; folder: string; id: string; limit: number }], ThreadRow>(
+            `SELECT * FROM threads WHERE account_id = @accountId AND last_date IS NULL AND id < @id
+               AND ${inFolder}
+             ORDER BY id DESC LIMIT @limit`,
           )
-          .all(accountId, after.id, limit + 1);
+          .all({ accountId, folder, id: after.id, limit: limit + 1 });
       } else {
         rows = db
           .prepare<
-            [{ accountId: string; lastDate: string; id: string; limit: number }],
+            [{ accountId: string; folder: string; lastDate: string; id: string; limit: number }],
             ThreadRow
           >(
             `SELECT * FROM threads WHERE account_id = @accountId
                AND (last_date < @lastDate OR (last_date = @lastDate AND id < @id) OR last_date IS NULL)
+               AND ${inFolder}
              ORDER BY last_date DESC, id DESC LIMIT @limit`,
           )
-          .all({ accountId, lastDate: after.lastDate, id: after.id, limit: limit + 1 });
+          .all({ accountId, folder, lastDate: after.lastDate, id: after.id, limit: limit + 1 });
       }
       const page = rows.slice(0, limit);
       const last = page[page.length - 1];
@@ -790,13 +913,20 @@ export function createSqliteStore(db: Database.Database): MailStore {
       };
     },
 
+    /**
+     * Each message once: of the rows sharing a dedup key, the Inbox copy,
+     * else the most recently stored row.
+     */
     getThread(threadId): ThreadDetail | null {
       const thread = threadById.get(threadId);
       if (!thread) return null;
       const messages = db
         .prepare<[string], HeaderRow>(
-          `SELECT ${SUMMARY_COLUMNS}, m.to_json, m.cc_json FROM messages m
-           WHERE m.thread_id = ? ORDER BY m.date IS NULL, m.date, m.id`,
+          `SELECT * FROM (
+             SELECT ${SUMMARY_COLUMNS}, m.to_json, m.cc_json,
+               row_number() OVER (PARTITION BY m.dedup_key ORDER BY ${IN_INBOX} DESC, m.seq DESC) AS rn
+             FROM messages m WHERE m.thread_id = ?)
+           WHERE rn = 1 ORDER BY date IS NULL, date, id`,
         )
         .all(threadId)
         .map(header);
@@ -816,8 +946,19 @@ export function createSqliteStore(db: Database.Database): MailStore {
       const row = db
         .prepare<
           [string],
-          { id: string; body_text: string | null; body_html: string | null; html_truncated: number }
-        >("SELECT id, body_text, body_html, html_truncated FROM messages WHERE id = ?")
+          {
+            id: string;
+            body_text: string | null;
+            body_html: string | null;
+            html_truncated: number;
+            images_allowed: number;
+          }
+        >(
+          `SELECT m.id, m.body_text, m.body_html, m.html_truncated,
+             EXISTS (SELECT 1 FROM image_senders i
+               WHERE i.account_id = m.account_id AND i.address = mail_lower(m.from_address)) AS images_allowed
+           FROM messages m WHERE m.id = ?`,
+        )
         .get(messageId);
       return row
         ? {
@@ -825,8 +966,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
             text: row.body_text,
             html: row.body_html,
             htmlTruncated: row.html_truncated === 1,
-            // Per-sender image permission lands with the image store (slice 2, Task 2).
-            remoteImagesAllowed: false,
+            remoteImagesAllowed: row.images_allowed === 1,
           }
         : null;
     },
@@ -877,11 +1017,19 @@ export function createSqliteStore(db: Database.Database): MailStore {
         where.push("m.date < ?");
         params.push(before);
       }
+      // A row waiting to move out is hidden until the move completes.
+      where.push("m.move_pending IS NULL");
       params.push(limit);
 
-      const sql = `SELECT ${SUMMARY_COLUMNS} ${from}
-        ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
-        ORDER BY m.date IS NULL DESC, m.date DESC, m.id DESC
+      // One hit per message (dedup key): the Inbox copy, else the newest row.
+      const sql = `SELECT * FROM (
+          SELECT ${SUMMARY_COLUMNS},
+            row_number() OVER (PARTITION BY m.account_id, m.dedup_key
+              ORDER BY ${IN_INBOX} DESC, m.seq DESC) AS rn
+          ${from}
+          WHERE ${where.join(" AND ")})
+        WHERE rn = 1
+        ORDER BY date IS NULL DESC, date DESC, id DESC
         LIMIT ?`;
       return (db.prepare(sql).all(...params) as MessageRow[]).map(toSummary);
     },
@@ -934,48 +1082,237 @@ export function createSqliteStore(db: Database.Database): MailStore {
     },
 
     unreadCount(accountId) {
+      const unread = `SELECT DISTINCT m.account_id, m.dedup_key FROM messages m
+        WHERE m.is_read = 0 AND m.move_pending IS NULL AND ${IN_INBOX}`;
       const row =
         accountId === null
-          ? db.prepare<[], { n: number }>("SELECT count(*) AS n FROM messages WHERE is_read = 0").get()
+          ? db.prepare<[], { n: number }>(`SELECT count(*) AS n FROM (${unread})`).get()
           : db
               .prepare<[string], { n: number }>(
-                "SELECT count(*) AS n FROM messages WHERE is_read = 0 AND account_id = ?",
+                `SELECT count(*) AS n FROM (${unread} AND m.account_id = ?)`,
               )
               .get(accountId);
       return row?.n ?? 0;
     },
 
-    // Folders, moves and images (slice 2; filled in by Task 2) ------------
+    // Folders ----------------------------------------------------------------
 
-    saveFolders() {
-      throw new Error("not implemented: saveFolders");
+    saveFolders(accountId, folders: RemoteFolder[]) {
+      return atomic(() => {
+        const listed = new Set(folders.map((f) => f.path));
+        const upsert = db.prepare(
+          `INSERT INTO folders (account_id, path, name, delimiter, special_use, selectable)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(account_id, path) DO UPDATE SET name = excluded.name,
+             delimiter = excluded.delimiter, special_use = excluded.special_use,
+             selectable = excluded.selectable`,
+        );
+        for (const f of folders) {
+          upsert.run(accountId, f.path, f.name, f.delimiter, f.specialUse, f.selectable ? 1 : 0);
+        }
+        const removed = db
+          .prepare<[string], { path: string }>(
+            "SELECT path FROM folders WHERE account_id = ? ORDER BY path",
+          )
+          .all(accountId)
+          .map((r) => r.path)
+          .filter((path) => !listed.has(path));
+        const touched = new Set<string>();
+        for (const path of removed) {
+          const rows = db
+            .prepare<[string, string], { id: string; thread_id: string }>(
+              "SELECT id, thread_id FROM messages WHERE account_id = ? AND folder = ?",
+            )
+            .all(accountId, path);
+          for (const threadId of deleteRows(rows)) touched.add(threadId);
+          db.prepare("DELETE FROM sync_state WHERE account_id = ? AND folder = ?").run(accountId, path);
+          db.prepare("DELETE FROM folders WHERE account_id = ? AND path = ?").run(accountId, path);
+        }
+        refreshThreads(accountId, touched);
+        return { removed };
+      });
     },
-    listFolders() {
-      throw new Error("not implemented: listFolders");
+
+    listFolders(accountId): Folder[] {
+      const rows = db
+        .prepare<
+          [string, string],
+          {
+            path: string;
+            name: string;
+            special_use: SpecialUse | null;
+            selectable: number;
+            total: number | null;
+            unread: number | null;
+          }
+        >(
+          `SELECT f.path, f.name, f.special_use, f.selectable, c.total, c.unread
+           FROM folders f LEFT JOIN (
+             SELECT folder, count(DISTINCT dedup_key) AS total,
+               count(DISTINCT CASE WHEN is_read = 0 THEN dedup_key END) AS unread
+             FROM messages WHERE account_id = ? AND move_pending IS NULL GROUP BY folder
+           ) c ON c.folder = f.path
+           WHERE f.account_id = ?`,
+        )
+        .all(accountId, accountId);
+      return rows
+        .map((r) => ({
+          accountId,
+          path: r.path,
+          name: r.name,
+          specialUse: effectiveSpecialUse(r.path, r.special_use),
+          selectable: r.selectable === 1,
+          unreadCount: r.unread ?? 0,
+          totalCount: r.total ?? 0,
+        }))
+        .sort(compareFolders);
     },
-    pendingMoves() {
-      throw new Error("not implemented: pendingMoves");
+
+    // Moves ------------------------------------------------------------------
+
+    pendingMoves(accountId, folder) {
+      return db
+        .prepare<[string, string], { uid: number; id: string; destination: string }>(
+          `SELECT uid, id, move_pending AS destination FROM messages
+           WHERE account_id = ? AND folder = ? AND uid IS NOT NULL AND move_pending IS NOT NULL
+           ORDER BY uid`,
+        )
+        .all(accountId, folder);
     },
-    queueMove() {
-      throw new Error("not implemented: queueMove");
+
+    queueMove(messageIds, destination) {
+      return atomic(() => {
+        const ids = [...new Set(messageIds)];
+        if (ids.length === 0) return null;
+        const find = db.prepare<
+          [string],
+          { id: string; account_id: string; folder: string; move_pending: string | null }
+        >("SELECT id, account_id, folder, move_pending FROM messages WHERE id = ?");
+        const rows = ids.map((id) => find.get(id));
+        const first = rows[0];
+        if (!first) return null;
+        const valid = rows.every(
+          (r) =>
+            r !== undefined &&
+            r.account_id === first.account_id &&
+            r.folder === first.folder &&
+            r.move_pending === null,
+        );
+        if (!valid || first.folder === destination) return null;
+        const queue = db.prepare(
+          "UPDATE messages SET move_pending = ?, move_failures = 0 WHERE id = ?",
+        );
+        for (const id of ids) queue.run(destination, id);
+        return { accountId: first.account_id, folder: first.folder };
+      });
     },
-    completeMove() {
-      throw new Error("not implemented: completeMove");
+
+    completeMove(accountId, folder, destination, moved, uids) {
+      return atomic(() => {
+        const find = db.prepare<[string, string, number], { id: string; thread_id: string }>(
+          `SELECT id, thread_id FROM messages
+           WHERE account_id = ? AND folder = ? AND uid = ? AND move_pending IS NOT NULL`,
+        );
+        const occupant = db.prepare<
+          [string, string, number],
+          { id: string; thread_id: string; seen_pending: number }
+        >("SELECT id, thread_id, seen_pending FROM messages WHERE account_id = ? AND folder = ? AND uid = ?");
+        const rehome = db.prepare(
+          `UPDATE messages SET folder = @destination, uid = @uid, move_pending = NULL,
+             move_failures = 0,
+             seen_pending = MAX(seen_pending, @carriedPending),
+             is_read = MAX(is_read, @carriedPending)
+           WHERE id = @id`,
+        );
+        const settle = db.prepare(
+          "UPDATE messages SET move_pending = NULL, move_failures = 0 WHERE id = ?",
+        );
+        const touched = new Set<string>();
+        for (const uid of uids) {
+          const row = find.get(accountId, folder, uid);
+          if (!row) continue;
+          touched.add(row.thread_id);
+          if (moved === null) {
+            rehome.run({ destination, uid: null, carriedPending: 0, id: row.id });
+            continue;
+          }
+          const newUid = moved.get(uid);
+          if (newUid === undefined) {
+            // Gone from the source already: done; reconcile removes the row.
+            settle.run(row.id);
+            continue;
+          }
+          // The destination copy may have been synced before the move
+          // completed: the moved row keeps its id and takes that copy's place.
+          const early = occupant.get(accountId, destination, newUid);
+          let carriedPending = 0;
+          if (early && early.id !== row.id) {
+            carriedPending = early.seen_pending;
+            for (const threadId of deleteRows([early])) touched.add(threadId);
+          }
+          rehome.run({ destination, uid: newUid, carriedPending, id: row.id });
+        }
+        refreshThreads(accountId, touched);
+      });
     },
-    failMove() {
-      throw new Error("not implemented: failMove");
+
+    failMove(accountId, folder, uids) {
+      return atomic(() => {
+        const bump = db.prepare<[string, string, number], { id: string; move_failures: number }>(
+          `UPDATE messages SET move_failures = move_failures + 1
+           WHERE account_id = ? AND folder = ? AND uid = ? AND move_pending IS NOT NULL
+           RETURNING id, move_failures`,
+        );
+        const cancel = db.prepare(
+          "UPDATE messages SET move_pending = NULL, move_failures = 0 WHERE id = ?",
+        );
+        const cancelled: string[] = [];
+        for (const uid of uids) {
+          const row = bump.get(accountId, folder, uid);
+          if (row && row.move_failures >= MOVE_MAX_FAILURES) {
+            cancel.run(row.id);
+            cancelled.push(row.id);
+          }
+        }
+        return { cancelled };
+      });
     },
-    inlineParts() {
-      throw new Error("not implemented: inlineParts");
+
+    // Images -----------------------------------------------------------------
+
+    inlineParts(messageId): InlinePart[] {
+      return db
+        .prepare<[string], { content_id: string; mime_type: string; data: Buffer }>(
+          "SELECT content_id, mime_type, data FROM inline_parts WHERE message_id = ? ORDER BY rowid",
+        )
+        .all(messageId)
+        .map((r) => ({
+          contentId: r.content_id,
+          mimeType: r.mime_type,
+          data: new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength),
+        }));
     },
-    isImageSenderAllowed() {
-      throw new Error("not implemented: isImageSenderAllowed");
+
+    isImageSenderAllowed(accountId, address) {
+      return (
+        db
+          .prepare("SELECT 1 FROM image_senders WHERE account_id = ? AND address = ?")
+          .get(accountId, address.toLowerCase()) !== undefined
+      );
     },
-    allowImageSender() {
-      throw new Error("not implemented: allowImageSender");
+
+    allowImageSender(accountId, address) {
+      db.prepare(
+        "INSERT OR IGNORE INTO image_senders (account_id, address, created_at) VALUES (?, ?, ?)",
+      ).run(accountId, address.toLowerCase(), new Date().toISOString());
     },
-    disallowImageSender() {
-      throw new Error("not implemented: disallowImageSender");
+
+    disallowImageSender(accountId, address) {
+      return (
+        db
+          .prepare("DELETE FROM image_senders WHERE account_id = ? AND address = ?")
+          .run(accountId, address.toLowerCase()).changes > 0
+      );
     },
   };
   return store;

@@ -5,8 +5,12 @@
 //   - beginFolderReset detaches uids but keeps message ids, upsertMessages
 //     reattaches a detached row with the same non-null Message-ID, and
 //     finishFolderReset deletes the rows still detached;
-//   - markOpened sets read + pending only when the message is unread;
-//   - localFolderIndex treats a message without a date as inside the window.
+//   - markOpened marks every copy (same dedup key) read, and sets pending
+//     only on the given row when it was unread;
+//   - localFolderIndex treats a message without a date as inside the window;
+//   - thread, folder, badge and search counts count distinct dedup keys, and
+//     rows waiting to move out are hidden from their folder, the badge and
+//     search; moves re-home rows (same id), detaching them without a uid map.
 import type {
   FetchedMessage,
   Folder,
@@ -25,6 +29,12 @@ import type {
 } from "../model.ts";
 import { ImapAuthError } from "../ports.ts";
 import { snippetOf as snippetFromBody } from "../snippet.ts";
+import {
+  capInlineParts,
+  compareFolders,
+  dedupKeyOf,
+  effectiveSpecialUse,
+} from "../store-rules.ts";
 import type {
   ChangeNotifier,
   Clock,
@@ -131,6 +141,11 @@ type Row = {
   seenPending: boolean;
   isFlagged: boolean;
   threadId: string;
+  gmMsgId: string | null;
+  dedupKey: string;
+  movePending: string | null;
+  moveFailures: number;
+  inlineParts: InlinePart[];
 };
 
 type StoreState = {
@@ -138,7 +153,13 @@ type StoreState = {
   syncStates: Map<string, SyncState>;
   rows: Row[];
   nextId: number;
+  /** Folders by account, in the order saved. */
+  folders: Map<string, RemoteFolder[]>;
+  /** `${accountId}\u0000${lowercased address}`. */
+  imageSenders: Set<string>;
 };
+
+const MOVE_MAX_FAILURES = 3;
 
 function stateKey(accountId: string, folder: string): string {
   return `${accountId}\u0000${folder}`;
@@ -160,6 +181,8 @@ export class InMemoryMailStore implements MailStore {
     syncStates: new Map(),
     rows: [],
     nextId: 1,
+    folders: new Map(),
+    imageSenders: new Set(),
   };
 
   /** Runs fn; on a throw restores the state from before the call, like a rollback. */
@@ -210,6 +233,10 @@ export class InMemoryMailStore implements MailStore {
       if (key.startsWith(`${id}\u0000`)) this.state.syncStates.delete(key);
     }
     this.state.rows = this.state.rows.filter((r) => r.accountId !== id);
+    this.state.folders.delete(id);
+    for (const key of [...this.state.imageSenders]) {
+      if (key.startsWith(`${id}\u0000`)) this.state.imageSenders.delete(key);
+    }
   }
 
   // Sync state -------------------------------------------------------------
@@ -242,14 +269,21 @@ export class InMemoryMailStore implements MailStore {
       const rows = this.folderRows(accountId, folder);
       const row =
         rows.find((r) => r.uid === message.uid) ??
+        (message.gmMsgId === null
+          ? undefined
+          : rows.find((r) => r.uid === null && r.gmMsgId === message.gmMsgId)) ??
         (message.messageId === null
           ? undefined
           : rows.find((r) => r.uid === null && r.message.messageId === message.messageId));
+      const inlineParts = capInlineParts(message.inlineParts).map((p) => structuredClone(p));
       if (row) {
         row.uid = message.uid;
         row.message = structuredClone(message);
         row.isRead = row.seenPending || message.seen;
         row.isFlagged = message.flagged;
+        row.gmMsgId = message.gmMsgId ?? row.gmMsgId;
+        row.dedupKey = dedupKeyOf(row.gmMsgId, message.messageId, row.id);
+        row.inlineParts = inlineParts;
         continue;
       }
       const id = `m_${this.state.nextId++}`;
@@ -263,6 +297,11 @@ export class InMemoryMailStore implements MailStore {
         seenPending: false,
         isFlagged: message.flagged,
         threadId: `t_${id}`,
+        gmMsgId: message.gmMsgId,
+        dedupKey: dedupKeyOf(message.gmMsgId, message.messageId, id),
+        movePending: null,
+        moveFailures: 0,
+        inlineParts,
       });
     }
   }
@@ -291,11 +330,21 @@ export class InMemoryMailStore implements MailStore {
       const row = this.attachedRows(accountId, folder).find((r) => r.uid === flag.uid);
       if (!row) continue;
       const isRead = row.seenPending || flag.seen;
+      let rowChanged = false;
       if (row.isRead !== isRead || row.isFlagged !== flag.flagged) {
         row.isRead = isRead;
         row.isFlagged = flag.flagged;
-        changed++;
+        rowChanged = true;
       }
+      if (flag.gmMsgId !== undefined && flag.gmMsgId !== null) {
+        const key = dedupKeyOf(flag.gmMsgId, null, row.id);
+        if (row.gmMsgId !== flag.gmMsgId || row.dedupKey !== key) {
+          row.gmMsgId = flag.gmMsgId;
+          row.dedupKey = key;
+          rowChanged = true;
+        }
+      }
+      if (rowChanged) changed++;
     }
     return changed;
   }
@@ -329,6 +378,9 @@ export class InMemoryMailStore implements MailStore {
     if (!row.isRead) {
       row.isRead = true;
       row.seenPending = true;
+    }
+    for (const copy of this.state.rows) {
+      if (copy.accountId === row.accountId && copy.dedupKey === row.dedupKey) copy.isRead = true;
     }
     return { accountId: row.accountId };
   }
@@ -373,7 +425,9 @@ export class InMemoryMailStore implements MailStore {
     const rows = this.state.rows.filter((r) => r.threadId === threadId);
     if (rows.length === 0) return null;
     const thread = this.summarize(threadId, rows);
-    const messages = [...rows].sort(oldestFirst).map((r) => this.header(r));
+    const messages = this.onePerKey(rows, (r) => r.dedupKey)
+      .sort(oldestFirst)
+      .map((r) => this.header(r));
     return { thread, messages };
   }
 
@@ -390,7 +444,7 @@ export class InMemoryMailStore implements MailStore {
       text: row.message.bodyText,
       html: row.message.bodyHtml,
       htmlTruncated: false,
-      remoteImagesAllowed: false,
+      remoteImagesAllowed: this.isImageSenderAllowed(row.accountId, row.message.from.address),
     };
   }
 
@@ -399,8 +453,9 @@ export class InMemoryMailStore implements MailStore {
       (haystack ?? "").toLowerCase().includes(needle.toLowerCase());
     const after = query.after === undefined ? null : Date.parse(query.after);
     const before = query.before === undefined ? null : Date.parse(query.before);
-    return this.state.rows
+    const matches = this.state.rows
       .filter((r) => accountId === null || r.accountId === accountId)
+      .filter((r) => r.movePending === null)
       .filter((r) => {
         const m = r.message;
         const time = timeOf(m.date);
@@ -416,7 +471,8 @@ export class InMemoryMailStore implements MailStore {
         if (after !== null && (time === null || time < after)) return false;
         if (before !== null && (time === null || time >= before)) return false;
         return true;
-      })
+      });
+    return this.onePerKey(matches, (r) => `${r.accountId}\u0000${r.dedupKey}`)
       .sort((a, b) => oldestFirst(b, a))
       .slice(0, limit)
       .map((r) => this.summary(r));
@@ -428,66 +484,192 @@ export class InMemoryMailStore implements MailStore {
   }
 
   unreadCount(accountId: string | null): number {
-    return this.state.rows.filter(
-      (r) => !r.isRead && (accountId === null || r.accountId === accountId),
-    ).length;
+    const keys = new Set(
+      this.state.rows
+        .filter(
+          (r) =>
+            !r.isRead &&
+            r.movePending === null &&
+            (accountId === null || r.accountId === accountId) &&
+            this.isInbox(r.accountId, r.folder),
+        )
+        .map((r) => `${r.accountId}\u0000${r.dedupKey}`),
+    );
+    return keys.size;
   }
 
-  // Folders, moves and images (slice 2; filled in by later tasks) ---------
+  // Folders ------------------------------------------------------------------
 
-  saveFolders(_accountId: string, _folders: RemoteFolder[]): { removed: string[] } {
-    throw new Error("not implemented: saveFolders");
+  saveFolders(accountId: string, folders: RemoteFolder[]): { removed: string[] } {
+    const listed = new Set(folders.map((f) => f.path));
+    const removed = (this.state.folders.get(accountId) ?? [])
+      .map((f) => f.path)
+      .filter((path) => !listed.has(path))
+      .sort();
+    this.state.folders.set(
+      accountId,
+      folders.map((f) => ({ ...f })),
+    );
+    for (const path of removed) {
+      this.state.rows = this.state.rows.filter((r) => !(r.accountId === accountId && r.folder === path));
+      this.state.syncStates.delete(stateKey(accountId, path));
+    }
+    return { removed };
   }
 
-  listFolders(_accountId: string): Folder[] {
-    throw new Error("not implemented: listFolders");
+  listFolders(accountId: string): Folder[] {
+    return (this.state.folders.get(accountId) ?? [])
+      .map((f) => {
+        const rows = this.folderRows(accountId, f.path).filter((r) => r.movePending === null);
+        return {
+          accountId,
+          path: f.path,
+          name: f.name,
+          specialUse: effectiveSpecialUse(f.path, f.specialUse),
+          selectable: f.selectable,
+          unreadCount: new Set(rows.filter((r) => !r.isRead).map((r) => r.dedupKey)).size,
+          totalCount: new Set(rows.map((r) => r.dedupKey)).size,
+        };
+      })
+      .sort(compareFolders);
   }
+
+  // Moves --------------------------------------------------------------------
 
   pendingMoves(
-    _accountId: string,
-    _folder: string,
+    accountId: string,
+    folder: string,
   ): { uid: number; id: string; destination: string }[] {
-    throw new Error("not implemented: pendingMoves");
+    return this.attachedRows(accountId, folder)
+      .filter((r): r is Row & { uid: number; movePending: string } => r.movePending !== null)
+      .sort((a, b) => a.uid - b.uid)
+      .map((r) => ({ uid: r.uid, id: r.id, destination: r.movePending }));
   }
 
   queueMove(
-    _messageIds: string[],
-    _destination: string,
+    messageIds: string[],
+    destination: string,
   ): { accountId: string; folder: string } | null {
-    throw new Error("not implemented: queueMove");
+    const ids = [...new Set(messageIds)];
+    const rows = ids.map((id) => this.state.rows.find((r) => r.id === id));
+    const first = rows[0];
+    if (!first) return null;
+    const valid = rows.every(
+      (r) =>
+        r !== undefined &&
+        r.accountId === first.accountId &&
+        r.folder === first.folder &&
+        r.movePending === null,
+    );
+    if (!valid || first.folder === destination) return null;
+    for (const row of rows as Row[]) {
+      row.movePending = destination;
+      row.moveFailures = 0;
+    }
+    return { accountId: first.accountId, folder: first.folder };
   }
 
   completeMove(
-    _accountId: string,
-    _folder: string,
-    _destination: string,
-    _moved: Map<number, number> | null,
-    _uids: number[],
+    accountId: string,
+    folder: string,
+    destination: string,
+    moved: Map<number, number> | null,
+    uids: number[],
   ): void {
-    throw new Error("not implemented: completeMove");
+    for (const uid of uids) {
+      const row: Row | undefined = this.attachedRows(accountId, folder).find(
+        (r) => r.uid === uid && r.movePending !== null,
+      );
+      if (!row) continue;
+      row.movePending = null;
+      row.moveFailures = 0;
+      if (moved === null) {
+        row.folder = destination;
+        row.uid = null;
+        continue;
+      }
+      const newUid = moved.get(uid);
+      if (newUid === undefined) continue;
+      const early = this.attachedRows(accountId, destination).find(
+        (r) => r.uid === newUid && r.id !== row.id,
+      );
+      if (early) {
+        if (early.seenPending) {
+          row.seenPending = true;
+          row.isRead = true;
+        }
+        this.state.rows = this.state.rows.filter((r) => r !== early);
+      }
+      row.folder = destination;
+      row.uid = newUid;
+    }
   }
 
-  failMove(_accountId: string, _folder: string, _uids: number[]): { cancelled: string[] } {
-    throw new Error("not implemented: failMove");
+  failMove(accountId: string, folder: string, uids: number[]): { cancelled: string[] } {
+    const cancelled: string[] = [];
+    for (const uid of uids) {
+      const row = this.attachedRows(accountId, folder).find(
+        (r) => r.uid === uid && r.movePending !== null,
+      );
+      if (!row) continue;
+      row.moveFailures++;
+      if (row.moveFailures >= MOVE_MAX_FAILURES) {
+        row.movePending = null;
+        row.moveFailures = 0;
+        cancelled.push(row.id);
+      }
+    }
+    return { cancelled };
   }
 
-  inlineParts(_messageId: string): InlinePart[] {
-    throw new Error("not implemented: inlineParts");
+  // Images -------------------------------------------------------------------
+
+  inlineParts(messageId: string): InlinePart[] {
+    const row = this.state.rows.find((r) => r.id === messageId);
+    return row ? row.inlineParts.map((p) => structuredClone(p)) : [];
   }
 
-  isImageSenderAllowed(_accountId: string, _address: string): boolean {
-    throw new Error("not implemented: isImageSenderAllowed");
+  isImageSenderAllowed(accountId: string, address: string): boolean {
+    return this.state.imageSenders.has(senderKey(accountId, address));
   }
 
-  allowImageSender(_accountId: string, _address: string): void {
-    throw new Error("not implemented: allowImageSender");
+  allowImageSender(accountId: string, address: string): void {
+    this.state.imageSenders.add(senderKey(accountId, address));
   }
 
-  disallowImageSender(_accountId: string, _address: string): boolean {
-    throw new Error("not implemented: disallowImageSender");
+  disallowImageSender(accountId: string, address: string): boolean {
+    return this.state.imageSenders.delete(senderKey(accountId, address));
   }
 
   // Helpers ----------------------------------------------------------------
+
+  /** INBOX, or a folder saved with the inbox special use. */
+  private isInbox(accountId: string, path: string): boolean {
+    const saved = (this.state.folders.get(accountId) ?? []).find((f) => f.path === path);
+    return effectiveSpecialUse(path, saved?.specialUse ?? null) === "inbox";
+  }
+
+  /** One row per key: the Inbox copy, else the most recently stored row. */
+  private onePerKey(rows: Row[], keyOf: (row: Row) => string): Row[] {
+    const order = new Map(this.state.rows.map((r, index) => [r, index]));
+    const best = new Map<string, Row>();
+    for (const row of rows) {
+      const key = keyOf(row);
+      const current = best.get(key);
+      if (!current) {
+        best.set(key, row);
+        continue;
+      }
+      const rank = (r: Row) => (this.isInbox(r.accountId, r.folder) ? 1 : 0);
+      if (
+        rank(row) > rank(current) ||
+        (rank(row) === rank(current) && order.get(row)! > order.get(current)!)
+      ) {
+        best.set(key, row);
+      }
+    }
+    return [...best.values()];
+  }
 
   private folderRows(accountId: string, folder: string): Row[] {
     return this.state.rows.filter((r) => r.accountId === accountId && r.folder === folder);
@@ -538,8 +720,8 @@ export class InMemoryMailStore implements MailStore {
       accountId: latest.accountId,
       subject: sorted[0]!.message.subject,
       lastDate: latest.message.date,
-      messageCount: rows.length,
-      unreadCount: rows.filter((r) => !r.isRead).length,
+      messageCount: new Set(rows.map((r) => r.dedupKey)).size,
+      unreadCount: new Set(rows.filter((r) => !r.isRead).map((r) => r.dedupKey)).size,
       participants,
       snippet: snippetOf(latest.message),
     };
@@ -549,7 +731,7 @@ export class InMemoryMailStore implements MailStore {
   private threadSummaries(accountId: string, folder: string): ThreadSummary[] {
     const inFolder = new Set(
       this.state.rows
-        .filter((r) => r.accountId === accountId && r.folder === folder)
+        .filter((r) => r.accountId === accountId && r.folder === folder && r.movePending === null)
         .map((r) => r.threadId),
     );
     const groups = new Map<string, Row[]>();
@@ -563,6 +745,10 @@ export class InMemoryMailStore implements MailStore {
       .map(([id, rows]) => this.summarize(id, rows))
       .sort((a, b) => (timeOf(b.lastDate) ?? -Infinity) - (timeOf(a.lastDate) ?? -Infinity));
   }
+}
+
+function senderKey(accountId: string, address: string): string {
+  return `${accountId}\u0000${address.toLowerCase()}`;
 }
 
 function oldestFirst(a: Row, b: Row): number {
