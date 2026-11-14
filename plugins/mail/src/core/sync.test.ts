@@ -191,7 +191,7 @@ describe("syncAccount", () => {
     expect(outcome).toMatchObject({ status: "ok", pushedSeen: 1 });
     const [, push, main] = gateway.sessions;
     expect(push!.readOnly).toBe(false);
-    expect(push!.calls).toEqual([{ method: "markSeen", uids: [2] }]);
+    expect(push!.calls).toEqual([{ method: "status" }, { method: "markSeen", uids: [2] }]);
     expect(push!.closed).toBe(true);
     expect(main!.readOnly).toBe(true);
     expect(main!.calls.some((c) => c.method === "markSeen")).toBe(false);
@@ -376,5 +376,114 @@ describe("syncAccount", () => {
 
     expect(outcome).toMatchObject({ status: "ok", removed: 1 });
     expect(store.getMessage(undatedId)).toBeNull();
+  });
+
+  it("does not push pending seen when uidvalidity changed", async () => {
+    const { store, gateway, deps } = setup(mailbox(3));
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const ids = store.localFolderIndex(ACCOUNT_ID, INBOX, "1970-01-01T00:00:00.000Z");
+    const openedId = ids.find((e) => e.uid === 2)!.id;
+    store.markOpened(openedId);
+
+    // The server renumbers: old uid 2 now names a different message.
+    const [m1, m2, m3] = gateway.mailbox.messages;
+    gateway.mailbox = {
+      uidValidity: 8,
+      uidNext: 4,
+      messages: [
+        { ...m3!, uid: 1 },
+        { ...m1!, uid: 2 },
+        { ...m2!, uid: 3 },
+      ],
+    };
+
+    const reset = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(reset).toMatchObject({ status: "ok", pushedSeen: 0 });
+    expect(gateway.sessions[1]!.readOnly).toBe(false);
+    expect(gateway.sessions[1]!.calls).toEqual([{ method: "status" }]);
+    expect(gateway.mailbox.messages.every((m) => !m.seen)).toBe(true);
+    expect(store.pendingSeenUids(ACCOUNT_ID, INBOX)).toEqual([3]);
+    expect(store.getMessage(openedId)).toMatchObject({ isRead: true });
+
+    const next = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(next).toMatchObject({ status: "ok", pushedSeen: 1 });
+    expect(gateway.sessions[3]!.calls).toContainEqual({ method: "markSeen", uids: [3] });
+    expect(gateway.mailbox.messages.map((m) => [m.uid, m.seen])).toEqual([
+      [1, false],
+      [2, false],
+      [3, true],
+    ]);
+    expect(store.pendingSeenUids(ACCOUNT_ID, INBOX)).toEqual([]);
+  });
+
+  it("an interrupted folder reset is finished by the next successful round", async () => {
+    const { store, gateway, deps } = setup(mailbox(60));
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const idByMessageId = new Map(
+      store.threadingInputs(ACCOUNT_ID).map((input) => [input.messageId, input.id]),
+    );
+
+    // Renumbered: messages 1..59 come back as uids 101..159, message 60 is gone.
+    gateway.mailbox = {
+      uidValidity: 8,
+      uidNext: 160,
+      messages: gateway.mailbox.messages.slice(0, 59).map((m) => ({ ...m, uid: m.uid + 100 })),
+    };
+    const open = gateway.openInbox.bind(gateway);
+    let fetches = 0;
+    const openInbox = vi.spyOn(gateway, "openInbox").mockImplementation(async (config, options) => {
+      const session = await open(config, options);
+      const fetchMessages = session.fetchMessages;
+      session.fetchMessages = async (uids) => {
+        if (++fetches === 2) throw new Error("connection lost");
+        return fetchMessages(uids);
+      };
+      return session;
+    });
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "error" });
+    openInbox.mockRestore();
+
+    const finished = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(finished).toMatchObject({ status: "ok", fetched: 9, removed: 1 });
+    const inputs = store.threadingInputs(ACCOUNT_ID);
+    expect(inputs).toHaveLength(59);
+    expect(store.localFolderIndex(ACCOUNT_ID, INBOX, "1970-01-01T00:00:00.000Z")).toHaveLength(59);
+    for (const input of inputs) expect(input.id).toBe(idByMessageId.get(input.messageId));
+    expect(store.getMessage(idByMessageId.get("msg-60@example.org")!)).toBeNull();
+  });
+
+  it("returns an error outcome even when recording the error fails", async () => {
+    const { store, gateway, deps } = setup(mailbox(1));
+    gateway.failOpen(Object.assign(new Error("refused"), { code: "ECONNREFUSED" }));
+    vi.spyOn(store, "recordSyncResult").mockImplementation(() => {
+      throw new Error("database is locked");
+    });
+
+    await expect(syncAccount(deps, ACCOUNT_ID, OPTIONS)).resolves.toEqual({
+      status: "error",
+      error: "Sync failed (ECONNREFUSED)",
+      authFailed: false,
+    });
+  });
+
+  it("auth failure during the pending push does not log in twice", async () => {
+    const { store, gateway, deps } = setup(mailbox(2));
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const ids = store.localFolderIndex(ACCOUNT_ID, INBOX, "1970-01-01T00:00:00.000Z");
+    store.markOpened(ids.find((e) => e.uid === 1)!.id);
+    gateway.failOpen(new ImapAuthError());
+    expect(await gateway.test()).toMatchObject({ ok: false, authFailed: true });
+    const openInbox = vi.spyOn(gateway, "openInbox");
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toEqual({ status: "error", error: "Authentication failed", authFailed: true });
+    expect(openInbox).toHaveBeenCalledTimes(1);
+    expect(openInbox.mock.calls[0]![1]).toEqual({ readOnly: false });
+    expect(store.getAccount(ACCOUNT_ID)).toMatchObject({ authFailed: true });
+    expect(store.pendingSeenUids(ACCOUNT_ID, INBOX)).toEqual([1]);
   });
 });

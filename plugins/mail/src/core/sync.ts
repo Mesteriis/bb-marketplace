@@ -8,7 +8,8 @@
 //      initial sync resumes), delete what left the server, take server flags;
 //   4. rebuild threads, record the result, notify.
 // A UIDVALIDITY change detaches the folder's rows and resyncs it as initial;
-// rows whose Message-ID reappears keep their ids. Never throws; error text is
+// rows whose Message-ID reappears keep their ids; rows still detached after a
+// successful round are deleted. Never throws; error text is
 // built from error classes and codes, so it never carries the password.
 import type { FetchedMessage } from "./model.ts";
 import {
@@ -86,18 +87,26 @@ export async function syncAccount(
   } catch (error) {
     const authFailed = error instanceof ImapAuthError;
     const message = redact(describeError(error), password);
-    store.recordSyncResult(accountId, {
-      lastSyncAt: account.lastSyncAt,
-      lastError: message,
-      authFailed,
-    });
+    try {
+      store.recordSyncResult(accountId, {
+        lastSyncAt: account.lastSyncAt,
+        lastError: message,
+        authFailed,
+      });
+    } catch {
+      // The outcome still carries the error; the next round records it again.
+    }
     return { status: "error", error: message, authFailed };
   }
 }
 
 /**
- * Pushes reads the owner made in BB with a writable session. A failure keeps
- * the pending flags for the next round and does not stop the main sync.
+ * Pushes reads the owner made in BB with a writable session. The push is
+ * skipped while the stored UIDVALIDITY does not match the server's: the
+ * pending uids would name other messages. Pending flags stay on their rows
+ * and are pushed with the new uids once the folder is resynced. Any failure
+ * except a rejected login keeps the flags and lets the main sync run; an
+ * ImapAuthError is rethrown so the round stops without a second login.
  */
 async function pushPendingSeen(
   deps: SyncDeps,
@@ -106,13 +115,18 @@ async function pushPendingSeen(
 ): Promise<number> {
   const uids = deps.store.pendingSeenUids(accountId, INBOX);
   if (uids.length === 0) return 0;
+  const stored = deps.store.getSyncState(accountId, INBOX);
+  if (stored === null) return 0;
   let session: InboxSession | null = null;
   try {
     session = await openWritable();
+    const status = await session.status();
+    if (status.uidValidity !== stored.uidValidity) return 0;
     await session.markSeen(uids);
     deps.store.clearSeenPending(accountId, INBOX, uids);
     return uids.length;
-  } catch {
+  } catch (error) {
+    if (error instanceof ImapAuthError) throw error;
     return 0;
   } finally {
     if (session) await closeQuietly(session);
@@ -170,7 +184,10 @@ async function syncInbox(
 
   const reconciled = await reconcile(store, session, accountId, since, fetchAndStore);
   fetched += reconciled.backfilled;
-  const resetRemoved = resetting ? store.finishFolderReset(accountId, INBOX) : 0;
+  // Every successful round, not only the one that saw the change: a reset
+  // round that failed midway has already saved the new UIDVALIDITY, so the
+  // rows it detached are only cleaned up here.
+  const resetRemoved = store.finishFolderReset(accountId, INBOX);
   return {
     fetched,
     removed: reconciled.removed + resetRemoved,
