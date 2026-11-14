@@ -20,6 +20,7 @@ import type {
   ThreadingInput,
   ThreadSummary,
 } from "../model.ts";
+import { ImapAuthError } from "../ports.ts";
 import type {
   ChangeNotifier,
   Clock,
@@ -555,7 +556,11 @@ export class ScriptedImapGateway implements ImapGateway {
 
   async test(): Promise<ImapTestResult> {
     return this.openFailure
-      ? { ok: false, reason: this.openFailure.name, authFailed: false }
+      ? {
+          ok: false,
+          reason: this.openFailure.name,
+          authFailed: this.openFailure instanceof ImapAuthError,
+        }
       : { ok: true };
   }
 
