@@ -46,7 +46,15 @@ describe("renderMessageForAgent", () => {
     expect(out).toContain("Subject: Invented subject");
     expect(out).toContain("Attachments: plan.pdf (application/pdf, 1234 bytes)");
     expect(out).toContain("Message id: m_1");
-    expect(out.endsWith("\n\nInvented body.")).toBe(true);
+    expect(out.endsWith("\n\nInvented body.\n--- end of untrusted email ---")).toBe(true);
+  });
+
+  it("closes the body with an end line, also when truncated, within maxChars", () => {
+    for (const text of ["Invented body.", "y".repeat(50_000)]) {
+      const out = renderMessageForAgent(header(), body({ text }), 1_000);
+      expect(out.endsWith("\n--- end of untrusted email ---")).toBe(true);
+      expect(out.length).toBeLessThanOrEqual(UNTRUSTED_NOTICE.length + 1_000);
+    }
   });
 
   it("truncates to maxChars with a marker", () => {
@@ -54,12 +62,13 @@ describe("renderMessageForAgent", () => {
     const out = renderMessageForAgent(header(), body({ text: long }), 1_000);
     expect(out.length).toBeLessThanOrEqual(1_000 + UNTRUSTED_NOTICE.length);
     expect(out.startsWith(UNTRUSTED_NOTICE)).toBe(true);
-    const marker = out.match(/\n\[truncated: (\d+) more characters\]$/);
+    const marker = out.match(/\n\[truncated: (\d+) more characters\]\n--- end of untrusted email ---$/);
     expect(marker).not.toBeNull();
     const kept = out.slice(0, marker!.index);
     const full = renderMessageForAgent(header(), body({ text: long }), 1_000_000);
+    const end = "\n--- end of untrusted email ---";
     expect(full.startsWith(kept)).toBe(true);
-    expect(kept.length + Number(marker![1])).toBe(full.length);
+    expect(kept.length + Number(marker![1])).toBe(full.length - end.length);
   });
 
   it("does not truncate when the message fits", () => {

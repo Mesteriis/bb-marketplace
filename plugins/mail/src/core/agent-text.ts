@@ -249,9 +249,13 @@ class TextBuffer {
 // Rendering
 // ---------------------------------------------------------------------------
 
+/** Closes the message, so text after it is visibly not part of the email. */
+const END_LINE = "\n--- end of untrusted email ---";
+
 /**
- * The notice, then headers and the body as plain text. Everything after the
- * notice line is cut to fit maxChars, marker included.
+ * The notice, then headers and the body as plain text, then the end line.
+ * Everything after the notice line is cut to fit maxChars, marker and end
+ * line included.
  */
 export function renderMessageForAgent(
   header: MessageHeader,
@@ -272,7 +276,8 @@ export function renderMessageForAgent(
   }
   lines.push(`Message id: ${header.id}`);
   const rest = `${lines.join("\n")}\n\n${bodyText(body)}`;
-  return `${UNTRUSTED_NOTICE}\n${truncate(rest, Math.max(0, maxChars - 1))}`;
+  const budget = Math.max(0, maxChars - 1 - END_LINE.length);
+  return `${UNTRUSTED_NOTICE}\n${truncate(rest, budget)}${END_LINE}`;
 }
 
 export function renderSearchHits(hits: MessageSummary[]): string {
