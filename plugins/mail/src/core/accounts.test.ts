@@ -96,7 +96,8 @@ describe("addAccount", () => {
         tested.push(config);
         return { ok: true };
       },
-      openInbox: (config, options) => gateway.openInbox(config, options),
+      listFolders: (config) => gateway.listFolders(config),
+      openFolder: (config, path, options) => gateway.openFolder(config, path, options),
     };
     await addAccount(
       { ...deps, gateway: recording },

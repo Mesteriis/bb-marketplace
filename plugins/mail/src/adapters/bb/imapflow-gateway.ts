@@ -1,6 +1,7 @@
 // ImapGateway on imapflow. TLS only (secure: true whatever the port, never
-// STARTTLS or plaintext), INBOX only, every body fetch is BODY.PEEK (imapflow
-// fetches `source` with PEEK), and the only write is \Seen in markSeen.
+// STARTTLS or plaintext), one folder per session, every body fetch is
+// BODY.PEEK (imapflow fetches `source` with PEEK), and the only write is \Seen
+// in markSeen.
 // Errors leaving this file are rebuilt from codes: imapflow errors can carry
 // server responses and the sent command, so their text is never passed on.
 import { ImapFlow } from "imapflow";
@@ -18,7 +19,7 @@ import {
   type FetchedMessage,
   type ImapConfig,
   type ImapGateway,
-  type InboxSession,
+  type FolderSession,
   type MailAddress,
 } from "../../core/index.ts";
 
@@ -93,10 +94,14 @@ export function createImapflowGateway(options: ImapflowGatewayOptions = {}): Ima
       }
     },
 
-    async openInbox(config, { readOnly }) {
+    async listFolders() {
+      throw new Error("not implemented: listFolders");
+    },
+
+    async openFolder(config, path, { readOnly }) {
       const client = await connect(config);
       try {
-        await client.mailboxOpen("INBOX", { readOnly });
+        await client.mailboxOpen(path, { readOnly });
       } catch (error) {
         await logoutQuietly(client);
         throw describeImapError(error);
@@ -107,7 +112,7 @@ export function createImapflowGateway(options: ImapflowGatewayOptions = {}): Ima
 }
 
 /**
- * An INBOX session over an open client. A refused SEARCH or STORE throws
+ * A folder session over an open client. A refused SEARCH or STORE throws
  * (never reads as "no messages" or "done"); a message postal-mime cannot
  * parse is kept with its envelope only, so one crafted email cannot block a
  * batch.
@@ -116,7 +121,7 @@ export function createSession(
   client: SessionClient,
   readOnly: boolean,
   parse: ParseMail = parseWithPostalMime,
-): InboxSession {
+): FolderSession {
   const guarded =
     <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
     async (...args: A): Promise<R> => {
@@ -165,12 +170,15 @@ export function createSession(
 
     fetchFlags: guarded(async (uids: number[]) => {
       if (uids.length === 0) return [];
-      const flags: { uid: number; seen: boolean; flagged: boolean }[] = [];
+      const flags: { uid: number; seen: boolean; flagged: boolean; gmMsgId: string | null }[] =
+        [];
       for await (const message of client.fetch(uids, { uid: true, flags: true }, { uid: true })) {
         flags.push({
           uid: message.uid,
           seen: message.flags?.has("\\Seen") ?? false,
           flagged: message.flags?.has("\\Flagged") ?? false,
+          // X-GM-MSGID mapping lands with the folder gateway (slice 2, Task 3).
+          gmMsgId: null,
         });
       }
       return flags;
@@ -181,6 +189,10 @@ export function createSession(
       if (uids.length === 0) return;
       const stored = await client.messageFlagsAdd(uids, ["\\Seen"], { uid: true });
       if (!stored) throw new SafeImapError("StoreFailed");
+    }),
+
+    moveMessages: guarded(async (_uids: number[], _destination: string) => {
+      throw new Error("not implemented: moveMessages");
     }),
 
     close: () => logoutQuietly(client),
@@ -282,6 +294,8 @@ export function toFetchedMessage(message: FetchMessageObject, parsed: Email): Fe
     inReplyTo: nonEmpty(envelope?.inReplyTo) ?? nonEmpty(parsed.inReplyTo),
     references: splitReferences(parsed.references),
     gmThreadId: nonEmpty(message.threadId),
+    // X-GM-MSGID and inline parts land with the folder gateway (slice 2, Task 3).
+    gmMsgId: null,
     date: toIso(envelope?.date) ?? toIso(message.internalDate),
     from: fromList[0] ?? { name: null, address: "" },
     to: envelope?.to ? envelope.to.map(fromImapflow) : flatten(parsed.to ?? []),
@@ -301,6 +315,7 @@ export function toFetchedMessage(message: FetchMessageObject, parsed: Email): Fe
         isInline: attachment.disposition === "inline" || attachment.related === true,
       }),
     ),
+    inlineParts: [],
   };
 }
 

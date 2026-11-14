@@ -309,7 +309,8 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       deps.loop.wake(accountId);
       return { started: true };
     },
-    threads_list: ({ accountId, cursor, limit }) => store.listThreads(accountId, cursor, limit),
+    threads_list: ({ accountId, folder, cursor, limit }) =>
+      store.listThreads(accountId, folder, cursor, limit),
     thread_get: ({ threadId }) => {
       const thread = store.getThread(threadId);
       if (thread === null) throw refuse("not_found", "Unknown thread");
@@ -338,6 +339,19 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     search: ({ query, accountId, limit }) => ({
       hits: store.search(parseQuery(query), accountId, limit),
     }),
+    // Slice 2: wired up with the folder, move and image stores (Task 5).
+    folders_list: () => {
+      throw new Error("not implemented: folders_list");
+    },
+    message_action: () => {
+      throw new Error("not implemented: message_action");
+    },
+    images_allow_sender: () => {
+      throw new Error("not implemented: images_allow_sender");
+    },
+    images_disallow_sender: () => {
+      throw new Error("not implemented: images_disallow_sender");
+    },
   });
 }
 

@@ -136,7 +136,13 @@ function MailPanel() {
         let cursor = mode === "more" ? current.nextCursor : null;
         do {
           const limit = Math.min(wanted - threads.length, MAX_PAGE);
-          const page = await rpc.call("threads_list", { accountId: forAccount, cursor, limit });
+          // The folder rail (slice 2, Task 6) picks the folder; INBOX until then.
+          const page = await rpc.call("threads_list", {
+            accountId: forAccount,
+            folder: "INBOX",
+            cursor,
+            limit,
+          });
           if (token !== requests.current.list) return;
           threads.push(...page.threads);
           cursor = page.nextCursor;

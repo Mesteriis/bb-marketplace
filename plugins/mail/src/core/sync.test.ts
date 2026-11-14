@@ -182,9 +182,9 @@ describe("syncAccount", () => {
   it("a spurious empty search does not delete local mail", async () => {
     const { store, gateway, deps } = setup(mailbox(3));
     await syncAccount(deps, ACCOUNT_ID, OPTIONS);
-    const open = gateway.openInbox.bind(gateway);
-    vi.spyOn(gateway, "openInbox").mockImplementation(async (config, options) => {
-      const session = await open(config, options);
+    const open = gateway.openFolder.bind(gateway);
+    vi.spyOn(gateway, "openFolder").mockImplementation(async (config, path, options) => {
+      const session = await open(config, path, options);
       session.searchSince = async () => [];
       return session;
     });
@@ -197,9 +197,9 @@ describe("syncAccount", () => {
 
   it("an initial round that fetches nothing for its search hits never leaves lastUid at 0", async () => {
     const { store, gateway, deps } = setup(mailbox(3));
-    const open = gateway.openInbox.bind(gateway);
-    const openInbox = vi.spyOn(gateway, "openInbox").mockImplementation(async (config, options) => {
-      const session = await open(config, options);
+    const open = gateway.openFolder.bind(gateway);
+    const openFolder = vi.spyOn(gateway, "openFolder").mockImplementation(async (config, path, options) => {
+      const session = await open(config, path, options);
       // The hits are expunged before the fetch, and the round then fails in reconcile.
       const searchSince = session.searchSince;
       let searches = 0;
@@ -213,7 +213,7 @@ describe("syncAccount", () => {
 
     expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "error" });
     expect(store.getSyncState(ACCOUNT_ID, INBOX)?.lastUid).toBe(3);
-    openInbox.mockRestore();
+    openFolder.mockRestore();
 
     const next = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
@@ -228,9 +228,9 @@ describe("syncAccount", () => {
     // Older mail outside the window ends at uid 9.
     box.uidNext = 10;
     const { store, gateway, deps } = setup(box);
-    const open = gateway.openInbox.bind(gateway);
-    vi.spyOn(gateway, "openInbox").mockImplementationOnce(async (config, options) => {
-      const session = await open(config, options);
+    const open = gateway.openFolder.bind(gateway);
+    vi.spyOn(gateway, "openFolder").mockImplementationOnce(async (config, path, options) => {
+      const session = await open(config, path, options);
       session.fetchMessages = async () => [];
       return session;
     });
@@ -316,11 +316,11 @@ describe("syncAccount", () => {
       lastSyncAt: null,
     });
 
-    const openInbox = vi.spyOn(gateway, "openInbox");
+    const openFolder = vi.spyOn(gateway, "openFolder");
     const second = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
     expect(second).toMatchObject({ status: "error", authFailed: true });
-    expect(openInbox).not.toHaveBeenCalled();
+    expect(openFolder).not.toHaveBeenCalled();
     expect(notifier.changes).toEqual([]);
   });
 
@@ -384,9 +384,9 @@ describe("syncAccount", () => {
   it("closes the session when fetch throws", async () => {
     const { store, gateway, deps } = setup(mailbox(60));
     let fetches = 0;
-    const open = gateway.openInbox.bind(gateway);
-    vi.spyOn(gateway, "openInbox").mockImplementation(async (config, options) => {
-      const session = await open(config, options);
+    const open = gateway.openFolder.bind(gateway);
+    vi.spyOn(gateway, "openFolder").mockImplementation(async (config, path, options) => {
+      const session = await open(config, path, options);
       const fetchMessages = session.fetchMessages;
       session.fetchMessages = async (uids) => {
         if (++fetches === 2) throw new Error("connection lost");
@@ -406,10 +406,10 @@ describe("syncAccount", () => {
 
   it("an interrupted initial sync backfills the older window messages on the next round", async () => {
     const { store, gateway, deps } = setup(mailbox(120));
-    const open = gateway.openInbox.bind(gateway);
+    const open = gateway.openFolder.bind(gateway);
     let fetches = 0;
-    const openInbox = vi.spyOn(gateway, "openInbox").mockImplementation(async (config, options) => {
-      const session = await open(config, options);
+    const openFolder = vi.spyOn(gateway, "openFolder").mockImplementation(async (config, path, options) => {
+      const session = await open(config, path, options);
       const fetchMessages = session.fetchMessages;
       session.fetchMessages = async (uids) => {
         if (++fetches === 2) throw new Error("connection lost");
@@ -421,7 +421,7 @@ describe("syncAccount", () => {
     const interrupted = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
     expect(interrupted).toMatchObject({ status: "error" });
     expect(store.getSyncState(ACCOUNT_ID, INBOX)?.lastUid).toBe(120);
-    openInbox.mockRestore();
+    openFolder.mockRestore();
 
     const resumed = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
@@ -513,10 +513,10 @@ describe("syncAccount", () => {
       uidNext: 160,
       messages: gateway.mailbox.messages.slice(0, 59).map((m) => ({ ...m, uid: m.uid + 100 })),
     };
-    const open = gateway.openInbox.bind(gateway);
+    const open = gateway.openFolder.bind(gateway);
     let fetches = 0;
-    const openInbox = vi.spyOn(gateway, "openInbox").mockImplementation(async (config, options) => {
-      const session = await open(config, options);
+    const openFolder = vi.spyOn(gateway, "openFolder").mockImplementation(async (config, path, options) => {
+      const session = await open(config, path, options);
       const fetchMessages = session.fetchMessages;
       session.fetchMessages = async (uids) => {
         if (++fetches === 2) throw new Error("connection lost");
@@ -525,7 +525,7 @@ describe("syncAccount", () => {
       return session;
     });
     expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "error" });
-    openInbox.mockRestore();
+    openFolder.mockRestore();
 
     const finished = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
@@ -558,13 +558,13 @@ describe("syncAccount", () => {
     store.markOpened(ids.find((e) => e.uid === 1)!.id);
     gateway.failOpen(new ImapAuthError());
     expect(await gateway.test()).toMatchObject({ ok: false, authFailed: true });
-    const openInbox = vi.spyOn(gateway, "openInbox");
+    const openFolder = vi.spyOn(gateway, "openFolder");
 
     const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
     expect(outcome).toEqual({ status: "error", error: "Authentication failed", authFailed: true });
-    expect(openInbox).toHaveBeenCalledTimes(1);
-    expect(openInbox.mock.calls[0]![1]).toEqual({ readOnly: false });
+    expect(openFolder).toHaveBeenCalledTimes(1);
+    expect(openFolder.mock.calls[0]!.slice(1)).toEqual([INBOX, { readOnly: false }]);
     expect(store.getAccount(ACCOUNT_ID)).toMatchObject({ authFailed: true });
     expect(store.pendingSeenUids(ACCOUNT_ID, INBOX)).toEqual([1]);
   });

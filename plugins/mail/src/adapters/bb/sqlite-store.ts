@@ -174,6 +174,7 @@ type AccountRow = {
 type MessageRow = {
   id: string;
   account_id: string;
+  folder: string;
   thread_id: string;
   date: string | null;
   from_name: string | null;
@@ -207,7 +208,7 @@ type AttachmentRow = {
   is_inline: number;
 };
 
-const SUMMARY_COLUMNS = `m.id, m.account_id, m.thread_id, m.date, m.from_name, m.from_address,
+const SUMMARY_COLUMNS = `m.id, m.account_id, m.folder, m.thread_id, m.date, m.from_name, m.from_address,
   m.subject, m.snippet, m.is_read, m.is_flagged, m.has_attachments`;
 
 /** Oldest first; an undated message sorts after every dated one. */
@@ -266,6 +267,7 @@ function toSummary(row: MessageRow): MessageSummary {
   return {
     id: row.id,
     accountId: row.account_id,
+    folder: row.folder,
     threadId: row.thread_id,
     date: row.date,
     from: { name: row.from_name, address: row.from_address },
@@ -750,7 +752,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
-    listThreads(accountId, cursor, limit) {
+    // Slice 1 syncs INBOX only, so every thread is an INBOX thread; the folder
+    // filter lands with the folder-aware store (slice 2, Task 2).
+    listThreads(accountId, _folder, cursor, limit) {
       const after = cursor === null ? null : decodeCursor(cursor);
       let rows: ThreadRow[];
       if (after === null) {
@@ -821,6 +825,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
             text: row.body_text,
             html: row.body_html,
             htmlTruncated: row.html_truncated === 1,
+            // Per-sender image permission lands with the image store (slice 2, Task 2).
+            remoteImagesAllowed: false,
           }
         : null;
     },
@@ -937,6 +943,39 @@ export function createSqliteStore(db: Database.Database): MailStore {
               )
               .get(accountId);
       return row?.n ?? 0;
+    },
+
+    // Folders, moves and images (slice 2; filled in by Task 2) ------------
+
+    saveFolders() {
+      throw new Error("not implemented: saveFolders");
+    },
+    listFolders() {
+      throw new Error("not implemented: listFolders");
+    },
+    pendingMoves() {
+      throw new Error("not implemented: pendingMoves");
+    },
+    queueMove() {
+      throw new Error("not implemented: queueMove");
+    },
+    completeMove() {
+      throw new Error("not implemented: completeMove");
+    },
+    failMove() {
+      throw new Error("not implemented: failMove");
+    },
+    inlineParts() {
+      throw new Error("not implemented: inlineParts");
+    },
+    isImageSenderAllowed() {
+      throw new Error("not implemented: isImageSenderAllowed");
+    },
+    allowImageSender() {
+      throw new Error("not implemented: allowImageSender");
+    },
+    disallowImageSender() {
+      throw new Error("not implemented: disallowImageSender");
     },
   };
   return store;

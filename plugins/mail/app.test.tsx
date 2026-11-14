@@ -68,6 +68,7 @@ const threadB: ThreadSummary = {
 function message(overrides: Partial<MessageHeader> & { id: string }): MessageHeader {
   return {
     accountId: "acc-1",
+    folder: "INBOX",
     threadId: "th-a",
     date: "2026-11-13T08:00:00.000Z",
     from: { name: "Ada Example", address: "ada@example.org" },
@@ -302,8 +303,8 @@ describe("Mail page", () => {
 
     await waitFor(() => expect(callsTo(slot, "threads_list").length).toBe(listBefore + 2));
     expect(callsTo(slot, "threads_list").slice(listBefore).map((call) => call.input)).toEqual([
-      { accountId: "acc-1", cursor: null, limit: 100 },
-      { accountId: "acc-1", cursor: "100", limit: 50 },
+      { accountId: "acc-1", folder: "INBOX", cursor: null, limit: 100 },
+      { accountId: "acc-1", folder: "INBOX", cursor: "100", limit: 50 },
     ]);
     expect(await slot.findByText("Invented subject 149")).toBeTruthy();
     expect(slot.queryByText("Invented subject 150")).toBeNull();

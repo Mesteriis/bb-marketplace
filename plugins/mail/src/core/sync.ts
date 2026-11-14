@@ -17,7 +17,7 @@ import {
   type ChangeNotifier,
   type Clock,
   type ImapGateway,
-  type InboxSession,
+  type FolderSession,
   type MailStore,
   type SecretVault,
 } from "./ports.ts";
@@ -67,9 +67,9 @@ export async function syncAccount(
     password = vault.open(account.passwordSealed);
     const config = { host: account.host, port: account.port, user: account.username, password };
     const pushedSeen = await pushPendingSeen(deps, accountId, () =>
-      gateway.openInbox(config, { readOnly: false }),
+      gateway.openFolder(config, INBOX, { readOnly: false }),
     );
-    const session = await gateway.openInbox(config, { readOnly: true });
+    const session = await gateway.openFolder(config, INBOX, { readOnly: true });
     let counts: { fetched: number; removed: number; flagsChanged: number };
     try {
       counts = await syncInbox(store, session, accountId, clock.now(), options);
@@ -111,13 +111,13 @@ export async function syncAccount(
 async function pushPendingSeen(
   deps: SyncDeps,
   accountId: string,
-  openWritable: () => Promise<InboxSession>,
+  openWritable: () => Promise<FolderSession>,
 ): Promise<number> {
   const uids = deps.store.pendingSeenUids(accountId, INBOX);
   if (uids.length === 0) return 0;
   const stored = deps.store.getSyncState(accountId, INBOX);
   if (stored === null) return 0;
-  let session: InboxSession | null = null;
+  let session: FolderSession | null = null;
   try {
     session = await openWritable();
     const status = await session.status();
@@ -135,7 +135,7 @@ async function pushPendingSeen(
 
 async function syncInbox(
   store: MailStore,
-  session: InboxSession,
+  session: FolderSession,
   accountId: string,
   now: Date,
   options: SyncOptions,
@@ -212,7 +212,7 @@ async function syncInbox(
  */
 async function reconcile(
   store: MailStore,
-  session: InboxSession,
+  session: FolderSession,
   accountId: string,
   since: Date,
   fetchAndStore: (uids: number[]) => Promise<number>,
@@ -244,7 +244,7 @@ async function reconcile(
   return { backfilled, removed, flagsChanged };
 }
 
-async function closeQuietly(session: InboxSession): Promise<void> {
+async function closeQuietly(session: FolderSession): Promise<void> {
   try {
     await session.close();
   } catch {

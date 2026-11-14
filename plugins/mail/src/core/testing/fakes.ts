@@ -9,11 +9,14 @@
 //   - localFolderIndex treats a message without a date as inside the window.
 import type {
   FetchedMessage,
+  Folder,
+  InlinePart,
   MailAddress,
   MessageBody,
   MessageHeader,
   MessageSummary,
   ParsedQuery,
+  RemoteFolder,
   StoredAccount,
   SyncState,
   ThreadDetail,
@@ -27,8 +30,8 @@ import type {
   Clock,
   ImapConfig,
   ImapGateway,
+  FolderSession,
   ImapTestResult,
-  InboxSession,
   MailStore,
   SecretVault,
 } from "../ports.ts";
@@ -65,6 +68,7 @@ export function makeFetchedMessage(
     inReplyTo: null,
     references: [],
     gmThreadId: null,
+    gmMsgId: null,
     date: "2026-11-10T09:00:00.000Z",
     from: { name: "Sender", address: "sender@example.org" },
     to: [{ name: null, address: "owner@example.org" }],
@@ -76,6 +80,7 @@ export function makeFetchedMessage(
     bodyText: `Invented body ${uid}`,
     bodyHtml: null,
     attachments: [],
+    inlineParts: [],
     ...overrides,
   };
 }
@@ -353,10 +358,11 @@ export class InMemoryMailStore implements MailStore {
 
   listThreads(
     accountId: string,
+    folder: string,
     cursor: string | null,
     limit: number,
   ): { threads: ThreadSummary[]; nextCursor: string | null } {
-    const all = this.threadSummaries(accountId);
+    const all = this.threadSummaries(accountId, folder);
     const offset = cursor === null ? 0 : Number(cursor);
     const threads = all.slice(offset, offset + limit);
     const next = offset + threads.length;
@@ -384,6 +390,7 @@ export class InMemoryMailStore implements MailStore {
       text: row.message.bodyText,
       html: row.message.bodyHtml,
       htmlTruncated: false,
+      remoteImagesAllowed: false,
     };
   }
 
@@ -426,6 +433,60 @@ export class InMemoryMailStore implements MailStore {
     ).length;
   }
 
+  // Folders, moves and images (slice 2; filled in by later tasks) ---------
+
+  saveFolders(_accountId: string, _folders: RemoteFolder[]): { removed: string[] } {
+    throw new Error("not implemented: saveFolders");
+  }
+
+  listFolders(_accountId: string): Folder[] {
+    throw new Error("not implemented: listFolders");
+  }
+
+  pendingMoves(
+    _accountId: string,
+    _folder: string,
+  ): { uid: number; id: string; destination: string }[] {
+    throw new Error("not implemented: pendingMoves");
+  }
+
+  queueMove(
+    _messageIds: string[],
+    _destination: string,
+  ): { accountId: string; folder: string } | null {
+    throw new Error("not implemented: queueMove");
+  }
+
+  completeMove(
+    _accountId: string,
+    _folder: string,
+    _destination: string,
+    _moved: Map<number, number> | null,
+    _uids: number[],
+  ): void {
+    throw new Error("not implemented: completeMove");
+  }
+
+  failMove(_accountId: string, _folder: string, _uids: number[]): { cancelled: string[] } {
+    throw new Error("not implemented: failMove");
+  }
+
+  inlineParts(_messageId: string): InlinePart[] {
+    throw new Error("not implemented: inlineParts");
+  }
+
+  isImageSenderAllowed(_accountId: string, _address: string): boolean {
+    throw new Error("not implemented: isImageSenderAllowed");
+  }
+
+  allowImageSender(_accountId: string, _address: string): void {
+    throw new Error("not implemented: allowImageSender");
+  }
+
+  disallowImageSender(_accountId: string, _address: string): void {
+    throw new Error("not implemented: disallowImageSender");
+  }
+
   // Helpers ----------------------------------------------------------------
 
   private folderRows(accountId: string, folder: string): Row[] {
@@ -442,6 +503,7 @@ export class InMemoryMailStore implements MailStore {
     return {
       id: row.id,
       accountId: row.accountId,
+      folder: row.folder,
       threadId: row.threadId,
       date: row.message.date,
       from: { ...row.message.from },
@@ -483,10 +545,16 @@ export class InMemoryMailStore implements MailStore {
     };
   }
 
-  private threadSummaries(accountId: string): ThreadSummary[] {
+  /** Whole threads (all folders) that have at least one message in `folder`. */
+  private threadSummaries(accountId: string, folder: string): ThreadSummary[] {
+    const inFolder = new Set(
+      this.state.rows
+        .filter((r) => r.accountId === accountId && r.folder === folder)
+        .map((r) => r.threadId),
+    );
     const groups = new Map<string, Row[]>();
     for (const row of this.state.rows) {
-      if (row.accountId !== accountId) continue;
+      if (row.accountId !== accountId || !inFolder.has(row.threadId)) continue;
       const group = groups.get(row.threadId);
       if (group) group.push(row);
       else groups.set(row.threadId, [row]);
@@ -508,7 +576,7 @@ function oldestFirst(a: Row, b: Row): number {
 // Scripted IMAP gateway
 // ---------------------------------------------------------------------------
 
-/** A server-side INBOX the scripted gateway serves. */
+/** A server-side folder the scripted gateway serves. */
 export type FakeMailbox = {
   uidValidity: number;
   uidNext: number;
@@ -517,11 +585,12 @@ export type FakeMailbox = {
   internalDates?: Map<number, string>;
 };
 
-type SessionMethod = Exclude<keyof InboxSession, "close">;
+type SessionMethod = Exclude<keyof FolderSession, "close">;
 
 export type SessionCall = { method: SessionMethod; uids?: number[]; date?: Date; uid?: number };
 
 export type OpenedSession = {
+  path: string;
   readOnly: boolean;
   config: ImapConfig;
   calls: SessionCall[];
@@ -530,7 +599,7 @@ export type OpenedSession = {
 
 /**
  * Serves a FakeMailbox. Failures are scripted per method with `failNext`
- * (one call) or `failAlways`; `failOpen` makes openInbox throw.
+ * (one call) or `failAlways`; `failOpen` makes openFolder throw.
  */
 export class ScriptedImapGateway implements ImapGateway {
   readonly sessions: OpenedSession[] = [];
@@ -570,9 +639,19 @@ export class ScriptedImapGateway implements ImapGateway {
       : { ok: true };
   }
 
-  async openInbox(config: ImapConfig, options: { readOnly: boolean }): Promise<InboxSession> {
+  async listFolders(_config: ImapConfig): Promise<RemoteFolder[]> {
+    throw new Error("not implemented: listFolders");
+  }
+
+  /** Serves `mailbox` for every path (slice-1 tests use only INBOX). */
+  async openFolder(
+    config: ImapConfig,
+    path: string,
+    options: { readOnly: boolean },
+  ): Promise<FolderSession> {
     if (this.openFailure) throw this.openFailure;
     const opened: OpenedSession = {
+      path,
       readOnly: options.readOnly,
       config: { ...config },
       calls: [],
@@ -626,7 +705,9 @@ export class ScriptedImapGateway implements ImapGateway {
         record({ method: "fetchFlags", uids: [...uids] });
         return uids.flatMap((uid) => {
           const message = box().messages.find((m) => m.uid === uid);
-          return message ? [{ uid, seen: message.seen, flagged: message.flagged }] : [];
+          return message
+            ? [{ uid, seen: message.seen, flagged: message.flagged, gmMsgId: message.gmMsgId }]
+            : [];
         });
       },
       markSeen: async (uids) => {
@@ -635,6 +716,10 @@ export class ScriptedImapGateway implements ImapGateway {
         for (const message of box().messages) {
           if (uids.includes(message.uid)) message.seen = true;
         }
+      },
+      moveMessages: async (uids) => {
+        record({ method: "moveMessages", uids: [...uids] });
+        throw new Error("not implemented: moveMessages");
       },
       close: async () => {
         opened.closed = true;

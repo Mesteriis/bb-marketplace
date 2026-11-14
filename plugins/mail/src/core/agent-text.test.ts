@@ -11,6 +11,7 @@ function header(overrides: Partial<MessageHeader> = {}): MessageHeader {
   return {
     id: "m_1",
     accountId: "acc_1",
+    folder: "INBOX",
     threadId: "t_1",
     date: "2026-11-10T09:00:00.000Z",
     from: { name: "Invented Sender", address: "sender@example.org" },
@@ -29,7 +30,14 @@ function header(overrides: Partial<MessageHeader> = {}): MessageHeader {
 }
 
 function body(overrides: Partial<MessageBody> = {}): MessageBody {
-  return { messageId: "m_1", text: "Invented body.", html: null, htmlTruncated: false, ...overrides };
+  return {
+    messageId: "m_1",
+    text: "Invented body.",
+    html: null,
+    htmlTruncated: false,
+    remoteImagesAllowed: false,
+    ...overrides,
+  };
 }
 
 describe("renderMessageForAgent", () => {
@@ -116,6 +124,7 @@ describe("renderSearchHits", () => {
   const hit: MessageSummary = {
     id: "m_7",
     accountId: "acc_1",
+    folder: "INBOX",
     threadId: "t_7",
     date: "2026-11-09T08:00:00.000Z",
     from: { name: null, address: "sender@example.org" },

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ImapConfig, ImapGateway, InboxSession } from "../../core/ports.ts";
+import type { FolderSession, ImapConfig, ImapGateway } from "../../core/ports.ts";
 import type { SyncDeps } from "../../core/sync.ts";
 import {
   FixedClock,
@@ -23,9 +23,16 @@ class OneBadUserGateway implements ImapGateway {
   test() {
     return this.inner.test();
   }
-  openInbox(config: ImapConfig, options: { readOnly: boolean }): Promise<InboxSession> {
+  listFolders(config: ImapConfig) {
+    return this.inner.listFolders(config);
+  }
+  openFolder(
+    config: ImapConfig,
+    path: string,
+    options: { readOnly: boolean },
+  ): Promise<FolderSession> {
     if (config.user === this.badUser) return Promise.reject(new Error("connection dropped"));
-    return this.inner.openInbox(config, options);
+    return this.inner.openFolder(config, path, options);
   }
 }
 
@@ -145,9 +152,10 @@ describe("createSyncLoop", () => {
     let opened = false;
     const stuck: ImapGateway = {
       test: async () => ({ ok: true }),
-      openInbox: () => {
+      listFolders: async () => [],
+      openFolder: () => {
         opened = true;
-        return new Promise<InboxSession>(() => {});
+        return new Promise<FolderSession>(() => {});
       },
     };
     const loop = createSyncLoop({ ...deps, gateway: stuck }, SETTINGS);
@@ -170,10 +178,11 @@ describe("createSyncLoop", () => {
     let opens = 0;
     const gated: ImapGateway = {
       test: () => scripted.test(),
-      openInbox: async (config, options) => {
+      listFolders: (config) => scripted.listFolders(config),
+      openFolder: async (config, path, options) => {
         opens++;
         if (opens === 1) await gate;
-        return scripted.openInbox(config, options);
+        return scripted.openFolder(config, path, options);
       },
     };
     const loop = createSyncLoop({ ...deps, gateway: gated }, SETTINGS);
