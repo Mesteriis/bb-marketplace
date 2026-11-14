@@ -551,11 +551,13 @@ describe("Message actions", () => {
       .map((button) => button.textContent?.trim())
       .filter((label) => label !== "Back" && label !== "Hand to agent");
 
+  // FOLDERS is Gmail-style (All Mail, no Archive): Archive applies only in the Inbox.
   for (const [name, expected] of [
     [/Inbox/, ["Archive", "Spam", "Delete"]],
-    [/Spam/, ["Not spam", "Archive", "Delete"]],
-    [/Trash/, ["Archive", "Spam"]],
+    [/Spam/, ["Not spam", "Delete"]],
+    [/Trash/, ["Spam"]],
     [/All Mail/, ["Spam", "Delete"]],
+    [/Alpha/, ["Spam", "Delete"]],
   ] as const) {
     it(`shows the actions that apply in ${name.source}`, async () => {
       const slot = render(folderRpc());
@@ -910,6 +912,39 @@ describe("Fix round 1", () => {
 });
 
 describe("Final fixes", () => {
+  for (const [name, expected] of [
+    [/^Trash/, ["Spam"]],
+    [/^Spam/, ["Not spam", "Archive", "Delete"]],
+    [/^Work/, ["Archive", "Spam", "Delete"]],
+  ] as const) {
+    it(`outside Gmail shows Archive only where the server allows it (${name.source})`, async () => {
+      const slot = render(
+        folderRpc({
+          status_get: () => status({ accounts: [{ ...account, preset: "icloud" }] }),
+          folders_list: () => ({
+            folders: [
+              folder({ path: "INBOX", name: "Inbox", specialUse: "inbox" }),
+              folder({ path: "Junk", name: "Spam", specialUse: "junk" }),
+              folder({ path: "Archive", name: "Archive", specialUse: "archive" }),
+              folder({ path: "Deleted Messages", name: "Trash", specialUse: "trash" }),
+              folder({ path: "Work", name: "Work" }),
+            ],
+          }),
+        }),
+      );
+
+      await openFolder(slot, name);
+      fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+      await slot.findByRole("heading", { name: "Quarterly plan" });
+
+      const labels = toolbar(slot)
+        .getAllByRole("button")
+        .map((button) => button.textContent?.trim())
+        .filter((label) => label !== "Back" && label !== "Hand to agent");
+      expect(labels).toEqual(expected);
+    });
+  }
+
   it("in Gmail Sent Mail the reply shows its Sent copy, so the moves appear", async () => {
     const SENT = "[Gmail]/Sent Mail";
     // Like the server: each message's copy in the viewed folder, else Inbox,

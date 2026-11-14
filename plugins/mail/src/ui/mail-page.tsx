@@ -13,6 +13,7 @@ import type {
   ThreadDetail,
   ThreadSummary,
 } from "../core/index.ts";
+import { archiveAllowedFrom } from "../core/actions.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
@@ -177,6 +178,7 @@ function Mailbox(props: MailPageProps & { account: Account; status: StatusView }
   const threadOpen = reading.threadId !== null;
   const folder = folders?.find((f) => f.path === folderPath) ?? null;
   const folderUse = folder?.specialUse ?? (folderPath === "INBOX" ? "inbox" : null);
+  const archiveAllowed = archiveAllowedFrom(folderUse, folders ?? [], account.preset);
 
   return (
     <div className="@container flex h-full min-h-0 flex-1 flex-col">
@@ -251,6 +253,7 @@ function Mailbox(props: MailPageProps & { account: Account; status: StatusView }
               onBack={props.onCloseThread}
               folderPath={folderPath}
               folderUse={folderUse}
+              archiveAllowed={archiveAllowed}
               folderName={(path) => nameOf(folders, path)}
               onAction={props.onAction}
               actionPending={props.actionPending}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveActionDestination } from "./actions.ts";
+import { archiveAllowedFrom, resolveActionDestination } from "./actions.ts";
 import type { Folder, SpecialUse } from "./model.ts";
 
 function folder(path: string, specialUse: SpecialUse | null, overrides: Partial<Folder> = {}): Folder {
@@ -131,5 +131,45 @@ describe("resolveActionDestination", () => {
     expect(resolveActionDestination("delete", "Gone", ICLOUD, "icloud")).toEqual({
       refusal: "Unknown folder",
     });
+  });
+});
+
+describe("archiveAllowedFrom", () => {
+  it("on Gmail-style accounts allows Archive only in the Inbox", () => {
+    for (const preset of ["gmail", "other"] as const) {
+      expect(archiveAllowedFrom("inbox", GMAIL, preset)).toBe(true);
+      for (const use of ["junk", "all", "trash", "sent", null] as const) {
+        expect(archiveAllowedFrom(use, GMAIL, preset), `${preset} ${use}`).toBe(false);
+      }
+    }
+  });
+
+  it("elsewhere allows Archive except in Archive, All Mail and Trash", () => {
+    for (const use of ["inbox", "junk", "sent", "drafts", null] as const) {
+      expect(archiveAllowedFrom(use, ICLOUD, "icloud"), String(use)).toBe(true);
+    }
+    for (const use of ["archive", "all", "trash"] as const) {
+      expect(archiveAllowedFrom(use, ICLOUD, "icloud"), use).toBe(false);
+    }
+  });
+
+  it("is the rule resolveActionDestination applies", () => {
+    const both = [...ICLOUD, folder("All", "all")];
+    expect(resolveActionDestination("archive", "Deleted Messages", ICLOUD, "icloud")).toEqual({
+      refusal: "Archive does not work in Trash",
+    });
+    expect(resolveActionDestination("archive", "All", both, "icloud")).toEqual({
+      refusal: "Already archived",
+    });
+    expect(resolveActionDestination("archive", "Archive", ICLOUD, "icloud")).toEqual({
+      refusal: "Already in Archive",
+    });
+    for (const [folders, preset] of [[ICLOUD, "icloud"], [GMAIL, "gmail"], [both, "icloud"]] as const) {
+      for (const source of folders) {
+        const allowed = archiveAllowedFrom(source.specialUse, folders, preset);
+        const result = resolveActionDestination("archive", source.path, folders, preset);
+        expect("destination" in result, `${preset} ${source.path}`).toBe(allowed);
+      }
+    }
   });
 });
