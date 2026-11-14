@@ -50,6 +50,8 @@ const SYNC_INDICATOR_MS = 60_000;
  * conversation with N unread messages publishes N of them.
  */
 const REFRESH_DEBOUNCE_MS = 250;
+/** A steady stream of events still refreshes at least this often. */
+const REFRESH_MAX_WAIT_MS = 2_000;
 
 const EMPTY_LIST: ThreadListState = {
   threads: [],
@@ -88,13 +90,15 @@ function handToAgentPrompt(agentText: string): string {
 
 /**
  * Calls `run` once per burst of realtime events on `channel`, REFRESH_DEBOUNCE_MS
- * after the last one, with every payload of the burst.
+ * after the last one (but no later than REFRESH_MAX_WAIT_MS after the first),
+ * with every payload of the burst.
  */
 function useDebouncedRealtime(channel: string, run: (payloads: unknown[]) => void) {
   const runRef = useRef(run);
   runRef.current = run;
   const pending = useRef<unknown[]>([]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const burstStart = useRef<number | null>(null);
   useEffect(
     () => () => {
       if (timer.current !== null) clearTimeout(timer.current);
@@ -103,13 +107,20 @@ function useDebouncedRealtime(channel: string, run: (payloads: unknown[]) => voi
   );
   useRealtime(channel, (payload) => {
     pending.current.push(payload);
+    const now = Date.now();
+    burstStart.current ??= now;
     if (timer.current !== null) clearTimeout(timer.current);
+    const wait = Math.max(
+      0,
+      Math.min(REFRESH_DEBOUNCE_MS, burstStart.current + REFRESH_MAX_WAIT_MS - now),
+    );
     timer.current = setTimeout(() => {
       timer.current = null;
+      burstStart.current = null;
       const payloads = pending.current;
       pending.current = [];
       runRef.current(payloads);
-    }, REFRESH_DEBOUNCE_MS);
+    }, wait);
   });
 }
 
@@ -122,9 +133,11 @@ function MailPanel() {
   const [statusError, setStatusError] = useState<string | null>(null);
   const [chosenAccountId, setChosenAccountId] = useState<string | null>(null);
   /** Folders and the chosen folder, each tagged with the account they belong to. */
-  const [folderState, setFolderState] = useState<{ accountId: string; folders: Folder[] } | null>(
-    null,
-  );
+  const [folderState, setFolderState] = useState<{
+    accountId: string;
+    folders: Folder[];
+    error: string | null;
+  } | null>(null);
   const [chosenFolder, setChosenFolder] = useState<{ accountId: string; path: string } | null>(
     null,
   );
@@ -140,6 +153,8 @@ function MailPanel() {
   const accountId = status?.vaultReady ? (account?.id ?? null) : null;
   const folders =
     folderState !== null && folderState.accountId === accountId ? folderState.folders : null;
+  const foldersError =
+    folderState !== null && folderState.accountId === accountId ? folderState.error : null;
   const chosenPath =
     chosenFolder !== null && chosenFolder.accountId === accountId ? chosenFolder.path : null;
   // The chosen folder while it still exists, else the account's inbox.
@@ -151,8 +166,8 @@ function MailPanel() {
     DEFAULT_FOLDER_PATH;
 
   // Latest values for callbacks that outlive a render (realtime, async results).
-  const latest = useRef({ accountId, folderPath, list, search, reading });
-  latest.current = { accountId, folderPath, list, search, reading };
+  const latest = useRef({ accountId, folderPath, folderState, list, search, reading });
+  latest.current = { accountId, folderPath, folderState, list, search, reading };
   /** Messages this page already marked opened, so message_open runs once each. */
   const opened = useRef(new Set<string>());
   const requests = useRef({ list: 0, search: 0, thread: 0, folders: 0 });
@@ -212,19 +227,24 @@ function MailPanel() {
     [rpc],
   );
 
-  /** A failed load keeps the folders on screen (or none); the list still shows the inbox. */
+  /**
+   * A failed load keeps the folders already on screen (or none), says why in
+   * the rail and toasts once until a load succeeds; the list still shows the inbox.
+   */
   const loadFolders = useCallback(
     async (forAccount: string) => {
       const token = ++requests.current.folders;
       try {
         const { folders: next } = await rpc.call("folders_list", { accountId: forAccount });
         if (token !== requests.current.folders) return;
-        setFolderState({ accountId: forAccount, folders: next });
-      } catch {
+        setFolderState({ accountId: forAccount, folders: next, error: null });
+      } catch (error) {
         if (token !== requests.current.folders) return;
-        setFolderState((prev) =>
-          prev !== null && prev.accountId === forAccount ? prev : { accountId: forAccount, folders: [] },
-        );
+        const text = messageOf(error);
+        const prev = latest.current.folderState;
+        const same = prev !== null && prev.accountId === forAccount;
+        if (!same || prev.error === null) toast.error(`Could not load folders: ${text}`);
+        setFolderState({ accountId: forAccount, folders: same ? prev.folders : [], error: text });
       }
     },
     [rpc],
@@ -462,18 +482,22 @@ function MailPanel() {
           requests.current.thread++;
           setReading(NO_READING);
         }
-        if (latest.current.accountId === active && latest.current.folderPath === folder) {
-          setList((prev) => ({ ...prev, threads: prev.threads.filter((t) => t.id !== threadId) }));
-          void loadList(active, folder, "refresh");
+        if (latest.current.accountId === active) {
+          if (latest.current.folderPath === folder) {
+            setList((prev) => ({ ...prev, threads: prev.threads.filter((t) => t.id !== threadId) }));
+            void loadList(active, folder, "refresh");
+          }
+          void loadFolders(active);
+          const query = latest.current.search.query;
+          if (query !== "") void runSearch(query, active);
         }
-        void loadFolders(active);
       } catch (error) {
         toast.error(messageOf(error));
       } finally {
         setActionPending(false);
       }
     },
-    [loadFolders, loadList, rpc],
+    [loadFolders, loadList, rpc, runSearch],
   );
 
   /** "Show images" for one message: page state only, gone when the conversation closes. */
@@ -595,6 +619,7 @@ function MailPanel() {
       onSelectAccount={setChosenAccountId}
       list={list}
       folders={folders}
+      foldersError={foldersError}
       folderPath={folderPath}
       onSelectFolder={selectFolder}
       onLoadMore={() => {

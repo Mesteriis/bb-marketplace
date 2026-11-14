@@ -35,10 +35,13 @@ export function inboxPath(folders: readonly Folder[] | null): string | null {
   return folders?.find((f) => f.specialUse === "inbox" && f.selectable)?.path ?? null;
 }
 
-/** True when `child` sits below `parent` in the folder tree (any one-character delimiter). */
+/**
+ * True when `child` sits below `parent`. The UI's Folder carries no IMAP
+ * delimiter, so only the two delimiters servers use in practice count: the
+ * parent's exact path followed by "/" (Gmail, iCloud) or "." (Dovecot-style).
+ */
 function isBelow(child: string, parent: string): boolean {
-  if (child.length <= parent.length + 1 || !child.startsWith(parent)) return false;
-  return !/[\p{L}\p{N}]/u.test(child[parent.length]!);
+  return child.startsWith(`${parent}/`) || child.startsWith(`${parent}.`);
 }
 
 type FolderRow =
@@ -48,22 +51,23 @@ type FolderRow =
 /**
  * Rows to draw: every selectable folder, and a non-clickable label for a
  * non-selectable folder only when one of the owner's folders sits below it
- * (Gmail's "[Gmail]" holds only system folders, which are listed first).
+ * (Gmail's "[Gmail]" holds only system folders, which are listed first). The
+ * owner's folders are indented once per drawn ancestor, selectable or not;
+ * system folders stay flush.
  */
 export function folderRows(folders: readonly Folder[]): FolderRow[] {
-  const groups = folders.filter(
-    (group) =>
-      !group.selectable &&
-      folders.some((f) => f.selectable && f.specialUse === null && isBelow(f.path, group.path)),
+  const drawn = folders.filter(
+    (folder) =>
+      folder.selectable ||
+      folders.some((f) => f.selectable && f.specialUse === null && isBelow(f.path, folder.path)),
   );
   const depthOf = (folder: Folder) =>
-    folder.specialUse === null ? groups.filter((g) => isBelow(folder.path, g.path)).length : 0;
-  const rows: FolderRow[] = [];
-  for (const folder of folders) {
-    if (folder.selectable) rows.push({ kind: "folder", folder, depth: depthOf(folder) });
-    else if (groups.includes(folder)) rows.push({ kind: "group", folder, depth: depthOf(folder) });
-  }
-  return rows;
+    folder.specialUse === null ? drawn.filter((d) => isBelow(folder.path, d.path)).length : 0;
+  return drawn.map((folder): FolderRow => ({
+    kind: folder.selectable ? "folder" : "group",
+    folder,
+    depth: depthOf(folder),
+  }));
 }
 
 export interface FolderListProps {
@@ -72,9 +76,18 @@ export interface FolderListProps {
   onSelect: (path: string) => void;
 }
 
-export function FolderList({ folders, selectedPath, onSelect }: FolderListProps) {
+export interface FolderRailProps extends FolderListProps {
+  /** Why the folders could not be loaded; null when they could. */
+  error: string | null;
+}
+
+export function FolderList({ folders, selectedPath, onSelect, error }: FolderRailProps) {
   if (folders.length === 0) {
-    return (
+    return error !== null ? (
+      <p role="alert" className="px-3 py-2 text-xs text-destructive">
+        Could not load folders: {error}
+      </p>
+    ) : (
       <p className="px-3 py-2 text-xs text-muted-foreground">Folders appear after the first sync.</p>
     );
   }
