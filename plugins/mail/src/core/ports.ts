@@ -108,4 +108,9 @@ export interface MailStore {
   getBody(messageId: string): MessageBody | null;
   search(query: ParsedQuery, accountId: string | null, limit: number): MessageSummary[];
   unreadCount(accountId: string | null): number;
+  /**
+   * Recomputes stored snippets written before entities were fully decoded,
+   * with their thread rows; returns how many changed. Idempotent.
+   */
+  repairSnippets(): number;
 }

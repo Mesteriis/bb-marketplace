@@ -195,6 +195,47 @@ describe("createSqliteStore", () => {
     }
   });
 
+  it("repairSnippets fixes rows stored before full decoding and leaves clean rows alone", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, {
+        bodyText: null,
+        bodyHtml: "<p>Sale &rarr; " + "&zwnj;&nbsp;".repeat(20) + "today</p>",
+      }),
+      makeFetchedMessage(2, { bodyText: "Clean & simple; text" }),
+      makeFetchedMessage(3, { bodyText: null, bodyHtml: null }),
+    ]);
+    const stale = "Sale &rarr; " + "&zwnj; ".repeat(20) + "today";
+    db.prepare("UPDATE messages SET snippet = ? WHERE id = ?").run(stale, idOf(store, 1));
+    // A row whose body is no longer kept is cleaned from its own snippet.
+    db.prepare("UPDATE messages SET snippet = ? WHERE id = ?").run("Old &mdash;\u200c gone", idOf(store, 3));
+    db.prepare("UPDATE threads SET snippet = ?").run(stale);
+    const cleanBefore = db
+      .prepare("SELECT snippet FROM messages WHERE id = ?")
+      .get(idOf(store, 2)) as { snippet: string };
+
+    expect(store.repairSnippets()).toBe(2);
+
+    expect(store.getMessage(idOf(store, 1))!.snippet).toBe("Sale \u2192 today");
+    expect(store.getMessage(idOf(store, 3))!.snippet).toBe("Old \u2014 gone");
+    expect(store.getMessage(idOf(store, 2))!.snippet).toBe(cleanBefore.snippet);
+    const threadSnippet = (id: string) =>
+      store.getThread(store.getMessage(id)!.threadId)!.thread.snippet;
+    expect(threadSnippet(idOf(store, 1))).toBe("Sale \u2192 today");
+    expect(threadSnippet(idOf(store, 3))).toBe("Old \u2014 gone");
+    expect(store.repairSnippets()).toBe(0);
+  });
+
+  it("repairSnippets works through more rows than one batch", () => {
+    store.upsertMessages(
+      "acc_1",
+      INBOX,
+      Array.from({ length: 1_200 }, (_, i) => makeFetchedMessage(i + 1, { bodyText: `Row ${i}` })),
+    );
+    db.prepare("UPDATE messages SET snippet = snippet || ' &zwnj;'").run();
+    expect(store.repairSnippets()).toBe(1_200);
+    expect(store.getMessage(idOf(store, 1_200))!.snippet).toBe("Row 1199");
+  });
+
   it("localFolderIndex excludes a dated row older than sinceIso", () => {
     store.upsertMessages("acc_1", INBOX, [
       makeFetchedMessage(1, { date: "2026-10-01T00:00:00.000Z" }),

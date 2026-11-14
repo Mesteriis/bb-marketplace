@@ -200,6 +200,9 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     const db = bb.storage.database();
     bb.storage.migrate(db, MIGRATIONS);
     const store = createSqliteStore(db);
+    // Snippets stored before entities were fully decoded; runs before the sync loop.
+    const repaired = store.repairSnippets();
+    if (repaired > 0) bb.log.info(`repaired ${repaired} message snippets`);
     const clock: Clock = overrides.clock ?? { now: () => new Date() };
     const gateway =
       overrides.gateway ?? createImapflowGateway({ logger: (line) => bb.log.warn(line) });

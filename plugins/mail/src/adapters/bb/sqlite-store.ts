@@ -26,7 +26,7 @@ import type {
   ThreadingInput,
   ThreadSummary,
 } from "../../core/model.ts";
-import { collapseForSnippet, decodeHtmlEntities } from "../../core/html-entities.ts";
+import { cleanSnippet, needsSnippetRepair, snippetOf } from "../../core/snippet.ts";
 import type { MailStore } from "../../core/ports.ts";
 
 /**
@@ -151,7 +151,8 @@ export const MIGRATIONS: string[] = [
 ];
 
 const HTML_CAP = 1_000_000;
-const SNIPPET_LENGTH = 200;
+/** Rows per transaction when stale snippets are repaired on load. */
+const SNIPPET_REPAIR_BATCH = 500;
 /** Trigram FTS needs at least three characters; shorter text uses LIKE. */
 const FTS_MIN_CHARS = 3;
 
@@ -221,55 +222,6 @@ function normalizeDate(raw: string | null | undefined): string | null {
   if (raw === null || raw === undefined) return null;
   const time = Date.parse(raw);
   return Number.isFinite(time) ? new Date(time).toISOString() : null;
-}
-
-/** Only the start of an HTML body feeds the snippet; this bounds the work. */
-const SNIPPET_HTML_SCAN = 20_000;
-const SKIPPED_ELEMENTS = new Set(["script", "style", "head"]);
-
-/**
- * Strips tags in one forward pass (untrusted input: no backtracking regex).
- * script/style/head contents are dropped; an unclosed tag or element drops the
- * rest of the input.
- */
-function stripTags(html: string): string {
-  const lower = html.toLowerCase();
-  let out = "";
-  let pos = 0;
-  while (pos < html.length) {
-    const open = html.indexOf("<", pos);
-    if (open < 0) {
-      out += html.slice(pos);
-      break;
-    }
-    out += html.slice(pos, open) + " ";
-    const close = html.indexOf(">", open + 1);
-    if (close < 0) break;
-    const name = /^[a-z]+/.exec(lower.slice(open + 1, Math.min(close, open + 9)))?.[0] ?? "";
-    pos = close + 1;
-    if (SKIPPED_ELEMENTS.has(name)) {
-      const end = lower.indexOf(`</${name}`, pos);
-      if (end < 0) break;
-      const endClose = html.indexOf(">", end);
-      if (endClose < 0) break;
-      pos = endClose + 1;
-    }
-  }
-  return out;
-}
-
-function htmlToText(html: string): string {
-  return decodeHtmlEntities(stripTags(html.slice(0, SNIPPET_HTML_SCAN)));
-}
-
-function snippetOf(message: FetchedMessage): string {
-  const source =
-    message.bodyText !== null
-      ? message.bodyText
-      : message.bodyHtml !== null
-        ? htmlToText(message.bodyHtml)
-        : "";
-  return collapseForSnippet(source).slice(0, SNIPPET_LENGTH);
 }
 
 function likePattern(text: string): string {
@@ -625,7 +577,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
             ccJson: JSON.stringify(message.cc),
             subject: message.subject,
             date: normalizeDate(message.date),
-            snippet: snippetOf(message),
+            snippet: snippetOf(message.bodyText, message.bodyHtml),
             bodyText: message.bodyText,
             bodyHtml: html !== null && html.length > HTML_CAP ? null : html,
             htmlTruncated: html !== null && html.length > HTML_CAP ? 1 : 0,
@@ -926,6 +878,53 @@ export function createSqliteStore(db: Database.Database): MailStore {
         ORDER BY m.date IS NULL DESC, m.date DESC, m.id DESC
         LIMIT ?`;
       return (db.prepare(sql).all(...params) as MessageRow[]).map(toSummary);
+    },
+
+    repairSnippets() {
+      const scan = db.prepare<[number, number], { seq: number; snippet: string }>(
+        "SELECT seq, snippet FROM messages WHERE seq > ? ORDER BY seq LIMIT ?",
+      );
+      const load = db.prepare<
+        [number],
+        {
+          account_id: string;
+          thread_id: string;
+          snippet: string;
+          body_text: string | null;
+          body_html: string | null;
+        }
+      >("SELECT account_id, thread_id, snippet, body_text, body_html FROM messages WHERE seq = ?");
+      const update = db.prepare("UPDATE messages SET snippet = ? WHERE seq = ?");
+      let after = 0;
+      let repaired = 0;
+      for (;;) {
+        const page = scan.all(after, SNIPPET_REPAIR_BATCH);
+        if (page.length === 0) break;
+        after = page[page.length - 1]!.seq;
+        const stale = page.filter((row) => needsSnippetRepair(row.snippet));
+        if (stale.length === 0) continue;
+        repaired += atomic(() => {
+          const touched = new Map<string, Set<string>>();
+          let changed = 0;
+          for (const { seq } of stale) {
+            const row = load.get(seq);
+            if (!row) continue;
+            const next =
+              row.body_text === null && row.body_html === null
+                ? cleanSnippet(row.snippet)
+                : snippetOf(row.body_text, row.body_html);
+            if (next === row.snippet) continue;
+            update.run(next, seq);
+            changed++;
+            const threads = touched.get(row.account_id) ?? new Set<string>();
+            threads.add(row.thread_id);
+            touched.set(row.account_id, threads);
+          }
+          for (const [accountId, threadIds] of touched) refreshThreads(accountId, threadIds);
+          return changed;
+        });
+      }
+      return repaired;
     },
 
     unreadCount(accountId) {
