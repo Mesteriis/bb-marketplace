@@ -26,6 +26,7 @@ import type {
   ThreadingInput,
   ThreadSummary,
 } from "../../core/model.ts";
+import { collapseForSnippet, decodeHtmlEntities } from "../../core/html-entities.ts";
 import type { MailStore } from "../../core/ports.ts";
 
 /**
@@ -258,13 +259,7 @@ function stripTags(html: string): string {
 }
 
 function htmlToText(html: string): string {
-  return stripTags(html.slice(0, SNIPPET_HTML_SCAN))
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/gi, "&");
+  return decodeHtmlEntities(stripTags(html.slice(0, SNIPPET_HTML_SCAN)));
 }
 
 function snippetOf(message: FetchedMessage): string {
@@ -274,7 +269,7 @@ function snippetOf(message: FetchedMessage): string {
       : message.bodyHtml !== null
         ? htmlToText(message.bodyHtml)
         : "";
-  return source.replace(/\s+/g, " ").trim().slice(0, SNIPPET_LENGTH);
+  return collapseForSnippet(source).slice(0, SNIPPET_LENGTH);
 }
 
 function likePattern(text: string): string {

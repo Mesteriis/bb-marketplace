@@ -172,6 +172,29 @@ describe("createSqliteStore", () => {
     expect(store.getMessage(idOf(store, 2))!.snippet).toBe("Visible & kept");
   });
 
+  it("snippet decodes entities and drops preheader padding", () => {
+    const padding = "&zwnj;&nbsp;".repeat(40);
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, {
+        bodyText: null,
+        bodyHtml: `<p>Всё о Чёрной пятнице и скидках &rarr; ${padding}&#8203;&shy;</p><p>Today&nbsp;only &mdash; &amp;zwnj; &bogus;</p>`,
+      }),
+      makeFetchedMessage(2, { bodyText: "Plain\u200c\u00a0\u200c\u00a0 text\ufeff" }),
+    ]);
+    expect(store.getMessage(idOf(store, 1))!.snippet).toBe(
+      "Всё о Чёрной пятнице и скидках → Today only — &zwnj; &bogus;",
+    );
+    expect(store.getMessage(idOf(store, 2))!.snippet).toBe("Plain text");
+  });
+
+  it("snippet of entity-heavy html is computed quickly", () => {
+    for (const bodyHtml of ["&".repeat(300_000), "&#".repeat(150_000)]) {
+      const started = performance.now();
+      store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { bodyText: null, bodyHtml })]);
+      expect(performance.now() - started).toBeLessThan(200);
+    }
+  });
+
   it("localFolderIndex excludes a dated row older than sinceIso", () => {
     store.upsertMessages("acc_1", INBOX, [
       makeFetchedMessage(1, { date: "2026-10-01T00:00:00.000Z" }),
