@@ -112,6 +112,32 @@ describe("createSyncLoop", () => {
     expect(lines.join("\n")).not.toContain("not-openable");
   });
 
+  it("logs how many reads were pushed, without message content", async () => {
+    const { store, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    const lines: string[] = [];
+    const loop = createSyncLoop(deps, SETTINGS, { log: (line) => lines.push(line) });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.waitFor(() =>
+      expect(lines).toContain("sync acc_1: ok, fetched 1, removed 0, marked read 0"),
+    );
+    const [entry] = store.localFolderIndex("acc_1", "INBOX", "1970-01-01T00:00:00.000Z");
+    const opened = store.getMessage(entry!.id)!;
+    store.markOpened(entry!.id);
+
+    loop.wake("acc_1");
+
+    await vi.waitFor(() =>
+      expect(lines).toContain("sync acc_1: ok, fetched 0, removed 0, marked read 1"),
+    );
+    controller.abort();
+    await done;
+    const text = lines.join("\n");
+    expect(text).not.toContain(opened.subject);
+    expect(text).not.toContain(opened.from.address);
+  });
+
   it("wake starts a round before the interval", async () => {
     const { store, notifier, deps } = setup();
     store.saveAccount(account("acc_1"));
