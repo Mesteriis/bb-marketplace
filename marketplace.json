@@ -8,7 +8,7 @@
     {
       "id": "makosh-mail",
       "displayName": "Makosh Mail [Experimental]",
-      "description": "Reads iCloud, Gmail and other IMAP inboxes on a Mail page and hands a chosen message to an agent. Agent mail tools are off by default.",
+      "description": "Reads all folders of iCloud, Gmail and other IMAP accounts on a Mail page, moves mail on your click and hands a message to an agent.",
       "icon": {
         "url": "./icons/makosh-mail.svg"
       },
@@ -16,6 +16,8 @@
         "email",
         "inbox",
         "imap",
+        "folders",
+        "spam",
         "icloud",
         "gmail",
         "agent-tools",

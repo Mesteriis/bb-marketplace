@@ -4,21 +4,42 @@ A [BB](https://github.com/get-bb/bb) plugin that brings mail into the IDE:
 your mailbox beside your threads, mail access for agents, and a way to hand a
 message to an agent.
 
-**Status: experimental, read-only first slice.** Plugin id: `makosh-mail`.
+**Status: experimental.** Plugin id: `makosh-mail`. It reads mail and moves
+it only when you click; it cannot send.
 
 - Connects IMAP accounts with an app password: iCloud, Gmail or another
   server, TLS only (port 993 by default).
-- Syncs each account's INBOX on the BB server every `syncIntervalMinutes`
-  (default 5), covering the last `syncWindowDays` (default 30).
-- A **Mail** page in the sidebar: thread list, search, unread badge and a
-  reading pane that sanitizes HTML and blocks remote content.
-- Opening a message on the Mail page marks it read on the server. That
-  `\Seen` flag is the only write; every other fetch uses `BODY.PEEK`.
+- Syncs every folder of each account on the BB server every
+  `syncIntervalMinutes` (default 5), covering the last `syncWindowDays`
+  (default 30): system folders (Inbox, Sent, Drafts, Spam, Trash, Archive)
+  and your own folders. Gmail labels appear as folders; Gmail All Mail is
+  synced, its Important and Starred folders are skipped.
+- A **Mail** page in the sidebar: a folder list with unread counts, thread
+  list, search, unread badge (Inbox mail of all accounts) and a reading pane
+  that sanitizes HTML. A message Gmail keeps in several folders is counted
+  and listed once.
+- Images: inline images that are part of the message (`cid:`, up to 512 KB
+  each and 2 MB per message) always show. Remote images are hidden; a bar
+  offers **Show images** for that message or **Always show from** its
+  sender. Only `https:` images load, even when allowed.
+- **Spam**, **Not spam** (in Spam only), **Archive** and **Delete** in the
+  reading pane move the open conversation's messages in the folder you are
+  viewing. Delete moves to Trash; nothing is ever permanently deleted.
+  Archive on Gmail moves Inbox copies to All Mail. Moves are pushed by the
+  sync loop and only to servers that support `MOVE` or `UIDPLUS`; a refused
+  move is retried and cancelled after 3 refusals, the mail returns to its
+  folder and the account shows the error.
+- Opening a message on the Mail page marks it read on the server. Reads and
+  your moves are the only writes; every other fetch uses `BODY.PEEK`.
 - Agent tools `mail_search` and `mail_read` and the `mail` skill, off by
   default behind the `agentTools` setting, which also gates
-  `bb makosh-mail accounts`, `search` and `read` inside agent threads.
-  `agentTools` controls what agents are offered; it is not a barrier against
-  an agent that has shell access to the machine running the BB server.
+  `bb makosh-mail accounts`, `search` and `read` inside agent threads. They
+  search all folders and name each message's folder. Agents get no way to
+  move mail.
+- `agentTools` controls what agents are offered; it is not a barrier against
+  an agent that has shell access to the machine running the BB server. Such
+  an agent can also call the plugin's RPC methods, including the ones behind
+  the move and image buttons.
 - An `@` mention provider (**Mail**) and a **Hand to agent** button that give
   an agent one message you picked.
 - CLI: `bb makosh-mail accounts|search|read|sync|remove`. `remove <accountId>`
@@ -32,8 +53,8 @@ Account passwords are sealed with AES-256-GCM under the `vaultKey` secret
 setting, generated on first load. Mail and credentials stay on the machine
 that runs the BB server.
 
-Not yet: sending, replying, other folders, attachment download, Gmail API or
-OAuth.
+Not yet: sending, replying, creating or renaming folders, attachment
+download, Gmail API or OAuth.
 
 ## Run it
 

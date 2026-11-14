@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-makosh-mail",
   "version": "0.1.0",
-  "description": "Reads iCloud, Gmail and other IMAP inboxes on a Mail page and hands a chosen message to an agent. Agent mail tools are off by default.",
+  "description": "Reads all folders of iCloud, Gmail and other IMAP accounts on a Mail page, moves mail on your click and hands a message to an agent.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,7 @@
   },
   "bb": {
     "name": "Makosh Mail [Experimental]",
-    "description": "Reads iCloud, Gmail and other IMAP inboxes on a Mail page and hands a chosen message to an agent. Agent mail tools are off by default.",
+    "description": "Reads all folders of iCloud, Gmail and other IMAP accounts on a Mail page, moves mail on your click and hands a message to an agent.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
