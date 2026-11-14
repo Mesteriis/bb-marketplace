@@ -7,15 +7,15 @@ the start of an agent's work.
 
 [Русская версия](README.ru.md)
 
-> **Status: pre-release.** The repository is set up and the first plugin is a
-> skeleton. No release tag exists yet, and nothing is listed in the BB
-> Community marketplace.
+> **Status: pre-release.** The first plugin reads IMAP mail as an
+> experimental, read-only slice. No release tag exists yet, and nothing is
+> listed in the BB Community marketplace.
 
 ## Plugins
 
 | Plugin | Id | What it does today |
 | --- | --- | --- |
-| [Makosh Mail](plugins/mail) | `makosh-mail` | Adds a **Mail** page that lists connected mail accounts. It cannot connect an account, and it cannot read or send mail yet. |
+| [Makosh Mail](plugins/mail) | `makosh-mail` | Reads the INBOX of iCloud, Gmail and other IMAP accounts on a **Mail** page, with search and opt-in agent tools. It cannot send or reply yet. |
 
 ## Install
 

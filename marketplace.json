@@ -8,14 +8,18 @@
     {
       "id": "makosh-mail",
       "displayName": "Makosh Mail [Experimental]",
-      "description": "Mail for BB, in development. This pre-release adds an empty Mail page and cannot connect an account yet.",
+      "description": "Reads iCloud, Gmail and other IMAP inboxes on a Mail page and hands a chosen message to an agent. Agent mail tools are off by default.",
       "icon": {
         "url": "./icons/makosh-mail.svg"
       },
       "tags": [
-        "mail",
         "email",
-        "inbox"
+        "inbox",
+        "imap",
+        "icloud",
+        "gmail",
+        "agent-tools",
+        "mentions"
       ],
       "author": {
         "name": "Mesteriis",
