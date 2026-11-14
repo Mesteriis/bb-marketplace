@@ -205,24 +205,35 @@ function MailPanel() {
     [rpc],
   );
 
+  /** Marks an unread message read once per page session; only for owner-opened mail. */
+  const markOpened = useCallback(
+    (message: MessageHeader) => {
+      if (message.isRead || opened.current.has(message.id)) return;
+      opened.current.add(message.id);
+      rpc.call("message_open", { messageId: message.id }).catch((error: unknown) => {
+        opened.current.delete(message.id);
+        toast.error(`Could not mark the message read: ${messageOf(error)}`);
+      });
+    },
+    [rpc],
+  );
+
   /** Expands a message the owner chose to read: fetch its body once, mark it opened once. */
   const openMessage = useCallback(
     (message: MessageHeader) => {
       setReading((prev) => ({ ...prev, expandedIds: new Set(prev.expandedIds).add(message.id) }));
       const body = latest.current.reading.bodies[message.id];
       if (body === undefined || body.status === "error") void loadBody(message.id);
-      if (!message.isRead && !opened.current.has(message.id)) {
-        opened.current.add(message.id);
-        rpc.call("message_open", { messageId: message.id }).catch((error: unknown) => {
-          opened.current.delete(message.id);
-          toast.error(`Could not mark the message read: ${messageOf(error)}`);
-        });
-      }
+      markOpened(message);
     },
-    [loadBody, rpc],
+    [loadBody, markOpened],
   );
 
-  /** Loads a conversation; on first open, expands `focusId` or the newest message. */
+  /**
+   * Loads a conversation; on first open, expands `focusId` or the newest message
+   * and marks every unread message of it read (a mail client shows a conversation
+   * unread while any message in it is). A refresh (`open === null`) marks nothing.
+   */
   const loadThread = useCallback(
     async (threadId: string, open: { focusId: string | null } | null) => {
       const token = ++requests.current.thread;
@@ -234,6 +245,7 @@ function MailPanel() {
           const focus =
             detail.messages.find((m) => m.id === open.focusId) ?? detail.messages.at(-1);
           if (focus !== undefined) openMessage(focus);
+          for (const message of detail.messages) markOpened(message);
         }
       } catch (error) {
         if (token !== requests.current.thread) return;
@@ -246,7 +258,7 @@ function MailPanel() {
         setReading((prev) => ({ ...prev, loading: false, error: messageOf(error) }));
       }
     },
-    [openMessage, rpc],
+    [markOpened, openMessage, rpc],
   );
 
   useEffect(() => {

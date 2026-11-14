@@ -201,26 +201,58 @@ describe("Mail page", () => {
     expect(frame.getAttribute("srcdoc")).toContain("Content-Security-Policy");
   });
 
-  it("opening a message calls message_open", async () => {
+  it("expanding an older message loads its body without marking it again", async () => {
     const slot = render(mailRpc());
 
     fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
-    await waitFor(() =>
-      expect(callsTo(slot, "message_open").map((call) => call.input)).toEqual([{ messageId: "m-new" }]),
-    );
-
-    fireEvent.click(await slot.findByRole("button", { name: /First note/ }));
-
     await waitFor(() =>
       expect(callsTo(slot, "message_open").map((call) => call.input)).toEqual([
         { messageId: "m-new" },
         { messageId: "m-old" },
       ]),
     );
-    expect(callsTo(slot, "message_body").map((call) => call.input)).toEqual([
-      { messageId: "m-new" },
-      { messageId: "m-old" },
-    ]);
+
+    fireEvent.click(await slot.findByRole("button", { name: /First note/ }));
+
+    await waitFor(() =>
+      expect(callsTo(slot, "message_body").map((call) => call.input)).toEqual([
+        { messageId: "m-new" },
+        { messageId: "m-old" },
+      ]),
+    );
+    expect(callsTo(slot, "message_open")).toHaveLength(2);
+  });
+
+  it("opening a conversation marks every unread message read", async () => {
+    const detail: ThreadDetail = {
+      thread: { ...threadA, messageCount: 3, unreadCount: 2 },
+      messages: [
+        message({ id: "m-1", date: "2026-11-12T08:00:00.000Z", isRead: false, snippet: "One" }),
+        message({ id: "m-2", date: "2026-11-13T08:00:00.000Z", isRead: true, snippet: "Two" }),
+        message({ id: "m-3", date: "2026-11-14T08:30:00.000Z", isRead: false, snippet: "Three" }),
+      ],
+    };
+    const slot = render(mailRpc({ thread_get: () => detail }));
+
+    // Rendering the list marks nothing.
+    expect(await slot.findByText("Lunch")).toBeTruthy();
+    expect(callsTo(slot, "message_open")).toHaveLength(0);
+
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await waitFor(() =>
+      expect(callsTo(slot, "message_open").map((call) => call.input)).toEqual([
+        { messageId: "m-3" },
+        { messageId: "m-1" },
+      ]),
+    );
+
+    // Reopening the conversation in the same page session does not mark again.
+    fireEvent.click(slot.getByRole("button", { name: /Lunch/ }));
+    await waitFor(() => expect(callsTo(slot, "thread_get")).toHaveLength(2));
+    fireEvent.click(slot.getByRole("button", { name: /Quarterly plan/ }));
+    await waitFor(() => expect(callsTo(slot, "thread_get")).toHaveLength(3));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    expect(callsTo(slot, "message_open")).toHaveLength(2);
   });
 
   it("hands a message to the agent as a mail mention", async () => {
