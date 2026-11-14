@@ -95,7 +95,7 @@ calendar, tasks, quick steps, smart folders, phishing detection.
 src/core/                 host-agnostic; imports only zod and itself
   model.ts                Account, Folder, MessageSummary, MessageDetail, Thread… (zod)
   ports.ts                MailStore, ImapGateway, SecretVault, Clock, ChangeNotifier
-  presets.ts              iCloud / Gmail / manual server presets        (from Velo autoDiscovery)
+  presets.ts              iCloud / Gmail / manual server presets
   threading.ts            JWZ-style threading                            (from Velo threadBuilder)
   sync.ts                 initial + incremental INBOX sync over the ports (from Velo imapSync, reduced)
   search.ts               query parsing → MailStore search call          (from Velo searchParser, reduced)
