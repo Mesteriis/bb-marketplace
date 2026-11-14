@@ -55,13 +55,20 @@ function compareEarliest(a: Prepared, b: Prepared): number {
   return a.input.id < b.input.id ? -1 : a.input.id > b.input.id ? 1 : 0;
 }
 
+/** References kept per message; the newest are last, so the tail is kept. */
+const MAX_REFERENCES = 500;
+
 function prepare(input: ThreadingInput): Prepared {
-  const refs: string[] = [];
   const references: unknown[] = Array.isArray(input.references) ? input.references : [];
-  for (const raw of [...references, input.inReplyTo]) {
+  const unique = new Set<string>();
+  for (const raw of references) {
     const id = cleanId(raw);
-    if (id && !refs.includes(id)) refs.push(id);
+    if (id) unique.add(id);
   }
+  // A crafted header can hold thousands of ids; linking costs grow with them.
+  const refs = [...unique].slice(-MAX_REFERENCES);
+  const parent = cleanId(input.inReplyTo);
+  if (parent && !refs.includes(parent)) refs.push(parent);
   return { input, time: parseTime(input.date), messageId: cleanId(input.messageId), refs };
 }
 
