@@ -158,4 +158,38 @@ describe("buildThreads", () => {
     expect(threads.get("cycle-a")).toBe(threads.get("cycle-b"));
     expect(buildThreads([]).size).toBe(0);
   });
+
+  it("20,000 references builds in well under 200 ms and still threads by In-Reply-To", () => {
+    // A crafted References header: many ids, with repeats, ending at the parent.
+    const crafted = Array.from({ length: 20_000 }, (_, i) => `<junk-${i % 15_000}@example.org>`);
+    const inputs = [
+      msg({ id: "parent", messageId: "<parent@example.org>", subject: "One", date: day(0) }),
+      msg({
+        id: "reply-1",
+        messageId: "<reply-1@example.org>",
+        inReplyTo: "<parent@example.org>",
+        references: crafted,
+        subject: "Two",
+        date: day(1),
+      }),
+      msg({
+        id: "reply-2",
+        messageId: "<reply-2@example.org>",
+        inReplyTo: "<parent@example.org>",
+        references: [...crafted].reverse(),
+        subject: "Three",
+        date: day(2),
+      }),
+      msg({ id: "other", messageId: "<other@example.org>", subject: "Four", date: day(3) }),
+    ];
+
+    const started = performance.now();
+    const threads = buildThreads(inputs);
+    const elapsed = performance.now() - started;
+
+    expect(elapsed).toBeLessThan(200);
+    expect(threads.get("reply-1")).toBe("t_parent");
+    expect(threads.get("reply-2")).toBe("t_parent");
+    expect(threads.get("other")).toBe("t_other");
+  });
 });
