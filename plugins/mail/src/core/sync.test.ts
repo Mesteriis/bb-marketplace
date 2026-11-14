@@ -297,11 +297,13 @@ describe("syncAccount", () => {
     expect(failedPush).toMatchObject({ status: "ok", pushedSeen: 0 });
     expect(gateway.sessions[1]!.closed).toBe(true);
     expect(store.pendingSeenUids(ACCOUNT_ID, INBOX)).toEqual([1]);
-    expect(store.getAccount(ACCOUNT_ID)?.lastError).toBeNull();
+    // The failed push shows, while the folder itself synced.
+    expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe("INBOX: Sync failed");
 
     const retried = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
     expect(retried).toMatchObject({ status: "ok", pushedSeen: 1 });
+    expect(store.getAccount(ACCOUNT_ID)?.lastError).toBeNull();
     expect(store.pendingSeenUids(ACCOUNT_ID, INBOX)).toEqual([]);
     expect(gateway.mailbox.messages[0]!.seen).toBe(true);
   });
@@ -327,13 +329,13 @@ describe("syncAccount", () => {
     expect(notifier.changes).toEqual([]);
   });
 
-  it("network error records lastError without authFailed", async () => {
+  it("a folder that cannot be opened records lastError without authFailed", async () => {
     const { store, gateway, deps } = setup(mailbox(2));
     await syncAccount(deps, ACCOUNT_ID, OPTIONS);
     const network = Object.assign(new Error("connect ECONNREFUSED 192.0.2.1:993"), {
       code: "ECONNREFUSED",
     });
-    gateway.failOpen(network);
+    gateway.failOpenFolder(INBOX, network);
 
     const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
@@ -347,9 +349,30 @@ describe("syncAccount", () => {
     });
 
     // The next round is attempted again.
-    gateway.failOpen(null);
+    gateway.failOpenFolder(INBOX, null);
     expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok" });
     expect(store.getAccount(ACCOUNT_ID)?.lastError).toBeNull();
+  });
+
+  it("a failed folder listing fails the round and saves nothing", async () => {
+    const { store, gateway, deps } = setup(mailbox(2));
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    gateway.failOpen(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }));
+    const saveFolders = vi.spyOn(store, "saveFolders");
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toEqual({
+      status: "error",
+      error: "Sync failed (ECONNREFUSED)",
+      authFailed: false,
+    });
+    expect(saveFolders).not.toHaveBeenCalled();
+    expect(gateway.sessions).toHaveLength(1);
+    expect(store.getAccount(ACCOUNT_ID)).toMatchObject({
+      lastError: "Sync failed (ECONNREFUSED)",
+      lastSyncAt: NOW.toISOString(),
+    });
   });
 
   it("error text never contains the password", async () => {
@@ -358,11 +381,16 @@ describe("syncAccount", () => {
       Object.assign(new Error(`AUTHENTICATE failed for ${PASSWORD}`), { code: "EAUTH" }),
       new Error(`socket closed while sending ${PASSWORD}`),
     ];
-    for (const leaky of leakyErrors) {
+    const cases = leakyErrors.flatMap((leaky) => [
+      { leaky, at: "openFolder" as const },
+      { leaky, at: "listFolders" as const },
+    ]);
+    for (const { leaky, at } of cases) {
       // A naive String(error) would leak it.
       expect(String(leaky)).toContain(PASSWORD);
       const { store, gateway, deps } = setup(mailbox(1));
-      gateway.failOpen(leaky);
+      if (at === "openFolder") gateway.failOpenFolder(INBOX, leaky);
+      else gateway.failOpen(leaky);
 
       const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
@@ -554,7 +582,7 @@ describe("syncAccount", () => {
     });
   });
 
-  it("auth failure during the pending push does not log in twice", async () => {
+  it("an auth failure on the writable push session stops the round before the read-only session", async () => {
     const { store, gateway, deps } = setup(mailbox(2));
     await syncAccount(deps, ACCOUNT_ID, OPTIONS);
     const ids = store.localFolderIndex(ACCOUNT_ID, INBOX, "1970-01-01T00:00:00.000Z");
@@ -847,7 +875,7 @@ describe("syncAccount moves", () => {
       expect(store.pendingMoves(ACCOUNT_ID, INBOX)).toEqual([
         { uid: 2, id: movedId, destination: "Archive" },
       ]);
-      expect(store.getAccount(ACCOUNT_ID)?.lastError).toBeNull();
+      expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe("INBOX: Sync failed");
     }
 
     await syncAccount(deps, ACCOUNT_ID, OPTIONS);
@@ -937,5 +965,143 @@ describe("syncAccount moves", () => {
     expect(store.unreadCount(ACCOUNT_ID)).toBe(1);
     const threads = store.listThreads(ACCOUNT_ID, "Archive", null, 10).threads;
     expect(threads.map((t) => t.messageCount)).toEqual([1]);
+  });
+});
+
+describe("syncAccount fix round 1", () => {
+  it("a store failure after the server moved the mail fails the folder visibly", async () => {
+    const { store, gateway, deps } = setupWithArchive(2);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const movedId = idByUid(store, INBOX, 1);
+    store.queueMove([movedId], "Archive");
+    vi.spyOn(store, "completeMove").mockImplementationOnce(() => {
+      throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+    });
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    // INBOX failed, Archive synced (and fetched the moved message itself).
+    expect(outcome).toMatchObject({ status: "ok", folders: 1 });
+    expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe("INBOX: Sync failed (SQLITE_BUSY)");
+    expect(gateway.mailboxes.get("Archive")!.messages).toHaveLength(1);
+    // The INBOX read-only sync did not run.
+    expect(sessionsFor(gateway, INBOX, true)).toHaveLength(1);
+  });
+
+  it("a queued move whose row a uidvalidity reset deletes is reported as dropped", async () => {
+    const { store, gateway, deps } = setupWithArchive(2);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const movedId = idByUid(store, INBOX, 1);
+    store.queueMove([movedId], "Archive");
+    // Renumbered, and message 1 is now outside the window by its internal date.
+    const [m1, m2] = gateway.mailbox.messages;
+    gateway.mailbox = {
+      uidValidity: 8,
+      uidNext: 3,
+      messages: [
+        { ...m1!, uid: 1, date: hoursAgo(24 * 40) },
+        { ...m2!, uid: 2 },
+      ],
+    };
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toMatchObject({ status: "ok", movesCancelled: [movedId] });
+    expect(store.getMessage(movedId)).toBeNull();
+    expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe(
+      "INBOX was renumbered by the server; 1 queued move(s) were dropped",
+    );
+  });
+
+  it("a never-synced folder holding re-homed rows starts with a reset", async () => {
+    const { store, gateway, deps } = setupWithArchive(2);
+    // Archive cannot be read in the first two rounds.
+    gateway.failOpenFolder("Archive", new Error("connection reset"));
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(store.getSyncState(ACCOUNT_ID, "Archive")).toBeNull();
+    const movedId = idByUid(store, INBOX, 1);
+    store.queueMove([movedId], "Archive");
+    // The move session works; only Archive's own sessions fail.
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(idsIn(store, "Archive")).toEqual([{ uid: 1, id: movedId }]);
+
+    // Archive is renumbered: uid 1 now names a new message, the moved one is 2.
+    const [moved] = gateway.mailboxes.get("Archive")!.messages;
+    const fresh = makeFetchedMessage(1, { messageId: "fresh@example.org", date: hoursAgo(1) });
+    gateway.mailboxes.set("Archive", {
+      uidValidity: 4,
+      uidNext: 3,
+      messages: [fresh, { ...moved!, uid: 2 }],
+    });
+    gateway.failOpenFolder("Archive", null);
+
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok", folders: 2 });
+
+    const archive = idsIn(store, "Archive");
+    expect(archive).toHaveLength(2);
+    expect(archive.find((e) => e.uid === 2)?.id).toBe(movedId);
+    expect(store.getMessage(archive.find((e) => e.uid === 1)!.id)?.subject).toBe(fresh.subject);
+  });
+
+  it("queued moves in a folder removed on the server are reported as dropped", async () => {
+    const { store, gateway, deps } = setupWithArchive(1, 2);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const ids = [idByUid(store, "Archive", 1), idByUid(store, "Archive", 2)];
+    store.queueMove(ids, INBOX);
+    gateway.removeFolder("Archive");
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toMatchObject({ status: "ok", movesCancelled: ids });
+    expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe(
+      "Archive no longer exists; 2 queued move(s) were dropped",
+    );
+  });
+
+  it("when every folder fails the round is an error and lastSyncAt stays", async () => {
+    const { store, gateway, deps } = setupWithArchive(2, 1);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const earlier = store.getAccount(ACCOUNT_ID)!.lastSyncAt;
+    const movedId = idByUid(store, INBOX, 1);
+    store.queueMove([movedId], "Archive");
+    gateway.failAlways("moveMessages", imapError("MoveUnsupported"));
+    gateway.failAlways("searchSince", new Error("connection reset"));
+    (deps.clock as FixedClock).set(new Date(NOW.getTime() + 60_000));
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    const error =
+      "Could not move 1 message(s); they were returned to INBOX; INBOX: Sync failed; Archive: Sync failed";
+    expect(outcome).toEqual({
+      status: "error",
+      error,
+      authFailed: false,
+      movesCancelled: [movedId],
+    });
+    expect(store.getAccount(ACCOUNT_ID)).toMatchObject({
+      lastSyncAt: earlier,
+      lastError: error,
+      authFailed: false,
+    });
+  });
+
+  it("a folder listing without INBOX fails the round and keeps the local folders", async () => {
+    const { store, gateway, deps } = setupWithArchive(1, 1);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    gateway.removeFolder(INBOX);
+    const saveFolders = vi.spyOn(store, "saveFolders");
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toEqual({
+      status: "error",
+      error: "Folder list from the server is missing INBOX",
+      authFailed: false,
+    });
+    expect(saveFolders).not.toHaveBeenCalled();
+    expect(store.listFolders(ACCOUNT_ID).map((f) => f.path)).toEqual([INBOX, "Archive"]);
+    expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe(
+      "Folder list from the server is missing INBOX",
+    );
   });
 });

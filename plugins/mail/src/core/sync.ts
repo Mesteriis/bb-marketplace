@@ -22,7 +22,7 @@
 // the next). One failing folder is recorded and the round goes on; a rejected
 // login stops the account. Never throws; error text is built from error
 // classes and codes, so it never carries the password.
-import type { FetchedMessage, Folder } from "./model.ts";
+import type { FetchedMessage, Folder, RemoteFolder } from "./model.ts";
 import {
   ImapAuthError,
   type ChangeNotifier,
@@ -87,7 +87,36 @@ type RoundProgress = {
   changed: boolean;
   /** Text for lastError: cancelled moves and failed folders. */
   problems: string[];
+  /** Strips the password from error text (defence in depth). */
+  describe: (error: unknown) => string;
 };
+
+/** An account-level failure whose message is fixed text, safe to show. */
+class SyncRoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SyncRoundError";
+  }
+}
+
+/**
+ * A store call in the push failed. Unlike a gateway error it must fail the
+ * folder: the server may already have moved the mail.
+ */
+class StoreFailure extends Error {
+  constructor(readonly original: unknown) {
+    super("store failure");
+    this.name = "StoreFailure";
+  }
+}
+
+function local<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (error) {
+    throw new StoreFailure(error);
+  }
+}
 
 export async function syncAccount(
   deps: SyncDeps,
@@ -111,11 +140,12 @@ export async function syncAccount(
     movesCancelled: [],
     changed: false,
     problems: [],
+    describe: (error) => redact(describeError(error), password),
   };
   try {
     password = vault.open(account.passwordSealed);
     const config = { host: account.host, port: account.port, user: account.username, password };
-    store.saveFolders(accountId, await gateway.listFolders(config));
+    saveListing(store, accountId, await gateway.listFolders(config), progress);
     const folders = store.listFolders(accountId).filter((folder) => folder.selectable);
 
     const totals: FolderCounts = { fetched: 0, removed: 0, flagsChanged: 0 };
@@ -130,12 +160,13 @@ export async function syncAccount(
         progress.changed = true;
       } catch (error) {
         if (error instanceof ImapAuthError) throw error;
-        progress.problems.push(`${folder.name}: ${redact(describeError(error), password)}`);
+        const cause = error instanceof StoreFailure ? error.original : error;
+        progress.problems.push(`${folder.name}: ${progress.describe(cause)}`);
       }
     }
 
     store.assignThreads(accountId, buildThreads(store.threadingInputs(accountId)));
-    const lastError = progress.problems.length > 0 ? progress.problems.join("; ") : null;
+    const lastError = problemText(progress);
     if (folders.length > 0 && synced === 0) {
       // Every folder failed: like a failed slice-1 round, lastSyncAt stays.
       const error = lastError ?? describeError(null);
@@ -174,7 +205,7 @@ export async function syncAccount(
       }
       store.recordSyncResult(accountId, {
         lastSyncAt: account.lastSyncAt,
-        lastError: [message, ...progress.problems].join("; "),
+        lastError: [message, problemText(progress)].filter((t) => t !== null).join("; "),
         authFailed,
       });
       if (progress.changed) notifier.mailChanged(accountId);
@@ -182,6 +213,43 @@ export async function syncAccount(
       // The outcome still carries the error; the next round records it again.
     }
     return { status: "error", error: message, authFailed, ...cancelledField(progress) };
+  }
+}
+
+/** The round's problems, each once, in the order they happened. */
+function problemText(progress: RoundProgress): string | null {
+  const unique = [...new Set(progress.problems)];
+  return unique.length > 0 ? unique.join("; ") : null;
+}
+
+/**
+ * Saves the server's folder listing. A listing without a selectable INBOX is
+ * taken as a broken answer, not as every folder being deleted: nothing is
+ * saved and the round fails. Moves still queued in a folder the listing drops
+ * go with its rows and are reported as cancelled.
+ */
+function saveListing(
+  store: MailStore,
+  accountId: string,
+  listing: RemoteFolder[],
+  progress: RoundProgress,
+): void {
+  const hasInbox = listing.some(
+    (f) => f.selectable && (f.path.toUpperCase() === INBOX || f.specialUse === "inbox"),
+  );
+  if (!hasInbox) throw new SyncRoundError("Folder list from the server is missing INBOX");
+  const listed = new Set(listing.map((f) => f.path));
+  const doomed = store
+    .listFolders(accountId)
+    .filter((f) => !listed.has(f.path))
+    .map((f) => ({ name: f.name, ids: store.pendingMoves(accountId, f.path).map((m) => m.id) }))
+    .filter((f) => f.ids.length > 0);
+  store.saveFolders(accountId, listing);
+  for (const folder of doomed) {
+    progress.movesCancelled.push(...folder.ids);
+    progress.problems.push(
+      `${folder.name} no longer exists; ${folder.ids.length} queued move(s) were dropped`,
+    );
   }
 }
 
@@ -203,7 +271,22 @@ async function syncOneFolder(
   );
   const session = await deps.gateway.openFolder(config, folder.path, { readOnly: true });
   try {
-    return await syncFolder(deps.store, session, accountId, folder.path, deps.clock.now(), options);
+    const counts = await syncFolder(
+      deps.store,
+      session,
+      accountId,
+      folder.path,
+      deps.clock.now(),
+      options,
+    );
+    if (counts.droppedMoves.length > 0) {
+      progress.changed = true;
+      progress.movesCancelled.push(...counts.droppedMoves);
+      progress.problems.push(
+        `${folder.name} was renumbered by the server; ${counts.droppedMoves.length} queued move(s) were dropped`,
+      );
+    }
+    return counts;
   } finally {
     await closeQuietly(session);
   }
@@ -214,9 +297,10 @@ async function syncOneFolder(
  * The push is skipped while the stored UIDVALIDITY does not match the
  * server's: the pending uids would name other messages. Pending reads and
  * moves stay on their rows and are pushed with the new uids once the folder
- * is resynced. Any failure except a rejected login keeps them and lets the
- * folder sync run; an ImapAuthError is rethrown so the round stops without
- * another login.
+ * is resynced. A gateway failure keeps them pending, is recorded as a problem
+ * of the folder and lets the folder sync run; a store failure fails the folder
+ * (the server may already hold the change); an ImapAuthError is rethrown so
+ * the round stops without another login.
  */
 async function pushPending(
   deps: SyncDeps,
@@ -232,24 +316,32 @@ async function pushPending(
   if (seen.length === 0 && moves.length === 0) return;
   const stored = store.getSyncState(accountId, path);
   if (stored === null) return;
+  const gatewayFailed = (error: unknown) => {
+    if (error instanceof ImapAuthError || error instanceof StoreFailure) throw error;
+    progress.problems.push(`${folder.name}: ${progress.describe(error)}`);
+  };
   let session: FolderSession | null = null;
   try {
     session = await openWritable();
     const status = await session.status();
     if (status.uidValidity !== stored.uidValidity) return;
     if (seen.length > 0) {
+      let pushed = false;
       try {
         await session.markSeen(seen);
-        store.clearSeenPending(accountId, path, seen);
-        progress.pushedSeen += seen.length;
+        pushed = true;
       } catch (error) {
         // The reads stay pending; a moved row carries them to its destination.
-        if (error instanceof ImapAuthError) throw error;
+        gatewayFailed(error);
+      }
+      if (pushed) {
+        local(() => store.clearSeenPending(accountId, path, seen));
+        progress.pushedSeen += seen.length;
       }
     }
     if (moves.length > 0) await pushMoves(store, session, accountId, folder, moves, progress);
   } catch (error) {
-    if (error instanceof ImapAuthError) throw error;
+    gatewayFailed(error);
   } finally {
     if (session) await closeQuietly(session);
   }
@@ -258,8 +350,8 @@ async function pushPending(
 /**
  * Moves pending rows, one server call per destination. A refusal counts
  * toward the store's cancel limit; a server that cannot move safely cancels
- * the move at once; anything else (a dropped connection) leaves every
- * remaining move pending, uncounted, and ends the push.
+ * the move at once; any other gateway error (a dropped connection) leaves
+ * every remaining move pending, uncounted, and ends the push.
  */
 async function pushMoves(
   store: MailStore,
@@ -279,23 +371,26 @@ async function pushMoves(
   try {
     for (const [destination, group] of byDestination) {
       const uids = group.map((entry) => entry.uid);
+      let moved: Map<number, number> | null;
       try {
-        const { moved } = await session.moveMessages(uids, destination);
-        store.completeMove(accountId, folder.path, destination, moved, uids);
-        progress.changed = true;
+        ({ moved } = await session.moveMessages(uids, destination));
       } catch (error) {
         const code = errorCode(error);
         if (code === MOVE_REFUSED) {
-          cancelled.push(...store.failMove(accountId, folder.path, uids).cancelled);
-        } else if (code === MOVE_UNSUPPORTED) {
+          cancelled.push(...local(() => store.failMove(accountId, folder.path, uids)).cancelled);
+          continue;
+        }
+        if (code === MOVE_UNSUPPORTED) {
           // Nothing reached the server. A uid map without these uids settles
           // the rows where they are: move_pending cleared, no failure counted.
-          store.completeMove(accountId, folder.path, destination, new Map(), uids);
+          local(() => store.completeMove(accountId, folder.path, destination, new Map(), uids));
           cancelled.push(...group.map((entry) => entry.id));
-        } else {
-          throw error;
+          continue;
         }
+        throw error;
       }
+      local(() => store.completeMove(accountId, folder.path, destination, moved, uids));
+      progress.changed = true;
     }
   } finally {
     if (cancelled.length > 0) {
@@ -320,11 +415,20 @@ async function syncFolder(
   path: string,
   now: Date,
   options: SyncOptions,
-): Promise<{ fetched: number; removed: number; flagsChanged: number }> {
+): Promise<FolderCounts & { droppedMoves: string[] }> {
   const since = new Date(now.getTime() - options.windowDays * DAY_MS);
   const status = await session.status();
   const stored = store.getSyncState(accountId, path);
-  const resetting = stored !== null && stored.uidValidity !== status.uidValidity;
+  // A folder never synced may already hold rows (re-homed by a move): their
+  // uids are unchecked against this UIDVALIDITY, so it starts as a reset too,
+  // or a reused uid would hide a new message behind a stale row.
+  const resetting =
+    stored === null
+      ? store.localFolderIndex(accountId, path, EPOCH_ISO).length > 0
+      : stored.uidValidity !== status.uidValidity;
+  // Moves still queued here when the reset starts; any whose row the reset
+  // deletes (not reattached, outside the window) is reported as dropped.
+  const queuedAtReset = resetting ? store.pendingMoves(accountId, path).map((m) => m.id) : [];
   if (resetting) store.beginFolderReset(accountId, path);
   const initial = stored === null || resetting;
 
@@ -381,8 +485,11 @@ async function syncFolder(
   // Every successful round, not only the one that saw the change: a reset
   // round that failed midway has already saved the new UIDVALIDITY, so the
   // rows it detached are only cleaned up here.
+  const stillThere = queuedAtReset.filter((id) => store.getMessage(id) !== null);
   const resetRemoved = store.finishFolderReset(accountId, path);
+  const droppedMoves = stillThere.filter((id) => store.getMessage(id) === null);
   return {
+    droppedMoves,
     fetched,
     removed: reconciled.removed + resetRemoved,
     flagsChanged: reconciled.flagsChanged,
@@ -448,6 +555,7 @@ const SAFE_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 /** Describes an error by its class and code only; messages may echo credentials. */
 function describeError(error: unknown): string {
   if (error instanceof ImapAuthError) return "Authentication failed";
+  if (error instanceof SyncRoundError) return error.message;
   const code = (error as { code?: unknown } | null)?.code;
   if (typeof code === "string" && SAFE_CODE.test(code)) return `Sync failed (${code})`;
   const name = error instanceof Error ? error.name : "";
