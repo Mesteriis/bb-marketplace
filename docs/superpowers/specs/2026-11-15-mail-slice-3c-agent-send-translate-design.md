@@ -1042,3 +1042,65 @@ go-ahead.
   app d.ts.
 - That `bb plugin rpc call` reaches non-discoverable methods. 3b's accepted
   limit assumes it; not re-run here.
+
+## Resolutions after the builder check
+
+These override the sections above. Items marked *(owner)* were decided by the owner on 2026-11-15; open questions 1–8 are closed by them. Names below were checked against the current code (`src/core/compose.ts`, `compose-outbox.ts`, `model.ts`, `contract.ts`, `server.ts`, `src/adapters/bb/sqlite-store.ts`, `outbox-worker.ts`).
+
+1. **Shell-answer limit *(owner)*.** Accepted as in 3b (3b Resolutions 1):
+   - `agentPropose` is off by default; every agent send keeps the 10 s Undo with the toast on any open Mail page; the card caps apply; README, `PLUGIN_OVERVIEW.md` and `skills/mail/SKILL.md` say it in plain words.
+   - The accepted limit also covers two more client-caller paths: a shell agent can start and read translations through `translate_start` / `translate_poll` (spending the owner's pool quota within the 30 per hour rate, reading text it could read through the RPCs anyway), and it can call `proposal_view` to rotate a card's view token. Rotation is denial of service only: the owner's card then fails its submit and shows "This card was opened elsewhere; reopen it" with Cancel, and nothing is sent.
+   - A BB feature request (no patch) asks for a host-verified "answered by a person in the app" marker on `PluginInteractionResult`, or a form the CLI cannot answer (open question 2). Filing it is an external post, so the owner files it or gives the go-ahead; the plan's last task holds the text.
+2. **Undo and Edit on an agent send *(owner)*.** Undo (toast, thread row or Outbox) and Outbox **Edit** on a row with `origin = 'agent'` turn its draft into an ordinary owner draft: `proposal_id` is cleared and the proposal moves to `opened`, in one store transaction with the outbox-row delete. The draft keeps `origin = 'agent'` only as the "Started by an agent" badge; a later composer Send queues with `origin = 'owner'`. Send now (held), Retry (failed), Send again (unknown) and Retry copy stay as in 3b: they are owner clicks in the Outbox, and the row keeps `origin = 'agent'`.
+3. **Agent quotes are plain text built on the server *(owner)*** (builder finding B1: 3b's `prepareCompose` leaves an HTML original out of the doc and sets `importHtml`, which only the page's editor turns into a quote, so the card would show no quote and the sent message would have none).
+   - For a reply or forward the server builds the quote: `quoteHeaderText(source, kind)` lines, then the original's text — the stored `text`, else `htmlToText(html)` from `agent-text.ts` — split into lines, all through `docFromLines(bodyLines, [...header, ...quoteLines])`.
+   - `importHtml` is always `null` on a proposal draft.
+   - The card renders that doc's text exactly; what the card shows is what `renderDoc` sends.
+4. **makosh-ai additions *(owner)*.** `ai.v1.providers` (provider id, display name, API format, availability), an optional `projectId` on `ai.v1.models`, and distinct error codes for "busy" (stream slots taken) and "bridge missing" are a separate change in makosh-ai, not a 3c task. Mail works without them (the static provider pair and the first project's catalog) and switches to them when `experimental_discoverRpc` finds `ai.v1.providers`.
+5. **Kept as recommended *(owner)*.** `agentPropose` is independent of `agentTools` (open question 3); no attachments beyond the forwarded message's own (4); every new address is acknowledged (5); scroll-to-end only for bodies taller than the card (6); no default provider or model in code (8).
+6. **Seam for hidden drafts** (B2: `prepareCompose` and `newCompose` create the row themselves with `origin: "owner"`, so there is no way to create a hidden draft atomically).
+   - `prepareCompose` splits into `planCompose(deps, input)`, which reads the store and the original and returns a `ComposePlan` (the `NewDraft` fields without `id`, `origin`, `proposalId`, plus the attachments to copy, `warning` and `dropped`), and `createComposeDraft(deps, plan, { origin, proposalId })`, which writes the row and its attachments. `newCompose` likewise uses `planNew` + `createComposeDraft`. `prepareCompose` and `newCompose` keep their signatures as `plan` + `create` with `origin: "owner"`, `proposalId: null`.
+   - `NewDraft` gains `proposalId: string | null`; `createDraft` stores `origin` and `proposal_id` in the same INSERT, so no hidden draft is ever visible for a moment.
+   - `origin` widens to `"owner" | "agent"` in `model.ts` (`NewDraft`, `NewOutboxRow`, hence `DraftRecord` and `OutboxRecord`), `compose.ts`, `compose-outbox.ts` (`queueSend` input) and the SQLite row types.
+7. **Where proposal drafts are refused** (B3).
+   - `store.getDraft` stays raw: it returns proposal drafts, because the proposal flow itself reads them.
+   - The refusal lives in the RPC handlers in `server.ts`: `compose_open` (both forms), `compose_save`, `compose_discard`, `compose_attachment_begin`, `compose_attachment_remove`, `compose_attachment_finish` (by the upload's draft) and `compose_send` answer `not_found` for a draft with `proposalId !== null`. One helper, `ownerDraft(store, id)`, does it for all of them.
+   - Core guards it too where no RPC stands in front: `writeServerCopy` skips proposal drafts and the outbox worker's server-copy tick filters them out of `listDrafts`, so a hidden draft never reaches the account's Drafts folder.
+8. **Submit check inside `describeSubmission`** (B4: the host calls `describeSubmission` before `requestInput` resolves, persists its return, and gives it 2 s; a title written there before the check ran could be false).
+   - `describeSubmission(value)` runs the whole submit check: strict parse (≤ 1 KiB), the closure `proposalId`, CAS `pending → confirming`, stored hash equal to the submitted one **and** to `proposalContent` of the current draft row and attachments, the view token, expiry. It returns the true title: "Email confirmed", "Opened in Mail" or "Not sent: the proposal changed", with payload `{ proposalId }`.
+   - `queueSend` runs after `requestInput` resolves, outside the 2 s window (the MIME build can be slow with attachments). The live outcome ("Sending in 8 s · Undo", "Sent", "Not sent · …") is the timeline row's body, never the persisted title.
+   - One id: `requestId = outboxId = proposalId`. The persisted payload is `{ proposalId }` only; the row finds the outbox row by that id.
+   - "Open" also acts inside `describeSubmission` (clear `proposal_id`, state `opened`), so the title is true when persisted.
+   - The check runs once: `describeSubmission` keeps its promise in the `execute` closure, and the `requestInput` continuation awaits that same promise, so a slow or timed-out description still yields one decision. If the host resolved `submitted` without calling `describeSubmission`, the continuation runs the check itself.
+9. **Agent sends: Undo, held, failed** (B5) follow resolution 2.
+10. **Strict validation at propose time.**
+    - Every agent address goes through `parseAddress`; one invalid address refuses the whole call with a fixed text naming the problem kind (`AddressProblem`), never the address.
+    - After the merge, to + cc + bcc unique addresses ≤ `MAX_RECIPIENTS` (100), the same count `queueSend` checks; at least one recipient.
+    - Size: body ≤ 50 000 characters, the built doc ≤ `DOC_MAX_BYTES`, kept attachments ≤ `ATTACHMENT_CAP_BYTES`.
+    - The account has SMTP, the vault is ready and the account is not `authFailed` — the same checks `compose_send` makes, repeated again right before `queueSend`.
+    - The tool's `to` / `cc` / `bcc` items use `headerAddressInput` (exported from `contract.ts`), so CR, LF and NUL are refused at the zod boundary.
+11. **Failures after the click.** `queueSend` can still refuse after the owner confirmed (`rate_limited`, `too_large`, `conflict`, `smtp_missing`, the vault or a sign-in). Then the draft becomes an owner draft exactly as Open in Mail (resolution 2) and the proposal is `opened`.
+    - Agent text: "The owner confirmed the message, but it could not be queued: <reason>. It is kept as a draft in Mail and has not been sent." `<reason>` is fixed per kind: "too many messages were sent in the last minute", "the attachments are over the size limit", "the account needs attention in Mail".
+    - Row text: "Not sent · <same reason> · Open in Mail".
+    - After a successful queue the server calls `worker.wake(accountId)`, as `compose_send` does.
+12. **"New address".** A recipient is new when the owner never sent to it: it appears in no To/Cc of a stored message in a Sent-role folder. Received mail does not count (an injected address may well have written to the owner). A new store method, `addressesSentTo(addresses)`, answers it.
+13. **Hidden text on the card.** Subject, display names, addresses and body:
+    - bidi controls (U+202A–202E, U+2066–2069, U+200E, U+200F, U+061C) and zero-width characters (U+200B–200D, U+2060, U+FEFF) are stripped from what is shown and revealed as a visible marker with a count ("2 hidden characters removed"); the hash and the sent bytes are not changed by the card, and a subject or address holding one is flagged.
+    - Addresses are shown in their ASCII form, so an IDN domain shows its `xn--` punycode (core already punycodes domains).
+    - Agent-supplied display names are dropped: the agent's recipients carry the address only. Names on recipients the Reply rules computed come from the store and stay secondary text.
+    - A recipient row longer than 10 collapses to the first 10 and "and N more" (expandable), and its new addresses take one bulk acknowledgement ("I know these N addresses").
+    - Links: `linksIn` also finds scheme-less links (`www.…`, `host.tld/path`, a bare `host.tld` with a known-looking TLD) and lists them by host.
+14. **`proposal_view` recomputes the hash** from the current draft row and attachments before it returns content or a token. On a mismatch it returns the changed state with no content and no token.
+15. **Translator adapter.**
+    - The SSE reader does not require `text/event-stream`: Codex answered with `contentType: null`. Any chunk with `status < 400` is read as SSE; with `status ≥ 400` the body is read whole (≤ 64 KiB) and mapped by status, never shown or logged.
+    - Events: `response.output_text.delta` (Codex) and `content_block_delta` with `delta.type = "text_delta"` (Claude) are the text events; the stop and error events stay as listed above.
+    - Codex: `max_output_tokens` is omitted. Output is capped by characters (`TRANSLATE_OUTPUT_CHARS`) in the adapter; at the cap the stream is cancelled and `finish` is `"max_tokens"` ("cut short"). Claude keeps `max_tokens: 8192`.
+    - Claude with a custom `system` prompt is untested through the pool. If the route refuses it (a 400 or a refusal before any text), the adapter retries once with the instructions at the top of the user turn, inside the same nonce frame, and remembers that for the provider until restart.
+16. **Error mapping until makosh-ai has distinct codes.** `gateway_missing` is decided by `experimental_discoverRpc({ pluginId: "makosh-ai" })` only. After discovery succeeded, a `conflict` or `not_found` refusal from `ai.v1.start` is ambiguous (bridge missing, busy, routing) and maps to `pool_unavailable`, showing makosh-ai's own refusal message (control characters removed, ≤ 200 characters; it is gateway text, not mail data). `busy` is used only once makosh-ai reports it distinctly. An HTTP status from the pool on a chunk or `done` (not a refusal) is the routing-off signal and maps by status; the exact status is pinned at the live check.
+17. **Explicit deletes.** The store does not rely on `PRAGMA foreign_keys` (3b's own cascades are explicit `DELETE`s too). The new tables carry no `REFERENCES` clause. `translations` rows are deleted in `deleteRows` (every message removal path) and in `deleteAccount`; `agent_proposals` rows in `deleteAccount`. Store tests pin both.
+18. **Nits.**
+    - "A restart never sends" reads "a restart never confirms": on start a `pending` proposal becomes `expired` and its hidden draft is deleted; a `confirming` one whose outbox row exists (id = proposal id) becomes `queued` and the row is `held` by 3b's start recovery; a `confirming` one without a row becomes `expired`.
+    - The thread row shows Undo only when it is expanded, so a click on the timeline cannot undo by accident.
+    - The 1.5 s dwell, the scroll-to-end and the acknowledgements are card UX, not part of the submit check: a client caller can skip them. The submit check is the one in resolution 8; the server keeps no dwell compare.
+    - The canonical content includes the From display name.
+    - The frozen-migration test is the SHA pin "shipped migration elements are unchanged" in `src/adapters/bb/sqlite-store.test.ts`; it keeps elements 0–4 and gains element 5's hash in the docs-and-listing task, once element 5 is final.
