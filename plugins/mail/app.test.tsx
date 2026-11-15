@@ -578,7 +578,7 @@ async function openFolder(slot: ReturnType<typeof render>, name: RegExp) {
 }
 
 /** Toolbar buttons that are not role moves. */
-const NOT_MOVES = ["Back", "Hand to agent", "Move to…", "Mark unread", "Reply", "Reply all", "Forward", "Edit draft"];
+const NOT_MOVES = ["Back", "Hand to agent", "Move to…", "Mark unread", "Reply", "Reply all", "Forward", "Translate", "Edit draft"];
 
 function toolbar(slot: ReturnType<typeof render>) {
   return within(slot.getByRole("toolbar", { name: "Conversation actions" }));
@@ -950,7 +950,7 @@ describe("Fix round 1", () => {
       .map((button) => button.textContent?.trim())
       .filter((label) => label !== "Back");
     // Writing still applies; the moves do not.
-    expect(labels).toEqual(["Reply", "Reply all", "Forward", "Hand to agent"]);
+    expect(labels).toEqual(["Reply", "Reply all", "Forward", "Translate", "Hand to agent"]);
   });
 
   it("shows Spam and Delete but no Archive in an archive folder", async () => {
@@ -3252,5 +3252,141 @@ describe("Agent proposals", () => {
     await slot.findByText("Lunch");
     await slot.behavior.emitRealtime(OUTBOX_CHANGED_CHANNEL, { accountId: "acc-1", id: "prop-1", state: "queued" });
     await waitFor(() => expect(toasts.plain.some((t) => /^Agent message · Sending in \d+ s$/.test(t))).toBe(true));
+  });
+});
+
+describe("Translation", () => {
+  function translateRpc(overrides: Record<string, (input: never) => unknown> = {}) {
+    const polls = [
+      { state: "running", text: "Made-up " },
+      { state: "running", text: "" },
+      { state: "done", text: "translation", finish: "complete", provider: "provider-x", model: "model-y" },
+    ];
+    let poll = 0;
+    return mailRpc({
+      status_get: () => status({ translate: { gateway: "ok" } }),
+      translate_settings_get: () => ({
+        gateway: "ok",
+        providers: [{ id: "provider-x", displayName: "Provider X", available: true }],
+        models: [{ model: "model-y", displayName: "Model Y" }],
+        current: { providerId: "provider-x", model: "model-y", language: "ru" },
+      }),
+      translate_start: () => ({ jobId: "job-1" }),
+      translate_poll: () => polls[Math.min(poll++, polls.length - 1)],
+      translate_cancel: () => ({ cancelled: true }),
+      ...overrides,
+    });
+  }
+
+  async function openThread(slot: ReturnType<typeof render>) {
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+  }
+
+  it("streams the translation as text, polling only for new text", async () => {
+    const slot = render(translateRpc());
+    await openThread(slot);
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "Translate" }));
+    const block = await slot.findByRole("region", { name: "Translation" });
+    await waitFor(() => expect(within(block).getByText("Made-up translation")).toBeTruthy(), { timeout: 3_000 });
+    expect(callsTo(slot, "translate_start")[0]?.input).toEqual({ messageId: "m-new", targetLanguage: "ru" });
+    expect(callsTo(slot, "translate_poll").map((c) => (c.input as { from: number }).from)).toEqual([0, 8, 8]);
+    expect(within(block).getByText(/Machine translation · provider-x · model-y · into Russian/)).toBeTruthy();
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "Show original" }));
+    expect(slot.queryByRole("region", { name: "Translation" })).toBeNull();
+  });
+
+  it("shows a cached translation at once, marked cached", async () => {
+    const slot = render(
+      translateRpc({
+        translate_start: () => ({
+          cached: {
+            messageId: "m-new",
+            targetLanguage: "ru",
+            providerId: "provider-x",
+            model: "model-y",
+            text: "Stored made-up text",
+            truncated: false,
+            cached: true,
+            createdAt: "2026-11-15T09:00:00.000Z",
+          },
+        }),
+      }),
+    );
+    await openThread(slot);
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "Translate" }));
+    expect(await slot.findByText("Stored made-up text")).toBeTruthy();
+    expect(slot.getByText(/· cached$/)).toBeTruthy();
+    expect(callsTo(slot, "translate_poll")).toHaveLength(0);
+  });
+
+  it("Stop cancels the job", async () => {
+    const slot = render(translateRpc({ translate_poll: () => ({ state: "running", text: "x" }) }));
+    await openThread(slot);
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "Translate" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(callsTo(slot, "translate_cancel")[0]?.input).toEqual({ jobId: "job-1" }));
+    expect(slot.getByText("The translation was stopped.")).toBeTruthy();
+  });
+
+  it("leaving the page cancels the job", async () => {
+    const slot = render(translateRpc({ translate_poll: () => ({ state: "running", text: "x" }) }));
+    await openThread(slot);
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "Translate" }));
+    await slot.findByRole("button", { name: "Stop" });
+    await waitFor(() => expect(callsTo(slot, "translate_start")).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    slot.unmount();
+    expect(callsTo(slot, "translate_cancel")[0]?.input).toEqual({ jobId: "job-1" });
+  });
+
+  it("t by the physical key translates the open message; not while typing", async () => {
+    const slot = render(translateRpc());
+    await openThread(slot);
+    press(slot.getByRole("searchbox", { name: "Search mail" }), { key: "t", code: "KeyT" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(callsTo(slot, "translate_settings_get")).toHaveLength(0);
+    press(pageRoot(slot), { key: "е", code: "KeyT" });
+    await slot.findByRole("region", { name: "Translation" });
+  });
+
+  it("is disabled without Makosh AI, with the reason", async () => {
+    const slot = render(translateRpc({ status_get: () => status({ translate: { gateway: "gateway_missing" } }) }));
+    await openThread(slot);
+    const button = toolbar(slot).getByRole("button", { name: "Translate" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.parentElement?.getAttribute("title")).toBe("Translation needs the Makosh AI plugin");
+  });
+
+  it("opens the settings first when no provider and model are chosen, then translates", async () => {
+    const proto = Element.prototype as unknown as Record<string, unknown>;
+    proto.scrollIntoView ??= () => {};
+    proto.hasPointerCapture ??= () => false;
+    proto.releasePointerCapture ??= () => {};
+    const slot = render(
+      translateRpc({
+        translate_settings_get: () => ({
+          gateway: "ok",
+          providers: [{ id: "provider-x", displayName: "Provider X", available: true }],
+          models: null,
+          current: { providerId: "", model: "", language: "ru" },
+        }),
+        translate_settings_set: () => ({ ok: true }),
+      }),
+    );
+    await openThread(slot);
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "Translate" }));
+    const dialog = await slot.findByRole("dialog", { name: "Translation settings" });
+    expect(callsTo(slot, "translate_start")).toHaveLength(0);
+    const trigger = within(dialog).getByRole("combobox", { name: "Provider" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter", code: "Enter" });
+    fireEvent.keyDown(await slot.findByRole("option", { name: "Provider X" }), { key: "Enter", code: "Enter" });
+    fireEvent.change(within(dialog).getByLabelText("Model"), { target: { value: "model-y" } });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    });
+    expect(callsTo(slot, "translate_settings_set")[0]?.input).toEqual({ providerId: "provider-x", model: "model-y", language: "ru" });
+    await waitFor(() => expect(callsTo(slot, "translate_start")).toHaveLength(1));
   });
 });

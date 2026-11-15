@@ -26,6 +26,7 @@ export type ShortcutCommand =
   | { kind: "reply" }
   | { kind: "reply_all" }
   | { kind: "forward" }
+  | { kind: "translate" }
   | { kind: "go"; target: GoTarget };
 
 /** How long `g` waits for its second key. */
@@ -152,6 +153,8 @@ function matchKey(event: KeyLike, afterG: boolean): KeyMatch {
       return { kind: "reply_all" };
     case "KeyF":
       return { kind: "forward" };
+    case "KeyT":
+      return { kind: "translate" };
     case "KeyG":
       return { kind: "g" };
     default:
@@ -244,6 +247,7 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
       { keys: ["Shift", "u"], label: "Mark unread" },
       { keys: ["Shift", "i"], label: "Mark read" },
       { keys: ["v"], label: "Move to…" },
+      { keys: ["t"], label: "Translate, or show the original" },
     ],
   },
   {

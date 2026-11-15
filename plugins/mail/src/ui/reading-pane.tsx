@@ -4,6 +4,7 @@
 // messages show sender, date and snippet; an expanded one shows its body.
 // The toolbar acts on the conversation's messages in the folder (or role)
 // being viewed; each message has its own flag, Details and downloads.
+import type { ReactNode } from "react";
 import type {
   AttachmentMeta,
   MessageAction,
@@ -68,6 +69,18 @@ export interface ReadingPaneProps {
   onEditDraft: (message: MessageHeader) => void;
   /** The composer under the conversation has focus: its toolbar is the one shown. */
   hideToolbar?: boolean;
+  /** Translate in the toolbar and the translation block; absent: no Translate. */
+  translation?: ReadingTranslation;
+}
+
+/** The reading pane's part of translation (slice 3c). */
+export interface ReadingTranslation {
+  /** Why Translate is disabled (its tooltip), or null. */
+  disabledReason: string | null;
+  /** The message whose translation is shown, and its block. */
+  shown: { messageId: string; block: ReactNode } | null;
+  /** Translate, or Show original when that message's translation is shown. */
+  onToggle: (message: MessageHeader) => void;
 }
 
 interface ToolbarAction {
@@ -200,6 +213,7 @@ function MessageItem({
   onDownloadEml,
   onDownloadAttachment,
   onEditDraft,
+  translation,
 }: {
   message: MessageHeader;
   expanded: boolean;
@@ -215,6 +229,8 @@ function MessageItem({
   onDownloadAttachment: (attachment: AttachmentMeta) => void;
   /** Set for a draft: continue it in the composer. */
   onEditDraft: (() => void) | null;
+  /** This message's translation block, shown above its body. */
+  translation: ReactNode | null;
 }) {
   const sender = addressLabel(message.from);
   const senderAddress = message.from.address.trim() !== "" ? message.from.address : null;
@@ -277,6 +293,7 @@ function MessageItem({
       </div>
       {expanded ? (
         <div className="flex flex-col gap-3 px-3 pb-3">
+          {translation}
           <MessageBodyView
             state={body}
             title={`Message from ${sender}`}
@@ -400,6 +417,21 @@ export function ReadingPane(props: ReadingPaneProps) {
               <Icon name="Forward" fallback="Send" aria-hidden />
               Forward
             </Button>
+            {props.translation !== undefined ? (
+              // A disabled button shows no tooltip of its own: the wrapper carries the reason.
+              <span title={props.translation.disabledReason ?? undefined} className="inline-flex">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={props.translation.disabledReason !== null}
+                  aria-description={props.translation.disabledReason ?? undefined}
+                  onClick={() => props.translation?.onToggle(handed)}
+                >
+                  <Icon name="Languages" fallback="Mail" aria-hidden />
+                  {props.translation.shown?.messageId === handed.id ? "Show original" : "Translate"}
+                </Button>
+              </span>
+            ) : null}
           </>
         ) : null}
         {inFolder
@@ -468,6 +500,7 @@ export function ReadingPane(props: ReadingPaneProps) {
             onDownloadEml={() => props.onDownloadEml(message)}
             onDownloadAttachment={(attachment) => props.onDownloadAttachment(message, attachment)}
             onEditDraft={props.isDraft(message) ? () => props.onEditDraft(message) : null}
+            translation={props.translation?.shown?.messageId === message.id ? props.translation.shown.block : null}
           />
         );
       })}

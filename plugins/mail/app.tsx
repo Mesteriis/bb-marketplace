@@ -76,6 +76,14 @@ import {
 } from "./src/ui/routes.ts";
 import { AgentSendCard, type ProposalViewResult } from "./src/ui/agent-send-card.tsx";
 import { AgentSendRow } from "./src/ui/agent-send-row.tsx";
+import type { ReadingTranslation } from "./src/ui/reading-pane.tsx";
+import {
+  TRANSLATION_STARTING,
+  TranslationBlock,
+  type TranslationState,
+} from "./src/ui/translation-block.tsx";
+import { TranslationSettings } from "./src/ui/translation-settings.tsx";
+import type { LanguageTag } from "./src/core/translate.ts";
 import { subjectOrPlaceholder } from "./src/ui/thread-list.tsx";
 
 // The channel name is checked against the core constant without importing it
@@ -84,6 +92,9 @@ const MAIL_CHANGED_CHANNEL: typeof MailChangedChannel = "mail-changed";
 const OUTBOX_CHANGED_CHANNEL: typeof OutboxChangedChannel = "outbox-changed";
 /** The Undo window when a row's sendAfter is not known yet. */
 const UNDO_WINDOW_MS = 10_000;
+/** How often a running translation is polled while the page is visible. */
+const TRANSLATE_POLL_MS = 400;
+const TRANSLATE_MISSING = "Translation needs the Makosh AI plugin";
 const PAGE_SIZE = 50;
 const MAX_PAGE = 100;
 const SEARCH_LIMIT = 50;
@@ -1527,6 +1538,202 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     [loadStatus, rpc],
   );
 
+  // ---- Translation (slice 3c) ----
+
+  const [translation, setTranslation] = useState<{ messageId: string; state: TranslationState } | null>(null);
+  const translationRef = useRef(translation);
+  translationRef.current = translation;
+  const [translateSettingsOpen, setTranslateSettingsOpen] = useState(false);
+  /** A Translate that waits for the first-use settings. */
+  const translateAfterSettings = useRef<string | null>(null);
+  /** The running job; a new serial ends any poll loop of an older one. */
+  const translateJob = useRef<string | null>(null);
+  const translateSerial = useRef(0);
+  /** The default target language, once read from the settings. */
+  const translateLanguage = useRef<string | null>(null);
+
+  /** Ends the poll loop and cancels the job on the server, if one runs. */
+  const stopTranslateJob = useCallback(() => {
+    translateSerial.current++;
+    const jobId = translateJob.current;
+    translateJob.current = null;
+    if (jobId !== null) rpc.call("translate_cancel", { jobId }).catch(() => undefined);
+  }, [rpc]);
+
+  const runTranslation = useCallback(
+    async (messageId: string, language: string, force: boolean) => {
+      stopTranslateJob();
+      const serial = translateSerial.current;
+      const live = () => translateSerial.current === serial;
+      const patch = (next: (state: TranslationState) => Partial<TranslationState>) => {
+        if (!live()) return;
+        setTranslation((prev) =>
+          prev !== null && prev.messageId === messageId ? { messageId, state: { ...prev.state, ...next(prev.state) } } : prev,
+        );
+      };
+      setTranslation({ messageId, state: TRANSLATION_STARTING(language) });
+      let started: Awaited<ReturnType<typeof rpc.call<"translate_start">>>;
+      try {
+        started = await rpc.call("translate_start", {
+          messageId,
+          targetLanguage: language as LanguageTag,
+          ...(force ? { force: true } : {}),
+        });
+      } catch {
+        patch(() => ({ status: "failed", error: "failed" }));
+        return;
+      }
+      if ("cached" in started) {
+        const cached = started.cached;
+        patch(() => ({
+          status: "done",
+          text: cached.text,
+          provider: cached.providerId,
+          model: cached.model,
+          cached: cached.cached,
+          incomplete: cached.truncated,
+        }));
+        return;
+      }
+      const { jobId } = started;
+      if (!live()) {
+        rpc.call("translate_cancel", { jobId }).catch(() => undefined);
+        return;
+      }
+      translateJob.current = jobId;
+      let from = 0;
+      while (live()) {
+        await new Promise((resolve) => setTimeout(resolve, TRANSLATE_POLL_MS));
+        if (!live()) return;
+        // Polled only while the page is visible; the server ends a job nobody polls.
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") continue;
+        let poll: Awaited<ReturnType<typeof rpc.call<"translate_poll">>>;
+        try {
+          poll = await rpc.call("translate_poll", { jobId, from });
+        } catch {
+          if (live()) translateJob.current = null;
+          patch(() => ({ status: "failed", error: "failed" }));
+          return;
+        }
+        if (!live()) return;
+        from += poll.text.length;
+        patch((prev) => ({
+          status: poll.state === "running" ? "running" : poll.state,
+          text: prev.text + poll.text,
+          provider: poll.provider ?? prev.provider,
+          model: poll.model ?? prev.model,
+          truncatedInput: poll.truncatedInput ?? prev.truncatedInput,
+          cutShort: poll.finish === "max_tokens",
+          error: poll.error ?? null,
+          gatewayMessage: poll.gatewayMessage ?? null,
+        }));
+        if (poll.state !== "running") {
+          translateJob.current = null;
+          if (poll.error === "gateway_missing") void loadStatus();
+          return;
+        }
+      }
+    },
+    [loadStatus, rpc, stopTranslateJob],
+  );
+
+  /** Translate, or Show original when that message's translation is shown. */
+  const toggleTranslation = useCallback(
+    (message: MessageHeader) => {
+      if (translationRef.current?.messageId === message.id) {
+        stopTranslateJob();
+        setTranslation(null);
+        return;
+      }
+      void (async () => {
+        let language = translateLanguage.current;
+        if (language === null) {
+          try {
+            const settings = await rpc.call("translate_settings_get", {});
+            language = settings.current.language;
+            translateLanguage.current = language;
+            // First use: the owner picks the provider and model before anything is sent.
+            if (settings.current.providerId === "" && settings.current.model === "") {
+              translateAfterSettings.current = message.id;
+              setTranslateSettingsOpen(true);
+              return;
+            }
+          } catch (error) {
+            toast.error(`Could not start the translation: ${messageOf(error)}`);
+            return;
+          }
+        }
+        await runTranslation(message.id, language, false);
+      })();
+    },
+    [rpc, runTranslation, stopTranslateJob],
+  );
+
+  // Another conversation, or leaving the page, ends the translation.
+  useEffect(() => {
+    stopTranslateJob();
+    setTranslation(null);
+  }, [reading.threadId, stopTranslateJob]);
+  useEffect(() => stopTranslateJob, [stopTranslateJob]);
+
+  const translationBlock = useMemo(() => {
+    if (translation === null) return null;
+    const { messageId, state } = translation;
+    return {
+      messageId,
+      block: (
+        <TranslationBlock
+          state={state}
+          onStop={() => {
+            stopTranslateJob();
+            setTranslation((prev) =>
+              prev !== null && prev.messageId === messageId ? { messageId, state: { ...prev.state, status: "cancelled" } } : prev,
+            );
+          }}
+          onAgain={() => void runTranslation(messageId, state.language, true)}
+          onLanguage={(tag) => {
+            translateLanguage.current = tag;
+            void runTranslation(messageId, tag, false);
+          }}
+          onSettings={() => setTranslateSettingsOpen(true)}
+        />
+      ),
+    };
+  }, [runTranslation, stopTranslateJob, translation]);
+
+  const readingTranslation = useMemo<ReadingTranslation>(
+    () => ({
+      disabledReason: status?.translate.gateway === "gateway_missing" ? TRANSLATE_MISSING : null,
+      shown: translationBlock,
+      onToggle: toggleTranslation,
+    }),
+    [status?.translate.gateway, toggleTranslation, translationBlock],
+  );
+
+  const loadTranslateSettings = useCallback(() => rpc.call("translate_settings_get", {}), [rpc]);
+  const saveTranslateSettings = useCallback(
+    async (input: { providerId: string; model: string; language: string }) => {
+      await rpc.call("translate_settings_set", { ...input, language: input.language as LanguageTag });
+      translateLanguage.current = input.language;
+    },
+    [rpc],
+  );
+  const clearTranslations = useCallback(async () => (await rpc.call("translate_clear", {})).removed, [rpc]);
+  const translateSettingsChanged = useCallback(
+    (open: boolean) => {
+      setTranslateSettingsOpen(open);
+      if (!open) translateAfterSettings.current = null;
+    },
+    [],
+  );
+  const translateSettingsSaved = useCallback(() => {
+    const pending = translateAfterSettings.current;
+    translateAfterSettings.current = null;
+    if (pending !== null && translateLanguage.current !== null) {
+      void runTranslation(pending, translateLanguage.current, false);
+    }
+  }, [runTranslation]);
+
   // ---- The sidebar's rail ----
 
   const outboxInScope = useMemo(
@@ -1583,7 +1790,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   }, [sidebarState]);
 
   return (
+    <>
     <MailPage
+      translation={readingTranslation}
       focusRequest={focusRequest}
       status={status}
       statusError={statusError}
@@ -1648,6 +1857,15 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onTestSmtp={(input) => smtpCall("accounts_smtp_test", input)}
       onSaveSmtp={(input) => smtpCall("accounts_smtp_set", input)}
     />
+    <TranslationSettings
+      open={translateSettingsOpen}
+      onOpenChange={translateSettingsChanged}
+      load={loadTranslateSettings}
+      save={saveTranslateSettings}
+      clear={clearTranslations}
+      onSaved={translateSettingsSaved}
+    />
+    </>
   );
 }
 
