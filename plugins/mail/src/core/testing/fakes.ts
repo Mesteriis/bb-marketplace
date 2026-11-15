@@ -64,7 +64,7 @@ import {
 } from "../contacts.ts";
 import type { ComposeDoc } from "../compose-doc.ts";
 import type { SignatureDoc } from "../compose-signature.ts";
-import { IDENTITIES_MAX_PER_ACCOUNT, resolveSendCheck, type AliasRow, type InboundRow, type SendCheck } from "../identities.ts";
+import { IDENTITIES_MAX_PER_ACCOUNT, ownerAddressSets, resolveSendCheck, type AliasRow, type InboundRow, type SendCheck } from "../identities.ts";
 import { ComposeError } from "../compose.ts";
 import type { UndoRow } from "../undo.ts";
 import { ImapAuthError, type NewProposal, type ProposalRecord, type TemplateRecord, type TranslationRecord, type AccountWriteQueue, type MailTransport, type MessageBuilder, type OriginalReader, type OutboxNotifier, type SendResult, type SmtpConfig } from "../ports.ts";
@@ -240,6 +240,8 @@ type StoreState = {
   identities: AliasRow[];
   /** `${accountId}\u0000${lowercased address}` → last sent (slice 3d `sent_recipients`). */
   sentRecipients: Map<string, string>;
+  /** Templates by id (slice 3d). */
+  templates: Map<string, TemplateRecord>;
 };
 
 type StoredComposeAttachment = ComposeAttachment & {
@@ -300,6 +302,7 @@ export class InMemoryMailStore implements MailStore {
     translations: new Map(),
     identities: [],
     sentRecipients: new Map(),
+    templates: new Map(),
   };
 
   /** Runs fn; on a throw restores the state from before the call, like a rollback. */
@@ -1218,7 +1221,7 @@ export class InMemoryMailStore implements MailStore {
     const bulkSenders = new Set(
       this.state.rows.filter((r) => this.bulkOf(r) === true).map((r) => r.message.from.address.trim().toLowerCase()),
     );
-    return rankContacts(messages, words, this.listAccounts(), bulkSenders, limit);
+    return rankContacts(messages, words, ownerAddressSets(this.listAccounts(), this.state.identities), bulkSenders, limit);
   }
 
   correspondence(addresses: string[]): AccountCorrespondence[] {
@@ -1229,7 +1232,7 @@ export class InMemoryMailStore implements MailStore {
     const messages = this.contactRows()
       .filter(involves)
       .map((row) => this.contactMessage(row, 0));
-    return correspondenceOf(messages, wanted, this.listAccounts());
+    return correspondenceOf(messages, wanted, ownerAddressSets(this.listAccounts(), this.state.identities));
   }
 
   /** The stored bulk mark: null when the fetch read no headers and no backfill filled it. */
@@ -1463,23 +1466,38 @@ export class InMemoryMailStore implements MailStore {
   }
 
   listTemplates(): TemplateRecord[] {
-    return [];
+    return [...this.state.templates.values()]
+      .sort((a, b) => (a.nameKey < b.nameKey ? -1 : a.nameKey > b.nameKey ? 1 : 0))
+      .map((row) => structuredClone(row));
   }
 
   saveTemplate(
-    _input: { id: string | null; name: string; nameKey: string; doc: ComposeDoc },
-    _newId: string,
-    _nowIso: string,
+    input: { id: string | null; name: string; nameKey: string; doc: ComposeDoc },
+    newId: string,
+    nowIso: string,
   ): { id: string } | { conflict: true } {
-    throw new Error("Not available yet");
+    const clash = [...this.state.templates.values()].some((row) => row.nameKey === input.nameKey && row.id !== input.id);
+    if (clash) return { conflict: true };
+    const existing = input.id === null ? undefined : this.state.templates.get(input.id);
+    const id = existing?.id ?? input.id ?? newId;
+    this.state.templates.set(id, {
+      id,
+      name: input.name,
+      nameKey: input.nameKey,
+      doc: structuredClone(input.doc),
+      createdAt: existing?.createdAt ?? nowIso,
+      updatedAt: nowIso,
+    });
+    return { id };
   }
 
-  deleteTemplate(_id: string): boolean {
-    throw new Error("Not available yet");
+  deleteTemplate(id: string): boolean {
+    return this.state.templates.delete(id);
   }
 
-  getTemplateByKey(_nameKey: string): TemplateRecord | null {
-    return null;
+  getTemplateByKey(nameKey: string): TemplateRecord | null {
+    const row = [...this.state.templates.values()].find((t) => t.nameKey === nameKey);
+    return row === undefined ? null : structuredClone(row);
   }
 
   /** Translations follow their message: dropped with every removed row (as SQLite deleteRows). */

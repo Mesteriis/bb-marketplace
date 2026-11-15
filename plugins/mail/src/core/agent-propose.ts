@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { dedupeAddresses, toAsciiDomain, type OutgoingAddress } from "./compose-address.ts";
 import { quoteHeaderText, type ReplySource } from "./compose-reply.ts";
+import { stripOwnSignature } from "./compose-signature.ts";
 import { sha256Hex } from "./compose.ts";
 import { htmlToText } from "./agent-text.ts";
 import type {
@@ -413,12 +414,14 @@ export function parseSubmitValue(value: unknown): SubmitValue | null {
  * The plain-text quote of a proposal's reply or forward (spec resolution 3):
  * the attribution or forwarded-message lines, then the original's stored
  * text, else its HTML as text. The server builds it, so the card shows and
- * the message carries the same lines.
+ * the message carries the same lines. `stripOwn` (a reply or reply all to
+ * the owner's own mail, slice 3d resolution 3) leaves the own signature out.
  */
 export function agentQuoteLines(
   source: ReplySource,
   kind: "reply" | "reply_all" | "forward",
   body: { text: string | null; html: string | null },
+  stripOwn = false,
 ): string[] {
   const header = quoteHeaderText(source, kind);
   const plain = body.text !== null && body.text !== ""
@@ -427,5 +430,6 @@ export function agentQuoteLines(
       ? htmlToText(body.html)
       : "";
   if (plain === "") return header;
-  return [...header, ...plain.replace(/\r\n?/g, "\n").split("\n")];
+  const lines = plain.replace(/\r\n?/g, "\n").split("\n");
+  return [...header, ...(stripOwn ? stripOwnSignature(lines) : lines)];
 }

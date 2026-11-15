@@ -658,22 +658,26 @@ describe("cancelProposal", () => {
 });
 
 describe("resolveSendingAccount", () => {
-  const ICLOUD = { id: "acc-1", email: "owner@example.com" };
-  const GMAIL = { id: "acc-2", email: "Owner.Two@example.org" };
+  const ICLOUD = { id: "acc-1", addresses: ["owner@example.com", "alias@example.com"] };
+  const GMAIL = { id: "acc-2", addresses: ["owner.two@example.org"] };
 
   it("uses the only account when the agent names none", () => {
-    expect(resolveSendingAccount([ICLOUD], undefined)).toBe("acc-1");
+    expect(resolveSendingAccount([ICLOUD], undefined)).toEqual({ accountId: "acc-1", address: null });
   });
 
   it("asks the agent to choose by address when there are several, naming only the owner's addresses", () => {
     expect(() => resolveSendingAccount([ICLOUD, GMAIL], undefined)).toThrow(
-      /several mail accounts.*Accounts: owner@example\.com, Owner\.Two@example\.org\./,
+      /several mail accounts.*Accounts: owner@example\.com, owner\.two@example\.org\./,
     );
   });
 
   it("accepts an id or an email address, case-insensitively", () => {
-    expect(resolveSendingAccount([ICLOUD, GMAIL], "acc-2")).toBe("acc-2");
-    expect(resolveSendingAccount([ICLOUD, GMAIL], " owner.two@EXAMPLE.org ")).toBe("acc-2");
+    expect(resolveSendingAccount([ICLOUD, GMAIL], "acc-2")).toEqual({ accountId: "acc-2", address: null });
+    expect(resolveSendingAccount([ICLOUD, GMAIL], " owner.two@EXAMPLE.org ")).toEqual({ accountId: "acc-2", address: null });
+  });
+
+  it("an alias address selects that identity of its account", () => {
+    expect(resolveSendingAccount([ICLOUD, GMAIL], "ALIAS@example.com")).toEqual({ accountId: "acc-1", address: "alias@example.com" });
   });
 
   it("refuses an unknown account and lists the choices", () => {
@@ -698,8 +702,8 @@ describe("resolveSendingAccount", () => {
     ["no history: the agent must choose", [], null],
   ])("several accounts, none named: %s", (_name, history, picked) => {
     const resolve = () => resolveSendingAccount([ICLOUD, GMAIL], undefined, () => history);
-    if (picked === null) expect(resolve).toThrow(/several mail accounts.*Accounts: owner@example\.com, Owner\.Two@example\.org\./);
-    else expect(resolve()).toBe(picked);
+    if (picked === null) expect(resolve).toThrow(/several mail accounts.*Accounts: owner@example\.com, owner\.two@example\.org\./);
+    else expect(resolve()).toEqual({ accountId: picked, address: null });
   });
 
   it("a named account wins over history, and history is not read for one account", () => {
@@ -708,8 +712,8 @@ describe("resolveSendingAccount", () => {
       reads++;
       return [{ accountId: "acc-2", lastReceived: "2026-06-01T00:00:00.000Z", lastSent: null }];
     };
-    expect(resolveSendingAccount([ICLOUD, GMAIL], "acc-1", history)).toBe("acc-1");
-    expect(resolveSendingAccount([ICLOUD], undefined, history)).toBe("acc-1");
+    expect(resolveSendingAccount([ICLOUD, GMAIL], "acc-1", history)).toEqual({ accountId: "acc-1", address: null });
+    expect(resolveSendingAccount([ICLOUD], undefined, history)).toEqual({ accountId: "acc-1", address: null });
     expect(reads).toBe(0);
   });
 });
@@ -751,5 +755,157 @@ describe("proposeMail picks the sending account from the recipients' history", (
     const error = await refusal(propose({ accountId: undefined }));
     expect(error.kind).toBe("account_required");
     expect(error.message).toMatch(/owner@example\.org, second@example\.org/);
+  });
+});
+
+// ---- Slice 3d: identities, signatures, templates and checks in proposals ----
+
+describe("proposals by identity (slice 3d)", () => {
+  const ALIAS = "alias@example.net";
+  const T = "2026-11-15T09:00:00.000Z";
+  const SIG = (line: string) => ({
+    type: "doc" as const,
+    content: [
+      {
+        type: "paragraph" as const,
+        content: [
+          { type: "text" as const, text: line },
+          { type: "text" as const, text: " site", marks: [{ type: "link" as const, attrs: { href: "https://sig.example.com/x" } }] },
+        ],
+      },
+    ],
+  });
+  const TEMPLATE = {
+    type: "doc" as const,
+    content: [
+      { type: "paragraph" as const, content: [{ type: "text" as const, text: "Template line", marks: [{ type: "bold" as const }] }] },
+      { type: "bulletList" as const, content: [{ type: "listItem" as const, content: [{ type: "paragraph" as const, content: [{ type: "text" as const, text: "Point" }] }] }] },
+    ],
+  };
+
+  function addAlias(signature: ReturnType<typeof SIG> | null = null) {
+    h.store.upsertIdentity({ accountId: "acc_1", address: ALIAS, displayName: "Alias Name" }, T);
+    if (signature !== null) h.store.updateIdentity("acc_1", ALIAS, { signature }, T);
+  }
+
+  function addTemplate(name = "Thanks", doc: typeof TEMPLATE = TEMPLATE) {
+    const saved = h.store.saveTemplate({ id: null, name, nameKey: name.toLowerCase(), doc }, `tpl_${name}`, T);
+    if ("conflict" in saved) throw new Error("conflict");
+  }
+
+  const draftOf = (proposalId: string) => h.store.getDraft(h.store.getProposal(proposalId)!.draftId!)!;
+
+  async function cardOf(proposed: { proposalId: string; contentHash: string }) {
+    const result = await viewProposal(d, proposed);
+    if (result.state !== "ready") throw new Error(result.state);
+    return result.view;
+  }
+
+  it("a new message from an alias named in accountId sends from the alias with its signature", async () => {
+    addAlias(SIG("Alias sig"));
+    const proposed = await propose({ accountId: "Alias@example.net" });
+    const draft = draftOf(proposed.proposalId);
+    expect(draft.fromAddress).toBe(ALIAS);
+    expect(draft.messageId).toMatch(/@example\.net>$/);
+    expect(draft.doc.content.at(-1)).toMatchObject({ type: "signature" });
+    expect(outgoingOf(h.deps, h.store.getAccount("acc_1")!, draft, true).from).toEqual({ name: "Alias Name", address: ALIAS });
+    const view = await cardOf(proposed);
+    expect(view.fromAlias).toBe(true);
+    expect(view.fromName).toBe("Alias Name");
+    expect(view.account.address).toBe(ALIAS);
+    expect(view.signatureText).toBe("Alias sig site <https://sig.example.com/x>");
+    expect(view.bodyText).not.toContain("Alias sig");
+    expect(view.links.map((l) => l.url)).toContain("https://sig.example.com/x");
+  });
+
+  it("without accountId and with one account the own address sends", async () => {
+    addAlias();
+    const proposed = await propose({ accountId: undefined });
+    expect(draftOf(proposed.proposalId).fromAddress).toBeNull();
+    const view = await cardOf(proposed);
+    expect(view.fromAlias).toBe(false);
+    expect(view.signatureText).toBeNull();
+  });
+
+  it("a reply to mail sent to an alias goes from the alias; naming the own address refuses", async () => {
+    addAlias();
+    const id = stored({ from: { name: "Anna", address: "anna@example.org" }, to: [{ name: null, address: ALIAS }] });
+    const reply = { kind: "reply" as const, sourceMessageId: id, accountId: undefined, subject: undefined, to: [] };
+    const proposed = await propose(reply);
+    expect(draftOf(proposed.proposalId).fromAddress).toBe(ALIAS);
+    const error = await refusal(propose({ ...reply, accountId: "owner@example.org" }, "thread_2"));
+    expect(error.kind).toBe("account_mismatch");
+    expect(error.message).toBe("A reply or forward is sent from the address the message came to; leave accountId out.");
+    await propose({ ...reply, accountId: ALIAS }, "thread_3");
+    await propose({ ...reply, accountId: "acc_1" }, "thread_4");
+  });
+
+  it("splices the template after the body and before the signature, marks kept, and records its name", async () => {
+    h.store.setAccountSignature("acc_1", SIG("Own sig"));
+    addTemplate();
+    const proposed = await propose({ template: "THANKS" });
+    const draft = draftOf(proposed.proposalId);
+    expect(draft.doc.content.map((b) => b.type)).toEqual([
+      "paragraph",
+      "paragraph",
+      "paragraph",
+      "paragraph",
+      "bulletList",
+      "signature",
+    ]);
+    expect(JSON.stringify(draft.doc.content[3])).toContain('"bold"');
+    expect(h.store.getProposal(proposed.proposalId)!.templateName).toBe("Thanks");
+    const view = await cardOf(proposed);
+    expect(view.templateName).toBe("Thanks");
+    expect(view.bodyText).toContain("Template line");
+    expect(view.signatureText).toBe("Own sig site <https://sig.example.com/x>");
+  });
+
+  it("a reply puts the template and the signature before the quote", async () => {
+    addTemplate();
+    const id = stored({ bodyText: "Original" });
+    const proposed = await propose({ kind: "reply", sourceMessageId: id, accountId: undefined, subject: undefined, to: [], body: "", template: "thanks" });
+    const types = draftOf(proposed.proposalId).doc.content.map((b) => b.type);
+    expect(types).toEqual(["paragraph", "bulletList", "signature", "blockquote"]);
+  });
+
+  it("an unknown template refuses with template_unknown", async () => {
+    const error = await refusal(propose({ template: "Nope" }));
+    expect(error.kind).toBe("template_unknown");
+    expect(error.message).toBe("No template has that name; call mail_templates for the names.");
+  });
+
+  it("the hash covers the signature and the template; a later template edit leaves the proposal alone", async () => {
+    h.store.setAccountSignature("acc_1", SIG("Own sig"));
+    addTemplate();
+    const proposed = await propose({ template: "Thanks" });
+    const draft = draftOf(proposed.proposalId);
+    expect(await draftHash(h.store, draft)).toBe(proposed.contentHash);
+    const plain = await propose({}, "thread_2");
+    expect(plain.contentHash).not.toBe(proposed.contentHash);
+    h.store.saveTemplate({ id: "tpl_Thanks", name: "Thanks", nameKey: "thanks", doc: { type: "doc", content: [{ type: "paragraph" }] } }, "x", T);
+    const view = await cardOf(proposed);
+    expect(view.bodyText).toContain("Template line");
+    const edited = { ...draft, doc: { ...draft.doc, content: draft.doc.content.filter((b) => b.type !== "signature") } };
+    expect(await draftHash(h.store, edited)).not.toBe(proposed.contentHash);
+  });
+
+  it("the card's checks leave new_recipients out", async () => {
+    const proposed = await propose({ to: ["fresh@example.com"], body: "See the attached plan" });
+    const view = await cardOf(proposed);
+    expect(view.checks).toEqual([{ kind: "attachment_mentioned", phrase: "attached" }]);
+    expect(view.to[0]!.flags).toContain("new");
+  });
+
+  it("a reply to own mail leaves the own signature out of the agent's quote", async () => {
+    const id = stored({
+      from: { name: "Owner", address: "owner@example.org" },
+      to: [{ name: null, address: "anna@example.org" }],
+      bodyText: "Own words\n-- \nOwner Sig",
+    });
+    const proposed = await propose({ kind: "reply", sourceMessageId: id, accountId: undefined, subject: undefined, to: [], body: "More" });
+    const view = await cardOf(proposed);
+    expect(view.quoteText).toContain("Own words");
+    expect(view.quoteText).not.toContain("Owner Sig");
   });
 });
