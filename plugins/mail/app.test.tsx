@@ -21,10 +21,26 @@ vi.mock("sonner", () => ({
   },
 }));
 
+// BB's own download path; the tests record what the page asked it to save.
+const saves = vi.hoisted(() => ({
+  calls: [] as { fileName: string; url: string }[],
+  outcome: "started" as "started" | "failed" | "throw",
+}));
+vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  experimental_saveFile: (request: { fileName: string; url: string }) => {
+    if (saves.outcome === "throw") throw new Error("needs the bb app's plugin runtime");
+    saves.calls.push(request);
+    return Promise.resolve(saves.outcome);
+  },
+}));
+
 afterEach(() => {
   cleanup();
   toasts.success.length = 0;
   toasts.error.length = 0;
+  saves.calls.length = 0;
+  saves.outcome = "started";
 });
 
 const app = await loadPluginApp(() => import("./app.tsx"));
@@ -121,7 +137,7 @@ function mailRpc(overrides: Record<string, (input: never) => unknown> = {}) {
       remoteImagesAllowed: false,
     }),
     message_open: () => ({ ok: true }),
-    folders_list: () => ({ folders: [] }),
+    folders_list: () => ({ folders: [], roles: [] }),
     ...overrides,
   };
 }
@@ -346,9 +362,9 @@ describe("Mail page", () => {
     const slot = render(mailRpc({ threads_list: pages }));
 
     expect(await slot.findByText("Invented subject 49")).toBeTruthy();
-    fireEvent.click(slot.getByRole("button", { name: "Load more" }));
+    fireEvent.click(slot.getByText("Load more"));
     expect(await slot.findByText("Invented subject 99")).toBeTruthy();
-    fireEvent.click(slot.getByRole("button", { name: "Load more" }));
+    fireEvent.click(slot.getByText("Load more"));
     expect(await slot.findByText("Invented subject 149")).toBeTruthy();
     const listBefore = callsTo(slot, "threads_list").length;
 
@@ -361,7 +377,7 @@ describe("Mail page", () => {
     ]);
     expect(await slot.findByText("Invented subject 149")).toBeTruthy();
     expect(slot.queryByText("Invented subject 150")).toBeNull();
-    expect(slot.getByRole("button", { name: "Load more" })).toBeTruthy();
+    expect(slot.getByText("Load more")).toBeTruthy();
   });
 
   it("a refresh does not cancel opening a thread", async () => {
@@ -463,7 +479,7 @@ function movedTo(folder: string, destination: string) {
 function folderRpc(overrides: Record<string, (input: never) => unknown> = {}) {
   let listed = "INBOX";
   return mailRpc({
-    folders_list: () => ({ folders: FOLDERS }),
+    folders_list: () => ({ folders: FOLDERS, roles: [] }),
     threads_list: ({ scope }: { scope: { kind: "account"; folder: string } }) => {
       listed = scope.folder;
       return { threads: [threadA, threadB], nextCursor: null };
@@ -481,6 +497,9 @@ async function openFolder(slot: ReturnType<typeof render>, name: RegExp) {
   await slot.findByRole("navigation", { name: "Folders" });
   fireEvent.click(await folderRail(slot).findByRole("button", { name }));
 }
+
+/** Toolbar buttons that are not role moves. */
+const NOT_MOVES = ["Back", "Hand to agent", "Move to…", "Mark unread"];
 
 function toolbar(slot: ReturnType<typeof render>) {
   return within(slot.getByRole("toolbar", { name: "Conversation actions" }));
@@ -510,6 +529,7 @@ describe("Mail folders", () => {
       folderRpc({
         folders_list: () => ({
           folders: [folder({ path: "Inbox", name: "Inbox", specialUse: "inbox" })],
+          roles: [],
         }),
       }),
     );
@@ -565,7 +585,7 @@ describe("Message actions", () => {
     toolbar(slot)
       .getAllByRole("button")
       .map((button) => button.textContent?.trim())
-      .filter((label) => label !== "Back" && label !== "Hand to agent");
+      .filter((label) => !NOT_MOVES.includes(label ?? ""));
 
   // FOLDERS is Gmail-style (All Mail, no Archive): Archive applies only in the Inbox.
   for (const [name, expected] of [
@@ -816,7 +836,7 @@ describe("Fix round 1", () => {
   });
 
   it("an empty folder list keeps the first-sync hint", async () => {
-    const slot = render(folderRpc({ folders_list: () => ({ folders: [] }) }));
+    const slot = render(folderRpc({ folders_list: () => ({ folders: [], roles: [] }) }));
 
     const rail = await slot.findByRole("navigation", { name: "Folders" });
     expect(await within(rail).findByText("Folders appear after the first sync.")).toBeTruthy();
@@ -856,6 +876,7 @@ describe("Fix round 1", () => {
             folder({ path: "INBOX", name: "Inbox", specialUse: "inbox" }),
             folder({ path: "Archive", name: "Archive", specialUse: "archive" }),
           ],
+          roles: [],
         }),
       }),
     );
@@ -966,6 +987,7 @@ describe("Final fixes", () => {
               folder({ path: "Deleted Messages", name: "Trash", specialUse: "trash" }),
               folder({ path: "Work", name: "Work" }),
             ],
+            roles: [],
           }),
         }),
       );
@@ -977,7 +999,7 @@ describe("Final fixes", () => {
       const labels = toolbar(slot)
         .getAllByRole("button")
         .map((button) => button.textContent?.trim())
-        .filter((label) => label !== "Back" && label !== "Hand to agent");
+        .filter((label) => !NOT_MOVES.includes(label ?? ""));
       expect(labels).toEqual(expected);
     });
   }
@@ -1013,5 +1035,700 @@ describe("Final fixes", () => {
     expect(reply.queryByText("All Mail")).toBeNull();
     const received = within(slot.getByRole("article", { name: /^Message from (?!owner)/ }));
     expect(received.getByText("Inbox")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 3a: All accounts, selection, flags, Move to…, Details, downloads, hotkeys.
+
+const work: Account = {
+  ...account,
+  id: "acc-2",
+  email: "me@work.example.org",
+  preset: "gmail",
+  host: "imap.work.example.org",
+  username: "me@work.example.org",
+};
+
+/** iCloud-like acc-1 and Gmail-like acc-2, in the store's order. */
+const ALL_FOLDERS: Folder[] = [
+  folder({ path: "INBOX", name: "Inbox", specialUse: "inbox", unreadCount: 1 }),
+  folder({ path: "Junk", name: "Junk", specialUse: "junk" }),
+  folder({ path: "Archive", name: "Archive", specialUse: "archive" }),
+  folder({ path: "Deleted Messages", name: "Deleted Messages", specialUse: "trash" }),
+  folder({ path: "Work", name: "Work" }),
+  folder({ accountId: "acc-2", path: "INBOX", name: "Inbox", specialUse: "inbox", unreadCount: 2 }),
+  folder({ accountId: "acc-2", path: "[Gmail]/Spam", name: "Spam", specialUse: "junk" }),
+  folder({ accountId: "acc-2", path: "[Gmail]/Trash", name: "Trash", specialUse: "trash" }),
+  folder({ accountId: "acc-2", path: "[Gmail]/All Mail", name: "All Mail", specialUse: "all" }),
+  folder({ accountId: "acc-2", path: "Clients", name: "Clients" }),
+];
+
+const ROLES = [
+  { role: "inbox", unreadCount: 3, totalCount: 9 },
+  { role: "sent", unreadCount: 0, totalCount: 2 },
+  { role: "drafts", unreadCount: 0, totalCount: 0 },
+  { role: "junk", unreadCount: 1, totalCount: 1 },
+  { role: "archive", unreadCount: 0, totalCount: 4 },
+  { role: "trash", unreadCount: 0, totalCount: 0 },
+] as const;
+
+const threadW: ThreadSummary = {
+  ...threadB,
+  id: "th-w",
+  accountId: "acc-2",
+  subject: "Invoice",
+  participants: [{ name: "Cy Example", address: "cy@example.org" }],
+  snippet: "Attached",
+};
+
+/** A conversation of one message per id, all in `folder` of `accountId`. */
+function detailOf(thread: ThreadSummary, folderPath: string, ids: string[]): ThreadDetail {
+  return {
+    thread,
+    messages: ids.map((id, i) =>
+      message({
+        id,
+        accountId: thread.accountId,
+        threadId: thread.id,
+        folder: folderPath,
+        date: `2026-11-1${Math.min(i, 9)}T08:00:00.000Z`,
+        snippet: `Note ${id}`,
+      }),
+    ),
+  };
+}
+
+function unifiedRpc(overrides: Record<string, (input: never) => unknown> = {}) {
+  return mailRpc({
+    status_get: () => status({ accounts: [account, work] }),
+    folders_list: ({ accountId }: { accountId: string | null }) =>
+      accountId === null
+        ? { folders: ALL_FOLDERS, roles: ROLES }
+        : { folders: ALL_FOLDERS.filter((f) => f.accountId === accountId), roles: [] },
+    threads_list: () => ({ threads: [threadA, threadB, threadW], nextCursor: null }),
+    thread_get: ({ threadId }: { threadId: string }) =>
+      threadId === "th-w"
+        ? detailOf(threadW, "INBOX", ["w-1"])
+        : threadId === "th-b"
+          ? detailOf(threadB, "INBOX", ["b-1"])
+          : detailOf(threadA, "INBOX", ["a-1", "a-2"]),
+    ...overrides,
+  });
+}
+
+function pageRoot(slot: ReturnType<typeof render>): HTMLElement {
+  return slot.getByRole("search").closest('[tabindex="-1"]') as HTMLElement;
+}
+
+function press(target: Element, init: { key: string; code: string; shiftKey?: boolean }) {
+  fireEvent.keyDown(target, { shiftKey: false, ...init });
+}
+
+describe("All accounts", () => {
+  it("is the default with several accounts: merged roles, then each account's own folders", async () => {
+    const slot = render(unifiedRpc());
+
+    expect(await slot.findByText("Invoice")).toBeTruthy();
+    expect(callsTo(slot, "folders_list")[0]?.input).toEqual({ accountId: null });
+    expect(callsTo(slot, "threads_list")[0]?.input).toEqual({
+      scope: { kind: "all", role: "inbox" },
+      cursor: null,
+      limit: 50,
+    });
+    const rail = folderRail(slot);
+    const roles = within(await rail.findByRole("list", { name: "All accounts" }));
+    expect(roles.getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "Inbox3 unread",
+      "Sent",
+      "Drafts",
+      "Spam1 unread",
+      "Archive",
+      "Trash",
+    ]);
+    const first = within(rail.getByRole("list", { name: "owner@example.org" }));
+    expect(first.getAllByRole("button").map((b) => b.textContent)).toEqual(["Work"]);
+    const second = within(rail.getByRole("list", { name: "me@work.example.org" }));
+    expect(second.getAllByRole("button").map((b) => b.textContent)).toEqual(["All Mail", "Clients"]);
+  });
+
+  it("switches between roles and an account's own folder", async () => {
+    const slot = render(unifiedRpc());
+
+    await openFolder(slot, /^Spam/);
+    await waitFor(() =>
+      expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ scope: { kind: "all", role: "junk" } }),
+    );
+    fireEvent.click(within(folderRail(slot).getByRole("list", { name: "me@work.example.org" })).getByRole("button", { name: /Clients/ }));
+    await waitFor(() =>
+      expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({
+        scope: { kind: "account", accountId: "acc-2", folder: "Clients" },
+      }),
+    );
+  });
+
+  it("marks each row with its account; one account shows no marker", async () => {
+    const slot = render(unifiedRpc());
+    const row = (await slot.findByRole("button", { name: /Invoice/ })).closest("li")!;
+    expect(within(row).getByText("work")).toBeTruthy();
+    expect(within(slot.getByRole("button", { name: /Lunch/ }).closest("li")!).getByText("example")).toBeTruthy();
+    cleanup();
+
+    const single = render(mailRpc());
+    const lunch = (await single.findByRole("button", { name: /Lunch/ })).closest("li")!;
+    expect(within(lunch).queryByText("example")).toBeNull();
+  });
+
+  it("opens a conversation in its account's folder of the role and acts by role", async () => {
+    const slot = render(unifiedRpc({ message_action: () => ({ groups: [] }) }));
+
+    await openFolder(slot, /^Spam/);
+    fireEvent.click(await slot.findByRole("button", { name: /Invoice/ }));
+    await waitFor(() =>
+      expect(callsTo(slot, "thread_get").at(-1)?.input).toEqual({ threadId: "th-w", folder: "[Gmail]/Spam" }),
+    );
+  });
+});
+
+describe("Selection", () => {
+  const checkbox = (slot: ReturnType<typeof render>, subject: string) =>
+    slot.getByRole("checkbox", { name: `Select ${subject}` });
+
+  it("selects with checkboxes, shift-click ranges and select page; the bar replaces the header", async () => {
+    const slot = render(unifiedRpc());
+    await slot.findByText("Invoice");
+    expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull();
+
+    fireEvent.click(checkbox(slot, "Quarterly plan"));
+    fireEvent.click(checkbox(slot, "Invoice"), { shiftKey: true });
+    const bar = within(slot.getByRole("toolbar", { name: "Selected conversations" }));
+    expect(bar.getByText("3 selected")).toBeTruthy();
+    expect(checkbox(slot, "Lunch").getAttribute("aria-checked")).toBe("true");
+
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select all on page" }));
+    expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull();
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select all on page" }));
+    expect(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByText("3 selected")).toBeTruthy();
+
+    // A folder change clears the selection.
+    await openFolder(slot, /^Spam/);
+    await waitFor(() => expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull());
+  });
+
+  it("chunks 250 messages into calls of 200 and 50, one after the other", async () => {
+    const ids = Array.from({ length: 250 }, (_, i) => `big-${i}`);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const slot = render(
+      unifiedRpc({
+        thread_get: () => detailOf(threadA, "INBOX", ids),
+        message_action: async ({ messageIds }: { messageIds: string[] }) => {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          if (messageIds.length === 200) await gate;
+          inFlight--;
+          return { groups: [{ accountId: "acc-1", folder: "INBOX", queued: messageIds.length, destination: null, error: null }] };
+        },
+      }),
+    );
+    await slot.findByText("Invoice");
+    fireEvent.click(checkbox(slot, "Quarterly plan"));
+    fireEvent.click(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByRole("button", { name: "Mark read" }));
+
+    await waitFor(() => expect(callsTo(slot, "message_action")).toHaveLength(1));
+    release();
+    await waitFor(() => expect(callsTo(slot, "message_action")).toHaveLength(2));
+    const inputs = callsTo(slot, "message_action").map((call) => call.input as { messageIds: string[] });
+    expect(inputs.map((input) => input.messageIds.length)).toEqual([200, 50]);
+    expect(inputs[0]).toMatchObject({ action: "mark_read", role: "inbox" });
+    expect([...inputs[0]!.messageIds, ...inputs[1]!.messageIds]).toEqual(ids);
+    expect(maxInFlight).toBe(1);
+    await waitFor(() => expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull());
+  });
+
+  it("a group's error toasts once and keeps its conversation selected; the rest moves", async () => {
+    let moved = false;
+    const slot = render(
+      unifiedRpc({
+        threads_list: () => ({ threads: moved ? [threadB, threadW] : [threadA, threadB, threadW], nextCursor: null }),
+        message_action: () => {
+          moved = true;
+          return {
+            groups: [
+              { accountId: "acc-1", folder: "INBOX", queued: 2, destination: "Archive", error: null },
+              { accountId: "acc-2", folder: "INBOX", queued: 0, destination: null, error: "Invented refusal" },
+            ],
+          };
+        },
+      }),
+    );
+    await slot.findByText("Invoice");
+    fireEvent.click(checkbox(slot, "Quarterly plan"));
+    fireEvent.click(checkbox(slot, "Invoice"));
+    fireEvent.click(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByRole("button", { name: "Archive" }));
+
+    await waitFor(() => expect(toasts.error).toEqual(["Invented refusal"]));
+    expect(callsTo(slot, "message_action")[0]?.input).toEqual({
+      messageIds: ["a-1", "a-2", "w-1"],
+      action: "archive",
+      role: "inbox",
+    });
+    expect(toasts.success).toEqual(["Moved to Archive"]);
+    await waitFor(() => expect(slot.queryByRole("button", { name: /Quarterly plan/ })).toBeNull());
+    expect(checkbox(slot, "Invoice").getAttribute("aria-checked")).toBe("true");
+    expect(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByText("1 selected")).toBeTruthy();
+  });
+
+  it("a thrown refusal toasts once and keeps every conversation selected", async () => {
+    const slot = render(
+      unifiedRpc({
+        message_action: () => {
+          throw new Error("Invented single-group refusal");
+        },
+      }),
+    );
+    await slot.findByText("Invoice");
+    fireEvent.click(checkbox(slot, "Quarterly plan"));
+    fireEvent.click(checkbox(slot, "Lunch"));
+    fireEvent.click(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(toasts.error).toEqual(["Invented single-group refusal"]));
+    expect(toasts.success).toEqual([]);
+    expect(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByText("2 selected")).toBeTruthy();
+    expect(slot.getByRole("button", { name: /Quarterly plan/ })).toBeTruthy();
+  });
+
+  it("offers an action for several accounts only when it applies to all of them", async () => {
+    const slot = render(unifiedRpc());
+    // Spam: iCloud archives from Junk, Gmail archives only from the Inbox.
+    await openFolder(slot, /^Spam/);
+    await waitFor(() => expect(callsTo(slot, "threads_list").length).toBeGreaterThan(1));
+    await slot.findByText("Invoice");
+    fireEvent.click(checkbox(slot, "Quarterly plan"));
+    fireEvent.click(checkbox(slot, "Invoice"));
+    const bar = within(slot.getByRole("toolbar", { name: "Selected conversations" }));
+
+    const archive = bar.getByRole("button", { name: "Archive" }) as HTMLButtonElement;
+    expect(archive.disabled).toBe(true);
+    expect(archive.closest("[title]")?.getAttribute("title")).toBe(
+      "Archive does not apply to every selected account here",
+    );
+    expect((bar.getByRole("button", { name: "Move to…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(bar.getByRole("button", { name: "Not spam" })).toBeTruthy();
+    expect(bar.queryByRole("button", { name: "Spam" })).toBeNull();
+  });
+});
+
+describe("Flags and read state", () => {
+  it("the row star flags the newest message of the conversation in the view", async () => {
+    const slot = render(folderRpc({ message_action: () => movedTo("INBOX", "") }));
+    const row = (await slot.findByRole("button", { name: /Quarterly plan/ })).closest("li")!;
+    const star = within(row).getByRole("button", { name: "Flag conversation" });
+
+    fireEvent.click(star);
+    expect(star.getAttribute("aria-pressed")).toBe("true");
+    await waitFor(() =>
+      expect(callsTo(slot, "message_action")[0]?.input).toEqual({
+        messageIds: ["m-new"],
+        action: "flag",
+        folder: "INBOX",
+      }),
+    );
+    expect(star.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("the row star goes back when the server refuses", async () => {
+    const slot = render(
+      folderRpc({
+        message_action: () => {
+          throw new Error("Invented flag refusal");
+        },
+      }),
+    );
+    const row = (await slot.findByRole("button", { name: /Lunch/ })).closest("li")!;
+    const star = within(row).getByRole("button", { name: "Flag conversation" });
+
+    fireEvent.click(star);
+    expect(star.getAttribute("aria-pressed")).toBe("true");
+    await waitFor(() => expect(toasts.error).toEqual(["Invented flag refusal"]));
+    expect(star.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("the star of a flagged conversation unflags every flagged message in the view", async () => {
+    const flagged = { ...threadA, flagged: true };
+    const slot = render(
+      folderRpc({
+        threads_list: () => ({ threads: [flagged, threadB], nextCursor: null }),
+        thread_get: () => ({
+          thread: flagged,
+          messages: [
+            message({ id: "f-1", isFlagged: true }),
+            message({ id: "f-2", isFlagged: false }),
+            message({ id: "f-3", isFlagged: true, folder: "[Gmail]/Sent Mail" }),
+            message({ id: "f-4", isFlagged: true }),
+          ],
+        }),
+        message_action: () => movedTo("INBOX", ""),
+      }),
+    );
+    const row = (await slot.findByRole("button", { name: /Quarterly plan/ })).closest("li")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Flag conversation" }));
+
+    await waitFor(() =>
+      expect(callsTo(slot, "message_action")[0]?.input).toEqual({
+        messageIds: ["f-1", "f-4"],
+        action: "unflag",
+        folder: "INBOX",
+      }),
+    );
+  });
+
+  it("Mark unread goes back to the list and the open conversation does not mark it read again", async () => {
+    const slot = render(folderRpc({ thread_get: () => detailA, message_action: () => movedTo("INBOX", "") }));
+
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await waitFor(() => expect(callsTo(slot, "message_open")).toHaveLength(2));
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "Mark unread" }));
+
+    await waitFor(() =>
+      expect(callsTo(slot, "message_action")[0]?.input).toEqual({
+        messageIds: ["m-old", "m-new"],
+        action: "mark_unread",
+        folder: "INBOX",
+      }),
+    );
+    expect(slot.queryByRole("heading", { name: "Quarterly plan" })).toBeNull();
+    await slot.behavior.emitRealtime(MAIL_CHANGED_CHANNEL, { accountId: "acc-1" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(callsTo(slot, "message_open")).toHaveLength(2);
+
+    // Opening it again is the owner reading it: it is marked read again.
+    fireEvent.click(slot.getByRole("button", { name: /Quarterly plan/ }));
+    await waitFor(() => expect(callsTo(slot, "message_open")).toHaveLength(4));
+  });
+
+  it("the message star toggles that message only, in its own folder", async () => {
+    const slot = render(folderRpc({ message_action: () => movedTo("INBOX", "") }));
+
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    const reply = within(await slot.findByRole("article", { name: "Message from owner@example.org" }));
+    fireEvent.click(reply.getByRole("button", { name: "Flag message" }));
+
+    await waitFor(() =>
+      expect(callsTo(slot, "message_action")[0]?.input).toEqual({
+        messageIds: ["m-sent"],
+        action: "flag",
+        folder: "[Gmail]/Sent Mail",
+      }),
+    );
+    expect(reply.getByRole("button", { name: "Flag message" }).getAttribute("aria-pressed")).toBe("true");
+  });
+});
+
+describe("Move to…", () => {
+  it("lists the account's selectable folders except the source, and moves there", async () => {
+    const slot = render(folderRpc({ message_action: () => movedTo("INBOX", "Alpha") }));
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "Move to…" }));
+
+    const dialog = within(await slot.findByRole("dialog", { name: "Move to…" }));
+    const list = within(dialog.getByRole("list", { name: "Folders" }));
+    expect(list.getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "Sent Mail",
+      "Spam",
+      "Trash",
+      "All Mail",
+      "Alpha",
+    ]);
+    expect(list.getByText("Projects").closest("button")).toBeNull();
+    fireEvent.click(list.getByRole("button", { name: "Alpha" }));
+
+    await waitFor(() =>
+      expect(callsTo(slot, "message_action")[0]?.input).toEqual({
+        messageIds: ["m-old", "m-new"],
+        action: "move",
+        folder: "INBOX",
+        destination: "Projects/Alpha",
+      }),
+    );
+    await waitFor(() => expect(toasts.success).toEqual(["Moved to Alpha"]));
+    expect(slot.queryByRole("dialog", { name: "Move to…" })).toBeNull();
+  });
+
+  it("says a selection across accounts cannot move", async () => {
+    const slot = render(unifiedRpc());
+    await slot.findByText("Invoice");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Invoice" }));
+    press(pageRoot(slot), { key: "v", code: "KeyV" });
+
+    const dialog = within(await slot.findByRole("dialog", { name: "Move to…" }));
+    expect(dialog.getByText(/Moving works within one account/)).toBeTruthy();
+    expect(dialog.queryByRole("list", { name: "Folders" })).toBeNull();
+  });
+});
+
+describe("Details and downloads", () => {
+  const source = {
+    headers: [
+      ["From", "Ada Example <ada@example.org>"],
+      ["Subject", "<script>alert(1)</script><b>bold</b>"],
+    ] as [string, string][],
+    structure: ["multipart/mixed", "  text/plain · 12 B"],
+    size: 2048,
+    uid: 42,
+    folder: "INBOX",
+    accountEmail: "owner@example.org",
+  };
+
+  it("shows the headers as text, never markup, and copies them", async () => {
+    const slot = render(mailRpc({ message_source: () => source }));
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await waitFor(() => expect(callsTo(slot, "message_open")).toHaveLength(2));
+    fireEvent.click(await slot.findByRole("button", { name: "Details" }));
+
+    const dialog = await slot.findByRole("dialog", { name: "Message details" });
+    const headers = await within(dialog).findByLabelText("Headers");
+    expect(headers.textContent).toContain("Subject: <script>alert(1)</script><b>bold</b>");
+    expect(dialog.querySelector("script")).toBeNull();
+    expect(dialog.querySelector("b")).toBeNull();
+    expect(within(dialog).getByLabelText("Structure").textContent).toBe("multipart/mixed\n  text/plain · 12 B");
+    expect(within(dialog).getByText("42")).toBeTruthy();
+    expect(callsTo(slot, "message_source").map((call) => call.input)).toEqual([{ messageId: "m-new" }]);
+    expect(callsTo(slot, "message_open")).toHaveLength(2);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy" }));
+    expect(await within(dialog).findByText("Copied")).toBeTruthy();
+    expect(slot.inspection.experimental_clipboardWrites.at(-1)?.text).toBe(
+      "From: Ada Example <ada@example.org>\nSubject: <script>alert(1)</script><b>bold</b>\n\nmultipart/mixed\n  text/plain · 12 B\n",
+    );
+  });
+
+  it("shows the server's refusal", async () => {
+    const slot = render(
+      mailRpc({
+        message_source: () => {
+          throw new Error("The message changed on the server; sync and try again");
+        },
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    fireEvent.click(await slot.findByRole("button", { name: "Details" }));
+
+    const dialog = await slot.findByRole("dialog", { name: "Message details" });
+    expect(await within(dialog).findByText("The message changed on the server; sync and try again")).toBeTruthy();
+  });
+
+  const ticket = (input: { kind: string; partId?: string }) => ({
+    url: `/api/v1/plugins/makosh-mail/http/download?t=ticket-${input.kind}`,
+    fileName: input.kind === "eml" ? "2026-11-14 Quarterly plan.eml" : "plan.pdf",
+  });
+  const withAttachment = () =>
+    mailRpc({
+      download_ticket: ticket,
+      thread_get: () => ({
+        ...detailA,
+        messages: [
+          detailA.messages[0]!,
+          {
+            ...detailA.messages[1]!,
+            attachments: [
+              { partId: "2", filename: "plan.pdf", mimeType: "application/pdf", size: 2048, isInline: false },
+            ],
+          },
+        ],
+      }),
+    });
+
+  it("Download .eml and an attachment ask for a ticket, then BB saves it", async () => {
+    const slot = render(withAttachment());
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    fireEvent.click(await slot.findByRole("button", { name: "Download .eml" }));
+    await waitFor(() => expect(saves.calls).toHaveLength(1));
+    fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf, 2 KB" }));
+    await waitFor(() => expect(saves.calls).toHaveLength(2));
+
+    expect(callsTo(slot, "download_ticket").map((call) => call.input)).toEqual([
+      { kind: "eml", messageId: "m-new" },
+      { kind: "attachment", messageId: "m-new", partId: "2" },
+    ]);
+    expect(saves.calls).toEqual([
+      { fileName: "2026-11-14 Quarterly plan.eml", url: "/api/v1/plugins/makosh-mail/http/download?t=ticket-eml" },
+      { fileName: "plan.pdf", url: "/api/v1/plugins/makosh-mail/http/download?t=ticket-attachment" },
+    ]);
+  });
+
+  it("falls back to a link download when BB has no saveFile or could not start it", async () => {
+    const clicks: { href: string; download: string }[] = [];
+    const spy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clicks.push({ href: this.getAttribute("href") ?? "", download: this.download });
+    });
+    try {
+      saves.outcome = "throw";
+      const slot = render(withAttachment());
+      fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+      fireEvent.click(await slot.findByRole("button", { name: "Download .eml" }));
+      await waitFor(() => expect(clicks).toHaveLength(1));
+      expect(clicks[0]).toEqual({
+        href: "/api/v1/plugins/makosh-mail/http/download?t=ticket-eml",
+        download: "2026-11-14 Quarterly plan.eml",
+      });
+
+      // "failed": the ticket may be spent, so a fresh one goes to the link.
+      saves.outcome = "failed";
+      fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf, 2 KB" }));
+      await waitFor(() => expect(clicks).toHaveLength(2));
+      expect(callsTo(slot, "download_ticket")).toHaveLength(3);
+      expect(document.querySelector("a[download]")).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a trusted sender can be taken off the list", async () => {
+    let allowed = true;
+    const slot = render(
+      mailRpc({
+        message_body: ({ messageId }: { messageId: string }) => ({
+          messageId,
+          text: null,
+          html: `<p>Body of ${messageId}</p>`,
+          htmlTruncated: false,
+          remoteImagesAllowed: allowed,
+        }),
+        images_disallow_sender: () => {
+          allowed = false;
+          return { removed: true };
+        },
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    expect(await slot.findByText("Images from ada@example.org are always shown.")).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Stop showing" }));
+
+    await waitFor(() =>
+      expect(callsTo(slot, "images_disallow_sender").map((call) => call.input)).toEqual([
+        { accountId: "acc-1", address: "ada@example.org" },
+      ]),
+    );
+    await waitFor(() => expect(slot.queryByText("Images from ada@example.org are always shown.")).toBeNull());
+  });
+});
+
+describe("Hotkeys", () => {
+  it("j and o work by the physical key on a Russian layout", async () => {
+    const slot = render(folderRpc());
+    await slot.findByText("Lunch");
+    const root = pageRoot(slot);
+
+    press(root, { key: "о", code: "KeyJ" });
+    const first = slot.getByRole("button", { name: /Quarterly plan/ });
+    expect(document.activeElement).toBe(first);
+    press(first, { key: "о", code: "KeyJ" });
+    expect(document.activeElement).toBe(slot.getByRole("button", { name: /Lunch/ }));
+    press(document.activeElement!, { key: "л", code: "KeyK" });
+    press(document.activeElement!, { key: "щ", code: "KeyO" });
+
+    await waitFor(() => expect(callsTo(slot, "thread_get")[0]?.input).toEqual({ threadId: "th-a", folder: "INBOX" }));
+    expect(await slot.findByRole("heading", { name: "Quarterly plan" })).toBeTruthy();
+  });
+
+  it("are ignored in the search box and with Ctrl", async () => {
+    const slot = render(folderRpc({ message_action: () => movedTo("INBOX", "Trash") }));
+    await slot.findByText("Lunch");
+    const box = slot.getByLabelText("Search mail");
+
+    press(box, { key: "j", code: "KeyJ" });
+    press(box, { key: "x", code: "KeyX" });
+    expect(document.activeElement).not.toBe(slot.getByRole("button", { name: /Quarterly plan/ }));
+    fireEvent.keyDown(pageRoot(slot), { key: "j", code: "KeyJ", ctrlKey: true });
+    expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull();
+    expect(document.activeElement).not.toBe(slot.getByRole("button", { name: /Quarterly plan/ }));
+  });
+
+  it("x selects, # deletes the selection, and / focuses search", async () => {
+    const slot = render(folderRpc({ message_action: () => movedTo("INBOX", "Trash") }));
+    await slot.findByText("Lunch");
+    const root = pageRoot(slot);
+
+    press(root, { key: "j", code: "KeyJ" });
+    press(document.activeElement!, { key: "x", code: "KeyX" });
+    expect(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByText("1 selected")).toBeTruthy();
+    press(document.activeElement!, { key: "№", code: "Digit3", shiftKey: true });
+
+    await waitFor(() =>
+      expect(callsTo(slot, "message_action")[0]?.input).toEqual({
+        messageIds: ["m-old", "m-new"],
+        action: "delete",
+        folder: "INBOX",
+      }),
+    );
+    press(root, { key: ".", code: "Slash" });
+    expect(document.activeElement).toBe(slot.getByLabelText("Search mail"));
+  });
+
+  it("g then a letter goes to a folder, and the sequence times out", async () => {
+    const slot = render(folderRpc());
+    await slot.findByText("Lunch");
+    await waitFor(() => expect(callsTo(slot, "folders_list")).toHaveLength(1));
+    const root = pageRoot(slot);
+    const listedFolders = () =>
+      callsTo(slot, "threads_list").map((call) => (call.input as { scope: { folder: string } }).scope.folder);
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      press(root, { key: "п", code: "KeyG" });
+      act(() => {
+        vi.advanceTimersByTime(1_001);
+      });
+      // Too late: this s is the flag key, with no conversation to flag.
+      press(root, { key: "ы", code: "KeyS" });
+    } finally {
+      vi.useRealTimers();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(listedFolders()).toEqual(["INBOX"]);
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      press(root, { key: "п", code: "KeyG" });
+      act(() => {
+        vi.advanceTimersByTime(900);
+      });
+      press(root, { key: "ы", code: "KeyS" });
+    } finally {
+      vi.useRealTimers();
+    }
+    await waitFor(() => expect(listedFolders()).toEqual(["INBOX", "[Gmail]/Sent Mail"]));
+    expect(callsTo(slot, "message_action")).toHaveLength(0);
+  });
+
+  it("? opens the sheet with the 3b keys marked soon, and keys inside it do nothing", async () => {
+    const slot = render(folderRpc());
+    await slot.findByText("Lunch");
+
+    press(pageRoot(slot), { key: "?", code: "Slash", shiftKey: true });
+    const sheet = await slot.findByRole("dialog", { name: "Keyboard shortcuts" });
+    expect(within(sheet).getByText("Reply").textContent).toBe("Replysoon");
+    expect(within(sheet).getByText("Move to…")).toBeTruthy();
+
+    press(sheet, { key: "j", code: "KeyJ" });
+    expect(document.activeElement).not.toBe(slot.queryByRole("button", { name: /Quarterly plan/ }));
+
+    // Escape closes the sheet and goes no further (BB's own Escape stays out of it).
+    const outer = vi.fn();
+    window.addEventListener("keydown", outer);
+    try {
+      fireEvent.keyDown(sheet, { key: "Escape", code: "Escape" });
+      await waitFor(() => expect(slot.queryByRole("dialog", { name: "Keyboard shortcuts" })).toBeNull());
+      expect(outer).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("keydown", outer);
+    }
   });
 });

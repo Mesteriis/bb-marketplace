@@ -27,6 +27,10 @@ export interface MessageFrameProps {
   senderAddress: string | null;
   /** Allow remote images from the sender from now on. */
   onAlwaysShowImages: () => void;
+  /** The sender is on the always-show list (server or this page session). */
+  senderTrusted: boolean;
+  /** Take the sender off that list. */
+  onStopImages: () => void;
 }
 
 /** Duck-typed: the click target lives in the frame's own realm. */
@@ -43,6 +47,8 @@ export function MessageFrame({
   onShowImages,
   senderAddress,
   onAlwaysShowImages,
+  senderTrusted,
+  onStopImages,
 }: MessageFrameProps) {
   const showRemote = remoteImages || body.remoteImagesAllowed;
   const sanitized = useMemo(
@@ -68,6 +74,18 @@ export function MessageFrame({
           onShowImages={onShowImages}
           onAlwaysShowImages={onAlwaysShowImages}
         />
+      ) : null}
+      {senderTrusted && senderAddress !== null ? (
+        <div
+          role="region"
+          aria-label="Trusted sender"
+          className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-xs text-muted-foreground"
+        >
+          <span className="min-w-0 flex-1 truncate">Images from {senderAddress} are always shown.</span>
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onStopImages}>
+            Stop showing
+          </Button>
+        </div>
       ) : null}
       <HtmlFrame srcDoc={sanitized.html} title={title} onOpenLink={onOpenLink} />
       {body.htmlTruncated ? (
