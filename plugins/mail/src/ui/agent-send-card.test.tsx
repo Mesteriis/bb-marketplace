@@ -190,13 +190,51 @@ describe("AgentSendCard", () => {
     await mountReady(view({ kind: "new", source: null, to: many.map((r) => ({ ...r, flags: [...r.flags] })) }));
     await passDwell();
     const to = screen.getByLabelText("To");
-    expect(within(to).getAllByRole("listitem")).toHaveLength(10);
+    const collapsed = within(to).getAllByRole("listitem");
+    expect(collapsed).toHaveLength(10);
+    // The 7 new ones lead the row, then 3 of the 7 unflagged.
+    expect(collapsed.slice(0, 7).every((li) => li.textContent?.includes("New address"))).toBe(true);
     expect(within(to).queryByRole("button", { name: "I know this address" })).toBeNull();
     fireEvent.click(within(to).getByRole("button", { name: "and 4 more" }));
     expect(within(to).getAllByRole("listitem")).toHaveLength(14);
     expect(sendButton().disabled).toBe(true);
     fireEvent.click(within(to).getByRole("button", { name: "I know these 7 addresses" }));
     expect(sendButton().disabled).toBe(false);
+  });
+
+  it.each(["to", "bcc"] as const)(
+    "shows a new address among 10 known ones in %s before the bulk acknowledgement can count it",
+    async (row) => {
+      const known = Array.from({ length: 10 }, (_, i) => ({ address: `known${i}@example.org`, name: null, flags: [] }));
+      const attacker = { address: "attacker@evil.example", name: null, flags: ["new", "outside"] as ("new" | "outside")[] };
+      await mountReady(view({ kind: "new", source: null, to: [], [row]: [...known, attacker] }));
+      await passDwell();
+      const list = screen.getByLabelText(row === "to" ? "To" : "Bcc");
+      const items = within(list).getAllByRole("listitem");
+      // Flagged first, and never behind the collapse.
+      expect(items[0]!.textContent).toContain("attacker@evil.example");
+      expect(items).toHaveLength(10);
+      expect(within(list).getByRole("button", { name: "and 1 more" })).toBeTruthy();
+      fireEvent.click(within(list).getByRole("button", { name: "I know this address" }));
+      expect(sendButton().disabled).toBe(false);
+    },
+  );
+
+  it("never collapses flagged recipients, only unflagged ones", async () => {
+    const known = Array.from({ length: 12 }, (_, i) => ({ address: `known${i}@example.org`, name: null, flags: [] }));
+    const flagged = Array.from({ length: 11 }, (_, i) => ({
+      address: `agent${i}@example.org`,
+      name: null,
+      flags: (i === 0 ? ["added"] : i === 1 ? ["outside"] : ["new"]) as ("new" | "added" | "outside")[],
+    }));
+    await mountReady(view({ kind: "new", source: null, to: [...known, ...flagged] }));
+    await passDwell();
+    const to = screen.getByLabelText("To");
+    const shown = within(to).getAllByRole("listitem").map((li) => li.textContent ?? "");
+    expect(shown).toHaveLength(11);
+    for (const r of flagged) expect(shown.some((t) => t.includes(r.address))).toBe(true);
+    expect(within(to).getByRole("button", { name: "and 12 more" })).toBeTruthy();
+    expect(within(to).getByRole("button", { name: "I know these 9 addresses" })).toBeTruthy();
   });
 
   it("asks for a scroll to the end only when the body is taller than its box", async () => {

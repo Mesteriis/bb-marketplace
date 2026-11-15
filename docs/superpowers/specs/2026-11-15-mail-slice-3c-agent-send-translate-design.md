@@ -1104,3 +1104,7 @@ These override the sections above. Items marked *(owner)* were decided by the ow
     - The 1.5 s dwell, the scroll-to-end and the acknowledgements are card UX, not part of the submit check: a client caller can skip them. The submit check is the one in resolution 8; the server keeps no dwell compare.
     - The canonical content includes the From display name.
     - The frozen-migration test is the SHA pin "shipped migration elements are unchanged" in `src/adapters/bb/sqlite-store.test.ts`; it keeps elements 0–4 and gains element 5's hash in the docs-and-listing task, once element 5 is final.
+
+## Resolutions after the review of slice 3c
+
+19. **Flagged recipients are never collapsed** (amends resolution 13's collapse rule). Within each recipient row the card lists flagged recipients (new, added by the agent, outside your domains, hidden characters) first, and renders every one of them whether the row is collapsed or not; a row longer than 10 collapses only its unflagged recipients ("and N more" counts those). The bulk acknowledgement ("I know these N addresses") covers only the new addresses currently rendered, so it can never count an address the owner has not seen. Pinned by the card test "10 known + 1 new" in To and in Bcc.
