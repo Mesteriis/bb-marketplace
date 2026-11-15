@@ -1,4 +1,4 @@
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import type { BbPluginApi, JsonValue, PluginInteractionRequest, PluginInteractionResult } from "@get-bb/plugin-sdk";
 import {
   createFakePluginHost,
   makePluginAgentConfigurationContext,
@@ -25,6 +25,7 @@ import {
   UNAVAILABLE_MESSAGE,
 } from "./src/adapters/bb/downloads.ts";
 import {
+  AGENT_RESULT,
   ImapAuthError,
   MAIL_CHANGED_CHANNEL,
   OUTBOX_CHANGED_CHANNEL,
@@ -499,6 +500,7 @@ describe("makosh-mail server", () => {
     expect(resolved.skills).toEqual([]);
     expect(resolved.instructions).toBeNull();
     expect(host.harness.inspection.registrations.agentTools.map((t) => t.name).sort()).toEqual([
+      "mail_propose",
       "mail_read",
       "mail_search",
     ]);
@@ -1063,12 +1065,10 @@ describe("makosh-mail server", () => {
     expect(body.remoteImagesAllowed).toBe(false);
   });
 
-  it("the slice-3c methods refuse other plugins first, then refuse until wired", async () => {
+  it("the translation methods refuse other plugins first, then refuse until wired", async () => {
     const host = await load();
     const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
     const inputs: [string, unknown][] = [
-      ["proposal_view", { proposalId: "p_1", contentHash: "a".repeat(64) }],
-      ["proposal_status", { proposalId: "p_1" }],
       ["translate_start", { messageId: "m_1", targetLanguage: "ru" }],
       ["translate_poll", { jobId: "j_1", from: 0 }],
       ["translate_cancel", { jobId: "j_1" }],
@@ -1141,7 +1141,7 @@ describe("makosh-mail server", () => {
     );
     // No RPC method is published to agents as discoverable.
     expect(registrations.experimental_publishedRpcMethods).toEqual([]);
-    expect(registrations.agentTools.map((t) => t.name).sort()).toEqual(["mail_read", "mail_search"]);
+    expect(registrations.agentTools.map((t) => t.name).sort()).toEqual(["mail_propose", "mail_read", "mail_search"]);
     const resolved = await host.harness.behavior.resolveAgentConfiguration(
       makePluginAgentConfigurationContext(),
     );
@@ -2381,5 +2381,396 @@ describe("compose and send", () => {
     expect(draft.serverCopy).toBe("saved");
     await expect(call(host, "compose_discard", { draftId })).resolves.toEqual({ ok: true });
     expect(host.gateway.expunged).toEqual([{ path: "Drafts", uid: copy.uid }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent proposals (slice 3c)
+// ---------------------------------------------------------------------------
+
+const THREAD = "thread-propose";
+const AGENT_TO = "ana@example.com";
+const PROPOSAL = { kind: "new", accountId: "acc_1", to: [`Mallory Trusted <${AGENT_TO}>`], subject: SUBJECT, body: BODY_TEXT };
+const PROPOSAL_SECRETS = [AGENT_TO, SUBJECT, BODY_TEXT, "Mallory", "orchard"];
+
+type Card = { request: PluginInteractionRequest; resolve: (result: PluginInteractionResult) => void };
+
+/** A bb whose requestInput is driven by the test: each form waits until the test resolves it. */
+function scriptedCards(cards: Card[]) {
+  return (bb: BbPluginApi): BbPluginApi => {
+    const ui = new Proxy(bb.ui, {
+      get: (target, key) =>
+        key === "requestInput"
+          ? (request: PluginInteractionRequest) =>
+              new Promise<PluginInteractionResult>((resolve) => cards.push({ request, resolve }))
+          : Reflect.get(target, key),
+    });
+    return new Proxy(bb, { get: (target, key) => (key === "ui" ? ui : Reflect.get(target, key)) });
+  };
+}
+
+function loadPropose(options: Omit<LoadOptions, "settings" | "server"> & { settings?: Record<string, string | number | boolean> } = {}) {
+  return load({
+    ...options,
+    settings: { vaultKey: COMPOSE_KEY, agentPropose: true, ...options.settings },
+    seed: (bb) => {
+      seedCompose(bb);
+      options.seed?.(bb);
+    },
+    server: composeServer,
+    outboxIntervalMs: options.outboxIntervalMs ?? 5,
+  });
+}
+
+type ProposedCard = {
+  result: Promise<unknown>;
+  card: Host["harness"]["inspection"]["pendingInteractions"][number];
+  proposalId: string;
+  contentHash: string;
+};
+
+/** Calls mail_propose and waits for its card (the tool's result comes once the card settles). */
+async function proposeCard(host: Host, params: unknown = PROPOSAL, threadId = THREAD): Promise<ProposedCard> {
+  const before = host.harness.inspection.pendingInteractions.length;
+  const result = host.harness.behavior.callAgentTool("mail_propose", params, { threadId });
+  await vi.waitFor(() => expect(host.harness.inspection.pendingInteractions.length).toBe(before + 1));
+  const card = host.harness.inspection.pendingInteractions.at(-1)!;
+  const { proposalId, contentHash } = card.payload as { proposalId: string; contentHash: string };
+  return { result, card, proposalId, contentHash };
+}
+
+async function viewToken(host: Host, p: { proposalId: string; contentHash: string }): Promise<string> {
+  const view = (await call(host, "proposal_view", { proposalId: p.proposalId, contentHash: p.contentHash })) as {
+    state: string;
+    viewToken: string;
+  };
+  expect(view.state).toBe("ready");
+  return view.viewToken;
+}
+
+const submitValue = (action: "send" | "open", p: { proposalId: string; contentHash: string }, token: string) => ({
+  action,
+  proposalId: p.proposalId,
+  contentHash: p.contentHash,
+  viewToken: token,
+});
+
+/** The host's order: describeSubmission first (its return is persisted), then the waiting requestInput resolves. */
+async function answer(host: Host, p: ProposedCard, value: JsonValue) {
+  const described = await p.card.describeSubmission!(value);
+  host.harness.behavior.submitInteraction(p.card.id, value);
+  return { described, result: await p.result };
+}
+
+const hiddenDraftOf = (host: Host, proposalId: string) => sqlStore(host).getProposal(proposalId)!.draftId!;
+
+describe("agent proposals", () => {
+  it("mail_propose is offered only while agentPropose is on, independent of agentTools, and refuses when off", async () => {
+    const off = await load({ settings: { vaultKey: COMPOSE_KEY, agentTools: true }, seed: (bb) => seedCompose(bb), server: composeServer });
+    const offResolved = await off.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext());
+    expect(offResolved.tools.map((t) => t.name).sort()).toEqual(["mail_read", "mail_search"]);
+    const refused = await off.harness.behavior.callAgentTool("mail_propose", PROPOSAL, { threadId: THREAD });
+    expect(refused).toEqual({ content: [{ type: "text", text: "Email proposals are turned off in Mail settings." }], isError: true });
+    expect(off.harness.inspection.pendingInteractions).toEqual([]);
+    expect(sqlStore(off).proposalCapRows(NOW.toISOString())).toEqual([]);
+    expect(((await call(off, "status_get", null)) as { agentPropose: boolean }).agentPropose).toBe(false);
+
+    const on = await loadPropose();
+    const onResolved = await on.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext());
+    expect(onResolved.tools.map((t) => t.name)).toEqual(["mail_propose"]);
+    expect(onResolved.skills).toEqual(["mail"]);
+    expect(onResolved.tools[0]!.instructions).toContain("It never sends");
+    expect(((await call(on, "status_get", null)) as { agentPropose: boolean }).agentPropose).toBe(true);
+
+    const both = await loadPropose({ settings: { agentTools: true } });
+    const bothResolved = await both.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext());
+    expect(bothResolved.tools.map((t) => t.name).sort()).toEqual(["mail_propose", "mail_read", "mail_search"]);
+
+    // A running session keeps its tools: execute re-checks the setting.
+    await on.harness.behavior.setSettings({ agentPropose: false });
+    expect(await on.harness.behavior.callAgentTool("mail_propose", PROPOSAL, { threadId: THREAD })).toMatchObject({ isError: true });
+    expect(on.harness.inspection.pendingInteractions).toEqual([]);
+  });
+
+  it("propose → view → Send queues one agent outbox row with id = proposal id, and it is sent after the Undo window", async () => {
+    const host = await loadPropose();
+    const service = host.harness.behavior.runService("sync");
+    const p = await proposeCard(host);
+    expect(p.card).toMatchObject({
+      threadId: THREAD,
+      rendererId: "agent-send",
+      title: "Review an email before it is sent",
+      payload: { proposalId: p.proposalId, contentHash: p.contentHash },
+      timeoutMs: 24 * 60 * 60 * 1000,
+    });
+    expect(Object.keys(p.card.payload as object).sort()).toEqual(["contentHash", "proposalId"]);
+    const token = await viewToken(host, p);
+    const { described, result } = await answer(host, p, submitValue("send", p, token));
+
+    expect(described).toEqual({ title: "Email confirmed", payload: { proposalId: p.proposalId } });
+    expect(result).toBe(AGENT_RESULT.sent);
+    const row = sqlStore(host).getOutbox(p.proposalId)!;
+    expect(row).toMatchObject({ id: p.proposalId, origin: "agent", state: "queued" });
+    expect(sqlStore(host).getProposal(p.proposalId)).toMatchObject({ state: "queued", outboxId: p.proposalId });
+    await expect(call(host, "proposal_status", { proposalId: p.proposalId })).resolves.toEqual({
+      state: "queued",
+      outboxId: p.proposalId,
+      draftId: hiddenDraftOf(host, p.proposalId),
+      reason: null,
+    });
+
+    host.clock.set(new Date(NOW.getTime() + UNDO_MS));
+    await vi.waitFor(() => expect(host.transport.sent).toHaveLength(1));
+    service.controller.abort();
+    await service.done;
+    expect(host.transport.sent[0]!.envelopeTo).toEqual([AGENT_TO]);
+    const wire = new TextDecoder().decode(host.transport.sent[0]!.raw);
+    expect(wire).not.toContain("Mallory");
+
+    for (const text of [JSON.stringify(result), JSON.stringify(described)]) {
+      for (const secret of [...PROPOSAL_SECRETS, token, p.contentHash]) expect(text).not.toContain(secret);
+    }
+    const seen = JSON.stringify([host.harness.inspection.realtimeSignals, host.harness.inspection.logEntries]);
+    for (const secret of [...PROPOSAL_SECRETS, token, p.contentHash]) expect(seen).not.toContain(secret);
+    for (const signal of outboxSignals(host)) {
+      expect(Object.keys(signal.payload as object).sort()).toEqual(["accountId", "id", "state"]);
+    }
+  });
+
+  it("runs the check itself when the host resolved the card without calling describeSubmission", async () => {
+    const host = await loadPropose();
+    const p = await proposeCard(host);
+    const token = await viewToken(host, p);
+    host.harness.behavior.submitInteraction(p.card.id, submitValue("send", p, token));
+    expect(await p.result).toBe(AGENT_RESULT.sent);
+    expect(sqlStore(host).getOutbox(p.proposalId)?.origin).toBe("agent");
+  });
+
+  it("Open in Mail turns the proposal into an owner draft; the title is true when persisted", async () => {
+    const host = await loadPropose();
+    const p = await proposeCard(host);
+    const draftId = hiddenDraftOf(host, p.proposalId);
+    await expect(call(host, "compose_open", { draftId })).rejects.toThrow("Not found");
+    const token = await viewToken(host, p);
+    const { described, result } = await answer(host, p, submitValue("open", p, token));
+    expect(described).toEqual({ title: "Opened in Mail", payload: { proposalId: p.proposalId } });
+    expect(result).toBe(AGENT_RESULT.opened);
+    const { draft } = (await call(host, "compose_open", { draftId })) as { draft: { id: string; origin: string; subject: string } };
+    expect(draft).toMatchObject({ id: draftId, origin: "agent", subject: SUBJECT });
+    expect(sqlStore(host).listOutbox(null)).toEqual([]);
+    await expect(call(host, "proposal_status", { proposalId: p.proposalId })).resolves.toMatchObject({ state: "opened", reason: null });
+  });
+
+  it("a forged or stale submit queues nothing and says the proposal changed", async () => {
+    const host = await loadPropose();
+    const cases: [string, (p: ProposedCard, token: string) => JsonValue][] = [
+      ["a wrong token", (p) => submitValue("send", p, "x".repeat(43))],
+      ["a wrong hash", (p, token) => ({ ...submitValue("send", p, token), contentHash: "f".repeat(64) })],
+      ["another proposal's id", (p, token) => ({ ...submitValue("send", p, token), proposalId: "other-proposal" })],
+      ["an extra field", (p, token) => ({ ...submitValue("send", p, token), to: "evil@example.net" })],
+    ];
+    for (const [name, value] of cases) {
+      const p = await proposeCard(host, PROPOSAL, `${THREAD}-${name}`);
+      const token = await viewToken(host, p);
+      const { described, result } = await answer(host, p, value(p, token));
+      expect(described.title, name).toBe("Not sent: the proposal changed");
+      expect(result, name).toBe(AGENT_RESULT.changed);
+      expect(sqlStore(host).getProposal(p.proposalId)!.state, name).toBe("refused");
+      expect(sqlStore(host).getProposal(p.proposalId)!.draftId, name).toBeNull();
+      await expect(call(host, "proposal_status", { proposalId: p.proposalId })).resolves.toMatchObject({ reason: "changed" });
+    }
+    // A second view rotates the token: the first one no longer submits.
+    const p = await proposeCard(host, PROPOSAL, `${THREAD}-rotated`);
+    const first = await viewToken(host, p);
+    await viewToken(host, p);
+    expect((await answer(host, p, submitValue("send", p, first))).result).toBe(AGENT_RESULT.changed);
+    expect(sqlStore(host).listOutbox(null)).toEqual([]);
+  });
+
+  it("every compose RPC answers not_found for a hidden proposal draft", async () => {
+    const host = await loadPropose({
+      seed: (bb) =>
+        createSqliteStore(bb.storage.database()).upsertMessages("acc_1", "Drafts", [makeFetchedMessage(5, { subject: "Invented draft copy" })]),
+    });
+    const p = await proposeCard(host);
+    const draftId = hiddenDraftOf(host, p.proposalId);
+    const before = JSON.stringify(sqlStore(host).getDraft(draftId));
+    // compose_open by draftMessageId resolves to the hidden draft through draftContinuing.
+    const draftMessageId = messageIdAt(host, "Drafts", 5);
+    host.bb.storage.database().prepare("UPDATE compose_drafts SET source_message_id = ? WHERE id = ?").run(draftMessageId, draftId);
+    const save = { draftId, baseRevision: 1, accountId: "acc_1", to: ["evil@example.net"], cc: [], bcc: [], subject: "x", doc: DOC };
+    const attempts: [string, unknown][] = [
+      ["compose_open", { draftId }],
+      ["compose_open", { draftMessageId }],
+      ["compose_save", save],
+      ["compose_save", { ...save, saveToServer: true }],
+      ["compose_discard", { draftId }],
+      ["compose_attachment_begin", { draftId, fileName: FILE_NAME, mimeType: "application/pdf", size: 3 }],
+      ["compose_attachment_remove", { draftId, attachmentId: "any" }],
+      ["compose_send", { draftId, baseRevision: 1, requestId: REQUEST_ID }],
+    ];
+    for (const [method, input] of attempts) {
+      await expect(call(host, method, input), method).rejects.toThrow("Not found");
+    }
+    host.bb.storage.database().prepare("UPDATE compose_drafts SET source_message_id = NULL WHERE id = ?").run(draftId);
+    expect(JSON.stringify(sqlStore(host).getDraft(draftId))).toBe(before);
+    expect(sqlStore(host).listOutbox(null)).toEqual([]);
+    expect(host.gateway.appended).toEqual([]);
+    host.harness.behavior.cancelInteraction(p.card.id);
+    await p.result;
+  });
+
+  it("an upload begun on a draft that later became hidden is refused at finish", async () => {
+    const host = await loadPropose();
+    const { draftId } = await savedDraft(host);
+    const { uploadId } = (await call(host, "compose_attachment_begin", { draftId, fileName: FILE_NAME, mimeType: "application/pdf", size: 3 })) as {
+      uploadId: string;
+    };
+    await call(host, "compose_attachment_chunk", { uploadId, offset: 0, dataBase64: "AAAA" });
+    host.bb.storage.database().prepare("UPDATE compose_drafts SET proposal_id = 'p-hidden' WHERE id = ?").run(draftId);
+    await expect(
+      call(host, "compose_attachment_finish", { uploadId, sha256: createHash("sha256").update(new Uint8Array(3)).digest("hex") }),
+    ).rejects.toThrow("Not found");
+    expect(sqlStore(host).listAttachments(draftId)).toEqual([]);
+  });
+
+  it("a failed sign-in or a locked vault after the click keeps the message as an owner draft, not queued", async () => {
+    for (const lock of ["authFailed", "vault"] as const) {
+      const host = await loadPropose();
+      const p = await proposeCard(host);
+      const token = await viewToken(host, p);
+      if (lock === "authFailed") {
+        sqlStore(host).recordSyncResult("acc_1", { lastSyncAt: null, lastError: "Authentication failed", authFailed: true });
+      } else {
+        await host.harness.behavior.setSettings({ vaultKey: null });
+      }
+      const { described, result } = await answer(host, p, submitValue("send", p, token));
+      expect(described.title, lock).toBe("Email confirmed");
+      expect(result, lock).toBe(AGENT_RESULT.notQueued("account"));
+      expect(sqlStore(host).listOutbox(null), lock).toEqual([]);
+      const draftId = hiddenDraftOf(host, p.proposalId);
+      expect(sqlStore(host).getDraft(draftId)!.proposalId, lock).toBeNull();
+      await expect(call(host, "proposal_status", { proposalId: p.proposalId })).resolves.toEqual({
+        state: "opened",
+        outboxId: null,
+        draftId,
+        reason: "account",
+      });
+    }
+  });
+
+  it("a cancelled card deletes the hidden draft: the owner's Cancel or a stop is cancelled, a timeout, restart or disposal expired", async () => {
+    const cards: Card[] = [];
+    const host = await loadPropose({ wrap: scriptedCards(cards) });
+    const reasons = [
+      ["user", AGENT_RESULT.cancelled, "cancelled"],
+      ["thread-stopped", AGENT_RESULT.cancelled, "cancelled"],
+      ["thread-deleted", AGENT_RESULT.cancelled, "cancelled"],
+      ["request-aborted", AGENT_RESULT.cancelled, "cancelled"],
+      ["timeout", AGENT_RESULT.expired, "expired"],
+      ["server-restarted", AGENT_RESULT.expired, "expired"],
+      ["plugin-disposed", AGENT_RESULT.expired, "expired"],
+    ] as const;
+    for (const [i, [reason, sentence, state]] of reasons.entries()) {
+      const result = host.harness.behavior.callAgentTool("mail_propose", PROPOSAL, { threadId: `${THREAD}-${i}` });
+      await vi.waitFor(() => expect(cards).toHaveLength(i + 1));
+      const { proposalId } = cards[i]!.request.payload as { proposalId: string };
+      const draftId = hiddenDraftOf(host, proposalId);
+      cards[i]!.resolve({ outcome: "cancelled", reason });
+      expect(await result, reason).toBe(sentence);
+      expect(sqlStore(host).getProposal(proposalId), reason).toMatchObject({ state, draftId: null });
+      expect(sqlStore(host).getDraft(draftId), reason).toBeNull();
+    }
+    expect(sqlStore(host).listOutbox(null)).toEqual([]);
+  });
+
+  it("a second proposal in the same thread is refused while the first waits", async () => {
+    const cards: Card[] = [];
+    const host = await loadPropose({ wrap: scriptedCards(cards) });
+    void host.harness.behavior.callAgentTool("mail_propose", PROPOSAL, { threadId: THREAD });
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    expect(await host.harness.behavior.callAgentTool("mail_propose", PROPOSAL, { threadId: THREAD })).toEqual({
+      content: [{ type: "text", text: "A proposal is already waiting for the owner in this thread." }],
+      isError: true,
+    });
+    expect(cards).toHaveLength(1);
+  });
+
+  it("a restart never confirms: pending and confirming-without-row expire, confirming with a row is queued and held", async () => {
+    const cards: Card[] = [];
+    const host = await loadPropose({ wrap: scriptedCards(cards) });
+    const open = async (threadId: string) => {
+      void host.harness.behavior.callAgentTool("mail_propose", PROPOSAL, { threadId });
+      await vi.waitFor(() => expect(cards.length).toBeGreaterThan(0));
+      const card = cards.at(-1)!;
+      cards.length = 0;
+      return { card, token: undefined as string | undefined, ...(card.request.payload as { proposalId: string; contentHash: string }) };
+    };
+    const pending = await open("thread-a");
+    const confirming = await open("thread-b");
+    await card(confirming, "send");
+    const queued = await open("thread-c");
+    await card(queued, "send");
+    queued.card.resolve({ outcome: "submitted", value: submitValue("send", queued, queued.token!) });
+    await vi.waitFor(() => expect(sqlStore(host).getOutbox(queued.proposalId)).not.toBeNull());
+    // As if the restart came between the queueSend and the proposal's own transition.
+    host.bb.storage.database().prepare("UPDATE agent_proposals SET state = 'confirming' WHERE id = ?").run(queued.proposalId);
+    const pendingDraft = hiddenDraftOf(host, pending.proposalId);
+    const confirmingDraft = hiddenDraftOf(host, confirming.proposalId);
+
+    async function card(p: { card: Card; proposalId: string; contentHash: string; token?: string }, action: "send") {
+      p.token = await viewToken(host, p);
+      await p.card.request.describeSubmission!(submitValue(action, p, p.token));
+    }
+
+    const later = new Date(NOW.getTime() + UNDO_MS + 1);
+    host.clock.set(later);
+    const next = await host.harness.lifecycle.reload(
+      createMailPlugin({ gateway: host.gateway, clock: host.clock, transport: host.transport, outboxIntervalMs: 5 }),
+    );
+    const store = createSqliteStore(next.bb.storage.database());
+    expect(store.getProposal(pending.proposalId)).toMatchObject({ state: "expired", draftId: null });
+    expect(store.getDraft(pendingDraft)).toBeNull();
+    expect(store.getProposal(confirming.proposalId)).toMatchObject({ state: "expired", draftId: null });
+    expect(store.getDraft(confirmingDraft)).toBeNull();
+    expect(store.getProposal(queued.proposalId)!.state).toBe("queued");
+    const service = next.harness.behavior.runService("sync");
+    await vi.waitFor(() => expect(store.getOutbox(queued.proposalId)?.state).toBe("held"));
+    await new Promise((r) => setTimeout(r, 40));
+    service.controller.abort();
+    await service.done;
+    expect(host.transport.sent).toEqual([]);
+  });
+
+  it("proposal_view and proposal_status refuse other plugins and are not discoverable", async () => {
+    const host = await loadPropose();
+    const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    await expect(
+      host.harness.behavior.callRpc("proposal_view", { proposalId: "p_1", contentHash: "a".repeat(64) }, asPlugin),
+    ).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    await expect(host.harness.behavior.callRpc("proposal_status", { proposalId: "p_1" }, asPlugin)).rejects.toThrow(
+      PLUGIN_CALLER_MESSAGE,
+    );
+    await expect(call(host, "proposal_status", { proposalId: "p_1" })).rejects.toThrow("Not found");
+    await expect(call(host, "proposal_view", { proposalId: "p_1", contentHash: "a".repeat(64) })).resolves.toEqual({ state: "gone" });
+    const { registrations } = host.harness.inspection;
+    expect(registrations.experimental_publishedRpcMethods).toEqual([]);
+    expect(registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "read", "remove", "search", "sync"]);
+    expect(registrations.mentionProviders.map((m) => m.id)).toEqual(["mail"]);
+  });
+
+  it("a reply from another account than the source's is refused with a fixed text", async () => {
+    const host = await loadPropose({
+      seed: (bb) => createSqliteStore(bb.storage.database()).upsertMessages("acc_1", "INBOX", [makeFetchedMessage(9)]),
+    });
+    const sourceMessageId = messageIdAt(host, "INBOX", 9);
+    const refused = (await host.harness.behavior.callAgentTool(
+      "mail_propose",
+      { kind: "reply", sourceMessageId, accountId: "acc_other", body: "Thanks" },
+      { threadId: THREAD },
+    )) as { content: { text: string }[]; isError: boolean };
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]!.text).toContain("sent from the account that received the message");
+    expect(host.harness.inspection.pendingInteractions).toEqual([]);
   });
 });

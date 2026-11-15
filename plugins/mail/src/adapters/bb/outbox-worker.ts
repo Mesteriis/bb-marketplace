@@ -118,6 +118,8 @@ export function createOutboxWorker(
       }
       for (const draft of drafts) {
         if (stop.aborted) return;
+        // A hidden agent-proposal draft never gets a server copy (listDrafts returns it raw).
+        if (draft.proposalId !== null) continue;
         if (draft.serverState === "local_only") continue;
         if (draft.serverCopy !== null && draft.serverCopy.revision >= draft.revision) continue;
         const failedAt = failedCopyAt.get(draft.id);

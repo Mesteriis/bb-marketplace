@@ -144,6 +144,14 @@ describe("proposeMail", () => {
     expect(draft.subject).toBe("Fwd: Invented subject 1");
   });
 
+  it("a reply naming the source's own account is accepted", async () => {
+    const id = stored();
+    const { proposalId } = await propose({ kind: "reply", sourceMessageId: id, accountId: "acc_1", subject: undefined });
+    const draft = h.store.getDraft(h.store.getProposal(proposalId)!.draftId!)!;
+    expect(draft.accountId).toBe("acc_1");
+    expect(draft.messageId).toMatch(/@example\.org>$/);
+  });
+
   it("records forwarded attachments left out over the cap", async () => {
     const id = stored();
     h.reader.originals.set(id, {
@@ -174,6 +182,16 @@ describe("proposeMail", () => {
       ["no source id", () => propose({ kind: "reply", subject: undefined }), "source_not_found"],
       ["unknown account", () => propose({ accountId: "acc_missing" }), "account"],
       ["attachments outside a forward", () => propose({ forwardAttachments: [0] }), "attachment_index"],
+      [
+        "a reply from another account than the source's",
+        () => propose({ kind: "reply", sourceMessageId: stored(), accountId: "acc_2", subject: undefined }),
+        "account_mismatch",
+      ],
+      [
+        "a forward from another account than the source's",
+        () => propose({ kind: "forward", sourceMessageId: stored(), accountId: "acc_2", subject: undefined }),
+        "account_mismatch",
+      ],
     ];
     for (const [name, run, kind] of cases) {
       it(name, async () => {
