@@ -9,6 +9,13 @@ import { EditorContent, useEditor, type Editor, type JSONContent } from "@tiptap
 import StarterKit from "@tiptap/starter-kit";
 import { cn } from "@/lib/utils";
 import { sanitizeEmailHtml } from "./sanitize.ts";
+import {
+  SIGNATURE_CLASS,
+  SIGNATURE_REPLACE_META,
+  SignatureDocument,
+  SignatureNode,
+  withoutSignatureClass,
+} from "./signature-node.ts";
 
 /** The document the editor emits and the server validates. */
 export type EditorDoc = JSONContent;
@@ -22,10 +29,25 @@ const DROPPED = "img, picture, source, video, audio, track, svg, style, link, me
  * in an inert document, so nothing here loads a resource.
  */
 export function cleanEditorHtml(html: string): string {
+  return cleanEditorBody(html).innerHTML;
+}
+
+function cleanEditorBody(html: string): HTMLElement {
   const sanitized = sanitizeEmailHtml(html, { remoteImages: false }).html;
   const doc = new DOMParser().parseFromString(sanitized, "text/html");
   for (const element of Array.from(doc.body.querySelectorAll(DROPPED))) element.remove();
-  return doc.body.innerHTML;
+  return doc.body;
+}
+
+/**
+ * Pasted or dropped HTML: cleaned as above, and without the signature
+ * class, so a copied signature (or a sender's look-alike) pastes as
+ * ordinary paragraphs (spec resolution 17).
+ */
+export function cleanPastedHtml(html: string): string {
+  const body = cleanEditorBody(html);
+  withoutSignatureClass(body);
+  return body.innerHTML;
 }
 
 /** Link protocols the editor and the server's renderer keep. */
@@ -39,14 +61,20 @@ export const LINK_PROTOCOLS = ["http", "https", "mailto"];
 export interface EditorFeatures {
   lists?: boolean;
   quotes?: boolean;
+  /** The top-level signature block (the composer only). */
+  signature?: boolean;
 }
 
 /** The StarterKit as the composer uses it: the server's schema, nothing more. */
 export function composeExtensions(features: EditorFeatures = {}) {
   const lists = features.lists ?? true;
   const quotes = features.quotes ?? true;
+  const signature = features.signature ?? true;
   return [
     StarterKit.configure({
+      ...(signature ? { document: false } : {}),
+      // A signature at the end stays the last block (its `-- ` is drawn then).
+      trailingNode: { notAfter: ["paragraph", "signature"] },
       heading: false,
       code: false,
       codeBlock: false,
@@ -56,17 +84,32 @@ export function composeExtensions(features: EditorFeatures = {}) {
       ...(quotes ? {} : { blockquote: false }),
       link: { openOnClick: false, autolink: true, protocols: LINK_PROTOCOLS, defaultProtocol: "https" },
     }),
+    ...(signature ? [SignatureDocument, SignatureNode] : []),
   ];
 }
 
 /**
  * Loads a draft's imported HTML once: as a quote at the end of the document
  * (a reply or forward), or as the whole body (a continued draft).
+ * `stripSignature` (a reply to the owner's own mail) drops the marked
+ * signature blocks; otherwise only their class goes, so their text stays as
+ * ordinary text and no second signature block reaches the editor (spec
+ * resolution 3).
  */
-export function importHtml(editor: Editor, html: string, into: "quote" | "body"): void {
-  const clean = cleanEditorHtml(html);
+export function importHtml(editor: Editor, html: string, into: "quote" | "body", stripSignature = false): void {
+  const body = cleanEditorBody(html);
+  if (stripSignature) {
+    for (const element of Array.from(body.querySelectorAll(`div.${SIGNATURE_CLASS}`))) element.remove();
+  } else {
+    withoutSignatureClass(body);
+  }
+  const clean = body.innerHTML;
   if (into === "body") {
-    editor.commands.setContent(clean === "" ? "<p></p>" : clean, { emitUpdate: true });
+    editor
+      .chain()
+      .setMeta(SIGNATURE_REPLACE_META, true)
+      .setContent(clean === "" ? "<p></p>" : clean, { emitUpdate: true })
+      .run();
     return;
   }
   const end = editor.state.doc.content.size;
@@ -91,7 +134,7 @@ export interface ComposeEditorProps {
   /** The saved document; read once, when the editor starts. */
   initialDoc: EditorDoc;
   /** HTML to load once after the editor starts (DraftView.import), or null. */
-  importFrom: { html: string; into: "quote" | "body" } | null;
+  importFrom: { html: string; into: "quote" | "body"; stripSignature?: boolean } | null;
   onChange: (doc: EditorDoc) => void;
   /** Files pasted or dropped into the editor. */
   onFiles: (files: File[]) => void;
@@ -105,7 +148,7 @@ export interface ComposeEditorProps {
   /** Cmd/Ctrl+K in the editor. */
   onLinkShortcut: () => void;
   label: string;
-  /** Lists and quotes; both on unless turned off. */
+  /** Lists, quotes and the signature block; all on unless turned off. */
   features?: EditorFeatures;
   className?: string;
 }
@@ -141,9 +184,12 @@ export function ComposeEditor({
           "[&_blockquote]:my-1 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground",
           "[&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:min-h-[1lh]",
           "[&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2",
+          // The signature: a muted `-- ` above it only when it is last; nothing when empty.
+          "[&_.makosh-signature:empty]:hidden [&_.makosh-signature:last-child]:before:block",
+          "[&_.makosh-signature:last-child]:before:text-muted-foreground [&_.makosh-signature:last-child]:before:content-['--_']",
         ),
       },
-      transformPastedHTML: (html) => cleanEditorHtml(html),
+      transformPastedHTML: (html) => cleanPastedHtml(html),
       handlePaste: (_view, event) => {
         const files = filesOf(event.clipboardData);
         if (files.length === 0) return false;
@@ -179,7 +225,7 @@ export function ComposeEditor({
       imported.current = true;
       importing.current = true;
       try {
-        importHtml(editor, importFrom.html, importFrom.into);
+        importHtml(editor, importFrom.html, importFrom.into, importFrom.stripSignature === true);
       } finally {
         importing.current = false;
       }

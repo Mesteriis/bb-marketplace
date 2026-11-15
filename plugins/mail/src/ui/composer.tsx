@@ -6,7 +6,8 @@
 // injected port; nothing here knows the host.
 import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import type { Editor } from "@tiptap/react";
-import type { Account, ComposeAttachment, DraftView, MailAddress } from "../core/model.ts";
+import type { Account, ComposeAttachment, DraftView, IdentityView, MailAddress } from "../core/model.ts";
+import type { PresendIssue } from "../core/presend.ts";
 import { parseAddress } from "../core/compose-address.ts";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,7 +22,9 @@ import { Icon } from "@/components/ui/icon";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -38,6 +41,10 @@ import { ComposeToolbar } from "./compose-toolbar.tsx";
 import { accountLabel } from "./folder-list.tsx";
 import { chipText, MAX_CHIP_LENGTH, MIN_CHIP_LENGTH, RecipientInput, addChips, splitTyped } from "./recipient-input.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { sendCheckText, type TemplateView } from "./mail-settings.tsx";
+import { PresendDialog } from "./presend-dialog.tsx";
+import { findSignature, signatureKey } from "./signature-node.ts";
+import { TemplatesPopover } from "./templates-popover.tsx";
 
 /** Typing rests this long before the draft is saved. */
 export const AUTOSAVE_MS = 1_500;
@@ -56,6 +63,8 @@ export interface ComposerSaveInput {
   saveToServer?: boolean;
   /** The editor's one-time load of the draft's import: not an edit. */
   imported?: boolean;
+  /** The identity to send from: null = the account's own address (slice 3d). */
+  fromAddress: string | null;
 }
 
 export type ComposerSaveResult = { revision: number; originalKept?: true } | { conflict: true; revision: number };
@@ -73,6 +82,8 @@ export interface ComposerPorts {
   suggest(prefix: string): Promise<MailAddress[]>;
   /** The draft as stored now (Reload after a conflict). */
   reload(draftId: string): Promise<DraftView>;
+  /** compose_check: the advisory pre-send issues (slice 3d). Any failure sends anyway. */
+  check?(input: { draftId: string; baseRevision: number }): Promise<{ issues: PresendIssue[] }>;
 }
 
 export interface ComposerProps {
@@ -92,6 +103,100 @@ export interface ComposerProps {
   onFocusWithin?: (focused: boolean) => void;
   /** A fresh request id per Send; tests inject one. */
   newRequestId?: () => string;
+  /** Every account's sending identities (slice 3d); without them From lists the own addresses. */
+  identities?: readonly IdentityView[];
+  /** Templates for the toolbar picker; absent: no Templates button. */
+  templates?: readonly TemplateView[];
+  /** Manage templates… in the picker: opens Mail settings. */
+  onManageTemplates?: () => void;
+}
+
+/** One entry of the From list: an identity of an account that can send. */
+export interface FromChoice {
+  key: string;
+  accountId: string;
+  address: string;
+  primary: boolean;
+  label: string;
+  signature: EditorDoc | null;
+  sendCheck: IdentityView["sendCheck"];
+  /** The draft's address is not an active identity any more. */
+  missing: boolean;
+}
+
+const fromKey = (accountId: string, address: string) => JSON.stringify([accountId, address.toLowerCase()]);
+
+function identityLabel(displayName: string | null, address: string): string {
+  return displayName !== null && displayName.trim() !== "" ? `${displayName.trim()} <${address}>` : address;
+}
+
+/**
+ * The From list: every active identity of every account with SMTP (and of
+ * the draft's account), own address first; an account with no identities
+ * loaded offers its own address. The draft's address stays listed, marked,
+ * when it is no longer set up.
+ */
+export function fromChoicesOf(
+  accounts: readonly Account[],
+  identities: readonly IdentityView[] | undefined,
+  current: { accountId: string; address: string | null },
+): FromChoice[] {
+  const choices: FromChoice[] = [];
+  for (const account of accounts) {
+    if (!account.smtpConfigured && account.id !== current.accountId) continue;
+    const own = (identities ?? [])
+      .filter((identity) => identity.accountId === account.id)
+      .sort((a, b) => Number(b.primary) - Number(a.primary));
+    const list =
+      own.length > 0
+        ? own
+        : [
+            {
+              accountId: account.id,
+              address: account.email.toLowerCase(),
+              displayName: account.displayName,
+              primary: true,
+              signature: null,
+              sendCheck: "unknown" as const,
+            },
+          ];
+    for (const identity of list) {
+      choices.push({
+        key: fromKey(account.id, identity.address),
+        accountId: account.id,
+        address: identity.address,
+        primary: identity.primary,
+        label: identityLabel(identity.displayName, identity.address),
+        signature: (identity.signature as EditorDoc | null) ?? null,
+        sendCheck: identity.sendCheck,
+        missing: false,
+      });
+    }
+    if (
+      account.id === current.accountId &&
+      current.address !== null &&
+      !list.some((identity) => identity.address === current.address!.toLowerCase())
+    ) {
+      choices.push({
+        key: fromKey(account.id, current.address),
+        accountId: account.id,
+        address: current.address.toLowerCase(),
+        primary: false,
+        label: current.address,
+        signature: null,
+        sendCheck: "unknown",
+        missing: true,
+      });
+    }
+  }
+  return choices;
+}
+
+/** The choice the draft sends from now. */
+function currentChoice(choices: readonly FromChoice[], from: { accountId: string; address: string | null }) {
+  const ofAccount = choices.filter((c) => c.accountId === from.accountId);
+  if (from.address === null) return ofAccount.find((c) => c.primary) ?? ofAccount[0] ?? null;
+  return ofAccount.find((c) => c.address === from.address!.toLowerCase()) ?? null;
 }
 
 type Field = { chips: string[]; text: string };
@@ -178,7 +283,16 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   const rootRef = useRef<HTMLElement | null>(null);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
-  const [accountId, setAccountId] = useState(draft.accountId);
+  const [from, setFrom] = useState<{ accountId: string; address: string | null }>({
+    accountId: draft.accountId,
+    address: draft.fromAddress,
+  });
+  const accountId = from.accountId;
+  /** The owner edited the signature, so a From change kept it: Use <address>'s replaces it. */
+  const [keptSignature, setKeptSignature] = useState<FromChoice | null>(null);
+  const [presend, setPresend] = useState<PresendIssue[] | null>(null);
+  const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   const [to, setTo] = useState<Field>(() => fieldOf(draft.to));
   const [cc, setCc] = useState<Field>(() => fieldOf(draft.cc));
   const [bcc, setBcc] = useState<Field>(() => fieldOf(draft.bcc));
@@ -196,8 +310,8 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   const [originalKept, setOriginalKept] = useState(false);
 
   // Latest values for saves that run after a render.
-  const fields = useRef({ accountId, to, cc, bcc, subject, attachments });
-  fields.current = { accountId, to, cc, bcc, subject, attachments };
+  const fields = useRef({ accountId, fromAddress: from.address, to, cc, bcc, subject, attachments });
+  fields.current = { accountId, fromAddress: from.address, to, cc, bcc, subject, attachments };
   const doc = useRef<EditorDoc>(draft.doc as EditorDoc);
   const revision = useRef(draft.revision);
   /** Bumped by every change; `savedVersion` is the one the last save held. */
@@ -217,7 +331,9 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
 
   const account = accounts.find((a) => a.id === accountId) ?? null;
   const smtpReady = account?.smtpConfigured === true;
-  const fromChoices = accounts.filter((a) => a.smtpConfigured || a.id === accountId);
+  const fromChoices = fromChoicesOf(accounts, props.identities, from);
+  const chosen = currentChoice(fromChoices, from);
+  const fromAccounts = new Set(fromChoices.map((c) => c.accountId));
   const uploading = uploads.some((u) => u.error === null);
 
   const clearTimer = () => {
@@ -238,6 +354,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           draftId: draft.id,
           baseRevision: revision.current,
           accountId: current.accountId,
+          fromAddress: current.fromAddress,
           to: savable(current.to.chips),
           cc: savable(current.cc.chips),
           bcc: savable(current.bcc.chips),
@@ -304,6 +421,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
 
   const setField = (setter: (field: Field) => void) => (next: Field) => {
     setter(next);
+    setMarked(new Set());
     changed();
   };
 
@@ -378,6 +496,47 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
     }
   };
 
+  /** Queues the saved revision: one request id per Send of it, retried once. */
+  const queue = async (baseRevision: number) => {
+    // One request id per Send of this revision: a retried call is the same send.
+    const requestId =
+      attempt.current !== null && attempt.current.revision === baseRevision
+        ? attempt.current.requestId
+        : (props.newRequestId ?? (() => crypto.randomUUID()))();
+    attempt.current = { revision: baseRevision, requestId };
+    const input = { draftId: draft.id, baseRevision, requestId };
+    let outbox: { outboxId: string; sendAfter: string };
+    try {
+      outbox = await portsRef.current.send(input);
+    } catch {
+      try {
+        outbox = await portsRef.current.send(input);
+      } catch (error) {
+        setSendProblem(messageOf(error));
+        return;
+      }
+    }
+    finish(() => props.onSent(outbox));
+  };
+
+  /** Runs `work` as the one send in flight. */
+  const sendingRun = async (work: () => Promise<void>) => {
+    sendingRef.current = true;
+    setSending(true);
+    setSendProblem(null);
+    try {
+      await work();
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
+  };
+
+  /**
+   * Send: the local checks, a save when something changed, then the
+   * advisory pre-send check. Issues open "Before you send"; none, or any
+   * failure of the check, queues the send (slice 3d: no check blocks).
+   */
   const send = async () => {
     if (sendingRef.current || closing) return;
     const now = commitAll();
@@ -390,38 +549,103 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
     }
     if (uploading) return setSendProblem("Wait for the attachments to finish uploading.");
     if (conflictRef.current !== null) return;
-    sendingRef.current = true;
-    setSending(true);
-    setSendProblem(null);
-    try {
+    await sendingRun(async () => {
       if (dirty()) {
         const outcome = await save(false);
         if (outcome !== "saved") return;
       }
       const baseRevision = revision.current;
-      // One request id per Send of this revision: a retried call is the same send.
-      const requestId =
-        attempt.current !== null && attempt.current.revision === baseRevision
-          ? attempt.current.requestId
-          : (props.newRequestId ?? (() => crypto.randomUUID()))();
-      attempt.current = { revision: baseRevision, requestId };
-      const input = { draftId: draft.id, baseRevision, requestId };
-      let outbox: { outboxId: string; sendAfter: string };
-      try {
-        outbox = await portsRef.current.send(input);
-      } catch {
+      const check = portsRef.current.check;
+      if (check !== undefined) {
+        let issues: PresendIssue[] = [];
         try {
-          outbox = await portsRef.current.send(input);
-        } catch (error) {
-          setSendProblem(messageOf(error));
+          issues = (await check({ draftId: draft.id, baseRevision })).issues;
+        } catch {
+          issues = [];
+        }
+        if (issues.length > 0) {
+          setPresend(issues);
           return;
         }
       }
-      finish(() => props.onSent(outbox));
-    } finally {
-      sendingRef.current = false;
-      setSending(false);
+      await queue(baseRevision);
+    });
+  };
+
+  /** Before you send → Send anyway. */
+  const sendAnyway = async () => {
+    setPresend(null);
+    if (sendingRef.current || closing || conflictRef.current !== null) return;
+    await sendingRun(async () => {
+      if (dirty()) {
+        const outcome = await save(false);
+        if (outcome !== "saved") return;
+      }
+      await queue(revision.current);
+    });
+  };
+
+  /** Fix on an issue: the dialog closes and the owner lands on it; returns what to focus once it has. */
+  const fix = (issue: PresendIssue): (() => void) | undefined => {
+    setPresend(null);
+    const within = (selector: string) => rootRef.current?.querySelector<HTMLElement>(selector) ?? null;
+    switch (issue.kind) {
+      case "attachment_mentioned":
+        // The picker opens inside the click, as a browser requires.
+        within('input[type="file"]')?.click();
+        return undefined;
+      case "empty_subject":
+        return () => rootRef.current?.ownerDocument.getElementById(`compose-subject-${draft.id}`)?.focus();
+      case "outside_conversation":
+      case "new_recipients": {
+        const wanted = new Set(issue.addresses.map((a) => a.toLowerCase()));
+        setMarked(wanted);
+        const holds = (field: Field) => field.chips.some((chip) => wanted.has(chipAddress(chip)));
+        const field = holds(to) ? "To" : holds(cc) ? "Cc" : holds(bcc) ? "Bcc" : "To";
+        if (field !== "To") setShowCopies(true);
+        return () => within(`input[role="combobox"][aria-label="${field}"]`)?.focus();
+      }
     }
+  };
+
+  /** From changed: an unedited signature becomes the new identity's; an edited one stays, with a note. */
+  const chooseFrom = (key: string) => {
+    const next = fromChoices.find((choice) => choice.key === key);
+    if (next === undefined || next.key === chosen?.key) return;
+    const previous = chosen;
+    const fromAddress = next.primary ? null : next.address;
+    setFrom({ accountId: next.accountId, address: fromAddress });
+    fields.current = { ...fields.current, accountId: next.accountId, fromAddress };
+    setKeptSignature(null);
+    const found = editor !== null ? findSignature(editor.state.doc) : null;
+    if (found !== null) {
+      const current = signatureKey((found.node.toJSON() as EditorDoc).content);
+      const replaceable =
+        current === signatureKey([]) || (previous !== null && current === signatureKey(previous.signature?.content));
+      if (replaceable) replaceSignature(next.signature);
+      else if (current !== signatureKey(next.signature?.content)) setKeptSignature(next);
+    }
+    changed();
+  };
+
+  const replaceSignature = (signature: EditorDoc | null) => {
+    if (editor === null) return;
+    const found = findSignature(editor.state.doc);
+    if (found === null) return;
+    editor
+      .chain()
+      .command(({ tr, state }) => {
+        const node = state.schema.nodeFromJSON({ type: "signature", content: signature?.content ?? [] });
+        tr.replaceWith(found.pos, found.pos + found.node.nodeSize, node);
+        return true;
+      })
+      .run();
+  };
+
+  const insertTemplate = (template: TemplateView) => {
+    setTemplatesOpen(false);
+    if (editor === null) return;
+    editor.chain().focus().insertContent(template.doc.content ?? []).run();
   };
 
   const addFiles = (files: File[]) => {
@@ -475,6 +699,13 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       event.preventDefault();
       event.stopPropagation();
       void send();
+      return;
+    }
+    // Mod+Alt+T: the template picker (Alt+T and Alt+Shift+T are BB's model picker).
+    if ((event.metaKey || event.ctrlKey) && event.altKey && event.code === "KeyT" && props.templates !== undefined) {
+      event.preventDefault();
+      event.stopPropagation();
+      setTemplatesOpen(true);
       return;
     }
     if (event.key === "Escape" && !event.defaultPrevented) {
@@ -575,29 +806,53 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
 
       <FieldRow label="From">
         {fromChoices.length > 1 ? (
-          <Select
-            value={accountId}
-            onValueChange={(next) => {
-              setAccountId(next);
-              fields.current = { ...fields.current, accountId: next };
-              changed();
-            }}
-          >
-            <SelectTrigger aria-label="From" className="h-7 w-auto max-w-72 border-none px-1 text-sm">
+          <Select value={chosen?.key ?? ""} onValueChange={chooseFrom}>
+            <SelectTrigger aria-label="From" className="h-7 w-auto max-w-80 border-none px-1 text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {fromChoices.map((choice) => (
-                <SelectItem key={choice.id} value={choice.id}>
-                  {accountLabel(choice)}
-                </SelectItem>
-              ))}
+              {fromAccounts.size > 1
+                ? [...fromAccounts].map((id) => {
+                    const owner = accounts.find((a) => a.id === id);
+                    return (
+                      <SelectGroup key={id}>
+                        <SelectLabel>{owner !== undefined ? accountLabel(owner) : id}</SelectLabel>
+                        {fromChoices.filter((c) => c.accountId === id).map(fromItem)}
+                      </SelectGroup>
+                    );
+                  })
+                : fromChoices.map(fromItem)}
             </SelectContent>
           </Select>
         ) : (
-          <span className="truncate px-1 text-sm text-foreground">{account !== null ? accountLabel(account) : ""}</span>
+          <span className="truncate px-1 text-sm text-foreground">{chosen?.label ?? (account !== null ? accountLabel(account) : "")}</span>
         )}
       </FieldRow>
+      {chosen !== null && (chosen.missing || sendCheckText(chosen.sendCheck) !== null) ? (
+        <p role="status" className="flex items-start gap-1 border-b border-border px-3 py-1.5 text-xs text-destructive">
+          <Icon name="TriangleAlert" fallback="Info" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          {chosen.missing
+            ? "This sending address is no longer set up for the account; choose another From."
+            : sendCheckText(chosen.sendCheck)}
+        </p>
+      ) : null}
+      {keptSignature !== null ? (
+        <div role="status" className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+          <span>Kept your edited signature</span>
+          <span aria-hidden>·</span>
+          <Button
+            variant="link"
+            size="sm"
+            className="h-auto p-0 text-xs"
+            onClick={() => {
+              replaceSignature(keptSignature.signature);
+              setKeptSignature(null);
+            }}
+          >
+            Use {keptSignature.address}'s
+          </Button>
+        </div>
+      ) : null}
       {!smtpReady ? (
         <div role="alert" className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-sm">
           <span className="min-w-0 flex-1 text-destructive">SMTP is not set for this account.</span>
@@ -615,6 +870,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           onChange={setField(setTo)}
           suggest={(prefix) => portsRef.current.suggest(prefix)}
           autoFocus={draft.kind === "new" || draft.kind === "forward"}
+          marked={marked}
         />
         {!showCopies ? (
           <Button variant="ghost" size="sm" className="h-7 shrink-0 px-2" onClick={() => setShowCopies(true)}>
@@ -625,10 +881,10 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       {showCopies ? (
         <>
           <FieldRow label="Cc">
-            <RecipientInput label="Cc" chips={cc.chips} text={cc.text} onChange={setField(setCc)} suggest={(p) => portsRef.current.suggest(p)} />
+            <RecipientInput label="Cc" chips={cc.chips} text={cc.text} onChange={setField(setCc)} suggest={(p) => portsRef.current.suggest(p)} marked={marked} />
           </FieldRow>
           <FieldRow label="Bcc">
-            <RecipientInput label="Bcc" chips={bcc.chips} text={bcc.text} onChange={setField(setBcc)} suggest={(p) => portsRef.current.suggest(p)} />
+            <RecipientInput label="Bcc" chips={bcc.chips} text={bcc.text} onChange={setField(setBcc)} suggest={(p) => portsRef.current.suggest(p)} marked={marked} />
           </FieldRow>
         </>
       ) : null}
@@ -650,7 +906,28 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       </FieldRow>
 
       <div className="border-b border-border px-2 py-1">
-        <ComposeToolbar editor={editor} linkOpen={linkOpen} onLinkOpenChange={setLinkOpen} />
+        <ComposeToolbar
+          editor={editor}
+          linkOpen={linkOpen}
+          onLinkOpenChange={setLinkOpen}
+          {...(props.templates !== undefined
+            ? { onTemplates: () => setTemplatesOpen((open) => !open), templatesOpen }
+            : {})}
+        />
+        {templatesOpen && props.templates !== undefined ? (
+          <TemplatesPopover
+            templates={props.templates}
+            onInsert={insertTemplate}
+            onManage={() => {
+              setTemplatesOpen(false);
+              props.onManageTemplates?.();
+            }}
+            onClose={() => {
+              setTemplatesOpen(false);
+              editor?.commands.focus();
+            }}
+          />
+        ) : null}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <ComposeEditor
@@ -706,6 +983,13 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           </p>
         ) : null}
       </div>
+
+      <PresendDialog
+        issues={presend}
+        onFix={fix}
+        onBack={() => setPresend(null)}
+        onSendAnyway={() => void sendAnyway()}
+      />
 
       <Dialog open={escapeOpen} onOpenChange={setEscapeOpen}>
         <DialogContent className="max-w-sm" onEscapeKeyDown={stopEscape}>
@@ -783,5 +1067,26 @@ function SaveStateLine({ state, serverCopy }: { state: SaveState; serverCopy: Dr
     >
       {text}
     </span>
+  );
+}
+
+/** A chip's address in lower case (the chip text when it does not parse). */
+function chipAddress(chip: string): string {
+  const parsed = parseAddress(chip);
+  return (parsed.ok ? parsed.value.address : chip.trim()).toLowerCase();
+}
+
+function fromItem(choice: FromChoice) {
+  const warning = choice.missing || sendCheckText(choice.sendCheck) !== null;
+  return (
+    <SelectItem key={choice.key} value={choice.key}>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate">{choice.label}</span>
+        {!choice.primary ? <span className="shrink-0 text-xs text-muted-foreground">alias</span> : null}
+        {warning ? (
+          <Icon name="TriangleAlert" fallback="Info" className="size-3.5 shrink-0 text-destructive" aria-label="Check this address" />
+        ) : null}
+      </span>
+    </SelectItem>
   );
 }

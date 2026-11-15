@@ -422,3 +422,208 @@ describe("Composer", () => {
     expect(screen.getByRole("combobox", { name: "Bcc" })).toBeTruthy();
   });
 });
+
+describe("Composer: identities, signatures, checks and templates (slice 3d)", () => {
+  const proto = Element.prototype as unknown as Record<string, unknown>;
+  proto.scrollIntoView ??= () => {};
+  proto.hasPointerCapture ??= () => false;
+  proto.releasePointerCapture ??= () => {};
+
+  const p = (text: string) => ({ type: "paragraph", content: [{ type: "text", text }] });
+  const sigDoc = (text: string) => ({ type: "doc", content: [p(text)] });
+  const second: Account = { ...account, id: "acc-2", email: "second@example.net", username: "second@example.net", displayName: "Second" };
+  const identities = [
+    { accountId: "acc-1", address: "owner@example.org", displayName: "Owner", primary: true, signature: sigDoc("Owner sig"), sendCheck: "confirmed" as const },
+    { accountId: "acc-1", address: "team@example.org", displayName: "Team", primary: false, signature: sigDoc("Team sig"), sendCheck: "rewritten" as const },
+    { accountId: "acc-2", address: "second@example.net", displayName: "Second", primary: true, signature: null, sendCheck: "unknown" as const },
+  ];
+  const withSignature = (text: string | null) =>
+    draft({ doc: { type: "doc", content: [{ type: "paragraph" }, { type: "signature", content: text === null ? [] : [p(text)] }] } });
+
+  const theEditor = () =>
+    (screen.getByRole("textbox", { name: "Message" }) as unknown as { editor: import("@tiptap/react").Editor }).editor;
+  const signatureText = () => {
+    const json = theEditor().getJSON();
+    const block = json.content?.find((node) => node.type === "signature");
+    return block === undefined ? null : JSON.stringify(block.content ?? []);
+  };
+
+  async function chooseFrom(name: RegExp) {
+    const trigger = screen.getByRole("combobox", { name: "From" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter", code: "Enter" });
+    fireEvent.keyDown(await screen.findByRole("option", { name }), { key: "Enter", code: "Enter" });
+  }
+
+  it("From lists every identity across accounts, grouped, with the alias mark and a warning", async () => {
+    mount({ accounts: [account, second], identities, draft: withSignature("Owner sig") });
+    const trigger = screen.getByRole("combobox", { name: "From" });
+    expect(trigger.textContent).toContain("Owner <owner@example.org>");
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter", code: "Enter" });
+    const options = await screen.findAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual([
+      "Owner <owner@example.org>",
+      "Team <team@example.org>alias",
+      "Second <second@example.net>",
+    ]);
+    expect(screen.getByText("owner@example.org")).toBeTruthy(); // the group label
+    expect(screen.getByText("Second", { selector: "[role=group] *" })).toBeTruthy();
+    expect(options[1]!.querySelector('[aria-label="Check this address"]')).not.toBeNull();
+  });
+
+  it("swapping From replaces an unedited signature and saves the alias", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { ports } = mount({ identities, draft: withSignature("Owner sig") });
+    await chooseFrom(/Team/);
+    expect(signatureText()).toBe(JSON.stringify([p("Team sig")]));
+    expect(screen.getByText(/does not let this account send as it/)).toBeTruthy();
+    await act(async () => {
+      vi.advanceTimersByTime(AUTOSAVE_MS);
+    });
+    await waitFor(() => expect(ports.save).toHaveBeenCalled());
+    expect(ports.save.mock.calls.at(-1)![0]).toMatchObject({ accountId: "acc-1", fromAddress: "team@example.org" });
+    // Back to the own address: null, and its signature again.
+    await chooseFrom(/Owner/);
+    expect(signatureText()).toBe(JSON.stringify([p("Owner sig")]));
+    await act(async () => {
+      vi.advanceTimersByTime(AUTOSAVE_MS);
+    });
+    await waitFor(() => expect(ports.save.mock.calls.at(-1)![0]).toMatchObject({ fromAddress: null }));
+  });
+
+  it("an empty signature block takes the new identity's; an edited one stays with the note", async () => {
+    mount({ identities, draft: withSignature("My own edit") });
+    await chooseFrom(/Team/);
+    expect(signatureText()).toBe(JSON.stringify([p("My own edit")]));
+    expect(screen.getByText("Kept your edited signature")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Use team@example.org's" }));
+    expect(signatureText()).toBe(JSON.stringify([p("Team sig")]));
+    expect(screen.queryByText("Kept your edited signature")).toBeNull();
+    cleanup();
+
+    mount({ identities, draft: withSignature(null) });
+    await chooseFrom(/Team/);
+    expect(signatureText()).toBe(JSON.stringify([p("Team sig")]));
+  });
+
+  it("a draft without a signature block is left alone by a From change", async () => {
+    mount({ identities });
+    await chooseFrom(/Team/);
+    expect(signatureText()).toBeNull();
+  });
+
+  function checkPorts(issues: unknown[] | Error) {
+    const ports = { ...fakePorts(), check: vi.fn(async () => (issues instanceof Error ? Promise.reject(issues) : { issues })) };
+    return ports as ReturnType<typeof fakePorts> & { check: typeof ports.check };
+  }
+
+  it("issues open Before you send; Send anyway sends, Back to editing does not", async () => {
+    const ports = checkPorts([{ kind: "empty_subject" }]);
+    const { onSent } = mount({}, ports as never);
+    addRecipient();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    const dialog = await screen.findByRole("dialog", { name: "Before you send" });
+    expect(ports.check).toHaveBeenCalledWith({ draftId: "draft-1", baseRevision: 2 });
+    expect(ports.send).not.toHaveBeenCalled();
+    expect(dialog.textContent).toContain("The subject is empty.");
+    expect(document.activeElement?.textContent).toBe("Back to editing");
+    // Cmd/Ctrl+Enter does nothing here.
+    fireEvent.keyDown(document.activeElement!, { key: "Enter", metaKey: true });
+    fireEvent.keyDown(document.activeElement!, { key: "Enter", ctrlKey: true });
+    expect(ports.send).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Back to editing" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Before you send" })).toBeNull());
+    expect(ports.send).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByRole("dialog", { name: "Before you send" });
+    fireEvent.click(screen.getByRole("button", { name: "Send anyway" }));
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+    expect(ports.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("no issues, or a failing check, sends at once", async () => {
+    for (const result of [[], new Error("conflict")]) {
+      const ports = checkPorts(result);
+      const { onSent } = mount({}, ports as never);
+      addRecipient();
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+      await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+      expect(ports.check).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("dialog", { name: "Before you send" })).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("each Fix takes the owner to the issue", async () => {
+    const ports = checkPorts([
+      { kind: "attachment_mentioned", phrase: "attached" },
+      { kind: "empty_subject" },
+      { kind: "outside_conversation", addresses: ["ada@example.org"] },
+    ]);
+    mount({}, ports as never);
+    addRecipient();
+    const picker = screen.getByTestId("compose-file-input") as HTMLInputElement;
+    const clicked = vi.fn();
+    picker.addEventListener("click", clicked);
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Attach a file" }));
+    expect(clicked).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add a subject" }));
+    await waitFor(() => expect(document.activeElement).toBe(subject()));
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Check recipients" }));
+    await waitFor(() => expect(document.activeElement).toBe(to()));
+    const chip = screen.getByRole("list", { name: "To recipients" }).querySelector("li[data-marked]");
+    expect(chip?.textContent).toContain("ada@example.org");
+    expect(ports.send).not.toHaveBeenCalled();
+  });
+
+  const TEMPLATES = [
+    { id: "tpl-1", name: "Thanks", doc: { type: "doc", content: [p("Thank you, made-up text.")] }, updatedAt: "2026-11-10T09:00:00.000Z" },
+    { id: "tpl-2", name: "Follow-up", doc: { type: "doc", content: [p("Following up, invented.")] }, updatedAt: "2026-11-10T09:00:00.000Z" },
+  ];
+
+  it("Templates inserts the chosen template at the cursor; Manage templates… opens settings", async () => {
+    const onManageTemplates = vi.fn();
+    mount({ templates: TEMPLATES, onManageTemplates, draft: draft({ doc: { type: "doc", content: [p("Hello"), p("Bye")] } }) });
+    const ed = theEditor();
+    act(() => {
+      ed.commands.setTextSelection(6); // the end of "Hello"
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Templates/ }));
+    const find = await screen.findByRole("combobox", { name: "Find a template" });
+    fireEvent.change(find, { target: { value: "foll" } });
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Follow-upFollowing up, invented."]);
+    fireEvent.keyDown(find, { key: "Enter" });
+    const text = ed.getText();
+    expect(text.indexOf("Hello")).toBeLessThan(text.indexOf("Following up"));
+    expect(text.indexOf("Following up")).toBeLessThan(text.indexOf("Bye"));
+    expect(screen.queryByRole("combobox", { name: "Find a template" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Templates/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Manage templates…" }));
+    expect(onManageTemplates).toHaveBeenCalled();
+  });
+
+  it("Mod+Alt+T opens the picker only with focus in the composer", async () => {
+    mount({ templates: TEMPLATES });
+    fireEvent.keyDown(document.body, { key: "†", code: "KeyT", metaKey: true, altKey: true });
+    expect(screen.queryByRole("combobox", { name: "Find a template" })).toBeNull();
+    // Alt+T alone is BB's model picker, not ours.
+    fireEvent.keyDown(subject(), { key: "†", code: "KeyT", altKey: true });
+    expect(screen.queryByRole("combobox", { name: "Find a template" })).toBeNull();
+    fireEvent.keyDown(subject(), { key: "†", code: "KeyT", metaKey: true, altKey: true });
+    expect(await screen.findByRole("combobox", { name: "Find a template" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Find a template" }), { key: "Escape" });
+    expect(screen.queryByRole("combobox", { name: "Find a template" })).toBeNull();
+    fireEvent.keyDown(subject(), { key: "t", code: "KeyT", ctrlKey: true, altKey: true });
+    expect(await screen.findByRole("combobox", { name: "Find a template" })).toBeTruthy();
+  });
+});

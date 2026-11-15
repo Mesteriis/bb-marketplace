@@ -3435,3 +3435,26 @@ describe("Mail settings (slice 3d)", () => {
     expect(await slot.findByRole("dialog", { name: /SMTP/ })).toBeTruthy();
   });
 });
+
+describe("Sending with the pre-send check (slice 3d)", () => {
+  it("Send saves From, runs compose_check, shows Before you send, and Send anyway queues it", async () => {
+    const slot = render(
+      composeRpc({
+        compose_check: () => ({ issues: [{ kind: "empty_subject" }] }),
+        compose_send: () => ({ outboxId: "out-1", sendAfter: new Date(Date.now() + 10_000).toISOString() }),
+      }),
+    );
+    await slot.findByText("Lunch");
+    press(pageRoot(slot), { key: "c", code: "KeyC" });
+    const composer = await composerRegion(slot, "New message");
+    fireEvent.change(within(composer).getByRole("combobox", { name: "To" }), { target: { value: "ada@example.org," } });
+    fireEvent.click(within(composer).getByRole("button", { name: "Send" }));
+    const dialog = await slot.findByRole("dialog", { name: "Before you send" });
+    expect(callsTo(slot, "compose_save")[0]?.input).toMatchObject({ fromAddress: null });
+    expect(callsTo(slot, "compose_check")[0]?.input).toEqual({ draftId: "d-1", baseRevision: 2 });
+    expect(callsTo(slot, "compose_send")).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send anyway" }));
+    await waitFor(() => expect(callsTo(slot, "compose_send")).toHaveLength(1));
+    await waitFor(() => expect(slot.queryByRole("region", { name: "New message" })).toBeNull());
+  });
+});
