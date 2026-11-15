@@ -28,6 +28,7 @@ import type {
   ComposeAttachment,
   ComposeKind,
   DraftOrigin,
+  DraftPurpose,
   DraftRecord,
   DraftServerCopyState,
   OutboxRecord,
@@ -52,6 +53,7 @@ import type {
   ThreadDetail,
   ThreadingInput,
   ThreadSummary,
+  ThreadFilter,
 } from "../../core/model.ts";
 import type { ComposeDoc } from "../../core/compose-doc.ts";
 import type { SignatureDoc } from "../../core/compose-signature.ts";
@@ -68,7 +70,19 @@ import {
 import { TEMPLATES_MAX } from "../../core/templates.ts";
 import type { UndoRow } from "../../core/undo.ts";
 import { cleanSnippet, needsSnippetRepair, snippetOf } from "../../core/snippet.ts";
-import type { MailStore, ProposalRecord, TemplateRecord, TranslationRecord } from "../../core/ports.ts";
+import type {
+  MailStore,
+  ProposalRecord,
+  TemplateRecord,
+  TranslationRecord,
+  TriageBatchRecord,
+  TriageItemRecord,
+  UnsubscribeRecord,
+} from "../../core/ports.ts";
+import { matchesBlock, type BlockRule } from "../../core/blocking.ts";
+import { SNOOZES_MAX_PER_ACCOUNT, type SnoozeRow, type SnoozeState } from "../../core/snooze.ts";
+import type { TriageAction, TriageBatchState, TriageItemOutcome } from "../../core/triage.ts";
+import { UNSUBSCRIBE_INFO_MAX_BYTES, type UnsubscribeInfo } from "../../core/unsubscribe.ts";
 import type { ProposalCapRow, ProposalState } from "../../core/agent-propose.ts";
 import { TRANSLATION_CACHE_ROWS } from "../../core/translate.ts";
 import {
@@ -426,6 +440,82 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (account_id, address)
   );
   `,
+  // 8: slice 3e — unsubscribe info of synced mail (NULL = not known), the
+  // account's snooze folder, purpose drafts (an unsubscribe email), snoozes,
+  // global block rules, unsubscribe requests, dedup keys that reached Spam
+  // (block never moves those back), and agent triage batches with their
+  // items. No REFERENCES: deletes are explicit.
+  `
+  ALTER TABLE messages ADD COLUMN unsubscribe_json TEXT;
+
+  ALTER TABLE accounts ADD COLUMN snooze_folder TEXT;
+
+  ALTER TABLE compose_drafts ADD COLUMN purpose TEXT;
+
+  CREATE TABLE snoozes (
+    message_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    return_to TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX snoozes_due ON snoozes(state, due_at);
+  CREATE INDEX snoozes_account ON snoozes(account_id);
+
+  CREATE TABLE block_rules (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    value TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX block_rules_value ON block_rules(kind, value);
+
+  CREATE TABLE unsubscribes (
+    account_id TEXT NOT NULL,
+    list_key TEXT NOT NULL,
+    method TEXT NOT NULL,
+    state TEXT NOT NULL,
+    outbox_id TEXT,
+    requested_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, list_key)
+  );
+
+  CREATE TABLE spam_seen (
+    account_id TEXT NOT NULL,
+    dedup_key TEXT NOT NULL,
+    seen_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, dedup_key)
+  );
+
+  CREATE TABLE triage_batches (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    summary TEXT,
+    view_token_hash TEXT,
+    approved_json TEXT,
+    create_snooze_folder_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+  CREATE INDEX triage_batches_thread ON triage_batches(thread_id, state);
+
+  CREATE TABLE triage_items (
+    batch_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    message_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    snooze_until TEXT,
+    note TEXT,
+    outcome TEXT,
+    PRIMARY KEY (batch_id, position)
+  );
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -455,6 +545,7 @@ type AccountRow = {
   smtp_username: string | null;
   sent_copy: SentCopyPolicy | null;
   signature_json: string | null;
+  snooze_folder: string | null;
 };
 
 type MessageRow = {
@@ -498,9 +589,105 @@ type DraftRow = {
   origin: DraftOrigin;
   proposal_id: string | null;
   from_address: string | null;
+  purpose: DraftPurpose | null;
   created_at: string;
   updated_at: string;
 };
+
+type SnoozeDbRow = {
+  message_id: string;
+  account_id: string;
+  return_to: string;
+  due_at: string;
+  state: SnoozeState;
+  created_at: string;
+  updated_at: string;
+};
+
+function toSnooze(row: SnoozeDbRow): SnoozeRow {
+  return { messageId: row.message_id, accountId: row.account_id, returnTo: row.return_to, dueAt: row.due_at, state: row.state };
+}
+
+type BlockRuleDbRow = { id: string; kind: BlockRule["kind"]; value: string; created_at: string };
+
+function toBlockRule(row: BlockRuleDbRow): BlockRule {
+  return { id: row.id, kind: row.kind, value: row.value, createdAt: row.created_at };
+}
+
+type UnsubscribeDbRow = {
+  account_id: string;
+  list_key: string;
+  method: UnsubscribeRecord["method"];
+  state: UnsubscribeRecord["state"];
+  outbox_id: string | null;
+  requested_at: string;
+};
+
+function toUnsubscribe(row: UnsubscribeDbRow): UnsubscribeRecord {
+  return {
+    accountId: row.account_id,
+    listKey: row.list_key,
+    method: row.method,
+    state: row.state,
+    outboxId: row.outbox_id,
+    requestedAt: row.requested_at,
+  };
+}
+
+type TriageBatchDbRow = {
+  id: string;
+  thread_id: string;
+  state: TriageBatchState;
+  content_hash: string;
+  summary: string | null;
+  view_token_hash: string | null;
+  approved_json: string | null;
+  create_snooze_folder_json: string | null;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+};
+
+function toTriageBatch(row: TriageBatchDbRow): TriageBatchRecord {
+  return {
+    id: row.id,
+    threadId: row.thread_id,
+    state: row.state,
+    contentHash: row.content_hash,
+    summary: row.summary,
+    viewTokenHash: row.view_token_hash,
+    approved: row.approved_json === null ? null : (JSON.parse(row.approved_json) as number[]),
+    createSnoozeFolder:
+      row.create_snooze_folder_json === null ? null : (JSON.parse(row.create_snooze_folder_json) as string[]),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    expiresAt: row.expires_at,
+  };
+}
+
+type TriageItemDbRow = {
+  batch_id: string;
+  position: number;
+  message_id: string;
+  account_id: string;
+  action: TriageAction;
+  snooze_until: string | null;
+  note: string | null;
+  outcome: TriageItemOutcome | null;
+};
+
+function toTriageItem(row: TriageItemDbRow): TriageItemRecord {
+  return {
+    batchId: row.batch_id,
+    position: row.position,
+    messageId: row.message_id,
+    accountId: row.account_id,
+    action: row.action,
+    snoozeUntil: row.snooze_until,
+    note: row.note,
+    outcome: row.outcome,
+  };
+}
 
 type IdentityRow = {
   id: string;
@@ -602,7 +789,7 @@ type ThreadRow = {
 };
 
 /** A thread row with whether a message of it in the listed folder is flagged. */
-type ListedThreadRow = ThreadRow & { flagged: number };
+type ListedThreadRow = ThreadRow & { flagged: number; snoozed_until: string | null };
 
 type AttachmentRow = {
   message_id: string;
@@ -739,7 +926,7 @@ function toAccount(row: AccountRow): StoredAccount {
         : null,
     sentCopy: row.sent_copy ?? "append",
     signature: row.signature_json === null ? null : (JSON.parse(row.signature_json) as SignatureDoc),
-    snoozeFolder: null,
+    snoozeFolder: row.snooze_folder,
   };
 }
 
@@ -775,7 +962,7 @@ function toDraft(row: DraftRow): DraftRecord {
         : null,
     origin: row.origin,
     proposalId: row.proposal_id,
-    purpose: null,
+    purpose: row.purpose,
     fromAddress: row.from_address,
     createdAt: row.created_at,
     revision: row.revision,
@@ -815,6 +1002,33 @@ function newIdentityId(): string {
 }
 
 /** Delivered-To / X-Original-To as stored: lower case, distinct, at most 10; null when the fetch read no headers. */
+/** `unsubscribe_json` of a fetched message: NULL without info or over UNSUBSCRIBE_INFO_MAX_BYTES. */
+function unsubscribeJson(info: UnsubscribeInfo | null | undefined): string | null {
+  if (info === undefined || info === null) return null;
+  const json = JSON.stringify(info);
+  return Buffer.byteLength(json, "utf8") > UNSUBSCRIBE_INFO_MAX_BYTES ? null : json;
+}
+
+/**
+ * The quick filters as one condition on a member row `m` (spec resolution
+ * 20): every requested flag on the same row, or the kept thread's row.
+ * Empty when nothing narrows the list.
+ */
+function filterCondition(filter: ThreadFilter | undefined): string {
+  const flags = [
+    filter?.unread === true ? "m.is_read = 0" : null,
+    filter?.flagged === true ? "m.is_flagged = 1" : null,
+    filter?.attachments === true ? "m.has_attachments = 1" : null,
+  ].filter((part): part is string => part !== null);
+  if (flags.length === 0) return "";
+  const keep = filter?.keep === undefined ? "" : " OR m.thread_id = @keep";
+  return ` AND ((${flags.join(" AND ")})${keep})`;
+}
+
+function filterParams(filter: ThreadFilter | undefined): Record<string, string> {
+  return filter?.keep === undefined ? {} : { keep: filter.keep };
+}
+
 function deliveredToJson(addresses: string[] | undefined): string | null {
   if (addresses === undefined) return null;
   const out = [...new Set(addresses.map((a) => a.trim().toLowerCase()).filter((a) => a !== ""))].slice(0, DELIVERED_TO_MAX);
@@ -901,7 +1115,7 @@ function toSummary(row: MessageRow): MessageSummary {
 }
 
 /** `flagged` covers the thread's messages in the viewed folder. */
-function toThread(row: ThreadRow, flagged: boolean): ThreadSummary {
+function toThread(row: ThreadRow, flagged: boolean, snoozedUntil: string | null = null): ThreadSummary {
   return {
     id: row.id,
     accountId: row.account_id,
@@ -912,7 +1126,7 @@ function toThread(row: ThreadRow, flagged: boolean): ThreadSummary {
     participants: JSON.parse(row.participants_json) as MailAddress[],
     snippet: row.snippet,
     flagged,
-    snoozedUntil: null,
+    snoozedUntil,
   };
 }
 
@@ -924,10 +1138,6 @@ function toAttachment(row: AttachmentRow): AttachmentMeta {
     size: row.size,
     isInline: row.is_inline === 1,
   };
-}
-
-function notYet(): never {
-  throw new Error("Not available yet");
 }
 
 export function createSqliteStore(db: Database.Database): MailStore {
@@ -983,11 +1193,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
     `INSERT INTO messages (id, account_id, folder, uid, message_id, in_reply_to, refs, thread_id,
        from_name, from_address, to_json, cc_json, subject, date, snippet, body_text, body_html,
        html_truncated, is_read, is_flagged, has_attachments, size, gm_thrid, gm_msgid, dedup_key,
-       reply_to_json, bulk, delivered_to_json)
+       reply_to_json, bulk, delivered_to_json, unsubscribe_json)
      VALUES (@id, @accountId, @folder, @uid, @messageId, @inReplyTo, @refs, @threadId,
        @fromName, @fromAddress, @toJson, @ccJson, @subject, @date, @snippet, @bodyText, @bodyHtml,
        @htmlTruncated, @seen, @flagged, @hasAttachments, @size, @gmThreadId, @gmMsgId, @dedupKey,
-       @replyToJson, @bulk, @deliveredTo)`,
+       @replyToJson, @bulk, @deliveredTo, @unsubscribe)`,
   );
   const updateMessage = db.prepare(
     `UPDATE messages SET uid = @uid, message_id = @messageId, in_reply_to = @inReplyTo,
@@ -997,6 +1207,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
        is_read = COALESCE(seen_desired, @seen), is_flagged = COALESCE(flag_desired, @flagged),
        has_attachments = @hasAttachments, size = @size, gm_thrid = @gmThreadId, bulk = @bulk,
        delivered_to_json = COALESCE(@deliveredTo, delivered_to_json),
+       unsubscribe_json = CASE WHEN @unsubscribeKnown = 1 THEN @unsubscribe ELSE unsubscribe_json END,
        gm_msgid = COALESCE(@gmMsgId, gm_msgid),
        dedup_key = CASE
          WHEN COALESCE(@gmMsgId, gm_msgid) IS NOT NULL THEN 'gm:' || COALESCE(@gmMsgId, gm_msgid)
@@ -1005,6 +1216,23 @@ export function createSqliteStore(db: Database.Database): MailStore {
      WHERE id = @id`,
   );
   const deleteInlinePartsOf = db.prepare("DELETE FROM inline_parts WHERE message_id = ?");
+  /** Another row of the account already has this dedup key (a returning message, slice 3e). */
+  const dedupTaken = db.prepare<[string, string], { one: number }>(
+    "SELECT 1 AS one FROM messages WHERE account_id = ? AND dedup_key = ? LIMIT 1",
+  );
+  /** The row reached a junk-role folder: block never moves its dedup key back out (spec resolution 17). */
+  const markSpamSeen = db.prepare(
+    `INSERT INTO spam_seen (account_id, dedup_key, seen_at)
+     SELECT account_id, dedup_key, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM messages WHERE id = ?
+     ON CONFLICT(account_id, dedup_key) DO UPDATE SET seen_at = excluded.seen_at`,
+  );
+  const folderSpecialUse = db.prepare<[string, string], { special_use: SpecialUse | null }>(
+    "SELECT special_use FROM folders WHERE account_id = ? AND path = ?",
+  );
+  /** The folder's effective special use (store-rules effectiveSpecialUse). */
+  function folderRole(accountId: string, path: string): SpecialUse | null {
+    return effectiveSpecialUse(path, folderSpecialUse.get(accountId, path)?.special_use ?? null);
+  }
   const insertInlinePart = db.prepare(
     "INSERT OR IGNORE INTO inline_parts (message_id, content_id, mime_type, data) VALUES (?, ?, ?, ?)",
   );
@@ -1139,10 +1367,12 @@ export function createSqliteStore(db: Database.Database): MailStore {
   function deleteRows(rows: { id: string; thread_id: string }[]): Set<string> {
     const remove = db.prepare("DELETE FROM messages WHERE id = ?");
     const removeTranslations = db.prepare("DELETE FROM translations WHERE message_id = ?");
+    const removeSnooze = db.prepare("DELETE FROM snoozes WHERE message_id = ?");
     for (const row of rows) {
       deleteAttachmentsOf.run(row.id);
       deleteInlinePartsOf.run(row.id);
       removeTranslations.run(row.id);
+      removeSnooze.run(row.id);
       remove.run(row.id);
     }
     return new Set(rows.map((r) => r.thread_id));
@@ -1166,12 +1396,14 @@ export function createSqliteStore(db: Database.Database): MailStore {
   function pageThreads(query: {
     where: string;
     flagged: string;
+    /** The earliest snooze due time of the thread's rows in scope (slice 3e). */
+    snoozed: string;
     params: Record<string, string>;
     cursor: string | null;
     limit: number;
   }): { threads: ThreadSummary[]; nextCursor: string | null } {
     const after = query.cursor === null ? null : decodeCursor(query.cursor);
-    const columns = `threads.*, ${query.flagged} AS flagged`;
+    const columns = `threads.*, ${query.flagged} AS flagged, ${query.snoozed} AS snoozed_until`;
     const params = { ...query.params, limit: query.limit + 1 };
     let rows: ListedThreadRow[];
     if (after === null) {
@@ -1201,7 +1433,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
     const page = rows.slice(0, query.limit);
     const last = page[page.length - 1];
     return {
-      threads: page.map((row) => toThread(row, row.flagged === 1)),
+      threads: page.map((row) => toThread(row, row.flagged === 1, row.snoozed_until)),
       nextCursor: rows.length > query.limit && last ? encodeCursor(last.last_date, last.id) : null,
     };
   }
@@ -1240,10 +1472,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
       db.prepare(
         `INSERT INTO accounts (id, email, display_name, host, port, username, password_sealed,
            preset, created_at, last_sync_at, last_error, auth_failed,
-           smtp_host, smtp_port, smtp_security, smtp_username, sent_copy, signature_json)
+           smtp_host, smtp_port, smtp_security, smtp_username, sent_copy, signature_json, snooze_folder)
          VALUES (@id, @email, @displayName, @host, @port, @username, @passwordSealed,
            @preset, @createdAt, @lastSyncAt, @lastError, @authFailed,
-           @smtpHost, @smtpPort, @smtpSecurity, @smtpUsername, @sentCopy, @signature)
+           @smtpHost, @smtpPort, @smtpSecurity, @smtpUsername, @sentCopy, @signature, @snoozeFolder)
          ON CONFLICT(id) DO UPDATE SET email = excluded.email,
            display_name = excluded.display_name, host = excluded.host, port = excluded.port,
            username = excluded.username, password_sealed = excluded.password_sealed,
@@ -1252,7 +1484,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
            auth_failed = excluded.auth_failed, smtp_host = excluded.smtp_host,
            smtp_port = excluded.smtp_port, smtp_security = excluded.smtp_security,
            smtp_username = excluded.smtp_username, sent_copy = excluded.sent_copy,
-           signature_json = excluded.signature_json`,
+           signature_json = excluded.signature_json, snooze_folder = excluded.snooze_folder`,
       ).run({
         id: account.id,
         email: account.email,
@@ -1272,6 +1504,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         smtpUsername: account.smtp?.username ?? null,
         sentCopy: account.sentCopy,
         signature: account.signature === null ? null : JSON.stringify(account.signature),
+        snoozeFolder: account.snoozeFolder,
       });
     },
 
@@ -1306,6 +1539,12 @@ export function createSqliteStore(db: Database.Database): MailStore {
         db.prepare("DELETE FROM agent_proposals WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM identities WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM sent_recipients WHERE account_id = ?").run(id);
+        // Slice 3e. Block rules are global and stay (spec resolution 5).
+        db.prepare("DELETE FROM snoozes WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM unsubscribes WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM spam_seen WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM triage_items WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM triage_batches WHERE id NOT IN (SELECT batch_id FROM triage_items)").run();
         db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
       });
     },
@@ -1358,6 +1597,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
     upsertMessages(accountId, folder, messages: FetchedMessage[]) {
       return atomic(() => {
         const touched = new Set<string>();
+        const inserted: string[] = [];
+        const returning: string[] = [];
+        const junk = folderRole(accountId, folder) === "junk";
         for (const message of messages) {
           const html = message.bodyHtml;
           const params = {
@@ -1389,6 +1631,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
             bulk: message.bulkHeaders === undefined ? null : classifyBulk(message.bulkHeaders, message.from.address) ? 1 : 0,
             // NULL: not known; an update leaves a known value alone.
             deliveredTo: deliveredToJson(message.deliveredTo),
+            // Absent: the fetch read no headers, so an update leaves the stored info alone.
+            unsubscribeKnown: message.unsubscribe === undefined ? 0 : 1,
+            unsubscribe: unsubscribeJson(message.unsubscribe),
           };
           // A detached row (folder reset, or a move without a uid map) is
           // reattached by Gmail id first, then by Message-ID.
@@ -1406,13 +1651,12 @@ export function createSqliteStore(db: Database.Database): MailStore {
             updateMessage.run({ ...params, id });
           } else {
             id = newMessageId();
-            insertMessage.run({
-              ...params,
-              id,
-              threadId: `t_${id}`,
-              dedupKey: dedupKeyOf(message.gmMsgId, message.messageId, message.size, id),
-            });
+            const dedupKey = dedupKeyOf(message.gmMsgId, message.messageId, message.size, id);
+            inserted.push(id);
+            if (dedupTaken.get(accountId, dedupKey) !== undefined) returning.push(id);
+            insertMessage.run({ ...params, id, threadId: `t_${id}`, dedupKey });
           }
+          if (junk) markSpamSeen.run(id);
           deleteAttachmentsOf.run(id);
           for (const a of message.attachments) {
             insertAttachment.run(id, a.partId, a.filename, a.mimeType, a.size, a.isInline ? 1 : 0);
@@ -1424,7 +1668,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
           touched.add(threadIdOf.get(id)!.thread_id);
         }
         refreshThreads(accountId, touched);
-        return { inserted: [] as string[], returning: [] as string[] };
+        return { inserted, returning };
       });
     },
 
@@ -1680,23 +1924,26 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
-    listThreads(accountId, folder, cursor, limit) {
+    listThreads(accountId, folder, cursor, limit, filter) {
       // Whole (account-wide) threads with a row in the folder that is not
       // waiting to move out. An uncorrelated IN list is built once from the
-      // (account_id, folder, move_pending) index, so the cost stays linear.
+      // (account_id, folder, move_pending) index, so the cost stays linear;
+      // the quick filters narrow that same list (spec resolution 20).
       return pageThreads({
         where: `account_id = @accountId AND threads.id IN (SELECT m.thread_id FROM messages m
-          WHERE m.account_id = @accountId AND m.folder = @folder AND m.move_pending IS NULL)`,
+          WHERE m.account_id = @accountId AND m.folder = @folder AND m.move_pending IS NULL${filterCondition(filter)})`,
         flagged: `EXISTS (SELECT 1 FROM messages f
           WHERE f.thread_id = threads.id AND f.account_id = @accountId AND f.folder = @folder
             AND f.move_pending IS NULL AND f.is_flagged = 1)`,
-        params: { accountId, folder },
+        snoozed: `(SELECT min(z.due_at) FROM messages s JOIN snoozes z ON z.message_id = s.id
+          WHERE s.thread_id = threads.id AND s.account_id = @accountId AND s.folder = @folder)`,
+        params: { accountId, folder, ...filterParams(filter) },
         cursor,
         limit,
       });
     },
 
-    listThreadsAll(role, cursor, limit) {
+    listThreadsAll(role, cursor, limit, filter) {
       // Gmail's All Mail is never merged (server refuses the role too).
       if (role === "all") return { threads: [], nextCursor: null };
       // Thread ids are globally unique (threads.id is the primary key), so the
@@ -1705,11 +1952,13 @@ export function createSqliteStore(db: Database.Database): MailStore {
       // (last_date DESC, id DESC) order without a temp B-tree.
       return pageThreads({
         where: `+threads.id IN (SELECT m.thread_id FROM ${MESSAGES_WITH_FOLDER}
-          WHERE m.move_pending IS NULL AND ${ROW_ROLE} = @role)`,
+          WHERE m.move_pending IS NULL AND ${ROW_ROLE} = @role${filterCondition(filter)})`,
         flagged: `EXISTS (SELECT 1 FROM ${MESSAGES_WITH_FOLDER}
           WHERE m.thread_id = threads.id AND m.move_pending IS NULL AND m.is_flagged = 1
             AND ${ROW_ROLE} = @role)`,
-        params: { role },
+        snoozed: `(SELECT min(z.due_at) FROM ${MESSAGES_WITH_FOLDER} JOIN snoozes z ON z.message_id = m.id
+          WHERE m.thread_id = threads.id AND ${ROW_ROLE} = @role)`,
+        params: { role, ...filterParams(filter) },
         cursor,
         limit,
       });
@@ -1794,7 +2043,14 @@ export function createSqliteStore(db: Database.Database): MailStore {
                AND move_pending IS NULL AND is_flagged = 1 LIMIT 1`,
           )
           .get({ threadId, folder }) !== undefined;
-      return { thread: toThread(thread, flagged), messages };
+      const snoozed =
+        db
+          .prepare<[{ threadId: string; folder: string }], { due: string | null }>(
+            `SELECT min(z.due_at) AS due FROM messages m JOIN snoozes z ON z.message_id = m.id
+             WHERE m.thread_id = @threadId AND m.folder = @folder`,
+          )
+          .get({ threadId, folder })?.due ?? null;
+      return { thread: toThread(thread, flagged, snoozed), messages };
     },
 
     getMessage(messageId) {
@@ -2112,6 +2368,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
            WHERE id = @id`,
         );
         const nothing = { carriedSeen: null, carriedFlag: null };
+        const junk = folderRole(accountId, destination) === "junk";
         const settle = db.prepare(
           "UPDATE messages SET move_pending = NULL, move_failures = 0 WHERE id = ?",
         );
@@ -2123,6 +2380,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
          * is left alone and the moved row is detached instead.
          */
         const takeOver = (row: { id: string }, occupant: Occupant | undefined, uid: number | null) => {
+          if (junk) markSpamSeen.run(row.id);
           if (occupant === undefined || occupant.id === row.id) {
             rehome.run({ destination, uid, ...nothing, id: row.id });
           } else if (occupant.move_pending !== null) {
@@ -2231,10 +2489,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
         `INSERT INTO compose_drafts (id, account_id, kind, source_message_id, message_id, in_reply_to,
            refs_json, to_json, cc_json, bcc_json, subject, doc_json, import_json, revision, server_state,
            server_folder, server_uidvalidity, server_uid, server_revision, server_size, origin,
-           proposal_id, from_address, created_at, updated_at)
+           proposal_id, from_address, purpose, created_at, updated_at)
          VALUES (@id, @accountId, @kind, @sourceMessageId, @messageId, @inReplyTo, @refs, @to, @cc, @bcc,
            @subject, @doc, @importHtml, 1, @serverState, @folder, @uidValidity, @uid, @serverRevision,
-           @size, @origin, @proposalId, @fromAddress, @createdAt, @createdAt)`,
+           @size, @origin, @proposalId, @fromAddress, @purpose, @createdAt, @createdAt)`,
       ).run({
         id: input.id,
         accountId: input.accountId,
@@ -2258,6 +2516,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         origin: input.origin,
         proposalId: input.proposalId,
         fromAddress: input.fromAddress,
+        purpose: input.purpose ?? null,
         createdAt: input.createdAt,
       });
       return toDraft(draftById.get(input.id)!);
@@ -3171,33 +3430,361 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return row ? toTemplate(row) : null;
     },
 
-    // ---- Inbox triage (slice 3e): stubs until migration element 8 ----
+    // ---- Inbox triage (slice 3e) ----
 
-    setSnoozeFolder: notYet,
-    createSnoozes: notYet,
-    listSnoozes: () => [],
-    updateSnooze: notYet,
-    deleteSnoozes: notYet,
-    snoozeViews: () => [],
-    listBlockRules: () => [],
-    addBlockRule: notYet,
-    removeBlockRule: notYet,
-    blockMatches: () => [],
-    spamSeen: () => new Set<string>(),
-    pruneSpamSeen: notYet,
-    notifyRows: () => [],
-    fillUnsubscribe: notYet,
-    unsubscribeUnknown: () => [],
-    getUnsubscribeInfo: () => null,
-    getUnsubscribe: () => null,
-    putUnsubscribe: notYet,
-    createTriageBatch: notYet,
-    getTriageBatch: () => null,
-    transitionTriageBatch: notYet,
-    setTriageOutcomes: notYet,
-    triageHistory: () => [],
-    settleTriageAtStart: notYet,
-    cancelSendPurpose: notYet,
+    setSnoozeFolder(accountId, path) {
+      db.prepare("UPDATE accounts SET snooze_folder = ? WHERE id = ?").run(path, accountId);
+    },
+
+    createSnoozes(rows, nowIso) {
+      return atomic(() => {
+        const ids = JSON.stringify(rows.map((row) => row.messageId));
+        const live = db.prepare<[string, string], { n: number }>(
+          `SELECT count(*) AS n FROM snoozes
+           WHERE account_id = ? AND message_id NOT IN (SELECT value FROM json_each(?))`,
+        );
+        const adding = new Map<string, number>();
+        for (const row of rows) adding.set(row.accountId, (adding.get(row.accountId) ?? 0) + 1);
+        for (const [accountId, count] of adding) {
+          if (live.get(accountId, ids)!.n + count > SNOOZES_MAX_PER_ACCOUNT) return { full: true as const };
+        }
+        const put = db.prepare(
+          `INSERT INTO snoozes (message_id, account_id, return_to, due_at, state, created_at, updated_at)
+           VALUES (@messageId, @accountId, @returnTo, @dueAt, @state, @now, @now)
+           ON CONFLICT(message_id) DO UPDATE SET account_id = excluded.account_id,
+             return_to = excluded.return_to, due_at = excluded.due_at, state = excluded.state,
+             created_at = excluded.created_at, updated_at = excluded.updated_at`,
+        );
+        for (const row of rows) put.run({ ...row, dueAt: isoOf(row.dueAt), now: isoOf(nowIso) });
+        return { created: rows.length };
+      });
+    },
+
+    listSnoozes(accountId, opts) {
+      return db
+        .prepare<[{ accountId: string; dueBefore: string | null; limit: number }], SnoozeDbRow>(
+          `SELECT * FROM snoozes WHERE account_id = @accountId
+             AND (@dueBefore IS NULL OR due_at <= @dueBefore)
+           ORDER BY due_at, message_id LIMIT @limit`,
+        )
+        .all({ accountId, dueBefore: opts.dueBefore === undefined ? null : isoOf(opts.dueBefore), limit: opts.limit })
+        .map(toSnooze);
+    },
+
+    updateSnooze(messageId, patch, nowIso) {
+      return (
+        db
+          .prepare(
+            `UPDATE snoozes SET state = COALESCE(@state, state), due_at = COALESCE(@dueAt, due_at),
+               return_to = COALESCE(@returnTo, return_to), updated_at = @now
+             WHERE message_id = @messageId`,
+          )
+          .run({
+            messageId,
+            state: patch.state ?? null,
+            dueAt: patch.dueAt === undefined ? null : isoOf(patch.dueAt),
+            returnTo: patch.returnTo ?? null,
+            now: isoOf(nowIso),
+          }).changes === 1
+      );
+    },
+
+    deleteSnoozes(messageIds) {
+      if (messageIds.length === 0) return 0;
+      return db
+        .prepare("DELETE FROM snoozes WHERE message_id IN (SELECT value FROM json_each(?))")
+        .run(JSON.stringify(messageIds)).changes;
+    },
+
+    snoozeViews(accountId, limit) {
+      // In-flight rows first (they need a step whatever their due time), then
+      // snoozed ones by due time.
+      return db
+        .prepare<
+          [string, number],
+          SnoozeDbRow & { folder: string | null; uid: number | null; move_pending: string | null; present: number | null }
+        >(
+          `SELECT z.*, m.folder, m.uid, m.move_pending, m.seq AS present
+           FROM snoozes z LEFT JOIN messages m ON m.id = z.message_id
+           WHERE z.account_id = ?
+           ORDER BY z.state = 'snoozed', z.due_at, z.message_id LIMIT ?`,
+        )
+        .all(accountId, limit)
+        .map((row) => ({
+          snooze: toSnooze(row),
+          row: row.present === null ? null : { folder: row.folder!, uid: row.uid, movePending: row.move_pending },
+        }));
+    },
+
+    listBlockRules() {
+      return db
+        .prepare<[], BlockRuleDbRow>("SELECT * FROM block_rules ORDER BY created_at, id")
+        .all()
+        .map(toBlockRule);
+    },
+
+    addBlockRule(kind, value, id, nowIso) {
+      return atomic(() => {
+        const existing = db
+          .prepare<[string, string], BlockRuleDbRow>("SELECT * FROM block_rules WHERE kind = ? AND value = ?")
+          .get(kind, value);
+        if (existing) return { rule: toBlockRule(existing), created: false };
+        db.prepare("INSERT INTO block_rules (id, kind, value, created_at) VALUES (?, ?, ?, ?)").run(
+          id,
+          kind,
+          value,
+          isoOf(nowIso),
+        );
+        return { rule: { id, kind, value, createdAt: isoOf(nowIso) }, created: true };
+      });
+    },
+
+    removeBlockRule(id) {
+      return db.prepare("DELETE FROM block_rules WHERE id = ?").run(id).changes === 1;
+    },
+
+    blockMatches(rule) {
+      const own = new Set(
+        ownerAddressSets(store.listAccounts(), store.listIdentities(null)).flatMap((set) =>
+          set.addresses.map((address) => address.trim().toLowerCase()),
+        ),
+      );
+      // Inbox-role rows, attached and not moving, whose dedup key never
+      // reached Spam (spam_seen, or a junk-role copy now).
+      const rows = db
+        .prepare<[], { id: string; account_id: string; folder: string; from_address: string }>(
+          `SELECT m.id, m.account_id, m.folder, m.from_address FROM ${MESSAGES_WITH_FOLDER}
+           WHERE m.uid IS NOT NULL AND m.move_pending IS NULL AND ${ROW_ROLE} = 'inbox'
+             AND NOT EXISTS (SELECT 1 FROM spam_seen s WHERE s.account_id = m.account_id AND s.dedup_key = m.dedup_key)
+             AND NOT EXISTS (SELECT 1 FROM messages j LEFT JOIN folders jf ON jf.account_id = j.account_id AND jf.path = j.folder
+               WHERE j.account_id = m.account_id AND j.dedup_key = m.dedup_key AND jf.special_use = 'junk')
+           ORDER BY m.seq`,
+        )
+        .all();
+      return rows
+        .filter((row) => !own.has(row.from_address.trim().toLowerCase()) && matchesBlock(row.from_address, [rule]) !== null)
+        .map((row) => ({ id: row.id, accountId: row.account_id, folder: row.folder }));
+    },
+
+    spamSeen(accountId, dedupKeys) {
+      if (dedupKeys.length === 0) return new Set();
+      const found = db
+        .prepare<[string, string, string, string], { key: string }>(
+          `SELECT dedup_key AS key FROM spam_seen
+             WHERE account_id = ? AND dedup_key IN (SELECT value FROM json_each(?))
+           UNION
+           SELECT m.dedup_key AS key FROM ${MESSAGES_WITH_FOLDER}
+             WHERE m.account_id = ? AND m.dedup_key IN (SELECT value FROM json_each(?)) AND f.special_use = 'junk'`,
+        )
+        .all(accountId, JSON.stringify(dedupKeys), accountId, JSON.stringify(dedupKeys));
+      return new Set(found.map((row) => row.key));
+    },
+
+    pruneSpamSeen(olderThanIso) {
+      return db.prepare("DELETE FROM spam_seen WHERE seen_at < ?").run(isoOf(olderThanIso)).changes;
+    },
+
+    notifyRows(ids, nowIso) {
+      if (ids.length === 0) return [];
+      const rows = db
+        .prepare<
+          [string],
+          {
+            id: string;
+            account_id: string;
+            thread_id: string;
+            role: SpecialUse | null;
+            is_read: number;
+            move_pending: string | null;
+            uid: number | null;
+            bulk: number | null;
+            from_name: string | null;
+            from_address: string;
+            date: string | null;
+            dedup_key: string;
+          }
+        >(
+          `SELECT m.id, m.account_id, m.thread_id, ${ROW_ROLE} AS role, m.is_read, m.move_pending, m.uid,
+             m.bulk, m.from_name, m.from_address, m.date, m.dedup_key
+           FROM ${MESSAGES_WITH_FOLDER} WHERE m.id IN (SELECT value FROM json_each(?))`,
+        )
+        .all(JSON.stringify(ids));
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      return ids.flatMap((id) => {
+        const row = byId.get(id);
+        if (!row) return [];
+        return [
+          {
+            id: row.id,
+            accountId: row.account_id,
+            threadId: row.thread_id,
+            folderRole: row.role,
+            isRead: row.is_read === 1,
+            movePending: row.move_pending,
+            uid: row.uid,
+            bulk: row.bulk === null ? null : row.bulk === 1,
+            fromName: row.from_name,
+            fromAddress: row.from_address,
+            date: row.date,
+            fetchedAt: isoOf(nowIso),
+            dedupKey: row.dedup_key,
+          },
+        ];
+      });
+    },
+
+    fillUnsubscribe(accountId, folder, uidValidity, values) {
+      return atomic(() => {
+        const state = db
+          .prepare<[string, string], { uid_validity: number }>(
+            "SELECT uid_validity FROM sync_state WHERE account_id = ? AND folder = ?",
+          )
+          .get(accountId, folder);
+        if (state === undefined || state.uid_validity !== uidValidity) return 0;
+        const fill = db.prepare(
+          `UPDATE messages SET unsubscribe_json = ?
+           WHERE account_id = ? AND folder = ? AND uid = ? AND unsubscribe_json IS NULL`,
+        );
+        let changed = 0;
+        for (const value of values) {
+          const json = unsubscribeJson(value.info);
+          if (json === null) continue;
+          changed += fill.run(json, accountId, folder, value.uid).changes;
+        }
+        return changed;
+      });
+    },
+
+    unsubscribeUnknown(accountId, folder, belowUid, limit) {
+      return db
+        .prepare<
+          [{ accountId: string; folder: string; below: number | null; limit: number }],
+          { uid: number; from_name: string | null; from_address: string }
+        >(
+          `SELECT uid, from_name, from_address FROM messages
+           WHERE account_id = @accountId AND folder = @folder AND uid IS NOT NULL AND bulk = 1
+             AND unsubscribe_json IS NULL AND (@below IS NULL OR uid < @below)
+           ORDER BY uid DESC LIMIT @limit`,
+        )
+        .all({ accountId, folder, below: belowUid, limit })
+        .map((row) => ({ uid: row.uid, from: { name: row.from_name, address: row.from_address } }));
+    },
+
+    getUnsubscribeInfo(messageId) {
+      const row = db
+        .prepare<[string], { unsubscribe_json: string | null }>("SELECT unsubscribe_json FROM messages WHERE id = ?")
+        .get(messageId);
+      return row?.unsubscribe_json ? (JSON.parse(row.unsubscribe_json) as UnsubscribeInfo) : null;
+    },
+
+    getUnsubscribe(accountId, listKey) {
+      const row = db
+        .prepare<[string, string], UnsubscribeDbRow>("SELECT * FROM unsubscribes WHERE account_id = ? AND list_key = ?")
+        .get(accountId, listKey);
+      return row ? toUnsubscribe(row) : null;
+    },
+
+    putUnsubscribe(row) {
+      db.prepare(
+        `INSERT INTO unsubscribes (account_id, list_key, method, state, outbox_id, requested_at)
+         VALUES (@accountId, @listKey, @method, @state, @outboxId, @requestedAt)
+         ON CONFLICT(account_id, list_key) DO UPDATE SET method = excluded.method, state = excluded.state,
+           outbox_id = excluded.outbox_id, requested_at = excluded.requested_at`,
+      ).run({ ...row, requestedAt: isoOf(row.requestedAt) });
+    },
+
+    createTriageBatch(batch, items) {
+      atomic(() => {
+        db.prepare(
+          `INSERT INTO triage_batches (id, thread_id, state, content_hash, summary, created_at, updated_at, expires_at)
+           VALUES (@id, @threadId, 'pending', @contentHash, @summary, @createdAt, @createdAt, @expiresAt)`,
+        ).run({ ...batch, createdAt: isoOf(batch.createdAt), expiresAt: isoOf(batch.expiresAt) });
+        const put = db.prepare(
+          `INSERT INTO triage_items (batch_id, position, message_id, account_id, action, snooze_until, note, outcome)
+           VALUES (@batchId, @position, @messageId, @accountId, @action, @snoozeUntil, @note, @outcome)`,
+        );
+        for (const item of items) put.run({ ...item, batchId: batch.id });
+      });
+    },
+
+    getTriageBatch(id) {
+      const batch = db.prepare<[string], TriageBatchDbRow>("SELECT * FROM triage_batches WHERE id = ?").get(id);
+      if (!batch) return null;
+      const items = db
+        .prepare<[string], TriageItemDbRow>("SELECT * FROM triage_items WHERE batch_id = ? ORDER BY position")
+        .all(id)
+        .map(toTriageItem);
+      return { batch: toTriageBatch(batch), items };
+    },
+
+    transitionTriageBatch(id, from, to, patch, nowIso) {
+      const sets = ["state = @to", "updated_at = @now"];
+      if (patch.viewTokenHash !== undefined) sets.push("view_token_hash = @viewTokenHash");
+      if (patch.approved !== undefined) sets.push("approved_json = @approved");
+      if (patch.createSnoozeFolder !== undefined) sets.push("create_snooze_folder_json = @createSnoozeFolder");
+      return (
+        db
+          .prepare(
+            `UPDATE triage_batches SET ${sets.join(", ")}
+             WHERE id = @id AND state IN (SELECT value FROM json_each(@from))`,
+          )
+          .run({
+            id,
+            from: JSON.stringify(from),
+            to,
+            now: isoOf(nowIso),
+            viewTokenHash: patch.viewTokenHash ?? null,
+            approved: patch.approved === undefined ? null : JSON.stringify(patch.approved),
+            createSnoozeFolder: patch.createSnoozeFolder === undefined ? null : JSON.stringify(patch.createSnoozeFolder),
+          }).changes === 1
+      );
+    },
+
+    setTriageOutcomes(id, outcomes) {
+      atomic(() => {
+        const set = db.prepare("UPDATE triage_items SET outcome = ? WHERE batch_id = ? AND position = ?");
+        for (const { position, outcome } of outcomes) set.run(outcome, id, position);
+      });
+    },
+
+    triageHistory(sinceIso) {
+      return db
+        .prepare<[string], { thread_id: string; state: TriageBatchState; created_at: string; updated_at: string }>(
+          `SELECT thread_id, state, created_at, updated_at FROM triage_batches
+           WHERE created_at >= ? OR state IN ('pending', 'confirming')`,
+        )
+        .all(isoOf(sinceIso))
+        .map((row) => ({ threadId: row.thread_id, state: row.state, createdAt: row.created_at, updatedAt: row.updated_at }));
+    },
+
+    settleTriageAtStart(nowIso) {
+      return atomic(() => {
+        const now = isoOf(nowIso);
+        const interrupted = db
+          .prepare("UPDATE triage_batches SET state = 'interrupted', updated_at = ? WHERE state = 'applying'")
+          .run(now).changes;
+        const expired = db
+          .prepare(
+            "UPDATE triage_batches SET state = 'expired', updated_at = ? WHERE state IN ('pending', 'confirming')",
+          )
+          .run(now).changes;
+        return { interrupted, expired };
+      });
+    },
+
+    cancelSendPurpose(outboxId, states) {
+      return atomic(() => {
+        const row = db
+          .prepare<[string], { draft_id: string | null }>("SELECT draft_id FROM outbox WHERE id = ?")
+          .get(outboxId);
+        if (!row || row.draft_id === null) return { cancelled: false };
+        const draft = draftById.get(row.draft_id);
+        if (!draft || draft.purpose === null) return { cancelled: false };
+        if (!store.deleteOutbox(outboxId, states)) return { cancelled: false };
+        deleteDraftRows(draft.id);
+        return { cancelled: true };
+      });
+    },
   };
   return store;
 }

@@ -1317,10 +1317,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         deps.loop.wake(accountId);
         return { started: true };
       },
-      threads_list: ({ scope, cursor, limit }) => {
-        if (scope.kind === "account") return store.listThreads(scope.accountId, scope.folder, cursor, limit);
+      threads_list: ({ scope, cursor, limit, filter }) => {
+        if (scope.kind === "account") return store.listThreads(scope.accountId, scope.folder, cursor, limit, filter);
         if (scope.role === "all") throw refuse("invalid", ALL_ROLE_MESSAGE);
-        return store.listThreadsAll(scope.role, cursor, limit);
+        return store.listThreadsAll(scope.role, cursor, limit, filter);
       },
       thread_get: ({ threadId, folder }) => {
         const thread = store.getThread(threadId, folder);
