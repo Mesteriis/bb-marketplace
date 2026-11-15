@@ -4,10 +4,15 @@ import type { Email } from "postal-mime";
 import type { FetchMessageObject, ListResponse } from "imapflow";
 import imapflowFetch from "imapflow/lib/commands/fetch.js";
 import { compiler as imapCompiler, parser as imapParser } from "imapflow/lib/handler/imap-handler.js";
-import { describe, expect, it } from "vitest";
-import { ImapAuthError, LIST_HEADER_FIELDS } from "../../core/index.ts";
+import { EventEmitter } from "node:events";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ImapAuthError, LIST_HEADER_FIELDS, UNSUBSCRIBE_HEADER_FIELDS, trustOf } from "../../core/index.ts";
 import {
   LIST_HEADERS_QUERY,
+  WATCH_LOGOUT_CAP_MS,
+  createFolderWith,
+  runWatch,
+  type WatchClient,
   SafeImapError,
   createSession,
   describeImapError,
@@ -1188,5 +1193,280 @@ describe("fetchListHeaders", () => {
     expect(result?.list[0]?.uid).toBe(5);
     expect(Buffer.isBuffer(result?.list[0]?.headers)).toBe(true);
     expect(String(result?.list[0]?.headers)).toBe(String(block));
+  });
+});
+
+describe("fetchHeaderFields", () => {
+  it("UID FETCHes exactly the given fields (BODY.PEEK HEADER.FIELDS) and returns each block by uid", async () => {
+    const block = Buffer.from("List-Unsubscribe: <mailto:u@example.net>\r\n\r\n");
+    const { client, calls } = stubClient({ fetched: [{ seq: 1, uid: 9, headers: block } as FetchMessageObject] });
+    const found = await createSession(client, true).fetchHeaderFields([9], UNSUBSCRIBE_HEADER_FIELDS);
+    expect(found).toEqual([{ uid: 9, block: new Uint8Array(block) }]);
+    expect(calls).toEqual([
+      { method: "fetch", args: [[9], { uid: true, headers: [...UNSUBSCRIBE_HEADER_FIELDS] }, { uid: true }] },
+    ]);
+  });
+});
+
+/** Synthetic: invented selectors, signatures and ids only. */
+const TRIAGE_RAW = [
+  "Received: from mx.example.net by mx.google.com; Tue, 10 Nov 2026 09:00:01 +0000",
+  "X-Google-Smtp-Source: invented",
+  "Authentication-Results: mx.google.com;",
+  "       dkim=pass header.i=@news.example.com header.s=sel1 header.b=AbCd;",
+  "       spf=pass smtp.mailfrom=news.example.com",
+  "DKIM-Signature: v=1; a=rsa-sha256; d=news.example.com; s=sel1;",
+  "\th=From:Subject:List-Unsubscribe:",
+  "\t List-Unsubscribe-Post; bh=aW52ZW50ZWQ=; b=AbCd",
+  "\t EfGh",
+  "DKIM-Signature: v=1; a=rsa-sha256; d=relay.example.org; s=other; h=From; bh=eA==; b=ZzZz",
+  "From: News <news@example.com>",
+  "Subject: Invented news",
+  "List-Unsubscribe: <https://news.example.com/u/1>, <mailto:u@news.example.com>",
+  "List-Unsubscribe-Post: List-Unsubscribe=One-Click",
+  "Message-ID: <n-1@example.com>",
+  "",
+  "Invented body.",
+  "",
+].join("\r\n");
+
+describe("toFetchedMessage unsubscribe headers", () => {
+  it("keeps the unsubscribe and trace header lines in message order, unfolded, two DKIM-Signatures included", async () => {
+    const parsed = await PostalMime.parse(TRIAGE_RAW);
+    const fetched = toFetchedMessage(imapMessage({ source: Buffer.from(TRIAGE_RAW) }), parsed);
+    const lines = fetched.unsubscribeHeaders ?? [];
+    expect(lines.map((line) => line.key)).toEqual([
+      "received",
+      "x-google-smtp-source",
+      "authentication-results",
+      "dkim-signature",
+      "dkim-signature",
+      "from",
+      "list-unsubscribe",
+      "list-unsubscribe-post",
+    ]);
+    expect(lines.every((line) => !/[\r\n]/.test(line.value))).toBe(true);
+    // The folded h= still names both list headers once parsed.
+    expect(trustOf(lines, "gmail", "news.example.com", "news.example.com")).toBe("covered");
+  });
+
+  it("leaves unsubscribeHeaders absent when the fetch read no headers", () => {
+    const fetched = toFetchedMessage(imapMessage({ source: undefined }), { headers: [], headerLines: [], attachments: [] });
+    expect(fetched.unsubscribeHeaders).toBeUndefined();
+  });
+
+  it("matches header names in any case and keeps at most 64 lines", () => {
+    const headers = Array.from({ length: 80 }, (_, i) => ({ key: i === 0 ? "List-Unsubscribe" : "received", originalKey: "Received", value: `v${i}` }));
+    const fetched = toFetchedMessage(imapMessage(), { headers, headerLines: [], attachments: [] } as unknown as Email);
+    expect(fetched.unsubscribeHeaders).toHaveLength(64);
+    expect(fetched.unsubscribeHeaders?.[0]).toEqual({ key: "list-unsubscribe", value: "v0" });
+  });
+});
+
+type FakeWatch = {
+  client: WatchClient;
+  emitter: EventEmitter;
+  calls: string[];
+  state: { usable: boolean; mailbox: unknown };
+  idleAnswers: (() => Promise<boolean | undefined>)[];
+};
+
+/** A fake imapflow client: records every method called, so a test can check nothing writes. */
+function fakeWatchClient(options: {
+  capabilities?: string[];
+  connect?: () => Promise<void>;
+  open?: () => Promise<unknown>;
+  logout?: () => Promise<void>;
+} = {}): FakeWatch {
+  const emitter = new EventEmitter();
+  const calls: string[] = [];
+  const state = { usable: false, mailbox: null as unknown };
+  const idleAnswers: (() => Promise<boolean | undefined>)[] = [];
+  const base = {
+    capabilities: new Map((options.capabilities ?? ["IMAP4rev1", "IDLE"]).map((name) => [name, true])),
+    enabled: new Set<string>(),
+    get usable() {
+      return state.usable;
+    },
+    get mailbox() {
+      return state.mailbox;
+    },
+    on: (event: string, listener: (...args: unknown[]) => void) => {
+      emitter.on(event, listener);
+      return base;
+    },
+    connect: async () => {
+      await (options.connect?.() ?? Promise.resolve());
+      state.usable = true;
+    },
+    mailboxOpen: async (path: string, opts: unknown) => {
+      calls.push(`mailboxOpen ${path} ${JSON.stringify(opts)}`);
+      await (options.open?.() ?? Promise.resolve());
+      state.mailbox = { path };
+      return state.mailbox;
+    },
+    idle: async () => {
+      const next = idleAnswers.shift();
+      return next ? next() : new Promise<undefined>(() => {});
+    },
+    logout: async () => {
+      await (options.logout?.() ?? Promise.resolve());
+      state.usable = false;
+    },
+    close: () => {
+      state.usable = false;
+    },
+  };
+  const client = new Proxy(base, {
+    get(target, key, receiver) {
+      const value = Reflect.get(target, key, receiver) as unknown;
+      if (typeof value === "function" && key !== "on") {
+        return (...args: unknown[]) => {
+          if (key !== "mailboxOpen") calls.push(String(key));
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      }
+      if (value === undefined && typeof key === "string") {
+        // Any other client method (STORE, MOVE, COPY, APPEND, CREATE...) is recorded and refused.
+        return (...args: unknown[]) => {
+          calls.push(`FORBIDDEN ${key} ${JSON.stringify(args)}`);
+          throw new Error("not allowed");
+        };
+      }
+      return value;
+    },
+  }) as unknown as WatchClient;
+  return { client, emitter, calls, state, idleAnswers };
+}
+
+const ALLOWED_WATCH_CALLS = /^(connect|mailboxOpen .*|idle|logout|close)$/;
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+describe("runWatch", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("EXAMINEs the given path (read-only) and calls back only when the count grew", async () => {
+    const fake = fakeWatchClient();
+    const changes: string[] = [];
+    const controller = new AbortController();
+    const end = runWatch(fake.client, "Boîte/Inbox", (change) => changes.push(change), controller.signal);
+    await flush();
+    expect(fake.calls).toContain('mailboxOpen Boîte/Inbox {"readOnly":true}');
+    fake.emitter.emit("exists", { path: "x", count: 5, prevCount: 4 });
+    fake.emitter.emit("exists", { path: "x", count: 3, prevCount: 4 });
+    fake.emitter.emit("expunge", { seq: 1 });
+    fake.emitter.emit("flags", { seq: 2 });
+    expect(changes).toEqual(["exists", "expunge", "flags"]);
+    controller.abort();
+    expect(await end).toEqual({ kind: "aborted" });
+    expect(fake.calls.every((call) => ALLOWED_WATCH_CALLS.test(call))).toBe(true);
+  });
+
+  it("re-enters idle() after each resolution", async () => {
+    const fake = fakeWatchClient();
+    fake.idleAnswers.push(async () => undefined, async () => undefined);
+    const controller = new AbortController();
+    const end = runWatch(fake.client, "INBOX", () => {}, controller.signal);
+    await flush();
+    expect(fake.calls.filter((call) => call === "idle")).toHaveLength(3);
+    controller.abort();
+    await end;
+  });
+
+  it("idle() returning false ends the watch as dropped IdleRefused without another idle", async () => {
+    const fake = fakeWatchClient();
+    fake.idleAnswers.push(async () => false);
+    const end = await runWatch(fake.client, "INBOX", () => {}, new AbortController().signal);
+    expect(end).toEqual({ kind: "dropped", code: "IdleRefused" });
+    expect(fake.calls.filter((call) => call === "idle")).toHaveLength(1);
+    expect(fake.calls).toContain("logout");
+  });
+
+  it("a close or an error ends the watch as dropped with a safe code", async () => {
+    const closing = fakeWatchClient();
+    const closed = runWatch(closing.client, "INBOX", () => {}, new AbortController().signal);
+    await flush();
+    closing.emitter.emit("close");
+    expect(await closed).toEqual({ kind: "dropped", code: "ConnectionClosed" });
+
+    const failing = fakeWatchClient();
+    const lines: string[] = [];
+    const failed = runWatch(failing.client, "INBOX", () => {}, new AbortController().signal, (line) => lines.push(line));
+    await flush();
+    failing.emitter.emit("error", Object.assign(new Error("server said: private text"), { code: "ETIMEOUT" }));
+    expect(await failed).toEqual({ kind: "dropped", code: "ETIMEOUT" });
+    expect(lines.join("\n")).not.toContain("private");
+  });
+
+  it("an abort ends the watch within the logout cap even when LOGOUT never answers", async () => {
+    vi.useFakeTimers();
+    const fake = fakeWatchClient({ logout: () => new Promise(() => {}) });
+    const controller = new AbortController();
+    const end = runWatch(fake.client, "INBOX", () => {}, controller.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(WATCH_LOGOUT_CAP_MS);
+    expect(await end).toEqual({ kind: "aborted" });
+    expect(fake.calls.slice(-2)).toEqual(["logout", "close"]);
+  });
+
+  it("no IDLE capability: logout, unsupported, nothing opened", async () => {
+    const fake = fakeWatchClient({ capabilities: ["IMAP4rev1"] });
+    expect(await runWatch(fake.client, "INBOX", () => {}, new AbortController().signal)).toEqual({ kind: "unsupported" });
+    expect(fake.calls.some((call) => call.startsWith("mailboxOpen"))).toBe(false);
+    expect(fake.calls).toContain("logout");
+  });
+
+  it("a refused login is auth, a throttled one throttled", async () => {
+    const auth = fakeWatchClient({
+      connect: async () => {
+        throw Object.assign(new Error("x"), { authenticationFailed: true, serverResponseCode: "AUTHENTICATIONFAILED" });
+      },
+    });
+    expect(await runWatch(auth.client, "INBOX", () => {}, new AbortController().signal)).toEqual({ kind: "auth" });
+    const throttled = fakeWatchClient({
+      connect: async () => {
+        throw Object.assign(new Error("x"), { authenticationFailed: true, response: "Too many simultaneous connections" });
+      },
+    });
+    expect(await runWatch(throttled.client, "INBOX", () => {}, new AbortController().signal)).toEqual({ kind: "throttled" });
+    const limit = fakeWatchClient({
+      connect: async () => {
+        throw Object.assign(new Error("x"), { serverResponseCode: "LIMIT" });
+      },
+    });
+    expect(await runWatch(limit.client, "INBOX", () => {}, new AbortController().signal)).toEqual({ kind: "throttled" });
+  });
+
+  it("an already aborted signal ends at once without connecting", async () => {
+    const fake = fakeWatchClient();
+    const controller = new AbortController();
+    controller.abort();
+    expect(await runWatch(fake.client, "INBOX", () => {}, controller.signal)).toEqual({ kind: "aborted" });
+    expect(fake.calls.some((call) => call.startsWith("mailboxOpen"))).toBe(false);
+  });
+});
+
+describe("createFolderWith", () => {
+  it("returns the path and created: true or false (ALREADYEXISTS)", async () => {
+    const made = { mailboxCreate: async (name: string) => ({ path: name, created: true }) };
+    expect(await createFolderWith(made as never, "Snoozed")).toEqual({ path: "Snoozed", created: true });
+    const existed = { mailboxCreate: async (name: string) => ({ path: name, created: false }) };
+    expect(await createFolderWith(existed as never, "Snoozed")).toEqual({ path: "Snoozed", created: false });
+  });
+
+  it("a refusal or no answer is CreateFailed without the server text", async () => {
+    const refused = {
+      mailboxCreate: async () => {
+        throw Object.assign(new Error("NO private text"), { responseStatus: "NO" });
+      },
+    };
+    const error = await createFolderWith(refused as never, "Snoozed").catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "CreateFailed" });
+    expect(String((error as Error).message)).not.toContain("private");
+    const none = { mailboxCreate: async () => undefined };
+    await expect(createFolderWith(none as never, "Snoozed")).rejects.toMatchObject({ code: "CreateFailed" });
   });
 });
