@@ -43,7 +43,7 @@ import {
 } from "./folder-list.tsx";
 import { MoveDialog } from "./move-dialog.tsx";
 import { OutboxSection, type OutboxAction } from "./outbox.tsx";
-import { messageToHand, ReadingPane, type BodyState } from "./reading-pane.tsx";
+import { messageToHand, ReadingPane, type BodyState, type ReadingTranslation } from "./reading-pane.tsx";
 import {
   SelectionBar,
   SelectionPanel,
@@ -187,6 +187,8 @@ export interface MailPageProps {
   onSaveSmtp: (input: SmtpSettingsInput) => Promise<SmtpResult>;
   /** Changes when focus should come to the page (a pick in the host's sidebar). */
   focusRequest?: number;
+  /** Translate in the reading pane (slice 3c); absent: no Translate. */
+  translation?: ReadingTranslation;
 }
 
 function PageFrame({ children }: { children: ReactNode }) {
@@ -599,6 +601,13 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         if (message !== null && !isDraft(message)) props.onReply(command.kind, message);
         return;
       }
+      case "translate": {
+        if (!threadOpen || selecting || reading.detail === null || props.translation === undefined) return;
+        if (props.translation.disabledReason !== null) return;
+        const message = messageToHand(reading.detail.messages, reading.expandedIds);
+        if (message !== null && !isDraft(message)) props.translation.onToggle(message);
+        return;
+      }
       case "back":
         if (threadOpen) props.onCloseThread();
         return;
@@ -817,6 +826,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               isDraft={isDraft}
               onEditDraft={props.onEditDraft}
               hideToolbar={docked && composerFocused}
+              translation={props.translation}
             />
             {docked ? <div className="flex min-h-[24rem] flex-col px-4 pb-6">{composerView}</div> : null}
             </>

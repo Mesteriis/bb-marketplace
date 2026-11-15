@@ -5,6 +5,7 @@ import {
   DESTRUCTIVE_GUARD_MS,
   isTypingTarget,
   matchShortcut,
+  SHORTCUT_SHEET,
   type KeyLike,
   type ShortcutCommand,
 } from "./shortcuts.ts";
@@ -82,6 +83,30 @@ describe("matchShortcut", () => {
     }
     editor.remove();
     composer.remove();
+  });
+
+  it("t translates by the physical key (Cyrillic layout too), and g t still goes to Trash", () => {
+    expect(matchShortcut(key({ key: "t", code: "KeyT" }), false)).toEqual({ kind: "translate" });
+    expect(matchShortcut(key({ key: "е", code: "KeyT" }), false)).toEqual({ kind: "translate" });
+    expect(matchShortcut(key({ key: "е", code: "KeyT" }), true)).toEqual({ kind: "go", target: "trash" });
+    expect(matchShortcut(key({ key: "T", code: "KeyT", shiftKey: true }), false)).toBeNull();
+  });
+
+  it("t is never a hotkey while typing", () => {
+    const input = document.createElement("input");
+    const editor = document.createElement("div");
+    editor.setAttribute("contenteditable", "true");
+    document.body.append(input, editor);
+    for (const target of [input, editor]) {
+      expect(matchShortcut(key({ key: "t", code: "KeyT", target }), false)).toBeNull();
+    }
+    input.remove();
+    editor.remove();
+  });
+
+  it("the sheet lists t", () => {
+    const entries = SHORTCUT_SHEET.flatMap((section) => section.entries);
+    expect(entries.find((entry) => entry.keys.join(" ") === "t")?.label).toBe("Translate, or show the original");
   });
 
   it("ignores Ctrl, Alt and Meta, and IME composition", () => {
