@@ -34,6 +34,7 @@ import {
 } from "./compose.ts";
 import { queueSend, type QueueDeps } from "./compose-outbox.ts";
 import { headerAddressInput } from "./contract.ts";
+import { pickSendingAccount, type AccountCorrespondence } from "./contacts.ts";
 import { composeKindSchema, noLineBreaks, type DraftRecord, type MailAddress, type ProposalView } from "./model.ts";
 import type { MailStore, ProposalRecord } from "./ports.ts";
 
@@ -55,7 +56,8 @@ export const mailProposeParamsSchema = z.object({
   sourceMessageId: z.string().min(1).max(200).optional(),
   /**
    * new: the sending account, by id or by its email address; may be left out
-   * when the owner has one account. reply / forward: leave it out (the source
+   * (the only account, else the one that corresponds with the To recipients;
+   * refused when none does). reply / forward: leave it out (the source
    * message's account sends; another one is refused).
    */
   accountId: z.string().min(1).max(320).optional(),
@@ -113,7 +115,8 @@ const ERROR_TEXT: Record<string, string> = {
   off: "Email proposals are turned off in Mail settings.",
   vault: "Mail is locked; the owner needs to unlock it in Mail.",
   account: "That account cannot send right now; the owner needs to check it in Mail.",
-  account_required: "The owner has several mail accounts; pass accountId as one of their addresses.",
+  account_required:
+    "The owner has several mail accounts and none has corresponded with these To recipients; pass accountId as one of their addresses.",
   account_unknown: "accountId is not one of the owner's mail accounts; pass one of their addresses.",
   account_mismatch: "A reply or forward is sent from the account that received the message; leave accountId out.",
   smtp_missing: "SMTP is not set for this account.",
@@ -209,7 +212,9 @@ export async function proposeMail(
 
   let plan: ComposePlan;
   if (params.kind === "new") {
-    const accountId = resolveSendingAccount(deps.store.listAccounts(), params.accountId);
+    const accountId = resolveSendingAccount(deps.store.listAccounts(), params.accountId, () =>
+      deps.store.correspondence(agent.to.map((a) => a.address)),
+    );
     if (params.subject === undefined || params.subject.trim() === "") throw new ProposalError("subject_missing");
     try {
       plan = planNew(deps, accountId);
@@ -319,17 +324,22 @@ function asMailAddress(entry: OutgoingAddress): MailAddress {
 
 /**
  * The account a new proposal sends from: the given id or email address
- * (case-insensitive), or the only account when none is given. The agent does
- * not know account ids, so a refusal names the owner's addresses to pick from.
+ * (case-insensitive); when none is given, the only account, else the one
+ * that corresponds with the To recipients (`history`, read only then). The
+ * agent does not know account ids, so a refusal names the owner's addresses.
  */
 export function resolveSendingAccount(
   accounts: readonly { id: string; email: string }[],
   given: string | undefined,
+  history: () => readonly AccountCorrespondence[] = () => [],
 ): string {
   const choices = () => `Accounts: ${accounts.map((a) => a.email).join(", ")}.`;
   if (given === undefined) {
     if (accounts.length === 1) return accounts[0]!.id;
     if (accounts.length === 0) throw new ProposalError("account");
+    // Several accounts: the one that corresponds with the To recipients (pickSendingAccount).
+    const picked = pickSendingAccount(accounts, history());
+    if (picked !== null) return picked;
     throw new ProposalError("account_required", choices());
   }
   const wanted = given.trim().toLowerCase();

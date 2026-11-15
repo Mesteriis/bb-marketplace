@@ -11,6 +11,7 @@ export * from "./search.ts";
 export * from "./agent-text.ts";
 export * from "./accounts.ts";
 export * from "./store-rules.ts";
+export * from "./contacts.ts";
 export * from "./actions.ts";
 export * from "./inline-html.ts";
 export * from "./compose-address.ts";

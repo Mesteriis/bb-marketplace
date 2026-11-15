@@ -112,6 +112,30 @@ describe("toFetchedMessage", () => {
     expect(toFetchedMessage(imapMessage(), await PostalMime.parse(RAW)).replyTo).toEqual([]);
   });
 
+  it("reads the bulk headers from the fetched source (no extra fetch item, so nothing sets \\Seen)", async () => {
+    const listed = [
+      "List-Id: Invented news <news.example.net>",
+      "List-Unsubscribe: <mailto:leave@example.net>",
+      "Precedence: bulk",
+      "Auto-Submitted: auto-generated",
+      RAW,
+    ].join("\r\n");
+    expect(toFetchedMessage(imapMessage(), await PostalMime.parse(listed)).bulkHeaders).toEqual({
+      listId: "Invented news <news.example.net>",
+      listUnsubscribe: "<mailto:leave@example.net>",
+      precedence: "bulk",
+      autoSubmitted: "auto-generated",
+    });
+    expect(toFetchedMessage(imapMessage(), await PostalMime.parse(RAW)).bulkHeaders).toEqual({
+      listId: null,
+      listUnsubscribe: null,
+      precedence: null,
+      autoSubmitted: null,
+    });
+    // An unparsable source has no headers: the mark stays unknown.
+    expect(toFetchedMessage(imapMessage(), { headers: [], headerLines: [], attachments: [] }).bulkHeaders).toBeUndefined();
+  });
+
   it("takes text and html from postal-mime", async () => {
     const message = toFetchedMessage(imapMessage(), await PostalMime.parse(RAW));
     expect(message.bodyText?.trim()).toBe("Invented plain body.");

@@ -8,6 +8,15 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Agent tool `mail_contacts`, offered while `agentTools` or `agentPropose`
+  is on: people the owner corresponds with, matched by name, address, domain
+  or the mail exchanged with them, from header addresses only (never from
+  message text), with Spam, Trash and bulk mail left out. Sync marks bulk mail
+  (mailing-list headers, `Precedence`, `Auto-Submitted`, automated senders);
+  mail synced earlier is judged by its sender only.
+- A new proposal with no account named goes from the account that corresponds
+  with its To recipients; only without any history is the agent asked to name
+  one.
 - Plugin skeleton: a **Mail** page in the BB sidebar.
 - IMAP accounts with an app password: iCloud, Gmail and other servers, TLS
   only. Passwords are encrypted with a key in the plugin's secret settings.

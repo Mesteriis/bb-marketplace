@@ -37,6 +37,7 @@ import type {
 } from "./model.ts";
 import type { OutboxChangedPayload } from "./contract.ts";
 import type { ProposalCapRow, ProposalState } from "./agent-propose.ts";
+import type { AccountCorrespondence, Contact } from "./contacts.ts";
 
 export interface ImapConfig {
   host: string;
@@ -523,6 +524,14 @@ export interface MailStore {
   purgeProposals(beforeIso: string): number;
   /** Of these addresses, the ones (lowercased) in To or Cc of a stored message in a Sent-role folder. */
   addressesSentTo(addresses: string[]): Set<string>;
+  /**
+   * People the owner corresponds with whose name, address or exchanged mail
+   * match the query, best first (rankContacts). Header addresses only; junk,
+   * trash and bulk mail are left out. Local only.
+   */
+  contacts(query: string, limit: number): Contact[];
+  /** Per account, the latest personal mail received from and sent to any of the addresses (correspondenceOf); junk and trash left out. */
+  correspondence(addresses: string[]): AccountCorrespondence[];
   getTranslation(messageId: string, targetLanguage: string): TranslationRecord | null;
   /** Upsert by (messageId, targetLanguage), then evict the oldest beyond TRANSLATION_CACHE_ROWS by createdAt. */
   putTranslation(row: TranslationRecord): void;

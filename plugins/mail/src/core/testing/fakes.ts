@@ -51,6 +51,17 @@ import type { ProposalCapRow, ProposalState } from "../agent-propose.ts";
 import type { ProposalDeps } from "../agent-proposals.ts";
 import { SendRateLimit, UndoneSends } from "../compose-outbox.ts";
 import { TRANSLATION_CACHE_ROWS } from "../translate.ts";
+import {
+  CONTACT_SCAN,
+  classifyBulk,
+  correspondenceOf,
+  messageTextMask,
+  queryWords,
+  rankContacts,
+  type AccountCorrespondence,
+  type Contact,
+  type ContactMessage,
+} from "../contacts.ts";
 import { ImapAuthError, type NewProposal, type ProposalRecord, type TranslationRecord, type AccountWriteQueue, type MailTransport, type MessageBuilder, type OriginalReader, type OutboxNotifier, type SendResult, type SmtpConfig } from "../ports.ts";
 import type { OutboxChangedPayload } from "../contract.ts";
 import { snippetOf as snippetFromBody } from "../snippet.ts";
@@ -1102,6 +1113,68 @@ export class InMemoryMailStore implements MailStore {
       }
     }
     return removed;
+  }
+
+  contacts(query: string, limit: number): Contact[] {
+    const words = queryWords(query);
+    if (words.length === 0 || limit <= 0) return [];
+    const newestFirst = (a: Row, b: Row) => {
+      const ta = timeOf(a.message.date);
+      const tb = timeOf(b.message.date);
+      if (ta === tb) return 0;
+      if (ta === null) return 1;
+      if (tb === null) return -1;
+      return tb - ta;
+    };
+    const messages = this.contactRows()
+      .sort(newestFirst)
+      .slice(0, CONTACT_SCAN)
+      .map((row) =>
+        this.contactMessage(row, messageTextMask(row.message.subject, snippetOf(row.message), row.message.bodyText, words)),
+      );
+    const bulkSenders = new Set(
+      this.state.rows.filter((r) => this.bulkOf(r) === true).map((r) => r.message.from.address.trim().toLowerCase()),
+    );
+    return rankContacts(messages, words, this.listAccounts(), bulkSenders, limit);
+  }
+
+  correspondence(addresses: string[]): AccountCorrespondence[] {
+    const wanted = [...new Set(addresses.map((a) => a.trim().toLowerCase()))].filter((a) => a !== "");
+    if (wanted.length === 0) return [];
+    const involves = (row: Row) =>
+      [row.message.from, ...row.message.to, ...row.message.cc].some((a) => wanted.includes(a.address.trim().toLowerCase()));
+    const messages = this.contactRows()
+      .filter(involves)
+      .map((row) => this.contactMessage(row, 0));
+    return correspondenceOf(messages, wanted, this.listAccounts());
+  }
+
+  /** The stored bulk mark: null when the fetch read no headers. */
+  private bulkOf(row: Row): boolean | null {
+    const headers = row.message.bulkHeaders;
+    return headers === undefined ? null : classifyBulk(headers, row.message.from.address);
+  }
+
+  /** Rows a contact lookup counts: not moving, not marked bulk, not in junk or trash. */
+  private contactRows(): Row[] {
+    return this.state.rows.filter((row) => {
+      const role = this.roleOf(row.accountId, row.folder);
+      return row.movePending === null && this.bulkOf(row) !== true && role !== "junk" && role !== "trash";
+    });
+  }
+
+  private contactMessage(row: Row, mask: number): ContactMessage {
+    return {
+      accountId: row.accountId,
+      dedupKey: row.dedupKey,
+      date: row.message.date === null ? null : (normalizeIso(row.message.date) ?? null),
+      from: { ...row.message.from },
+      to: row.message.to.map((a) => ({ ...a })),
+      cc: row.message.cc.map((a) => ({ ...a })),
+      inSent: this.roleOf(row.accountId, row.folder) === "sent",
+      bulk: this.bulkOf(row),
+      textMask: mask,
+    };
   }
 
   addressesSentTo(addresses: string[]): Set<string> {
