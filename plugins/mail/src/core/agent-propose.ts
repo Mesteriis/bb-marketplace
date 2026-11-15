@@ -25,7 +25,7 @@ export const PROPOSAL_PURGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const AGENT_BODY_MAX_CHARS = 50_000;
 /** The card's submit value, serialized as JSON. */
 export const SUBMIT_VALUE_MAX_BYTES = 1024;
-/** A recipient row on the card shows this many before "and N more". */
+/** A collapsed recipient row on the card shows this many (flagged ones always, spec resolution 19) before "and N more". */
 export const RECIPIENT_ROW_COLLAPSE = 10;
 export const PROPOSAL_CAPS = {
   pendingPerThread: 1,

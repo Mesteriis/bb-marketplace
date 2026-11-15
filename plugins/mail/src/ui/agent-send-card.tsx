@@ -368,6 +368,22 @@ const FLAG_LABELS: Record<RecipientFlag, string> = {
 
 const QUIET_FLAGS: ReadonlySet<RecipientFlag> = new Set(["outside"]);
 
+/** A recipient with any flag is never collapsed away, and leads its row. */
+const isFlagged = (r: Recipient) => r.flags.length > 0;
+
+/**
+ * What a row shows: every flagged recipient first (always, collapsed or
+ * not), then the unflagged ones; a collapsed row cuts only the unflagged ones
+ * to fill ROW_COLLAPSE. `hidden` is how many unflagged ones were cut.
+ */
+export function rowRecipients(list: readonly Recipient[], expanded: boolean): { shown: Recipient[]; hidden: number } {
+  const flagged = list.filter(isFlagged);
+  const quiet = list.filter((r) => !isFlagged(r));
+  if (expanded || list.length <= ROW_COLLAPSE) return { shown: [...flagged, ...quiet], hidden: 0 };
+  const room = Math.max(0, ROW_COLLAPSE - flagged.length);
+  return { shown: [...flagged, ...quiet.slice(0, room)], hidden: quiet.length - room };
+}
+
 function RecipientRow({
   label,
   list,
@@ -383,8 +399,10 @@ function RecipientRow({
 }) {
   const [expanded, setExpanded] = useState(false);
   const long = list.length > ROW_COLLAPSE;
-  const shown = long && !expanded ? list.slice(0, ROW_COLLAPSE) : list;
-  const newOnes = list.filter((r) => r.flags.includes("new") && !acknowledged.has(key(r.address)));
+  const { shown } = rowRecipients(list, expanded);
+  const { hidden } = rowRecipients(list, false);
+  // The bulk acknowledgement covers only what is on screen right now.
+  const newOnes = shown.filter((r) => r.flags.includes("new") && !acknowledged.has(key(r.address)));
   const warning = notice !== null;
   return (
     <>
@@ -408,14 +426,14 @@ function RecipientRow({
             ))}
           </ul>
         )}
-        {long ? (
+        {long && hidden > 0 ? (
           <button
             type="button"
             aria-expanded={expanded}
             onClick={() => setExpanded((open) => !open)}
             className="self-start text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
           >
-            {expanded ? "Show fewer" : `and ${list.length - ROW_COLLAPSE} more`}
+            {expanded ? "Show fewer" : `and ${hidden} more`}
           </button>
         ) : null}
         {long && newOnes.length > 0 ? (
