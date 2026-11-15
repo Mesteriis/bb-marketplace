@@ -7,7 +7,7 @@
 // This file is the BB adapter: it owns RPC, realtime refreshes, navigation and
 // the composer, and hands plain data and callbacks to the host-agnostic page
 // in src/ui.
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   definePluginApp,
   experimental_copyToClipboard,
@@ -25,17 +25,23 @@ import { toast } from "sonner";
 import type { rpcContract } from "./server.ts";
 import type {
   AttachmentMeta,
+  DraftView,
   Folder,
   MAIL_CHANGED_CHANNEL as MailChangedChannel,
   MessageAction,
   MessageHeader,
   NewAccountInput,
+  OUTBOX_CHANGED_CHANNEL as OutboxChangedChannel,
+  OutboxChangedPayload,
+  OutboxRow,
   RoleCount,
   StatusView,
   ThreadDetail,
   ThreadSummary,
 } from "./src/core/index.ts";
 import { isRoleMoveAction, roleFolders } from "./src/core/actions.ts";
+import type { ComposerPorts, ComposeWarningKind } from "./src/ui/composer.tsx";
+import type { SmtpSettingsInput } from "./src/ui/smtp-dialog.tsx";
 import type { DetailsState } from "./src/ui/details-panel.tsx";
 import {
   DEFAULT_FOLDER_PATH,
@@ -50,10 +56,13 @@ import {
   ALL_ACCOUNTS,
   MailPage,
   type AccountFormRequest,
+  type ComposeKind,
+  type ComposerState,
   type ReadingState,
   type SearchState,
   type ThreadListState,
 } from "./src/ui/mail-page.tsx";
+import { outboxStateText, type OutboxAction } from "./src/ui/outbox.tsx";
 import type { BodyState } from "./src/ui/reading-pane.tsx";
 import { parseThreadSubPath, threadSubPath, type ThreadLink } from "./src/ui/routes.ts";
 import { SidebarMailList } from "./src/ui/sidebar-mail-list.tsx";
@@ -62,6 +71,9 @@ import { subjectOrPlaceholder } from "./src/ui/thread-list.tsx";
 // The channel name is checked against the core constant without importing it
 // at runtime: a value import of the core would bundle its zod schemas.
 const MAIL_CHANGED_CHANNEL: typeof MailChangedChannel = "mail-changed";
+const OUTBOX_CHANGED_CHANNEL: typeof OutboxChangedChannel = "outbox-changed";
+/** The Undo window when a row's sendAfter is not known yet. */
+const UNDO_WINDOW_MS = 10_000;
 const PAGE_SIZE = 50;
 const MAX_PAGE = 100;
 const SEARCH_LIMIT = 50;
@@ -107,6 +119,33 @@ function changedAccount(payload: unknown): string | null | undefined {
   if (typeof payload !== "object" || payload === null) return undefined;
   const value = (payload as { accountId?: unknown }).accountId;
   return typeof value === "string" || value === null ? value : undefined;
+}
+
+const OUTBOX_EVENT_STATES = new Set<OutboxChangedPayload["state"]>([
+  "queued",
+  "held",
+  "sending",
+  "sent",
+  "appending",
+  "failed",
+  "unknown",
+  "sent_no_copy",
+  "done",
+  "cancelled",
+]);
+
+/** An outbox-changed payload, or null when it is not one. */
+function outboxEvent(payload: unknown): OutboxChangedPayload | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const { accountId, id, state } = payload as Record<string, unknown>;
+  if (typeof accountId !== "string" || typeof id !== "string" || typeof state !== "string") return null;
+  if (!OUTBOX_EVENT_STATES.has(state as OutboxChangedPayload["state"])) return null;
+  return { accountId, id, state: state as OutboxChangedPayload["state"] };
+}
+
+/** One toast per send, so each state replaces the last. */
+function sendToastId(outboxId: string): string {
+  return `makosh-mail-send-${outboxId}`;
 }
 
 /** The fallback prompt carries the message text itself (it starts with the untrusted notice). */
@@ -292,6 +331,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const [details, setDetails] = useState<DetailsState | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [accountForm, setAccountForm] = useState<AccountFormRequest>(null);
+  const [mailComposer, setComposer] = useState<ComposerState | null>(null);
+  const [outbox, setOutbox] = useState<OutboxRow[]>([]);
+  const [outboxPending, setOutboxPending] = useState<ReadonlySet<string>>(new Set());
+  const [smtpAccountId, setSmtpAccountId] = useState<string | null>(null);
 
   const accounts = status?.accounts ?? [];
   const chosenAccount =
@@ -565,6 +608,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
 
   const selectThread = useCallback(
     (threadId: string, messageId: string | null, accountId: string) => {
+      // A reply docked under another conversation closes (it saves itself).
+      setComposer((prev) => (prev !== null && prev.dockThreadId !== null && prev.dockThreadId !== threadId ? null : prev));
       openAccount.current = accountId;
       openThreadId.current = threadId;
       setReading({ ...NO_READING, threadId, loading: true });
@@ -574,6 +619,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   );
 
   const closeThread = useCallback(() => {
+    setComposer((prev) => (prev !== null && prev.dockThreadId !== null ? null : prev));
     requests.current.thread++;
     openThreadId.current = null;
     wantedLink.current = null;
@@ -1136,6 +1182,250 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     [loadStatus, rpc],
   );
 
+
+  // ---- Compose and send (slice 3b) ----
+
+  const openComposer = useCallback(
+    (draft: DraftView, warning: ComposeWarningKind, dropped: string[], dockThreadId: string | null) => {
+      setComposer({ draft, warning, dropped, dockThreadId });
+    },
+    [],
+  );
+
+  /** A new message from the account viewed (All accounts: the first account). */
+  const compose = useCallback(async () => {
+    const from = account?.id ?? accounts[0]?.id;
+    if (from === undefined) return;
+    try {
+      const { draftId } = await rpc.call("compose_new", { accountId: from });
+      const { draft, warning } = await rpc.call("compose_open", { draftId });
+      openComposer(draft, warning, [], null);
+    } catch (error) {
+      toast.error(`Could not start a message: ${messageOf(error)}`);
+    }
+  }, [account, accounts, openComposer, rpc]);
+
+  const reply = useCallback(
+    async (kind: ComposeKind, message: MessageHeader) => {
+      try {
+        const prepared = await rpc.call("compose_prepare", { kind, messageId: message.id });
+        const { draft } = await rpc.call("compose_open", { draftId: prepared.draftId });
+        openComposer(draft, prepared.warning, prepared.dropped, latest.current.reading.threadId);
+      } catch (error) {
+        toast.error(`Could not start the ${kind === "forward" ? "forward" : "reply"}: ${messageOf(error)}`);
+      }
+    },
+    [openComposer, rpc],
+  );
+
+  /** Our draft by id, or a synced Drafts message continued by its message id. */
+  const editDraft = useCallback(
+    async (message: MessageHeader) => {
+      try {
+        const { draft, warning } = await rpc.call(
+          "compose_open",
+          message.draftId !== null ? { draftId: message.draftId } : { draftMessageId: message.id },
+        );
+        openComposer(draft, warning, [], null);
+      } catch (error) {
+        toast.error(`Could not open the draft: ${messageOf(error)}`);
+      }
+    },
+    [openComposer, rpc],
+  );
+
+  /** Enter or o on a Drafts row: the conversation's newest draft in the folder. */
+  const editDraftThread = useCallback(
+    async (threadId: string, accountId: string) => {
+      const ctx: ViewContext = { view: latest.current.view, folders: latest.current.folders };
+      try {
+        const detail = await rpc.call("thread_get", { threadId, folder: folderIn(ctx, accountId) });
+        const message = detail.messages.filter((m) => inViewOf(ctx, m)).at(-1) ?? detail.messages.at(-1);
+        if (message !== undefined) await editDraft(message);
+      } catch (error) {
+        toast.error(`Could not open the draft: ${messageOf(error)}`);
+      }
+    },
+    [editDraft, rpc],
+  );
+
+  const composerPorts = useMemo<ComposerPorts>(
+    () => ({
+      save: (input) => rpc.call("compose_save", input),
+      send: (input) => rpc.call("compose_send", input),
+      discard: async (draftId) => {
+        await rpc.call("compose_discard", { draftId });
+      },
+      upload: {
+        begin: (input) => rpc.call("compose_attachment_begin", input),
+        chunk: (input) => rpc.call("compose_attachment_chunk", input),
+        finish: (input) => rpc.call("compose_attachment_finish", input),
+      },
+      removeAttachment: async (draftId, attachmentId) => {
+        await rpc.call("compose_attachment_remove", { draftId, attachmentId });
+      },
+      suggest: async (prefix) => (await rpc.call("recipients_suggest", { prefix })).suggestions,
+      reload: async (draftId) => (await rpc.call("compose_open", { draftId })).draft,
+    }),
+    [rpc],
+  );
+
+  const loadOutbox = useCallback(async (): Promise<OutboxRow[] | null> => {
+    try {
+      const { rows } = await rpc.call("outbox_list", { accountId: null });
+      setOutbox(rows);
+      return rows;
+    } catch {
+      return null;
+    }
+  }, [rpc]);
+
+  /** Undo: the send is removed and its draft comes back into the composer. */
+  const undoSend = useCallback(
+    async (outboxId: string) => {
+      const toastId = sendToastId(outboxId);
+      try {
+        const { cancelled, draftId } = await rpc.call("outbox_cancel", { id: outboxId });
+        if (!cancelled) {
+          toast.error("Too late to undo", { id: toastId });
+          return;
+        }
+        toast.dismiss(toastId);
+        void loadOutbox();
+        if (draftId !== null) {
+          const { draft, warning } = await rpc.call("compose_open", { draftId });
+          openComposer(draft, warning, [], null);
+        }
+      } catch (error) {
+        toast.error(`Could not undo: ${messageOf(error)}`, { id: toastId });
+      }
+    },
+    [loadOutbox, openComposer, rpc],
+  );
+
+  /** "Sending in N s · Undo" for a queued send, on every queued event. */
+  const showUndo = useCallback(
+    (outboxId: string, sendAfter: string | null) => {
+      const due = sendAfter === null ? NaN : Date.parse(sendAfter);
+      const left = Number.isNaN(due) ? UNDO_WINDOW_MS : Math.max(0, due - Date.now());
+      toast(`Sending in ${Math.max(1, Math.ceil(left / 1000))} s`, {
+        id: sendToastId(outboxId),
+        duration: left + 2_000,
+        action: { label: "Undo", onClick: () => void undoSend(outboxId) },
+      });
+    },
+    [undoSend],
+  );
+
+  /** Pending Undo windows survive a page reload (and a restart publishes nothing). */
+  const outboxChecked = useRef(false);
+  useEffect(() => {
+    if (!status?.vaultReady || outboxChecked.current) return;
+    outboxChecked.current = true;
+    void loadOutbox().then((rows) => {
+      for (const row of rows ?? []) if (row.state === "queued") showUndo(row.id, row.sendAfter);
+    });
+  }, [loadOutbox, showUndo, status?.vaultReady]);
+
+  useDebouncedRealtime(OUTBOX_CHANGED_CHANNEL, (payloads) => {
+    // The last state of each send in the burst decides its toast.
+    const last = new Map<string, OutboxChangedPayload>();
+    for (const payload of payloads) {
+      const event = outboxEvent(payload);
+      if (event !== null) last.set(event.id, event);
+    }
+    if (last.size === 0) return;
+    void loadOutbox().then((rows) => {
+      for (const event of last.values()) {
+        const toastId = sendToastId(event.id);
+        const row = rows?.find((r) => r.id === event.id) ?? null;
+        switch (event.state) {
+          case "queued":
+            showUndo(event.id, row?.sendAfter ?? null);
+            break;
+          case "sending":
+          case "cancelled":
+            toast.dismiss(toastId);
+            break;
+          case "done":
+            toast.success("Sent", { id: toastId });
+            break;
+          case "failed":
+            toast.error(row !== null ? outboxStateText(row) : "Not sent", {
+              id: toastId,
+              action: { label: "Retry", onClick: () => void outboxAction(event.id, "retry") },
+            });
+            break;
+          case "unknown":
+            toast.error("May have been sent — see the Outbox in Sent", { id: toastId });
+            break;
+          case "sent_no_copy":
+            toast.error(row !== null ? outboxStateText(row) : "Sent; the copy to Sent failed", { id: toastId });
+            break;
+          case "held":
+          case "sent":
+          case "appending":
+            break;
+        }
+      }
+    });
+  });
+
+  /** An Outbox row's button (and the failed toast's Retry). */
+  const outboxAction = useCallback(
+    async (id: string, action: OutboxAction) => {
+      if (action === "undo" || action === "edit") {
+        await undoSend(id);
+        return;
+      }
+      setOutboxPending((prev) => new Set(prev).add(id));
+      try {
+        if (action === "send_now") await rpc.call("outbox_send_now", { id });
+        else if (action === "retry" || action === "retry_copy") await rpc.call("outbox_retry", { id });
+        else if (action === "resend") await rpc.call("outbox_resend", { id });
+        else await rpc.call("outbox_dismiss", { id });
+      } catch (error) {
+        toast.error(messageOf(error));
+      } finally {
+        setOutboxPending((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        void loadOutbox();
+      }
+    },
+    [loadOutbox, rpc, undoSend],
+  );
+
+  const closeComposer = useCallback(() => {
+    setComposer(null);
+    refreshAfterChange();
+  }, [refreshAfterChange]);
+
+  const sent = useCallback(
+    (queued: { outboxId: string; sendAfter: string }) => {
+      setComposer(null);
+      showUndo(queued.outboxId, queued.sendAfter);
+      void loadOutbox();
+      refreshAfterChange();
+    },
+    [loadOutbox, refreshAfterChange, showUndo],
+  );
+
+  const smtpCall = useCallback(
+    async (method: "accounts_smtp_test" | "accounts_smtp_set", input: SmtpSettingsInput) => {
+      try {
+        const result = await rpc.call(method, input);
+        if (method === "accounts_smtp_set" && result.ok) void loadStatus();
+        return result;
+      } catch (error) {
+        return { ok: false, reason: messageOf(error) };
+      }
+    },
+    [loadStatus, rpc],
+  );
+
   return (
     <MailPage
       status={status}
@@ -1189,6 +1479,22 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onTestAccount={testAccount}
       onSaveAccount={saveAccount}
       ExternalLink={UrlLink}
+      composer={mailComposer}
+      composerPorts={composerPorts}
+      onCompose={() => void compose()}
+      onReply={(kind, message) => void reply(kind, message)}
+      onEditDraft={(message) => void editDraft(message)}
+      onEditDraftThread={(threadId, accountId) => void editDraftThread(threadId, accountId)}
+      onCloseComposer={closeComposer}
+      onSent={sent}
+      outbox={outbox}
+      outboxPending={outboxPending}
+      onOutboxAction={(row, action) => void outboxAction(row.id, action)}
+      smtpAccountId={smtpAccountId}
+      onOpenSmtp={setSmtpAccountId}
+      onCloseSmtp={() => setSmtpAccountId(null)}
+      onTestSmtp={(input) => smtpCall("accounts_smtp_test", input)}
+      onSaveSmtp={(input) => smtpCall("accounts_smtp_set", input)}
     />
   );
 }

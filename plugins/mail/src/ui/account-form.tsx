@@ -2,7 +2,7 @@
 // it is read when Test or Save runs, never kept in React state, and the field
 // is cleared once the account is saved.
 import { useId, useRef, useState, type ComponentType, type FormEvent, type ReactNode } from "react";
-import type { AccountPreset, NewAccountInput } from "../core/index.ts";
+import type { AccountPreset, NewAccountInput, SmtpSecurity } from "../core/index.ts";
 // presets.ts directly: the core index would pull its zod schemas into the app bundle.
 import { PRESETS } from "../core/presets.ts";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { defaultSmtpPort, smtpInput } from "./smtp-dialog.tsx";
 
 const PRESET_ORDER: AccountPreset[] = ["icloud", "gmail", "other"];
 
@@ -49,6 +50,10 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
   const [email, setEmail] = useState(initial?.email ?? "");
   const [host, setHost] = useState(initial?.host ?? "");
   const [port, setPort] = useState(String(initial?.port ?? PRESETS.other.port));
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpSecurity, setSmtpSecurity] = useState<SmtpSecurity>("tls");
+  const [smtpPort, setSmtpPort] = useState(String(defaultSmtpPort("tls")));
+  const [smtpUsername, setSmtpUsername] = useState("");
   const [busy, setBusy] = useState<"test" | "save" | null>(null);
   const [outcome, setOutcome] = useState<Outcome>(null);
   const appPasswordUrl = PRESETS[preset].appPasswordUrl;
@@ -66,7 +71,19 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
     if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
       return fail("Enter a port between 1 and 65535.");
     }
-    return { preset, email: address, host: server, port: portNumber, password };
+    const smtp = smtpInput("", { host: smtpHost, port: smtpPort, security: smtpSecurity, username: smtpUsername });
+    if (typeof smtp === "string") return fail(smtp);
+    return {
+      preset,
+      email: address,
+      host: server,
+      port: portNumber,
+      password,
+      smtpHost: smtp.host,
+      smtpPort: smtp.port,
+      smtpSecurity: smtp.security,
+      ...(smtp.username !== undefined ? { smtpUsername: smtp.username } : {}),
+    };
   }
 
   function fail(message: string): null {
@@ -194,6 +211,70 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
             />
           </div>
         </div>
+      ) : null}
+
+      {preset === "other" ? (
+        <fieldset className="flex flex-col gap-3">
+          <legend className="pb-1.5 text-sm font-medium text-foreground">Sending (SMTP)</legend>
+          <div className="flex gap-3">
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+              <label htmlFor={`${id}-smtp-host`} className="text-sm font-medium text-foreground">
+                SMTP server
+              </label>
+              <Input
+                id={`${id}-smtp-host`}
+                value={smtpHost}
+                onChange={(event) => setSmtpHost(event.target.value)}
+                placeholder="smtp.example.org"
+              />
+            </div>
+            <div className="flex w-24 flex-col gap-1.5">
+              <label htmlFor={`${id}-smtp-port`} className="text-sm font-medium text-foreground">
+                SMTP port
+              </label>
+              <Input
+                id={`${id}-smtp-port`}
+                inputMode="numeric"
+                value={smtpPort}
+                onChange={(event) => setSmtpPort(event.target.value)}
+              />
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+              <label id={`${id}-smtp-security`} className="text-sm font-medium text-foreground">
+                Security
+              </label>
+              <Select
+                value={smtpSecurity}
+                onValueChange={(next) => {
+                  const value = next as SmtpSecurity;
+                  if (smtpPort === String(defaultSmtpPort(smtpSecurity))) setSmtpPort(String(defaultSmtpPort(value)));
+                  setSmtpSecurity(value);
+                }}
+              >
+                <SelectTrigger aria-labelledby={`${id}-smtp-security`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="tls">TLS</SelectItem>
+                  <SelectItem value="starttls">STARTTLS</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+              <label htmlFor={`${id}-smtp-username`} className="text-sm font-medium text-foreground">
+                SMTP username
+              </label>
+              <Input
+                id={`${id}-smtp-username`}
+                value={smtpUsername}
+                onChange={(event) => setSmtpUsername(event.target.value)}
+                placeholder="Same as the email"
+              />
+            </div>
+          </div>
+        </fieldset>
       ) : null}
 
       {outcome !== null ? (

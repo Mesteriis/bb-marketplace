@@ -83,6 +83,8 @@ export interface FolderListProps {
 export interface FolderRailProps extends FolderListProps {
   /** Why the folders could not be loaded; null when they could. */
   error: string | null;
+  /** Outbox rows that need the owner, shown on Sent. */
+  sentAttention?: number;
 }
 
 function RailButton({
@@ -92,6 +94,7 @@ function RailButton({
   selected,
   indent,
   onSelect,
+  attention = 0,
 }: {
   icon: string;
   name: string;
@@ -99,6 +102,8 @@ function RailButton({
   selected: boolean;
   indent: number;
   onSelect: () => void;
+  /** Outbox rows that need the owner (Sent only). */
+  attention?: number;
 }) {
   return (
     <li>
@@ -114,6 +119,12 @@ function RailButton({
       >
         <Icon name={icon} className="size-4 shrink-0 text-muted-foreground" aria-hidden />
         <span className={cn("min-w-0 flex-1 truncate", unread > 0 && "font-medium")}>{name}</span>
+        {attention > 0 ? (
+          <span className="shrink-0 rounded-sm bg-destructive/10 px-1 text-xs tabular-nums text-destructive">
+            {attention}
+            <span className="sr-only"> in the Outbox need you</span>
+          </span>
+        ) : null}
         {unread > 0 ? (
           <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
             {unread}
@@ -129,11 +140,14 @@ function FolderRowsList({
   folders,
   isSelected,
   onSelect,
+  sentAttention = 0,
 }: {
   folders: readonly Folder[];
   isSelected: (folder: Folder) => boolean;
   onSelect: (folder: Folder) => void;
+  sentAttention?: number;
 }) {
+  const firstSent = folders.find((f) => f.specialUse === "sent" && f.selectable)?.path ?? null;
   return (
     <>
       {folderRows(folders).map((row) => {
@@ -158,6 +172,7 @@ function FolderRowsList({
             selected={isSelected(folder)}
             indent={depth}
             onSelect={() => onSelect(folder)}
+            attention={folder.path === firstSent ? sentAttention : 0}
           />
         );
       })}
@@ -165,12 +180,13 @@ function FolderRowsList({
   );
 }
 
-export function FolderList({ folders, selectedPath, onSelect, error }: FolderRailProps) {
+export function FolderList({ folders, selectedPath, onSelect, error, sentAttention }: FolderRailProps) {
   if (folders.length === 0) return <RailHint error={error} />;
   return (
     <ul className="flex flex-col gap-px px-1.5 py-1">
       <FolderRowsList
         folders={folders}
+        sentAttention={sentAttention}
         isSelected={(folder) => folder.path === selectedPath}
         onSelect={(folder) => onSelect(folder.path)}
       />
@@ -239,6 +255,8 @@ export interface UnifiedRailProps {
   view: MailView;
   onSelect: (view: MailView) => void;
   error: string | null;
+  /** Outbox rows that need the owner, shown on Sent. */
+  sentAttention?: number;
 }
 
 /** Where the rail remembers which accounts the owner collapsed. */
@@ -345,7 +363,7 @@ function AccountGroup({
  * name, in a group the owner can collapse (remembered on this device). The
  * group holding the open folder stays open.
  */
-export function UnifiedRail({ roles, folders, accounts, view, onSelect, error }: UnifiedRailProps) {
+export function UnifiedRail({ roles, folders, accounts, view, onSelect, error, sentAttention = 0 }: UnifiedRailProps) {
   const shownRoles = roles.filter((r): r is RoleCount & { role: RoleName } => r.role !== "all");
   const [collapsed, setCollapsed] = useState(() => readCollapsedAccounts(pageStorage()));
   const toggle = (accountId: string) => {
@@ -370,6 +388,7 @@ export function UnifiedRail({ roles, folders, accounts, view, onSelect, error }:
             selected={view.kind === "role" && view.role === role}
             indent={0}
             onSelect={() => onSelect({ kind: "role", role })}
+            attention={role === "sent" ? sentAttention : 0}
           />
         ))}
       </ul>
