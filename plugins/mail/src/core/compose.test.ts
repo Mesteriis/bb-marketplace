@@ -3,9 +3,12 @@ import {
   ATTACHMENT_CAP_BYTES,
   ComposeError,
   addComposeAttachment,
+  createComposeDraft,
   discardCompose,
   newCompose,
   openDraft,
+  planCompose,
+  planNew,
   prepareCompose,
   removeComposeAttachment,
   saveCompose,
@@ -573,5 +576,66 @@ describe("attachments", () => {
     const id = h.store.listAttachments(draftId)[0]!.id;
     expect(removeComposeAttachment(h.store, draftId, id)).toBe(true);
     expect(removeComposeAttachment(h.store, draftId, id)).toBe(false);
+  });
+});
+
+describe("plan and create (slice 3c)", () => {
+  it("planCompose writes nothing; createComposeDraft writes one row with origin and proposal id", async () => {
+    const id = stored({ subject: "Invented question" });
+    const plan = await planCompose(h.deps, { kind: "reply", messageId: id });
+    expect(h.store.listDrafts("acc_1")).toEqual([]);
+    expect(plan).toMatchObject({ kind: "reply", subject: "Re: Invented question", warning: null, attachments: [] });
+    expect(plan.original?.source.from.address).toBe("sender@example.org");
+
+    const calls: unknown[] = [];
+    const createDraft = h.store.createDraft.bind(h.store);
+    h.store.createDraft = (input) => {
+      calls.push(structuredClone(input));
+      return createDraft(input);
+    };
+    const created = await createComposeDraft(h.deps, plan, { origin: "agent", proposalId: "p1" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ origin: "agent", proposalId: "p1" });
+    expect(h.store.getDraft(created.draftId)).toMatchObject({ origin: "agent", proposalId: "p1" });
+    expect(created).toMatchObject({ warning: null, dropped: [], leftOut: 0 });
+  });
+
+  it("planNew is an empty new draft of the account", () => {
+    expect(planNew(h.deps, "acc_1")).toMatchObject({ kind: "new", accountId: "acc_1", to: [], subject: "", original: null });
+    expect(h.store.listDrafts("acc_1")).toEqual([]);
+  });
+
+  it("createComposeDraft counts attachments left out over the cap", async () => {
+    const id = stored();
+    h.reader.originals.set(id, {
+      replyTo: [],
+      bcc: [],
+      html: null,
+      attachments: [
+        { fileName: "a.bin", mimeType: "application/octet-stream", bytes: new Uint8Array(10), contentId: null },
+        { fileName: "b.bin", mimeType: "application/octet-stream", bytes: new Uint8Array(ATTACHMENT_CAP_BYTES), contentId: null },
+      ],
+    });
+    const plan = await planCompose(h.deps, { kind: "forward", messageId: id });
+    const created = await createComposeDraft(h.deps, plan, { origin: "owner", proposalId: null });
+    expect(created).toMatchObject({ leftOut: 1, warning: "attachments_left_out" });
+    expect(h.store.listAttachments(created.draftId).map((a) => a.fileName)).toEqual(["a.bin"]);
+  });
+
+  it("prepareCompose and newCompose still make owner drafts without a proposal", async () => {
+    const id = stored();
+    const reply = await prepareCompose(h.deps, { kind: "reply", messageId: id });
+    expect(Object.keys(reply).sort()).toEqual(["draftId", "dropped", "warning"]);
+    expect(h.store.getDraft(reply.draftId)).toMatchObject({ origin: "owner", proposalId: null });
+    const fresh = newCompose(h.deps, "acc_1");
+    expect(h.store.getDraft(fresh.draftId)).toMatchObject({ origin: "owner", proposalId: null });
+  });
+
+  it("writeServerCopy skips a hidden proposal draft", async () => {
+    const plan = planNew(h.deps, "acc_1");
+    const { draftId } = await createComposeDraft(h.deps, { ...plan, subject: "Invented" }, { origin: "agent", proposalId: "p1" });
+    expect(await writeServerCopy(h.deps, draftId, "save")).toBe("skipped");
+    expect(await writeServerCopy(h.deps, draftId, "tick")).toBe("skipped");
+    expect(h.gateway.sessions).toHaveLength(0);
   });
 });

@@ -47,7 +47,11 @@ import type {
   ThreadSummary,
 } from "../model.ts";
 import { headerValue, normalizeMessageId } from "../headers.ts";
-import { ImapAuthError, type AccountWriteQueue, type MailTransport, type MessageBuilder, type OriginalReader, type OutboxNotifier, type SendResult, type SmtpConfig } from "../ports.ts";
+import type { ProposalCapRow, ProposalState } from "../agent-propose.ts";
+import type { ProposalDeps } from "../agent-proposals.ts";
+import { SendRateLimit, UndoneSends } from "../compose-outbox.ts";
+import { TRANSLATION_CACHE_ROWS } from "../translate.ts";
+import { ImapAuthError, type NewProposal, type ProposalRecord, type TranslationRecord, type AccountWriteQueue, type MailTransport, type MessageBuilder, type OriginalReader, type OutboxNotifier, type SendResult, type SmtpConfig } from "../ports.ts";
 import type { OutboxChangedPayload } from "../contract.ts";
 import { snippetOf as snippetFromBody } from "../snippet.ts";
 import {
@@ -190,6 +194,9 @@ type StoreState = {
   drafts: Map<string, DraftRecord>;
   composeAttachments: StoredComposeAttachment[];
   outbox: Map<string, { record: OutboxRecord; mime: Uint8Array; bccHeader: string | null }>;
+  proposals: Map<string, ProposalRecord>;
+  /** By `${messageId}\u0000${targetLanguage}`. */
+  translations: Map<string, TranslationRecord>;
 };
 
 type StoredComposeAttachment = ComposeAttachment & {
@@ -231,9 +238,8 @@ function snippetOf(message: FetchedMessage): string {
   return snippetFromBody(message.bodyText, message.bodyHtml);
 }
 
-/** A slice-3c store method that a later task implements. */
-function notYet(method: string): Error {
-  return new Error(`${method} is not implemented yet`);
+function translationKey(messageId: string, targetLanguage: string): string {
+  return `${messageId}\u0000${targetLanguage}`;
 }
 
 export class InMemoryMailStore implements MailStore {
@@ -247,6 +253,8 @@ export class InMemoryMailStore implements MailStore {
     drafts: new Map(),
     composeAttachments: [],
     outbox: new Map(),
+    proposals: new Map(),
+    translations: new Map(),
   };
 
   /** Runs fn; on a throw restores the state from before the call, like a rollback. */
@@ -307,6 +315,10 @@ export class InMemoryMailStore implements MailStore {
     for (const [key, entry] of [...this.state.outbox]) {
       if (entry.record.accountId === id) this.state.outbox.delete(key);
     }
+    for (const [key, proposal] of [...this.state.proposals]) {
+      if (proposal.accountId === id) this.state.proposals.delete(key);
+    }
+    this.dropOrphanTranslations();
   }
 
   // Sync state -------------------------------------------------------------
@@ -329,6 +341,7 @@ export class InMemoryMailStore implements MailStore {
     this.state.rows = this.state.rows.filter(
       (r) => !(r.accountId === accountId && r.folder === folder && r.uid === null),
     );
+    this.dropOrphanTranslations();
     return before - this.state.rows.length;
   }
 
@@ -428,6 +441,7 @@ export class InMemoryMailStore implements MailStore {
       (r) =>
         !(r.accountId === accountId && r.folder === folder && r.uid !== null && doomed.has(r.uid)),
     );
+    this.dropOrphanTranslations();
     return before - this.state.rows.length;
   }
 
@@ -960,49 +974,175 @@ export class InMemoryMailStore implements MailStore {
     return rankRecipientSuggestions(entries, prefix, limit);
   }
 
-  // ---- Agent proposals and translation (slice 3c): implemented in task 4 ----
+  // ---- Agent proposals and translation (slice 3c) ----
 
-  createProposal(): never {
-    throw notYet("createProposal");
+  createProposal(input: NewProposal): ProposalRecord {
+    if (this.state.proposals.has(input.id)) throw new Error("Proposal exists");
+    const record: ProposalRecord = {
+      ...structuredClone(input),
+      state: "pending",
+      viewTokenSha256: null,
+      viewedAt: null,
+      outboxId: null,
+      updatedAt: input.createdAt,
+    };
+    this.state.proposals.set(record.id, record);
+    return structuredClone(record);
   }
-  getProposal(): never {
-    throw notYet("getProposal");
+
+  getProposal(id: string): ProposalRecord | null {
+    const proposal = this.state.proposals.get(id);
+    return proposal ? structuredClone(proposal) : null;
   }
-  proposalCapRows(): never {
-    throw notYet("proposalCapRows");
+
+  proposalCapRows(nowIso: string): ProposalCapRow[] {
+    const since = Date.parse(nowIso) - 24 * 60 * 60 * 1000;
+    return [...this.state.proposals.values()]
+      .filter((p) => p.state === "pending" || p.state === "confirming" || Date.parse(p.createdAt) > since)
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : 1))
+      .map((p) => ({ threadId: p.threadId, state: p.state, createdAt: p.createdAt, updatedAt: p.updatedAt }));
   }
-  transitionProposal(): never {
-    throw notYet("transitionProposal");
+
+  transitionProposal(
+    id: string,
+    from: ProposalState[],
+    to: ProposalState,
+    updatedAt: string,
+    patch: { outboxId?: string | null; viewTokenSha256?: string | null; viewedAt?: string | null } = {},
+  ): boolean {
+    const proposal = this.state.proposals.get(id);
+    if (!proposal || !from.includes(proposal.state)) return false;
+    proposal.state = to;
+    proposal.updatedAt = updatedAt;
+    if (patch.outboxId !== undefined) proposal.outboxId = patch.outboxId;
+    if (patch.viewTokenSha256 !== undefined) proposal.viewTokenSha256 = patch.viewTokenSha256;
+    if (patch.viewedAt !== undefined) proposal.viewedAt = patch.viewedAt;
+    return true;
   }
-  setViewToken(): never {
-    throw notYet("setViewToken");
+
+  setViewToken(id: string, sha256: string, viewedAtIso: string): boolean {
+    const proposal = this.state.proposals.get(id);
+    if (!proposal || proposal.state !== "pending") return false;
+    proposal.viewTokenSha256 = sha256;
+    proposal.viewedAt = viewedAtIso;
+    return true;
   }
-  releaseProposalDraft(): never {
-    throw notYet("releaseProposalDraft");
+
+  releaseProposalDraft(id: string, draftId: string, updatedAt: string): boolean {
+    return this.transaction(() => {
+      const proposal = this.state.proposals.get(id);
+      const draft = this.state.drafts.get(draftId);
+      if (!proposal || (proposal.state !== "pending" && proposal.state !== "confirming")) return false;
+      if (proposal.draftId !== draftId || !draft || draft.proposalId !== id) return false;
+      draft.proposalId = null;
+      proposal.state = "opened";
+      proposal.updatedAt = updatedAt;
+      return true;
+    });
   }
-  undoAgentSend(): never {
-    throw notYet("undoAgentSend");
+
+  undoAgentSend(outboxId: string, from: OutboxState[], updatedAt: string): { cancelled: boolean; draftId: string | null } {
+    return this.transaction(() => {
+      const entry = this.state.outbox.get(outboxId);
+      if (!entry) return { cancelled: false, draftId: null };
+      const draftId = entry.record.draftId;
+      if (!from.includes(entry.record.state)) return { cancelled: false, draftId };
+      this.state.outbox.delete(outboxId);
+      const draft = draftId === null ? undefined : this.state.drafts.get(draftId);
+      if (draft && draft.proposalId === outboxId) draft.proposalId = null;
+      const proposal = this.state.proposals.get(outboxId);
+      if (proposal && proposal.state === "queued") {
+        proposal.state = "opened";
+        proposal.updatedAt = updatedAt;
+      }
+      return { cancelled: true, draftId };
+    });
   }
-  dropProposalDraft(): never {
-    throw notYet("dropProposalDraft");
+
+  dropProposalDraft(id: string): void {
+    const proposal = this.state.proposals.get(id);
+    if (!proposal || proposal.draftId === null) return;
+    const draft = this.state.drafts.get(proposal.draftId);
+    // Only the hidden draft: one the owner opened in Mail is theirs now.
+    if (draft && draft.proposalId !== id) return;
+    if (draft) this.deleteDraft(draft.id);
+    proposal.draftId = null;
   }
-  recoverProposalsOnStart(): never {
-    throw notYet("recoverProposalsOnStart");
+
+  recoverProposalsOnStart(nowIso: string): { expired: number; queued: number } {
+    let expired = 0;
+    let queued = 0;
+    for (const proposal of this.state.proposals.values()) {
+      if (proposal.state === "confirming" && this.state.outbox.has(proposal.id)) {
+        proposal.state = "queued";
+        proposal.outboxId = proposal.id;
+        proposal.updatedAt = nowIso;
+        queued++;
+      } else if (proposal.state === "pending" || proposal.state === "confirming") {
+        proposal.state = "expired";
+        proposal.updatedAt = nowIso;
+        this.dropProposalDraft(proposal.id);
+        expired++;
+      }
+    }
+    return { expired, queued };
   }
-  purgeProposals(): never {
-    throw notYet("purgeProposals");
+
+  purgeProposals(beforeIso: string): number {
+    const before = Date.parse(beforeIso);
+    let removed = 0;
+    for (const [id, proposal] of [...this.state.proposals]) {
+      if (proposal.state === "pending" || proposal.state === "confirming") continue;
+      if (Date.parse(proposal.updatedAt) < before) {
+        this.state.proposals.delete(id);
+        removed++;
+      }
+    }
+    return removed;
   }
-  addressesSentTo(): never {
-    throw notYet("addressesSentTo");
+
+  addressesSentTo(addresses: string[]): Set<string> {
+    const wanted = new Set(addresses.map((a) => a.trim().toLowerCase()));
+    const found = new Set<string>();
+    for (const row of this.state.rows) {
+      if (this.roleOf(row.accountId, row.folder) !== "sent") continue;
+      for (const a of [...row.message.to, ...row.message.cc]) {
+        const key = a.address.trim().toLowerCase();
+        if (wanted.has(key)) found.add(key);
+      }
+    }
+    return found;
   }
-  getTranslation(): never {
-    throw notYet("getTranslation");
+
+  getTranslation(messageId: string, targetLanguage: string): TranslationRecord | null {
+    const row = this.state.translations.get(translationKey(messageId, targetLanguage));
+    return row ? { ...row } : null;
   }
-  putTranslation(): never {
-    throw notYet("putTranslation");
+
+  putTranslation(row: TranslationRecord): void {
+    this.transaction(() => {
+      this.state.translations.set(translationKey(row.messageId, row.targetLanguage), { ...row });
+      const extra = this.state.translations.size - TRANSLATION_CACHE_ROWS;
+      if (extra <= 0) return;
+      const oldest = [...this.state.translations.entries()]
+        .sort(([ka, a], [kb, b]) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : ka < kb ? -1 : 1))
+        .slice(0, extra);
+      for (const [key] of oldest) this.state.translations.delete(key);
+    });
   }
-  clearTranslations(): never {
-    throw notYet("clearTranslations");
+
+  clearTranslations(): number {
+    const removed = this.state.translations.size;
+    this.state.translations.clear();
+    return removed;
+  }
+
+  /** Translations follow their message: dropped with every removed row (as SQLite deleteRows). */
+  private dropOrphanTranslations(): void {
+    const ids = new Set(this.state.rows.map((r) => r.id));
+    for (const [key, row] of [...this.state.translations]) {
+      if (!ids.has(row.messageId)) this.state.translations.delete(key);
+    }
   }
 
   /** A live outbox row holds the draft (done rows are deleted). */
@@ -1045,6 +1185,7 @@ export class InMemoryMailStore implements MailStore {
       this.state.rows = this.state.rows.filter((r) => !(r.accountId === accountId && r.folder === path));
       this.state.syncStates.delete(stateKey(accountId, path));
     }
+    this.dropOrphanTranslations();
     return { removed };
   }
 
@@ -1123,6 +1264,7 @@ export class InMemoryMailStore implements MailStore {
         row.isFlagged = row.flagDesired ?? row.isFlagged;
         row.uid = occupant.uid;
         this.state.rows = this.state.rows.filter((r) => r !== occupant);
+        this.dropOrphanTranslations();
       }
     };
     for (const uid of uids) {
@@ -1871,5 +2013,14 @@ export function composeHarness(options: { now?: string } = {}) {
   };
   /** Moves the clock forward. */
   const advance = (ms: number) => clock.set(new Date(clock.now().getTime() + ms));
-  return Object.assign(harness, { ...deps, deps, drafts, sent, advance, sleeps });
+  /** Agent proposal deps (slice 3c): the send cap, undone ids, numbered view tokens and a vault switch. */
+  const proposal = { vaultOpen: true, tokens: 0 };
+  const proposalDeps: ProposalDeps = {
+    ...deps,
+    rate: new SendRateLimit(clock),
+    undone: new UndoneSends(clock),
+    randomToken: () => `tok${String(++proposal.tokens).padStart(40, "0")}`,
+    vaultReady: () => proposal.vaultOpen,
+  };
+  return Object.assign(harness, { ...deps, deps, drafts, sent, advance, sleeps, proposal, proposalDeps });
 }
