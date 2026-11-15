@@ -30,13 +30,16 @@ export type ServerCopyCheck = {
 /**
  * True when the server copy should be written now. Never without UIDPLUS or
  * a Drafts folder (each copy would be left behind); never for a send or a
- * discard; never when the server already holds this revision. With
+ * discard; never when the server already holds this revision, nor before
+ * the owner's first save (revision 1 has no server copy to follow). With
  * attachments only on close and Save draft; a tick only after 30 s idle.
  */
 export function serverCopyDue(check: ServerCopyCheck): boolean {
   if (!check.uidplus || !check.hasDraftsFolder) return false;
   if (check.reason === "send" || check.reason === "discard") return false;
   if (check.serverRevision !== null && check.serverRevision >= check.revision) return false;
+  // Revision 1 is the draft as created (an import does not bump it): the owner has not saved it yet.
+  if (check.serverRevision === null && check.revision <= 1) return false;
   if (check.reason === "close" || check.reason === "save") return true;
   if (check.hasAttachments) return false;
   const idle = Date.parse(check.now) - Date.parse(check.updatedAt);

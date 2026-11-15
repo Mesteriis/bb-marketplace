@@ -8,6 +8,7 @@ const RAW = [
   "From: Invented Sender <sender@example.org>",
   "Reply-To: Desk <desk@example.org>, other@example.org",
   "To: owner@example.org",
+  "Bcc: Hidden <hidden@example.org>",
   "Subject: Invented",
   "Message-ID: <orig-1@example.org>",
   "MIME-Version: 1.0",
@@ -80,6 +81,7 @@ describe("createOriginalReader", () => {
       { name: "Desk", address: "desk@example.org" },
       { name: null, address: "other@example.org" },
     ]);
+    expect(original.bcc).toEqual([{ name: "Hidden", address: "hidden@example.org" }]);
     expect(original.html).toContain("cid:logo@example.org");
     expect(original.attachments).toHaveLength(2);
   });

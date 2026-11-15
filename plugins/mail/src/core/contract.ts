@@ -41,7 +41,7 @@ export const UPLOAD_CHUNK_BYTES = 512 * 1024;
 const CHUNK_BASE64_MAX = Math.ceil(UPLOAD_CHUNK_BYTES / 3) * 4;
 
 const okOutput = z.object({ ok: z.boolean() });
-const composeWarning = z.enum(["original_unavailable", "attachments_left_out"]).nullable();
+const composeWarning = z.enum(["original_unavailable", "attachments_left_out", "original_kept"]).nullable();
 const smtpSettingsInput = z.object({
   accountId: idInput,
   host: hostInputSchema,
@@ -242,9 +242,12 @@ export const rpcSchemas = {
       subject: z.string().max(998).refine(noLineBreaks, NO_LINE_BREAKS),
       doc: composeDocInputSchema,
       saveToServer: z.boolean().optional(),
+      /** The editor's one-time load of `import`: not an edit (no revision bump, no server copy due). */
+      imported: z.boolean().optional(),
     }),
     output: z.union([
-      z.object({ revision: z.number().int() }),
+      /** originalKept: the import lost content, so the continued foreign draft stays on the server. */
+      z.object({ revision: z.number().int(), originalKept: z.literal(true).optional() }),
       z.object({ conflict: z.literal(true), revision: z.number().int() }),
     ]),
   },

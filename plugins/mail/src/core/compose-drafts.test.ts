@@ -24,6 +24,13 @@ describe("serverCopyDue", () => {
     expect(serverCopyDue(check({ serverRevision: null }))).toBe(true);
   });
 
+  it("never copies a draft the owner has not saved yet (revision 1, no copy)", () => {
+    for (const reason of ["tick", "close", "save"] as const) {
+      expect(serverCopyDue(check({ revision: 1, serverRevision: null, reason }))).toBe(false);
+    }
+    expect(serverCopyDue(check({ revision: 2, serverRevision: null }))).toBe(true);
+  });
+
   it("waits 30 s after the last change before a tick copies it", () => {
     expect(serverCopyDue(check({ now: at(SERVER_COPY_IDLE_MS - 1) }))).toBe(false);
     expect(serverCopyDue(check({ now: at(0) }))).toBe(false);

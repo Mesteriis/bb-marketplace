@@ -242,6 +242,73 @@ function safeHref(raw: unknown): string | null {
   return url.href.length > HREF_MAX ? null : url.href;
 }
 
+const KEPT_NODES = new Set(["doc", "text", "hardBreak", ...BLOCK_TYPES]);
+const KEPT_MARKS = new Set(["bold", "italic", "underline", "link"]);
+
+/**
+ * True when normalizeDoc would drop something of this document: a node or
+ * mark outside the schema, or a link whose href it refuses. Attributes the
+ * renderer ignores (TipTap's list start, link target) do not count.
+ */
+export function docLosesContent(input: DocNodeInput): boolean {
+  const stack: DocNodeInput[] = [input];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (!KEPT_NODES.has(node.type)) return true;
+    for (const mark of node.marks ?? []) {
+      if (!KEPT_MARKS.has(mark.type)) return true;
+      if (mark.type === "link" && safeHref(mark.attrs?.href) === null) return true;
+    }
+    stack.push(...(node.content ?? []));
+  }
+  return false;
+}
+
+/** Elements whose content the editor keeps as it is (or, for div and span, as a paragraph or plain text). */
+const FITTING_TAGS = new Set([
+  "html", "head", "body", "meta", "title", "p", "br", "div", "span",
+  "ul", "ol", "li", "blockquote", "b", "strong", "i", "em", "u", "a",
+]);
+/** Attributes that carry no formatting or content. */
+const FITTING_ATTRS = new Set(["href", "target", "rel", "class", "id", "dir", "lang", "name", "title", "charset", "content", "http-equiv", "type", "start"]);
+
+/**
+ * True when HTML (a foreign draft's body) fits the editor's schema, so
+ * loading it into the composer loses nothing: only the tags and attributes
+ * above, and links the editor keeps. Anything else (an image, a table, a
+ * heading, inline styles, a font) means the editor would drop it. A plain
+ * scan, no DOM: false on any doubt.
+ */
+export function htmlFitsDoc(html: string): boolean {
+  const source = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<!doctype[^>]*>/gi, "");
+  if (/<!--|<!\[|<\?/.test(source)) return false;
+  const tag = /<\/?\s*([A-Za-z][A-Za-z0-9-]*)([^>]*)>/g;
+  for (const match of source.matchAll(tag)) {
+    const name = match[1]!.toLowerCase();
+    if (!FITTING_TAGS.has(name)) return false;
+    const attrs = match[2] ?? "";
+    const attr = /([^\s"'=/<>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+    for (const a of attrs.matchAll(attr)) {
+      const key = a[1]!.toLowerCase();
+      if (!FITTING_ATTRS.has(key)) return false;
+      if (key === "href" && name === "a") {
+        const value = decodeBasicEntities(a[2] ?? a[3] ?? a[4] ?? "");
+        if (safeHref(value) === null) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function decodeBasicEntities(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
 /** The server-built document: one paragraph per line, then the quote (if any) as a blockquote. */
 export function docFromLines(lines: string[], quote?: string[]): ComposeDoc {
   const content: ComposeBlock[] = lines.map(lineParagraph);

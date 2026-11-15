@@ -58,6 +58,7 @@ function typesAndHrefs(doc: EditorDoc) {
 function mount(props: Partial<Parameters<typeof ComposeEditor>[0]> = {}) {
   let editor: Editor | null = null;
   const docs: EditorDoc[] = [];
+  const imports: EditorDoc[] = [];
   const files: File[][] = [];
   const view = render(
     <ComposeEditor
@@ -69,11 +70,12 @@ function mount(props: Partial<Parameters<typeof ComposeEditor>[0]> = {}) {
       onReady={(e) => {
         editor = e;
       }}
+      onImported={(doc) => imports.push(doc)}
       onLinkShortcut={() => undefined}
       {...props}
     />,
   );
-  return { view, docs, files, editor: () => editor! };
+  return { view, docs, imports, files, editor: () => editor! };
 }
 
 describe("cleanEditorHtml", () => {
@@ -92,11 +94,11 @@ describe("ComposeEditor", () => {
   it("imports quoted hostile HTML as a blockquote with no image, script, style or javascript: link, and loads nothing", () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
-    const { view, docs, editor } = mount({
+    const { view, imports, editor } = mount({
       initialDoc: { type: "doc", content: [{ type: "paragraph" }, { type: "paragraph", content: [{ type: "text", text: "Ada wrote:" }] }] },
       importFrom: { html: HOSTILE, into: "quote" },
     });
-    const doc = docs.at(-1)!;
+    const doc = imports.at(-1)!;
     const { types, hrefs, text } = typesAndHrefs(doc);
     expect(types.has("blockquote")).toBe(true);
     expect([...types].some((t) => /image|img/i.test(t))).toBe(false);
@@ -113,9 +115,12 @@ describe("ComposeEditor", () => {
     vi.unstubAllGlobals();
   });
 
-  it("imports a continued draft's HTML as the body, once", () => {
-    const { docs, editor, view } = mount({ importFrom: { html: "<p>Draft <i>body</i></p>", into: "body" } });
+  it("imports a continued draft's HTML as the body, once, and not as an edit", () => {
+    const { docs, imports, editor, view } = mount({ importFrom: { html: "<p>Draft <i>body</i></p>", into: "body" } });
     expect(editor().getText()).toBe("Draft body");
+    expect(docs).toEqual([]);
+    expect(imports).toHaveLength(1);
+    expect(imports[0]).toEqual(editor().getJSON());
     const count = docs.length;
     view.rerender(
       <ComposeEditor

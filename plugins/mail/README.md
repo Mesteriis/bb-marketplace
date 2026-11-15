@@ -75,7 +75,9 @@ after a 10-second Undo window. Agents cannot send, draft or reply.
   copies of what you sent (appended to Sent, except on Gmail, which keeps
   its own). It expunges only its own superseded drafts: after saving a newer
   copy, after a send or a discard, it removes the previous copy it wrote —
-  or the one foreign draft you continued — by UID, on servers with UIDPLUS.
+  or the one foreign draft you continued, when it was read in full (body,
+  every attachment within the cap, nothing the editor cannot hold; any other
+  stays on the server beside your copy) — by UID, on servers with UIDPLUS.
   It never marks anything else `\Deleted`. Details, the .eml and attachment
   downloads and every other fetch use `BODY.PEEK` and never mark mail read.
 - Agent tools `mail_search` and `mail_read` and the `mail` skill, off by

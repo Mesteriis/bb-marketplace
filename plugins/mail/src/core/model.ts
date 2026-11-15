@@ -416,6 +416,8 @@ export type OutgoingMessage = {
 /** What a reply or forward reads from the original on the server. */
 export type OriginalMessage = {
   replyTo: MailAddress[];
+  /** A Drafts message's Bcc (only a draft keeps one). */
+  bcc: MailAddress[];
   html: string | null;
   attachments: OutgoingAttachment[];
 };

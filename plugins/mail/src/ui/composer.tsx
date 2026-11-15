@@ -42,7 +42,7 @@ import { stopEscape } from "./shortcuts.ts";
 /** Typing rests this long before the draft is saved. */
 export const AUTOSAVE_MS = 1_500;
 
-export type ComposeWarningKind = "original_unavailable" | "attachments_left_out" | null;
+export type ComposeWarningKind = "original_unavailable" | "attachments_left_out" | "original_kept" | null;
 
 export interface ComposerSaveInput {
   draftId: string;
@@ -54,9 +54,11 @@ export interface ComposerSaveInput {
   subject: string;
   doc: EditorDoc;
   saveToServer?: boolean;
+  /** The editor's one-time load of the draft's import: not an edit. */
+  imported?: boolean;
 }
 
-export type ComposerSaveResult = { revision: number } | { conflict: true; revision: number };
+export type ComposerSaveResult = { revision: number; originalKept?: true } | { conflict: true; revision: number };
 
 /** The RPC surface the composer needs, injected by the host adapter. */
 export interface ComposerPorts {
@@ -135,12 +137,16 @@ function docIsEmpty(doc: EditorDoc): boolean {
   return walk(doc);
 }
 
+const ORIGINAL_KEPT_TEXT =
+  "The original draft stays on the server: it could not be loaded in full, so this draft is saved beside it.";
+
 function warningText(warning: ComposeWarningKind, dropped: readonly string[]): string[] {
   const lines: string[] = [];
   if (warning === "original_unavailable") {
     lines.push("The original message could not be read from the server, so its attachments and Reply-To are left out.");
   }
   if (warning === "attachments_left_out") lines.push("Some attachments of the original were too large and are left out.");
+  if (warning === "original_kept") lines.push(ORIGINAL_KEPT_TEXT);
   if (dropped.length > 0) lines.push(`Left out: ${dropped.join(", ")}`);
   return lines;
 }
@@ -186,6 +192,8 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   const [sendProblem, setSendProblem] = useState<string | null>(null);
   const [escapeOpen, setEscapeOpen] = useState(false);
   const [closing, setClosing] = useState(false);
+  /** The import lost content: the continued foreign draft stays on the server. */
+  const [originalKept, setOriginalKept] = useState(false);
 
   // Latest values for saves that run after a render.
   const fields = useRef({ accountId, to, cc, bcc, subject, attachments });
@@ -217,8 +225,8 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
     timer.current = null;
   };
 
-  /** One save at a time, in order. Resolves "saved", "conflict" or "error". */
-  const save = (server: boolean): Promise<"saved" | "conflict" | "error"> => {
+  /** One save at a time, in order. Resolves "saved", "conflict" or "error". `imported`: the editor's load of the import. */
+  const save = (server: boolean, imported = false): Promise<"saved" | "conflict" | "error"> => {
     clearTimer();
     const run = async (): Promise<"saved" | "conflict" | "error"> => {
       if (conflictRef.current !== null) return "conflict";
@@ -236,6 +244,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           subject: current.subject,
           doc: doc.current,
           ...(server ? { saveToServer: true } : {}),
+          ...(imported ? { imported: true } : {}),
         });
         if ("conflict" in result) {
           const next = { revision: result.revision, queued: false };
@@ -245,6 +254,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           return "conflict";
         }
         revision.current = result.revision;
+        if (result.originalKept === true) setOriginalKept(true);
         savedVersion.current = Math.max(savedVersion.current, at);
         setSaveState(version.current === at ? { kind: "saved" } : { kind: "unsaved" });
         return "saved";
@@ -465,6 +475,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
 
   const hasDragFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
   const lines = warningText(props.warning ?? null, props.dropped ?? []);
+  if (originalKept && !lines.includes(ORIGINAL_KEPT_TEXT)) lines.push(ORIGINAL_KEPT_TEXT);
   const noRecipients = [to, cc, bcc].every((f) => f.chips.length === 0 && f.text.trim() === "");
   const page = props.layout === "page";
 
@@ -634,7 +645,10 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           }}
           onFiles={addFiles}
           onReady={setEditor}
-          onImported={() => void save(false)}
+          onImported={(next) => {
+            doc.current = next;
+            void save(false, true);
+          }}
           onLinkShortcut={() => setLinkOpen(true)}
         />
         <AttachmentChips

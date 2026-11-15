@@ -1,6 +1,6 @@
 // OriginalReader: what a reply or forward needs from the original that the
 // store does not keep (Reply-To of rows synced before it was stored, the
-// HTML to quote, the attachments to forward). The raw message is fetched
+// HTML to quote, the attachments to forward, a continued draft's Bcc). The raw message is fetched
 // with the 3a guards (read-only session, BODY.PEEK, UIDVALIDITY, size and
 // Message-ID checks, 50 MB cap) and parsed by the plugin's one MIME parser.
 // File names and types come out sanitized, so the composer and the builder
@@ -44,7 +44,12 @@ export function createOriginalReader(deps: RawDeps): OriginalReader {
           contentId: contentId === "" || /[\r\n\u0000]/.test(contentId) ? null : contentId,
         };
       });
-      return { replyTo: addresses(parsed.replyTo), html: parsed.html ?? null, attachments };
+      return {
+        replyTo: addresses(parsed.replyTo),
+        bcc: addresses(parsed.bcc),
+        html: parsed.html ?? null,
+        attachments,
+      };
     },
   };
 }
