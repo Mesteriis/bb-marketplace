@@ -61,3 +61,25 @@ export class UndoBook {
     return this.peek(undoId) !== null;
   }
 }
+
+/**
+ * Undo's second wake (spec resolution 16): after the reverse moves were
+ * queued and the first wake pushed them, the account's next round end wakes
+ * it once more, so the source folder's sync brings a reattached or copied
+ * row back without waiting for the interval.
+ */
+export class RoundWakes {
+  private readonly wanted = new Set<string>();
+
+  constructor(private readonly wake: (accountId: string) => void) {}
+
+  /** Wake the account once more after its next round. */
+  after(accountId: string): void {
+    this.wanted.add(accountId);
+  }
+
+  /** The sync loop's onRoundEnd. */
+  roundEnded(accountId: string): void {
+    if (this.wanted.delete(accountId)) this.wake(accountId);
+  }
+}
