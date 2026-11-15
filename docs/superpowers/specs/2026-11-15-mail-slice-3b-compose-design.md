@@ -986,3 +986,51 @@ Each task ends with `npm run check`; the last also with `npm run build` and
   plugin does not append.
 - Plugin RPC and HTTP body-size limits: none found in BB 0.49.0 host code,
   none documented.
+
+## Resolutions after the builder check
+
+These override the sections above. Items marked *(owner)* wait for the owner's sign-off; until then the recommended form is the plan's default.
+
+1. **Send boundary *(owner)*.** `refusePluginCaller` refuses only `kind: "plugin"`; the app, the `bb` CLI and agents with shell access are all `client` callers, so "only the owner sends" is an accepted limit, not a guarantee. Mitigations: every queued send publishes `outbox-changed` and any open Mail page shows its Undo toast; the Outbox is always reachable; a cap of 10 sends per minute per account.
+2. **No `is_deleted` column.** `fetchFlags` does not return `\Deleted`, and hiding other clients' `\Deleted` mail is out of scope. Drop the column and `markDeleted`. Without UIDPLUS, drafts stay local only.
+3. **Double send.** Outbox id = `requestId`. A partial unique index on `outbox(draft_id)` for live rows is checked in the queueing transaction together with the `baseRevision` compare-and-swap. `compose_save` answers `conflict` while the draft is queued. Undo deletes the outbox row; there is no `cancelled` state.
+4. **Post-DATA errors.** New error kinds:
+   - `rejected_message`: a 5xx after DATA. The send is failed and offers Edit.
+   - `temporary`: a 4xx at any stage. The send is failed and offers Retry.
+   - `unknown`: only when there is no reply after DATA (timeout, socket close, abort).
+5. **Editor schema.** `StarterKit.configure` disables heading, code, codeBlock, strike and horizontalRule. The server strips unknown nodes and marks, keeping their text, instead of refusing the save.
+6. **Restart with queued rows.** On start, overdue `queued` rows become `held`. The Outbox shows them with Send now and Edit; no timer runs.
+7. **Per-account write queue.** The adapter runs APPEND, expunge and SMTP for one account through a single promise queue.
+8. **Blob volume.**
+   - Store `bcc_header TEXT` and splice it in at append time, instead of keeping a second MIME.
+   - With attachments, the server copy is written only on close or Save draft, not on each autosave.
+   - Run `PRAGMA incremental_vacuum` after a row reaches `done`.
+9. **Reply-To.** Migration 4 adds `messages.reply_to_json`, filled by sync. A raw fetch is only the fallback for older rows.
+10. **Abort during a send.** On abort the worker takes no new rows. An in-flight send keeps its own store handle and gets a short drain, so it is not recorded as `unknown`.
+11. **SMTP settings for existing accounts.**
+    - A new SMTP dialog.
+    - `accountSchema.smtpConfigured`.
+    - SMTP fields in `newAccountInputSchema` for Other.
+12. **Stale draft row.** Right after `expungeOwn`, the store drops the old draft row locally with `deleteByUids`, so the draft and the Sent copy do not both show (their `dedup_key` differs).
+13. **Subjects.** Reply strips only the leading run of reply markers, so `Fwd: x` becomes `Re: Fwd: x`. Forward strips only forward markers. The marker list is shared with `normalizeSubject`.
+14. **Reply to one's own sent message.** Reply addresses the original To only; Cc goes only into Reply all.
+15. **Addresses.** Non-ASCII local parts are refused in 3b (no SMTPUTF8). Domains are punycoded in core.
+16. **Bcc.** The MIME is built once without Bcc; a pure core function inserts a folded, ASCII-only `Bcc:` line into the Sent copy only. A test asserts the SMTP bytes contain no Bcc. Gmail's own Sent copy does not show Bcc; this is documented.
+17. **Nits.**
+    - Tests are colocated next to the code.
+    - Toasts stay in `app.tsx`, because `src/ui` cannot import `sonner`.
+    - New tables keep ISO TEXT timestamps.
+    - c, r, a and f are bound by `event.code`.
+    - The architecture allow-list is exactly `@tiptap/react`, `@tiptap/core`, `@tiptap/pm` and `@tiptap/starter-kit`.
+    - The live checks add iCloud `SEARCH HEADER Message-ID`.
+    - Drafts synced from the server are visible to `mail_search`, and the docs say so.
+18. **Dependencies *(owner)*.** nodemailer 10.x (MIT-0, no dependencies) plus the four TipTap packages at 3.32.2, exact pins.
+19. **Expunge exception *(owner)*.** After a newer draft is appended, or after a send or discard, the previous draft copy is removed, under these conditions:
+    - The server must support UIDPLUS, checked by the gateway before any command.
+    - The uid comes from our own APPENDUID, or is the one foreign draft the owner explicitly continued (open question 3), with UIDVALIDITY unchanged.
+    - A Message-ID and size guard fetch runs first.
+    - The command is `UID EXPUNGE` of that single uid, never a plain `EXPUNGE`.
+    - No UIDPLUS means drafts stay local only, and nothing is ever marked `\Deleted`.
+20. **Open questions 1 and 4 *(owner)*.** Recommended:
+    - Upload attachments over chunked RPC (open question 1); the 415 rule on local HTTP is confirmed.
+    - Put the Bcc header in the Sent copy (open question 4).
