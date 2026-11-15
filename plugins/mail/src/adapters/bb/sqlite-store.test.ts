@@ -2552,6 +2552,19 @@ describe.each(storeKinds)("slice-3c store semantics (%s)", (_kind, make) => {
     expect(s.addressesSentTo([]).size).toBe(0);
   });
 
+  it("sentToCount counts Sent mail with the address in To or Cc, once per message", () => {
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Sent", "sent")]);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { to: [{ name: null, address: "bob@example.com" }] })]);
+    s.upsertMessages("acc_1", "Sent", [
+      makeFetchedMessage(1, { messageId: "s1@example.org", to: [{ name: "Bob", address: "Bob@Example.com" }] }),
+      makeFetchedMessage(2, { messageId: "s2@example.org", cc: [{ name: null, address: "bob@example.com" }] }),
+      makeFetchedMessage(3, { messageId: "s3@example.org", to: [{ name: null, address: "carol@example.net" }] }),
+    ]);
+    expect(s.sentToCount("BOB@example.com")).toBe(2);
+    expect(s.sentToCount("nobody@example.com")).toBe(0);
+    expect(s.sentToCount("")).toBe(0);
+  });
+
   describe("translations", () => {
     beforeEach(() => {
       s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Old")]);

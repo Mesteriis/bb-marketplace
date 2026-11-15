@@ -320,6 +320,11 @@ describe("mergeRecord", () => {
     expect(mergeRecord(first, idB, "move", [], t1)).toBe(first);
     expect(mergeRecord(null, idB, "move", [], t1)).toBeNull();
   });
+
+  it("a block that moved nothing still records its rule", () => {
+    const record = mergeRecord(null, idA, "block", [], t0, "rule_1");
+    expect(record).toMatchObject({ id: idA, action: "block", groups: [], ruleId: "rule_1" });
+  });
 });
 
 describe("texts", () => {

@@ -1375,6 +1375,18 @@ export class InMemoryMailStore implements MailStore {
     return found;
   }
 
+  sentToCount(address: string): number {
+    const wanted = address.trim().toLowerCase();
+    const keys = new Set<string>();
+    for (const row of this.state.rows) {
+      if (this.roleOf(row.accountId, row.folder) !== "sent") continue;
+      if ([...row.message.to, ...row.message.cc].some((a) => a.address.trim().toLowerCase() === wanted)) {
+        keys.add(`${row.accountId}\u0000${row.dedupKey}`);
+      }
+    }
+    return keys.size;
+  }
+
   getTranslation(messageId: string, targetLanguage: string): TranslationRecord | null {
     const row = this.state.translations.get(translationKey(messageId, targetLanguage));
     return row ? { ...row } : null;

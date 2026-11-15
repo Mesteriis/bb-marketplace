@@ -2,8 +2,8 @@
 // action across windows, in memory only. Replaced by the next undoable
 // action, consumed by an undo, gone after UNDO_TTL_MS or a restart or plugin
 // reload. It holds message ids and folder paths only, never mail content.
-import type { Clock, MessageAction } from "../../core/index.ts";
-import { mergeRecord, type UndoGroup, type UndoRecord } from "../../core/undo.ts";
+import type { Clock } from "../../core/index.ts";
+import { mergeRecord, type UndoAction, type UndoGroup, type UndoRecord } from "../../core/undo.ts";
 
 export class UndoBook {
   private slot: UndoRecord | null = null;
@@ -18,10 +18,14 @@ export class UndoBook {
     return this.slot;
   }
 
-  /** Records one message_action call's groups under `undoId` (mergeRecord); false when it queued nothing. */
-  record(undoId: string, action: MessageAction, groups: UndoGroup[]): boolean {
-    if (groups.length === 0) return false;
-    this.slot = mergeRecord(this.live(), undoId, action, groups, this.clock.now());
+  /**
+   * Records one undoable call's groups under `undoId` (mergeRecord): a
+   * message action, a snooze, a block (with the rule it added) or a triage
+   * batch. False when it queued nothing and added no rule.
+   */
+  record(undoId: string, action: UndoAction, groups: UndoGroup[], ruleId?: string): boolean {
+    if (groups.length === 0 && ruleId === undefined) return false;
+    this.slot = mergeRecord(this.live(), undoId, action, groups, this.clock.now(), ruleId);
     this.lastId = undoId;
     return true;
   }
