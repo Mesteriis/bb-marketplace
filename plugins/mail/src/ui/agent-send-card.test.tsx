@@ -302,7 +302,7 @@ describe("AgentSendCard", () => {
     expect(openDraft).toHaveBeenCalledWith("draft-9");
   });
 
-  it("presses Send from the host's submit shortcut only when Send is enabled", async () => {
+  it("never presses Send from the host's submit shortcut; Cancel still works", async () => {
     let handler: ((action: string) => boolean) | null = null;
     const { submit, cancel } = await mountReady(view(), {
       registerAction: (h) => {
@@ -313,10 +313,15 @@ describe("AgentSendCard", () => {
       },
     });
     expect(handler!("submit")).toBe(false);
-    expect(submit).not.toHaveBeenCalled();
     await passDwell();
+    expect(sendButton().disabled).toBe(false);
     await act(async () => {
-      expect(handler!("submit")).toBe(true);
+      expect(handler!("submit")).toBe(false);
+    });
+    expect(submit).not.toHaveBeenCalled();
+    // Only a click (or Enter on the focused button, which the browser turns into a click) sends.
+    await act(async () => {
+      fireEvent.click(sendButton());
     });
     expect(submit).toHaveBeenCalledWith("send", TOKEN);
     expect(handler!("cancel")).toBe(true);

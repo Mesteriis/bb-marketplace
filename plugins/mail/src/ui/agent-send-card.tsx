@@ -36,8 +36,8 @@ export interface AgentSendCardProps {
   /** Open the draft in the Mail page's composer (after Open in Mail). */
   openDraft(draftId: string): void;
   /**
-   * The host's form shortcuts (submit, cancel). The handler returns false
-   * when the card did not act, for example while Send is still disabled.
+   * The host's form shortcuts. The card handles only cancel; the handler
+   * returns false for submit, which never presses Send.
    */
   registerAction?: (handler: (action: string) => boolean) => () => void;
 }
@@ -172,18 +172,15 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
     [openDraft, ready, submit],
   );
 
-  // The host's form shortcuts: submit presses Send only when it is enabled.
-  const actions = useRef({ sendEnabled, doSubmit, doCancel });
-  actions.current = { sendEnabled, doSubmit, doCancel };
+  // The host's form shortcuts: only Cancel. The submit shortcut never
+  // presses Send; Send takes a click (or Enter) on the Send button itself.
+  const actions = useRef({ doCancel });
+  actions.current = { doCancel };
   useEffect(() => {
     if (registerAction === undefined) return;
     return registerAction((action) => {
       if (action === "cancel") {
         void actions.current.doCancel();
-        return true;
-      }
-      if (action === "submit" && actions.current.sendEnabled) {
-        void actions.current.doSubmit("send");
         return true;
       }
       return false;
