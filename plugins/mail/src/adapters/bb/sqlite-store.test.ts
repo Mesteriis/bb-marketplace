@@ -2114,6 +2114,20 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       expect(s.getOutbox("future")!.state).toBe("queued");
     });
 
+    it("peeks the next due row without claiming it, and claims one chosen row only while it is due", () => {
+      s.createDraft(newDraft({ id: "d_3" }));
+      s.queueOutbox(newOutbox({ id: "future", draftId: "d_3", sendAfter: later(60_000) }), 1);
+      s.queueOutbox(newOutbox({ id: "late", sendAfter: later(9_000) }), 1);
+      const now = later(10_000);
+      expect(s.nextDueOutbox(now, [])).toMatchObject({ id: "late", state: "queued", attempts: 0 });
+      expect(s.nextDueOutbox(now, ["acc_1"])).toBeNull();
+      expect(s.claimDueOutbox(now, [], "future")).toBeNull();
+      expect(s.getOutbox("future")!.state).toBe("queued");
+      expect(s.claimDueOutbox(now, [], "late")).toMatchObject({ id: "late", state: "sending", attempts: 1 });
+      expect(s.claimDueOutbox(now, [], "late")).toBeNull();
+      expect(s.nextDueOutbox(now, [])).toBeNull();
+    });
+
     it("recovers on start: sending → unknown, overdue queued → held, appending → sent", () => {
       for (const id of ["d_2", "d_3", "d_4", "d_5"]) s.createDraft(newDraft({ id }));
       s.queueOutbox(newOutbox({ id: "sending", sendAfter: later(1) }), 1);

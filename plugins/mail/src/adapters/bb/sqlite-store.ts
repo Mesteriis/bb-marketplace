@@ -706,6 +706,19 @@ export function createSqliteStore(db: Database.Database): MailStore {
   );
   const draftById = db.prepare<[string], DraftRow>("SELECT * FROM compose_drafts WHERE id = ?");
   const outboxById = db.prepare<[string], OutboxRow>(`SELECT ${OUTBOX_COLUMNS} FROM outbox WHERE id = ?`);
+  /** The oldest due queued row of an account not busy (with onlyId, that row only), or null. */
+  const dueOutboxId = (now: string, busyAccounts: string[], onlyId?: string): string | null => {
+    const due = db
+      .prepare<[{ now: string; busy: string; only: string | null }], { id: string }>(
+        `SELECT id FROM outbox
+         WHERE state = 'queued' AND send_after <= @now
+           AND account_id NOT IN (SELECT value FROM json_each(@busy))
+           AND (@only IS NULL OR id = @only)
+         ORDER BY send_after, created_at, id LIMIT 1`,
+      )
+      .get({ now, busy: JSON.stringify(busyAccounts), only: onlyId ?? null });
+    return due ? due.id : null;
+  };
   const draftHeld = db.prepare<[string], { one: number }>(
     "SELECT 1 AS one FROM outbox WHERE draft_id = ? LIMIT 1",
   );
@@ -2116,18 +2129,17 @@ export function createSqliteStore(db: Database.Database): MailStore {
       );
     },
 
-    claimDueOutbox(nowIso, busyAccounts) {
+    nextDueOutbox(nowIso, busyAccounts) {
+      const due = dueOutboxId(isoOf(nowIso), busyAccounts);
+      return due === null ? null : toOutbox(outboxById.get(due)!);
+    },
+
+    claimDueOutbox(nowIso, busyAccounts, onlyId) {
       return atomic(() => {
         const now = isoOf(nowIso);
-        const due = db
-          .prepare<[{ now: string; busy: string }], { id: string }>(
-            `SELECT id FROM outbox
-             WHERE state = 'queued' AND send_after <= @now
-               AND account_id NOT IN (SELECT value FROM json_each(@busy))
-             ORDER BY send_after, created_at, id LIMIT 1`,
-          )
-          .get({ now, busy: JSON.stringify(busyAccounts) });
-        if (!due) return null;
+        const id = dueOutboxId(now, busyAccounts, onlyId);
+        if (id === null) return null;
+        const due = { id };
         const changed = db
           .prepare(
             `UPDATE outbox SET state = 'sending', attempts = attempts + 1, updated_at = ?

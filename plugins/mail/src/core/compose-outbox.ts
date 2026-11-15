@@ -1,7 +1,8 @@
 // The outbox: queueing a send, Undo / Edit, the owner's Retry / Send now /
 // Send again / Dismiss, and one worker step. Sending is owner-initiated and never
 // repeated automatically once DATA may have been accepted: a claim moves a
-// row queued → sending by compare-and-swap before SMTP is opened, a restart
+// row queued → sending by compare-and-swap inside the account's write queue,
+// immediately before SMTP is opened, a restart
 // turns `sending` into `unknown`, and the only automatic retry is the
 // idempotent Sent-copy APPEND (search by Message-ID first, 3 tries).
 import { parseAddress } from "./compose-address.ts";
@@ -219,53 +220,75 @@ export async function dismissOutbox(
 
 /**
  * One worker step: a `sent` row's copy step if any, else the oldest due
- * queued row, claimed (CAS → sending) before SMTP is opened. True when it
- * did something, so the worker calls again.
+ * queued row. The claim (CAS queued → sending) happens inside the
+ * account's write queue, immediately before SMTP is opened: while the send
+ * waits behind a sync or an APPEND the row stays `queued`, so Undo still
+ * works, and an abort while waiting leaves it `queued` with no SMTP opened.
+ * True when it did something (or the row it chose went away), so the
+ * worker calls again. `signal` aborts the SMTP send itself; `stop` (the
+ * worker stopping, which aborts `signal` only after a drain) also keeps a
+ * send that has not started yet from starting.
  */
-export async function runOutboxOnce(deps: OutboxDeps, signal: AbortSignal): Promise<boolean> {
-  if (signal.aborted) return false;
+export async function runOutboxOnce(
+  deps: OutboxDeps,
+  signal: AbortSignal,
+  stop: AbortSignal = signal,
+): Promise<boolean> {
+  const stopped = () => signal.aborted || stop.aborted;
+  if (stopped()) return false;
   const pendingCopy = deps.store.listOutbox(null).find((row) => row.state === "sent");
   if (pendingCopy !== undefined) {
     await copyStep(deps, pendingCopy);
     return true;
   }
-  const now = deps.clock.now().toISOString();
-  const claimed = deps.store.claimDueOutbox(now, []);
-  if (claimed === null) return false;
-  publish(deps, claimed, "sending");
+  const due = deps.store.nextDueOutbox(deps.clock.now().toISOString(), []);
+  if (due === null) return false;
 
-  const account = deps.store.getAccount(claimed.accountId);
-  const payload = deps.store.outboxPayload(claimed.id);
-  let config: SmtpConfig | null = null;
+  type Outcome =
+    | { state: "skipped" }
+    | { state: "sent"; row: OutboxRecord; rejected: string[] }
+    | { state: "failed" | "unknown"; row: OutboxRecord; kind: SendErrorKind };
+  let outcome: Outcome;
   try {
-    if (account !== null && payload !== null) config = smtpConfigOf(account, deps);
+    outcome = await deps.queue.run(due.accountId, async (): Promise<Outcome> => {
+      if (stopped()) return { state: "skipped" };
+      const claimed = deps.store.claimDueOutbox(deps.clock.now().toISOString(), [], due.id);
+      if (claimed === null) return { state: "skipped" }; // undone, or no longer due
+      publish(deps, claimed, "sending");
+      const account = deps.store.getAccount(claimed.accountId);
+      const payload = deps.store.outboxPayload(claimed.id);
+      let config: SmtpConfig | null = null;
+      try {
+        if (account !== null && payload !== null) config = smtpConfigOf(account, deps);
+      } catch {
+        config = null;
+      }
+      if (account === null || payload === null || config === null) {
+        // Nothing was sent: SMTP was never opened.
+        return { state: "failed", row: claimed, kind: account?.smtp === null ? "connect" : "auth" };
+      }
+      try {
+        const result = await deps.transport.send(
+          config,
+          { envelopeFrom: claimed.envelopeFrom, envelopeTo: claimed.envelopeTo, raw: payload.mime },
+          signal,
+        );
+        return result.accepted.length === 0
+          ? { state: "failed", row: claimed, kind: "rejected_all" }
+          : { state: "sent", row: claimed, rejected: result.rejected };
+      } catch (error) {
+        return { row: claimed, ...classifySendError(error) };
+      } finally {
+        config.password = "";
+      }
+    });
   } catch {
-    config = null;
+    // The queue itself failed: nothing was claimed, or the claim stays `sending` for recovery.
+    return false;
   }
-  if (account === null || payload === null || config === null) {
-    // Nothing was sent: SMTP was never opened.
-    settle(deps, claimed, "failed", account?.smtp === null ? "connect" : "auth");
-    return true;
-  }
+  if (outcome.state === "skipped") return !stopped();
 
-  let outcome: { state: "sent"; rejected: string[] } | { state: "failed" | "unknown"; kind: SendErrorKind };
-  try {
-    const result = await deps.queue.run(claimed.accountId, () =>
-      deps.transport.send(
-        config,
-        { envelopeFrom: claimed.envelopeFrom, envelopeTo: claimed.envelopeTo, raw: payload.mime },
-        signal,
-      ),
-    );
-    outcome =
-      result.accepted.length === 0
-        ? { state: "failed", kind: "rejected_all" }
-        : { state: "sent", rejected: result.rejected };
-  } catch (error) {
-    outcome = classifySendError(error);
-  }
-  config.password = "";
-
+  const claimed = outcome.row;
   if (outcome.state === "sent") {
     const updatedAt = deps.clock.now().toISOString();
     if (deps.store.transitionOutbox(claimed.id, ["sending"], "sent", { rejected: outcome.rejected, updatedAt })) {
