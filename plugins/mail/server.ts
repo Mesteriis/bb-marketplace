@@ -34,14 +34,41 @@ import {
   sanitizeFileName,
   type RawDeps,
 } from "./src/adapters/bb/downloads.ts";
+import { createAccountQueue } from "./src/adapters/bb/account-queue.ts";
 import { createImapflowGateway, parseMail } from "./src/adapters/bb/imapflow-gateway.ts";
+import { createMimeBuilder } from "./src/adapters/bb/mime-builder.ts";
+import { createOriginalReader } from "./src/adapters/bb/original-reader.ts";
+import { createOutboxWorker, type OutboxWorker } from "./src/adapters/bb/outbox-worker.ts";
+import { createSmtpTransport } from "./src/adapters/bb/smtp-transport.ts";
+import { UploadBook, UploadError } from "./src/adapters/bb/uploads.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
 import { createSyncLoop, type SyncLoop } from "./src/adapters/bb/sync-service.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
 import { describeStructure, readHeaders } from "./src/core/headers.ts";
 import {
+  AccountBusyError,
+  ComposeError,
   MAIL_CHANGED_CHANNEL,
+  OUTBOX_CHANGED_CHANNEL,
   ROLE_NAMES,
+  SendRateLimit,
+  addComposeAttachment,
+  attachmentRoom,
+  cancelSend,
+  isQueued,
+  discardCompose,
+  dismissOutbox,
+  newCompose,
+  openDraft,
+  prepareCompose,
+  queueSend,
+  removeComposeAttachment,
+  resendUnknown,
+  retrySend,
+  saveCompose,
+  sendNow,
+  setSmtp,
+  testSmtp,
   UNTRUSTED_NOTICE,
   addAccount,
   flagChangeOf,
@@ -57,12 +84,13 @@ import {
   resolveMoveDestination,
   roleFolders,
   rpcSchemas,
-  SendError,
   testAccount,
   toPublicAccount,
   type Account,
   type AccountDeps,
   type Clock,
+  type ComposeDeps,
+  type ComposeErrorKind,
   type Folder,
   type ImapGateway,
   type MailAddress,
@@ -70,6 +98,11 @@ import {
   type MailStore,
   type MailTransport,
   type MessageAction,
+  type OutboxChangedPayload,
+  type OutboxNotifier,
+  type OutboxRecord,
+  type OutboxRow,
+  type QueueDeps,
   type MessageSummary,
   type SecretVault,
   type SpecialUse,
@@ -92,6 +125,7 @@ const FETCH_BATCH_SIZE = 50;
 const AGENT_TEXT_CAP = 20_000;
 const TOOL_SEARCH_DEFAULT = 10;
 const MENTION_LIMIT = 20;
+const RECIPIENT_SUGGESTIONS = 10;
 const QUERY_MAX = 500;
 const SYNC_INTERVAL_MAX = 1440;
 const TOOL_NAMES = ["mail_search", "mail_read"] as const;
@@ -108,17 +142,9 @@ export interface MailPluginOverrides {
   gateway?: ImapGateway;
   clock?: Clock;
   transport?: MailTransport;
+  /** The outbox worker's tick; tests shorten it. */
+  outboxIntervalMs?: number;
 }
-
-/** Until the SMTP adapter is wired (slice 3b task 6): every SMTP check fails, nothing is sent. */
-const SMTP_NOT_WIRED: MailTransport = {
-  verify: async () => {
-    throw new SendError("connect", false);
-  },
-  send: async () => {
-    throw new SendError("connect", false);
-  },
-};
 
 function isVaultKey(value: string): boolean {
   try {
@@ -182,12 +208,51 @@ function refusePluginCaller(context: ExperimentalPluginRpcHandlerContext): void 
   if (context.experimental_caller.kind === "plugin") throw refuse("forbidden", PLUGIN_CALLER_MESSAGE);
 }
 
-export const COMPOSE_UNAVAILABLE_MESSAGE = "Sending mail is not available yet";
+export const ACCOUNT_BUSY_MESSAGE = "A message is being sent";
+export const COMPOSE_FAILED_MESSAGE = "The request failed; try again";
 
-/** Every compose and outbox method until it is wired: plugin callers are refused first, as on every write. */
-function composeUnavailable(_input: unknown, context: ExperimentalPluginRpcHandlerContext): never {
-  refusePluginCaller(context);
-  throw refuse("conflict", COMPOSE_UNAVAILABLE_MESSAGE);
+/** ComposeError kinds as SDK refusal codes; the message is the error's fixed text. */
+const COMPOSE_REFUSAL: Record<ComposeErrorKind, "conflict" | "invalid" | "not_found"> = {
+  not_found: "not_found",
+  conflict: "conflict",
+  invalid: "invalid",
+  queued: "conflict",
+  too_large: "invalid",
+  smtp_missing: "conflict",
+  rate_limited: "conflict",
+};
+
+const UPLOAD_REFUSAL: Record<UploadError["code"], "conflict" | "invalid" | "not_found"> = {
+  not_found: "not_found",
+  invalid: "invalid",
+  too_large: "invalid",
+  busy: "conflict",
+};
+
+/**
+ * A compose or outbox failure as a refusal. Core and upload errors carry
+ * fixed text; anything else is logged by kind only and refused with fixed
+ * text, so no address, subject, file name or server reply reaches the page.
+ */
+function composeRefusal(error: unknown, log: (line: string) => void, method: string): Error {
+  if (error instanceof experimental_PluginRpcRefusal) return error;
+  if (error instanceof ComposeError) return refuse(COMPOSE_REFUSAL[error.kind], error.message);
+  if (error instanceof UploadError) return refuse(UPLOAD_REFUSAL[error.code], error.message);
+  log(`${method} failed (${errorKind(error)})`);
+  return refuse("conflict", COMPOSE_FAILED_MESSAGE);
+}
+
+function toOutboxRow(row: OutboxRecord): OutboxRow {
+  return {
+    id: row.id,
+    accountId: row.accountId,
+    subject: row.subject,
+    state: row.state,
+    errorKind: row.errorKind,
+    rejected: row.rejected,
+    sendAfter: row.sendAfter,
+    attempts: row.attempts,
+  };
 }
 
 /** Name and SQLite code of a failure, never its message (it may quote stored content). */
@@ -315,14 +380,18 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       clock,
       notifier: { mailChanged: publishChanged },
     };
+    const transport = overrides.transport ?? createSmtpTransport();
     const accountDeps: AccountDeps = {
       store,
       gateway,
       vault: sealer,
       clock,
       newId: randomUUID,
-      transport: overrides.transport ?? SMTP_NOT_WIRED,
+      transport,
     };
+    // One promise chain per account: sync rounds, APPENDs, expunges and SMTP
+    // sends of an account never overlap (resolution 7).
+    const queue = createAccountQueue();
 
     // Always registered; without a key no password can be sealed or opened, so
     // rounds do nothing until one is saved.
@@ -333,9 +402,57 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         batchSize: FETCH_BATCH_SIZE,
         intervalMinutes: clampInterval(current.syncIntervalMinutes),
       }),
-      { log: (line) => bb.log.info(line), isReady: () => vault !== null },
+      { log: (line) => bb.log.info(line), isReady: () => vault !== null, queue },
     );
-    bb.background.service("sync", { start: (signal) => loop.start(signal) });
+
+    const rawDeps: RawDeps = {
+      store,
+      gateway,
+      vault: sealer,
+      vaultReady: () => vault !== null,
+      messages: { needsKey: NEEDS_KEY_MESSAGE, passwordNeeded: PASSWORD_NEEDED_MESSAGE },
+    };
+    const composeDeps: ComposeDeps = {
+      store,
+      gateway,
+      vault: sealer,
+      clock,
+      newId: randomUUID,
+      builder: createMimeBuilder(),
+      reader: createOriginalReader(rawDeps),
+      queue,
+    };
+    // Ids and states only: never recipients, subjects or content. A finished
+    // send changed Sent (and maybe Drafts): the page reloads, sync fetches it.
+    const outboxNotifier: OutboxNotifier = {
+      outboxChanged: ({ accountId, id, state }) => {
+        bb.realtime.publish(OUTBOX_CHANGED_CHANNEL, { accountId, id, state } satisfies OutboxChangedPayload);
+        if (state === "done" || state === "cancelled") {
+          publishChanged(accountId);
+          loop.wake(accountId);
+        }
+      },
+    };
+    const queueDeps: QueueDeps = { ...composeDeps, notifier: outboxNotifier, rate: new SendRateLimit(clock) };
+    const worker = createOutboxWorker(
+      {
+        ...composeDeps,
+        notifier: outboxNotifier,
+        transport,
+        isReady: () => vault !== null,
+        mailChanged: (accountId) => {
+          publishChanged(accountId);
+          loop.wake(accountId);
+        },
+        log: (line) => bb.log.info(line),
+      },
+      overrides.outboxIntervalMs === undefined ? {} : { intervalMs: overrides.outboxIntervalMs },
+    );
+    bb.background.service("sync", {
+      start: async (signal) => {
+        await Promise.all([loop.start(signal), worker.start(signal)]);
+      },
+    });
 
     // Saving settings does not reload a loaded plugin, so changes apply here. The
     // PluginStatusApi has no way to clear needs-configuration (d.ts:21636-21645): the
@@ -349,17 +466,14 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       if (next.syncIntervalMinutes !== prev.syncIntervalMinutes) loop.reschedule();
     });
 
-    const rawDeps: RawDeps = {
-      store,
-      gateway,
-      vault: sealer,
-      vaultReady: () => vault !== null,
-      messages: { needsKey: NEEDS_KEY_MESSAGE, passwordNeeded: PASSWORD_NEEDED_MESSAGE },
-    };
     const tickets = new TicketBook<DownloadRequest>(clock);
     registerRpc(bb, {
       store,
       accountDeps,
+      composeDeps,
+      queueDeps,
+      uploads: new UploadBook(clock),
+      worker,
       publishChanged,
       loop,
       vaultReady: () => vault !== null,
@@ -382,6 +496,10 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
 type RpcDeps = {
   store: MailStore;
   accountDeps: AccountDeps;
+  composeDeps: ComposeDeps;
+  queueDeps: QueueDeps;
+  uploads: UploadBook;
+  worker: OutboxWorker;
   publishChanged: (accountId: string | null) => void;
   loop: SyncLoop;
   vaultReady: () => boolean;
@@ -532,7 +650,24 @@ function runMessageAction(deps: RpcDeps, input: ActionInput): { groups: ActionGr
 }
 
 function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
-  const { store, accountDeps, publishChanged } = deps;
+  const { store, accountDeps, composeDeps, publishChanged } = deps;
+  const log = (line: string) => bb.log.warn(line);
+  /** Owner-only compose handler: plugin callers refused first, failures as fixed-text refusals. */
+  function owner<I, O>(method: string, run: (input: I) => O | Promise<O>) {
+    return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
+      refusePluginCaller(context);
+      try {
+        return await run(input);
+      } catch (error) {
+        throw composeRefusal(error, log, method);
+      }
+    };
+  }
+  /** A server draft copy was written or removed: the page reloads, sync picks it up. */
+  const mailChangedOn = (accountId: string) => {
+    publishChanged(accountId);
+    deps.loop.wake(accountId);
+  };
   // No method is published as discoverable, and none (message_action and the
   // image methods included) is exposed as a tool, CLI command or mention. They
   // are still reachable by anything that can call local plugin RPC as a client,
@@ -563,7 +698,13 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       },
       accounts_remove: ({ accountId }, context) => {
         refusePluginCaller(context);
-        const removed = removeAccount(accountDeps, accountId);
+        let removed: boolean;
+        try {
+          removed = removeAccount(accountDeps, accountId);
+        } catch (error) {
+          if (error instanceof AccountBusyError) throw refuse("conflict", ACCOUNT_BUSY_MESSAGE);
+          throw error;
+        }
         if (removed) publishChanged(accountId);
         return { removed };
       },
@@ -681,26 +822,91 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         refusePluginCaller(context);
         return { removed: store.disallowImageSender(accountId, address) };
       },
-      // Compose and send (slice 3b): owner only, not available yet.
-      compose_new: composeUnavailable,
-      compose_prepare: composeUnavailable,
-      compose_open: composeUnavailable,
-      compose_save: composeUnavailable,
-      compose_discard: composeUnavailable,
-      compose_attachment_begin: composeUnavailable,
-      compose_attachment_chunk: composeUnavailable,
-      compose_attachment_finish: composeUnavailable,
-      compose_attachment_remove: composeUnavailable,
-      compose_send: composeUnavailable,
-      outbox_list: composeUnavailable,
-      outbox_cancel: composeUnavailable,
-      outbox_send_now: composeUnavailable,
-      outbox_retry: composeUnavailable,
-      outbox_resend: composeUnavailable,
-      outbox_dismiss: composeUnavailable,
-      recipients_suggest: composeUnavailable,
-      accounts_smtp_test: composeUnavailable,
-      accounts_smtp_set: composeUnavailable,
+      // Compose and send (slice 3b). Owner only: every handler refuses plugin
+      // callers first; none is discoverable, a tool, a CLI command or a mention.
+      compose_new: owner("compose_new", ({ accountId }) => newCompose(composeDeps, accountId)),
+      compose_prepare: owner("compose_prepare", (input) => prepareCompose(composeDeps, input)),
+      compose_open: owner("compose_open", (input) => openDraft(composeDeps, input)),
+      compose_save: owner("compose_save", async (input) => {
+        const result = await saveCompose(composeDeps, input);
+        if (input.saveToServer === true && !("conflict" in result)) mailChangedOn(input.accountId);
+        return result;
+      }),
+      compose_discard: owner("compose_discard", async ({ draftId }) => {
+        const draft = store.getDraft(draftId);
+        deps.uploads.dropDraft(draftId);
+        const result = await discardCompose(composeDeps, draftId);
+        if (draft?.serverCopy) mailChangedOn(draft.accountId);
+        return result;
+      }),
+      compose_attachment_begin: owner("compose_attachment_begin", ({ draftId, fileName, mimeType, size }) => {
+        const draft = store.getDraft(draftId);
+        if (draft === null) throw new ComposeError("not_found");
+        if (isQueued(store, draft)) throw new ComposeError("queued");
+        const uploadId = deps.uploads.begin(draftId, { fileName, mimeType, size }, attachmentRoom(store, draftId));
+        return { uploadId };
+      }),
+      compose_attachment_chunk: owner("compose_attachment_chunk", ({ uploadId, offset, dataBase64 }) => ({
+        received: deps.uploads.chunk(uploadId, offset, Buffer.from(dataBase64, "base64")),
+      })),
+      compose_attachment_finish: owner("compose_attachment_finish", ({ uploadId, sha256 }) => {
+        const file = deps.uploads.finish(uploadId, sha256);
+        // The page's name and type are untrusted: only a plain name and an inert type are kept.
+        return addComposeAttachment(store, file.draftId, {
+          fileName: sanitizeFileName(file.fileName, "attachment"),
+          mimeType: safeContentType(file.mimeType),
+          size: file.size,
+          sha256: file.sha256,
+          data: file.data,
+        });
+      }),
+      compose_attachment_remove: owner("compose_attachment_remove", ({ draftId, attachmentId }) => ({
+        removed: removeComposeAttachment(store, draftId, attachmentId),
+      })),
+      compose_send: owner("compose_send", async (input) => {
+        const draft = store.getDraft(input.draftId);
+        if (draft === null) throw new ComposeError("not_found");
+        if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
+        if (store.getAccount(draft.accountId)?.authFailed) throw refuse("conflict", PASSWORD_NEEDED_MESSAGE);
+        const queued = await queueSend(deps.queueDeps, { ...input, origin: "owner" });
+        deps.uploads.dropDraft(input.draftId);
+        deps.worker.wake(draft.accountId);
+        return queued;
+      }),
+      outbox_list: owner("outbox_list", ({ accountId }) => ({
+        rows: store.listOutbox(accountId).map(toOutboxRow),
+      })),
+      outbox_cancel: owner("outbox_cancel", ({ id }) => cancelSend(deps.queueDeps, id)),
+      outbox_send_now: owner("outbox_send_now", ({ id }) => {
+        const result = sendNow(deps.queueDeps, id);
+        deps.worker.wake(null);
+        return result;
+      }),
+      outbox_retry: owner("outbox_retry", ({ id }) => {
+        const result = retrySend(deps.queueDeps, id);
+        deps.worker.wake(null);
+        return result;
+      }),
+      outbox_resend: owner("outbox_resend", ({ id }) => {
+        const result = resendUnknown(deps.queueDeps, id);
+        deps.worker.wake(null);
+        return result;
+      }),
+      outbox_dismiss: owner("outbox_dismiss", ({ id }) => dismissOutbox(deps.queueDeps, id)),
+      recipients_suggest: owner("recipients_suggest", ({ prefix }) => ({
+        suggestions: store.recipientSuggestions(prefix, RECIPIENT_SUGGESTIONS),
+      })),
+      // The account's stored password is used; it is never sent back.
+      accounts_smtp_test: owner("accounts_smtp_test", (input) => {
+        if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
+        return testSmtp(accountDeps, input);
+      }),
+      accounts_smtp_set: owner("accounts_smtp_set", async (input) => {
+        if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
+        const result = await setSmtp(accountDeps, input);
+        if (result.ok) publishChanged(input.accountId);
+        return result;
+      }),
     },
     { experimental_discoverable: false },
   );
@@ -1035,7 +1241,16 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
               throw new PluginCliError(REMOVE_IN_THREAD_MESSAGE, { code: "owner_terminal_only" });
             }
             const { accountId } = positionals;
-            if (!removeAccount(deps.accountDeps, accountId)) throw unknownAccount(accountId);
+            let removed: boolean;
+            try {
+              removed = removeAccount(deps.accountDeps, accountId);
+            } catch (error) {
+              if (error instanceof AccountBusyError) {
+                throw new PluginCliError(ACCOUNT_BUSY_MESSAGE, { code: "account_busy" });
+              }
+              throw error;
+            }
+            if (!removed) throw unknownAccount(accountId);
             deps.publishChanged(accountId);
             if (options.json) return { exitCode: 0, stdout: json({ removed: true, accountId }) };
             return { exitCode: 0, stdout: `Removed ${accountId}.\n` };
