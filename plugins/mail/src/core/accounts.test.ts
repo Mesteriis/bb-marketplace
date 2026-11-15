@@ -210,10 +210,16 @@ describe("addAccount: SMTP", () => {
 
 describe("testSmtp and setSmtp", () => {
   const settings = { accountId: "acc_x", host: " smtp.example.org ", port: 587, security: "starttls" as const };
+  const STORED_SMTP = { host: "smtp.example.org", port: 465, security: "tls" as const, username: null };
 
   beforeEach(() => {
     store.saveAccount(
-      makeStoredAccount({ id: "acc_x", username: "imap-login", passwordSealed: new MarkingVault().seal(PASSWORD) }),
+      makeStoredAccount({
+        id: "acc_x",
+        username: "imap-login",
+        passwordSealed: new MarkingVault().seal(PASSWORD),
+        smtp: STORED_SMTP,
+      }),
     );
   });
 
@@ -222,7 +228,7 @@ describe("testSmtp and setSmtp", () => {
     expect(transport.verified).toEqual([
       { host: "smtp.example.org", port: 587, security: "starttls", username: "imap-login", password: PASSWORD },
     ]);
-    expect(store.getAccount("acc_x")!.smtp).toBeNull();
+    expect(store.getAccount("acc_x")!.smtp).toEqual(STORED_SMTP);
   });
 
   it("reports an unknown account and a refused login without echoing anything", async () => {
@@ -238,7 +244,7 @@ describe("testSmtp and setSmtp", () => {
   it("setSmtp saves only after a passing test, keeping mail and the Sent policy", async () => {
     transport.verifyError = new SendError("auth", false);
     expect((await setSmtp(deps, settings)).ok).toBe(false);
-    expect(store.getAccount("acc_x")!.smtp).toBeNull();
+    expect(store.getAccount("acc_x")!.smtp).toEqual(STORED_SMTP);
     transport.verifyError = null;
     expect(await setSmtp(deps, { ...settings, username: "smtp-login" })).toEqual({ ok: true, reason: null });
     expect(store.getAccount("acc_x")).toMatchObject({
@@ -268,27 +274,38 @@ describe("testSmtp and setSmtp", () => {
       expect(result).toEqual({ ok: false, reason: "Enter the account password to use this SMTP server", signInRequired: true });
     }
     expect(transport.verified).toEqual([]);
-    expect(store.getAccount("acc_x")!.smtp).toBeNull();
+    expect(store.getAccount("acc_x")!.smtp).toEqual(STORED_SMTP);
   });
 
-  it("the stored SMTP host and hosts in the IMAP host's domain need no password", async () => {
+  it("only the stored SMTP host and the IMAP host itself need no password", async () => {
     store.saveAccount({
       ...store.getAccount("acc_x")!,
       smtp: { host: "relay.provider.example.com", port: 465, security: "tls", username: null },
     });
-    for (const host of ["relay.provider.example.com", "RELAY.provider.example.com.", "imap.example.org", "mail.out.example.org", "example.org"]) {
+    for (const host of ["relay.provider.example.com", "RELAY.provider.example.com.", "imap.example.org", "IMAP.example.org."]) {
       expect((await testSmtp(deps, { ...settings, host })).ok, host).toBe(true);
     }
-    for (const host of ["example.org.attacker.net", "badexample.org", "provider.example.com"]) {
+    for (const host of ["smtp.example.org", "example.org", "mail.out.example.org", "example.org.attacker.net", "badexample.org", "provider.example.com"]) {
       expect(await testSmtp(deps, { ...settings, host }), host).toMatchObject({ ok: false, signInRequired: true });
     }
     expect(transport.verified.every((c) => c.password === PASSWORD)).toBe(true);
   });
 
-  it("an IMAP host with two labels trusts only itself, not its whole parent domain", async () => {
-    store.saveAccount({ ...store.getAccount("acc_x")!, host: "example.org" });
-    expect((await testSmtp(deps, { ...settings, host: "example.org" })).ok).toBe(true);
-    expect(await testSmtp(deps, { ...settings, host: "other.org" })).toMatchObject({ signInRequired: true });
+  it("no parent-domain trust: shared suffixes and IP neighbours need the password", async () => {
+    const cases: [string, string][] = [
+      ["example.co.uk", "evil.co.uk"],
+      ["myhome.duckdns.org", "evil.duckdns.org"],
+      ["box.mailhost.example", "attacker.mailhost.example"],
+      ["192.168.1.10", "8.168.1.10"],
+    ];
+    for (const [imap, smtp] of cases) {
+      store.saveAccount({ ...store.getAccount("acc_x")!, host: imap, smtp: null });
+      expect(await testSmtp(deps, { ...settings, host: smtp }), `${imap} → ${smtp}`).toMatchObject({
+        ok: false,
+        signInRequired: true,
+      });
+    }
+    expect(transport.verified).toEqual([]);
   });
 
   it("another host with the password: IMAP must accept it, SMTP gets that password, set stores it sealed", async () => {
@@ -313,7 +330,7 @@ describe("testSmtp and setSmtp", () => {
     expect(result).toEqual({ ok: false, reason: "The IMAP server refused this password" });
     expect(JSON.stringify(result)).not.toContain("wrong-guess");
     expect(transport.verified).toEqual([]);
-    expect(store.getAccount("acc_x")).toMatchObject({ smtp: null, passwordSealed: new MarkingVault().seal(PASSWORD) });
+    expect(store.getAccount("acc_x")).toMatchObject({ smtp: STORED_SMTP, passwordSealed: new MarkingVault().seal(PASSWORD) });
   });
 
   it("iCloud and Gmail keep their preset SMTP server: any other value is refused", async () => {

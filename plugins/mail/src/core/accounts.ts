@@ -229,20 +229,16 @@ function normalizeHost(host: string): string {
 }
 
 /**
- * A host the stored password may go to: the account's stored SMTP host, the
- * IMAP host itself, or (when the IMAP host has three labels or more) a host
- * in the IMAP host's parent domain, so imap.example.org trusts
- * smtp.example.org but example.org trusts only itself.
+ * A host the stored password may go to: exactly the account's stored SMTP
+ * host or its IMAP host. No sibling or parent-domain rule: without a
+ * public-suffix list, "same parent domain" also matches strangers
+ * (example.co.uk → evil.co.uk, x.duckdns.org → y.duckdns.org), so any other
+ * host needs the password typed in the same call.
  */
 export function hostTrusted(account: StoredAccount, host: string): boolean {
   const candidate = normalizeHost(host);
   if (account.smtp !== null && normalizeHost(account.smtp.host) === candidate) return true;
-  const imap = normalizeHost(account.host);
-  if (candidate === imap) return true;
-  const labels = imap.split(".");
-  if (labels.length < 3) return false;
-  const parent = labels.slice(1).join(".");
-  return candidate === parent || candidate.endsWith(`.${parent}`);
+  return candidate === normalizeHost(account.host);
 }
 
 export function toPublicAccount(stored: StoredAccount): Account {
