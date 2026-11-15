@@ -5,6 +5,7 @@ import { buildThreads } from "../../core/threading.ts";
 import type { NewDraft, NewOutboxRow, RemoteFolder } from "../../core/model.ts";
 import type { MailStore, NewProposal, TranslationRecord } from "../../core/ports.ts";
 import { TRANSLATION_CACHE_ROWS } from "../../core/translate.ts";
+import type { UnsubscribeInfo } from "../../core/unsubscribe.ts";
 import {
   InMemoryMailStore,
   makeFetchedMessage,
@@ -3177,6 +3178,626 @@ describe.each(storeKinds)("slice-3d store semantics (%s)", (_kind, make) => {
       );
       expect(s.saveTemplate({ id: "tpl_5", name: "Five", nameKey: "five", doc: TEMPLATE_DOC }, "tpl_x", T0)).toEqual({ id: "tpl_5" });
       expect(s.listTemplates()).toHaveLength(200);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 3e: migration element 8 and the inbox-triage store methods
+// ---------------------------------------------------------------------------
+
+const FOLDERS_3E: RemoteFolder[] = [
+  { path: INBOX, name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+  { path: "Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true },
+  { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
+  { path: "Snoozed", name: "Snoozed", delimiter: "/", specialUse: null, selectable: true },
+];
+
+const INFO: UnsubscribeInfo = {
+  listKey: "weekly.example.com",
+  listName: "Weekly",
+  https: "https://u.example.com/x",
+  oneClick: true,
+  mailto: { address: "leave@example.com", subject: "unsubscribe", body: "" },
+  trust: "covered",
+};
+
+describe("slice-3e migration (SQLite)", () => {
+  it("element 8 on a 3d database: existing rows get NULLs and no new table carries REFERENCES", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 8).forEach((s) => old.exec(s)))();
+    old.prepare(
+      `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+       VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner@example.org', 'sealed', 'other', ?)`,
+    ).run(EPOCH);
+    old.prepare(
+      `INSERT INTO messages (id, account_id, folder, uid, thread_id, from_address, subject, snippet, date, dedup_key)
+       VALUES ('m_old', 'acc_1', 'INBOX', 1, 't_m_old', 'sender@example.org', 'Invented', 'Text', ?, 'id:m_old')`,
+    ).run(T0);
+    old.prepare(
+      `INSERT INTO compose_drafts (id, account_id, kind, message_id, refs_json, to_json, cc_json, bcc_json,
+         subject, doc_json, revision, created_at, updated_at)
+       VALUES ('d_old', 'acc_1', 'new', '<old@example.org>', '[]', '[]', '[]', '[]', 'Invented', '{"type":"doc","content":[]}', 2, ?, ?)`,
+    ).run(T0, T0);
+
+    old.transaction(() => MIGRATIONS.slice(8).forEach((s) => old.exec(s)))();
+
+    const migrated = createSqliteStore(old);
+    migrated.assignThreads("acc_1", new Map());
+    expect(migrated.getAccount("acc_1")!.snoozeFolder).toBeNull();
+    expect(migrated.getDraft("d_old")).toMatchObject({ purpose: null, proposalId: null, revision: 2 });
+    expect(migrated.getUnsubscribeInfo("m_old")).toBeNull();
+    expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
+      expect.objectContaining({ id: "t_m_old", snoozedUntil: null }),
+    ]);
+    const tables = ["snoozes", "block_rules", "unsubscribes", "spam_seen", "triage_batches", "triage_items"];
+    const objects = old
+      .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`)
+      .all(...tables) as { name: string; sql: string }[];
+    expect(objects.map((o) => o.name).sort()).toEqual([...tables].sort());
+    for (const object of objects) expect(object.sql).not.toMatch(/REFERENCES/i);
+  });
+
+  it("saveAccount and setSnoozeFolder store the snooze folder", () => {
+    store.saveAccount(makeStoredAccount({ snoozeFolder: "Snoozed" }));
+    expect(store.getAccount("acc_1")!.snoozeFolder).toBe("Snoozed");
+    store.setSnoozeFolder("acc_1", null);
+    expect(store.getAccount("acc_1")!.snoozeFolder).toBeNull();
+    store.setSnoozeFolder("acc_1", "Snoozed (Makosh)");
+    expect(store.getAccount("acc_1")!.snoozeFolder).toBe("Snoozed (Makosh)");
+  });
+
+  it("deleteAccount deletes its snoozes, unsubscribes, spam_seen and triage rows explicitly, never block rules", () => {
+    store.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org" }));
+    store.saveFolders("acc_1", FOLDERS_3E);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    store.upsertMessages("acc_1", "Spam", [makeFetchedMessage(2, { messageId: "spam@example.org" })]);
+    store.upsertMessages("acc_2", INBOX, [makeFetchedMessage(1, { messageId: "other@example.org" })]);
+    const id = idOf(store, 1);
+    const other = idOf(store, 1, "acc_2");
+    store.createSnoozes([{ messageId: id, accountId: "acc_1", returnTo: INBOX, dueAt: later(3_600_000), state: "moving" }], T0);
+    store.putUnsubscribe({ accountId: "acc_1", listKey: "weekly.example.com", method: "mailto", state: "queued", outboxId: null, requestedAt: T0 });
+    store.addBlockRule("address", "news@example.com", "br_1", T0);
+    const batch = (batchId: string, items: [string, string][]) =>
+      store.createTriageBatch(
+        { id: batchId, threadId: "bb_t", contentHash: "a".repeat(64), summary: null, createdAt: T0, expiresAt: later(86_400_000) },
+        items.map(([messageId, accountId], position) => ({
+          batchId,
+          position,
+          messageId,
+          accountId,
+          action: "archive",
+          snoozeUntil: null,
+          note: null,
+          outcome: null,
+        })),
+      );
+    batch("tb_only_1", [[id, "acc_1"]]);
+    batch("tb_mixed", [[id, "acc_1"], [other, "acc_2"]]);
+    expect(count(db, "spam_seen")).toBe(1);
+
+    store.deleteAccount("acc_1");
+
+    for (const table of ["snoozes", "unsubscribes", "spam_seen"]) expect(count(db, table), table).toBe(0);
+    expect(count(db, "block_rules")).toBe(1);
+    expect(store.getTriageBatch("tb_only_1")).toBeNull();
+    expect(store.getTriageBatch("tb_mixed")!.items.map((i) => i.accountId)).toEqual(["acc_2"]);
+  });
+
+  it("caps stored unsubscribe info at 4 KiB", () => {
+    const big = { ...INFO, listName: "x".repeat(5_000) };
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { unsubscribe: big }), makeFetchedMessage(2, { unsubscribe: INFO })]);
+    expect(store.getUnsubscribeInfo(idOf(store, 1))).toBeNull();
+    expect(store.getUnsubscribeInfo(idOf(store, 2))).toEqual(INFO);
+  });
+
+  it("the filtered membership list stays uncorrelated and on the folder index", () => {
+    const plan = (
+      db
+        .prepare(
+          `EXPLAIN QUERY PLAN SELECT * FROM threads WHERE account_id = 'acc_1'
+             AND threads.id IN (SELECT m.thread_id FROM messages m
+               WHERE m.account_id = 'acc_1' AND m.folder = 'INBOX' AND m.move_pending IS NULL
+                 AND ((m.is_read = 0 AND m.is_flagged = 1) OR m.thread_id = 't_keep'))
+           ORDER BY last_date DESC, id DESC LIMIT 51`,
+        )
+        .all() as { detail: string }[]
+    ).map((r) => r.detail);
+    expect(plan.join("\n")).not.toMatch(/CORRELATED/);
+    expect(plan.join("\n")).toMatch(/messages_folder_pending/);
+  });
+});
+
+describe.each(storeKinds)("slice-3e store semantics (%s)", (_kind, make) => {
+  let s: MailStore;
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org", username: "second@example.org" }));
+    s.saveFolders("acc_1", FOLDERS_3E);
+    s.saveFolders("acc_2", FOLDERS_3E);
+  });
+  const idIn = (folder: string, uid: number, accountId = "acc_1") =>
+    s.localFolderIndex(accountId, folder, EPOCH).find((e) => e.uid === uid)!.id;
+
+  describe("upsertMessages", () => {
+    it("reports inserted rows, not updated, reattached or re-homed ones", () => {
+      const first = s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)]);
+      expect(first).toEqual({ inserted: [idIn(INBOX, 1), idIn(INBOX, 2)], returning: [] });
+      expect(s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { seen: true })])).toEqual({ inserted: [], returning: [] });
+
+      // A folder reset detaches, the same Message-ID reattaches with its id.
+      const kept = idIn(INBOX, 2);
+      s.beginFolderReset("acc_1", INBOX);
+      expect(s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(7, { messageId: "msg-2@example.org" })])).toEqual({
+        inserted: [],
+        returning: [],
+      });
+      expect(idIn(INBOX, 7)).toBe(kept);
+      s.finishFolderReset("acc_1", INBOX);
+
+      // A move without a uid map detaches in the destination; its sync reattaches it.
+      const moving = idIn(INBOX, 7);
+      s.queueMove([moving], "Archive");
+      s.completeMove("acc_1", INBOX, "Archive", null, [7]);
+      expect(s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(30, { messageId: "msg-2@example.org" })])).toEqual({
+        inserted: [],
+        returning: [],
+      });
+      expect(idIn("Archive", 30)).toBe(moving);
+    });
+
+    it("marks an inserted row returning when its dedup key already had a row in the account", () => {
+      s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(1, { messageId: "same@example.org" })]);
+      s.upsertMessages("acc_2", INBOX, [makeFetchedMessage(1, { messageId: "elsewhere@example.org" })]);
+      const result = s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(5, { messageId: "same@example.org" }),
+        makeFetchedMessage(6, { messageId: "elsewhere@example.org" }),
+        makeFetchedMessage(7, { messageId: "same@example.org", size: 999 }),
+      ]);
+      expect(result.inserted).toEqual([idIn(INBOX, 5), idIn(INBOX, 6), idIn(INBOX, 7)]);
+      expect(result.returning).toEqual([idIn(INBOX, 5)]);
+    });
+
+    it("round-trips unsubscribe info and leaves it alone on a fetch without headers", () => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { unsubscribe: INFO }), makeFetchedMessage(2)]);
+      expect(s.getUnsubscribeInfo(idIn(INBOX, 1))).toEqual(INFO);
+      expect(s.getUnsubscribeInfo(idIn(INBOX, 2))).toBeNull();
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+      expect(s.getUnsubscribeInfo(idIn(INBOX, 1))).toEqual(INFO);
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { unsubscribe: null })]);
+      expect(s.getUnsubscribeInfo(idIn(INBOX, 1))).toBeNull();
+      expect(s.getUnsubscribeInfo("m_unknown")).toBeNull();
+    });
+  });
+
+  describe("spam_seen", () => {
+    it("is written by upsert into Spam and by a completed move into Spam, and pruned by time", () => {
+      s.upsertMessages("acc_1", "Spam", [makeFetchedMessage(1, { messageId: "junk@example.org" })]);
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(2, { messageId: "moved@example.org" }), makeFetchedMessage(3)]);
+      const keys = ["mid:junk@example.org:100", "mid:moved@example.org:100", "mid:msg-3@example.org:100"];
+      s.queueMove([idIn(INBOX, 2)], "Spam");
+      s.completeMove("acc_1", INBOX, "Spam", new Map([[2, 40]]), [2]);
+      // Out of Spam again (the owner rescued it): the key stays seen.
+      s.queueMove([idIn("Spam", 40)], INBOX);
+      s.completeMove("acc_1", "Spam", INBOX, new Map([[40, 9]]), [40]);
+      s.deleteByUids("acc_1", "Spam", [1]);
+
+      expect(s.spamSeen("acc_1", keys)).toEqual(new Set(keys.slice(0, 2)));
+      expect(s.spamSeen("acc_2", keys)).toEqual(new Set());
+      expect(s.pruneSpamSeen("2000-01-01T00:00:00.000Z")).toBe(0);
+      expect(s.pruneSpamSeen("2999-01-01T00:00:00.000Z")).toBe(2);
+      expect(s.spamSeen("acc_1", keys)).toEqual(new Set());
+    });
+
+    it("also counts a key held by a junk-role row now", () => {
+      s.upsertMessages("acc_1", "Spam", [makeFetchedMessage(1, { messageId: "junk@example.org" })]);
+      s.pruneSpamSeen("2999-01-01T00:00:00.000Z");
+      expect(s.spamSeen("acc_1", ["mid:junk@example.org:100"])).toEqual(new Set(["mid:junk@example.org:100"]));
+    });
+  });
+
+  describe("blockMatches", () => {
+    const rule = (kind: "address" | "domain", value: string) => ({ id: "br", kind, value, createdAt: T0 });
+    const from = (address: string) => ({ from: { name: null, address } });
+
+    it("lists attached Inbox-role rows of every account, not moving, never Spam-seen or own mail", () => {
+      s.upsertIdentity({ accountId: "acc_1", address: "alias@news.example.com", displayName: null }, T0);
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, from("news@news.example.com")),
+        makeFetchedMessage(2, from("Promo@News.Example.com")),
+        makeFetchedMessage(3, from("friend@example.org")),
+        makeFetchedMessage(4, from("alias@news.example.com")),
+        makeFetchedMessage(5, { ...from("news@news.example.com"), messageId: "rescued@example.org" }),
+        makeFetchedMessage(6, from("news@news.example.com")),
+      ]);
+      s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(1, { ...from("news@news.example.com"), messageId: "arch@example.org" })]);
+      s.upsertMessages("acc_1", "Spam", [makeFetchedMessage(1, { ...from("news@news.example.com"), messageId: "rescued@example.org" })]);
+      s.upsertMessages("acc_2", INBOX, [makeFetchedMessage(1, { ...from("news@sub.news.example.com"), messageId: "b@example.org" })]);
+      s.queueMove([idIn(INBOX, 6)], "Archive");
+
+      const matches = s.blockMatches(rule("domain", "news.example.com"));
+      expect(matches.sort((a, b) => a.id.localeCompare(b.id))).toEqual(
+        [
+          { id: idIn(INBOX, 1), accountId: "acc_1", folder: INBOX },
+          { id: idIn(INBOX, 2), accountId: "acc_1", folder: INBOX },
+          { id: idIn(INBOX, 1, "acc_2"), accountId: "acc_2", folder: INBOX },
+        ].sort((a, b) => a.id.localeCompare(b.id)),
+      );
+      expect(s.blockMatches(rule("address", "promo@news.example.com"))).toEqual([
+        { id: idIn(INBOX, 2), accountId: "acc_1", folder: INBOX },
+      ]);
+      expect(s.blockMatches(rule("address", "owner@example.org"))).toEqual([]);
+    });
+  });
+
+  describe("quick filters", () => {
+    /** Five threads in the Inbox, newest first t5..t1, with one row each unless noted. */
+    function seed(): void {
+      const at = (h: number) => later(h * 3_600_000);
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { date: at(1), seen: false }),
+        makeFetchedMessage(2, { date: at(2), seen: true, flagged: true }),
+        makeFetchedMessage(3, {
+          date: at(3),
+          seen: true,
+          attachments: [{ partId: "2", filename: "a.pdf", mimeType: "application/pdf", size: 10, isInline: false }],
+        }),
+        makeFetchedMessage(4, { date: at(4), seen: false, flagged: true }),
+        makeFetchedMessage(5, { date: at(5), seen: true }),
+        // Thread of 5: an unread reply in Archive does not make it unread in the Inbox.
+      ]);
+      s.upsertMessages("acc_1", "Archive", [
+        makeFetchedMessage(9, { date: at(6), seen: false, flagged: true, messageId: "reply-5@example.org", inReplyTo: "msg-5@example.org" }),
+      ]);
+      s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+    }
+    const listed = (filter?: Parameters<MailStore["listThreads"]>[4], limit = 50) => {
+      const ids: string[] = [];
+      let cursor: string | null = null;
+      do {
+        const page = s.listThreads("acc_1", INBOX, cursor, limit, filter);
+        ids.push(...page.threads.map((t) => t.subject));
+        cursor = page.nextCursor;
+      } while (cursor !== null);
+      return ids;
+    };
+    const subject = (uid: number) => `Invented subject ${uid}`;
+
+    it("narrows by each flag, and by flags together on the same row only", () => {
+      seed();
+      expect(listed()).toEqual([5, 4, 3, 2, 1].map(subject));
+      expect(listed({ unread: true })).toEqual([4, 1].map(subject));
+      expect(listed({ flagged: true })).toEqual([4, 2].map(subject));
+      expect(listed({ attachments: true })).toEqual([3].map(subject));
+      expect(listed({ unread: true, flagged: true })).toEqual([4].map(subject));
+      expect(listed({ unread: true, attachments: true })).toEqual([]);
+    });
+
+    it("pages across a filtered page boundary", () => {
+      seed();
+      expect(listed({ unread: true }, 1)).toEqual([4, 1].map(subject));
+      expect(listed({ flagged: true }, 1)).toEqual([4, 2].map(subject));
+    });
+
+    it("ignores rows waiting to move, and keeps the open thread listed", () => {
+      seed();
+      s.queueMove([idIn(INBOX, 4)], "Archive");
+      expect(listed({ unread: true })).toEqual([1].map(subject));
+      s.markOpened(idIn(INBOX, 1));
+      expect(listed({ unread: true })).toEqual([]);
+      const open = s.getMessage(idIn(INBOX, 1))!.threadId;
+      expect(listed({ unread: true, keep: open })).toEqual([1].map(subject));
+      expect(listed({ keep: open })).toEqual([5, 3, 2, 1].map(subject));
+    });
+
+    it("filters a merged role across accounts", () => {
+      seed();
+      s.upsertMessages("acc_2", INBOX, [makeFetchedMessage(1, { date: later(10 * 3_600_000), seen: false, messageId: "b@example.org" })]);
+      s.assignThreads("acc_2", buildThreads(s.threadingInputs("acc_2")));
+      const all = (filter: Parameters<MailStore["listThreadsAll"]>[3], limit = 50) => {
+        const ids: string[] = [];
+        let cursor: string | null = null;
+        do {
+          const page = s.listThreadsAll("inbox", cursor, limit, filter);
+          ids.push(...page.threads.map((t) => `${t.accountId}:${t.subject}`));
+          cursor = page.nextCursor;
+        } while (cursor !== null);
+        return ids;
+      };
+      expect(all({ unread: true })).toEqual(["acc_2:Invented subject 1", "acc_1:Invented subject 4", "acc_1:Invented subject 1"]);
+      expect(all({ unread: true }, 1)).toEqual(["acc_2:Invented subject 1", "acc_1:Invented subject 4", "acc_1:Invented subject 1"]);
+      expect(all({ flagged: true, unread: true })).toEqual(["acc_1:Invented subject 4"]);
+    });
+  });
+
+  describe("snoozes", () => {
+    const row = (messageId: string, dueAt: string, state: "moving" | "snoozed" | "returning" = "moving", accountId = "acc_1") => ({
+      messageId,
+      accountId,
+      returnTo: INBOX,
+      dueAt,
+      state,
+    });
+
+    it("create, list by due time, update, delete", () => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2), makeFetchedMessage(3)]);
+      const [a, b, c] = [1, 2, 3].map((uid) => idIn(INBOX, uid)) as [string, string, string];
+      expect(s.createSnoozes([row(a, later(3_000)), row(b, later(1_000)), row(c, later(2_000), "snoozed")], T0)).toEqual({ created: 3 });
+      expect(s.listSnoozes("acc_1", { limit: 10 }).map((z) => z.messageId)).toEqual([b, c, a]);
+      expect(s.listSnoozes("acc_1", { dueBefore: later(2_000), limit: 10 }).map((z) => z.messageId)).toEqual([b, c]);
+      expect(s.listSnoozes("acc_1", { limit: 1 }).map((z) => z.messageId)).toEqual([b]);
+      expect(s.listSnoozes("acc_2", { limit: 10 })).toEqual([]);
+
+      expect(s.updateSnooze(a, { state: "returning", returnTo: "Archive" }, later(5))).toBe(true);
+      expect(s.updateSnooze("m_none", { state: "snoozed" }, later(5))).toBe(false);
+      expect(s.listSnoozes("acc_1", { limit: 10 }).find((z) => z.messageId === a)).toEqual({
+        ...row(a, later(3_000), "returning"),
+        returnTo: "Archive",
+      });
+      expect(s.deleteSnoozes([a, b, "m_none"])).toBe(2);
+      expect(s.deleteSnoozes([])).toBe(0);
+      expect(s.listSnoozes("acc_1", { limit: 10 }).map((z) => z.messageId)).toEqual([c]);
+    });
+
+    it("caps live snoozes per account, counting a replaced row once", () => {
+      const many = Array.from({ length: 2_000 }, (_, i) => row(`m_${i}`, later(i)));
+      expect(s.createSnoozes(many, T0)).toEqual({ created: 2_000 });
+      expect(s.createSnoozes([row("m_more", later(1))], T0)).toEqual({ full: true });
+      expect(s.listSnoozes("acc_1", { limit: 3_000 })).toHaveLength(2_000);
+      expect(s.createSnoozes([row("m_0", later(99))], T0)).toEqual({ created: 1 });
+      expect(s.createSnoozes([row("m_other", later(1), "moving", "acc_2")], T0)).toEqual({ created: 1 });
+    });
+
+    it("snoozeViews: in-flight rows first, then snoozed by due time, with where each message is", () => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)]);
+      s.upsertMessages("acc_1", "Snoozed", [makeFetchedMessage(1, { messageId: "z@example.org" })]);
+      const [a, b] = [idIn(INBOX, 1), idIn(INBOX, 2)];
+      const z = idIn("Snoozed", 1);
+      s.queueMove([b], "Snoozed");
+      s.createSnoozes([row(z, later(1_000), "snoozed"), row(a, later(9_000), "returning"), row(b, later(5_000)), row("m_gone", later(1), "snoozed")], T0);
+
+      const views = s.snoozeViews("acc_1", 10);
+      expect(views.map((v) => v.snooze.messageId)).toEqual([b, a, "m_gone", z]);
+      expect(views[0]!.row).toEqual({ folder: INBOX, uid: 2, movePending: "Snoozed" });
+      expect(views[1]!.row).toEqual({ folder: INBOX, uid: 1, movePending: null });
+      expect(views[2]!.row).toBeNull();
+      expect(s.snoozeViews("acc_1", 2).map((v) => v.snooze.messageId)).toEqual([b, a]);
+    });
+
+    it("snoozedUntil is the earliest due time of the thread's rows in the viewed folder", () => {
+      s.upsertMessages("acc_1", "Snoozed", [
+        makeFetchedMessage(1, { date: later(1) }),
+        makeFetchedMessage(2, { date: later(2), inReplyTo: "msg-1@example.org" }),
+      ]);
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(3, { date: later(3) })]);
+      s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+      const [one, two] = [idIn("Snoozed", 1), idIn("Snoozed", 2)];
+      s.createSnoozes([row(one, later(9_000), "snoozed"), row(two, later(4_000), "snoozed")], T0);
+
+      const [thread] = s.listThreads("acc_1", "Snoozed", null, 10).threads;
+      expect(thread!.snoozedUntil).toBe(later(4_000));
+      expect(s.getThread(thread!.id, "Snoozed")!.thread.snoozedUntil).toBe(later(4_000));
+      expect(s.getThread(thread!.id, INBOX)!.thread.snoozedUntil).toBeNull();
+      expect(s.listThreads("acc_1", INBOX, null, 10).threads[0]!.snoozedUntil).toBeNull();
+    });
+
+    it("every message removal deletes the rows' snoozes", () => {
+      s.upsertMessages("acc_1", "Snoozed", [makeFetchedMessage(1), makeFetchedMessage(2), makeFetchedMessage(3)]);
+      const [a, b, c] = [1, 2, 3].map((uid) => idIn("Snoozed", uid)) as [string, string, string];
+      s.createSnoozes([row(a, later(1), "snoozed"), row(b, later(2), "snoozed"), row(c, later(3), "snoozed")], T0);
+      s.deleteByUids("acc_1", "Snoozed", [1]);
+      s.beginFolderReset("acc_1", "Snoozed");
+      s.upsertMessages("acc_1", "Snoozed", [makeFetchedMessage(8, { messageId: "msg-2@example.org" })]);
+      s.finishFolderReset("acc_1", "Snoozed");
+      expect(s.listSnoozes("acc_1", { limit: 10 }).map((z) => z.messageId)).toEqual([b]);
+      s.saveFolders("acc_1", FOLDERS_3E.filter((f) => f.path !== "Snoozed"));
+      expect(s.listSnoozes("acc_1", { limit: 10 })).toEqual([]);
+    });
+  });
+
+  describe("block rules", () => {
+    it("are global: added once per kind and value, listed oldest first, removed by id", () => {
+      expect(s.addBlockRule("address", "news@example.com", "br_1", T0)).toEqual({
+        rule: { id: "br_1", kind: "address", value: "news@example.com", createdAt: T0 },
+        created: true,
+      });
+      expect(s.addBlockRule("address", "news@example.com", "br_2", later(1))).toEqual({
+        rule: { id: "br_1", kind: "address", value: "news@example.com", createdAt: T0 },
+        created: false,
+      });
+      s.addBlockRule("domain", "news@example.com", "br_3", later(2));
+      expect(s.listBlockRules().map((r) => r.id)).toEqual(["br_1", "br_3"]);
+      expect(s.removeBlockRule("br_1")).toBe(true);
+      expect(s.removeBlockRule("br_1")).toBe(false);
+      expect(s.listBlockRules().map((r) => r.id)).toEqual(["br_3"]);
+    });
+  });
+
+  describe("unsubscribe", () => {
+    it("fills info only where NULL and only for the stored UIDVALIDITY; lists unknown bulk rows newest first", () => {
+      const state = { uidValidity: 4, lastUid: 9, syncedSince: EPOCH };
+      s.saveSyncState("acc_1", INBOX, state);
+      const list = { listId: "<l.example.com>", listUnsubscribe: "<mailto:x@example.com>", precedence: null, autoSubmitted: null };
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { bulkHeaders: list, from: { name: "News", address: "news@example.com" } }),
+        makeFetchedMessage(2, { bulkHeaders: list }),
+        makeFetchedMessage(3, { bulkHeaders: list, unsubscribe: INFO }),
+        makeFetchedMessage(4, { bulkHeaders: { ...list, listId: null, listUnsubscribe: null } }),
+      ]);
+      expect(s.unsubscribeUnknown("acc_1", INBOX, null, 10)).toEqual([
+        { uid: 2, from: { name: "Sender", address: "sender@example.org" } },
+        { uid: 1, from: { name: "News", address: "news@example.com" } },
+      ]);
+      expect(s.unsubscribeUnknown("acc_1", INBOX, 2, 10).map((r) => r.uid)).toEqual([1]);
+      expect(s.unsubscribeUnknown("acc_1", INBOX, null, 1).map((r) => r.uid)).toEqual([2]);
+
+      const other = { ...INFO, listKey: "other.example.com" };
+      expect(s.fillUnsubscribe("acc_1", INBOX, 5, [{ uid: 1, info: other }])).toBe(0);
+      expect(s.fillUnsubscribe("acc_1", INBOX, 4, [{ uid: 1, info: other }, { uid: 2, info: null }, { uid: 3, info: other }])).toBe(1);
+      expect(s.getUnsubscribeInfo(idIn(INBOX, 1))).toEqual(other);
+      expect(s.getUnsubscribeInfo(idIn(INBOX, 2))).toBeNull();
+      expect(s.getUnsubscribeInfo(idIn(INBOX, 3))).toEqual(INFO);
+    });
+
+    it("keeps one request per account and list", () => {
+      const request = { accountId: "acc_1", listKey: "l.example.com", method: "mailto" as const, state: "queued" as const, outboxId: "out_1", requestedAt: T0 };
+      s.putUnsubscribe(request);
+      s.putUnsubscribe({ ...request, state: "sent" });
+      expect(s.getUnsubscribe("acc_1", "l.example.com")).toEqual({ ...request, state: "sent" });
+      expect(s.getUnsubscribe("acc_2", "l.example.com")).toBeNull();
+    });
+  });
+
+  describe("notifyRows", () => {
+    it("reads the rows notify and block judge, in the order asked", () => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { bulkHeaders: { listId: null, listUnsubscribe: null, precedence: null, autoSubmitted: null } })]);
+      s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(1, { messageId: "a@example.org", seen: true })]);
+      const [inbox, archived] = [idIn(INBOX, 1), idIn("Archive", 1)];
+      expect(s.notifyRows([archived, "m_none", inbox], later(5))).toEqual([
+        expect.objectContaining({ id: archived, folderRole: "archive", isRead: true, bulk: null, fetchedAt: later(5) }),
+        {
+          id: inbox,
+          accountId: "acc_1",
+          threadId: s.getMessage(inbox)!.threadId,
+          folderRole: "inbox",
+          isRead: false,
+          movePending: null,
+          uid: 1,
+          bulk: false,
+          fromName: "Sender",
+          fromAddress: "sender@example.org",
+          date: "2026-11-10T09:00:00.000Z",
+          fetchedAt: later(5),
+          dedupKey: "mid:msg-1@example.org:100",
+        },
+      ]);
+      expect(s.notifyRows([], T0)).toEqual([]);
+    });
+  });
+
+  describe("triage batches", () => {
+    const batch = (id: string, threadId = "bb_t", createdAt = T0) => ({
+      id,
+      threadId,
+      contentHash: "b".repeat(64),
+      summary: "Invented summary",
+      createdAt,
+      expiresAt: later(86_400_000),
+    });
+    const items = (batchId: string) =>
+      [0, 1].map((position) => ({
+        batchId,
+        position,
+        messageId: `m_${position}`,
+        accountId: "acc_1",
+        action: position === 0 ? ("archive" as const) : ("snooze" as const),
+        snoozeUntil: position === 0 ? null : later(3_600_000),
+        note: position === 0 ? "Invented note" : null,
+        outcome: null,
+      }));
+
+    it("stores a pending batch with its items and moves it by compare-and-swap", () => {
+      s.createTriageBatch(batch("tb_1"), items("tb_1"));
+      expect(s.getTriageBatch("tb_1")).toEqual({
+        batch: {
+          ...batch("tb_1"),
+          state: "pending",
+          viewTokenHash: null,
+          approved: null,
+          createSnoozeFolder: null,
+          updatedAt: T0,
+        },
+        items: items("tb_1"),
+      });
+      expect(s.getTriageBatch("tb_none")).toBeNull();
+
+      expect(s.transitionTriageBatch("tb_1", ["pending"], "pending", { viewTokenHash: "c".repeat(64) }, later(1))).toBe(true);
+      expect(s.transitionTriageBatch("tb_1", ["confirming"], "applying", {}, later(2))).toBe(false);
+      expect(
+        s.transitionTriageBatch("tb_1", ["pending"], "confirming", { approved: [1], createSnoozeFolder: ["acc_1"] }, later(3)),
+      ).toBe(true);
+      expect(s.getTriageBatch("tb_1")!.batch).toMatchObject({
+        state: "confirming",
+        viewTokenHash: "c".repeat(64),
+        approved: [1],
+        createSnoozeFolder: ["acc_1"],
+        updatedAt: later(3),
+      });
+      expect(s.transitionTriageBatch("tb_1", ["confirming"], "confirming", { viewTokenHash: null }, later(4))).toBe(true);
+      expect(s.getTriageBatch("tb_1")!.batch.viewTokenHash).toBeNull();
+
+      s.setTriageOutcomes("tb_1", [{ position: 0, outcome: "done" }, { position: 1, outcome: "not_approved" }, { position: 7, outcome: "done" }]);
+      expect(s.getTriageBatch("tb_1")!.items.map((i) => i.outcome)).toEqual(["done", "not_approved"]);
+    });
+
+    it("history has the day's batches and every unsettled one; start settles applying, pending and confirming", () => {
+      s.createTriageBatch(batch("tb_old", "bb_a", "2026-11-01T00:00:00.000Z"), items("tb_old"));
+      s.createTriageBatch(batch("tb_old_done", "bb_a", "2026-11-01T00:00:00.000Z"), items("tb_old_done"));
+      s.transitionTriageBatch("tb_old_done", ["pending"], "applied", {}, "2026-11-01T00:01:00.000Z");
+      s.createTriageBatch(batch("tb_new", "bb_b", later(1)), items("tb_new"));
+      s.createTriageBatch(batch("tb_apply", "bb_b", later(2)), items("tb_apply"));
+      s.transitionTriageBatch("tb_apply", ["pending"], "applying", {}, later(3));
+      s.createTriageBatch(batch("tb_confirm", "bb_c", later(2)), items("tb_confirm"));
+      s.transitionTriageBatch("tb_confirm", ["pending"], "confirming", {}, later(3));
+
+      const history = s.triageHistory(T0);
+      expect(history.map((h) => `${h.threadId}:${h.state}`).sort()).toEqual(
+        ["bb_a:pending", "bb_b:pending", "bb_b:applying", "bb_c:confirming"].sort(),
+      );
+
+      expect(s.settleTriageAtStart(later(10))).toEqual({ interrupted: 1, expired: 3 });
+      expect(s.getTriageBatch("tb_apply")!.batch).toMatchObject({ state: "interrupted", updatedAt: later(10) });
+      expect(s.getTriageBatch("tb_confirm")!.batch.state).toBe("expired");
+      expect(s.getTriageBatch("tb_old_done")!.batch.state).toBe("applied");
+      expect(s.settleTriageAtStart(later(11))).toEqual({ interrupted: 0, expired: 0 });
+    });
+  });
+
+  describe("deleteAccount", () => {
+    it("drops the account's snoozes, unsubscribes and triage items, keeps block rules", () => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+      s.upsertMessages("acc_2", INBOX, [makeFetchedMessage(1, { messageId: "b@example.org" })]);
+      const [a, b] = [idIn(INBOX, 1), idIn(INBOX, 1, "acc_2")];
+      s.createSnoozes(
+        [
+          { messageId: a, accountId: "acc_1", returnTo: INBOX, dueAt: later(1), state: "moving" },
+          { messageId: b, accountId: "acc_2", returnTo: INBOX, dueAt: later(1), state: "moving" },
+        ],
+        T0,
+      );
+      s.putUnsubscribe({ accountId: "acc_1", listKey: "l", method: "mailto", state: "sent", outboxId: null, requestedAt: T0 });
+      s.addBlockRule("address", "news@example.com", "br_1", T0);
+      s.createTriageBatch(
+        { id: "tb_1", threadId: "bb", contentHash: "a".repeat(64), summary: null, createdAt: T0, expiresAt: later(1) },
+        [{ batchId: "tb_1", position: 0, messageId: a, accountId: "acc_1", action: "archive", snoozeUntil: null, note: null, outcome: null }],
+      );
+
+      s.deleteAccount("acc_1");
+
+      expect(s.listSnoozes("acc_1", { limit: 10 })).toEqual([]);
+      expect(s.listSnoozes("acc_2", { limit: 10 }).map((z) => z.messageId)).toEqual([b]);
+      expect(s.getUnsubscribe("acc_1", "l")).toBeNull();
+      expect(s.getTriageBatch("tb_1")).toBeNull();
+      expect(s.listBlockRules().map((r) => r.id)).toEqual(["br_1"]);
+    });
+  });
+
+  describe("cancelSendPurpose", () => {
+    it("deletes a purpose draft's outbox row and the draft in one go; refuses other drafts and states", () => {
+      s.createDraft(newDraft({ id: "d_unsub", purpose: "unsubscribe" }));
+      s.queueOutbox(newOutbox({ id: "out_unsub", draftId: "d_unsub" }), 1);
+      s.createDraft(newDraft({ id: "d_owner", messageId: "<owner@example.org>" }));
+      s.queueOutbox(newOutbox({ id: "out_owner", draftId: "d_owner", messageId: "<owner@example.org>" }), 1);
+
+      expect(s.cancelSendPurpose("out_owner", ["queued"])).toEqual({ cancelled: false });
+      expect(s.getOutbox("out_owner")).not.toBeNull();
+      expect(s.cancelSendPurpose("out_unsub", ["held"])).toEqual({ cancelled: false });
+      expect(s.getDraft("d_unsub")).toMatchObject({ purpose: "unsubscribe" });
+      expect(s.cancelSendPurpose("out_unsub", ["queued"])).toEqual({ cancelled: true });
+      expect(s.getOutbox("out_unsub")).toBeNull();
+      expect(s.getDraft("d_unsub")).toBeNull();
+      expect(s.cancelSendPurpose("out_none", ["queued"])).toEqual({ cancelled: false });
     });
   });
 });
