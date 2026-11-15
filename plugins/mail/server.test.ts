@@ -2103,6 +2103,50 @@ describe("compose and send", () => {
     await service.done;
   });
 
+  /** A queued send the SMTP server refused (as if the worker had tried it). */
+  async function failedSend(host: Host): Promise<{ draftId: string; revision: number }> {
+    const saved = await savedDraft(host);
+    await call(host, "compose_send", { draftId: saved.draftId, baseRevision: saved.revision, requestId: REQUEST_ID });
+    const store = sqlStore(host);
+    const later = new Date(NOW.getTime() + UNDO_MS).toISOString();
+    expect(store.claimDueOutbox(later, [])?.id).toBe(REQUEST_ID);
+    expect(store.transitionOutbox(REQUEST_ID, ["sending"], "failed", { errorKind: "too_large", updatedAt: later })).toBe(true);
+    return saved;
+  }
+
+  it("Edit on a failed send removes the row and gives the draft back editable", async () => {
+    const host = await loadCompose();
+    const { draftId, revision } = await failedSend(host);
+    await expect(call(host, "outbox_cancel", { id: REQUEST_ID })).resolves.toEqual({ cancelled: true, draftId });
+    expect(sqlStore(host).getOutbox(REQUEST_ID)).toBeNull();
+    expect(outboxStates(host).at(-1)).toBe("cancelled");
+    const { draft } = (await call(host, "compose_open", { draftId })) as { draft: { subject: string; queued: boolean } };
+    expect(draft).toMatchObject({ subject: SUBJECT, queued: false });
+    await expect(
+      call(host, "compose_save", {
+        draftId,
+        baseRevision: revision,
+        accountId: "acc_1",
+        to: [TO],
+        cc: [],
+        bcc: [],
+        subject: "Shorter",
+        doc: DOC,
+      }),
+    ).resolves.toMatchObject({ revision: revision + 1 });
+    expect(host.transport.sent).toEqual([]);
+  });
+
+  it("Discard on a failed send removes the row and its draft", async () => {
+    const host = await loadCompose();
+    const { draftId } = await failedSend(host);
+    await expect(call(host, "outbox_dismiss", { id: REQUEST_ID })).resolves.toEqual({ ok: true });
+    expect(sqlStore(host).getOutbox(REQUEST_ID)).toBeNull();
+    expect(sqlStore(host).getDraft(draftId)).toBeNull();
+    expect(outboxStates(host).at(-1)).toBe("cancelled");
+    expect(host.transport.sent).toEqual([]);
+  });
+
   it("a queued row overdue at start is held until Send now", async () => {
     const host = await loadCompose();
     const { draftId, revision } = await savedDraft(host);

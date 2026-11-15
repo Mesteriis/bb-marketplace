@@ -2926,7 +2926,7 @@ describe("Sending", () => {
     expect(actionsOf("q")).toEqual(["Undo"]);
     expect(actionsOf("h")).toEqual(["Send now", "Edit"]);
     expect(actionsOf("s")).toEqual([]);
-    expect(actionsOf("f")).toEqual(["Retry"]);
+    expect(actionsOf("f")).toEqual(["Retry", "Edit", "Discard"]);
     expect(actionsOf("u")).toEqual(["Send again", "Discard"]);
     expect(actionsOf("n")).toEqual(["Retry copy", "Dismiss"]);
     expect(within(outbox).getByText("Not sent: sign-in refused")).toBeTruthy();
@@ -2934,6 +2934,34 @@ describe("Sending", () => {
 
     fireEvent.click(within(within(outbox).getByRole("listitem", { name: "Subject f" })).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(callsTo(slot, "outbox_retry")[0]?.input).toEqual({ id: "f" }));
+  });
+
+  it("a failed send: Edit reopens its draft, Discard deletes the send and its draft", async () => {
+    const rows = [
+      outboxRow({ id: "f1", state: "failed", errorKind: "too_large" }),
+      outboxRow({ id: "f2", state: "failed", errorKind: "rejected_all" }),
+    ];
+    const slot = render(
+      composeRpc({
+        outbox_list: () => ({ rows }),
+        outbox_cancel: () => ({ cancelled: true, draftId: "d-7" }),
+        outbox_dismiss: () => ({ ok: true }),
+      }),
+    );
+    await slot.findByText("Lunch");
+    await openFolder(slot, /Sent Mail/);
+    const outbox = await slot.findByRole("region", { name: "Outbox" });
+    const rowOf = (id: string) => within(within(outbox).getByRole("listitem", { name: `Subject ${id}` }));
+
+    expect(rowOf("f2").getByText("Edit reopens the draft. Discard deletes the message and its draft.")).toBeTruthy();
+    fireEvent.click(rowOf("f2").getByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(callsTo(slot, "outbox_dismiss")[0]?.input).toEqual({ id: "f2" }));
+    expect(callsTo(slot, "outbox_cancel")).toHaveLength(0);
+
+    fireEvent.click(rowOf("f1").getByRole("button", { name: "Edit" }));
+    await composerRegion(slot, "New message");
+    expect(callsTo(slot, "outbox_cancel")[0]?.input).toEqual({ id: "f1" });
+    expect(callsTo(slot, "compose_open").at(-1)?.input).toEqual({ draftId: "d-7" });
   });
 
   it("an account without SMTP: Compose asks for it, and the dialog tests then saves", async () => {

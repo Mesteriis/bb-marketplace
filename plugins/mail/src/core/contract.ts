@@ -294,7 +294,7 @@ export const rpcSchemas = {
     input: z.object({ accountId: idInput.nullable() }),
     output: z.object({ rows: z.array(outboxRowSchema) }),
   },
-  /** Undo, from queued or held; deletes the row and hands back the draft. */
+  /** Undo from queued, Edit from held or failed; deletes the row and hands back the draft. */
   outbox_cancel: {
     input: z.object({ id: idInput }),
     output: z.object({ cancelled: z.boolean(), draftId: z.string().nullable() }),
@@ -314,7 +314,7 @@ export const rpcSchemas = {
     input: z.object({ id: idInput }),
     output: okOutput,
   },
-  /** From unknown or sent_no_copy. */
+  /** From failed, unknown or sent_no_copy; deletes the row and its draft. */
   outbox_dismiss: {
     input: z.object({ id: idInput }),
     output: okOutput,

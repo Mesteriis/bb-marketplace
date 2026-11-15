@@ -1,5 +1,5 @@
-// The outbox: queueing a send, Undo, the owner's Retry / Send now / Send
-// again / Dismiss, and one worker step. Sending is owner-initiated and never
+// The outbox: queueing a send, Undo / Edit, the owner's Retry / Send now /
+// Send again / Dismiss, and one worker step. Sending is owner-initiated and never
 // repeated automatically once DATA may have been accepted: a claim moves a
 // row queued → sending by compare-and-swap before SMTP is opened, a restart
 // turns `sending` into `unknown`, and the only automatic retry is the
@@ -57,7 +57,7 @@ type Target = OutboxState | "deleted";
 /** The state table. Every store transition is a compare-and-swap over these `from` states. */
 const TRANSITIONS: Record<OutboxEvent, Partial<Record<OutboxState, Target>>> = {
   claim: { queued: "sending" },
-  undo: { queued: "deleted", held: "deleted" },
+  undo: { queued: "deleted", held: "deleted", failed: "deleted" },
   send_now: { held: "queued" },
   accepted: { sending: "sent" },
   failed: { sending: "failed" },
@@ -67,7 +67,7 @@ const TRANSITIONS: Record<OutboxEvent, Partial<Record<OutboxState, Target>>> = {
   copy_failed: { appending: "sent_no_copy" },
   retry: { failed: "queued", sent_no_copy: "sent" },
   resend: { unknown: "queued" },
-  dismiss: { unknown: "deleted", sent_no_copy: "deleted" },
+  dismiss: { unknown: "deleted", sent_no_copy: "deleted", failed: "deleted" },
   recover: { sending: "unknown", queued: "held", appending: "sent" },
   settle: { unknown: "sent" },
 };
@@ -159,7 +159,10 @@ export async function queueSend(
   return { outboxId: queued.row.id, sendAfter: queued.row.sendAfter };
 }
 
-/** Undo: deletes a queued or held row; the draft stays, unchanged. */
+/**
+ * Undo (queued) or Edit (held, failed): deletes the row; the draft stays,
+ * unchanged, and can be saved and sent again.
+ */
 export function cancelSend(
   deps: Pick<QueueDeps, "store" | "notifier">,
   id: string,
@@ -197,7 +200,7 @@ export function resendUnknown(deps: Pick<QueueDeps, "store" | "notifier" | "cloc
   return requeue(deps, id, "resend");
 }
 
-/** Removes an unknown or sent_no_copy row and its draft. */
+/** Removes a failed, unknown or sent_no_copy row and its draft. */
 export async function dismissOutbox(
   deps: Pick<ComposeDeps, "store" | "gateway" | "vault" | "queue"> & { notifier: OutboxNotifier },
   id: string,

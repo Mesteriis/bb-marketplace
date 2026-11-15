@@ -1,8 +1,9 @@
 // The Outbox: sends that are not done yet, at the top of the Sent list.
 // Each row says where the send stands and offers only what is safe from
 // there (the failure matrix): Undo while queued, Send now or Edit when held
-// after a restart, Retry after a failure, Send again or Discard when it may
-// have been sent, Retry copy or Dismiss when the Sent copy failed. Nothing
+// after a restart, Retry, Edit or Discard after a failure, Send again or
+// Discard when it may have been sent, Retry copy or Dismiss when the Sent
+// copy failed. Nothing
 // here resends on its own.
 import type { OutboxRow, SendErrorKind } from "../core/model.ts";
 import { Button } from "@/components/ui/button";
@@ -30,7 +31,7 @@ export function outboxActions(row: Pick<OutboxRow, "state">): OutboxAction[] {
     case "held":
       return ["send_now", "edit"];
     case "failed":
-      return ["retry"];
+      return ["retry", "edit", "dismiss"];
     case "unknown":
       return ["resend", "dismiss"];
     case "sent_no_copy":
@@ -47,6 +48,18 @@ export function outboxActions(row: Pick<OutboxRow, "state">): OutboxAction[] {
 export function outboxActionLabel(row: Pick<OutboxRow, "state">, action: OutboxAction): string {
   if (action === "dismiss" && row.state === "sent_no_copy") return "Dismiss";
   return ACTION_LABELS[action];
+}
+
+/** A line under a row that says what its buttons keep and delete, or null. */
+export function outboxRowHint(row: Pick<OutboxRow, "state">): string | null {
+  switch (row.state) {
+    case "failed":
+      return "Edit reopens the draft. Discard deletes the message and its draft.";
+    case "unknown":
+      return "Discard deletes the message and its draft.";
+    default:
+      return null;
+  }
 }
 
 const REASONS: Record<SendErrorKind, string> = {
@@ -119,6 +132,7 @@ export function OutboxSection({ rows, onAction, pending, marker }: OutboxSection
           const actions = outboxActions(row);
           const attention = row.state === "failed" || row.state === "unknown" || row.state === "sent_no_copy";
           const label = marker(row.accountId);
+          const hint = outboxRowHint(row);
           return (
             <li
               key={row.id}
@@ -138,6 +152,7 @@ export function OutboxSection({ rows, onAction, pending, marker }: OutboxSection
               <p className={cn("text-xs", attention ? "text-destructive" : "text-muted-foreground")}>
                 {outboxStateText(row)}
               </p>
+              {hint !== null ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
               {actions.length > 0 ? (
                 <div className="flex flex-wrap gap-1">
                   {actions.map((action) => (

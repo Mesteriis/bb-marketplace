@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OutboxRow, OutboxState } from "../core/model.ts";
-import { outboxActions, outboxAttention, OutboxSection, outboxStateText } from "./outbox.tsx";
+import { outboxActionLabel, outboxRowHint, outboxActions, outboxAttention, OutboxSection, outboxStateText } from "./outbox.tsx";
 
 installTestPluginRuntime();
 afterEach(cleanup);
@@ -30,11 +30,20 @@ describe("outboxActions", () => {
       sending: [],
       sent: [],
       appending: [],
-      failed: ["retry"],
+      failed: ["retry", "edit", "dismiss"],
       unknown: ["resend", "dismiss"],
       sent_no_copy: ["retry_copy", "dismiss"],
       done: [],
     });
+  });
+
+  it("a failed send can be edited (draft kept) or discarded (draft deleted), and says so", () => {
+    expect(outboxActionLabel({ state: "failed" }, "edit")).toBe("Edit");
+    expect(outboxActionLabel({ state: "failed" }, "dismiss")).toBe("Discard");
+    expect(outboxRowHint({ state: "failed" })).toBe("Edit reopens the draft. Discard deletes the message and its draft.");
+    expect(outboxRowHint({ state: "unknown" })).toBe("Discard deletes the message and its draft.");
+    expect(outboxRowHint({ state: "sent_no_copy" })).toBeNull();
+    expect(outboxRowHint({ state: "held" })).toBeNull();
   });
 
   it("never offers a resend except from unknown", () => {

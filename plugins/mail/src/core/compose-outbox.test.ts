@@ -324,6 +324,43 @@ describe("failure matrix", () => {
     expect(h.store.getOutbox(id)).toBeNull();
   });
 
+  it("Edit from a failure removes the row and hands back the draft, editable and unchanged", async () => {
+    h.transport.answer(new SendError("too_large", true));
+    const { id, draftId, baseRevision } = await queued();
+    h.advance(UNDO_MS);
+    await drain();
+    const before = h.store.getDraft(draftId);
+    expect(cancelSend(h.deps, id)).toEqual({ cancelled: true, draftId });
+    expect(h.store.getOutbox(id)).toBeNull();
+    expect(h.store.getDraft(draftId)).toEqual(before);
+    expect(states().at(-1)).toBe("cancelled");
+    const saved = await saveCompose(h.deps, {
+      draftId,
+      baseRevision,
+      accountId: "acc_1",
+      to: ["Bob <bob@example.com>"],
+      cc: [],
+      bcc: [],
+      subject: "Smaller",
+      doc: { type: "doc", content: [] },
+    });
+    expect(saved).toMatchObject({ revision: baseRevision + 1 });
+    h.advance(UNDO_MS);
+    await drain();
+    expect(h.transport.sent).toHaveLength(1);
+  });
+
+  it("Discard from a failure removes the row and its draft", async () => {
+    h.transport.answer(new SendError("rejected_all", false));
+    const { id, draftId } = await queued();
+    h.advance(UNDO_MS);
+    await drain();
+    await dismissOutbox(h.deps, id);
+    expect(h.store.getOutbox(id)).toBeNull();
+    expect(h.store.getDraft(draftId)).toBeNull();
+    expect(states().at(-1)).toBe("cancelled");
+  });
+
   it("Dismiss removes an unknown row and its draft, reopening nothing", async () => {
     h.transport.answer(new SendError("unknown_after_data", true));
     const { id, draftId } = await queued();
@@ -456,6 +493,9 @@ describe("state table", () => {
     expect(nextOutboxState("unknown", "resend")).toBe("queued");
     expect(nextOutboxState("sent_no_copy", "retry")).toBe("sent");
     expect(nextOutboxState("sending", "recover")).toBe("unknown");
-    expect(canTransition("failed", "dismiss")).toBe(false);
+    expect(nextOutboxState("failed", "undo")).toBe("deleted");
+    expect(nextOutboxState("failed", "dismiss")).toBe("deleted");
+    expect(canTransition("sending", "dismiss")).toBe(false);
+    expect(canTransition("queued", "dismiss")).toBe(false);
   });
 });
