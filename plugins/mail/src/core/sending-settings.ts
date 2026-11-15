@@ -14,7 +14,7 @@ import {
 } from "./identities.ts";
 import type { DraftRecord, StoredAccount } from "./model.ts";
 import type { MailStore } from "./ports.ts";
-import { presendIssues, type PresendIssue } from "./presend.ts";
+import { inheritedSubject, presendIssues, type PresendIssue } from "./presend.ts";
 import { normalizeTemplate, templateName, templateNameKey } from "./templates.ts";
 
 /**
@@ -214,5 +214,12 @@ export function checkDraft(store: MailStore, draft: DraftRecord, baseRevision: n
     own: new Set(ownAddresses(store)),
     sentTo: store.addressesSentTo(recipients),
     conversation: reply && draft.sourceMessageId !== null ? store.conversationAddresses(draft.sourceMessageId) : null,
+    inheritedSubject: inheritedSubject(draft.kind, sourceSubject(store, draft)),
   });
+}
+
+/** The stored source message's subject, for the inherited Re:/Fwd: subject; null when it is gone. */
+function sourceSubject(store: MailStore, draft: Pick<DraftRecord, "kind" | "sourceMessageId">): string | null {
+  if (draft.kind === "new" || draft.sourceMessageId === null) return null;
+  return store.getMessage(draft.sourceMessageId)?.subject ?? null;
 }

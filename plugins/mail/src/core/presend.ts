@@ -2,6 +2,7 @@
 // in "Before you send" and the agent card lists. Nothing here refuses a
 // send. Pure.
 import { renderDoc, type ComposeBlock, type ComposeDoc } from "./compose-doc.ts";
+import { forwardSubject, replySubject } from "./compose-subjects.ts";
 import type { ComposeKind } from "./model.ts";
 
 export type PresendIssue =
@@ -24,6 +25,13 @@ export type PresendInput = {
   sentTo: ReadonlySet<string>;
   /** The source thread's From, To, Cc and Reply-To; reply / reply all with a stored source only. */
   conversation: ReadonlySet<string> | null;
+  /**
+   * Reply, reply all and forward: the Re:/Fwd: subject computed from the
+   * source (`inheritedSubject`). The subject is searched for attachment
+   * words only when the owner changed it; null (a new message, or a source
+   * no longer stored) searches it always.
+   */
+  inheritedSubject: string | null;
 };
 
 /** What quoteHeaderText writes above a forwarded message. */
@@ -82,6 +90,16 @@ function paragraphText(block: Extract<ComposeBlock, { type: "paragraph" }>): str
   return (block.content ?? []).map((node) => (node.type === "text" ? node.text : "\n")).join("");
 }
 
+/** The subject a reply, reply all or forward starts with; null for a new message or no source subject. */
+export function inheritedSubject(kind: ComposeKind, sourceSubject: string | null): string | null {
+  if (sourceSubject === null) return null;
+  if (kind === "forward") return forwardSubject(sourceSubject);
+  if (kind === "reply" || kind === "reply_all") return replySubject(sourceSubject);
+  return null;
+}
+
+const sameSubject = (a: string, b: string) => a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
+
 /** The attachment words found in the subject, else in the text; null for none. */
 export function attachmentMention(subject: string, text: string): string | null {
   for (const source of [subject, text]) {
@@ -113,7 +131,9 @@ const lower = (address: string) => address.trim().toLowerCase();
 export function presendIssues(input: PresendInput): PresendIssue[] {
   const issues: PresendIssue[] = [];
   if (input.attachmentCount === 0) {
-    const phrase = attachmentMention(input.subject, ownText(input.doc, input.kind));
+    // An inherited Re:/Fwd: subject is the other side's words, not the owner's.
+    const inherited = input.kind !== "new" && input.inheritedSubject !== null && sameSubject(input.subject, input.inheritedSubject);
+    const phrase = attachmentMention(inherited ? "" : input.subject, ownText(input.doc, input.kind));
     if (phrase !== null) issues.push({ kind: "attachment_mentioned", phrase });
   }
   if (input.subject.trim() === "") issues.push({ kind: "empty_subject" });
