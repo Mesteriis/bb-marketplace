@@ -862,26 +862,6 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
-    // Slice-2 view over seen_desired, until sync switches to pendingFlagIntents.
-    pendingSeenUids(accountId, folder) {
-      return db
-        .prepare<[string, string], { uid: number }>(
-          `SELECT uid FROM messages
-           WHERE account_id = ? AND folder = ? AND uid IS NOT NULL AND seen_desired = 1
-           ORDER BY uid`,
-        )
-        .all(accountId, folder)
-        .map((r) => r.uid);
-    },
-
-    clearSeenPending(accountId, folder, uids) {
-      store.clearFlagIntents(
-        accountId,
-        folder,
-        uids.map((uid) => ({ uid, seen: true, flagged: null })),
-      );
-    },
-
     setDesired(messageIds, change) {
       return atomic(() => {
         const find = db.prepare<[string], { account_id: string; dedup_key: string }>(

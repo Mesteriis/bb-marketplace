@@ -371,22 +371,6 @@ export class InMemoryMailStore implements MailStore {
     return before - this.state.rows.length;
   }
 
-  /** Slice-2 view over seenDesired, until sync switches to pendingFlagIntents. */
-  pendingSeenUids(accountId: string, folder: string): number[] {
-    return this.attachedRows(accountId, folder)
-      .filter((r) => r.seenDesired === true)
-      .sort((a, b) => a.uid - b.uid)
-      .map((r) => r.uid);
-  }
-
-  clearSeenPending(accountId: string, folder: string, uids: number[]): void {
-    this.clearFlagIntents(
-      accountId,
-      folder,
-      uids.map((uid) => ({ uid, seen: true, flagged: null })),
-    );
-  }
-
   setDesired(messageIds: string[], change: FlagChange): { accountId: string }[] {
     const accounts: string[] = [];
     for (const id of messageIds) {
@@ -929,6 +913,7 @@ export type SessionCall = {
   date?: Date;
   uid?: number;
   destination?: string;
+  change?: FlagChange;
 };
 
 export type OpenedSession = {
@@ -962,7 +947,9 @@ function failureKey(method: SessionMethod, path: string | undefined): string {
  * `failOpen` makes every login (listFolders and openFolder) throw and
  * `failOpenFolder` only the opening of one path. Moves move messages between
  * the mailboxes with new destination uids and return the uid map, or null
- * when `moveUidMap` is false (a server without UIDPLUS).
+ * when `moveUidMap` is false (a server without UIDPLUS). `setFlags` applies
+ * \Seen / \Flagged to the mailbox; `gateStore` holds the next STORE open
+ * until released, so a test can act while a push is in flight.
  */
 export class ScriptedImapGateway implements ImapGateway {
   readonly sessions: OpenedSession[] = [];
@@ -976,6 +963,7 @@ export class ScriptedImapGateway implements ImapGateway {
   private readonly openFolderFailures = new Map<string, Error>();
   private readonly onceFailures = new Map<string, Error>();
   private readonly alwaysFailures = new Map<string, Error>();
+  private storeGate: { enter: () => void; released: Promise<void> } | null = null;
 
   constructor(mailbox: FakeMailbox) {
     this.mailboxes.set("INBOX", mailbox);
@@ -1042,6 +1030,20 @@ export class ScriptedImapGateway implements ImapGateway {
 
   failAlways(method: SessionMethod, error: Error, path?: string): void {
     this.alwaysFailures.set(failureKey(method, path), error);
+  }
+
+  /**
+   * Holds the next setFlags call after it is recorded and before it changes
+   * the mailbox. `entered` resolves when that call arrives; `release` lets it
+   * finish.
+   */
+  gateStore(): { entered: Promise<void>; release: () => void } {
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => (enter = resolve));
+    const released = new Promise<void>((resolve) => (release = resolve));
+    this.storeGate = { enter, released };
+    return { entered, release };
   }
 
   async test(): Promise<ImapTestResult> {
@@ -1148,8 +1150,20 @@ export class ScriptedImapGateway implements ImapGateway {
           if (uids.includes(message.uid)) message.seen = true;
         }
       },
-      setFlags: async () => {
-        throw new Error("not implemented: setFlags");
+      setFlags: async (uids, change) => {
+        record({ method: "setFlags", uids: [...uids], change: { ...change } });
+        if (options.readOnly) throw imapError("ReadOnly");
+        const gate = this.storeGate;
+        if (gate) {
+          this.storeGate = null;
+          gate.enter();
+          await gate.released;
+        }
+        for (const message of box().messages) {
+          if (!uids.includes(message.uid)) continue;
+          if (change.seen !== undefined) message.seen = change.seen;
+          if (change.flagged !== undefined) message.flagged = change.flagged;
+        }
       },
       fetchRaw: async () => {
         throw new Error("not implemented: fetchRaw");
