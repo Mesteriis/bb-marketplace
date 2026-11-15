@@ -162,6 +162,8 @@ const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const JOB_SWEEP_MS = 15 * 1000;
 /** How long status_get trusts the last makosh-ai check. */
 export const GATEWAY_CACHE_MS = 60 * 1000;
+/** How long status_get waits for a makosh-ai check before it answers the last known state. */
+export const STATUS_PROBE_MS = 1_500;
 const TOOL_NAMES = ["mail_search", "mail_read"] as const;
 const PROPOSE_TOOL = "mail_propose";
 const AGENT_SEND_RENDERER = "agent-send";
@@ -427,20 +429,23 @@ type GatewayValue = "ok" | TranslateErrorKind;
 type GatewayState = {
   translator: Translator;
   get(options?: { fresh?: boolean }): Promise<GatewayValue>;
+  /**
+   * For status_get: the cached value when fresh, else a probe bounded by
+   * STATUS_PROBE_MS; a slower probe keeps running and fills the cache, and
+   * this answers the last known value, or "unknown".
+   */
+  status(): Promise<GatewayValue | "unknown">;
   report(value: GatewayValue): void;
 };
 
 function createGatewayState(translator: Translator, clock: Clock): GatewayState {
   let cached: { value: GatewayValue; at: number } | null = null;
+  let probing: Promise<GatewayValue> | null = null;
   const report = (value: GatewayValue) => {
     cached = { value, at: clock.now().getTime() };
   };
-  return {
-    translator,
-    report,
-    async get(options = {}) {
-      const now = clock.now().getTime();
-      if (options.fresh !== true && cached !== null && now - cached.at < GATEWAY_CACHE_MS) return cached.value;
+  const probe = (): Promise<GatewayValue> =>
+    (probing ??= (async () => {
       let value: GatewayValue;
       try {
         await translator.providers(AbortSignal.timeout(SETTINGS_LOOKUP_MS));
@@ -450,6 +455,29 @@ function createGatewayState(translator: Translator, clock: Clock): GatewayState 
       }
       report(value);
       return value;
+    })().finally(() => {
+      probing = null;
+    }));
+  const fresh = () => cached !== null && clock.now().getTime() - cached.at < GATEWAY_CACHE_MS;
+  return {
+    translator,
+    report,
+    async get(options = {}) {
+      if (options.fresh !== true && fresh()) return cached!.value;
+      return probe();
+    },
+    async status() {
+      if (fresh()) return cached!.value;
+      const known: GatewayValue | "unknown" = cached?.value ?? "unknown";
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<GatewayValue | "unknown">((resolve) => {
+        timer = setTimeout(() => resolve(known), STATUS_PROBE_MS);
+      });
+      try {
+        return await Promise.race([probe(), late]);
+      } finally {
+        clearTimeout(timer);
+      }
     },
   };
 }
@@ -921,7 +949,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         vaultReady: deps.vaultReady(),
         agentTools: deps.agentTools(),
         agentPropose: deps.agentPropose(),
-        translate: { gateway: await deps.gateway.get() },
+        translate: { gateway: await deps.gateway.status() },
         accounts: store.listAccounts().map(toPublicAccount),
         unreadCount: store.unreadCount(null),
       }),
@@ -1492,6 +1520,10 @@ function registerProposeTool(bb: BbPluginApi, deps: AgentSurfaceDeps): void {
       }
       if ("lost" in queued) {
         bb.log.info(`proposal ${proposalId} lost its draft`);
+        return AGENT_RESULT.changed;
+      }
+      if ("refused" in queued) {
+        bb.log.info(`proposal ${proposalId} refused before queueing`);
         return AGENT_RESULT.changed;
       }
       if ("notQueued" in queued) {

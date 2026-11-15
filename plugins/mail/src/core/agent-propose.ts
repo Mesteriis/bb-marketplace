@@ -250,18 +250,29 @@ const EDGE_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?", "*", "_", "~", "
 const LABEL = /^[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?$/u;
 const TLD = /^(?:\p{L}{2,24}|xn--[a-z0-9-]{1,59})$/iu;
 
+/** Schemes without `//` that a mail client or browser may still open; listed by scheme. */
+const OPAQUE_SCHEMES: ReadonlySet<string> = new Set([
+  "about", "bitcoin", "blob", "callto", "data", "facetime", "facetime-audio", "geo", "im", "intent",
+  "javascript", "magnet", "matrix", "mms", "news", "nntp", "sip", "sips", "skype", "sms", "smsto", "tel",
+  "tg", "vbscript", "viber", "webcal", "whatsapp", "xmpp",
+]);
+const SCHEME = /^([a-z][a-z0-9+.-]{0,31}):/i;
+
 /**
- * Links in plain text, deduped in order: `http:`, `https:` and `mailto:`,
- * plus scheme-less `www.…`, `host.tld/path` and a bare `host.tld` (a TLD of
- * 2–24 letters or punycode). Hosts lowercased, in ASCII (IDN as punycode).
- * Addresses, abbreviations like "e.g." and version numbers are not links.
+ * Links in plain text, deduped in order: any `scheme://…` (by its host, or
+ * by `scheme:` when it has none, as `file:///…`), `mailto:` (by its domain)
+ * and the other schemes a client opens without `//` (`tel:`, `sms:`,
+ * `javascript:`, `data:`… by `scheme:`), plus scheme-less `www.…`,
+ * `host.tld/path` and a bare `host.tld` (a TLD of 2–24 letters or
+ * punycode). Hosts lowercased, in ASCII (IDN as punycode). Addresses,
+ * abbreviations like "e.g.", "Note:" and version numbers are not links.
  */
 export function linksIn(text: string): { url: string; host: string }[] {
   const found: { url: string; host: string }[] = [];
   const seen = new Set<string>();
   for (const match of text.matchAll(TOKEN)) {
     const raw = match[0];
-    if (raw.length > LINK_TOKEN_MAX || !raw.includes(".")) continue;
+    if (raw.length > LINK_TOKEN_MAX || !(raw.includes(".") || raw.includes(":"))) continue;
     const token = trimEdges(raw);
     const host = linkHost(token);
     if (host === null || seen.has(token)) continue;
@@ -280,19 +291,25 @@ function trimEdges(token: string): string {
 }
 
 function linkHost(token: string): string | null {
-  const lower = token.toLowerCase();
-  if (lower.startsWith("http://") || lower.startsWith("https://")) {
-    try {
-      const host = new URL(token).hostname;
-      return host === "" ? null : host;
-    } catch {
-      return null;
+  const scheme = SCHEME.exec(token)?.[1]?.toLowerCase();
+  if (scheme !== undefined) {
+    const rest = token.slice(scheme.length + 1);
+    if (rest.startsWith("//")) {
+      let host = "";
+      try {
+        host = new URL(token).hostname;
+      } catch {
+        host = "";
+      }
+      if (scheme === "http" || scheme === "https") return host === "" ? null : host;
+      return host === "" ? `${scheme}:` : (asciiHost(host) ?? host.toLowerCase());
     }
-  }
-  if (lower.startsWith("mailto:")) {
-    const address = token.slice("mailto:".length).split("?")[0] ?? "";
-    const at = address.lastIndexOf("@");
-    return at <= 0 ? null : asciiHost(address.slice(at + 1));
+    if (scheme === "mailto") {
+      const address = rest.split("?")[0] ?? "";
+      const at = address.lastIndexOf("@");
+      return at <= 0 ? null : asciiHost(address.slice(at + 1));
+    }
+    if (OPAQUE_SCHEMES.has(scheme)) return rest === "" ? null : `${scheme}:`;
   }
   if (token.includes("@") || token.includes("://")) return null;
   const end = firstIndexOf(token, ["/", "?", "#", ":"]);

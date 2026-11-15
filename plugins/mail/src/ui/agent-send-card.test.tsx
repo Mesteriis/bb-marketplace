@@ -94,6 +94,24 @@ describe("AgentSendCard", () => {
     expect(within(attachments).getByText(/Left out: too large/)).toBeTruthy();
   });
 
+  it("shows an attachment's full name, wrapped, and its extension on its own", async () => {
+    const long = `${"quarterly-report-".repeat(8)}final.pdf          .exe`;
+    await mountReady(
+      view({
+        attachments: [
+          { fileName: long, mimeType: "application/octet-stream", size: 10 },
+          { fileName: "README", mimeType: "text/plain", size: 5 },
+        ],
+      }),
+    );
+    const attachments = screen.getByRole("region", { name: "Attachments" });
+    const name = within(attachments).getByText((_, el) => el?.tagName === "SPAN" && el.textContent === long);
+    expect(name.className).not.toContain("truncate");
+    expect(name.className).toContain("break-all");
+    expect(within(attachments).getByText(".exe")).toBeTruthy();
+    expect(within(attachments).getByText("no extension")).toBeTruthy();
+  });
+
   it("renders the body as text, never as markup or a link", async () => {
     const { container } = await mountReady(
       view({ bodyText: '<img src=x onerror="alert(1)"> <a href="javascript:alert(1)">click</a> **bold**' }),

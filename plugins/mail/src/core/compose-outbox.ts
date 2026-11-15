@@ -170,7 +170,14 @@ function timerSleep(ms: number, signal: AbortSignal): Promise<void> {
  */
 export async function queueSend(
   deps: QueueDeps,
-  input: { draftId: string; baseRevision: number; requestId: string; origin: DraftOrigin },
+  input: {
+    draftId: string;
+    baseRevision: number;
+    requestId: string;
+    origin: DraftOrigin;
+    /** An agent send: the From the owner confirmed; a different From actually used is `conflict`. */
+    expectFrom?: { name: string | null; address: string };
+  },
 ): Promise<{ outboxId: string; sendAfter: string }> {
   if (deps.undone.has(input.requestId)) throw new ComposeError("undone");
   const repeated = deps.store.getOutbox(input.requestId);
@@ -185,6 +192,16 @@ export async function queueSend(
   if (account.smtp === null) throw new ComposeError("smtp_missing");
 
   const message = outgoingOf(deps, account, draft, true);
+  if (input.expectFrom !== undefined) {
+    const expected = parseAddress(input.expectFrom.address);
+    if (
+      !expected.ok ||
+      expected.value.address.toLowerCase() !== message.from.address.toLowerCase() ||
+      input.expectFrom.name !== message.from.name
+    ) {
+      throw new ComposeError("conflict");
+    }
+  }
   const envelopeTo = uniqueAddresses([...message.to, ...message.cc, ...message.bcc].map((a) => a.address));
   if (envelopeTo.length === 0 || envelopeTo.length > MAX_RECIPIENTS) throw new ComposeError("invalid");
   const attached = message.attachments.reduce((sum, a) => sum + a.bytes.length, 0);

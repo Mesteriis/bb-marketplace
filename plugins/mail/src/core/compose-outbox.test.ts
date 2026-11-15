@@ -116,6 +116,21 @@ describe("queueSend", () => {
     expect(h.store.listOutbox(null)).toEqual([]);
   });
 
+  it("refuses with conflict when the From it would use is not the expected one", async () => {
+    const draft = await readyDraft();
+    await expect(
+      queueSend(deps, { ...draft, requestId: requestId(), origin: "agent", expectFrom: { name: "Someone Else", address: "owner@example.org" } }),
+    ).rejects.toMatchObject({ kind: "conflict" });
+    const name = h.store.getAccount("acc_1")!.displayName?.trim() || null;
+    await expect(
+      queueSend(deps, { ...draft, requestId: requestId(), origin: "agent", expectFrom: { name, address: "other@example.org" } }),
+    ).rejects.toMatchObject({ kind: "conflict" });
+    expect(h.store.listOutbox(null)).toEqual([]);
+    await expect(
+      queueSend(deps, { ...draft, requestId: requestId(), origin: "agent", expectFrom: { name, address: "Owner@Example.org" } }),
+    ).resolves.toMatchObject({ outboxId: expect.any(String) });
+  });
+
   it("refuses the 11th send in a minute, and allows it once the minute has passed", async () => {
     for (let i = 0; i < SEND_RATE_PER_MINUTE; i++) await queued();
     const extra = await readyDraft();
