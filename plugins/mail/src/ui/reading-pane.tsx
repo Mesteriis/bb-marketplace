@@ -2,8 +2,10 @@
 //
 // The right column: one conversation, messages oldest first. Collapsed
 // messages show sender, date and snippet; an expanded one shows its body.
-// The toolbar moves the conversation's messages in the folder being viewed.
+// The toolbar acts on the conversation's messages in the folder (or role)
+// being viewed; each message has its own flag, Details and downloads.
 import type {
+  AttachmentMeta,
   MessageAction,
   MessageBody,
   MessageHeader,
@@ -33,23 +35,32 @@ export interface ReadingPaneProps {
   onHandToAgent: (message: MessageHeader) => void;
   /** Back to the list; the button shows only when the page is one column wide. */
   onBack: () => void;
-  /** Path of the folder being viewed; actions move this thread's messages in it. */
-  folderPath: string;
-  /** Special use of that folder: it decides which actions apply. */
+  /** Whether a message's copy sits in the folder (or role) being viewed; actions apply to those. */
+  inView: (message: MessageHeader) => boolean;
+  /** Special use of that folder (or the role): it decides which actions apply. */
   folderUse: SpecialUse | null;
-  /** Whether the server would archive from this folder (core archiveAllowedFrom). */
+  /** Whether the server would archive from here (core archiveAllowedFrom). */
   archiveAllowed: boolean;
-  /** Display name of a folder path, for messages that live in another folder. */
-  folderName: (path: string) => string;
+  /** Display name of a message's folder, for copies that live elsewhere. */
+  folderName: (message: MessageHeader) => string;
   onAction: (action: MessageAction) => void;
+  /** Mark the conversation unread and go back to the list. */
+  onMarkUnread: () => void;
+  /** Open Move to… for the conversation. */
+  onMoveTo: () => void;
   /** An action is in flight; the buttons wait. */
   actionPending: boolean;
+  onToggleMessageFlag: (message: MessageHeader) => void;
+  onDetails: (message: MessageHeader) => void;
+  onDownloadEml: (message: MessageHeader) => void;
+  onDownloadAttachment: (message: MessageHeader, attachment: AttachmentMeta) => void;
   /** Messages whose remote images the owner chose to show this time. */
   remoteImageIds: ReadonlySet<string>;
   /** Lowercased senders allowed during this page session. */
   imageSenders: ReadonlySet<string>;
   onShowImages: (messageId: string) => void;
   onAlwaysShowImages: (message: MessageHeader) => void;
+  onStopImages: (message: MessageHeader) => void;
 }
 
 interface ToolbarAction {
@@ -88,8 +99,11 @@ function formatSize(bytes: number): string {
 
 interface ImageProps {
   remoteImages: boolean;
+  /** The sender is allowed during this page session. */
+  senderAllowed: boolean;
   onShowImages: () => void;
   onAlwaysShowImages: () => void;
+  onStopImages: () => void;
 }
 
 function MessageBodyView({
@@ -124,7 +138,34 @@ function MessageBodyView({
       onShowImages={images.onShowImages}
       senderAddress={senderAddress}
       onAlwaysShowImages={images.onAlwaysShowImages}
+      senderTrusted={images.senderAllowed || state.body.remoteImagesAllowed}
+      onStopImages={images.onStopImages}
     />
+  );
+}
+
+function AttachmentButton({
+  attachment,
+  onDownload,
+}: {
+  attachment: AttachmentMeta;
+  onDownload: () => void;
+}) {
+  const name = attachment.filename ?? "Unnamed attachment";
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onDownload}
+        aria-label={`Download ${name}, ${formatSize(attachment.size)}`}
+        className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        <Icon name="Paperclip" className="size-3.5" aria-hidden />
+        <span className="max-w-48 truncate text-foreground">{name}</span>
+        <span>{formatSize(attachment.size)}</span>
+        <Icon name="Download" fallback="Paperclip" className="size-3.5" aria-hidden />
+      </button>
+    </li>
   );
 }
 
@@ -136,6 +177,10 @@ function MessageItem({
   onToggle,
   onOpenLink,
   images,
+  onToggleFlag,
+  onDetails,
+  onDownloadEml,
+  onDownloadAttachment,
 }: {
   message: MessageHeader;
   expanded: boolean;
@@ -145,16 +190,21 @@ function MessageItem({
   onToggle: () => void;
   onOpenLink: (url: string) => void;
   images: ImageProps;
+  onToggleFlag: () => void;
+  onDetails: () => void;
+  onDownloadEml: () => void;
+  onDownloadAttachment: (attachment: AttachmentMeta) => void;
 }) {
   const sender = addressLabel(message.from);
   const senderAddress = message.from.address.trim() !== "" ? message.from.address : null;
   const attachments = message.attachments.filter((a) => !a.isInline);
+  const inline = message.attachments.filter((a) => a.isInline);
   return (
     <article
       aria-label={`Message from ${sender}`}
       className="rounded-lg border border-border bg-card"
     >
-      <div className="flex items-start gap-2 px-3 py-2">
+      <div className="flex items-start gap-1 px-3 py-2">
         <button
           type="button"
           onClick={onToggle}
@@ -190,6 +240,19 @@ function MessageItem({
             {expanded ? recipients(message) : message.snippet}
           </span>
         </button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn(
+            "size-7 shrink-0",
+            message.isFlagged ? "text-primary [&_svg]:fill-current" : "text-muted-foreground",
+          )}
+          aria-label="Flag message"
+          aria-pressed={message.isFlagged}
+          onClick={onToggleFlag}
+        >
+          <Icon name="Star" fallback="Check" aria-hidden />
+        </Button>
       </div>
       {expanded ? (
         <div className="flex flex-col gap-3 px-3 pb-3">
@@ -203,19 +266,40 @@ function MessageItem({
           {attachments.length > 0 ? (
             <ul aria-label="Attachments" className="flex flex-wrap gap-2">
               {attachments.map((attachment) => (
-                <li
+                <AttachmentButton
                   key={attachment.partId}
-                  className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground"
-                >
-                  <Icon name="Paperclip" className="size-3.5" aria-hidden />
-                  <span className="max-w-48 truncate text-foreground">
-                    {attachment.filename ?? "Unnamed attachment"}
-                  </span>
-                  <span>{formatSize(attachment.size)}</span>
-                </li>
+                  attachment={attachment}
+                  onDownload={() => onDownloadAttachment(attachment)}
+                />
               ))}
             </ul>
           ) : null}
+          {inline.length > 0 ? (
+            <details className="text-xs text-muted-foreground">
+              <summary className="cursor-pointer select-none">
+                {inline.length === 1 ? "1 inline part" : `${inline.length} inline parts`}
+              </summary>
+              <ul aria-label="Inline parts" className="mt-2 flex flex-wrap gap-2">
+                {inline.map((attachment) => (
+                  <AttachmentButton
+                    key={attachment.partId}
+                    attachment={attachment}
+                    onDownload={() => onDownloadAttachment(attachment)}
+                  />
+                ))}
+              </ul>
+            </details>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-1">
+            <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onDetails}>
+              <Icon name="Info" fallback="Folder" aria-hidden />
+              Details
+            </Button>
+            <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onDownloadEml}>
+              <Icon name="Download" fallback="Paperclip" aria-hidden />
+              Download .eml
+            </Button>
+          </div>
         </div>
       ) : null}
     </article>
@@ -230,27 +314,8 @@ function messageToHand(messages: MessageHeader[], expandedIds: ReadonlySet<strin
   return messages.at(-1) ?? null;
 }
 
-export function ReadingPane({
-  detail,
-  loading,
-  error,
-  expandedIds,
-  bodies,
-  onToggleMessage,
-  onOpenLink,
-  onHandToAgent,
-  onBack,
-  folderPath,
-  folderUse,
-  archiveAllowed,
-  folderName,
-  onAction,
-  actionPending,
-  remoteImageIds,
-  imageSenders,
-  onShowImages,
-  onAlwaysShowImages,
-}: ReadingPaneProps) {
+export function ReadingPane(props: ReadingPaneProps) {
+  const { detail, loading, error, expandedIds, bodies, onBack, folderUse, archiveAllowed } = props;
   const back = (
     <div className="@3xl:hidden">
       <Button variant="ghost" size="sm" onClick={onBack}>
@@ -276,7 +341,7 @@ export function ReadingPane({
   }
 
   const { thread, messages } = detail;
-  const inFolder = messages.some((m) => m.folder === folderPath);
+  const inFolder = messages.some(props.inView);
   const handed = messageToHand(messages, expandedIds);
   return (
     <div className="box-border flex w-full min-w-0 flex-col gap-3 px-4 pb-6 pt-2">
@@ -292,17 +357,29 @@ export function ReadingPane({
                 key={action}
                 variant="ghost"
                 size="sm"
-                disabled={actionPending}
-                onClick={() => onAction(action)}
+                disabled={props.actionPending}
+                onClick={() => props.onAction(action)}
               >
                 <Icon name={icon} aria-hidden />
                 {label}
               </Button>
             ))
           : null}
+        {inFolder ? (
+          <>
+            <Button variant="ghost" size="sm" disabled={props.actionPending} onClick={props.onMoveTo}>
+              <Icon name="Folder" aria-hidden />
+              Move to…
+            </Button>
+            <Button variant="ghost" size="sm" disabled={props.actionPending} onClick={props.onMarkUnread}>
+              <Icon name="Mail" aria-hidden />
+              Mark unread
+            </Button>
+          </>
+        ) : null}
         <span className="flex-1" />
         {handed !== null ? (
-          <Button variant="ghost" size="sm" onClick={() => onHandToAgent(handed)}>
+          <Button variant="ghost" size="sm" onClick={() => props.onHandToAgent(handed)}>
             <Icon name="Bot" aria-hidden />
             Hand to agent
           </Button>
@@ -316,24 +393,31 @@ export function ReadingPane({
           {messages.length === 1 ? "1 message" : `${messages.length} messages`}
         </p>
       </div>
-      {messages.map((message) => (
-        <MessageItem
-          key={message.id}
-          message={message}
-          expanded={expandedIds.has(message.id)}
-          body={bodies[message.id]}
-          otherFolder={message.folder !== folderPath ? folderName(message.folder) : null}
-          onToggle={() => onToggleMessage(message.id)}
-          onOpenLink={onOpenLink}
-          images={{
-            remoteImages:
-              remoteImageIds.has(message.id) ||
-              imageSenders.has(message.from.address.trim().toLowerCase()),
-            onShowImages: () => onShowImages(message.id),
-            onAlwaysShowImages: () => onAlwaysShowImages(message),
-          }}
-        />
-      ))}
+      {messages.map((message) => {
+        const sender = message.from.address.trim().toLowerCase();
+        return (
+          <MessageItem
+            key={message.id}
+            message={message}
+            expanded={expandedIds.has(message.id)}
+            body={bodies[message.id]}
+            otherFolder={props.inView(message) ? null : props.folderName(message)}
+            onToggle={() => props.onToggleMessage(message.id)}
+            onOpenLink={props.onOpenLink}
+            images={{
+              remoteImages: props.remoteImageIds.has(message.id) || props.imageSenders.has(sender),
+              senderAllowed: props.imageSenders.has(sender),
+              onShowImages: () => props.onShowImages(message.id),
+              onAlwaysShowImages: () => props.onAlwaysShowImages(message),
+              onStopImages: () => props.onStopImages(message),
+            }}
+            onToggleFlag={() => props.onToggleMessageFlag(message)}
+            onDetails={() => props.onDetails(message)}
+            onDownloadEml={() => props.onDownloadEml(message)}
+            onDownloadAttachment={(attachment) => props.onDownloadAttachment(message, attachment)}
+          />
+        );
+      })}
     </div>
   );
 }

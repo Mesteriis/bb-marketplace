@@ -10,6 +10,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   definePluginApp,
+  experimental_copyToClipboard,
+  experimental_saveFile,
   UrlLink,
   useBbNavigate,
   useComposer,
@@ -20,15 +22,28 @@ import {
 import { toast } from "sonner";
 import type { rpcContract } from "./server.ts";
 import type {
+  AttachmentMeta,
   Folder,
   MAIL_CHANGED_CHANNEL as MailChangedChannel,
   MessageAction,
   MessageHeader,
   NewAccountInput,
+  RoleCount,
   StatusView,
+  ThreadDetail,
 } from "./src/core/index.ts";
-import { DEFAULT_FOLDER_PATH, inboxPath } from "./src/ui/folder-list.tsx";
+import { isRoleMoveAction, roleFolders } from "./src/core/actions.ts";
+import type { DetailsState } from "./src/ui/details-panel.tsx";
 import {
+  DEFAULT_FOLDER_PATH,
+  inboxPath,
+  viewKey,
+  viewPaths,
+  type MailView,
+  type RoleName,
+} from "./src/ui/folder-list.tsx";
+import {
+  ALL_ACCOUNTS,
   MailPage,
   type AccountFormRequest,
   type ReadingState,
@@ -45,6 +60,10 @@ const PAGE_SIZE = 50;
 const MAX_PAGE = 100;
 const SEARCH_LIMIT = 50;
 const SYNC_INDICATOR_MS = 60_000;
+/** message_action takes at most this many ids per call; larger batches go in sequence. */
+const ACTION_CHUNK = 200;
+/** thread_get calls in flight at once while a selection's messages are collected. */
+const COLLECT_CONCURRENCY = 6;
 /**
  * mail-changed events closer together than this cause one refresh: opening a
  * conversation with N unread messages publishes N of them.
@@ -71,6 +90,7 @@ const NO_READING: ReadingState = {
   remoteImageIds: new Set(),
   imageSenders: new Set(),
 };
+const NO_SELECTION: ReadonlySet<string> = new Set();
 
 function messageOf(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
@@ -86,6 +106,54 @@ function changedAccount(payload: unknown): string | null | undefined {
 /** The fallback prompt carries the message text itself (it starts with the untrusted notice). */
 function handToAgentPrompt(agentText: string): string {
   return `Help me with this email.\n\n${agentText}`;
+}
+
+/** The threads_list scope of a view. */
+function scopeOf(view: MailView) {
+  return view.kind === "role"
+    ? ({ kind: "all", role: view.role } as const)
+    : ({ kind: "account", accountId: view.accountId, folder: view.path } as const);
+}
+
+/** The message_action source of a view: the folder, or in All accounts the role. */
+function sourceOf(view: MailView): { folder: string } | { role: RoleName } {
+  return view.kind === "folder" ? { folder: view.path } : { role: view.role };
+}
+
+/** Runs `work` on every item with at most `limit` in flight. */
+async function inPool<T>(items: readonly T[], limit: number, work: (item: T) => Promise<void>) {
+  let next = 0;
+  const lanes = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) await work(items[next++]!);
+  });
+  await Promise.all(lanes);
+}
+
+/** A message the action touches, with where it is. */
+type ActionItem = { id: string; accountId: string; folder: string; threadId: string };
+
+/**
+ * Saves a ticket's file through BB's own download path; a plain
+ * `<a download>` click when this BB has no saveFile.
+ */
+async function saveTicket(ticket: { url: string; fileName: string }): Promise<"started" | "failed"> {
+  try {
+    return await experimental_saveFile({ fileName: ticket.fileName, url: ticket.url });
+  } catch {
+    anchorDownload(ticket);
+    return "started";
+  }
+}
+
+function anchorDownload({ url, fileName }: { url: string; fileName: string }) {
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.rel = "noopener";
+  link.style.display = "none";
+  document.body.append(link);
+  link.click();
+  link.remove();
 }
 
 /**
@@ -124,6 +192,8 @@ function useDebouncedRealtime(channel: string, run: (payloads: unknown[]) => voi
   });
 }
 
+type FolderState = { key: string; folders: Folder[]; roles: RoleCount[]; error: string | null };
+
 function MailPanel() {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
@@ -131,46 +201,50 @@ function MailPanel() {
 
   const [status, setStatus] = useState<StatusView | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
-  const [chosenAccountId, setChosenAccountId] = useState<string | null>(null);
-  /** Folders and the chosen folder, each tagged with the account they belong to. */
-  const [folderState, setFolderState] = useState<{
-    accountId: string;
-    folders: Folder[];
-    error: string | null;
-  } | null>(null);
-  const [chosenFolder, setChosenFolder] = useState<{ accountId: string; path: string } | null>(
-    null,
-  );
+  /** An account id or ALL_ACCOUNTS; null until the owner chooses (All accounts when several). */
+  const [chosen, setChosen] = useState<string | null>(null);
+  /** Folders of the scope (an account, or ALL_ACCOUNTS), tagged with it. */
+  const [folderState, setFolderState] = useState<FolderState | null>(null);
+  const [chosenView, setChosenView] = useState<{ key: string; view: MailView } | null>(null);
   const [actionPending, setActionPending] = useState(false);
   const [list, setList] = useState<ThreadListState>(EMPTY_LIST);
   const [search, setSearch] = useState<SearchState>(NO_SEARCH);
   const [reading, setReading] = useState<ReadingState>(NO_READING);
+  const [selection, setSelection] = useState<ReadonlySet<string>>(NO_SELECTION);
+  const [details, setDetails] = useState<DetailsState | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [accountForm, setAccountForm] = useState<AccountFormRequest>(null);
 
   const accounts = status?.accounts ?? [];
-  const account = accounts.find((a) => a.id === chosenAccountId) ?? accounts[0] ?? null;
-  const accountId = status?.vaultReady ? (account?.id ?? null) : null;
-  const folders =
-    folderState !== null && folderState.accountId === accountId ? folderState.folders : null;
-  const foldersError =
-    folderState !== null && folderState.accountId === accountId ? folderState.error : null;
-  const chosenPath =
-    chosenFolder !== null && chosenFolder.accountId === accountId ? chosenFolder.path : null;
-  // The chosen folder while it still exists, else the account's inbox.
-  const folderPath =
-    (chosenPath !== null && folders?.some((f) => f.path === chosenPath && f.selectable)
-      ? chosenPath
-      : null) ??
-    inboxPath(folders) ??
-    DEFAULT_FOLDER_PATH;
+  const chosenAccount =
+    chosen !== null && chosen !== ALL_ACCOUNTS ? (accounts.find((a) => a.id === chosen) ?? null) : null;
+  const unified = accounts.length > 1 && chosenAccount === null;
+  const account = unified ? null : (chosenAccount ?? accounts[0] ?? null);
+  const scopeKey = status?.vaultReady ? (unified ? ALL_ACCOUNTS : (account?.id ?? null)) : null;
+  const scoped = folderState !== null && folderState.key === scopeKey ? folderState : null;
+  const folders = scoped?.folders ?? null;
+  const picked = chosenView !== null && chosenView.key === scopeKey ? chosenView.view : null;
+  // The chosen folder while it still exists, else the inbox (or the merged Inbox).
+  const view: MailView = (() => {
+    const exists = (v: MailView) =>
+      v.kind === "role" ||
+      (folders?.some((f) => f.accountId === v.accountId && f.path === v.path && f.selectable) ?? false);
+    if (picked !== null && exists(picked)) return picked;
+    if (unified || account === null) return { kind: "role", role: "inbox" };
+    return { kind: "folder", accountId: account.id, path: inboxPath(folders) ?? DEFAULT_FOLDER_PATH };
+  })();
+  const currentViewKey = viewKey(view);
+  const searchAccount = unified ? null : (account?.id ?? null);
 
   // Latest values for callbacks that outlive a render (realtime, async results).
-  const latest = useRef({ accountId, folderPath, folderState, list, search, reading });
-  latest.current = { accountId, folderPath, folderState, list, search, reading };
+  const latest = useRef({ scopeKey, searchAccount, unified, view, folders, list, search, reading, selection });
+  latest.current = { scopeKey, searchAccount, unified, view, folders, list, search, reading, selection };
   /** Messages this page already marked opened, so message_open runs once each. */
   const opened = useRef(new Set<string>());
-  const requests = useRef({ list: 0, search: 0, thread: 0, folders: 0 });
+  /** The account of the conversation open in the reading pane. */
+  const openAccount = useRef<string | null>(null);
+  const requests = useRef({ list: 0, search: 0, thread: 0, folders: 0, details: 0 });
+  const pendingRef = useRef(false);
   const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusLoaded = useRef(false);
 
@@ -191,7 +265,7 @@ function MailPanel() {
    * after page, until it has at least as many threads as are on screen.
    */
   const loadList = useCallback(
-    async (forAccount: string, folder: string, mode: "reset" | "refresh" | "more") => {
+    async (forView: MailView, mode: "reset" | "refresh" | "more") => {
       const token = ++requests.current.list;
       const current = latest.current.list;
       const wanted = mode === "refresh" ? Math.max(current.threads.length, PAGE_SIZE) : PAGE_SIZE;
@@ -207,11 +281,7 @@ function MailPanel() {
         let cursor = mode === "more" ? current.nextCursor : null;
         do {
           const limit = Math.min(wanted - threads.length, MAX_PAGE);
-          const page = await rpc.call("threads_list", {
-            scope: { kind: "account", accountId: forAccount, folder },
-            cursor,
-            limit,
-          });
+          const page = await rpc.call("threads_list", { scope: scopeOf(forView), cursor, limit });
           if (token !== requests.current.list) return;
           threads.push(...page.threads);
           cursor = page.nextCursor;
@@ -223,6 +293,13 @@ function MailPanel() {
           loadingMore: false,
           error: null,
         }));
+        if (mode === "refresh") {
+          // Conversations that left the list leave the selection too.
+          const ids = new Set(threads.map((t) => t.id));
+          setSelection((prev) =>
+            [...prev].every((id) => ids.has(id)) ? prev : new Set([...prev].filter((id) => ids.has(id))),
+          );
+        }
       } catch (error) {
         if (token !== requests.current.list) return;
         setList((prev) => ({ ...prev, loading: false, loadingMore: false, error: messageOf(error) }));
@@ -236,19 +313,27 @@ function MailPanel() {
    * the rail and toasts once until a load succeeds; the list still shows the inbox.
    */
   const loadFolders = useCallback(
-    async (forAccount: string) => {
+    async (key: string) => {
       const token = ++requests.current.folders;
       try {
-        const { folders: next } = await rpc.call("folders_list", { accountId: forAccount });
+        const { folders: next, roles } = await rpc.call("folders_list", {
+          accountId: key === ALL_ACCOUNTS ? null : key,
+        });
         if (token !== requests.current.folders) return;
-        setFolderState({ accountId: forAccount, folders: next, error: null });
+        setFolderState({ key, folders: next, roles, error: null });
       } catch (error) {
         if (token !== requests.current.folders) return;
         const text = messageOf(error);
-        const prev = latest.current.folderState;
-        const same = prev !== null && prev.accountId === forAccount;
-        if (!same || prev.error === null) toast.error(`Could not load folders: ${text}`);
-        setFolderState({ accountId: forAccount, folders: same ? prev.folders : [], error: text });
+        setFolderState((prev) => {
+          const same = prev !== null && prev.key === key;
+          if (!same || prev.error === null) toast.error(`Could not load folders: ${text}`);
+          return {
+            key,
+            folders: same ? prev.folders : [],
+            roles: same ? prev.roles : [],
+            error: text,
+          };
+        });
       }
     },
     [rpc],
@@ -257,6 +342,7 @@ function MailPanel() {
   const runSearch = useCallback(
     async (query: string, forAccount: string | null) => {
       const token = ++requests.current.search;
+      if (latest.current.search.query !== query) setSelection(NO_SELECTION);
       if (query === "") {
         setSearch(NO_SEARCH);
         return;
@@ -343,6 +429,21 @@ function MailPanel() {
     [expandMessage, markOpened],
   );
 
+  /** The folder thread_get prefers for a conversation of `accountId` in the current view. */
+  const folderFor = useCallback((accountId: string | null): string => {
+    const { view: current, folders: known } = latest.current;
+    if (current.kind === "folder") return current.path;
+    const own = (known ?? []).filter((f) => f.accountId === accountId);
+    const matching = roleFolders(current.role, own);
+    return (matching.find((f) => f.selectable) ?? matching[0])?.path ?? DEFAULT_FOLDER_PATH;
+  }, []);
+
+  /** Whether a message's copy sits in the folder (or role) being viewed. */
+  const inView = useCallback((message: MessageHeader): boolean => {
+    const { view: current, folders: known } = latest.current;
+    return viewPaths(current, known ?? [], message.accountId).includes(message.folder);
+  }, []);
+
   /**
    * Loads a conversation; on first open, expands `focusId` or the newest message
    * and marks every unread message of it read (a mail client shows a conversation
@@ -352,10 +453,7 @@ function MailPanel() {
     async (threadId: string, open: { focusId: string | null } | null) => {
       const token = ++requests.current.thread;
       try {
-        const detail = await rpc.call("thread_get", {
-          threadId,
-          folder: latest.current.folderPath,
-        });
+        const detail = await rpc.call("thread_get", { threadId, folder: folderFor(openAccount.current) });
         if (token !== requests.current.thread) return;
         setReading((prev) => ({ ...prev, detail, loading: false, error: null }));
         if (open !== null) {
@@ -382,31 +480,32 @@ function MailPanel() {
         setReading((prev) => ({ ...prev, loading: false, error: messageOf(error) }));
       }
     },
-    [expandMessage, markOpened, rpc],
+    [expandMessage, folderFor, markOpened, rpc],
   );
 
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
 
-  // A new active account loads its folders and re-runs the search for it.
+  // A new scope (account or All accounts) loads its folders and re-runs the search for it.
   useEffect(() => {
-    if (accountId === null) return;
-    void loadFolders(accountId);
+    if (scopeKey === null) return;
+    void loadFolders(scopeKey);
     const query = latest.current.search.query;
-    if (query !== "") void runSearch(query, accountId);
-  }, [accountId, loadFolders, runSearch]);
+    if (query !== "") void runSearch(query, latest.current.searchAccount);
+  }, [scopeKey, loadFolders, runSearch]);
 
-  // A new account or folder starts from its first page with nothing open.
+  // A new view starts from its first page with nothing open or selected.
   useEffect(() => {
     requests.current.thread++;
     setReading(NO_READING);
-    if (accountId === null) {
+    setSelection(NO_SELECTION);
+    if (scopeKey === null) {
       setList(EMPTY_LIST);
       return;
     }
-    void loadList(accountId, folderPath, "reset");
-  }, [accountId, folderPath, loadList]);
+    void loadList(latest.current.view, "reset");
+  }, [scopeKey, currentViewKey, loadList]);
 
   useEffect(
     () => () => {
@@ -421,24 +520,26 @@ function MailPanel() {
     setSyncing(false);
   }, []);
 
+  /** After a change: the list, the folders' counts and any search, for the view still shown. */
+  const refreshAfterChange = useCallback(() => {
+    const { scopeKey: key, view: current, search: currentSearch, searchAccount: forAccount } = latest.current;
+    if (key === null) return;
+    void loadList(current, "refresh");
+    void loadFolders(key);
+    if (currentSearch.query !== "") void runSearch(currentSearch.query, forAccount);
+  }, [loadFolders, loadList, runSearch]);
+
   useDebouncedRealtime(MAIL_CHANGED_CHANNEL, (payloads) => {
     void loadStatus();
-    const {
-      accountId: active,
-      folderPath: folder,
-      search: currentSearch,
-      reading: currentReading,
-    } = latest.current;
-    if (active === null) return;
+    const { scopeKey: key, unified: all, reading: currentReading } = latest.current;
+    if (key === null) return;
     const touched = payloads.some((payload) => {
       const changed = changedAccount(payload);
-      return changed === null || changed === active;
+      return changed === null || all || changed === key;
     });
     if (!touched) return;
     stopSyncing();
-    void loadList(active, folder, "refresh");
-    void loadFolders(active);
-    if (currentSearch.query !== "") void runSearch(currentSearch.query, active);
+    refreshAfterChange();
     // A thread still opening loads fresh data anyway; refreshing it now would
     // supersede the open and drop which message to expand.
     if (currentReading.threadId !== null && !currentReading.loading) {
@@ -447,7 +548,8 @@ function MailPanel() {
   });
 
   const selectThread = useCallback(
-    (threadId: string, messageId: string | null) => {
+    (threadId: string, messageId: string | null, accountId: string) => {
+      openAccount.current = accountId;
       setReading({ ...NO_READING, threadId, loading: true });
       void loadThread(threadId, { focusId: messageId });
     },
@@ -459,57 +561,253 @@ function MailPanel() {
     setReading(NO_READING);
   }, []);
 
-  /** A folder change resets the list (the effect above) and ends any search. */
-  const selectFolder = useCallback(
-    (path: string) => {
-      if (accountId === null) return;
-      setChosenFolder({ accountId, path });
-      if (latest.current.search.query !== "") void runSearch("", accountId);
+  /** A view change resets the list (the effect above) and ends any search. */
+  const selectView = useCallback(
+    (next: MailView) => {
+      const { scopeKey: key, search: currentSearch, searchAccount: forAccount } = latest.current;
+      if (key === null) return;
+      setChosenView({ key, view: next });
+      if (currentSearch.query !== "") void runSearch("", forAccount);
     },
-    [accountId, runSearch],
+    [runSearch],
+  );
+
+  /** The messages of each conversation in the view (the open one's from the pane). */
+  const collect = useCallback(
+    async (threadIds: readonly string[], snapshot: ReadingState) => {
+      const items: ActionItem[] = [];
+      const failures = new Map<string, string>();
+      const details = new Map<string, ThreadDetail>();
+      const accountOf = (threadId: string) =>
+        latest.current.list.threads.find((t) => t.id === threadId)?.accountId ??
+        (snapshot.detail?.thread.id === threadId ? snapshot.detail.thread.accountId : null);
+      await inPool(threadIds, COLLECT_CONCURRENCY, async (threadId) => {
+        try {
+          const detail =
+            snapshot.detail !== null && snapshot.detail.thread.id === threadId
+              ? snapshot.detail
+              : await rpc.call("thread_get", { threadId, folder: folderFor(accountOf(threadId)) });
+          details.set(threadId, detail);
+        } catch (error) {
+          failures.set(threadId, messageOf(error));
+        }
+      });
+      // In the order the owner sees, so chunks and calls are predictable.
+      for (const threadId of threadIds) {
+        for (const message of details.get(threadId)?.messages ?? []) {
+          if (inView(message)) {
+            items.push({ id: message.id, accountId: message.accountId, folder: message.folder, threadId });
+          }
+        }
+      }
+      return { items, failures, details };
+    },
+    [folderFor, inView, rpc],
   );
 
   /**
-   * Moves the open conversation's messages in the folder being viewed (copies
-   * in other folders stay). On success the conversation leaves the list at once.
+   * Sends `items` in calls of at most ACTION_CHUNK ids, one after another. A
+   * refusal of the whole call (thrown) fails every conversation in it; a
+   * group's error fails the conversations with messages in that group.
    */
-  const runAction = useCallback(
-    async (action: MessageAction) => {
-      const { accountId: active, folderPath: folder, reading: current } = latest.current;
-      const threadId = current.threadId;
-      const messageIds = (current.detail?.messages ?? [])
-        .filter((m) => m.folder === folder)
-        .map((m) => m.id);
-      if (active === null || threadId === null || messageIds.length === 0) return;
-      setActionPending(true);
-      try {
-        // One account and one source folder: the result has one group.
-        const { groups } = await rpc.call("message_action", { messageIds, folder, action });
-        const group = groups[0];
-        if (group === undefined || group.error !== null) {
-          throw new Error(group?.error ?? "Nothing was moved");
-        }
-        toast.success(`Moved to ${group.destination}`);
-        if (latest.current.reading.threadId === threadId) {
-          requests.current.thread++;
-          setReading(NO_READING);
-        }
-        if (latest.current.accountId === active) {
-          if (latest.current.folderPath === folder) {
-            setList((prev) => ({ ...prev, threads: prev.threads.filter((t) => t.id !== threadId) }));
-            void loadList(active, folder, "refresh");
+  const sendAction = useCallback(
+    async (items: readonly ActionItem[], action: MessageAction, destination?: string) => {
+      const failed = new Map<string, string>();
+      const destinations = new Set<string>();
+      const source = sourceOf(latest.current.view);
+      for (let start = 0; start < items.length; start += ACTION_CHUNK) {
+        const chunk = items.slice(start, start + ACTION_CHUNK);
+        try {
+          const { groups } = await rpc.call("message_action", {
+            messageIds: chunk.map((item) => item.id),
+            action,
+            ...source,
+            ...(destination !== undefined ? { destination } : {}),
+          });
+          for (const group of groups) {
+            if (group.error === null) {
+              if (group.destination !== null) destinations.add(group.destination);
+              continue;
+            }
+            for (const item of chunk) {
+              if (item.accountId === group.accountId && item.folder === group.folder) {
+                if (!failed.has(item.threadId)) failed.set(item.threadId, group.error);
+              }
+            }
           }
-          void loadFolders(active);
-          const query = latest.current.search.query;
-          if (query !== "") void runSearch(query, active);
+          if (groups.length === 0) {
+            for (const item of chunk) if (!failed.has(item.threadId)) failed.set(item.threadId, "Nothing was changed");
+          }
+        } catch (error) {
+          for (const item of chunk) if (!failed.has(item.threadId)) failed.set(item.threadId, messageOf(error));
         }
-      } catch (error) {
-        toast.error(messageOf(error));
+      }
+      return { failed, destinations };
+    },
+    [rpc],
+  );
+
+  /**
+   * An action on conversations' messages in the view: the selection bar, the
+   * reading pane toolbar and the hotkeys. Failed conversations stay selected;
+   * one toast per distinct error.
+   */
+  const threadsAction = useCallback(
+    async (threadIds: string[], action: MessageAction, destination?: string) => {
+      if (threadIds.length === 0 || pendingRef.current) return;
+      pendingRef.current = true;
+      setActionPending(true);
+      const snapshot = latest.current.reading;
+      const moving = isRoleMoveAction(action) || action === "move";
+      // Mark unread goes back to the list first, so nothing marks the messages read again.
+      if (action === "mark_unread" && snapshot.threadId !== null && threadIds.includes(snapshot.threadId)) {
+        closeThread();
+      }
+      try {
+        const { items, failures } = await collect(threadIds, snapshot);
+        const { failed, destinations } = await sendAction(items, action, destination);
+        for (const [threadId, error] of failures) failed.set(threadId, error);
+        const done = new Set(threadIds.filter((id) => !failed.has(id)));
+        for (const error of new Set(failed.values())) toast.error(error);
+        if (moving && done.size > 0 && destinations.size > 0) {
+          toast.success(`Moved to ${[...destinations].join(", ")}`);
+        }
+        if (action === "mark_unread") {
+          // A later open marks them read again.
+          for (const item of items) if (done.has(item.threadId)) opened.current.delete(item.id);
+        }
+        setSelection((prev) => {
+          if (![...prev].some((id) => done.has(id))) return prev;
+          return new Set([...prev].filter((id) => !done.has(id)));
+        });
+        const doneIds = new Set(items.filter((item) => done.has(item.threadId)).map((item) => item.id));
+        if (moving) {
+          setList((prev) => ({ ...prev, threads: prev.threads.filter((t) => !done.has(t.id)) }));
+          const open = latest.current.reading.threadId;
+          if (open !== null && done.has(open)) closeThread();
+        } else {
+          const flagged = action === "flag" ? true : action === "unflag" ? false : null;
+          setList((prev) => ({
+            ...prev,
+            threads: prev.threads.map((t) => {
+              if (!done.has(t.id)) return t;
+              if (flagged !== null) return { ...t, flagged };
+              return { ...t, unreadCount: action === "mark_read" ? 0 : Math.max(t.unreadCount, 1) };
+            }),
+          }));
+          setReading((prev) =>
+            prev.detail === null
+              ? prev
+              : {
+                  ...prev,
+                  detail: {
+                    ...prev.detail,
+                    messages: prev.detail.messages.map((m) =>
+                      !doneIds.has(m.id)
+                        ? m
+                        : flagged !== null
+                          ? { ...m, isFlagged: flagged }
+                          : { ...m, isRead: action === "mark_read" },
+                    ),
+                  },
+                },
+          );
+        }
+        if (done.size > 0) refreshAfterChange();
       } finally {
+        pendingRef.current = false;
         setActionPending(false);
       }
     },
-    [loadFolders, loadList, rpc, runSearch],
+    [closeThread, collect, refreshAfterChange, sendAction],
+  );
+
+  /** Sets a list row's star, and the open conversation's messages to match. */
+  const setThreadFlagged = useCallback((threadId: string, flagged: boolean) => {
+    setList((prev) => ({
+      ...prev,
+      threads: prev.threads.map((t) => (t.id === threadId ? { ...t, flagged } : t)),
+    }));
+  }, []);
+
+  /**
+   * The row star (and `s`): when any message of the conversation in the view is
+   * flagged, unflag all of them; otherwise flag the newest one. The star
+   * changes at once and goes back when the server refuses.
+   */
+  const toggleThreadFlag = useCallback(
+    async (threadId: string) => {
+      const { list: currentList, reading: snapshot } = latest.current;
+      const flaggedBefore =
+        currentList.threads.find((t) => t.id === threadId)?.flagged ??
+        (snapshot.detail?.thread.id === threadId ? snapshot.detail.thread.flagged : null);
+      if (flaggedBefore === null) return;
+      setThreadFlagged(threadId, !flaggedBefore);
+      try {
+        const { items, failures, details } = await collect([threadId], snapshot);
+        const failure = failures.get(threadId);
+        if (failure !== undefined) throw new Error(failure);
+        const messages = details.get(threadId)?.messages.filter(inView) ?? [];
+        const chosenIds = new Set(
+          flaggedBefore ? messages.filter((m) => m.isFlagged).map((m) => m.id) : [messages.at(-1)?.id],
+        );
+        const targets = items.filter((item) => chosenIds.has(item.id));
+        if (targets.length === 0) return;
+        const { failed } = await sendAction(targets, flaggedBefore ? "unflag" : "flag");
+        const error = failed.get(threadId);
+        if (error !== undefined) throw new Error(error);
+        setReading((prev) =>
+          prev.detail === null || prev.detail.thread.id !== threadId
+            ? prev
+            : {
+                ...prev,
+                detail: {
+                  ...prev.detail,
+                  messages: prev.detail.messages.map((m) =>
+                    chosenIds.has(m.id) ? { ...m, isFlagged: !flaggedBefore } : m,
+                  ),
+                },
+              },
+        );
+      } catch (error) {
+        setThreadFlagged(threadId, flaggedBefore);
+        toast.error(messageOf(error));
+      }
+    },
+    [collect, inView, sendAction, setThreadFlagged],
+  );
+
+  /** The star of one message in the reading pane: that message only, wherever its copy is. */
+  const toggleMessageFlag = useCallback(
+    async (message: MessageHeader) => {
+      const next = !message.isFlagged;
+      const setFlag = (value: boolean) =>
+        setReading((prev) =>
+          prev.detail === null
+            ? prev
+            : {
+                ...prev,
+                detail: {
+                  ...prev.detail,
+                  messages: prev.detail.messages.map((m) => (m.id === message.id ? { ...m, isFlagged: value } : m)),
+                },
+              },
+        );
+      setFlag(next);
+      try {
+        const { groups } = await rpc.call("message_action", {
+          messageIds: [message.id],
+          action: next ? "flag" : "unflag",
+          folder: message.folder,
+        });
+        const refused = groups.find((g) => g.error !== null);
+        if (refused !== undefined) throw new Error(refused.error!);
+      } catch (error) {
+        setFlag(!next);
+        toast.error(messageOf(error));
+      }
+    },
+    [rpc],
   );
 
   /** "Show images" for one message: page state only, gone when the conversation closes. */
@@ -533,6 +831,84 @@ function MailPanel() {
     [rpc],
   );
 
+  /** "Stop showing": the sender leaves the always-show list; open bodies load again without images. */
+  const stopImages = useCallback(
+    async (message: MessageHeader) => {
+      const address = message.from.address.trim().toLowerCase();
+      try {
+        await rpc.call("images_disallow_sender", { accountId: message.accountId, address: message.from.address });
+      } catch (error) {
+        toast.error(`Could not stop showing images: ${messageOf(error)}`);
+        return;
+      }
+      const { detail, bodies } = latest.current.reading;
+      setReading((prev) => {
+        const senders = new Set(prev.imageSenders);
+        senders.delete(address);
+        const remote = new Set(prev.remoteImageIds);
+        for (const m of prev.detail?.messages ?? []) {
+          if (m.from.address.trim().toLowerCase() === address) remote.delete(m.id);
+        }
+        return { ...prev, imageSenders: senders, remoteImageIds: remote };
+      });
+      for (const m of detail?.messages ?? []) {
+        if (m.from.address.trim().toLowerCase() === address && bodies[m.id] !== undefined) void loadBody(m.id);
+      }
+    },
+    [loadBody, rpc],
+  );
+
+  const openDetails = useCallback(
+    async (message: MessageHeader) => {
+      const token = ++requests.current.details;
+      setDetails({ messageId: message.id, status: "loading" });
+      try {
+        const source = await rpc.call("message_source", { messageId: message.id });
+        if (token !== requests.current.details) return;
+        setDetails({ messageId: message.id, status: "ready", source });
+      } catch (error) {
+        if (token !== requests.current.details) return;
+        setDetails({ messageId: message.id, status: "error", error: messageOf(error) });
+      }
+    },
+    [rpc],
+  );
+
+  const closeDetails = useCallback(() => {
+    requests.current.details++;
+    setDetails(null);
+  }, []);
+
+  const copy = useCallback(async (text: string) => {
+    try {
+      return await experimental_copyToClipboard({ text });
+    } catch {
+      return false;
+    }
+  }, []);
+
+  /**
+   * A download: a one-time ticket, then BB's own save. When BB could not
+   * start it (an older BB, or a URL it does not take), a fresh ticket goes
+   * through a plain `<a download>` instead.
+   */
+  const download = useCallback(
+    async (message: MessageHeader, attachment: AttachmentMeta | null) => {
+      const request =
+        attachment === null
+          ? ({ kind: "eml", messageId: message.id } as const)
+          : ({ kind: "attachment", messageId: message.id, partId: attachment.partId } as const);
+      try {
+        const ticket = await rpc.call("download_ticket", request);
+        if ((await saveTicket(ticket)) === "started") return;
+        anchorDownload(await rpc.call("download_ticket", request));
+      } catch (error) {
+        toast.error(`Could not download: ${messageOf(error)}`);
+      }
+    },
+    [rpc],
+  );
+
   const toggleMessage = useCallback(
     (messageId: string) => {
       const { detail, expandedIds } = latest.current.reading;
@@ -551,18 +927,18 @@ function MailPanel() {
   );
 
   const sync = useCallback(async () => {
-    if (accountId === null) return;
+    if (scopeKey === null) return;
     setSyncing(true);
     if (syncTimer.current !== null) clearTimeout(syncTimer.current);
     syncTimer.current = setTimeout(stopSyncing, SYNC_INDICATOR_MS);
     try {
-      const { started } = await rpc.call("sync_now", { accountId });
+      const { started } = await rpc.call("sync_now", { accountId: searchAccount });
       if (!started) stopSyncing();
     } catch (error) {
       stopSyncing();
       toast.error(`Sync failed: ${messageOf(error)}`);
     }
-  }, [accountId, rpc, stopSyncing]);
+  }, [rpc, scopeKey, searchAccount, stopSyncing]);
 
   const openLink = useCallback(
     (url: string) => {
@@ -616,7 +992,7 @@ function MailPanel() {
   const saveAccount = useCallback(
     async (input: NewAccountInput) => {
       const saved = await rpc.call("accounts_add", input);
-      setChosenAccountId(saved.id);
+      setChosen(saved.id);
       setAccountForm(null);
       await loadStatus();
     },
@@ -628,17 +1004,19 @@ function MailPanel() {
       status={status}
       statusError={statusError}
       account={account}
-      onSelectAccount={setChosenAccountId}
-      list={list}
+      unified={unified}
+      onSelectAccount={setChosen}
       folders={folders}
-      foldersError={foldersError}
-      folderPath={folderPath}
-      onSelectFolder={selectFolder}
+      roles={scoped?.roles ?? []}
+      foldersError={scoped?.error ?? null}
+      view={view}
+      onSelectView={selectView}
+      list={list}
       onLoadMore={() => {
-        if (accountId !== null) void loadList(accountId, folderPath, "more");
+        if (scopeKey !== null) void loadList(view, "more");
       }}
       search={search}
-      onSearch={(query) => void runSearch(query, accountId)}
+      onSearch={(query) => void runSearch(query, searchAccount)}
       syncing={syncing}
       onSync={() => void sync()}
       reading={reading}
@@ -647,10 +1025,21 @@ function MailPanel() {
       onToggleMessage={toggleMessage}
       onOpenLink={openLink}
       onHandToAgent={(message) => void handToAgent(message)}
-      onAction={(action) => void runAction(action)}
+      selection={selection}
+      onSelectionChange={setSelection}
+      onThreadsAction={(ids, action, destination) => void threadsAction(ids, action, destination)}
       actionPending={actionPending}
+      onToggleThreadFlag={(threadId) => void toggleThreadFlag(threadId)}
+      onToggleMessageFlag={(message) => void toggleMessageFlag(message)}
+      details={details}
+      onOpenDetails={(message) => void openDetails(message)}
+      onCloseDetails={closeDetails}
+      onCopy={copy}
+      onDownloadEml={(message) => void download(message, null)}
+      onDownloadAttachment={(message, attachment) => void download(message, attachment)}
       onShowImages={showImages}
       onAlwaysShowImages={(message) => void alwaysShowImages(message)}
+      onStopImages={(message) => void stopImages(message)}
       accountForm={accountForm}
       onOpenAccountForm={setAccountForm}
       onCloseAccountForm={() => setAccountForm(null)}
