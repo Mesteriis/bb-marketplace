@@ -1,0 +1,267 @@
+import { describe, expect, it } from "vitest";
+import {
+  composeDocInputSchema,
+  docFromLines,
+  isDocEmpty,
+  normalizeDoc,
+  renderDoc,
+  type ComposeDoc,
+} from "./compose-doc.ts";
+
+const text = (value: string, marks?: unknown[]) => (marks ? { type: "text", text: value, marks } : { type: "text", text: value });
+const p = (...content: unknown[]) => ({ type: "paragraph", content });
+const doc = (...content: unknown[]) => ({ type: "doc", content });
+
+function parse(input: unknown) {
+  const result = composeDocInputSchema.safeParse(input);
+  if (!result.success) throw new Error("expected the document to parse");
+  return result.data;
+}
+
+function norm(input: unknown): ComposeDoc {
+  return normalizeDoc(parse(input));
+}
+
+describe("composeDocInputSchema", () => {
+  it("accepts a TipTap document with unknown nodes and attributes", () => {
+    expect(
+      composeDocInputSchema.safeParse(
+        doc({ type: "heading", attrs: { level: 1 }, content: [text("Hi")] }, p(text("x", [{ type: "strike" }]))),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("refuses shapes that are not nodes", () => {
+    const parseOk = (input: unknown) => composeDocInputSchema.safeParse(input).success;
+    expect(parseOk(null)).toBe(false);
+    expect(parseOk("text")).toBe(false);
+    expect(parseOk({ content: [] })).toBe(false);
+    expect(parseOk(doc({ type: 1 }))).toBe(false);
+    expect(parseOk(doc(p({ type: "text", text: 5 })))).toBe(false);
+    expect(parseOk(doc(p(text("x", [{ attrs: {} }]))))).toBe(false);
+  });
+
+  it("refuses a document deeper than 32 levels without overflowing the stack", () => {
+    const nest = (depth: number) => {
+      let node: unknown = p(text("x"));
+      for (let i = 0; i < depth; i += 1) node = { type: "blockquote", content: [node] };
+      return doc(node);
+    };
+    expect(composeDocInputSchema.safeParse(nest(29)).success).toBe(true);
+    expect(composeDocInputSchema.safeParse(nest(40)).success).toBe(false);
+    expect(composeDocInputSchema.safeParse(nest(100_000)).success).toBe(false);
+    let attrs: unknown = {};
+    for (let i = 0; i < 100_000; i += 1) attrs = { a: attrs };
+    expect(composeDocInputSchema.safeParse(doc({ type: "paragraph", attrs })).success).toBe(false);
+  });
+
+  it("refuses a document over 2 MB of JSON", () => {
+    const big = "x".repeat(1024 * 1024);
+    expect(composeDocInputSchema.safeParse(doc(p(text(big)))).success).toBe(true);
+    expect(composeDocInputSchema.safeParse(doc(p(text(big)), p(text(big)))).success).toBe(false);
+    // Counted in UTF-8 bytes: 700k three-byte characters are about 2.1 MB.
+    expect(composeDocInputSchema.safeParse(doc(p(text("я".repeat(700_000) + "ж".repeat(400_000))))).success).toBe(false);
+  });
+});
+
+describe("normalizeDoc", () => {
+  it("keeps the allowed nodes and marks as they are", () => {
+    const input = doc(
+      p(text("Hello "), text("world", [{ type: "bold" }, { type: "italic" }]), { type: "hardBreak" }, text("u", [{ type: "underline" }])),
+      { type: "bulletList", content: [{ type: "listItem", content: [p(text("one"))] }] },
+      { type: "orderedList", content: [{ type: "listItem", content: [p(text("two"))] }] },
+      { type: "blockquote", content: [p(text("quoted"))] },
+    );
+    expect(norm(input)).toEqual(input);
+  });
+
+  it("strips heading, code, image and table nodes and keeps their text", () => {
+    const result = norm(
+      doc(
+        { type: "heading", attrs: { level: 2 }, content: [text("Title")] },
+        { type: "codeBlock", content: [text("line one\nline two")] },
+        p(text("see "), { type: "image", attrs: { src: "https://tracker.example.net/p.png" } }, text("this", [{ type: "code" }])),
+        {
+          type: "table",
+          content: [
+            { type: "tableRow", content: [{ type: "tableCell", content: [p(text("cell"))] }] },
+          ],
+        },
+        { type: "horizontalRule" },
+      ),
+    );
+    expect(result).toEqual(
+      doc(
+        p(text("Title")),
+        p(text("line one"), { type: "hardBreak" }, text("line two")),
+        p(text("see "), text("this")),
+        p(text("cell")),
+      ),
+    );
+    expect(JSON.stringify(result)).not.toMatch(/image|tracker|table|heading|code|attrs/);
+  });
+
+  it("keeps a link's href for http, https and mailto only", () => {
+    const link = (href: unknown) => norm(doc(p(text("go", [{ type: "link", attrs: { href, target: "_blank", rel: "x" } }]))));
+    expect(link("https://example.org/a?b=1")).toEqual(doc(p(text("go", [{ type: "link", attrs: { href: "https://example.org/a?b=1" } }]))));
+    expect(link("http://example.org/")).toEqual(doc(p(text("go", [{ type: "link", attrs: { href: "http://example.org/" } }]))));
+    expect(link("mailto:anna@example.org")).toEqual(doc(p(text("go", [{ type: "link", attrs: { href: "mailto:anna@example.org" } }]))));
+    for (const bad of ["javascript:alert(1)", " JavaScript:alert(1)", "data:text/html,x", "vbscript:x", "file:///etc/passwd", "/relative", "", 7, "https://exa\nmple.org"]) {
+      expect(link(bad)).toEqual(doc(p(text("go"))));
+    }
+  });
+
+  it("drops unknown marks and duplicate marks", () => {
+    expect(norm(doc(p(text("x", [{ type: "strike" }, { type: "bold" }, { type: "bold" }, { type: "textStyle", attrs: { color: "red" } }]))))).toEqual(
+      doc(p(text("x", [{ type: "bold" }]))),
+    );
+  });
+
+  it("repairs structure: stray text, items outside lists, empty containers", () => {
+    expect(
+      norm(
+        doc(
+          text("loose"),
+          { type: "bulletList", content: [p(text("not an item")), { type: "listItem", content: [] }] },
+          { type: "orderedList", content: [] },
+          { type: "blockquote", content: [] },
+          { type: "listItem", content: [p(text("orphan"))] },
+        ),
+      ),
+    ).toEqual(
+      doc(
+        p(text("loose")),
+        {
+          type: "bulletList",
+          content: [
+            { type: "listItem", content: [p(text("not an item"))] },
+            { type: "listItem", content: [{ type: "paragraph" }] },
+          ],
+        },
+        p(text("orphan")),
+      ),
+    );
+  });
+
+  it("removes control characters and empty text, and never returns an empty doc", () => {
+    expect(norm(doc(p(text("a\u0000b\u0007c"), text(""))))).toEqual(doc(p(text("abc"))));
+    expect(norm(doc())).toEqual(doc({ type: "paragraph" }));
+    expect(norm({ type: "paragraph", content: [text("root")] })).toEqual(doc(p(text("root"))));
+  });
+});
+
+describe("renderDoc", () => {
+  it("renders only whitelisted tags inside a fixed skeleton, text escaped", () => {
+    const { html } = renderDoc(
+      norm(
+        doc(
+          p(text("<script>alert(1)</script> & \"q\" 'a'"), text("b", [{ type: "bold" }])),
+          p(text("link", [{ type: "link", attrs: { href: "https://example.org/?a=1&b=\"2\"" } }, { type: "italic" }])),
+          { type: "bulletList", content: [{ type: "listItem", content: [p(text("one"))] }] },
+          { type: "orderedList", content: [{ type: "listItem", content: [p(text("two"), { type: "hardBreak" }, text("u", [{ type: "underline" }]))] }] },
+          { type: "blockquote", content: [p()] },
+        ),
+      ),
+    );
+    expect(html).toBe(
+      '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>' +
+        "<p>&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;q&quot; &#39;a&#39;<strong>b</strong></p>" +
+        '<p><a href="https://example.org/?a=1&amp;b=%222%22"><em>link</em></a></p>' +
+        "<ul><li><p>one</p></li></ul>" +
+        "<ol><li><p>two<br><u>u</u></p></li></ol>" +
+        "<blockquote><p><br></p></blockquote>" +
+        "</body></html>",
+    );
+    const tags = [...html.matchAll(/<\/?([a-z!]+)/gi)].map((m) => m[1]?.toLowerCase());
+    expect(new Set(tags)).toEqual(
+      new Set(["!doctype", "html", "head", "meta", "body", "p", "strong", "a", "em", "ul", "li", "ol", "br", "u", "blockquote"]),
+    );
+    expect(html.replace(/<meta charset="utf-8">/, "").match(/ [a-z-]+=/g)).toEqual([" href="]);
+  });
+
+  it("renders the text alternative: links, lists, quotes, blank lines between blocks", () => {
+    const { text: plain } = renderDoc(
+      norm(
+        doc(
+          p(text("Hello "), text("there", [{ type: "link", attrs: { href: "https://example.org/x" } }])),
+          p(text("https://example.org/same", [{ type: "link", attrs: { href: "https://example.org/same" } }])),
+          { type: "bulletList", content: [{ type: "listItem", content: [p(text("one"))] }, { type: "listItem", content: [p(text("two"))] }] },
+          { type: "orderedList", content: [{ type: "listItem", content: [p(text("first"))] }, { type: "listItem", content: [p(text("second"), { type: "hardBreak" }, text("more"))] }] },
+          { type: "blockquote", content: [p(text("quoted")), p(text("again"))] },
+          p(),
+          p(text("Bye")),
+        ),
+      ),
+    );
+    expect(plain).toBe(
+      [
+        "Hello there <https://example.org/x>",
+        "",
+        "https://example.org/same",
+        "",
+        "- one",
+        "- two",
+        "",
+        "1. first",
+        "2. second",
+        "   more",
+        "",
+        "> quoted",
+        ">",
+        "> again",
+        "",
+        "",
+        "",
+        "Bye",
+      ].join("\n"),
+    );
+  });
+
+  it("wraps the text alternative at 76 columns, prefixes included, long words kept whole", () => {
+    const words = Array.from({ length: 40 }, (_, i) => `word${i}`).join(" ");
+    const long = "x".repeat(90);
+    const { text: plain } = renderDoc(
+      norm(doc(p(text(words)), { type: "blockquote", content: [p(text(words))] }, p(text(long)))),
+    );
+    const lines = plain.split("\n");
+    for (const line of lines) {
+      if (line !== long) expect(line.length).toBeLessThanOrEqual(76);
+    }
+    expect(lines.filter((line) => line.startsWith("> ")).length).toBeGreaterThan(1);
+    expect(lines).toContain(long);
+    expect(plain.replace(/\n(> )?/g, " ")).toContain("word38 word39");
+  });
+
+  it("renders a mailto link as text <url>", () => {
+    expect(
+      renderDoc(norm(doc(p(text("Write me", [{ type: "link", attrs: { href: "mailto:anna@example.org" } }]))))).text,
+    ).toBe("Write me <mailto:anna@example.org>");
+  });
+});
+
+describe("docFromLines", () => {
+  it("makes one paragraph per line and a blockquote for the quote", () => {
+    expect(docFromLines(["", "On 14 Nov 2026 09:05 UTC, anna@example.org wrote:"], ["Hi", "", "Anna"])).toEqual(
+      doc(
+        { type: "paragraph" },
+        p(text("On 14 Nov 2026 09:05 UTC, anna@example.org wrote:")),
+        { type: "blockquote", content: [p(text("Hi")), { type: "paragraph" }, p(text("Anna"))] },
+      ),
+    );
+    expect(docFromLines([])).toEqual(doc({ type: "paragraph" }));
+  });
+
+  it("keeps markup in lines as text", () => {
+    const result = docFromLines(["<b>x</b>"]);
+    expect(renderDoc(result).html).toContain("<p>&lt;b&gt;x&lt;/b&gt;</p>");
+  });
+});
+
+describe("isDocEmpty", () => {
+  it("is true when only whitespace and breaks remain", () => {
+    expect(isDocEmpty(docFromLines([]))).toBe(true);
+    expect(isDocEmpty(norm(doc(p(text("  "), { type: "hardBreak" }), { type: "bulletList", content: [{ type: "listItem", content: [p()] }] })))).toBe(true);
+    expect(isDocEmpty(docFromLines(["", "x"]))).toBe(false);
+    expect(isDocEmpty(norm(doc({ type: "blockquote", content: [p(text("q"))] })))).toBe(false);
+  });
+});
