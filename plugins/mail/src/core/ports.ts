@@ -444,8 +444,14 @@ export interface MailStore {
     },
   ): boolean;
   deleteOutbox(id: string, from: OutboxState[]): boolean;
-  /** The oldest due `queued` row of an account not in `busyAccounts`, moved to `sending` (attempts + 1). */
-  claimDueOutbox(nowIso: string, busyAccounts: string[]): OutboxRecord | null;
+  /** The oldest due `queued` row of an account not in `busyAccounts`, unchanged (a peek). */
+  nextDueOutbox(nowIso: string, busyAccounts: string[]): OutboxRecord | null;
+  /**
+   * The oldest due `queued` row of an account not in `busyAccounts` (with
+   * `onlyId`, that row only, if it is still queued and due), moved to
+   * `sending` (attempts + 1).
+   */
+  claimDueOutbox(nowIso: string, busyAccounts: string[], onlyId?: string): OutboxRecord | null;
   /**
    * On start: `sending` becomes `unknown`, overdue `queued` becomes `held`,
    * and `appending` goes back to `sent` (the copy step is idempotent).

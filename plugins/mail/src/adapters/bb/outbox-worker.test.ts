@@ -130,6 +130,25 @@ describe("createOutboxWorker", () => {
     expect(state(second)).toBe("queued");
   });
 
+  it("a send still waiting behind the account's queue at abort never opens SMTP and stays queued", async () => {
+    const id = await queued();
+    let releaseQueue: (() => void) | null = null;
+    void h.queue.run("acc_1", () => new Promise<void>((resolve) => (releaseQueue = resolve)));
+    const controller = new AbortController();
+    const { worker: w } = worker({}, { intervalMs: 5, drainMs: 1_000 });
+    const running = w.start(controller.signal);
+    await new Promise((r) => setTimeout(r, 10));
+    h.advance(UNDO_MS);
+    w.wake(null);
+    await new Promise((r) => setTimeout(r, 10));
+    controller.abort();
+    setTimeout(() => releaseQueue?.(), 20);
+    await running;
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.transport.sent).toEqual([]);
+    expect(state(id)).toBe("queued");
+  });
+
   it("a send still in flight after the drain is aborted and start resolves", async () => {
     await queued();
     const signals: AbortSignal[] = [];

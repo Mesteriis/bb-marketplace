@@ -159,6 +159,47 @@ describe("Undo", () => {
     expect(states()).toEqual(["queued", "cancelled"]);
   });
 
+  /** Keeps the account's write queue busy (a sync round, an APPEND) until released. */
+  function busyQueue(): () => void {
+    let released = false;
+    let resolveTask: (() => void) | null = null;
+    void h.queue.run("acc_1", () => new Promise<void>((resolve) => (released ? resolve() : (resolveTask = resolve))));
+    return () => {
+      released = true;
+      resolveTask?.();
+    };
+  }
+
+  it("still works while the send waits behind another write of the account", async () => {
+    const { id, draftId } = await queued();
+    h.advance(UNDO_MS);
+    const release = busyQueue();
+    const running = runOutboxOnce(h.deps, signal);
+    await Promise.resolve();
+    expect(h.store.getOutbox(id)!.state).toBe("queued");
+    expect(cancelSend(h.deps, id)).toEqual({ cancelled: true, draftId });
+    release();
+    await running;
+    await drain();
+    expect(h.transport.sent).toEqual([]);
+    expect(h.store.getDraft(draftId)).not.toBeNull();
+    expect(states()).toEqual(["queued", "cancelled"]);
+  });
+
+  it("an abort while the send waits leaves the row queued and opens no SMTP", async () => {
+    const { id } = await queued();
+    h.advance(UNDO_MS);
+    const release = busyQueue();
+    const controller = new AbortController();
+    const running = runOutboxOnce(h.deps, controller.signal);
+    controller.abort();
+    release();
+    await running;
+    expect(h.transport.sent).toEqual([]);
+    expect(h.store.getOutbox(id)!.state).toBe("queued");
+    expect(states()).toEqual(["queued"]);
+  });
+
   it("is too late once the worker has claimed the row", async () => {
     const { id } = await queued();
     h.advance(UNDO_MS);

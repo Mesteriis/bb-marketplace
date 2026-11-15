@@ -845,14 +845,27 @@ export class InMemoryMailStore implements MailStore {
     return true;
   }
 
-  claimDueOutbox(nowIso: string, busyAccounts: string[]): OutboxRecord | null {
+  private dueOutbox(nowIso: string, busyAccounts: string[], onlyId?: string): OutboxRecord | undefined {
     const now = Date.parse(nowIso);
-    const due = [...this.state.outbox.values()]
+    return [...this.state.outbox.values()]
       .map((e) => e.record)
       .filter(
-        (r) => r.state === "queued" && Date.parse(r.sendAfter) <= now && !busyAccounts.includes(r.accountId),
+        (r) =>
+          r.state === "queued" &&
+          Date.parse(r.sendAfter) <= now &&
+          !busyAccounts.includes(r.accountId) &&
+          (onlyId === undefined || r.id === onlyId),
       )
       .sort(dueOrder)[0];
+  }
+
+  nextDueOutbox(nowIso: string, busyAccounts: string[]): OutboxRecord | null {
+    const due = this.dueOutbox(nowIso, busyAccounts);
+    return due ? structuredClone(due) : null;
+  }
+
+  claimDueOutbox(nowIso: string, busyAccounts: string[], onlyId?: string): OutboxRecord | null {
+    const due = this.dueOutbox(nowIso, busyAccounts, onlyId);
     if (!due) return null;
     due.state = "sending";
     due.attempts++;

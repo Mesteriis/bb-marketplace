@@ -6,7 +6,9 @@
 // background copy of idle drafts to the Drafts folder, and the search of a
 // Gmail account's Sent folder for sends that became `unknown`.
 //
-// Resolution 10: on abort the worker takes no new rows. A step in flight
+// Resolution 10: on abort the worker takes no new rows, and a send still
+// waiting behind the account's write queue never opens SMTP (its row stays
+// `queued`, so it is not `unknown` on the next start). A step in flight
 // keeps the worker's own (unguarded) store and gets DRAIN_MS to finish, so a
 // send that completes in that time is recorded as sent, not left as
 // `sending` (which the next start would call `unknown`). After the drain the
@@ -79,7 +81,7 @@ export function createOutboxWorker(
     if (!ready()) return;
     try {
       for (let n = 0; n < MAX_SENDS_PER_STEP && !stop.aborted; n++) {
-        if (!(await runOutboxOnce(deps, sendSignal))) break;
+        if (!(await runOutboxOnce(deps, sendSignal, stop))) break;
       }
     } catch (error) {
       log(`outbox: step failed (${kindOf(error)})`);
