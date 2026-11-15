@@ -12,6 +12,7 @@ import {
   queueConfirmed,
   viewProposal,
   type MailProposeParams,
+  resolveSendingAccount,
 } from "./agent-proposals.ts";
 import { ATTACHMENT_CAP_BYTES, outgoingOf } from "./compose.ts";
 import { SEND_RATE_PER_MINUTE, UNDO_MS, cancelSend, retrySend, runOutboxOnce, sendNow } from "./compose-outbox.ts";
@@ -184,7 +185,6 @@ describe("proposeMail", () => {
       ["a filler letter in the subject", () => propose({ subject: "Plan\uFFA0" }), "hidden_text"],
       ["unknown source", () => propose({ kind: "reply", sourceMessageId: "m_missing", subject: undefined }), "source_not_found"],
       ["no source id", () => propose({ kind: "reply", subject: undefined }), "source_not_found"],
-      ["unknown account", () => propose({ accountId: "acc_missing" }), "account"],
       ["attachments outside a forward", () => propose({ forwardAttachments: [0] }), "attachment_index"],
       [
         "a reply from another account than the source's",
@@ -205,6 +205,16 @@ describe("proposeMail", () => {
         expect(h.store.listDrafts("acc_1")).toEqual([]);
       });
     }
+
+    it("an unknown account names only the owner's own addresses to choose from", async () => {
+      const error = await refusal(propose({ accountId: "acc_missing" }));
+      expect(error.kind).toBe("account_unknown");
+      const owned = new Set(h.store.listAccounts().map((a) => a.email));
+      const named = error.message.match(/[^\s,:]+@[^\s,]+(?=[,.](\s|$))/g) ?? [];
+      expect(named.length).toBeGreaterThan(0);
+      for (const address of named) expect(owned.has(address)).toBe(true);
+      expect(h.store.listDrafts("acc_1")).toEqual([]);
+    });
 
     it("an attachment index past the source's attachments", async () => {
       const id = stored();
@@ -644,5 +654,33 @@ describe("cancelProposal", () => {
       expect(sentence).not.toMatch(/@|\{|<|token|hash/i);
     }
     expect(AGENT_RESULT.changed).toBe("The confirmation did not match the proposal; nothing was sent.");
+  });
+});
+
+describe("resolveSendingAccount", () => {
+  const ICLOUD = { id: "acc-1", email: "owner@example.com" };
+  const GMAIL = { id: "acc-2", email: "Owner.Two@example.org" };
+
+  it("uses the only account when the agent names none", () => {
+    expect(resolveSendingAccount([ICLOUD], undefined)).toBe("acc-1");
+  });
+
+  it("asks the agent to choose by address when there are several, naming only the owner's addresses", () => {
+    expect(() => resolveSendingAccount([ICLOUD, GMAIL], undefined)).toThrow(
+      /several mail accounts.*Accounts: owner@example\.com, Owner\.Two@example\.org\./,
+    );
+  });
+
+  it("accepts an id or an email address, case-insensitively", () => {
+    expect(resolveSendingAccount([ICLOUD, GMAIL], "acc-2")).toBe("acc-2");
+    expect(resolveSendingAccount([ICLOUD, GMAIL], " owner.two@EXAMPLE.org ")).toBe("acc-2");
+  });
+
+  it("refuses an unknown account and lists the choices", () => {
+    expect(() => resolveSendingAccount([ICLOUD, GMAIL], "stranger@example.net")).toThrow(/not one of the owner's mail accounts.*Accounts:/);
+  });
+
+  it("no accounts at all is the plain account refusal", () => {
+    expect(() => resolveSendingAccount([], undefined)).toThrow(/cannot send right now/);
   });
 });

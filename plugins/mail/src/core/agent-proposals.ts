@@ -53,8 +53,12 @@ export const mailProposeParamsSchema = z.object({
   kind: composeKindSchema,
   /** reply / reply_all / forward: a message id from mail_search, mail_read or a mention. */
   sourceMessageId: z.string().min(1).max(200).optional(),
-  /** new: required. reply / forward: the source message's account (another one is refused); leave it out. */
-  accountId: z.string().min(1).max(200).optional(),
+  /**
+   * new: the sending account, by id or by its email address; may be left out
+   * when the owner has one account. reply / forward: leave it out (the source
+   * message's account sends; another one is refused).
+   */
+  accountId: z.string().min(1).max(320).optional(),
   to: z.array(headerAddressInput).max(MAX_RECIPIENTS).default([]),
   cc: z.array(headerAddressInput).max(MAX_RECIPIENTS).default([]),
   bcc: z.array(headerAddressInput).max(MAX_RECIPIENTS).default([]),
@@ -75,6 +79,8 @@ export type ProposalErrorKind =
   | "off"
   | "vault"
   | "account"
+  | "account_required"
+  | "account_unknown"
   | "account_mismatch"
   | "smtp_missing"
   | `caps:${ProposalCapHit}`
@@ -107,6 +113,8 @@ const ERROR_TEXT: Record<string, string> = {
   off: "Email proposals are turned off in Mail settings.",
   vault: "Mail is locked; the owner needs to unlock it in Mail.",
   account: "That account cannot send right now; the owner needs to check it in Mail.",
+  account_required: "The owner has several mail accounts; pass accountId as one of their addresses.",
+  account_unknown: "accountId is not one of the owner's mail accounts; pass one of their addresses.",
   account_mismatch: "A reply or forward is sent from the account that received the message; leave accountId out.",
   smtp_missing: "SMTP is not set for this account.",
   too_many_recipients: `An email can have at most ${MAX_RECIPIENTS} recipients.`,
@@ -130,8 +138,12 @@ function errorText(kind: ProposalErrorKind): string {
 /** A refusal with a fixed text per kind: never an address, subject or body. */
 export class ProposalError extends Error {
   readonly kind: ProposalErrorKind;
-  constructor(kind: ProposalErrorKind) {
-    super(errorText(kind));
+  /**
+   * `detail` is only ever the owner's own account addresses (for
+   * account_required / account_unknown), never message content.
+   */
+  constructor(kind: ProposalErrorKind, detail?: string) {
+    super(detail === undefined ? errorText(kind) : `${errorText(kind)} ${detail}`);
     this.name = "ProposalError";
     this.kind = kind;
   }
@@ -197,10 +209,10 @@ export async function proposeMail(
 
   let plan: ComposePlan;
   if (params.kind === "new") {
-    if (params.accountId === undefined) throw new ProposalError("account");
+    const accountId = resolveSendingAccount(deps.store.listAccounts(), params.accountId);
     if (params.subject === undefined || params.subject.trim() === "") throw new ProposalError("subject_missing");
     try {
-      plan = planNew(deps, params.accountId);
+      plan = planNew(deps, accountId);
     } catch (error) {
       throw asProposalError(error, "account");
     }
@@ -303,6 +315,27 @@ function parseAll(list: readonly string[]): OutgoingAddress[] {
 
 function asMailAddress(entry: OutgoingAddress): MailAddress {
   return { name: entry.name, address: entry.address };
+}
+
+/**
+ * The account a new proposal sends from: the given id or email address
+ * (case-insensitive), or the only account when none is given. The agent does
+ * not know account ids, so a refusal names the owner's addresses to pick from.
+ */
+export function resolveSendingAccount(
+  accounts: readonly { id: string; email: string }[],
+  given: string | undefined,
+): string {
+  const choices = () => `Accounts: ${accounts.map((a) => a.email).join(", ")}.`;
+  if (given === undefined) {
+    if (accounts.length === 1) return accounts[0]!.id;
+    if (accounts.length === 0) throw new ProposalError("account");
+    throw new ProposalError("account_required", choices());
+  }
+  const wanted = given.trim().toLowerCase();
+  const match = accounts.find((a) => a.id === given || a.email.toLowerCase() === wanted);
+  if (match === undefined) throw new ProposalError(accounts.length === 0 ? "account" : "account_unknown", accounts.length === 0 ? undefined : choices());
+  return match.id;
 }
 
 function asProposalError(error: unknown, kind: ProposalErrorKind): Error {
