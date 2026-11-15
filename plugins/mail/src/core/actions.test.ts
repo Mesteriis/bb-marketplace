@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { archiveAllowedFrom, isRoleMoveAction, resolveActionDestination } from "./actions.ts";
+import {
+  ROLE_NAMES,
+  archiveAllowedFrom,
+  flagChangeOf,
+  isRoleMoveAction,
+  resolveActionDestination,
+  resolveMoveDestination,
+  roleFolders,
+} from "./actions.ts";
 import { type Folder, messageActionSchema, type SpecialUse } from "./model.ts";
 
 function folder(path: string, specialUse: SpecialUse | null, overrides: Partial<Folder> = {}): Folder {
@@ -182,5 +190,61 @@ describe("isRoleMoveAction", () => {
       "archive",
       "delete",
     ]);
+  });
+});
+
+describe("flagChangeOf", () => {
+  it("maps the flag actions to a FlagChange and moves to null", () => {
+    expect(messageActionSchema.options.map((action) => [action, flagChangeOf(action)])).toEqual([
+      ["spam", null],
+      ["not_spam", null],
+      ["archive", null],
+      ["delete", null],
+      ["mark_read", { seen: true }],
+      ["mark_unread", { seen: false }],
+      ["flag", { flagged: true }],
+      ["unflag", { flagged: false }],
+      ["move", null],
+    ]);
+  });
+});
+
+describe("resolveMoveDestination", () => {
+  it("moves to another selectable folder of the account", () => {
+    expect(resolveMoveDestination("Work", "INBOX", ICLOUD)).toEqual({ destination: ICLOUD[4] });
+  });
+
+  it("refuses an unknown folder, a folder that cannot hold mail and the source", () => {
+    expect(resolveMoveDestination("Nowhere", "INBOX", ICLOUD)).toEqual({
+      refusal: "This account has no folder Nowhere",
+    });
+    const folders = [...ICLOUD, folder("Projects", null, { selectable: false })];
+    expect(resolveMoveDestination("Projects", "INBOX", folders)).toEqual({
+      refusal: "Projects cannot hold messages",
+    });
+    expect(resolveMoveDestination("Work", "Work", ICLOUD)).toEqual({ refusal: "Already in Work" });
+  });
+
+  it("refuses an unknown source folder", () => {
+    expect(resolveMoveDestination("Work", "Gone", ICLOUD)).toEqual({ refusal: "Unknown folder" });
+  });
+});
+
+describe("roleFolders", () => {
+  it("returns the folders of the role; archive never includes All Mail", () => {
+    expect(roleFolders("trash", ICLOUD).map((f) => f.path)).toEqual(["Deleted Messages"]);
+    expect(roleFolders("archive", GMAIL)).toEqual([]);
+    expect(roleFolders("archive", ICLOUD).map((f) => f.path)).toEqual(["Archive"]);
+  });
+
+  it("names every role but all", () => {
+    expect(ROLE_NAMES).toEqual({
+      inbox: "Inbox",
+      sent: "Sent",
+      drafts: "Drafts",
+      junk: "Spam",
+      archive: "Archive",
+      trash: "Trash",
+    });
   });
 });

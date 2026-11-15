@@ -13,7 +13,14 @@ import {
   REMOVE_IN_THREAD_MESSAGE,
 } from "./server.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
-import { generateVaultKey } from "./src/adapters/bb/vault.ts";
+import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
+import { parseMail } from "./src/adapters/bb/imapflow-gateway.ts";
+import {
+  STALE_MESSAGE,
+  TICKET_TTL_MS,
+  TOO_LARGE_MESSAGE,
+  UNAVAILABLE_MESSAGE,
+} from "./src/adapters/bb/downloads.ts";
 import { ImapAuthError, MAIL_CHANGED_CHANNEL, UNTRUSTED_NOTICE } from "./src/core/index.ts";
 import type {
   AccountPreset,
@@ -28,9 +35,11 @@ import type {
 import {
   FixedClock,
   ScriptedImapGateway,
+  imapError,
   makeFetchedMessage,
   makeStoredAccount,
 } from "./src/core/testing/fakes.ts";
+import type { FolderSession, ImapConfig } from "./src/core/index.ts";
 
 const PLUGIN_ID = "makosh-mail";
 const PASSWORD = "Pa55-word-never-leaks";
@@ -50,11 +59,42 @@ type LoadOptions = {
   /** Runs against the host's database before the plugin loads. */
   seed?: (bb: BbPluginApi) => void;
   /** Adjusts the scripted server before the plugin loads. */
-  server?: (gateway: ScriptedImapGateway) => void;
+  server?: (gateway: RawGateway) => void;
 };
 
+/**
+ * The scripted server plus raw message bytes by folder and uid, served by
+ * fetchRaw (recorded like the other session calls).
+ */
+class RawGateway extends ScriptedImapGateway {
+  readonly raw = new Map<string, Uint8Array>();
+
+  setRaw(path: string, uid: number, bytes: Uint8Array): void {
+    this.raw.set(`${path}\u0000${uid}`, bytes);
+  }
+
+  override async openFolder(
+    config: ImapConfig,
+    path: string,
+    options: { readOnly: boolean },
+  ): Promise<FolderSession> {
+    const session = await super.openFolder(config, path, options);
+    const opened = this.sessions[this.sessions.length - 1]!;
+    return {
+      ...session,
+      fetchRaw: async (uid, maxBytes) => {
+        opened.calls.push({ method: "fetchRaw", uid });
+        const bytes = this.raw.get(`${path}\u0000${uid}`);
+        if (bytes === undefined) throw imapError("NotFound");
+        if (bytes.byteLength > maxBytes) throw imapError("TooLarge");
+        return bytes.slice();
+      },
+    };
+  }
+}
+
 async function load(options: LoadOptions = {}) {
-  const gateway = new ScriptedImapGateway({ uidValidity: 3, uidNext: 1, messages: [] });
+  const gateway = new RawGateway({ uidValidity: 3, uidNext: 1, messages: [] });
   gateway.deliver({
     subject: "Invented quarterly note",
     bodyText: "Invented body about the garden fence.",
@@ -68,8 +108,9 @@ async function load(options: LoadOptions = {}) {
   });
   const bb = options.wrap ? options.wrap(host.bb) : host.bb;
   options.seed?.(host.bb);
-  await createMailPlugin({ gateway, clock: new FixedClock(NOW) })(bb);
-  return { ...host, gateway };
+  const clock = new FixedClock(NOW);
+  await createMailPlugin({ gateway, clock })(bb);
+  return { ...host, gateway, clock };
 }
 
 /** A bb whose settings handles reject experimental_set, like a host that cannot write secrets. */
@@ -108,10 +149,11 @@ const GMAIL_FOLDERS: SeedFolder[] = [
   { path: "[Gmail]/Trash", specialUse: "trash" },
 ];
 
-/** Stores account acc_1 with folders and messages before the plugin loads. */
+/** Stores an account (acc_1 by default) with folders and messages before the plugin loads. */
 function seedMail(
   bb: BbPluginApi,
   seed: {
+    accountId?: string;
     preset?: AccountPreset;
     folders: SeedFolder[];
     messages: { folder: string; message: FetchedMessage }[];
@@ -120,9 +162,20 @@ function seedMail(
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
   const store = createSqliteStore(db);
-  store.saveAccount(makeStoredAccount({ preset: seed.preset ?? "other" }));
+  const accountId = seed.accountId ?? "acc_1";
+  const preset = seed.preset ?? "other";
+  store.saveAccount(
+    accountId === "acc_1"
+      ? makeStoredAccount({ preset })
+      : makeStoredAccount({
+          id: accountId,
+          email: `${accountId}@example.org`,
+          username: `${accountId}@example.org`,
+          preset,
+        }),
+  );
   store.saveFolders(
-    "acc_1",
+    accountId,
     seed.folders.map((f) => ({
       path: f.path,
       name: f.name ?? f.path.split("/").pop()!,
@@ -131,7 +184,7 @@ function seedMail(
       selectable: f.selectable ?? true,
     })),
   );
-  for (const { folder, message } of seed.messages) store.upsertMessages("acc_1", folder, [message]);
+  for (const { folder, message } of seed.messages) store.upsertMessages(accountId, folder, [message]);
 }
 
 /** A bb whose database refuses the snippet repair scan, as a corrupt row might. */
@@ -1117,3 +1170,563 @@ describe("makosh-mail server", () => {
     expect(items[0]!.subtitle).toMatch(/ · Spam$/);
   });
 });
+
+/** Ids of the rows in `folder` of `accountId`, by uid. */
+function idsIn(host: Host, accountId: string, folder: string): string[] {
+  return (
+    host.bb.storage
+      .database()
+      .prepare("SELECT id FROM messages WHERE account_id = ? AND folder = ? ORDER BY uid")
+      .all(accountId, folder) as { id: string }[]
+  ).map((row) => row.id);
+}
+
+function desired(host: Host, messageId: string): { seen: number | null; flagged: number | null; read: number } {
+  return host.bb.storage
+    .database()
+    .prepare("SELECT seen_desired AS seen, flag_desired AS flagged, is_read AS read FROM messages WHERE id = ?")
+    .get(messageId) as { seen: number | null; flagged: number | null; read: number };
+}
+
+function messages(count: number, from = 1): FetchedMessage[] {
+  return Array.from({ length: count }, (_, i) => makeFetchedMessage(from + i));
+}
+
+/** acc_1 (iCloud folders) and acc_2 (an INBOX and Work), each with messages in INBOX. */
+function seedTwoAccounts(bb: BbPluginApi, perAccount = 2): void {
+  seedMail(bb, {
+    folders: ICLOUD_FOLDERS,
+    messages: [
+      ...messages(perAccount).map((message) => ({ folder: "INBOX", message })),
+      { folder: "Work", message: makeFetchedMessage(500) },
+    ],
+  });
+  seedMail(bb, {
+    accountId: "acc_2",
+    folders: [{ path: "INBOX", specialUse: "inbox" }, { path: "Work" }, { path: "Trash", specialUse: "trash" }],
+    messages: messages(perAccount, 1000).map((message) => ({ folder: "INBOX", message })),
+  });
+}
+
+describe("makosh-mail server: bulk actions", () => {
+  it("groups a role batch by account and source folder and sets the desired flags", async () => {
+    const host = await load({ seed: (bb) => seedTwoAccounts(bb) });
+    const [a1, a2] = idsIn(host, "acc_1", "INBOX");
+    const [b1] = idsIn(host, "acc_2", "INBOX");
+    const [work] = idsIn(host, "acc_1", "Work");
+    const signalsBefore = host.harness.inspection.realtimeSignals.length;
+
+    const result = await host.harness.behavior.callRpc("message_action", {
+      messageIds: [a1, b1, work, a2],
+      role: "inbox",
+      action: "flag",
+    });
+
+    expect(result).toEqual({
+      groups: [
+        { accountId: "acc_1", folder: "INBOX", queued: 2, destination: null, error: null },
+        { accountId: "acc_2", folder: "INBOX", queued: 1, destination: null, error: null },
+        {
+          accountId: "acc_1",
+          folder: "Work",
+          queued: 0,
+          destination: null,
+          error: "These messages are no longer in Inbox",
+        },
+      ],
+    });
+    expect([a1, a2, b1].map((id) => desired(host, id!).flagged)).toEqual([1, 1, 1]);
+    expect(desired(host, work!).flagged).toBeNull();
+    expect(host.harness.inspection.realtimeSignals.slice(signalsBefore)).toEqual([
+      { channel: MAIL_CHANGED_CHANNEL, payload: { accountId: "acc_1" } },
+      { channel: MAIL_CHANGED_CHANNEL, payload: { accountId: "acc_2" } },
+    ]);
+  });
+
+  it("groups a 200-id mix across accounts", async () => {
+    const host = await load({ seed: (bb) => seedTwoAccounts(bb, 100) });
+    const ids = [...idsIn(host, "acc_1", "INBOX"), ...idsIn(host, "acc_2", "INBOX")];
+    expect(ids).toHaveLength(200);
+
+    const { groups } = (await host.harness.behavior.callRpc("message_action", {
+      messageIds: ids,
+      role: "inbox",
+      action: "mark_read",
+    })) as { groups: { accountId: string; queued: number; error: string | null }[] };
+
+    expect(groups.map((g) => [g.accountId, g.queued, g.error])).toEqual([
+      ["acc_1", 100, null],
+      ["acc_2", 100, null],
+    ]);
+    expect(ids.every((id) => desired(host, id).read === 1 && desired(host, id).seen === 1)).toBe(true);
+  });
+
+  it("moves a role batch per account and reports each group's destination or refusal", async () => {
+    const host = await load({ seed: (bb) => seedTwoAccounts(bb) });
+    const [a1] = idsIn(host, "acc_1", "INBOX");
+    const [b1] = idsIn(host, "acc_2", "INBOX");
+
+    await expect(
+      host.harness.behavior.callRpc("message_action", { messageIds: [a1, b1], role: "inbox", action: "spam" }),
+    ).resolves.toEqual({
+      groups: [
+        { accountId: "acc_1", folder: "INBOX", queued: 1, destination: "Junk", error: null },
+        {
+          accountId: "acc_2",
+          folder: "INBOX",
+          queued: 0,
+          destination: null,
+          error: "This account has no Spam folder",
+        },
+      ],
+    });
+    expect(movePending(host, a1!)).toBe("Junk");
+    expect(movePending(host, b1!)).toBeNull();
+  });
+
+  it("refuses per group while one account needs its password", async () => {
+    const host = await load({
+      seed: (bb) => {
+        seedTwoAccounts(bb);
+        createSqliteStore(bb.storage.database()).recordSyncResult("acc_2", {
+          lastSyncAt: null,
+          lastError: "Authentication failed",
+          authFailed: true,
+        });
+      },
+    });
+    const [a1] = idsIn(host, "acc_1", "INBOX");
+    const [b1] = idsIn(host, "acc_2", "INBOX");
+
+    const { groups } = (await host.harness.behavior.callRpc("message_action", {
+      messageIds: [a1, b1],
+      role: "inbox",
+      action: "mark_unread",
+    })) as { groups: { accountId: string; error: string | null }[] };
+
+    expect(groups.map((g) => [g.accountId, g.error])).toEqual([
+      ["acc_1", null],
+      ["acc_2", PASSWORD_NEEDED_MESSAGE],
+    ]);
+    expect(desired(host, a1!).seen).toBe(0);
+    expect(desired(host, b1!).seen).toBeNull();
+  });
+
+  it("refuses role all for actions and lists", async () => {
+    const host = await load({ seed: (bb) => seedTwoAccounts(bb) });
+    const [a1] = idsIn(host, "acc_1", "INBOX");
+
+    await expect(
+      host.harness.behavior.callRpc("message_action", { messageIds: [a1], role: "all", action: "flag" }),
+    ).rejects.toThrow("All Mail is not a merged folder");
+    await expect(
+      host.harness.behavior.callRpc("threads_list", {
+        scope: { kind: "all", role: "all" },
+        cursor: null,
+        limit: 10,
+      }),
+    ).rejects.toThrow("All Mail is not a merged folder");
+    expect(desired(host, a1!).flagged).toBeNull();
+  });
+
+  it("moves to a chosen folder of the same account", async () => {
+    const host = await load({ seed: (bb) => seedTwoAccounts(bb) });
+    const [a1, a2] = idsIn(host, "acc_1", "INBOX");
+    const [b1] = idsIn(host, "acc_2", "INBOX");
+    const move = (messageIds: string[], destination: string, folder = "INBOX") =>
+      host.harness.behavior.callRpc("message_action", { messageIds, folder, action: "move", destination });
+
+    await expect(move([a1!], "Work")).resolves.toEqual(movedGroup("acc_1", "INBOX", 1, "Work"));
+    expect(movePending(host, a1!)).toBe("Work");
+    await expect(move([a2!], "Nowhere")).rejects.toThrow("This account has no folder Nowhere");
+    await expect(move([a2!], "INBOX")).rejects.toThrow("Already in INBOX");
+    // One destination path for two accounts: each group checks its own account.
+    await expect(move([a2!, b1!], "Deleted Messages")).resolves.toEqual({
+      groups: [
+        { accountId: "acc_1", folder: "INBOX", queued: 1, destination: "Trash", error: null },
+        {
+          accountId: "acc_2",
+          folder: "INBOX",
+          queued: 0,
+          destination: null,
+          error: "This account has no folder Deleted Messages",
+        },
+      ],
+    });
+    expect(movePending(host, b1!)).toBeNull();
+  });
+
+  it("refuses a move into a folder that cannot hold messages", async () => {
+    const host = await load({
+      seed: (bb) =>
+        seedMail(bb, {
+          folders: [...ICLOUD_FOLDERS, { path: "Projects", selectable: false }],
+          messages: [{ folder: "INBOX", message: makeFetchedMessage(1) }],
+        }),
+    });
+    const id = messageIdAt(host, "INBOX", 1);
+
+    await expect(
+      host.harness.behavior.callRpc("message_action", {
+        messageIds: [id],
+        folder: "INBOX",
+        action: "move",
+        destination: "Projects",
+      }),
+    ).rejects.toThrow("Projects cannot hold messages");
+    expect(movePending(host, id)).toBeNull();
+  });
+
+  it("a flag action wakes sync, which pushes the change to the server", async () => {
+    const host = await load();
+    const { accountId, messageId } = await addAndSync(host);
+
+    await expect(
+      host.harness.behavior.callRpc("message_action", {
+        messageIds: [messageId],
+        folder: "INBOX",
+        action: "flag",
+      }),
+    ).resolves.toEqual({
+      groups: [{ accountId, folder: "INBOX", queued: 1, destination: null, error: null }],
+    });
+    const service = host.harness.behavior.runService("sync");
+    await vi.waitFor(() => expect(host.gateway.mailbox.messages[0]!.flagged).toBe(true));
+    service.controller.abort();
+    await service.done;
+    const calls = host.gateway.sessions.flatMap((s) => s.calls);
+    expect(calls).toContainEqual(expect.objectContaining({ method: "setFlags", change: { flagged: true } }));
+  });
+});
+
+const BOUNDARY = "invented-boundary";
+
+/** A raw message with a text part and, optionally, one attachment. */
+function rawMail(
+  options: {
+    messageId?: string | null;
+    subject?: string;
+    attachment?: { filename: string; mimeType: string; content: string };
+  } = {},
+): Uint8Array {
+  const lines = [
+    "From: Sender <sender@example.org>",
+    "To: owner@example.org",
+    `Subject: ${options.subject ?? "Invented quarterly note"}`,
+    "Date: Fri, 13 Nov 2026 08:30:00 +0000",
+  ];
+  if (options.messageId !== null) lines.push(`Message-ID: ${options.messageId ?? "<msg-1@example.org>"}`);
+  lines.push(
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/mixed; boundary="${BOUNDARY}"`,
+    "",
+    `--${BOUNDARY}`,
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "Invented body about the garden fence.",
+  );
+  if (options.attachment) {
+    const { filename, mimeType, content } = options.attachment;
+    lines.push(
+      `--${BOUNDARY}`,
+      `Content-Type: ${mimeType}`,
+      `Content-Disposition: attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      "Content-Transfer-Encoding: base64",
+      "",
+      Buffer.from(content).toString("base64"),
+    );
+  }
+  lines.push(`--${BOUNDARY}--`, "");
+  return new TextEncoder().encode(lines.join("\r\n"));
+}
+
+/** The stored row for `raw`, with attachment metadata as the gateway records it. */
+async function storedFor(raw: Uint8Array, overrides: Partial<FetchedMessage> = {}): Promise<FetchedMessage> {
+  const parsed = await parseMail(raw);
+  return makeFetchedMessage(1, {
+    messageId: parsed.messageId ?? null,
+    subject: parsed.subject ?? "",
+    date: "2026-11-13T08:30:00.000Z",
+    size: raw.byteLength,
+    attachments: parsed.attachments.map((a, index) => ({
+      partId: String(index + 1),
+      filename: a.filename,
+      mimeType: a.mimeType,
+      size: (a.content as ArrayBuffer).byteLength,
+      isInline: false,
+    })),
+    ...overrides,
+  });
+}
+
+/** acc_1 with one INBOX message (uid 1) whose raw bytes the server serves. */
+async function loadRaw(raw: Uint8Array, overrides: Partial<FetchedMessage> = {}, served: Uint8Array = raw) {
+  const message = await storedFor(raw, overrides);
+  const vaultKey = generateVaultKey();
+  const host = await load({
+    settings: { vaultKey },
+    seed: (bb) => {
+      seedMail(bb, { folders: ICLOUD_FOLDERS, messages: [{ folder: "INBOX", message }] });
+      // A password the plugin's vault can open, so the raw fetch can log in.
+      bb.storage
+        .database()
+        .prepare("UPDATE accounts SET password_sealed = ?")
+        .run(createVault(vaultKey).seal(PASSWORD));
+      createSqliteStore(bb.storage.database()).saveSyncState("acc_1", "INBOX", {
+        uidValidity: 3,
+        lastUid: 1,
+        syncedSince: "2026-10-01T00:00:00.000Z",
+      });
+    },
+    server: (gateway) => gateway.setRaw("INBOX", 1, served),
+  });
+  return { host, messageId: messageIdAt(host, "INBOX", 1) };
+}
+
+type Source = {
+  headers: [string, string][];
+  structure: string[];
+  size: number;
+  uid: number;
+  folder: string;
+  accountEmail: string;
+};
+
+/** No session wrote anything: every one was read-only and none stored flags or moved. */
+function expectNoWrites(host: Host): void {
+  expect(host.gateway.sessions.length).toBeGreaterThan(0);
+  for (const session of host.gateway.sessions) {
+    expect(session.readOnly).toBe(true);
+    expect(session.closed).toBe(true);
+    expect(session.calls.map((c) => c.method)).not.toEqual(
+      expect.arrayContaining(["setFlags"]),
+    );
+    for (const call of session.calls) expect(["status", "fetchRaw"]).toContain(call.method);
+  }
+}
+
+function logText(host: Host): string {
+  return JSON.stringify(host.harness.inspection.logEntries);
+}
+
+describe("makosh-mail server: source and downloads", () => {
+  it("message_source returns headers as text and the MIME structure, never marking read", async () => {
+    const raw = rawMail({
+      subject: "<script>alert(1)</script>",
+      attachment: { filename: "report.pdf", mimeType: "application/pdf", content: "Invented" },
+    });
+    const { host, messageId } = await loadRaw(raw);
+
+    const source = (await host.harness.behavior.callRpc("message_source", { messageId })) as Source;
+
+    expect(source.headers).toContainEqual(["Subject", "<script>alert(1)</script>"]);
+    expect(source.headers[0]).toEqual(["From", "Sender <sender@example.org>"]);
+    expect(source.structure[0]).toMatch(/^multipart\/mixed · /);
+    expect(source.structure).toContainEqual('  application/pdf · attachment · "report.pdf" · 12 B');
+    expect(source).toMatchObject({ size: raw.byteLength, uid: 1, folder: "INBOX", accountEmail: "owner@example.org" });
+    expectNoWrites(host);
+    expect(desired(host, messageId)).toEqual({ seen: null, flagged: null, read: 0 });
+  });
+
+  it("refuses a message renumbered on the server", async () => {
+    const { host, messageId } = await loadRaw(rawMail());
+    host.gateway.mailbox.uidValidity = 4;
+
+    await expect(host.harness.behavior.callRpc("message_source", { messageId })).rejects.toThrow(STALE_MESSAGE);
+    // The uid was not fetched under the new UIDVALIDITY.
+    expect(host.gateway.sessions.flatMap((s) => s.calls).map((c) => c.method)).toEqual(["status"]);
+  });
+
+  it("refuses detached rows and rows waiting to move without opening a session", async () => {
+    const { host, messageId } = await loadRaw(rawMail());
+    const store = createSqliteStore(host.bb.storage.database());
+
+    store.queueMove([messageId], "Junk");
+    await expect(host.harness.behavior.callRpc("message_source", { messageId })).rejects.toThrow(
+      UNAVAILABLE_MESSAGE,
+    );
+    host.bb.storage.database().prepare("UPDATE messages SET move_pending = NULL").run();
+    store.beginFolderReset("acc_1", "INBOX");
+    await expect(
+      host.harness.behavior.callRpc("download_ticket", { kind: "eml", messageId }),
+    ).rejects.toThrow(UNAVAILABLE_MESSAGE);
+    expect(host.gateway.sessions).toEqual([]);
+  });
+
+  it("refuses when the fetched size or Message-ID differ from the stored ones", async () => {
+    const raw = rawMail();
+    const sized = await loadRaw(raw, { size: raw.byteLength + 1 });
+    await expect(
+      sized.host.harness.behavior.callRpc("message_source", { messageId: sized.messageId }),
+    ).rejects.toThrow(STALE_MESSAGE);
+
+    const other = await loadRaw(raw, {}, rawMail({ messageId: "<other@example.org>" }));
+    await expect(
+      other.host.harness.behavior.callRpc("message_source", { messageId: other.messageId }),
+    ).rejects.toThrow(STALE_MESSAGE);
+
+    const missing = await loadRaw(raw, {}, rawMail({ messageId: null }));
+    await expect(
+      missing.host.harness.behavior.callRpc("message_source", { messageId: missing.messageId }),
+    ).rejects.toThrow(STALE_MESSAGE);
+  });
+
+  it("refuses a stored size over 50 MB before fetching", async () => {
+    const { host, messageId } = await loadRaw(rawMail(), { size: 50 * 1024 * 1024 + 1 });
+
+    await expect(host.harness.behavior.callRpc("message_source", { messageId })).rejects.toThrow(
+      TOO_LARGE_MESSAGE,
+    );
+    await expect(
+      host.harness.behavior.callRpc("download_ticket", { kind: "eml", messageId }),
+    ).rejects.toThrow(TOO_LARGE_MESSAGE);
+    expect(host.gateway.sessions).toEqual([]);
+  });
+
+  it("downloads the .eml byte for byte once, with the download headers", async () => {
+    const raw = rawMail();
+    const { host, messageId } = await loadRaw(raw);
+
+    const ticket = (await host.harness.behavior.callRpc("download_ticket", { kind: "eml", messageId })) as {
+      url: string;
+      fileName: string;
+    };
+    expect(ticket.fileName).toBe("2026-11-13 Invented quarterly note.eml");
+    expect(ticket.url).toMatch(/^\/api\/v1\/plugins\/makosh-mail\/http\/download\?t=[A-Za-z0-9_-]{43}$/);
+    const path = ticket.url.replace("/api/v1/plugins/makosh-mail/http", "");
+
+    const response = await host.harness.behavior.fetchHttp("GET", path);
+    expect(response.status).toBe(200);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(raw);
+    const headers: Record<string, string> = {};
+    response.headers.forEach((value, name) => (headers[name] = value));
+    expect(headers).toEqual({
+      "content-type": "message/rfc822",
+      "content-length": String(raw.byteLength),
+      "content-disposition": `attachment; filename="2026-11-13 Invented quarterly note.eml"; filename*=UTF-8''2026-11-13%20Invented%20quarterly%20note.eml`,
+      "x-content-type-options": "nosniff",
+      "cache-control": "no-store",
+      "content-security-policy": "default-src 'none'",
+    });
+    expectNoWrites(host);
+    expect(desired(host, messageId).read).toBe(0);
+
+    const again = await host.harness.behavior.fetchHttp("GET", path);
+    expect(again.status).toBe(404);
+    expect(await again.text()).toBe("");
+    const route = host.harness.inspection.registrations.httpRoutes.find((r) => r.path === "/download");
+    expect(route).toMatchObject({ method: "GET", auth: "local" });
+    const logs = logText(host);
+    expect(logs).not.toContain(path.split("t=")[1]!);
+    expect(logs).not.toContain("garden fence");
+    expect(logs).not.toContain("quarterly");
+  });
+
+  it("refuses an expired, unknown or missing ticket with a bare 404", async () => {
+    const { host, messageId } = await loadRaw(rawMail());
+    const { url } = (await host.harness.behavior.callRpc("download_ticket", { kind: "eml", messageId })) as {
+      url: string;
+    };
+    host.clock.set(new Date(NOW.getTime() + TICKET_TTL_MS));
+
+    for (const path of [url.replace("/api/v1/plugins/makosh-mail/http", ""), "/download", "/download?t=abc", `/download?messageId=${messageId}`]) {
+      const response = await host.harness.behavior.fetchHttp("GET", path);
+      expect(response.status, path).toBe(404);
+      expect(await response.text(), path).toBe("");
+    }
+    expect(host.gateway.sessions).toEqual([]);
+  });
+
+  it("serves an attachment's bytes with a safe type and file name", async () => {
+    const raw = rawMail({
+      attachment: { filename: "../../evil\u202Elmth.html", mimeType: "text/html", content: "<script>x</script>" },
+    });
+    const { host, messageId } = await loadRaw(raw);
+
+    const ticket = (await host.harness.behavior.callRpc("download_ticket", {
+      kind: "attachment",
+      messageId,
+      partId: "1",
+    })) as { url: string; fileName: string };
+    expect(ticket.fileName).toBe("evillmth.html");
+    const response = await host.harness.behavior.fetchHttp(
+      "GET",
+      ticket.url.replace("/api/v1/plugins/makosh-mail/http", ""),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("<script>x</script>");
+    expect(response.headers.get("content-type")).toBe("application/octet-stream");
+    expect(response.headers.get("content-length")).toBe("18");
+    expect(response.headers.get("content-disposition")).toBe(
+      `attachment; filename="evillmth.html"; filename*=UTF-8''evillmth.html`,
+    );
+    expectNoWrites(host);
+    expect(logText(host)).not.toContain("evil");
+  });
+
+  it("keeps CR/LF and quotes out of the download headers", async () => {
+    const raw = rawMail({
+      attachment: { filename: 'a\r\nSet-Cookie: x=1 "q".pdf', mimeType: "application/pdf", content: "Invented" },
+    });
+    const { host, messageId } = await loadRaw(raw);
+
+    const { url, fileName } = (await host.harness.behavior.callRpc("download_ticket", {
+      kind: "attachment",
+      messageId,
+      partId: "1",
+    })) as { url: string; fileName: string };
+    const response = await host.harness.behavior.fetchHttp("GET", url.replace("/api/v1/plugins/makosh-mail/http", ""));
+
+    expect(fileName).not.toMatch(/[\r\n]/);
+    expect(response.headers.get("set-cookie")).toBeNull();
+    const disposition = response.headers.get("content-disposition")!;
+    expect(disposition).toMatch(/^attachment; filename="[^"\\]*"; filename\*=UTF-8''[A-Za-z0-9%._!~-]+$/);
+    expect(response.headers.get("content-type")).toBe("application/pdf");
+  });
+
+  it("refuses an attachment that changed on the server with 409", async () => {
+    const raw = rawMail({ attachment: { filename: "report.pdf", mimeType: "application/pdf", content: "Invented" } });
+    const message = await storedFor(raw);
+    // Same size, Message-ID and part count; a different file name in the part.
+    const served = rawMail({ attachment: { filename: "rep0rt.pdf", mimeType: "application/pdf", content: "Invented" } });
+    const { host, messageId } = await loadRaw(raw, { attachments: message.attachments }, served);
+
+    const { url } = (await host.harness.behavior.callRpc("download_ticket", {
+      kind: "attachment",
+      messageId,
+      partId: "1",
+    })) as { url: string };
+    const response = await host.harness.behavior.fetchHttp("GET", url.replace("/api/v1/plugins/makosh-mail/http", ""));
+
+    expect(response.status).toBe(409);
+    expect(await response.text()).toBe(STALE_MESSAGE);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  it("refuses a ticket for an attachment the message does not have", async () => {
+    const { host, messageId } = await loadRaw(rawMail());
+
+    await expect(
+      host.harness.behavior.callRpc("download_ticket", { kind: "attachment", messageId, partId: "2" }),
+    ).rejects.toThrow("Unknown attachment");
+    await expect(
+      host.harness.behavior.callRpc("download_ticket", { kind: "eml", messageId: "missing" }),
+    ).rejects.toThrow("Unknown message");
+  });
+
+  it("a long attachment name is cut to 120 characters keeping the extension", async () => {
+    const raw = rawMail({
+      attachment: { filename: `${"n".repeat(300)}.pdf`, mimeType: "application/pdf", content: "Invented" },
+    });
+    const { host, messageId } = await loadRaw(raw);
+
+    const { fileName } = (await host.harness.behavior.callRpc("download_ticket", {
+      kind: "attachment",
+      messageId,
+      partId: "1",
+    })) as { fileName: string };
+    expect(fileName).toBe(`${"n".repeat(116)}.pdf`);
+  });
+});
+

@@ -112,7 +112,7 @@ describe("createSyncLoop", () => {
     expect(lines.join("\n")).not.toContain("not-openable");
   });
 
-  it("logs how many reads were pushed, without message content", async () => {
+  it("logs how many reads and flag changes were pushed, without message content", async () => {
     const { store, deps } = setup();
     store.saveAccount(account("acc_1"));
     const lines: string[] = [];
@@ -120,16 +120,17 @@ describe("createSyncLoop", () => {
     const controller = new AbortController();
     const done = loop.start(controller.signal);
     await vi.waitFor(() =>
-      expect(lines).toContain("sync acc_1: ok, fetched 1, removed 0, marked read 0"),
+      expect(lines).toContain("sync acc_1: ok, fetched 1, removed 0, marked read 0, flags 0"),
     );
     const [entry] = store.localFolderIndex("acc_1", "INBOX", "1970-01-01T00:00:00.000Z");
     const opened = store.getMessage(entry!.id)!;
     store.markOpened(entry!.id);
+    store.setDesired([entry!.id], { flagged: true });
 
     loop.wake("acc_1");
 
     await vi.waitFor(() =>
-      expect(lines).toContain("sync acc_1: ok, fetched 0, removed 0, marked read 1"),
+      expect(lines).toContain("sync acc_1: ok, fetched 0, removed 0, marked read 1, flags 1"),
     );
     controller.abort();
     await done;

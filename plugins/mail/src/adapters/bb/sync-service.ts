@@ -136,7 +136,7 @@ export function createSyncLoop(
         const outcome = await syncAccount(guarded, accountId, syncOptions);
         log(
           outcome.status === "ok"
-            ? `sync ${accountId}: ok, fetched ${outcome.fetched}, removed ${outcome.removed}, marked read ${outcome.pushedSeen}`
+            ? `sync ${accountId}: ok, fetched ${outcome.fetched}, removed ${outcome.removed}, marked read ${outcome.pushedSeen}, flags ${outcome.pushedFlags}`
             : `sync ${accountId}: ${outcome.authFailed ? "authentication failed" : "error"}`,
         );
       } catch {
