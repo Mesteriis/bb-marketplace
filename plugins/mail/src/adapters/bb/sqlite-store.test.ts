@@ -696,12 +696,14 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 5).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 6).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
       "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
       "d32d0c6bafc6b6259c1bf6448fe0a24ee944f1c46dd8cf87e0e443eb7301103c",
       "910621e83320dbef912d682fbb78f4016bb53ea56704075fd1e578a7890a538f",
+      // Element 5 (slice 3c: proposals and translations).
+      "4f2e79c7b40711c0a250c3b9ff33cf72bddaa9d70add62c0f55987f31a30159a",
     ]);
   });
 

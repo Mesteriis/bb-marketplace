@@ -17,7 +17,7 @@ the start of an agent's work.
 
 | Plugin | Id | What it does today |
 | --- | --- | --- |
-| [Makosh Mail](plugins/mail) | `makosh-mail` | Reads every folder of iCloud, Gmail and other IMAP accounts on a **Mail** page, with an All accounts view, search, read state and flags synced with the server, multi-select with Spam / Archive / Delete / Move to… on your click, .eml and attachment downloads, hotkeys and opt-in agent tools. Composes, replies and forwards with drafts on the server, sends over SMTP with a 10-second Undo and an Outbox. Agents cannot send. |
+| [Makosh Mail](plugins/mail) | `makosh-mail` | Reads every folder of iCloud, Gmail and other IMAP accounts on a **Mail** page, with an All accounts view, search, read state and flags synced with the server, multi-select with Spam / Archive / Delete / Move to… on your click, .eml and attachment downloads, hotkeys and opt-in agent tools. Composes, replies and forwards with drafts on the server, sends over SMTP with a 10-second Undo and an Outbox. Translates a message through Makosh AI. Agents can propose an email; it is sent only when you press Send on its card (off by default). |
 
 ## Install
 

@@ -82,6 +82,31 @@ All notable changes to Makosh Mail are recorded here. The format follows
 - SMTP settings per account: iCloud and Gmail presets (also for accounts
   added earlier), host and port for other servers, and an SMTP dialog that
   tests before saving.
+- `mail_propose`, an agent tool off by default behind the new
+  `agentPropose` setting (separate from `agentTools`): an agent proposes a
+  new message, reply, reply all or forward, and a confirmation card in its
+  thread shows the whole message — full addresses with New address, Added by
+  the agent and Outside your domains flags, the Bcc row always, hidden
+  characters removed and counted, punycode domains, the links in the text,
+  the folded quote and the attachments. **Send** (disabled for 1.5 s, until
+  new addresses are acknowledged, and until a tall body is scrolled to its
+  end) queues exactly what the card showed with the 10 s Undo; **Open in
+  Mail** makes it an ordinary draft with a "Started by an agent" badge;
+  **Cancel** discards it. The tool never sends. The settled card stays in
+  the thread with the live send state and Undo. Agent sends are labelled
+  "Agent message" in the Undo toast and the Outbox. Cards are capped per
+  thread, in all and per day, and expire after 24 hours; a restart never
+  sends.
+- **Translate** in the reading pane (key `t`): a plain-text machine
+  translation of the open message through the provider and model chosen in
+  the Makosh AI plugin, streamed under the header with **Stop**, **Translate
+  again**, a language picker and **Show original**. Only the subject and the
+  plain text are sent. Translations are cached per message and language
+  until **Clear translations** in the new Translation settings, and removed
+  with their message or account. Without Makosh AI the button is disabled
+  and says why; provider, model, sign-in, quota and refusal failures have
+  their own texts. At most 30 translations an hour.
+- The `d/<draftId>` page route opens a draft in the composer.
 
 ### Changed
 
@@ -102,5 +127,10 @@ All notable changes to Makosh Mail are recorded here. The format follows
   is not an edit: nothing is written to the server until the owner changes it.
 - Drafts synced from the server are visible to `mail_search` and
   `mail_read` like any other message.
-- The page bundle (`dist/app.js`) grew to about 600 KB with the TipTap
-  editor.
+- The page bundle (`dist/app.js`) grew to about 640 KB with the TipTap
+  editor, the agent card and translation.
+- The agent surfaces: the `mail` skill documents `mail_propose`, and that
+  the agent never answers the card itself. The note on agents with shell
+  access now also covers answering a card (a forged Send, still behind the
+  10 s Undo), starting translations and opening a card's view again, which
+  breaks the owner's card but sends nothing.
