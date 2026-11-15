@@ -68,6 +68,7 @@ import {
   saveCompose,
   sendNow,
   setSmtp,
+  SmtpSettingsRefused,
   testSmtp,
   UNTRUSTED_NOTICE,
   addAccount,
@@ -238,6 +239,7 @@ function composeRefusal(error: unknown, log: (line: string) => void, method: str
   if (error instanceof experimental_PluginRpcRefusal) return error;
   if (error instanceof ComposeError) return refuse(COMPOSE_REFUSAL[error.kind], error.message);
   if (error instanceof UploadError) return refuse(UPLOAD_REFUSAL[error.code], error.message);
+  if (error instanceof SmtpSettingsRefused) return refuse("invalid", error.message);
   log(`${method} failed (${errorKind(error)})`);
   return refuse("conflict", COMPOSE_FAILED_MESSAGE);
 }
@@ -896,7 +898,9 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       recipients_suggest: owner("recipients_suggest", ({ prefix }) => ({
         suggestions: store.recipientSuggestions(prefix, RECIPIENT_SUGGESTIONS),
       })),
-      // The account's stored password is used; it is never sent back.
+      // The account's stored password goes only to a host the account trusts
+      // (resolution 21); another host needs the password typed in the call,
+      // which IMAP must accept first. No password is ever sent back or logged.
       accounts_smtp_test: owner("accounts_smtp_test", (input) => {
         if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
         return testSmtp(accountDeps, input);

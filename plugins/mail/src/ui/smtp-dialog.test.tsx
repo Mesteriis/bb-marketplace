@@ -74,6 +74,33 @@ describe("SmtpDialog", () => {
     expect((screen.getByLabelText("Port") as HTMLInputElement).value).toBe("587");
   });
 
+  it("keeps an iCloud or Gmail account's server fixed: only the username can change", () => {
+    render(<SmtpDialog account={{ ...other, preset: "gmail" }} onClose={() => undefined} onTest={vi.fn()} onSave={vi.fn()} />);
+    expect((screen.getByLabelText("SMTP server") as HTMLInputElement).readOnly).toBe(true);
+    expect((screen.getByLabelText("Port") as HTMLInputElement).readOnly).toBe(true);
+    expect(screen.getByText(/Gmail's SMTP server is fixed/)).toBeTruthy();
+    expect(screen.queryByLabelText("Account password")).toBeNull();
+  });
+
+  it("asks for the account password when the server needs it, and sends it only in that call", async () => {
+    const onTest = vi.fn(async (input: { password?: string }) =>
+      input.password === undefined
+        ? { ok: false, reason: "Enter the account password to use this SMTP server", signInRequired: true as const }
+        : { ok: true, reason: null },
+    );
+    render(<SmtpDialog account={other} onClose={() => undefined} onTest={onTest} onSave={vi.fn()} />);
+    expect(screen.queryByLabelText("Account password")).toBeNull();
+    fireEvent.change(screen.getByLabelText("SMTP server"), { target: { value: "smtp.provider.example.net" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    const field = (await screen.findByLabelText("Account password")) as HTMLInputElement;
+    expect(field.type).toBe("password");
+    fireEvent.change(field, { target: { value: "typed-app-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    expect((await screen.findByRole("status")).textContent).toBe("SMTP works.");
+    expect(onTest.mock.calls.at(-1)![0]).toMatchObject({ host: "smtp.provider.example.net", password: "typed-app-password" });
+    expect(document.body.textContent).not.toContain("typed-app-password");
+  });
+
   it("stays closed without an account", () => {
     render(<SmtpDialog account={null} onClose={() => undefined} onTest={vi.fn()} onSave={vi.fn()} />);
     expect(screen.queryByRole("dialog")).toBeNull();

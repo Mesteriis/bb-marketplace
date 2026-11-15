@@ -163,7 +163,11 @@ iCloud and Gmail accounts get SMTP from their preset, including accounts
 added before this version. An Other account asks for SMTP when added; for
 one added earlier, Compose shows **Set up SMTP**, which tests the settings
 before saving them. The password is decrypted for one send and never
-logged.
+logged. iCloud and Gmail keep their preset SMTP server. For an Other
+account the stored password goes only to its saved SMTP server or a server
+in its IMAP server's domain; for any other server the dialog asks for the
+account password, which the IMAP server must accept first, and which is
+stored only when both servers accept it.
 
 ## Mail in the sidebar
 

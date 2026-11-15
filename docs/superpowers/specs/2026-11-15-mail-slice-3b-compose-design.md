@@ -1034,3 +1034,8 @@ These override the sections above. Items marked *(owner)* were approved by the o
 20. **Open questions 1 and 4 *(owner)*.** Recommended:
     - Upload attachments over chunked RPC (open question 1); the 415 rule on local HTTP is confirmed.
     - Put the Bcc header in the Sent copy (open question 4).
+21. **SMTP settings and the stored password.** The SMTP dialog's calls (`accounts_smtp_test`, `accounts_smtp_set`) are reachable by any `client` caller, so the stored password must not follow a caller-chosen host:
+    - iCloud and Gmail: host, port and security are fixed by the preset. Any other value is refused (`invalid`, "This provider's SMTP server is fixed"); only the username may change.
+    - Other: the stored password goes only to a trusted host — the account's stored SMTP host, the IMAP host itself, or (when the IMAP host has three labels or more) a host in the IMAP host's parent domain (`imap.example.org` trusts `smtp.example.org`; `example.org` trusts only itself). Hosts are compared in lower case without a trailing dot.
+    - Any other host needs `password` in the same call. The account's IMAP server must accept it first (a refusal answers a fixed reason and nothing reaches SMTP); then SMTP is tested with that password, never the stored one. `accounts_smtp_set` stores it sealed as the account's password only when both accepted it. Without it the call answers `{ ok: false, signInRequired: true }` and the dialog shows a password field.
+    - No password appears in a reason, a log line or a realtime payload. A caller who knows the password learns nothing new; a caller who does not can only guess against the account's own IMAP server.

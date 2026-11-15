@@ -1,6 +1,9 @@
 // SMTP settings of a connected account (host, port, security, username):
-// Test checks the login with the account's stored password; Save tests and
-// stores them. The password never passes through this dialog.
+// Test checks the login; Save tests and stores them. iCloud and Gmail keep
+// their preset server. The account's stored password is used for a server
+// in the account's own domain; for any other server the owner types the
+// password here (resolution 21), it goes in that call only, the IMAP server
+// checks it first, and it is never shown back.
 import { useId, useState, type FormEvent } from "react";
 import type { Account, SmtpSecurity } from "../core/model.ts";
 // presets.ts directly: the core index would pull its zod schemas into the app bundle.
@@ -31,9 +34,11 @@ export interface SmtpSettingsInput {
   port: number;
   security: SmtpSecurity;
   username?: string;
+  /** Typed only when the server asked for it (signInRequired). */
+  password?: string;
 }
 
-export type SmtpResult = { ok: boolean; reason: string | null };
+export type SmtpResult = { ok: boolean; reason: string | null; signInRequired?: true };
 
 /** The usual port for a security mode. */
 export function defaultSmtpPort(security: SmtpSecurity): number {
@@ -94,6 +99,10 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
   const [username, setUsername] = useState("");
   const [busy, setBusy] = useState<"test" | "save" | null>(null);
   const [outcome, setOutcome] = useState<Outcome>(null);
+  /** The server asked for the account password for this host. */
+  const [askPassword, setAskPassword] = useState(false);
+  const [password, setPassword] = useState("");
+  const fixed = preset !== null;
 
   const read = (): SmtpSettingsInput | null => {
     const input = smtpInput(account.id, { host, port, security, username });
@@ -101,7 +110,7 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
       setOutcome({ kind: "error", message: input });
       return null;
     }
-    return input;
+    return askPassword && password !== "" ? { ...input, password } : input;
   };
 
   const run = async (kind: "test" | "save") => {
@@ -111,6 +120,7 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
     setOutcome(null);
     try {
       const result = await (kind === "test" ? onTest(input) : onSave(input));
+      if (result.signInRequired === true) setAskPassword(true);
       if (!result.ok) {
         setOutcome({ kind: "error", message: result.reason ?? "The SMTP server refused the login." });
       } else if (kind === "test") {
@@ -143,21 +153,31 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
           <label htmlFor={`${id}-host`} className="text-sm font-medium text-foreground">
             SMTP server
           </label>
-          <Input id={`${id}-host`} value={host} placeholder="smtp.example.org" onChange={(e) => setHost(e.target.value)} />
+          <Input
+            id={`${id}-host`}
+            value={host}
+            readOnly={fixed}
+            placeholder="smtp.example.org"
+            onChange={(e) => setHost(e.target.value)}
+          />
         </div>
         <div className="flex w-24 flex-col gap-1.5">
           <label htmlFor={`${id}-port`} className="text-sm font-medium text-foreground">
             Port
           </label>
-          <Input id={`${id}-port`} inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value)} />
+          <Input id={`${id}-port`} inputMode="numeric" value={port} readOnly={fixed} onChange={(e) => setPort(e.target.value)} />
         </div>
       </div>
+      {fixed ? (
+        <p className="text-xs text-muted-foreground">{PRESETS[account.preset].label}&apos;s SMTP server is fixed.</p>
+      ) : null}
       <div className="flex flex-col gap-1.5">
         <label id={`${id}-security`} className="text-sm font-medium text-foreground">
           Security
         </label>
         <Select
           value={security}
+          disabled={fixed}
           onValueChange={(next) => {
             const value = next as SmtpSecurity;
             if (port === String(defaultSmtpPort(security))) setPort(String(defaultSmtpPort(value)));
@@ -185,6 +205,24 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
         />
         <p className="text-xs text-muted-foreground">Leave empty to use the IMAP username.</p>
       </div>
+      {askPassword ? (
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={`${id}-password`} className="text-sm font-medium text-foreground">
+            Account password
+          </label>
+          <Input
+            id={`${id}-password`}
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            This server is outside {account.host}&apos;s domain. The IMAP server checks the password first; it is
+            stored only if both servers accept it.
+          </p>
+        </div>
+      ) : null}
       {outcome !== null ? (
         <p
           role={outcome.kind === "error" ? "alert" : "status"}

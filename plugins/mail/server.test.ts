@@ -2291,6 +2291,30 @@ describe("compose and send", () => {
     expect(sqlStore(host).getAccount("acc_1")!.authFailed).toBe(false);
   });
 
+  it("refuses an iCloud or Gmail account another SMTP server, and asks for the password before another host", async () => {
+    const gmail = await loadCompose({ preset: "gmail", host: "imap.gmail.com", smtp: null });
+    await expect(
+      call(gmail, "accounts_smtp_test", { accountId: "acc_1", host: "smtp.attacker.example.net", port: 465, security: "tls" }),
+    ).rejects.toThrow("This provider's SMTP server is fixed");
+    await expect(
+      call(gmail, "accounts_smtp_set", { accountId: "acc_1", host: "smtp.gmail.com", port: 587, security: "tls" }),
+    ).rejects.toThrow("This provider's SMTP server is fixed");
+    expect(gmail.transport.verified).toEqual([]);
+
+    const other = await loadCompose({ smtp: null });
+    const input = { accountId: "acc_1", host: "smtp.attacker.example.net", port: 465, security: "tls" };
+    await expect(call(other, "accounts_smtp_set", input)).resolves.toEqual({
+      ok: false,
+      reason: "Enter the account password to use this SMTP server",
+      signInRequired: true,
+    });
+    await expect(call(other, "accounts_smtp_test", { ...input, password: "typed-guess" })).resolves.toMatchObject({ ok: true });
+    expect(other.transport.verified.map((c) => c.password)).toEqual(["typed-guess"]);
+    const text = JSON.stringify([other.harness.inspection.logEntries, other.harness.inspection.realtimeSignals]);
+    expect(text).not.toContain("typed-guess");
+    expect(text).not.toContain(PASSWORD);
+  });
+
   it("suggests recipients from stored mail only", async () => {
     const host = await loadCompose();
     await expect(call(host, "recipients_suggest", { prefix: "zz" })).resolves.toEqual({ suggestions: [] });
