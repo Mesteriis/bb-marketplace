@@ -146,9 +146,12 @@ export interface MailStore {
    * Each attached copy (with a uid) gets the desired value to push, rows
    * waiting to move included. A new request overwrites an opposite pending
    * desired value. The desired value is set even when nothing is pending and
-   * the local value already equals the request (an idempotent push). A
-   * detached copy gets no desired value and drops a pending one for the
-   * changed field, so a stale intent cannot win when it is reattached.
+   * the local value already equals the request (an idempotent push). A row
+   * named in `messageIds` keeps its intent even when detached (uid NULL); it
+   * is pushed after reattach, since push queries select attached rows only.
+   * Another detached copy gets the local value only, and drops a pending
+   * value of the changed field that differs from the request, so a stale
+   * intent cannot win when it is reattached.
    * Returns each touched account once, in order of first appearance.
    * upsertMessages and applyFlags never overwrite a field whose desired value
    * is pending, and a move re-home carries both desired values (non-null wins).
@@ -169,7 +172,8 @@ export interface MailStore {
   /**
    * Sets is_read on every copy with the same (account, dedup key). Each
    * attached unread copy gets a desired \Seen to push (slice-2 semantics).
-   * A detached copy is read locally only and gets no desired value.
+   * The opened row, when unread, keeps its intent even when detached (pushed
+   * after reattach); another detached copy is read locally only.
    */
   markOpened(messageId: string): { accountId: string } | null;
   threadingInputs(accountId: string): ThreadingInput[];

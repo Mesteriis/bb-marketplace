@@ -890,8 +890,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
         const seen = change.seen === undefined ? null : change.seen ? 1 : 0;
         const flagged = change.flagged === undefined ? null : change.flagged ? 1 : 0;
         // Attached copies get the value to push (overwriting an opposite
-        // one); detached copies drop a pending value of a changed field, so a
-        // stale intent cannot win when they are reattached.
+        // one); other detached copies drop a pending value of a changed field
+        // that differs from the request, so a stale intent cannot win when
+        // they are reattached (NULL != x is not true, so NULL stays NULL).
         const update = db.prepare<
           [{ accountId: string; dedupKey: string; seen: number | null; flagged: number | null }],
           { thread_id: string }
@@ -900,11 +901,19 @@ export function createSqliteStore(db: Database.Database): MailStore {
              is_read = COALESCE(@seen, is_read),
              is_flagged = COALESCE(@flagged, is_flagged),
              seen_desired = CASE WHEN @seen IS NULL THEN seen_desired
-               WHEN uid IS NOT NULL THEN @seen ELSE NULL END,
+               WHEN uid IS NOT NULL THEN @seen
+               WHEN seen_desired != @seen THEN NULL ELSE seen_desired END,
              flag_desired = CASE WHEN @flagged IS NULL THEN flag_desired
-               WHEN uid IS NOT NULL THEN @flagged ELSE NULL END
+               WHEN uid IS NOT NULL THEN @flagged
+               WHEN flag_desired != @flagged THEN NULL ELSE flag_desired END
            WHERE account_id = @accountId AND dedup_key = @dedupKey
            RETURNING thread_id`,
+        );
+        // A named row keeps its intent even when detached: pushed after reattach.
+        const named = db.prepare(
+          `UPDATE messages SET seen_desired = COALESCE(@seen, seen_desired),
+             flag_desired = COALESCE(@flagged, flag_desired)
+           WHERE id = @id`,
         );
         const accounts: string[] = [];
         const done = new Set<string>();
@@ -914,13 +923,15 @@ export function createSqliteStore(db: Database.Database): MailStore {
           if (!row) continue;
           if (!accounts.includes(row.account_id)) accounts.push(row.account_id);
           const key = `${row.account_id}\u0000${row.dedup_key}`;
-          if (done.has(key)) continue;
-          done.add(key);
-          const threads = touched.get(row.account_id) ?? new Set<string>();
-          for (const copy of update.all({ accountId: row.account_id, dedupKey: row.dedup_key, seen, flagged })) {
-            threads.add(copy.thread_id);
+          if (!done.has(key)) {
+            done.add(key);
+            const threads = touched.get(row.account_id) ?? new Set<string>();
+            for (const copy of update.all({ accountId: row.account_id, dedupKey: row.dedup_key, seen, flagged })) {
+              threads.add(copy.thread_id);
+            }
+            touched.set(row.account_id, threads);
           }
-          touched.set(row.account_id, threads);
+          named.run({ id, seen, flagged });
         }
         for (const [accountId, threadIds] of touched) refreshThreads(accountId, threadIds);
         return accounts.map((accountId) => ({ accountId }));
@@ -967,16 +978,17 @@ export function createSqliteStore(db: Database.Database): MailStore {
           )
           .get(messageId);
         if (!row) return null;
-        // Every unread copy (the opened row included) is read: attached ones
-        // get a read to push; detached ones (no uid to push) are read locally
-        // only and drop a stale pending unread.
+        // Every unread copy is read: attached ones and the opened row itself
+        // (even detached: pushed after reattach) get a read to push; other
+        // detached copies are read locally only and drop a stale pending unread.
         const copies = db
-          .prepare<[string, string], { thread_id: string }>(
+          .prepare<[{ accountId: string; dedupKey: string; id: string }], { thread_id: string }>(
             `UPDATE messages SET is_read = 1,
-               seen_desired = CASE WHEN uid IS NOT NULL THEN 1 ELSE NULL END
-             WHERE account_id = ? AND dedup_key = ? AND is_read = 0 RETURNING thread_id`,
+               seen_desired = CASE WHEN uid IS NOT NULL OR id = @id THEN 1 ELSE NULL END
+             WHERE account_id = @accountId AND dedup_key = @dedupKey AND is_read = 0
+             RETURNING thread_id`,
           )
-          .all(row.account_id, row.dedup_key);
+          .all({ accountId: row.account_id, dedupKey: row.dedup_key, id: messageId });
         refreshThreads(row.account_id, copies.map((c) => c.thread_id));
         return { accountId: row.account_id };
       });
@@ -1046,8 +1058,12 @@ export function createSqliteStore(db: Database.Database): MailStore {
     listThreadsAll(role, cursor, limit) {
       // Gmail's All Mail is never merged (server refuses the role too).
       if (role === "all") return { threads: [], nextCursor: null };
+      // Thread ids are globally unique (threads.id is the primary key), so the
+      // membership list needs no account match. The unary + keeps SQLite from
+      // driving the query by the id autoindex: it scans threads_last_date in
+      // (last_date DESC, id DESC) order without a temp B-tree.
       return pageThreads({
-        where: `threads.id IN (SELECT m.thread_id FROM ${MESSAGES_WITH_FOLDER}
+        where: `+threads.id IN (SELECT m.thread_id FROM ${MESSAGES_WITH_FOLDER}
           WHERE m.move_pending IS NULL AND ${ROW_ROLE} = @role)`,
         flagged: `EXISTS (SELECT 1 FROM ${MESSAGES_WITH_FOLDER}
           WHERE m.thread_id = threads.id AND m.move_pending IS NULL AND m.is_flagged = 1
