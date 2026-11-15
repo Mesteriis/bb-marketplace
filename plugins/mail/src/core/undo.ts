@@ -18,9 +18,22 @@ export const UNDO_TTL_MS = 10 * 60 * 1000;
 /** How long the page shows the Undo toast. */
 export const UNDO_TOAST_MS = 10_000;
 
-/** The ids one action queued in one account and source folder. */
+/** What a group queued: a move, a \Seen / \Flagged change, or a move into the snooze folder. */
+export type UndoGroupKind = "move" | "flags" | "snooze";
+
+/** The actions an undo record names; only toast texts read it (spec resolution 14). */
+export type UndoAction = MessageAction | "snooze" | "block" | "triage";
+
+/**
+ * The ids one action queued in one account and source folder. Each group
+ * carries its own kind and flag change, so one record can hold the groups of
+ * several actions (a triage batch).
+ */
 export type UndoGroup = {
   accountId: string;
+  kind: UndoGroupKind;
+  /** `flags` groups: the change the action made; null otherwise. */
+  change: FlagChange | null;
   /** Folder path the messages were in. */
   source: string;
   /** Move: the destination's path; flag change: null. */
@@ -29,13 +42,18 @@ export type UndoGroup = {
   ids: string[];
   /** Flag changes: each id's value before the action. */
   prior?: { id: string; seen: boolean; flagged: boolean }[];
+  /** `snooze` groups: the snooze rows (keyed by message id) the group created; undo deletes them. */
+  snoozeIds?: string[];
 };
 
 export type UndoRecord = {
   /** The page's undoId (a uuid). */
   id: string;
-  action: MessageAction;
+  /** The first action recorded under this id, or "triage" (toast texts only). */
+  action: UndoAction;
   groups: UndoGroup[];
+  /** A block: the rule undo deletes first. */
+  ruleId?: string;
   createdAt: string;
   expiresAt: string;
 };
@@ -99,12 +117,13 @@ export function planUndo(
     step.ids.push(id);
   };
 
-  const change = flagChangeOf(record.action);
   for (const group of record.groups) {
-    if (group.destination === null) {
-      if (change !== null) planFlags(group, change, rows, add);
+    if (group.kind === "flags") {
+      if (group.change !== null) planFlags(group, group.change, rows, add);
       continue;
     }
+    // A move and a snooze both undo as a move: cancel it, or move back to the source.
+    if (group.destination === null) continue;
     const destination = group.destination;
     const accountFolders = folders(group.accountId);
     const source = accountFolders.find((f) => f.path === group.source);
@@ -178,18 +197,26 @@ export type RecordableGroup = {
   destinationUse: SpecialUse | null;
 };
 
-/** The undo groups of one message_action call: only groups that queued something; flag changes keep each id's prior flags. */
+/**
+ * The undo groups of one message_action (or snooze) call: only groups that
+ * queued something, each with its kind and flag change; flag changes keep
+ * each id's prior flags, snooze groups list their snooze rows.
+ */
 export function recordGroups(
-  action: MessageAction,
+  action: MessageAction | "snooze",
   groups: RecordableGroup[],
   priors: ReadonlyMap<string, { seen: boolean; flagged: boolean }>,
 ): UndoGroup[] {
-  const flags = flagChangeOf(action) !== null;
+  const change = action === "snooze" ? null : flagChangeOf(action);
+  const flags = change !== null;
+  const kind: UndoGroupKind = action === "snooze" ? "snooze" : flags ? "flags" : "move";
   return groups
     .filter((group) => group.queued > 0)
     .map((group) => {
       const recorded: UndoGroup = {
         accountId: group.accountId,
+        kind,
+        change,
         source: group.folder,
         destination: flags ? null : group.destinationPath,
         destinationUse: flags ? null : group.destinationUse,
@@ -201,43 +228,66 @@ export function recordGroups(
           return prior === undefined ? [] : [{ id, seen: prior.seen, flagged: prior.flagged }];
         });
       }
+      if (kind === "snooze") recorded.snoozeIds = [...group.ids];
       return recorded;
     });
 }
 
 /**
- * The slot after a message_action call with `undoId`: the same id (the
- * page's chunks of one batch) appends its groups and keeps the first
- * expiry; a new id, or the same one after it expired, replaces the record.
- * A call that queued nothing leaves the slot as it is.
+ * The slot after an undoable call with `undoId`: the same unexpired id (the
+ * page's chunks of one batch, or a triage batch's groups) appends its groups
+ * whatever the action, keeps the first expiry and the first action, which
+ * becomes "triage" only when the caller passes it; a new id, or the same one
+ * after it expired, replaces the record. A call that queued nothing leaves
+ * the slot as it is. `ruleId`: a block's rule, kept once set.
  */
 export function mergeRecord(
   current: UndoRecord | null,
   undoId: string,
-  action: MessageAction,
+  action: UndoAction,
   groups: UndoGroup[],
   now: Date,
+  ruleId?: string,
 ): UndoRecord | null {
   if (groups.length === 0) return current;
   const nowIso = now.toISOString();
-  if (current !== null && current.id === undoId && current.action === action && current.expiresAt > nowIso) {
-    return { ...current, groups: [...current.groups, ...groups] };
+  if (current !== null && current.id === undoId && current.expiresAt > nowIso) {
+    const merged: UndoRecord = {
+      ...current,
+      action: action === "triage" ? "triage" : current.action,
+      groups: [...current.groups, ...groups],
+    };
+    if (merged.ruleId === undefined && ruleId !== undefined) merged.ruleId = ruleId;
+    return merged;
   }
-  return {
+  const record: UndoRecord = {
     id: undoId,
     action,
     groups,
     createdAt: nowIso,
     expiresAt: new Date(now.getTime() + UNDO_TTL_MS).toISOString(),
   };
+  if (ruleId !== undefined) record.ruleId = ruleId;
+  return record;
 }
 
 const plural = (count: number) => `${count} conversation${count === 1 ? "" : "s"}`;
 
-/** The toast after an undoable action. `destinationName`: the folder's name for a move. */
-export function undoToastText(action: MessageAction, count: number, destinationName: string | null): string {
+/**
+ * The toast after an undoable action. `detail`: the folder's name for a
+ * move, the preformatted return time for a snooze. `count`: conversations,
+ * or the number of actions for a triage batch.
+ */
+export function undoToastText(action: UndoAction, count: number, detail: string | null): string {
   const n = plural(count);
+  const destinationName = detail;
   switch (action) {
+    case "snooze":
+      return `Snoozed until ${detail ?? "later"}`;
+    case "block":
+      return count === 0 ? "Blocked" : `Blocked \u00b7 ${n} moved to Spam`;
+    case "triage":
+      return `Applied ${count} action${count === 1 ? "" : "s"}`;
     case "archive":
       return `Archived ${n}`;
     case "delete":

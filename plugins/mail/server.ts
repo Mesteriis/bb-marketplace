@@ -1079,7 +1079,7 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
     if (ids.length === 0) return;
     deps.undo.putBack({
       ...record,
-      groups: [{ accountId: step.accountId, source: step.to, destination: step.from, destinationUse: use, ids }],
+      groups: [{ accountId: step.accountId, kind: "move", change: null, source: step.to, destination: step.from, destinationUse: use, ids }],
     });
   };
   /** The server could not be reached: counted as failed, and put back for another Undo. */

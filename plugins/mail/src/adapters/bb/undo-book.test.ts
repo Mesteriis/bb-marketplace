@@ -9,6 +9,8 @@ const ID_B = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
 
 const group = (accountId: string, ids: string[]): UndoGroup => ({
   accountId,
+  kind: "move",
+  change: null,
   source: "INBOX",
   destination: "Archive",
   destinationUse: "archive",
