@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { formatBytes } from "./attachments-input.tsx";
+import { presendIssueText } from "./presend-dialog.tsx";
 import { subjectOrPlaceholder } from "./thread-list.tsx";
 
 export type ProposalViewResult =
@@ -254,6 +255,9 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
         <dd className="min-w-0 break-all text-foreground">
           {v.fromName !== null ? <span>{shownText(v.fromName)} </span> : null}
           <span className="text-muted-foreground">&lt;{v.account.address}&gt;</span>
+          {v.fromAlias ? (
+            <span className="ml-1.5 rounded-sm border border-border px-1 text-xs text-muted-foreground">alias</span>
+          ) : null}
         </dd>
         <RecipientRow label="To" list={v.to} acknowledged={acknowledged} onAcknowledge={acknowledge} />
         <RecipientRow label="Cc" list={v.cc} acknowledged={acknowledged} onAcknowledge={acknowledge} />
@@ -268,6 +272,11 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
         <dd className="min-w-0 break-words font-medium text-foreground">{subjectOrPlaceholder(shownText(v.subject))}</dd>
       </dl>
 
+      {v.templateName !== null ? (
+        <p className="text-xs text-muted-foreground">
+          Includes the template «<span className="text-foreground">{shownText(v.templateName)}</span>»
+        </p>
+      ) : null}
       <div
         ref={bodyRef}
         onScroll={onBodyScroll}
@@ -275,6 +284,13 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
         className="max-h-80 overflow-y-auto rounded-md border border-border bg-background px-3 py-2"
       >
         <div className="whitespace-pre-wrap break-words text-sm text-foreground">{shownText(v.bodyText)}</div>
+        {v.signatureText !== null ? (
+          // `-- ` only when the signature is the last thing (a new message); above a quote it is a block of its own.
+          <div data-testid="agent-send-signature" className="mt-2 whitespace-pre-wrap break-words text-sm text-foreground">
+            {v.quoteText === null ? <span className="block text-muted-foreground">{"-- "}</span> : null}
+            {shownText(v.signatureText)}
+          </div>
+        ) : null}
         {v.quoteText !== null ? (
           <div className="mt-2">
             <button
@@ -338,6 +354,20 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
           </p>
         ) : null}
       </section>
+
+      {v.checks.length > 0 ? (
+        <section aria-label="Before sending" className="flex flex-col gap-1 rounded-md bg-muted/50 px-2 py-1.5">
+          <h4 className="text-xs font-medium text-foreground">Before sending</h4>
+          <ul className="flex flex-col gap-0.5">
+            {v.checks.map((issue, index) => (
+              <li key={`${issue.kind}-${index}`} className="flex items-start gap-1.5 text-xs text-foreground">
+                <Icon name="TriangleAlert" fallback="Info" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                <span className="min-w-0 break-words">{shownText(presendIssueText(issue).text)}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {failure !== null ? (
         <p role="alert" className="text-xs text-destructive">
