@@ -231,6 +231,11 @@ function snippetOf(message: FetchedMessage): string {
   return snippetFromBody(message.bodyText, message.bodyHtml);
 }
 
+/** A slice-3c store method that a later task implements. */
+function notYet(method: string): Error {
+  return new Error(`${method} is not implemented yet`);
+}
+
 export class InMemoryMailStore implements MailStore {
   private state: StoreState = {
     accounts: new Map(),
@@ -953,6 +958,51 @@ export class InMemoryMailStore implements MailStore {
       }
     }
     return rankRecipientSuggestions(entries, prefix, limit);
+  }
+
+  // ---- Agent proposals and translation (slice 3c): implemented in task 4 ----
+
+  createProposal(): never {
+    throw notYet("createProposal");
+  }
+  getProposal(): never {
+    throw notYet("getProposal");
+  }
+  proposalCapRows(): never {
+    throw notYet("proposalCapRows");
+  }
+  transitionProposal(): never {
+    throw notYet("transitionProposal");
+  }
+  setViewToken(): never {
+    throw notYet("setViewToken");
+  }
+  releaseProposalDraft(): never {
+    throw notYet("releaseProposalDraft");
+  }
+  undoAgentSend(): never {
+    throw notYet("undoAgentSend");
+  }
+  dropProposalDraft(): never {
+    throw notYet("dropProposalDraft");
+  }
+  recoverProposalsOnStart(): never {
+    throw notYet("recoverProposalsOnStart");
+  }
+  purgeProposals(): never {
+    throw notYet("purgeProposals");
+  }
+  addressesSentTo(): never {
+    throw notYet("addressesSentTo");
+  }
+  getTranslation(): never {
+    throw notYet("getTranslation");
+  }
+  putTranslation(): never {
+    throw notYet("putTranslation");
+  }
+  clearTranslations(): never {
+    throw notYet("clearTranslations");
   }
 
   /** A live outbox row holds the draft (done rows are deleted). */

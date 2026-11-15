@@ -140,6 +140,8 @@ function status(overrides: Partial<StatusView> = {}): StatusView {
   return {
     vaultReady: true,
     agentTools: false,
+    agentPropose: false,
+    translate: { gateway: "gateway_missing" },
     accounts: [account],
     unreadCount: 1,
     ...overrides,
@@ -2733,6 +2735,7 @@ function draftView(overrides: Partial<DraftView> = {}): DraftView {
     queued: false,
     continues: false,
     import: null,
+    origin: "owner",
     ...overrides,
   };
 }
@@ -2776,6 +2779,7 @@ function outboxRow(overrides: Partial<OutboxRow> & { id: string; state: OutboxRo
     rejected: [],
     sendAfter: "2026-11-15T10:00:10.000Z",
     attempts: 0,
+    origin: "owner",
     ...overrides,
   };
 }

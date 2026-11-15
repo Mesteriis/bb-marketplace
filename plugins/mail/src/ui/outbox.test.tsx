@@ -18,6 +18,7 @@ function row(state: OutboxState, overrides: Partial<OutboxRow> = {}): OutboxRow 
     rejected: [],
     sendAfter: "2026-11-15T10:00:10.000Z",
     attempts: 1,
+    origin: "owner",
     ...overrides,
   };
 }

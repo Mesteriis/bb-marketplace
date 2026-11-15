@@ -10,7 +10,13 @@ import { dedupeAddresses, toAsciiDomain, type OutgoingAddress } from "./compose-
 import { quoteHeaderText, type ReplySource } from "./compose-reply.ts";
 import { sha256Hex } from "./compose.ts";
 import { htmlToText } from "./agent-text.ts";
-import type { ComposeAttachment, ComposeKind, DraftRecord } from "./model.ts";
+import type {
+  ComposeAttachment,
+  ComposeKind,
+  DraftRecord,
+  proposalStateSchema,
+  recipientFlagSchema,
+} from "./model.ts";
 
 /** A card waits this long for the owner. */
 export const PROPOSAL_TTL_MS = 24 * 60 * 60 * 1000;
@@ -37,7 +43,7 @@ const DAY_MS = 24 * HOUR_MS;
 // State machine
 // ---------------------------------------------------------------------------
 
-export type ProposalState = "pending" | "confirming" | "queued" | "opened" | "cancelled" | "expired" | "refused";
+export type ProposalState = z.infer<typeof proposalStateSchema>;
 export type ProposalEvent = "confirm" | "queue" | "open" | "queue_failed" | "cancel" | "expire" | "refuse" | "undo";
 
 const TRANSITIONS: Partial<Record<ProposalState, Partial<Record<ProposalEvent, ProposalState>>>> = {
@@ -171,7 +177,7 @@ export function mergeAgentRecipients(
   return { to, cc, bcc, added };
 }
 
-export type RecipientFlag = "new" | "added" | "outside" | "hidden_chars";
+export type RecipientFlag = z.infer<typeof recipientFlagSchema>;
 
 /**
  * The card's flags for one recipient. `new`: the owner never sent to it

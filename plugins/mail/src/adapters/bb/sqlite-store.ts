@@ -27,6 +27,7 @@ import type {
   AttachmentMeta,
   ComposeAttachment,
   ComposeKind,
+  DraftOrigin,
   DraftRecord,
   DraftServerCopyState,
   OutboxRecord,
@@ -378,7 +379,7 @@ type DraftRow = {
   server_uid: number | null;
   server_revision: number | null;
   server_size: number | null;
-  origin: "owner";
+  origin: DraftOrigin;
   created_at: string;
   updated_at: string;
 };
@@ -396,7 +397,7 @@ type OutboxRow = {
   attempts: number;
   error_kind: SendErrorKind | null;
   rejected_json: string;
-  origin: "owner";
+  origin: DraftOrigin;
   created_at: string;
   updated_at: string;
 };
@@ -565,6 +566,8 @@ function toDraft(row: DraftRow): DraftRecord {
           }
         : null,
     origin: row.origin,
+    // The proposal_id column arrives with migration element 5 (slice 3c, task 5).
+    proposalId: null,
     createdAt: row.created_at,
     revision: row.revision,
     serverState: row.server_state,
@@ -1854,6 +1857,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
     // Compose and send (slice 3b) --------------------------------------------
 
     createDraft(input) {
+      // Hidden proposal drafts need migration element 5 (task 5); no caller passes one before task 7.
+      if (input.proposalId !== null) throw new Error("Proposal drafts are not available yet");
       const copy = input.serverCopy;
       db.prepare(
         `INSERT INTO compose_drafts (id, account_id, kind, source_message_id, message_id, in_reply_to,
@@ -2280,7 +2285,58 @@ export function createSqliteStore(db: Database.Database): MailStore {
       }
       return rankRecipientSuggestions(entries, prefix, limit);
     },
+
+    // Agent proposals and translation (slice 3c): migration element 5 and these
+    // methods arrive in task 5. ----------------------------------------------
+
+    createProposal() {
+      throw notYet("createProposal");
+    },
+    getProposal() {
+      throw notYet("getProposal");
+    },
+    proposalCapRows() {
+      throw notYet("proposalCapRows");
+    },
+    transitionProposal() {
+      throw notYet("transitionProposal");
+    },
+    setViewToken() {
+      throw notYet("setViewToken");
+    },
+    releaseProposalDraft() {
+      throw notYet("releaseProposalDraft");
+    },
+    undoAgentSend() {
+      throw notYet("undoAgentSend");
+    },
+    dropProposalDraft() {
+      throw notYet("dropProposalDraft");
+    },
+    recoverProposalsOnStart() {
+      throw notYet("recoverProposalsOnStart");
+    },
+    purgeProposals() {
+      throw notYet("purgeProposals");
+    },
+    addressesSentTo() {
+      throw notYet("addressesSentTo");
+    },
+    getTranslation() {
+      throw notYet("getTranslation");
+    },
+    putTranslation() {
+      throw notYet("putTranslation");
+    },
+    clearTranslations() {
+      throw notYet("clearTranslations");
+    },
   };
   return store;
+}
+
+/** A slice-3c store method that task 5 implements. */
+function notYet(method: string): Error {
+  return new Error(`${method} is not implemented yet`);
 }
 

@@ -209,9 +209,30 @@ export const messageBodySchema = z.object({
 });
 export type MessageBody = z.infer<typeof messageBodySchema>;
 
+/** Why a translation failed or the gateway is not usable, as a kind only. */
+export const translateErrorKindSchema = z.enum([
+  "gateway_missing",
+  "pool_unavailable",
+  "provider_unknown",
+  "model_unknown",
+  "auth",
+  "quota",
+  "refused",
+  "too_large",
+  "busy",
+  "failed",
+  "cancelled",
+]);
+
+/** The translation gateway's state: "ok", or why it cannot be used. */
+export const translateGatewaySchema = z.union([z.literal("ok"), translateErrorKindSchema]);
+
 export const statusViewSchema = z.object({
   vaultReady: z.boolean(),
   agentTools: z.boolean(),
+  /** The mail_propose tool is offered to agents (off by default). */
+  agentPropose: z.boolean(),
+  translate: z.object({ gateway: translateGatewaySchema }),
   accounts: z.array(accountSchema),
   unreadCount: z.number().int(),
 });
@@ -305,6 +326,10 @@ export type ParsedQuery = {
 export const composeKindSchema = z.enum(["new", "reply", "reply_all", "forward"]);
 export type ComposeKind = z.infer<typeof composeKindSchema>;
 
+/** Who started a draft or a send: the owner, or an agent through a confirmed proposal (slice 3c). */
+export const draftOriginSchema = z.enum(["owner", "agent"]);
+export type DraftOrigin = z.infer<typeof draftOriginSchema>;
+
 /**
  * A queued send's state. `done` appears only in realtime events: a done row
  * is deleted. There is no cancelled state: Undo deletes the row.
@@ -371,6 +396,8 @@ export const draftViewSchema = z.object({
   import: z
     .object({ html: z.string(), into: z.enum(["quote", "body"]) })
     .nullable(),
+  /** "agent": started by an agent proposal the owner opened in Mail (the composer's badge). */
+  origin: draftOriginSchema,
 });
 export type DraftView = z.infer<typeof draftViewSchema>;
 
@@ -386,6 +413,8 @@ export const outboxRowSchema = z.object({
   /** ISO 8601. */
   sendAfter: z.string(),
   attempts: z.number().int(),
+  /** "agent": a send the owner confirmed in an agent's card (the toast and the "Agent message" label). */
+  origin: draftOriginSchema,
 });
 export type OutboxRow = z.infer<typeof outboxRowSchema>;
 
@@ -466,8 +495,14 @@ export type NewDraft = DraftFields & {
    * draft's body. Cleared by the first save.
    */
   importHtml: { html: string; into: "quote" | "body" } | null;
-  /** The 3c seam; always "owner" in 3b. */
-  origin: "owner";
+  /** "agent" for a draft an agent proposal created; it stays as the composer's badge. */
+  origin: DraftOrigin;
+  /**
+   * The agent proposal this hidden draft belongs to, or null. A draft with a
+   * proposal id is reachable only through the proposal's card: no compose
+   * RPC, Drafts list or server copy sees it.
+   */
+  proposalId: string | null;
   /** ISO 8601. */
   createdAt: string;
 };
@@ -497,7 +532,7 @@ export type NewOutboxRow = {
   bccHeader: string | null;
   /** ISO 8601. */
   sendAfter: string;
-  origin: "owner";
+  origin: DraftOrigin;
   /** ISO 8601. */
   createdAt: string;
 };
@@ -511,3 +546,67 @@ export type OutboxRecord = Omit<NewOutboxRow, "mime" | "bccHeader"> & {
   /** ISO 8601. */
   updatedAt: string;
 };
+
+// ---- Agent proposals and translation (slice 3c) ----
+
+export const proposalStateSchema = z.enum([
+  "pending",
+  "confirming",
+  "queued",
+  "opened",
+  "cancelled",
+  "expired",
+  "refused",
+]);
+
+/** The card's warnings on one recipient. */
+export const recipientFlagSchema = z.enum(["new", "added", "outside", "hidden_chars"]);
+
+const proposalRecipientSchema = z.object({
+  /** ASCII form: an IDN domain shows as punycode. */
+  address: z.string(),
+  /** Only names the Reply rules computed from the store; agent-supplied names are dropped. */
+  name: z.string().nullable(),
+  flags: z.array(recipientFlagSchema),
+});
+
+/** What the confirmation card shows: the whole message, server-built. */
+export const proposalViewSchema = z.object({
+  proposalId: z.string(),
+  draftId: z.string(),
+  kind: composeKindSchema,
+  account: z.object({ id: z.string(), name: z.string(), address: z.string() }),
+  fromName: z.string().nullable(),
+  /** The message replied to or forwarded; null for a new message. */
+  source: z.object({ fromAddress: z.string(), subject: z.string() }).nullable(),
+  to: z.array(proposalRecipientSchema),
+  cc: z.array(proposalRecipientSchema),
+  bcc: z.array(proposalRecipientSchema),
+  subject: z.string(),
+  /** Bidi and zero-width characters removed from what is shown. */
+  hiddenChars: z.number().int(),
+  bodyText: z.string(),
+  quoteText: z.string().nullable(),
+  /** Links in the agent's own text, by host. */
+  links: z.array(z.object({ url: z.string(), host: z.string() })),
+  attachments: z.array(z.object({ fileName: z.string(), mimeType: z.string(), size: z.number().int() })),
+  /** Forwarded attachments left out over the size cap. */
+  leftOut: z.number().int(),
+  /** ISO 8601. */
+  expiresAt: z.string(),
+});
+export type ProposalView = z.infer<typeof proposalViewSchema>;
+
+/** A stored (or just finished) translation as the reading pane shows it. Text only, never HTML. */
+export const translationViewSchema = z.object({
+  messageId: z.string(),
+  targetLanguage: z.string(),
+  providerId: z.string(),
+  model: z.string(),
+  text: z.string(),
+  truncated: z.boolean(),
+  cached: z.boolean(),
+  /** ISO 8601. */
+  createdAt: z.string(),
+});
+export type TranslationView = z.infer<typeof translationViewSchema>;

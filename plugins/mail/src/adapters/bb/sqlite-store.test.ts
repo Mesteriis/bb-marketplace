@@ -1725,6 +1725,7 @@ function newDraft(overrides: Partial<NewDraft> = {}): NewDraft {
     serverCopy: null,
     importHtml: null,
     origin: "owner",
+    proposalId: null,
     createdAt: T0,
     ...overrides,
   };
@@ -1911,6 +1912,11 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       });
       expect(s.getDraft("d_1")).toEqual(created);
       expect(s.getDraft("nope")).toBeNull();
+    });
+
+    it("stores an agent origin", () => {
+      expect(s.createDraft(newDraft({ origin: "agent" }))).toMatchObject({ origin: "agent", proposalId: null });
+      expect(s.getDraft("d_1")?.origin).toBe("agent");
     });
 
     it("a draft continuing a foreign copy starts saved, pointing at it", () => {
