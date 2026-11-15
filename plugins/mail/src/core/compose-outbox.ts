@@ -4,7 +4,8 @@
 // row queued → sending by compare-and-swap inside the account's write queue,
 // immediately before SMTP is opened, a restart
 // turns `sending` into `unknown`, and the only automatic retry is the
-// idempotent Sent-copy APPEND (search by Message-ID first, 3 tries).
+// idempotent Sent-copy APPEND (search by Message-ID first, 3 tries with
+// backoff).
 import { parseAddress } from "./compose-address.ts";
 import { bccHeaderLine, insertBccHeader } from "./compose-bcc.ts";
 import {
@@ -33,6 +34,8 @@ export const UNDO_MS = 10_000;
 export const SEND_RATE_PER_MINUTE = 10;
 /** Tries of the Sent-copy step (each searches by Message-ID first). */
 export const APPEND_ATTEMPTS = 3;
+/** The wait before the 2nd, 3rd (and any later) Sent-copy try. */
+export const APPEND_BACKOFF_MS = [1_000, 4_000, 15_000];
 /** How long after a send became unknown a Gmail account's Sent folder is searched for it. */
 export const SETTLE_WINDOW_MS = 5 * 60_000;
 
@@ -105,7 +108,26 @@ export class SendRateLimit {
 }
 
 export type QueueDeps = ComposeDeps & { notifier: OutboxNotifier; rate: SendRateLimit };
-export type OutboxDeps = ComposeDeps & { notifier: OutboxNotifier; transport: MailTransport };
+export type OutboxDeps = ComposeDeps & {
+  notifier: OutboxNotifier;
+  transport: MailTransport;
+  /** Waits between Sent-copy tries; resolves early when the signal aborts. Defaults to a timer. */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+};
+
+/** A timer that resolves after `ms`, or at once when the signal aborts. */
+function timerSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
 
 /**
  * Queues the saved draft. The requestId is the row id: the same id again
@@ -242,7 +264,7 @@ export async function runOutboxOnce(
   if (stopped()) return false;
   const pendingCopy = deps.store.listOutbox(null).find((row) => row.state === "sent");
   if (pendingCopy !== undefined) {
-    await copyStep(deps, pendingCopy);
+    await copyStep(deps, pendingCopy, stop);
     return true;
   }
   const due = deps.store.nextDueOutbox(deps.clock.now().toISOString(), []);
@@ -298,7 +320,7 @@ export async function runOutboxOnce(
     if (deps.store.transitionOutbox(claimed.id, ["sending"], "sent", { rejected: outcome.rejected, updatedAt })) {
       publish(deps, claimed, "sent");
       const row = deps.store.getOutbox(claimed.id);
-      if (row !== null) await copyStep(deps, row);
+      if (row !== null) await copyStep(deps, row, stop);
     }
   } else {
     settle(deps, claimed, outcome.state, outcome.kind);
@@ -374,8 +396,13 @@ export function smtpConfigOf(account: StoredAccount, deps: Pick<ComposeDeps, "va
 
 // ---------------------------------------------------------------------------
 
-/** The Sent-copy step of a `sent` row: done for `server` accounts, else search-then-APPEND. */
-async function copyStep(deps: OutboxDeps, row: OutboxRecord): Promise<void> {
+/**
+ * The Sent-copy step of a `sent` row: done for `server` accounts, else
+ * search-then-APPEND, up to APPEND_ATTEMPTS tries with a backoff between
+ * them (outside the write queue). An abort during the backoff stops: the
+ * row stays `appending`, which the next start turns back into `sent`.
+ */
+async function copyStep(deps: OutboxDeps, row: OutboxRecord, stop: AbortSignal): Promise<void> {
   const account = deps.store.getAccount(row.accountId);
   if (account === null) return;
   if (account.sentCopy === "server") {
@@ -396,7 +423,12 @@ async function copyStep(deps: OutboxDeps, row: OutboxRecord): Promise<void> {
     return;
   }
   const raw = payload.bccHeader === null ? payload.mime : insertBccHeader(payload.mime, payload.bccHeader);
+  const sleep = deps.sleep ?? timerSleep;
   for (let attempt = 0; attempt < APPEND_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      await sleep(APPEND_BACKOFF_MS[Math.min(attempt - 1, APPEND_BACKOFF_MS.length - 1)]!, stop);
+      if (stop.aborted) return;
+    }
     try {
       await deps.queue.run(account.id, async () => {
         const session = await deps.gateway.openFolder(imapConfigOf(account, deps.vault), sent, {

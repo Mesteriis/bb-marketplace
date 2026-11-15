@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { ComposeError, addComposeAttachment, newCompose, saveCompose } from "./compose.ts";
 import {
   APPEND_ATTEMPTS,
+  APPEND_BACKOFF_MS,
   SEND_RATE_PER_MINUTE,
   SendRateLimit,
   UNDO_MS,
@@ -509,12 +510,38 @@ describe("Sent copy", () => {
     const searches = h.gateway.sessions.flatMap((s) => s.calls).filter((c) => c.method === "findByMessageId");
     expect(appendCalls).toHaveLength(APPEND_ATTEMPTS);
     expect(searches).toHaveLength(APPEND_ATTEMPTS);
+    // Backoff between tries, outside the account's write queue.
+    expect(h.sleeps).toEqual(APPEND_BACKOFF_MS.slice(0, APPEND_ATTEMPTS - 1));
+    expect(APPEND_BACKOFF_MS.slice(0, 2)).toEqual([1_000, 4_000]);
     expect(h.store.getOutbox(id)).toMatchObject({ state: "sent_no_copy", errorKind: "append_failed" });
     h.gateway.clearFailure("appendMessage");
     retrySend(deps, id);
     await drain();
     expect(h.transport.sent).toHaveLength(1);
     expect(h.store.getOutbox(id)).toBeNull();
+  });
+
+  it("a second try that lands after a backoff completes the send", async () => {
+    const { id } = await queued();
+    h.advance(UNDO_MS);
+    h.gateway.failNext("appendMessage", imapError("AppendFailed"));
+    await drain();
+    expect(h.sleeps).toEqual([1_000]);
+    expect(h.gateway.appended).toHaveLength(1);
+    expect(h.store.getOutbox(id)).toBeNull();
+  });
+
+  it("an abort during the backoff stops retrying and leaves the row for recovery, not sent_no_copy", async () => {
+    const { id } = await queued();
+    h.advance(UNDO_MS);
+    h.gateway.failAlways("appendMessage", imapError("AppendFailed"));
+    const controller = new AbortController();
+    h.onSleep = () => controller.abort();
+    await runOutboxOnce(h.deps, controller.signal);
+    expect(h.sleeps).toEqual([1_000]);
+    expect(h.store.getOutbox(id)!.state).toBe("appending");
+    expect(h.store.recoverOutboxOnStart(h.clock.now().toISOString())).toEqual({ unknown: 0, held: 0 });
+    expect(h.store.getOutbox(id)!.state).toBe("sent");
   });
 
   it("without a Sent folder ends sent_no_copy, and Dismiss clears it", async () => {
