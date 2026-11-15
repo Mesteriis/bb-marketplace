@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildThreads } from "../../core/threading.ts";
-import type { RemoteFolder } from "../../core/model.ts";
+import type { NewDraft, NewOutboxRow, RemoteFolder } from "../../core/model.ts";
 import type { MailStore } from "../../core/ports.ts";
 import {
   InMemoryMailStore,
@@ -695,10 +695,11 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 3).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 4).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
       "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
+      "d32d0c6bafc6b6259c1bf6448fe0a24ee944f1c46dd8cf87e0e443eb7301103c",
     ]);
   });
 
@@ -1253,7 +1254,8 @@ describe("slice-3a migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(3).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(4);
+    // Element 3 shipped with slice 3a; later slices only append.
+    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(4);
     expect(
       old.prepare("SELECT id, seen_pending, seen_desired, flag_desired FROM messages ORDER BY id").all(),
     ).toEqual([
@@ -1695,5 +1697,525 @@ describe.each(storeKinds)("slice-3a store semantics (%s)", (_kind, make) => {
     expect(s.rawRef(idIn(s, "Other", 4))).toBeNull();
     s.beginFolderReset("acc_1", INBOX);
     expect(s.rawRef(id)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 3b: SMTP columns, Reply-To, drafts, attachments, outbox.
+// ---------------------------------------------------------------------------
+
+const T0 = "2026-11-15T10:00:00.000Z";
+const later = (ms: number) => new Date(Date.parse(T0) + ms).toISOString();
+
+function newDraft(overrides: Partial<NewDraft> = {}): NewDraft {
+  return {
+    id: "d_1",
+    kind: "new",
+    accountId: "acc_1",
+    sourceMessageId: null,
+    messageId: "<d1@example.org>",
+    inReplyTo: null,
+    references: [],
+    to: [{ name: "Bob", address: "bob@example.com" }],
+    cc: [],
+    bcc: [{ name: null, address: "hidden@example.net" }],
+    subject: "Invented draft",
+    doc: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Hello" }] }] },
+    serverCopy: null,
+    importHtml: null,
+    origin: "owner",
+    createdAt: T0,
+    ...overrides,
+  };
+}
+
+function newOutbox(overrides: Partial<NewOutboxRow> = {}): NewOutboxRow {
+  return {
+    id: "out_1",
+    accountId: "acc_1",
+    draftId: "d_1",
+    messageId: "<d1@example.org>",
+    subject: "Invented draft",
+    envelopeFrom: "owner@example.org",
+    envelopeTo: ["bob@example.com", "hidden@example.net"],
+    mime: new TextEncoder().encode("Subject: Invented\r\n\r\nBody"),
+    bccHeader: "Bcc: hidden@example.net\r\n",
+    sendAfter: later(10_000),
+    origin: "owner",
+    createdAt: T0,
+    ...overrides,
+  };
+}
+
+const FIELDS = {
+  accountId: "acc_1",
+  to: [{ name: null, address: "carl@example.com" }],
+  cc: [],
+  bcc: [],
+  subject: "Changed",
+  doc: { type: "doc" as const, content: [{ type: "paragraph" as const }] },
+};
+
+const file = (data: number[], overrides: { contentId?: string | null; fileName?: string } = {}) => ({
+  fileName: overrides.fileName ?? "notes.txt",
+  mimeType: "text/plain",
+  size: data.length,
+  sha256: "a".repeat(64),
+  data: new Uint8Array(data),
+  contentId: overrides.contentId ?? null,
+});
+
+describe("slice-3b migration (SQLite)", () => {
+  it("element 4 backfills SMTP per preset and leaves old Reply-To unknown", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 4).forEach((s) => old.exec(s)))();
+    const account = old.prepare(
+      `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+       VALUES (?, ?, 'imap.example.org', 993, ?, 'sealed', ?, ?)`,
+    );
+    account.run("acc_i", "i@example.org", "i@example.org", "icloud", EPOCH);
+    account.run("acc_g", "g@example.com", "g@example.com", "gmail", EPOCH);
+    account.run("acc_o", "o@example.net", "o@example.net", "other", EPOCH);
+    old.prepare(
+      `INSERT INTO messages (id, account_id, folder, uid, message_id, thread_id, from_address, subject, date, snippet, dedup_key)
+       VALUES ('m_a', 'acc_i', 'INBOX', 1, 'a@example.org', 't_m_a', 'sender@example.org', 'Invented',
+         '2026-11-10T00:00:00.000Z', 'Invented', 'mid:a@example.org:0')`,
+    ).run();
+
+    old.transaction(() => MIGRATIONS.slice(4).forEach((s) => old.exec(s)))();
+
+    const migrated = createSqliteStore(old);
+    expect(migrated.getAccount("acc_i")).toMatchObject({
+      smtp: { host: "smtp.mail.me.com", port: 587, security: "starttls", username: null },
+      sentCopy: "append",
+    });
+    expect(migrated.getAccount("acc_g")).toMatchObject({
+      smtp: { host: "smtp.gmail.com", port: 465, security: "tls", username: null },
+      sentCopy: "server",
+    });
+    expect(migrated.getAccount("acc_o")).toMatchObject({ smtp: null, sentCopy: "append" });
+    expect(migrated.replySource("m_a")).toMatchObject({ replyTo: [], replyToKnown: false });
+    expect(migrated.getMessage("m_a")!.draftId).toBeNull();
+
+    const names = (
+      old.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')").all() as { name: string }[]
+    ).map((r) => r.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "compose_drafts",
+        "compose_attachments",
+        "outbox",
+        "outbox_state",
+        "outbox_draft_live",
+        "compose_drafts_account",
+      ]),
+    );
+    const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
+    expect(columns).toContain("reply_to_json");
+    expect(columns).not.toContain("is_deleted");
+    const outboxColumns = (old.prepare("PRAGMA table_info(outbox)").all() as { name: string }[]).map((c) => c.name);
+    expect(outboxColumns).toContain("bcc_header");
+    expect(outboxColumns).not.toContain("sent_copy_mime");
+  });
+
+  it("one outbox row per draft, enforced by the database", () => {
+    store.createDraft(newDraft());
+    store.queueOutbox(newOutbox(), 1);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO outbox (id, account_id, draft_id, message_id, subject, envelope_from, envelope_to_json,
+             mime, state, send_after, created_at, updated_at)
+           VALUES ('out_2', 'acc_1', 'd_1', '<x@example.org>', 's', 'a@example.org', '[]', x'00', 'queued', ?, ?, ?)`,
+        )
+        .run(T0, T0, T0),
+    ).toThrow(/UNIQUE/);
+  });
+
+  it("saveAccount stays an upsert: mail, drafts and outbox survive an update", () => {
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    store.createDraft(newDraft());
+    store.addAttachment("d_1", file([1, 2]));
+    store.queueOutbox(newOutbox(), 1);
+    store.saveAccount(
+      makeStoredAccount({
+        displayName: "Renamed",
+        smtp: { host: "smtp.example.org", port: 465, security: "tls", username: "login" },
+      }),
+    );
+    expect(store.getAccount("acc_1")).toMatchObject({
+      displayName: "Renamed",
+      smtp: { host: "smtp.example.org", port: 465, security: "tls", username: "login" },
+      sentCopy: "append",
+    });
+    expect(count(db, "messages")).toBe(1);
+    expect(count(db, "compose_drafts")).toBe(1);
+    expect(count(db, "compose_attachments")).toBe(1);
+    expect(count(db, "outbox")).toBe(1);
+  });
+
+  it("deleting the account deletes its drafts, attachments and outbox rows", () => {
+    store.createDraft(newDraft());
+    store.addAttachment("d_1", file([1, 2]));
+    store.queueOutbox(newOutbox(), 1);
+    store.deleteAccount("acc_1");
+    for (const table of ["compose_drafts", "compose_attachments", "outbox", "accounts"]) {
+      expect(count(db, table)).toBe(0);
+    }
+  });
+
+  it("completeOutbox gives the blob pages back with incremental auto_vacuum", () => {
+    const vacuumed = new Database(":memory:");
+    vacuumed.pragma("auto_vacuum = INCREMENTAL");
+    migrate(vacuumed);
+    const s = createSqliteStore(vacuumed);
+    s.saveAccount(makeStoredAccount());
+    s.createDraft(newDraft());
+    s.addAttachment("d_1", file(Array.from({ length: 300_000 }, (_, i) => i % 251)));
+    s.queueOutbox(newOutbox({ mime: new Uint8Array(400_000).fill(7) }), 1);
+    const pages = () => vacuumed.pragma("page_count", { simple: true }) as number;
+    const before = pages();
+    s.completeOutbox("out_1");
+    expect(vacuumed.pragma("freelist_count", { simple: true })).toBe(0);
+    expect(pages()).toBeLessThan(before);
+  });
+
+  it("stores Reply-To from sync", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { replyTo: [{ name: "List", address: "list@example.net" }] }),
+    ]);
+    expect(store.replySource(idOf(store, 1))).toMatchObject({
+      replyTo: [{ name: "List", address: "list@example.net" }],
+      replyToKnown: true,
+    });
+  });
+});
+
+describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
+  let s: MailStore;
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.com", createdAt: "2026-02-01T00:00:00.000Z" }));
+  });
+
+  describe("drafts", () => {
+    it("create and read back at revision 1", () => {
+      const created = s.createDraft(newDraft({ importHtml: { html: "<p>q</p>", into: "quote" }, references: ["<r@example.org>"] }));
+      expect(created).toEqual({
+        ...newDraft({ importHtml: { html: "<p>q</p>", into: "quote" }, references: ["<r@example.org>"] }),
+        revision: 1,
+        serverState: "none",
+        updatedAt: T0,
+      });
+      expect(s.getDraft("d_1")).toEqual(created);
+      expect(s.getDraft("nope")).toBeNull();
+    });
+
+    it("a draft continuing a foreign copy starts saved, pointing at it", () => {
+      const copy = { folder: "Drafts", uidValidity: 7, uid: 41, revision: 1, size: 321 };
+      expect(s.createDraft(newDraft({ serverCopy: copy }))).toMatchObject({ serverCopy: copy, serverState: "saved" });
+      expect(s.draftForServerCopy("acc_1", "Drafts", 41)).toBe("d_1");
+      expect(s.draftForServerCopy("acc_2", "Drafts", 41)).toBeNull();
+      expect(s.draftForServerCopy("acc_1", "Drafts", 42)).toBeNull();
+    });
+
+    it("saveDraft is a compare-and-swap on the revision and clears the import", () => {
+      s.createDraft(newDraft({ importHtml: { html: "<p>q</p>", into: "quote" } }));
+      expect(s.saveDraft("d_1", 1, FIELDS, later(1000))).toEqual({ revision: 2 });
+      expect(s.getDraft("d_1")).toMatchObject({ ...FIELDS, revision: 2, importHtml: null, updatedAt: later(1000) });
+      expect(s.saveDraft("d_1", 1, { ...FIELDS, subject: "Stale" }, later(2000))).toEqual({ conflict: true, revision: 2 });
+      expect(s.getDraft("d_1")!.subject).toBe("Changed");
+      expect(() => s.saveDraft("nope", 1, FIELDS, T0)).toThrow();
+    });
+
+    it("saveDraft answers conflict while a send of the draft is queued", () => {
+      s.createDraft(newDraft());
+      s.queueOutbox(newOutbox(), 1);
+      expect(s.saveDraft("d_1", 1, FIELDS, T0)).toEqual({ conflict: true, revision: 1 });
+      s.deleteOutbox("out_1", ["queued"]);
+      expect(s.saveDraft("d_1", 1, FIELDS, T0)).toEqual({ revision: 2 });
+    });
+
+    it("lists an account's drafts oldest first", () => {
+      s.createDraft(newDraft({ id: "d_b", createdAt: later(5) }));
+      s.createDraft(newDraft({ id: "d_a", createdAt: later(1) }));
+      s.createDraft(newDraft({ id: "d_c", accountId: "acc_2" }));
+      expect(s.listDrafts("acc_1").map((d) => d.id)).toEqual(["d_a", "d_b"]);
+      expect(s.listDrafts("acc_2").map((d) => d.id)).toEqual(["d_c"]);
+    });
+
+    it("records, clears and marks the server copy", () => {
+      s.createDraft(newDraft());
+      const copy = { folder: "Drafts", uidValidity: 7, uid: 3, revision: 1, size: 99 };
+      s.recordServerCopy("d_1", copy);
+      expect(s.getDraft("d_1")).toMatchObject({ serverCopy: copy, serverState: "saved" });
+      s.setServerCopyState("d_1", "failed");
+      expect(s.getDraft("d_1")).toMatchObject({ serverCopy: copy, serverState: "failed" });
+      s.recordServerCopy("d_1", null);
+      expect(s.getDraft("d_1")).toMatchObject({ serverCopy: null, serverState: "none" });
+    });
+
+    it("the synced copy of a draft's server copy carries its draftId", () => {
+      s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Drafts", "drafts")]);
+      s.upsertMessages("acc_1", "Drafts", [makeFetchedMessage(3, { messageId: "d1@example.org" })]);
+      s.createDraft(newDraft());
+      const id = idIn(s, "Drafts", 3);
+      expect(s.getMessage(id)!.draftId).toBeNull();
+      s.recordServerCopy("d_1", { folder: "Drafts", uidValidity: 7, uid: 3, revision: 1, size: 100 });
+      expect(s.getMessage(id)!.draftId).toBe("d_1");
+      s.assignThreads("acc_1", new Map());
+      const threadId = s.getMessage(id)!.threadId;
+      expect(s.getThread(threadId, "Drafts")!.messages.map((m) => m.draftId)).toEqual(["d_1"]);
+    });
+
+    it("deleting a draft deletes its attachments", () => {
+      s.createDraft(newDraft());
+      s.addAttachment("d_1", file([1]));
+      s.deleteDraft("d_1");
+      expect(s.getDraft("d_1")).toBeNull();
+      expect(s.listAttachments("d_1")).toEqual([]);
+    });
+  });
+
+  describe("attachments", () => {
+    it("keep their order, bytes, hash and Content-ID; remove takes one", () => {
+      s.createDraft(newDraft());
+      const a = s.addAttachment("d_1", file([1, 2, 3], { fileName: "a.txt" }));
+      const b = s.addAttachment("d_1", file([4], { fileName: "logo.png", contentId: "logo@example.org" }));
+      expect(a).toEqual({ id: expect.any(String), fileName: "a.txt", mimeType: "text/plain", size: 3 });
+      expect(s.listAttachments("d_1")).toEqual([a, b]);
+      expect(s.attachmentData("d_1")).toEqual([
+        { ...a, sha256: "a".repeat(64), contentId: null, data: new Uint8Array([1, 2, 3]) },
+        { ...b, sha256: "a".repeat(64), contentId: "logo@example.org", data: new Uint8Array([4]) },
+      ]);
+      expect(s.removeAttachment("d_1", a.id)).toBe(true);
+      expect(s.removeAttachment("d_1", a.id)).toBe(false);
+      expect(s.removeAttachment("other", b.id)).toBe(false);
+      const c = s.addAttachment("d_1", file([5], { fileName: "c.txt" }));
+      expect(s.listAttachments("d_1").map((x) => x.id)).toEqual([b.id, c.id]);
+    });
+
+    it("are refused for a draft that does not exist", () => {
+      expect(() => s.addAttachment("nope", file([1]))).toThrow();
+    });
+  });
+
+  describe("outbox", () => {
+    beforeEach(() => {
+      s.createDraft(newDraft());
+    });
+
+    it("queues once per requestId and returns the existing row on a repeat", () => {
+      const first = s.queueOutbox(newOutbox(), 1);
+      expect(first).toEqual({
+        created: true,
+        row: {
+          id: "out_1",
+          accountId: "acc_1",
+          draftId: "d_1",
+          messageId: "<d1@example.org>",
+          subject: "Invented draft",
+          envelopeFrom: "owner@example.org",
+          envelopeTo: ["bob@example.com", "hidden@example.net"],
+          sendAfter: later(10_000),
+          origin: "owner",
+          createdAt: T0,
+          state: "queued",
+          attempts: 0,
+          errorKind: null,
+          rejected: [],
+          updatedAt: T0,
+        },
+      });
+      const again = s.queueOutbox(newOutbox({ subject: "Ignored" }), 7);
+      expect(again).toEqual({ created: false, row: (first as { row: unknown }).row });
+      expect(s.listOutbox(null)).toHaveLength(1);
+      expect(s.outboxPayload("out_1")).toEqual({
+        mime: newOutbox().mime,
+        bccHeader: "Bcc: hidden@example.net\r\n",
+      });
+    });
+
+    it("refuses a stale revision and a second live row for the draft", () => {
+      expect(s.queueOutbox(newOutbox(), 0)).toEqual({ conflict: true });
+      s.queueOutbox(newOutbox(), 1);
+      expect(s.queueOutbox(newOutbox({ id: "out_2" }), 1)).toEqual({ conflict: true });
+      expect(s.queueOutbox(newOutbox({ id: "out_3", draftId: "nope" }), 1)).toEqual({ conflict: true });
+      expect(s.queueOutbox(newOutbox({ id: "out_4", draftId: null }), 0)).toMatchObject({ created: true });
+      expect(s.listOutbox(null).map((r) => r.id)).toEqual(["out_1", "out_4"]);
+    });
+
+    it("lists rows without blobs, per account or all", () => {
+      s.queueOutbox(newOutbox(), 1);
+      s.queueOutbox(newOutbox({ id: "out_2", accountId: "acc_2", draftId: null, createdAt: later(1) }), 0);
+      expect(s.listOutbox("acc_2").map((r) => r.id)).toEqual(["out_2"]);
+      expect(s.listOutbox(null).map((r) => r.id)).toEqual(["out_1", "out_2"]);
+      expect(Object.keys(s.listOutbox(null)[0]!)).not.toEqual(expect.arrayContaining(["mime"]));
+      expect(Object.keys(s.listOutbox(null)[0]!)).not.toEqual(expect.arrayContaining(["bccHeader"]));
+      expect(s.outboxPayload("nope")).toBeNull();
+    });
+
+    it("transitions only from the given states, with the patch", () => {
+      s.queueOutbox(newOutbox(), 1);
+      expect(s.transitionOutbox("out_1", ["sending"], "sent")).toBe(false);
+      expect(
+        s.transitionOutbox("out_1", ["queued", "held"], "failed", {
+          errorKind: "connect",
+          rejected: ["x@example.com"],
+          sendAfter: later(99),
+          countAttempt: true,
+          updatedAt: later(5),
+        }),
+      ).toBe(true);
+      expect(s.getOutbox("out_1")).toMatchObject({
+        state: "failed",
+        errorKind: "connect",
+        rejected: ["x@example.com"],
+        sendAfter: later(99),
+        attempts: 1,
+        updatedAt: later(5),
+      });
+      expect(s.transitionOutbox("out_1", ["failed"], "queued", { errorKind: null })).toBe(true);
+      expect(s.getOutbox("out_1")).toMatchObject({ state: "queued", errorKind: null, updatedAt: later(5) });
+      expect(s.transitionOutbox("nope", ["queued"], "sending")).toBe(false);
+    });
+
+    it("deletes only from the given states", () => {
+      s.queueOutbox(newOutbox(), 1);
+      expect(s.deleteOutbox("out_1", ["held"])).toBe(false);
+      expect(s.deleteOutbox("out_1", ["queued", "held"])).toBe(true);
+      expect(s.getOutbox("out_1")).toBeNull();
+      expect(s.getDraft("d_1")).not.toBeNull();
+    });
+
+    it("claims the oldest due row of an account not busy, once", () => {
+      s.createDraft(newDraft({ id: "d_2", accountId: "acc_2" }));
+      s.createDraft(newDraft({ id: "d_3" }));
+      s.queueOutbox(newOutbox({ id: "future", draftId: "d_3", sendAfter: later(60_000) }), 1);
+      s.queueOutbox(newOutbox({ id: "late", sendAfter: later(9_000) }), 1);
+      s.queueOutbox(newOutbox({ id: "early", accountId: "acc_2", draftId: "d_2", sendAfter: later(8_000) }), 1);
+      const now = later(10_000);
+      expect(s.claimDueOutbox(now, ["acc_2"])).toMatchObject({ id: "late", state: "sending", attempts: 1, updatedAt: now });
+      expect(s.claimDueOutbox(now, ["acc_2"])).toBeNull();
+      expect(s.claimDueOutbox(now, [])).toMatchObject({ id: "early", state: "sending" });
+      expect(s.claimDueOutbox(now, [])).toBeNull();
+      expect(s.getOutbox("future")!.state).toBe("queued");
+    });
+
+    it("recovers on start: sending → unknown, overdue queued → held, appending → sent", () => {
+      for (const id of ["d_2", "d_3", "d_4", "d_5"]) s.createDraft(newDraft({ id }));
+      s.queueOutbox(newOutbox({ id: "sending", sendAfter: later(1) }), 1);
+      s.queueOutbox(newOutbox({ id: "overdue", draftId: "d_2", sendAfter: later(2) }), 1);
+      s.queueOutbox(newOutbox({ id: "fresh", draftId: "d_3", sendAfter: later(60_000) }), 1);
+      s.queueOutbox(newOutbox({ id: "appending", draftId: "d_4", sendAfter: later(1) }), 1);
+      s.queueOutbox(newOutbox({ id: "failed", draftId: "d_5", sendAfter: later(1) }), 1);
+      s.transitionOutbox("sending", ["queued"], "sending");
+      s.transitionOutbox("appending", ["queued"], "appending");
+      s.transitionOutbox("failed", ["queued"], "failed", { errorKind: "auth" });
+      expect(s.hasSendingOutbox("acc_1")).toBe(true);
+      expect(s.recoverOutboxOnStart(later(10_000))).toEqual({ unknown: 1, held: 1 });
+      expect(
+        Object.fromEntries(s.listOutbox(null).map((r) => [r.id, r.state])),
+      ).toEqual({ sending: "unknown", overdue: "held", fresh: "queued", appending: "sent", failed: "failed" });
+      expect(s.getOutbox("sending")!.errorKind).toBe("unknown_after_data");
+      expect(s.hasSendingOutbox("acc_1")).toBe(false);
+    });
+
+    it("completeOutbox deletes the row and its draft with attachments", () => {
+      s.addAttachment("d_1", file([1]));
+      s.queueOutbox(newOutbox(), 1);
+      s.completeOutbox("out_1");
+      expect(s.getOutbox("out_1")).toBeNull();
+      expect(s.getDraft("d_1")).toBeNull();
+      expect(s.listAttachments("d_1")).toEqual([]);
+      s.completeOutbox("out_1");
+    });
+
+    it("hasSendingOutbox is per account", () => {
+      s.queueOutbox(newOutbox(), 1);
+      expect(s.hasSendingOutbox("acc_1")).toBe(false);
+      s.claimDueOutbox(later(10_000), []);
+      expect(s.hasSendingOutbox("acc_1")).toBe(true);
+      expect(s.hasSendingOutbox("acc_2")).toBe(false);
+    });
+
+    it("deleting the account deletes its drafts and rows, not another account's", () => {
+      s.createDraft(newDraft({ id: "d_2", accountId: "acc_2" }));
+      s.queueOutbox(newOutbox(), 1);
+      s.queueOutbox(newOutbox({ id: "out_2", accountId: "acc_2", draftId: "d_2" }), 1);
+      s.deleteAccount("acc_1");
+      expect(s.getDraft("d_1")).toBeNull();
+      expect(s.listOutbox(null).map((r) => r.id)).toEqual(["out_2"]);
+      expect(s.getDraft("d_2")).not.toBeNull();
+    });
+  });
+
+  describe("replySource", () => {
+    it("returns the stored header fields of the message", () => {
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, {
+          from: { name: "Anna", address: "anna@example.org" },
+          to: [{ name: null, address: "owner@example.org" }],
+          cc: [{ name: "Carl", address: "carl@example.com" }],
+          replyTo: [{ name: null, address: "list@example.net" }],
+          subject: "Garden",
+          date: "Sat, 14 Nov 2026 09:05:00 +0000",
+          messageId: "m1@example.org",
+          inReplyTo: "p@example.org",
+          references: ["r@example.org", "p@example.org"],
+        }),
+      ]);
+      expect(s.replySource(idOf(s, 1))).toEqual({
+        accountId: "acc_1",
+        folder: INBOX,
+        from: { name: "Anna", address: "anna@example.org" },
+        to: [{ name: null, address: "owner@example.org" }],
+        cc: [{ name: "Carl", address: "carl@example.com" }],
+        replyTo: [{ name: null, address: "list@example.net" }],
+        replyToKnown: true,
+        subject: "Garden",
+        date: "2026-11-14T09:05:00.000Z",
+        messageId: "m1@example.org",
+        inReplyTo: "p@example.org",
+        references: ["r@example.org", "p@example.org"],
+      });
+      expect(s.replySource("nope")).toBeNull();
+    });
+  });
+
+  describe("recipientSuggestions", () => {
+    beforeEach(() => {
+      s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Sent", "sent")]);
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { from: { name: "Bella Stone", address: "bella@example.com" }, date: "2026-11-01T00:00:00.000Z" }),
+        makeFetchedMessage(2, { from: { name: "Ben", address: "ben@example.org" }, date: "2026-11-10T00:00:00.000Z" }),
+        makeFetchedMessage(3, { from: { name: null, address: "BEN@example.org" }, date: "2026-11-02T00:00:00.000Z" }),
+        makeFetchedMessage(4, { from: { name: "Otto", address: "otto@example.net" }, cc: [{ name: "Bram", address: "bram@example.net" }], date: "2026-11-11T00:00:00.000Z" }),
+      ]);
+      s.upsertMessages("acc_1", "Sent", [
+        makeFetchedMessage(1, {
+          from: { name: "Owner", address: "owner@example.org" },
+          to: [{ name: "Bob Sent", address: "bob@example.com" }],
+          date: "2026-10-01T00:00:00.000Z",
+        }),
+      ]);
+    });
+
+    it("puts addresses the owner sent to first, then the most recent, case-folded and deduped", () => {
+      expect(s.recipientSuggestions("b", 10)).toEqual([
+        { name: "Bob Sent", address: "bob@example.com" },
+        { name: "Bram", address: "bram@example.net" },
+        { name: "Ben", address: "ben@example.org" },
+        { name: "Bella Stone", address: "bella@example.com" },
+      ]);
+    });
+
+    it("matches a word of the display name and honours the limit", () => {
+      expect(s.recipientSuggestions("sto", 10)).toEqual([{ name: "Bella Stone", address: "bella@example.com" }]);
+      expect(s.recipientSuggestions("B", 2)).toHaveLength(2);
+      expect(s.recipientSuggestions("zz", 10)).toEqual([]);
+      expect(s.recipientSuggestions("%", 10)).toEqual([]);
+    });
   });
 });

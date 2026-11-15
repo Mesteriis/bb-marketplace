@@ -25,6 +25,15 @@ import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
   AttachmentMeta,
+  ComposeAttachment,
+  ComposeKind,
+  DraftRecord,
+  DraftServerCopyState,
+  OutboxRecord,
+  OutboxState,
+  SendErrorKind,
+  SentCopyPolicy,
+  SmtpSecurity,
   FetchedMessage,
   Folder,
   InlinePart,
@@ -43,6 +52,7 @@ import type {
   ThreadingInput,
   ThreadSummary,
 } from "../../core/model.ts";
+import type { ComposeDoc } from "../../core/compose-doc.ts";
 import { cleanSnippet, needsSnippetRepair, snippetOf } from "../../core/snippet.ts";
 import type { MailStore } from "../../core/ports.ts";
 import {
@@ -50,7 +60,9 @@ import {
   compareFolders,
   dedupKeyOf,
   effectiveSpecialUse,
+  rankRecipientSuggestions,
   UNIFIED_ROLES,
+  type SuggestionEntry,
 } from "../../core/store-rules.ts";
 
 /**
@@ -218,6 +230,88 @@ export const MIGRATIONS: string[] = [
   UPDATE messages SET seen_desired = 1 WHERE seen_pending = 1;
   CREATE INDEX threads_last_date ON threads(last_date, id);
   `,
+  // 4: slice 3b — SMTP and the Sent-copy policy per account (iCloud and
+  // Gmail backfilled from their presets), Reply-To on synced mail (NULL =
+  // synced before it was kept), the composer's drafts and attachments, and
+  // the outbox (one row per Send, id = the page's requestId; a done row is
+  // deleted, so every row is live and a draft has at most one).
+  `
+  ALTER TABLE accounts ADD COLUMN smtp_host TEXT;
+  ALTER TABLE accounts ADD COLUMN smtp_port INTEGER;
+  ALTER TABLE accounts ADD COLUMN smtp_security TEXT;
+  ALTER TABLE accounts ADD COLUMN smtp_username TEXT;
+  ALTER TABLE accounts ADD COLUMN sent_copy TEXT;
+  UPDATE accounts SET smtp_host = 'smtp.mail.me.com', smtp_port = 587,
+    smtp_security = 'starttls', sent_copy = 'append' WHERE preset = 'icloud';
+  UPDATE accounts SET smtp_host = 'smtp.gmail.com', smtp_port = 465,
+    smtp_security = 'tls', sent_copy = 'server' WHERE preset = 'gmail';
+  UPDATE accounts SET sent_copy = 'append' WHERE sent_copy IS NULL;
+
+  ALTER TABLE messages ADD COLUMN reply_to_json TEXT;
+
+  CREATE TABLE compose_drafts (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    source_message_id TEXT,
+    message_id TEXT NOT NULL,
+    in_reply_to TEXT,
+    refs_json TEXT NOT NULL,
+    to_json TEXT NOT NULL,
+    cc_json TEXT NOT NULL,
+    bcc_json TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    doc_json TEXT NOT NULL,
+    import_json TEXT,
+    revision INTEGER NOT NULL,
+    server_state TEXT NOT NULL DEFAULT 'none',
+    server_folder TEXT,
+    server_uidvalidity INTEGER,
+    server_uid INTEGER,
+    server_revision INTEGER,
+    server_size INTEGER,
+    origin TEXT NOT NULL DEFAULT 'owner',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX compose_drafts_account ON compose_drafts(account_id);
+  CREATE INDEX compose_drafts_server ON compose_drafts(account_id, server_folder, server_uid);
+
+  CREATE TABLE compose_attachments (
+    id TEXT PRIMARY KEY,
+    draft_id TEXT NOT NULL REFERENCES compose_drafts(id) ON DELETE CASCADE,
+    file_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    content_id TEXT,
+    data BLOB NOT NULL,
+    position INTEGER NOT NULL
+  );
+  CREATE INDEX compose_attachments_draft ON compose_attachments(draft_id, position);
+
+  CREATE TABLE outbox (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    draft_id TEXT,
+    message_id TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    envelope_from TEXT NOT NULL,
+    envelope_to_json TEXT NOT NULL,
+    mime BLOB NOT NULL,
+    bcc_header TEXT,
+    state TEXT NOT NULL,
+    send_after TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error_kind TEXT,
+    rejected_json TEXT NOT NULL DEFAULT '[]',
+    origin TEXT NOT NULL DEFAULT 'owner',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX outbox_state ON outbox(state, send_after);
+  CREATE UNIQUE INDEX outbox_draft_live ON outbox(draft_id) WHERE draft_id IS NOT NULL;
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -239,6 +333,11 @@ type AccountRow = {
   last_sync_at: string | null;
   last_error: string | null;
   auth_failed: number;
+  smtp_host: string | null;
+  smtp_port: number | null;
+  smtp_security: SmtpSecurity | null;
+  smtp_username: string | null;
+  sent_copy: SentCopyPolicy | null;
 };
 
 type MessageRow = {
@@ -256,7 +355,68 @@ type MessageRow = {
   has_attachments: number;
 };
 
-type HeaderRow = MessageRow & { to_json: string; cc_json: string };
+type HeaderRow = MessageRow & { to_json: string; cc_json: string; uid: number | null };
+
+type DraftRow = {
+  id: string;
+  account_id: string;
+  kind: ComposeKind;
+  source_message_id: string | null;
+  message_id: string;
+  in_reply_to: string | null;
+  refs_json: string;
+  to_json: string;
+  cc_json: string;
+  bcc_json: string;
+  subject: string;
+  doc_json: string;
+  import_json: string | null;
+  revision: number;
+  server_state: DraftServerCopyState;
+  server_folder: string | null;
+  server_uidvalidity: number | null;
+  server_uid: number | null;
+  server_revision: number | null;
+  server_size: number | null;
+  origin: "owner";
+  created_at: string;
+  updated_at: string;
+};
+
+type OutboxRow = {
+  id: string;
+  account_id: string;
+  draft_id: string | null;
+  message_id: string;
+  subject: string;
+  envelope_from: string;
+  envelope_to_json: string;
+  state: OutboxState;
+  send_after: string;
+  attempts: number;
+  error_kind: SendErrorKind | null;
+  rejected_json: string;
+  origin: "owner";
+  created_at: string;
+  updated_at: string;
+};
+
+type ComposeAttachmentRow = {
+  id: string;
+  file_name: string;
+  mime_type: string;
+  size: number;
+  sha256: string;
+  content_id: string | null;
+  data: Buffer;
+};
+
+/** Outbox columns without the blobs. */
+const OUTBOX_COLUMNS = `id, account_id, draft_id, message_id, subject, envelope_from, envelope_to_json,
+  state, send_after, attempts, error_kind, rejected_json, origin, created_at, updated_at`;
+
+/** Distinct rows read for recipient suggestions, newest first. */
+const SUGGESTION_SCAN = 5000;
 
 type ThreadRow = {
   id: string;
@@ -321,6 +481,11 @@ function normalizeDate(raw: string | null | undefined): string | null {
   return Number.isFinite(time) ? new Date(time).toISOString() : null;
 }
 
+/** An ISO time as stored: normalized to UTC so text order is time order. */
+function isoOf(raw: string): string {
+  return normalizeDate(raw) ?? raw;
+}
+
 function likePattern(text: string): string {
   return `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
@@ -356,10 +521,83 @@ function toAccount(row: AccountRow): StoredAccount {
     lastError: row.last_error,
     authFailed: row.auth_failed === 1,
     passwordSealed: row.password_sealed,
-    // SMTP columns arrive with migration element 4.
-    smtp: null,
-    sentCopy: "append",
+    smtp:
+      row.smtp_host !== null && row.smtp_port !== null && row.smtp_security !== null
+        ? {
+            host: row.smtp_host,
+            port: row.smtp_port,
+            security: row.smtp_security,
+            username: row.smtp_username,
+          }
+        : null,
+    sentCopy: row.sent_copy ?? "append",
   };
+}
+
+function toDraft(row: DraftRow): DraftRecord {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    kind: row.kind,
+    sourceMessageId: row.source_message_id,
+    messageId: row.message_id,
+    inReplyTo: row.in_reply_to,
+    references: JSON.parse(row.refs_json) as string[],
+    to: JSON.parse(row.to_json) as MailAddress[],
+    cc: JSON.parse(row.cc_json) as MailAddress[],
+    bcc: JSON.parse(row.bcc_json) as MailAddress[],
+    subject: row.subject,
+    doc: JSON.parse(row.doc_json) as ComposeDoc,
+    importHtml:
+      row.import_json === null ? null : (JSON.parse(row.import_json) as DraftRecord["importHtml"]),
+    serverCopy:
+      row.server_folder !== null &&
+      row.server_uidvalidity !== null &&
+      row.server_uid !== null &&
+      row.server_revision !== null &&
+      row.server_size !== null
+        ? {
+            folder: row.server_folder,
+            uidValidity: row.server_uidvalidity,
+            uid: row.server_uid,
+            revision: row.server_revision,
+            size: row.server_size,
+          }
+        : null,
+    origin: row.origin,
+    createdAt: row.created_at,
+    revision: row.revision,
+    serverState: row.server_state,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toOutbox(row: OutboxRow): OutboxRecord {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    draftId: row.draft_id,
+    messageId: row.message_id,
+    subject: row.subject,
+    envelopeFrom: row.envelope_from,
+    envelopeTo: JSON.parse(row.envelope_to_json) as string[],
+    sendAfter: row.send_after,
+    origin: row.origin,
+    createdAt: row.created_at,
+    state: row.state,
+    attempts: row.attempts,
+    errorKind: row.error_kind,
+    rejected: JSON.parse(row.rejected_json) as string[],
+    updatedAt: row.updated_at,
+  };
+}
+
+function newAttachmentId(): string {
+  return `att_${randomBytes(8).toString("hex")}`;
+}
+
+function bytesOf(data: Buffer): Uint8Array {
+  return new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
 }
 
 function toSummary(row: MessageRow): MessageSummary {
@@ -428,15 +666,17 @@ export function createSqliteStore(db: Database.Database): MailStore {
   const insertMessage = db.prepare(
     `INSERT INTO messages (id, account_id, folder, uid, message_id, in_reply_to, refs, thread_id,
        from_name, from_address, to_json, cc_json, subject, date, snippet, body_text, body_html,
-       html_truncated, is_read, is_flagged, has_attachments, size, gm_thrid, gm_msgid, dedup_key)
+       html_truncated, is_read, is_flagged, has_attachments, size, gm_thrid, gm_msgid, dedup_key,
+       reply_to_json)
      VALUES (@id, @accountId, @folder, @uid, @messageId, @inReplyTo, @refs, @threadId,
        @fromName, @fromAddress, @toJson, @ccJson, @subject, @date, @snippet, @bodyText, @bodyHtml,
-       @htmlTruncated, @seen, @flagged, @hasAttachments, @size, @gmThreadId, @gmMsgId, @dedupKey)`,
+       @htmlTruncated, @seen, @flagged, @hasAttachments, @size, @gmThreadId, @gmMsgId, @dedupKey,
+       @replyToJson)`,
   );
   const updateMessage = db.prepare(
     `UPDATE messages SET uid = @uid, message_id = @messageId, in_reply_to = @inReplyTo,
        refs = @refs, from_name = @fromName, from_address = @fromAddress, to_json = @toJson,
-       cc_json = @ccJson, subject = @subject, date = @date, snippet = @snippet,
+       cc_json = @ccJson, reply_to_json = @replyToJson, subject = @subject, date = @date, snippet = @snippet,
        body_text = @bodyText, body_html = @bodyHtml, html_truncated = @htmlTruncated,
        is_read = COALESCE(seen_desired, @seen), is_flagged = COALESCE(flag_desired, @flagged),
        has_attachments = @hasAttachments, size = @size, gm_thrid = @gmThreadId,
@@ -460,6 +700,19 @@ export function createSqliteStore(db: Database.Database): MailStore {
     "SELECT * FROM attachments WHERE message_id = ? ORDER BY rowid",
   );
   const threadById = db.prepare<[string], ThreadRow>("SELECT * FROM threads WHERE id = ?");
+  const draftByServerCopy = db.prepare<[string, string, number], { id: string }>(
+    `SELECT id FROM compose_drafts WHERE account_id = ? AND server_folder = ? AND server_uid = ?
+     ORDER BY created_at, id LIMIT 1`,
+  );
+  const draftById = db.prepare<[string], DraftRow>("SELECT * FROM compose_drafts WHERE id = ?");
+  const outboxById = db.prepare<[string], OutboxRow>(`SELECT ${OUTBOX_COLUMNS} FROM outbox WHERE id = ?`);
+  const draftHeld = db.prepare<[string], { one: number }>(
+    "SELECT 1 AS one FROM outbox WHERE draft_id = ? LIMIT 1",
+  );
+  const deleteDraftRows = (id: string) => {
+    db.prepare("DELETE FROM compose_attachments WHERE draft_id = ?").run(id);
+    db.prepare("DELETE FROM compose_drafts WHERE id = ?").run(id);
+  };
   const threadIdOf = db.prepare<[string], { thread_id: string }>(
     "SELECT thread_id FROM messages WHERE id = ?",
   );
@@ -553,7 +806,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
       to: JSON.parse(row.to_json) as MailAddress[],
       cc: JSON.parse(row.cc_json) as MailAddress[],
       attachments: attachmentsOf.all(row.id).map(toAttachment),
-      draftId: null,
+      draftId: row.uid === null ? null : (draftByServerCopy.get(row.account_id, row.folder, row.uid)?.id ?? null),
     };
   }
 
@@ -638,15 +891,19 @@ export function createSqliteStore(db: Database.Database): MailStore {
       // and cascade to every message of the account.
       db.prepare(
         `INSERT INTO accounts (id, email, display_name, host, port, username, password_sealed,
-           preset, created_at, last_sync_at, last_error, auth_failed)
+           preset, created_at, last_sync_at, last_error, auth_failed,
+           smtp_host, smtp_port, smtp_security, smtp_username, sent_copy)
          VALUES (@id, @email, @displayName, @host, @port, @username, @passwordSealed,
-           @preset, @createdAt, @lastSyncAt, @lastError, @authFailed)
+           @preset, @createdAt, @lastSyncAt, @lastError, @authFailed,
+           @smtpHost, @smtpPort, @smtpSecurity, @smtpUsername, @sentCopy)
          ON CONFLICT(id) DO UPDATE SET email = excluded.email,
            display_name = excluded.display_name, host = excluded.host, port = excluded.port,
            username = excluded.username, password_sealed = excluded.password_sealed,
            preset = excluded.preset, created_at = excluded.created_at,
            last_sync_at = excluded.last_sync_at, last_error = excluded.last_error,
-           auth_failed = excluded.auth_failed`,
+           auth_failed = excluded.auth_failed, smtp_host = excluded.smtp_host,
+           smtp_port = excluded.smtp_port, smtp_security = excluded.smtp_security,
+           smtp_username = excluded.smtp_username, sent_copy = excluded.sent_copy`,
       ).run({
         id: account.id,
         email: account.email,
@@ -660,6 +917,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
         lastSyncAt: account.lastSyncAt,
         lastError: account.lastError,
         authFailed: account.authFailed ? 1 : 0,
+        smtpHost: account.smtp?.host ?? null,
+        smtpPort: account.smtp?.port ?? null,
+        smtpSecurity: account.smtp?.security ?? null,
+        smtpUsername: account.smtp?.username ?? null,
+        sentCopy: account.sentCopy,
       });
     },
 
@@ -683,6 +945,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
         db.prepare("DELETE FROM messages WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM threads WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM sync_state WHERE account_id = ?").run(id);
+        db.prepare(
+          "DELETE FROM compose_attachments WHERE draft_id IN (SELECT id FROM compose_drafts WHERE account_id = ?)",
+        ).run(id);
+        db.prepare("DELETE FROM compose_drafts WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM outbox WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
       });
     },
@@ -748,6 +1015,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
             fromAddress: message.from.address,
             toJson: JSON.stringify(message.to),
             ccJson: JSON.stringify(message.cc),
+            // NULL: not known (a row from before Reply-To was kept, or a fetch without it).
+            replyToJson: message.replyTo === undefined ? null : JSON.stringify(message.replyTo),
             subject: message.subject,
             date: normalizeDate(message.date),
             snippet: snippetOf(message.bodyText, message.bodyHtml),
@@ -1120,7 +1389,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
       const messages = db
         .prepare<[{ threadId: string; folder: string }], HeaderRow>(
           `SELECT * FROM (
-             SELECT ${SUMMARY_COLUMNS}, m.to_json, m.cc_json,
+             SELECT ${SUMMARY_COLUMNS}, m.to_json, m.cc_json, m.uid,
                row_number() OVER (PARTITION BY m.dedup_key
                  ORDER BY (m.folder = @folder AND m.move_pending IS NULL) DESC,
                    m.move_pending IS NULL DESC, ${IN_INBOX} DESC, ${IN_ALL_MAIL} ASC,
@@ -1143,7 +1412,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
     getMessage(messageId) {
       const row = db
         .prepare<[string], HeaderRow>(
-          `SELECT ${SUMMARY_COLUMNS}, m.to_json, m.cc_json FROM messages m WHERE m.id = ?`,
+          `SELECT ${SUMMARY_COLUMNS}, m.to_json, m.cc_json, m.uid FROM messages m WHERE m.id = ?`,
         )
         .get(messageId);
       return row ? header(row) : null;
@@ -1565,85 +1834,413 @@ export function createSqliteStore(db: Database.Database): MailStore {
       );
     },
 
-    // Compose and send (slice 3b): not implemented yet ---------------------------
+    // Compose and send (slice 3b) --------------------------------------------
 
-    createDraft(): never {
-      throw notImplemented("createDraft");
+    createDraft(input) {
+      const copy = input.serverCopy;
+      db.prepare(
+        `INSERT INTO compose_drafts (id, account_id, kind, source_message_id, message_id, in_reply_to,
+           refs_json, to_json, cc_json, bcc_json, subject, doc_json, import_json, revision, server_state,
+           server_folder, server_uidvalidity, server_uid, server_revision, server_size, origin,
+           created_at, updated_at)
+         VALUES (@id, @accountId, @kind, @sourceMessageId, @messageId, @inReplyTo, @refs, @to, @cc, @bcc,
+           @subject, @doc, @importHtml, 1, @serverState, @folder, @uidValidity, @uid, @serverRevision,
+           @size, @origin, @createdAt, @createdAt)`,
+      ).run({
+        id: input.id,
+        accountId: input.accountId,
+        kind: input.kind,
+        sourceMessageId: input.sourceMessageId,
+        messageId: input.messageId,
+        inReplyTo: input.inReplyTo,
+        refs: JSON.stringify(input.references),
+        to: JSON.stringify(input.to),
+        cc: JSON.stringify(input.cc),
+        bcc: JSON.stringify(input.bcc),
+        subject: input.subject,
+        doc: JSON.stringify(input.doc),
+        importHtml: input.importHtml === null ? null : JSON.stringify(input.importHtml),
+        serverState: copy === null ? "none" : "saved",
+        folder: copy?.folder ?? null,
+        uidValidity: copy?.uidValidity ?? null,
+        uid: copy?.uid ?? null,
+        serverRevision: copy?.revision ?? null,
+        size: copy?.size ?? null,
+        origin: input.origin,
+        createdAt: input.createdAt,
+      });
+      return toDraft(draftById.get(input.id)!);
     },
-    getDraft(): never {
-      throw notImplemented("getDraft");
+
+    getDraft(id) {
+      const row = draftById.get(id);
+      return row ? toDraft(row) : null;
     },
-    saveDraft(): never {
-      throw notImplemented("saveDraft");
+
+    saveDraft(id, baseRevision, fields, updatedAt) {
+      return atomic(() => {
+        const current = draftById.get(id);
+        if (!current) throw new Error("Draft not found");
+        const changed = db
+          .prepare(
+            `UPDATE compose_drafts SET account_id = @accountId, to_json = @to, cc_json = @cc,
+               bcc_json = @bcc, subject = @subject, doc_json = @doc, import_json = NULL,
+               revision = revision + 1, updated_at = @updatedAt
+             WHERE id = @id AND revision = @baseRevision
+               AND NOT EXISTS (SELECT 1 FROM outbox WHERE draft_id = @id)`,
+          )
+          .run({
+            id,
+            baseRevision,
+            accountId: fields.accountId,
+            to: JSON.stringify(fields.to),
+            cc: JSON.stringify(fields.cc),
+            bcc: JSON.stringify(fields.bcc),
+            subject: fields.subject,
+            doc: JSON.stringify(fields.doc),
+            updatedAt,
+          }).changes;
+        const revision = draftById.get(id)!.revision;
+        return changed === 1 ? { revision } : { conflict: true as const, revision };
+      });
     },
-    deleteDraft(): never {
-      throw notImplemented("deleteDraft");
+
+    deleteDraft(id) {
+      atomic(() => deleteDraftRows(id));
     },
-    listDrafts(): never {
-      throw notImplemented("listDrafts");
+
+    listDrafts(accountId) {
+      return db
+        .prepare<[string], DraftRow>(
+          "SELECT * FROM compose_drafts WHERE account_id = ? ORDER BY created_at, id",
+        )
+        .all(accountId)
+        .map(toDraft);
     },
-    draftForServerCopy(): never {
-      throw notImplemented("draftForServerCopy");
+
+    draftForServerCopy(accountId, folder, uid) {
+      return draftByServerCopy.get(accountId, folder, uid)?.id ?? null;
     },
-    recordServerCopy(): never {
-      throw notImplemented("recordServerCopy");
+
+    recordServerCopy(id, copy) {
+      db.prepare(
+        `UPDATE compose_drafts SET server_state = @state, server_folder = @folder,
+           server_uidvalidity = @uidValidity, server_uid = @uid, server_revision = @revision,
+           server_size = @size
+         WHERE id = @id`,
+      ).run({
+        id,
+        state: copy === null ? "none" : "saved",
+        folder: copy?.folder ?? null,
+        uidValidity: copy?.uidValidity ?? null,
+        uid: copy?.uid ?? null,
+        revision: copy?.revision ?? null,
+        size: copy?.size ?? null,
+      });
     },
-    setServerCopyState(): never {
-      throw notImplemented("setServerCopyState");
+
+    setServerCopyState(id, state) {
+      db.prepare("UPDATE compose_drafts SET server_state = ? WHERE id = ?").run(state, id);
     },
-    addAttachment(): never {
-      throw notImplemented("addAttachment");
+
+    addAttachment(draftId, input): ComposeAttachment {
+      return atomic(() => {
+        if (!draftById.get(draftId)) throw new Error("Draft not found");
+        const id = newAttachmentId();
+        db.prepare(
+          `INSERT INTO compose_attachments (id, draft_id, file_name, mime_type, size, sha256, content_id,
+             data, position)
+           VALUES (@id, @draftId, @fileName, @mimeType, @size, @sha256, @contentId, @data,
+             (SELECT COALESCE(MAX(position), -1) + 1 FROM compose_attachments WHERE draft_id = @draftId))`,
+        ).run({
+          id,
+          draftId,
+          fileName: input.fileName,
+          mimeType: input.mimeType,
+          size: input.size,
+          sha256: input.sha256,
+          contentId: input.contentId ?? null,
+          data: Buffer.from(input.data),
+        });
+        return { id, fileName: input.fileName, mimeType: input.mimeType, size: input.size };
+      });
     },
-    listAttachments(): never {
-      throw notImplemented("listAttachments");
+
+    listAttachments(draftId) {
+      return db
+        .prepare<[string], { id: string; file_name: string; mime_type: string; size: number }>(
+          `SELECT id, file_name, mime_type, size FROM compose_attachments WHERE draft_id = ?
+           ORDER BY position`,
+        )
+        .all(draftId)
+        .map((row) => ({ id: row.id, fileName: row.file_name, mimeType: row.mime_type, size: row.size }));
     },
-    attachmentData(): never {
-      throw notImplemented("attachmentData");
+
+    attachmentData(draftId) {
+      return db
+        .prepare<[string], ComposeAttachmentRow>(
+          `SELECT id, file_name, mime_type, size, sha256, content_id, data FROM compose_attachments
+           WHERE draft_id = ? ORDER BY position`,
+        )
+        .all(draftId)
+        .map((row) => ({
+          id: row.id,
+          fileName: row.file_name,
+          mimeType: row.mime_type,
+          size: row.size,
+          sha256: row.sha256,
+          contentId: row.content_id,
+          data: bytesOf(row.data),
+        }));
     },
-    removeAttachment(): never {
-      throw notImplemented("removeAttachment");
+
+    removeAttachment(draftId, attachmentId) {
+      return (
+        db
+          .prepare("DELETE FROM compose_attachments WHERE draft_id = ? AND id = ?")
+          .run(draftId, attachmentId).changes > 0
+      );
     },
-    queueOutbox(): never {
-      throw notImplemented("queueOutbox");
+
+    queueOutbox(input, draftBaseRevision) {
+      return atomic(() => {
+        const existing = outboxById.get(input.id);
+        if (existing) return { row: toOutbox(existing), created: false };
+        if (input.draftId !== null) {
+          const draft = draftById.get(input.draftId);
+          if (!draft || draft.revision !== draftBaseRevision || draftHeld.get(input.draftId)) {
+            return { conflict: true as const };
+          }
+        }
+        db.prepare(
+          `INSERT INTO outbox (id, account_id, draft_id, message_id, subject, envelope_from,
+             envelope_to_json, mime, bcc_header, state, send_after, attempts, error_kind, rejected_json,
+             origin, created_at, updated_at)
+           VALUES (@id, @accountId, @draftId, @messageId, @subject, @envelopeFrom, @envelopeTo, @mime,
+             @bccHeader, 'queued', @sendAfter, 0, NULL, '[]', @origin, @createdAt, @createdAt)`,
+        ).run({
+          id: input.id,
+          accountId: input.accountId,
+          draftId: input.draftId,
+          messageId: input.messageId,
+          subject: input.subject,
+          envelopeFrom: input.envelopeFrom,
+          envelopeTo: JSON.stringify(input.envelopeTo),
+          mime: Buffer.from(input.mime),
+          bccHeader: input.bccHeader,
+          sendAfter: isoOf(input.sendAfter),
+          origin: input.origin,
+          createdAt: isoOf(input.createdAt),
+        });
+        return { row: toOutbox(outboxById.get(input.id)!), created: true };
+      });
     },
-    getOutbox(): never {
-      throw notImplemented("getOutbox");
+
+    getOutbox(id) {
+      const row = outboxById.get(id);
+      return row ? toOutbox(row) : null;
     },
-    listOutbox(): never {
-      throw notImplemented("listOutbox");
+
+    listOutbox(accountId) {
+      const rows =
+        accountId === null
+          ? db.prepare<[], OutboxRow>(`SELECT ${OUTBOX_COLUMNS} FROM outbox ORDER BY created_at, id`).all()
+          : db
+              .prepare<[string], OutboxRow>(
+                `SELECT ${OUTBOX_COLUMNS} FROM outbox WHERE account_id = ? ORDER BY created_at, id`,
+              )
+              .all(accountId);
+      return rows.map(toOutbox);
     },
-    outboxPayload(): never {
-      throw notImplemented("outboxPayload");
+
+    outboxPayload(id) {
+      const row = db
+        .prepare<[string], { mime: Buffer; bcc_header: string | null }>(
+          "SELECT mime, bcc_header FROM outbox WHERE id = ?",
+        )
+        .get(id);
+      return row ? { mime: bytesOf(row.mime), bccHeader: row.bcc_header } : null;
     },
-    transitionOutbox(): never {
-      throw notImplemented("transitionOutbox");
+
+    transitionOutbox(id, from, to, patch = {}) {
+      const sets = ["state = @to"];
+      const params: Record<string, unknown> = { id, to, from: JSON.stringify(from) };
+      if (patch.errorKind !== undefined) {
+        sets.push("error_kind = @errorKind");
+        params.errorKind = patch.errorKind;
+      }
+      if (patch.rejected !== undefined) {
+        sets.push("rejected_json = @rejected");
+        params.rejected = JSON.stringify(patch.rejected);
+      }
+      if (patch.sendAfter !== undefined) {
+        sets.push("send_after = @sendAfter");
+        params.sendAfter = isoOf(patch.sendAfter);
+      }
+      if (patch.countAttempt) sets.push("attempts = attempts + 1");
+      if (patch.updatedAt !== undefined) {
+        sets.push("updated_at = @updatedAt");
+        params.updatedAt = isoOf(patch.updatedAt);
+      }
+      return (
+        db
+          .prepare(
+            `UPDATE outbox SET ${sets.join(", ")}
+             WHERE id = @id AND state IN (SELECT value FROM json_each(@from))`,
+          )
+          .run(params).changes === 1
+      );
     },
-    deleteOutbox(): never {
-      throw notImplemented("deleteOutbox");
+
+    deleteOutbox(id, from) {
+      return (
+        db
+          .prepare("DELETE FROM outbox WHERE id = ? AND state IN (SELECT value FROM json_each(?))")
+          .run(id, JSON.stringify(from)).changes === 1
+      );
     },
-    claimDueOutbox(): never {
-      throw notImplemented("claimDueOutbox");
+
+    claimDueOutbox(nowIso, busyAccounts) {
+      return atomic(() => {
+        const now = isoOf(nowIso);
+        const due = db
+          .prepare<[{ now: string; busy: string }], { id: string }>(
+            `SELECT id FROM outbox
+             WHERE state = 'queued' AND send_after <= @now
+               AND account_id NOT IN (SELECT value FROM json_each(@busy))
+             ORDER BY send_after, created_at, id LIMIT 1`,
+          )
+          .get({ now, busy: JSON.stringify(busyAccounts) });
+        if (!due) return null;
+        const changed = db
+          .prepare(
+            `UPDATE outbox SET state = 'sending', attempts = attempts + 1, updated_at = ?
+             WHERE id = ? AND state = 'queued'`,
+          )
+          .run(now, due.id).changes;
+        return changed === 1 ? toOutbox(outboxById.get(due.id)!) : null;
+      });
     },
-    recoverOutboxOnStart(): never {
-      throw notImplemented("recoverOutboxOnStart");
+
+    recoverOutboxOnStart(nowIso) {
+      return atomic(() => {
+        const now = isoOf(nowIso);
+        const unknown = db
+          .prepare(
+            `UPDATE outbox SET state = 'unknown', error_kind = 'unknown_after_data', updated_at = ?
+             WHERE state = 'sending'`,
+          )
+          .run(now).changes;
+        const held = db
+          .prepare(
+            "UPDATE outbox SET state = 'held', updated_at = ? WHERE state = 'queued' AND send_after <= ?",
+          )
+          .run(now, now).changes;
+        db.prepare("UPDATE outbox SET state = 'sent', updated_at = ? WHERE state = 'appending'").run(now);
+        return { unknown, held };
+      });
     },
-    completeOutbox(): never {
-      throw notImplemented("completeOutbox");
+
+    completeOutbox(id) {
+      atomic(() => {
+        const row = outboxById.get(id);
+        if (!row) return;
+        db.prepare("DELETE FROM outbox WHERE id = ?").run(id);
+        if (row.draft_id !== null) deleteDraftRows(row.draft_id);
+      });
+      // The host creates the database with incremental auto_vacuum; give the
+      // MIME and attachment pages back (a no-op otherwise, and skipped inside
+      // a caller's transaction).
+      if (!db.inTransaction) db.exec("PRAGMA incremental_vacuum");
     },
-    hasSendingOutbox() {
-      // No outbox table before migration element 4, so nothing can be sending.
-      return false;
+
+    hasSendingOutbox(accountId) {
+      return (
+        db
+          .prepare<[string], { one: number }>(
+            `SELECT 1 AS one FROM outbox WHERE account_id = ? AND state IN ('sending', 'appending') LIMIT 1`,
+          )
+          .get(accountId) !== undefined
+      );
     },
-    replySource(): never {
-      throw notImplemented("replySource");
+
+    replySource(messageId) {
+      const row = db
+        .prepare<
+          [string],
+          {
+            account_id: string;
+            folder: string;
+            from_name: string | null;
+            from_address: string;
+            to_json: string;
+            cc_json: string;
+            reply_to_json: string | null;
+            subject: string;
+            date: string | null;
+            message_id: string | null;
+            in_reply_to: string | null;
+            refs: string | null;
+          }
+        >(
+          `SELECT account_id, folder, from_name, from_address, to_json, cc_json, reply_to_json, subject,
+             date, message_id, in_reply_to, refs FROM messages WHERE id = ?`,
+        )
+        .get(messageId);
+      if (!row) return null;
+      return {
+        accountId: row.account_id,
+        folder: row.folder,
+        from: { name: row.from_name, address: row.from_address },
+        to: JSON.parse(row.to_json) as MailAddress[],
+        cc: JSON.parse(row.cc_json) as MailAddress[],
+        replyTo: row.reply_to_json === null ? [] : (JSON.parse(row.reply_to_json) as MailAddress[]),
+        replyToKnown: row.reply_to_json !== null,
+        subject: row.subject,
+        date: row.date,
+        messageId: row.message_id,
+        inReplyTo: row.in_reply_to,
+        references: row.refs === null ? [] : (JSON.parse(row.refs) as string[]),
+      };
     },
-    recipientSuggestions(): never {
-      throw notImplemented("recipientSuggestions");
+
+    recipientSuggestions(prefix, limit) {
+      const pattern = likePattern(prefix.trim().toLowerCase());
+      const rows = db
+        .prepare<
+          [{ pattern: string; scan: number }],
+          {
+            from_name: string | null;
+            from_address: string;
+            to_json: string;
+            cc_json: string;
+            date: string | null;
+            role: string | null;
+          }
+        >(
+          `SELECT m.from_name, m.from_address, m.to_json, m.cc_json, m.date, ${ROW_ROLE} AS role
+           FROM ${MESSAGES_WITH_FOLDER}
+           WHERE mail_lower(m.from_address) LIKE @pattern ESCAPE '\\'
+              OR mail_lower(m.from_name) LIKE @pattern ESCAPE '\\'
+              OR mail_lower(m.to_json) LIKE @pattern ESCAPE '\\'
+              OR mail_lower(m.cc_json) LIKE @pattern ESCAPE '\\'
+           ORDER BY m.date IS NULL, m.date DESC, m.seq DESC LIMIT @scan`,
+        )
+        .all({ pattern, scan: SUGGESTION_SCAN });
+      const entries: SuggestionEntry[] = [];
+      for (const row of rows) {
+        entries.push({ address: row.from_address, name: row.from_name, date: row.date, ownerSent: false });
+        const sent = row.role === "sent";
+        for (const a of [
+          ...(JSON.parse(row.to_json) as MailAddress[]),
+          ...(JSON.parse(row.cc_json) as MailAddress[]),
+        ]) {
+          entries.push({ address: a.address, name: a.name, date: row.date, ownerSent: sent });
+        }
+      }
+      return rankRecipientSuggestions(entries, prefix, limit);
     },
   };
   return store;
 }
 
-function notImplemented(method: string): Error {
-  return new Error(`not implemented: ${method}`);
-}
