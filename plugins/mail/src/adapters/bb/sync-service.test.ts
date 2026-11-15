@@ -9,6 +9,7 @@ import {
   RecordingNotifier,
   ScriptedImapGateway,
 } from "../../core/testing/fakes.ts";
+import { createAccountQueue } from "./account-queue.ts";
 import { DECRYPT_ERROR, createSyncLoop } from "./sync-service.ts";
 
 const NOW = new Date("2026-11-14T12:00:00.000Z");
@@ -61,6 +62,25 @@ function account(id: string, overrides: Parameters<typeof makeStoredAccount>[0] 
 }
 
 describe("createSyncLoop", () => {
+  it("runs each account's sync through the write queue, after that account's other work", async () => {
+    const { store, scripted, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    const queue = createAccountQueue();
+    let release!: () => void;
+    const held = queue.run("acc_1", () => new Promise<void>((resolve) => (release = resolve)));
+    const lines: string[] = [];
+    const loop = createSyncLoop(deps, SETTINGS, { queue, log: (line) => lines.push(line) });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(scripted.sessions).toHaveLength(0);
+    release();
+    await held;
+    await vi.waitFor(() => expect(lines.some((l) => l.startsWith("sync acc_1: ok"))).toBe(true));
+    controller.abort();
+    await done;
+  });
+
   it("one failing account does not stop the others", async () => {
     const { store, scripted, notifier, deps } = setup();
     store.saveAccount(account("acc_bad"));

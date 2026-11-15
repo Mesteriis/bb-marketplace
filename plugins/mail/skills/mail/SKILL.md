@@ -62,3 +62,6 @@ flags, marks or downloads mail: read and unread, flags, Spam, Not spam,
 Archive, Delete, Move to… and downloads are controls on the owner's Mail page
 only, and there is no tool or command for them. If the owner wants a message
 moved or flagged, tell them which message and let them do it.
+
+Agents cannot send, draft or reply to mail: composing and sending happen only
+on the owner's Mail page, and there is no tool or command for them.

@@ -14,8 +14,12 @@
 // finish on its own, and from the abort on every store call it makes throws and
 // every notification is dropped, so it cannot write into a store the host has
 // closed. Log lines name account ids and outcome codes only.
+//
+// With a write queue, each account's sync runs through it, so a round never
+// overlaps that account's APPEND, expunge or SMTP send (resolution 7).
 import {
   syncAccount,
+  type AccountWriteQueue,
   type ChangeNotifier,
   type MailStore,
   type SyncDeps,
@@ -37,6 +41,8 @@ export interface SyncLoopOptions {
   log?: (line: string) => void;
   /** False while there is no vault key: rounds are skipped. Defaults to always ready. */
   isReady?: () => boolean;
+  /** Serializes each account's sync with its other server work. */
+  queue?: AccountWriteQueue;
 }
 
 export interface SyncLoop {
@@ -120,6 +126,16 @@ export function createSyncLoop(
     });
 
     async function syncOne(accountId: string, syncOptions: SyncOptions): Promise<void> {
+      if (options.queue === undefined) return syncOneNow(accountId, syncOptions);
+      try {
+        await options.queue.run(accountId, () => syncOneNow(accountId, syncOptions));
+      } catch {
+        // syncOneNow never rejects.
+      }
+    }
+
+    async function syncOneNow(accountId: string, syncOptions: SyncOptions): Promise<void> {
+      if (signal.aborted) return;
       try {
         const account = guarded.store.getAccount(accountId);
         if (account === null || account.authFailed) return;

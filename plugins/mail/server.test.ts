@@ -9,7 +9,7 @@ import {
   createMailPlugin,
   NEEDS_KEY_MESSAGE,
   PASSWORD_NEEDED_MESSAGE,
-  COMPOSE_UNAVAILABLE_MESSAGE,
+  ACCOUNT_BUSY_MESSAGE,
   PLUGIN_CALLER_MESSAGE,
   REMOVE_IN_THREAD_MESSAGE,
   renderSource,
@@ -23,7 +23,15 @@ import {
   TOO_LARGE_MESSAGE,
   UNAVAILABLE_MESSAGE,
 } from "./src/adapters/bb/downloads.ts";
-import { ImapAuthError, MAIL_CHANGED_CHANNEL, UNTRUSTED_NOTICE } from "./src/core/index.ts";
+import {
+  ImapAuthError,
+  MAIL_CHANGED_CHANNEL,
+  OUTBOX_CHANGED_CHANNEL,
+  SendError,
+  UNDO_MS,
+  UNTRUSTED_NOTICE,
+} from "./src/core/index.ts";
+import { createHash } from "node:crypto";
 import type {
   AccountPreset,
   FetchedMessage,
@@ -66,6 +74,7 @@ type LoadOptions = {
   seed?: (bb: BbPluginApi) => void;
   /** Adjusts the scripted server before the plugin loads. */
   server?: (gateway: RawGateway) => void;
+  outboxIntervalMs?: number;
 };
 
 /**
@@ -116,7 +125,7 @@ async function load(options: LoadOptions = {}) {
   options.seed?.(host.bb);
   const clock = new FixedClock(NOW);
   const transport = new FakeTransport();
-  await createMailPlugin({ gateway, clock, transport })(bb);
+  await createMailPlugin({ gateway, clock, transport, outboxIntervalMs: options.outboxIntervalMs })(bb);
   return { ...host, gateway, clock, transport };
 }
 
@@ -969,14 +978,22 @@ describe("makosh-mail server", () => {
     expect(movePending(host, id)).toBeNull();
   });
 
-  it("compose and outbox methods refuse other plugins and are not available yet", async () => {
-    const host = await load();
+  it("compose and outbox methods refuse other plugins before doing anything", async () => {
+    const host = await load({ seed: (bb) => seedMail(bb, { folders: ICLOUD_FOLDERS, messages: [] }) });
     const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    const doc = { type: "doc", content: [{ type: "paragraph" }] };
     const inputs: [string, unknown][] = [
       ["compose_new", { accountId: "acc_1" }],
       ["compose_prepare", { kind: "reply", messageId: "m" }],
       ["compose_open", { draftId: "d" }],
+      [
+        "compose_save",
+        { draftId: "d", baseRevision: 1, accountId: "acc_1", to: [], cc: [], bcc: [], subject: "", doc },
+      ],
       ["compose_discard", { draftId: "d" }],
+      ["compose_attachment_begin", { draftId: "d", fileName: "a.pdf", mimeType: "application/pdf", size: 1 }],
+      ["compose_attachment_chunk", { uploadId: "u", offset: 0, dataBase64: "AA==" }],
+      ["compose_attachment_finish", { uploadId: "u", sha256: "0".repeat(64) }],
       ["compose_attachment_remove", { draftId: "d", attachmentId: "a" }],
       ["compose_send", { draftId: "d", baseRevision: 1, requestId: "6f1c2a52-3b5e-4f0a-9c1d-2e7b8a9c0d1e" }],
       ["outbox_list", { accountId: null }],
@@ -989,14 +1006,16 @@ describe("makosh-mail server", () => {
       ["accounts_smtp_test", { accountId: "acc_1", host: "smtp.example.org", port: 465, security: "tls" }],
       ["accounts_smtp_set", { accountId: "acc_1", host: "smtp.example.org", port: 465, security: "tls" }],
     ];
+    expect(inputs).toHaveLength(19);
     for (const [method, input] of inputs) {
       await expect(host.harness.behavior.callRpc(method, input, asPlugin)).rejects.toThrow(
         PLUGIN_CALLER_MESSAGE,
       );
-      await expect(host.harness.behavior.callRpc(method, input)).rejects.toThrow(
-        COMPOSE_UNAVAILABLE_MESSAGE,
-      );
     }
+    const db = host.bb.storage.database();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM compose_drafts").get()).toEqual({ n: 0 });
+    expect(host.transport.verified).toEqual([]);
+    expect(host.harness.inspection.realtimeSignals).toEqual([]);
   });
 
   it("write methods refuse other plugins and change nothing", async () => {
@@ -1910,5 +1929,357 @@ describe("makosh-mail server: fix round 2", () => {
     expect(renderSource(raw, (line) => lines.push(line)).headers).toEqual([
       ["Subject", "Invented secret subject"],
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Compose and send (slice 3b)
+// ---------------------------------------------------------------------------
+
+const COMPOSE_KEY = generateVaultKey();
+const SUBJECT = "Invented harvest schedule";
+const BODY_TEXT = "Invented note about the orchard ladder.";
+const TO = "Ana Example <ana@example.com>";
+const BCC = "hidden@example.net";
+const FILE_NAME = "invented-ledger.pdf";
+const DOC = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: BODY_TEXT }] }] };
+const REQUEST_ID = "6f1c2a52-3b5e-4f0a-9c1d-2e7b8a9c0d1e";
+const SECRETS = [PASSWORD, "ana@example.com", BCC, SUBJECT, BODY_TEXT, FILE_NAME, "orchard"];
+
+/** acc_1 with SMTP set and its password sealed under COMPOSE_KEY; INBOX, Drafts and Sent. */
+function seedCompose(bb: BbPluginApi, overrides: Parameters<typeof makeStoredAccount>[0] = {}): void {
+  const db = bb.storage.database();
+  bb.storage.migrate(db, MIGRATIONS);
+  const store = createSqliteStore(db);
+  store.saveAccount(
+    makeStoredAccount({
+      passwordSealed: createVault(COMPOSE_KEY).seal(PASSWORD),
+      smtp: { host: "smtp.example.org", port: 465, security: "tls", username: null },
+      sentCopy: "append",
+      ...overrides,
+    }),
+  );
+  store.saveFolders("acc_1", [
+    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+    { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true },
+    { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true },
+  ]);
+}
+
+function composeServer(gateway: RawGateway): void {
+  gateway.addFolder({ path: "Drafts", specialUse: "drafts" }, { uidValidity: 7, uidNext: 1, messages: [] });
+  gateway.addFolder({ path: "Sent", specialUse: "sent" }, { uidValidity: 9, uidNext: 1, messages: [] });
+}
+
+function loadCompose(overrides: Parameters<typeof makeStoredAccount>[0] = {}) {
+  return load({
+    settings: { vaultKey: COMPOSE_KEY },
+    seed: (bb) => seedCompose(bb, overrides),
+    server: composeServer,
+    outboxIntervalMs: 5,
+  });
+}
+
+const call = (host: Host, method: string, input: unknown) => host.harness.behavior.callRpc(method, input);
+
+/** A saved draft to Ana with a Bcc; returns its id and revision. */
+async function savedDraft(host: Host, fields: { to?: string[] } = {}): Promise<{ draftId: string; revision: number }> {
+  const { draftId } = (await call(host, "compose_new", { accountId: "acc_1" })) as { draftId: string };
+  const saved = (await call(host, "compose_save", {
+    draftId,
+    baseRevision: 1,
+    accountId: "acc_1",
+    to: fields.to ?? [TO],
+    cc: [],
+    bcc: [BCC],
+    subject: SUBJECT,
+    doc: DOC,
+  })) as { revision: number };
+  return { draftId, revision: saved.revision };
+}
+
+function outboxSignals(host: Host) {
+  return host.harness.inspection.realtimeSignals.filter((s) => s.channel === OUTBOX_CHANGED_CHANNEL);
+}
+
+function outboxStates(host: Host): string[] {
+  return outboxSignals(host).map((s) => (s.payload as { state: string }).state);
+}
+
+function sqlStore(host: Host) {
+  return createSqliteStore(host.bb.storage.database());
+}
+
+describe("compose and send", () => {
+  it("sends once for one requestId after the Undo window, with no Bcc on the wire", async () => {
+    const host = await loadCompose();
+    const service = host.harness.behavior.runService("sync");
+    const { draftId, revision } = await savedDraft(host);
+
+    const first = await call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID });
+    const second = await call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID });
+    expect(second).toEqual(first);
+    expect(first).toEqual({
+      outboxId: REQUEST_ID,
+      sendAfter: new Date(NOW.getTime() + UNDO_MS).toISOString(),
+    });
+    const { rows } = (await call(host, "outbox_list", { accountId: null })) as { rows: { state: string }[] };
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: REQUEST_ID, state: "queued", subject: SUBJECT, errorKind: null });
+
+    await new Promise((r) => setTimeout(r, 40));
+    expect(host.transport.sent).toEqual([]);
+    host.clock.set(new Date(NOW.getTime() + UNDO_MS));
+    await vi.waitFor(() => expect(outboxStates(host)).toContain("done"));
+    await new Promise((r) => setTimeout(r, 40));
+    service.controller.abort();
+    await service.done;
+
+    expect(host.transport.sent).toHaveLength(1);
+    const sent = host.transport.sent[0]!;
+    expect(sent.config.password).toBe(PASSWORD);
+    expect(sent.envelopeTo.sort()).toEqual(["ana@example.com", BCC].sort());
+    const wire = new TextDecoder().decode(sent.raw);
+    expect(wire).not.toMatch(/^bcc:/im);
+    expect(wire).not.toContain(BCC);
+    const copy = host.gateway.appended.find((a) => a.path === "Sent")!;
+    expect(copy.flags).toEqual(["\\Seen"]);
+    expect(new TextDecoder().decode(copy.raw)).toMatch(/^Bcc: hidden@example\.net\r$/m);
+    expect((await parseMail(copy.raw)).subject).toBe(SUBJECT);
+    expect(outboxStates(host)).toEqual(["queued", "sending", "sent", "appending", "done"]);
+    expect(await call(host, "outbox_list", { accountId: "acc_1" })).toEqual({ rows: [] });
+  });
+
+  it("realtime carries ids and states only; logs carry no content or secret", async () => {
+    const host = await loadCompose();
+    const service = host.harness.behavior.runService("sync");
+    const { draftId, revision } = await savedDraft(host);
+    await call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID });
+    host.clock.set(new Date(NOW.getTime() + UNDO_MS));
+    await vi.waitFor(() => expect(outboxStates(host)).toContain("done"));
+    service.controller.abort();
+    await service.done;
+
+    for (const signal of outboxSignals(host)) {
+      expect(Object.keys(signal.payload as object).sort()).toEqual(["accountId", "id", "state"]);
+    }
+    const text = JSON.stringify([host.harness.inspection.realtimeSignals, host.harness.inspection.logEntries]);
+    for (const secret of [...SECRETS, COMPOSE_KEY]) expect(text).not.toContain(secret);
+  });
+
+  it("Undo before the tick sends nothing and keeps the draft", async () => {
+    const host = await loadCompose();
+    const service = host.harness.behavior.runService("sync");
+    const { draftId, revision } = await savedDraft(host);
+    await call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID });
+    await expect(call(host, "outbox_cancel", { id: REQUEST_ID })).resolves.toEqual({ cancelled: true, draftId });
+    host.clock.set(new Date(NOW.getTime() + UNDO_MS));
+    await new Promise((r) => setTimeout(r, 40));
+    service.controller.abort();
+    await service.done;
+    expect(host.transport.sent).toEqual([]);
+    const { draft } = (await call(host, "compose_open", { draftId })) as { draft: { subject: string; queued: boolean } };
+    expect(draft).toMatchObject({ subject: SUBJECT, queued: false });
+    await expect(call(host, "outbox_cancel", { id: REQUEST_ID })).resolves.toEqual({ cancelled: false, draftId: null });
+  });
+
+  it("a restart while sending makes the row unknown, with no SMTP call; Retry is refused", async () => {
+    const host = await loadCompose();
+    const { draftId, revision } = await savedDraft(host);
+    await call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID });
+    const later = new Date(NOW.getTime() + UNDO_MS);
+    expect(sqlStore(host).claimDueOutbox(later.toISOString(), [])?.id).toBe(REQUEST_ID);
+    host.clock.set(later);
+
+    const service = host.harness.behavior.runService("sync");
+    await vi.waitFor(() => expect(sqlStore(host).getOutbox(REQUEST_ID)?.state).toBe("unknown"));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(host.transport.sent).toEqual([]);
+    await expect(call(host, "outbox_retry", { id: REQUEST_ID })).rejects.toThrow(
+      "This draft changed in another window",
+    );
+    await expect(call(host, "accounts_remove", { accountId: "acc_1" })).resolves.toEqual({ removed: true });
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("a queued row overdue at start is held until Send now", async () => {
+    const host = await loadCompose();
+    const { draftId, revision } = await savedDraft(host);
+    await call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID });
+    host.clock.set(new Date(NOW.getTime() + UNDO_MS + 1));
+    const service = host.harness.behavior.runService("sync");
+    await vi.waitFor(() => expect(sqlStore(host).getOutbox(REQUEST_ID)?.state).toBe("held"));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(host.transport.sent).toEqual([]);
+
+    await expect(call(host, "outbox_send_now", { id: REQUEST_ID })).resolves.toEqual({ ok: true });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(host.transport.sent).toEqual([]);
+    host.clock.set(new Date(NOW.getTime() + 2 * UNDO_MS + 1));
+    await vi.waitFor(() => expect(host.transport.sent).toHaveLength(1));
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("refuses account removal while a message is being sent", async () => {
+    const host = await loadCompose();
+    const { draftId, revision } = await savedDraft(host);
+    await call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID });
+    sqlStore(host).claimDueOutbox(new Date(NOW.getTime() + UNDO_MS).toISOString(), []);
+    await expect(call(host, "accounts_remove", { accountId: "acc_1" })).rejects.toThrow(ACCOUNT_BUSY_MESSAGE);
+    expect(sqlStore(host).getAccount("acc_1")).not.toBeNull();
+  });
+
+  it("maps core refusals to fixed text: no recipients, no SMTP, unknown draft", async () => {
+    const host = await loadCompose();
+    const empty = await savedDraft(host, { to: [] });
+    await call(host, "compose_save", {
+      draftId: empty.draftId,
+      baseRevision: empty.revision,
+      accountId: "acc_1",
+      to: [],
+      cc: [],
+      bcc: [],
+      subject: SUBJECT,
+      doc: DOC,
+    });
+    await expect(
+      call(host, "compose_send", { draftId: empty.draftId, baseRevision: empty.revision + 1, requestId: REQUEST_ID }),
+    ).rejects.toThrow("The message is not ready to send");
+    await expect(
+      call(host, "compose_send", { draftId: "missing", baseRevision: 1, requestId: REQUEST_ID }),
+    ).rejects.toThrow("Not found");
+
+    const bare = await load({
+      settings: { vaultKey: COMPOSE_KEY },
+      seed: (bb) => seedCompose(bb, { smtp: null }),
+      server: composeServer,
+    });
+    const draft = await savedDraft(bare);
+    await expect(
+      call(bare, "compose_send", { draftId: draft.draftId, baseRevision: draft.revision, requestId: REQUEST_ID }),
+    ).rejects.toThrow("SMTP is not set for this account");
+  });
+
+  it("refuses to send while the account needs its password", async () => {
+    const host = await loadCompose({ authFailed: true });
+    const { draftId, revision } = await savedDraft(host);
+    await expect(
+      call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID }),
+    ).rejects.toThrow(PASSWORD_NEEDED_MESSAGE);
+    expect(sqlStore(host).listOutbox(null)).toEqual([]);
+  });
+
+  it("uploads in chunks, sanitizes the name and type, and checks order and SHA-256", async () => {
+    const host = await loadCompose();
+    const { draftId } = await savedDraft(host);
+    const bytes = new Uint8Array(700 * 1024).map((_, i) => i % 256);
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    const { uploadId } = (await call(host, "compose_attachment_begin", {
+      draftId,
+      fileName: "../../evil\u202e.pdf",
+      mimeType: "text/html",
+      size: bytes.length,
+    })) as { uploadId: string };
+    const half = 512 * 1024;
+    const b64 = (part: Uint8Array) => Buffer.from(part).toString("base64");
+    await expect(
+      call(host, "compose_attachment_chunk", { uploadId, offset: 0, dataBase64: b64(bytes.slice(0, half)) }),
+    ).resolves.toEqual({ received: half });
+    await expect(
+      call(host, "compose_attachment_chunk", { uploadId, offset: half, dataBase64: b64(bytes.slice(half)) }),
+    ).resolves.toEqual({ received: bytes.length });
+    const attachment = (await call(host, "compose_attachment_finish", { uploadId, sha256: sha })) as {
+      id: string;
+      fileName: string;
+      mimeType: string;
+      size: number;
+    };
+    expect(attachment).toMatchObject({ fileName: "evil.pdf", mimeType: "application/octet-stream", size: bytes.length });
+
+    const second = (await call(host, "compose_attachment_begin", {
+      draftId,
+      fileName: FILE_NAME,
+      mimeType: "application/pdf",
+      size: 4,
+    })) as { uploadId: string };
+    await expect(
+      call(host, "compose_attachment_chunk", { uploadId: second.uploadId, offset: 2, dataBase64: "AAAA" }),
+    ).rejects.toThrow("out of order");
+    const third = (await call(host, "compose_attachment_begin", {
+      draftId,
+      fileName: FILE_NAME,
+      mimeType: "application/pdf",
+      size: 3,
+    })) as { uploadId: string };
+    await call(host, "compose_attachment_chunk", { uploadId: third.uploadId, offset: 0, dataBase64: "AAAA" });
+    await expect(
+      call(host, "compose_attachment_finish", { uploadId: third.uploadId, sha256: "0".repeat(64) }),
+    ).rejects.toThrow("damaged");
+    await expect(
+      call(host, "compose_attachment_begin", { draftId, fileName: FILE_NAME, mimeType: "application/pdf", size: 25 * 1024 * 1024 }),
+    ).rejects.toThrow("over the size limit");
+
+    await expect(
+      call(host, "compose_attachment_remove", { draftId, attachmentId: attachment.id }),
+    ).resolves.toEqual({ removed: true });
+    const logs = JSON.stringify(host.harness.inspection.logEntries);
+    expect(logs).not.toContain(FILE_NAME);
+    expect(logs).not.toContain("evil");
+  });
+
+  it("tests and saves SMTP with the stored password and never echoes it", async () => {
+    const host = await loadCompose({ smtp: null });
+    const input = { accountId: "acc_1", host: "smtp.example.org", port: 587, security: "starttls" };
+    host.transport.verifyError = new SendError("auth", false);
+    const refused = await call(host, "accounts_smtp_test", input);
+    expect(refused).toEqual({ ok: false, reason: "SMTP sign-in refused" });
+    host.transport.verifyError = null;
+    await expect(call(host, "accounts_smtp_set", input)).resolves.toEqual({ ok: true, reason: null });
+    expect(host.transport.verified.map((c) => c.password)).toEqual([PASSWORD, PASSWORD]);
+    expect(host.transport.verified.at(-1)).toMatchObject({ host: "smtp.example.org", port: 587, security: "starttls" });
+    const status = (await call(host, "status_get", null)) as { accounts: { smtpConfigured: boolean }[] };
+    expect(status.accounts[0]!.smtpConfigured).toBe(true);
+    const text = JSON.stringify([refused, status, host.harness.inspection.logEntries, host.harness.inspection.realtimeSignals]);
+    expect(text).not.toContain(PASSWORD);
+    // A refused SMTP login does not flag the account: IMAP keeps syncing.
+    expect(sqlStore(host).getAccount("acc_1")!.authFailed).toBe(false);
+  });
+
+  it("suggests recipients from stored mail only", async () => {
+    const host = await loadCompose();
+    await expect(call(host, "recipients_suggest", { prefix: "zz" })).resolves.toEqual({ suggestions: [] });
+    expect(host.gateway.sessions).toEqual([]);
+  });
+
+  it("saving to the server copies the draft to Drafts and publishes mail-changed", async () => {
+    const host = await loadCompose();
+    const { draftId, revision } = await savedDraft(host);
+    const before = host.harness.inspection.realtimeSignals.length;
+    await expect(
+      call(host, "compose_save", {
+        draftId,
+        baseRevision: revision,
+        accountId: "acc_1",
+        to: [TO],
+        cc: [],
+        bcc: [BCC],
+        subject: SUBJECT,
+        doc: DOC,
+        saveToServer: true,
+      }),
+    ).resolves.toEqual({ revision: revision + 1 });
+    const copy = host.gateway.appended.find((a) => a.path === "Drafts")!;
+    expect(copy.flags).toEqual(["\\Draft", "\\Seen"]);
+    expect(new TextDecoder().decode(copy.raw)).toMatch(/^Bcc: hidden@example\.net\r$/m);
+    expect(host.harness.inspection.realtimeSignals.slice(before)).toContainEqual({
+      channel: MAIL_CHANGED_CHANNEL,
+      payload: { accountId: "acc_1" },
+    });
+    const { draft } = (await call(host, "compose_open", { draftId })) as { draft: { serverCopy: string } };
+    expect(draft.serverCopy).toBe("saved");
+    await expect(call(host, "compose_discard", { draftId })).resolves.toEqual({ ok: true });
+    expect(host.gateway.expunged).toEqual([{ path: "Drafts", uid: copy.uid }]);
   });
 });
