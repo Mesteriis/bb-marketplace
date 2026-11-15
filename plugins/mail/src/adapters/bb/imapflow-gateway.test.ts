@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import PostalMime from "postal-mime";
 import type { Email } from "postal-mime";
 import type { FetchMessageObject, ListResponse } from "imapflow";
@@ -8,6 +9,7 @@ import {
   createSession,
   describeImapError,
   listRemoteFolders,
+  parseMail,
   toFetchedMessage,
   toInlineParts,
   toRemoteFolders,
@@ -329,6 +331,8 @@ type StubOptions = {
   fetched?: FetchMessageObject[];
   mailbox?: unknown;
   usable?: boolean;
+  removed?: boolean;
+  download?: unknown;
 };
 
 function stubClient(options: StubOptions = {}) {
@@ -350,7 +354,16 @@ function stubClient(options: StubOptions = {}) {
     },
     messageFlagsAdd: async (...args: unknown[]) => {
       calls.push({ method: "messageFlagsAdd", args });
-      return options.stored ?? true;
+      return "stored" in options ? options.stored : true;
+    },
+    messageFlagsRemove: async (...args: unknown[]) => {
+      calls.push({ method: "messageFlagsRemove", args });
+      return "removed" in options ? options.removed : true;
+    },
+    download: async (...args: unknown[]) => {
+      calls.push({ method: "download", args });
+      if (options.download instanceof Error) throw options.download;
+      return options.download ?? {};
     },
     messageMove: async (...args: unknown[]) => {
       calls.push({ method: "messageMove", args });
@@ -531,6 +544,146 @@ describe("createSession", () => {
     const flagsQuery = calls.filter((c) => c.method === "fetch")[1]!.args[1];
     expect(flagsQuery).toMatchObject({ uid: true, flags: true, emailId: true });
     expect(flagsQuery).not.toHaveProperty("source");
+  });
+
+  it("setFlags adds and removes \\Seen / \\Flagged by uid, leaving absent fields alone", async () => {
+    const { client, calls } = stubClient();
+    const session = createSession(client, false);
+    await session.setFlags([1, 2], { seen: true, flagged: false });
+    await session.setFlags([3], { flagged: true });
+    await session.setFlags([4], { seen: false });
+    expect(calls).toEqual([
+      { method: "messageFlagsAdd", args: [[1, 2], ["\\Seen"], { uid: true }] },
+      { method: "messageFlagsRemove", args: [[1, 2], ["\\Flagged"], { uid: true }] },
+      { method: "messageFlagsAdd", args: [[3], ["\\Flagged"], { uid: true }] },
+      { method: "messageFlagsRemove", args: [[4], ["\\Seen"], { uid: true }] },
+    ]);
+  });
+
+  it("setFlags throws StoreFailed when the server refuses an add or a remove", async () => {
+    for (const refused of [false, undefined]) {
+      const add = stubClient({ stored: refused as boolean });
+      await expect(createSession(add.client, false).setFlags([1], { flagged: true })).rejects.toMatchObject({
+        code: "StoreFailed",
+        message: "IMAP error (StoreFailed)",
+      });
+      const remove = stubClient({ removed: refused as boolean });
+      await expect(createSession(remove.client, false).setFlags([1], { seen: false })).rejects.toMatchObject({
+        code: "StoreFailed",
+      });
+    }
+  });
+
+  it("setFlags refuses a read-only session and sends nothing for no uids or no change", async () => {
+    const readOnly = stubClient();
+    await expect(createSession(readOnly.client, true).setFlags([1], { seen: true })).rejects.toMatchObject({
+      code: "ReadOnly",
+    });
+    expect(readOnly.calls).toEqual([]);
+    const idle = stubClient();
+    await createSession(idle.client, false).setFlags([], { seen: true, flagged: true });
+    await createSession(idle.client, false).setFlags([5], {});
+    expect(idle.calls).toEqual([]);
+  });
+
+  it("setFlags passes on a thrown STORE error without its text", async () => {
+    const { client } = stubClient();
+    (client as unknown as { messageFlagsRemove: unknown }).messageFlagsRemove = async () => {
+      throw Object.assign(new Error("A5 NO secret-server-text"), { response: "secret-server-text" });
+    };
+    const error = (await createSession(client, false)
+      .setFlags([1], { flagged: false })
+      .catch((e: unknown) => e)) as Error;
+    expect(error).toBeInstanceOf(SafeImapError);
+    expect(error.message).not.toContain("secret-server-text");
+  });
+
+  it("fetchRaw downloads the whole message by uid (BODY.PEEK[]) and returns its bytes", async () => {
+    const content = Readable.from([Buffer.from(RAW.slice(0, 100)), Buffer.from(RAW.slice(100))]);
+    const { client, calls } = stubClient({
+      download: { meta: { expectedSize: RAW.length, contentType: "message/rfc822" }, content },
+    });
+    const bytes = await createSession(client, true).fetchRaw(42, 1000);
+    expect(bytes).toBeInstanceOf(Uint8Array);
+    expect(Buffer.from(bytes).toString()).toBe(RAW);
+    // No part: imapflow fetches `source`, which it always asks as BODY.PEEK[]<start.len>.
+    // maxBytes + 1 lets imapflow stop pulling chunks just past the cap so the overflow is seen.
+    expect(calls).toEqual([{ method: "download", args: ["42", undefined, { uid: true, maxBytes: 1001 }] }]);
+  });
+
+  it("fetchRaw refuses before reading when the reported size is over the cap", async () => {
+    const content = Readable.from([Buffer.from(RAW)]);
+    const { client } = stubClient({
+      download: { meta: { expectedSize: 5000 }, content },
+    });
+    await expect(createSession(client, true).fetchRaw(42, 4999)).rejects.toMatchObject({ code: "TooLarge" });
+    expect(content.destroyed).toBe(true);
+  });
+
+  it("fetchRaw stops and throws TooLarge when more than the cap arrives", async () => {
+    let pulled = 0;
+    const content = new Readable({
+      read() {
+        pulled += 1;
+        this.push(pulled > 50 ? null : Buffer.alloc(64, 0x61));
+      },
+    });
+    const { client } = stubClient({ download: { meta: {}, content } });
+    await expect(createSession(client, true).fetchRaw(42, 100)).rejects.toMatchObject({
+      code: "TooLarge",
+      message: "IMAP error (TooLarge)",
+    });
+    expect(content.destroyed).toBe(true);
+    expect(pulled).toBeLessThan(10);
+  });
+
+  it("fetchRaw returns a message exactly at the cap", async () => {
+    const content = Readable.from([Buffer.alloc(60, 0x61), Buffer.alloc(40, 0x62)]);
+    const { client } = stubClient({ download: { meta: { expectedSize: 100 }, content } });
+    const bytes = await createSession(client, true).fetchRaw(42, 100);
+    expect(bytes.byteLength).toBe(100);
+  });
+
+  it("fetchRaw throws NotFound when the uid is gone", async () => {
+    const { client } = stubClient({ download: {} });
+    await expect(createSession(client, true).fetchRaw(42, 100)).rejects.toMatchObject({ code: "NotFound" });
+  });
+
+  it("fetchRaw passes on download and stream errors without server text", async () => {
+    const thrown = stubClient({
+      download: Object.assign(new Error("A9 NO secret-server-text"), { code: "DownloadIncomplete" }),
+    });
+    const first = (await createSession(thrown.client, true)
+      .fetchRaw(42, 100)
+      .catch((e: unknown) => e)) as Error;
+    expect(first).toMatchObject({ code: "DownloadIncomplete", message: "IMAP error (DownloadIncomplete)" });
+
+    const content = new Readable({
+      read() {
+        this.destroy(new Error("stream says secret-server-text"));
+      },
+    });
+    const failing = stubClient({ download: { meta: {}, content } });
+    const second = (await createSession(failing.client, true)
+      .fetchRaw(42, 100)
+      .catch((e: unknown) => e)) as Error;
+    expect(second).toBeInstanceOf(SafeImapError);
+    expect(second.message).not.toContain("secret-server-text");
+  });
+
+  it("parseMail is the parser fetchMessages uses: same mapping from the same bytes", async () => {
+    const session = createSession(stubClient({ fetched: [imapMessage()] }).client, true);
+    const [fetched] = await session.fetchMessages([42]);
+    const fromBuffer = toFetchedMessage(imapMessage(), await parseMail(Buffer.from(RAW)));
+    const fromBytes = toFetchedMessage(
+      imapMessage(),
+      await parseMail(new Uint8Array(Buffer.from(RAW))),
+    );
+    expect(fromBuffer).toEqual(fetched);
+    expect(fromBytes).toEqual(fetched);
+    // Same options as the fetch path: attachment content comes back as ArrayBuffer.
+    const parsed = await parseMail(new Uint8Array(Buffer.from(RAW)));
+    expect(parsed.attachments.map((a) => a.content instanceof ArrayBuffer)).toEqual([true, true]);
   });
 
   it("fetchMessages extracts inline images", async () => {
