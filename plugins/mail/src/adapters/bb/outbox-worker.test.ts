@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SendRateLimit,
+  UndoneSends,
   UNDO_MS,
   newCompose,
   queueSend,
@@ -38,7 +39,7 @@ async function readyDraft(): Promise<{ draftId: string; baseRevision: number }> 
 async function queued(): Promise<string> {
   const draft = await readyDraft();
   const { outboxId } = await queueSend(
-    { ...h.deps, rate: new SendRateLimit(h.clock) },
+    { ...h.deps, rate: new SendRateLimit(h.clock), undone: new UndoneSends(h.clock) },
     { ...draft, requestId: requestId(), origin: "owner" },
   );
   return outboxId;

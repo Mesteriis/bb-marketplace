@@ -52,6 +52,7 @@ import {
   OUTBOX_CHANGED_CHANNEL,
   ROLE_NAMES,
   SendRateLimit,
+  UndoneSends,
   addComposeAttachment,
   attachmentRoom,
   cancelSend,
@@ -221,6 +222,7 @@ const COMPOSE_REFUSAL: Record<ComposeErrorKind, "conflict" | "invalid" | "not_fo
   too_large: "invalid",
   smtp_missing: "conflict",
   rate_limited: "conflict",
+  undone: "conflict",
 };
 
 const UPLOAD_REFUSAL: Record<UploadError["code"], "conflict" | "invalid" | "not_found"> = {
@@ -435,7 +437,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         }
       },
     };
-    const queueDeps: QueueDeps = { ...composeDeps, notifier: outboxNotifier, rate: new SendRateLimit(clock) };
+    const queueDeps: QueueDeps = { ...composeDeps, notifier: outboxNotifier, rate: new SendRateLimit(clock), undone: new UndoneSends(clock) };
     const worker = createOutboxWorker(
       {
         ...composeDeps,
