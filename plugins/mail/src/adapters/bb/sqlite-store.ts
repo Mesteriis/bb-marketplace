@@ -356,6 +356,9 @@ function toAccount(row: AccountRow): StoredAccount {
     lastError: row.last_error,
     authFailed: row.auth_failed === 1,
     passwordSealed: row.password_sealed,
+    // SMTP columns arrive with migration element 4.
+    smtp: null,
+    sentCopy: "append",
   };
 }
 
@@ -550,6 +553,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
       to: JSON.parse(row.to_json) as MailAddress[],
       cc: JSON.parse(row.cc_json) as MailAddress[],
       attachments: attachmentsOf.all(row.id).map(toAttachment),
+      draftId: null,
     };
   }
 
@@ -1560,6 +1564,82 @@ export function createSqliteStore(db: Database.Database): MailStore {
           .run(accountId, address.toLowerCase()).changes > 0
       );
     },
+
+    // Compose and send (slice 3b): not implemented yet ---------------------------
+
+    createDraft(): never {
+      throw notImplemented("createDraft");
+    },
+    getDraft(): never {
+      throw notImplemented("getDraft");
+    },
+    saveDraft(): never {
+      throw notImplemented("saveDraft");
+    },
+    deleteDraft(): never {
+      throw notImplemented("deleteDraft");
+    },
+    listDrafts(): never {
+      throw notImplemented("listDrafts");
+    },
+    draftForServerCopy(): never {
+      throw notImplemented("draftForServerCopy");
+    },
+    recordServerCopy(): never {
+      throw notImplemented("recordServerCopy");
+    },
+    addAttachment(): never {
+      throw notImplemented("addAttachment");
+    },
+    listAttachments(): never {
+      throw notImplemented("listAttachments");
+    },
+    attachmentData(): never {
+      throw notImplemented("attachmentData");
+    },
+    removeAttachment(): never {
+      throw notImplemented("removeAttachment");
+    },
+    queueOutbox(): never {
+      throw notImplemented("queueOutbox");
+    },
+    getOutbox(): never {
+      throw notImplemented("getOutbox");
+    },
+    listOutbox(): never {
+      throw notImplemented("listOutbox");
+    },
+    outboxPayload(): never {
+      throw notImplemented("outboxPayload");
+    },
+    transitionOutbox(): never {
+      throw notImplemented("transitionOutbox");
+    },
+    deleteOutbox(): never {
+      throw notImplemented("deleteOutbox");
+    },
+    claimDueOutbox(): never {
+      throw notImplemented("claimDueOutbox");
+    },
+    recoverOutboxOnStart(): never {
+      throw notImplemented("recoverOutboxOnStart");
+    },
+    completeOutbox(): never {
+      throw notImplemented("completeOutbox");
+    },
+    hasSendingOutbox(): never {
+      throw notImplemented("hasSendingOutbox");
+    },
+    replySource(): never {
+      throw notImplemented("replySource");
+    },
+    recipientSuggestions(): never {
+      throw notImplemented("recipientSuggestions");
+    },
   };
   return store;
+}
+
+function notImplemented(method: string): Error {
+  return new Error(`not implemented: ${method}`);
 }

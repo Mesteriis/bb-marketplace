@@ -82,6 +82,7 @@ describe("addAccount", () => {
       lastSyncAt: null,
       lastError: null,
       authFailed: false,
+      smtpConfigured: false,
     });
     expect(JSON.stringify(account)).not.toContain(PASSWORD);
     const stored = store.getAccount("acc_new_1")!;
@@ -148,7 +149,18 @@ describe("toPublicAccount", () => {
     const account = toPublicAccount(stored);
     expect("passwordSealed" in account).toBe(false);
     expect(JSON.stringify(account)).not.toContain("sealed-secret");
-    const { passwordSealed: _omitted, ...rest } = stored;
-    expect(account).toEqual(rest);
+    const { passwordSealed: _omitted, smtp: _smtp, sentCopy: _sentCopy, ...rest } = stored;
+    expect(account).toEqual({ ...rest, smtpConfigured: false });
+  });
+
+  it("toPublicAccount says whether SMTP is set, never its details", () => {
+    const stored = makeStoredAccount({
+      smtp: { host: "smtp.example.org", port: 465, security: "tls", username: "smtp-login" },
+      sentCopy: "append",
+    });
+    const account = toPublicAccount(stored);
+    expect(account.smtpConfigured).toBe(true);
+    expect(Object.keys(account)).not.toEqual(expect.arrayContaining(["smtp"]));
+    expect(JSON.stringify(account)).not.toContain("smtp-login");
   });
 });

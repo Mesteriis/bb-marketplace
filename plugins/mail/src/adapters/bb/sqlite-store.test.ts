@@ -147,6 +147,7 @@ describe("createSqliteStore", () => {
       attachments: [
         { partId: "2", filename: "plan.txt", mimeType: "text/plain", size: 12, isInline: false },
       ],
+      draftId: null,
     });
     expect(store.threadingInputs("acc_1")).toContainEqual({
       id: second,

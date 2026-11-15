@@ -295,6 +295,19 @@ export function createSession(
       return { moved };
     }),
 
+    // Slice 3b server writes; not implemented yet.
+    capabilities: () => {
+      throw new SafeImapError("NotImplemented");
+    },
+    appendMessage: async () => {
+      throw new SafeImapError("NotImplemented");
+    },
+    findByMessageId: async () => {
+      throw new SafeImapError("NotImplemented");
+    },
+    expungeOwn: async () => {
+      throw new SafeImapError("NotImplemented");
+    },
     close: () => logoutQuietly(client),
   };
 }
@@ -453,6 +466,8 @@ export function toFetchedMessage(message: FetchMessageObject, parsed: Email): Fe
     from: fromList[0] ?? { name: null, address: "" },
     to: envelope?.to ? envelope.to.map(fromImapflow) : flatten(parsed.to ?? []),
     cc: envelope?.cc ? envelope.cc.map(fromImapflow) : flatten(parsed.cc ?? []),
+    // Reply-To is not mapped yet; nothing reads it before migration element 4.
+    replyTo: [],
     subject: envelope?.subject ?? parsed.subject ?? "",
     seen: message.flags?.has("\\Seen") ?? false,
     flagged: message.flags?.has("\\Flagged") ?? false,

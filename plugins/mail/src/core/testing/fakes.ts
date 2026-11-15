@@ -71,6 +71,8 @@ export function makeStoredAccount(overrides: Partial<StoredAccount> = {}): Store
     lastError: null,
     authFailed: false,
     passwordSealed: "sealed-password",
+    smtp: null,
+    sentCopy: "append",
     ...overrides,
   };
 }
@@ -90,6 +92,7 @@ export function makeFetchedMessage(
     from: { name: "Sender", address: "sender@example.org" },
     to: [{ name: null, address: "owner@example.org" }],
     cc: [],
+    replyTo: [],
     subject: `Invented subject ${uid}`,
     seen: false,
     flagged: false,
@@ -183,6 +186,10 @@ function timeOf(date: string | null): number | null {
 
 function snippetOf(message: FetchedMessage): string {
   return snippetFromBody(message.bodyText, message.bodyHtml);
+}
+
+function notImplemented(method: string): Error {
+  return new Error(`not implemented: ${method}`);
 }
 
 export class InMemoryMailStore implements MailStore {
@@ -578,6 +585,78 @@ export class InMemoryMailStore implements MailStore {
     return 0;
   }
 
+  // Compose and send (slice 3b): not implemented yet ---------------------------
+
+  createDraft(): never {
+    throw notImplemented("createDraft");
+  }
+  getDraft(): never {
+    throw notImplemented("getDraft");
+  }
+  saveDraft(): never {
+    throw notImplemented("saveDraft");
+  }
+  deleteDraft(): never {
+    throw notImplemented("deleteDraft");
+  }
+  listDrafts(): never {
+    throw notImplemented("listDrafts");
+  }
+  draftForServerCopy(): never {
+    throw notImplemented("draftForServerCopy");
+  }
+  recordServerCopy(): never {
+    throw notImplemented("recordServerCopy");
+  }
+  addAttachment(): never {
+    throw notImplemented("addAttachment");
+  }
+  listAttachments(): never {
+    throw notImplemented("listAttachments");
+  }
+  attachmentData(): never {
+    throw notImplemented("attachmentData");
+  }
+  removeAttachment(): never {
+    throw notImplemented("removeAttachment");
+  }
+  queueOutbox(): never {
+    throw notImplemented("queueOutbox");
+  }
+  getOutbox(): never {
+    throw notImplemented("getOutbox");
+  }
+  listOutbox(): never {
+    throw notImplemented("listOutbox");
+  }
+  outboxPayload(): never {
+    throw notImplemented("outboxPayload");
+  }
+  transitionOutbox(): never {
+    throw notImplemented("transitionOutbox");
+  }
+  deleteOutbox(): never {
+    throw notImplemented("deleteOutbox");
+  }
+  claimDueOutbox(): never {
+    throw notImplemented("claimDueOutbox");
+  }
+  recoverOutboxOnStart(): never {
+    throw notImplemented("recoverOutboxOnStart");
+  }
+  completeOutbox(): never {
+    throw notImplemented("completeOutbox");
+  }
+  hasSendingOutbox(): never {
+    throw notImplemented("hasSendingOutbox");
+  }
+  replySource(): never {
+    throw notImplemented("replySource");
+  }
+  recipientSuggestions(): never {
+    throw notImplemented("recipientSuggestions");
+  }
+
   unreadCount(accountId: string | null): number {
     const keys = new Set(
       this.state.rows
@@ -824,6 +903,7 @@ export class InMemoryMailStore implements MailStore {
       to: row.message.to.map((a) => ({ ...a })),
       cc: row.message.cc.map((a) => ({ ...a })),
       attachments: row.message.attachments.map((a) => ({ ...a })),
+      draftId: null,
     };
   }
 
@@ -1185,6 +1265,18 @@ export class ScriptedImapGateway implements ImapGateway {
           moved.set(uid, newUid);
         }
         return { moved: this.moveUidMap ? moved : null };
+      },
+      capabilities: () => {
+        throw new Error("not implemented: capabilities");
+      },
+      appendMessage: async () => {
+        throw new Error("not implemented: appendMessage");
+      },
+      findByMessageId: async () => {
+        throw new Error("not implemented: findByMessageId");
+      },
+      expungeOwn: async () => {
+        throw new Error("not implemented: expungeOwn");
       },
       close: async () => {
         opened.closed = true;

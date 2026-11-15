@@ -25,6 +25,7 @@ function header(overrides: Partial<MessageHeader> = {}): MessageHeader {
     attachments: [
       { partId: "1", filename: "plan.pdf", mimeType: "application/pdf", size: 1234, isInline: false },
     ],
+    draftId: null,
     ...overrides,
   };
 }

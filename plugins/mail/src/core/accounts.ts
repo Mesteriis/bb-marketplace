@@ -53,6 +53,9 @@ export async function addAccount(deps: AccountDeps, input: NewAccountInput): Pro
     lastError: null,
     authFailed: false,
     passwordSealed: deps.vault.seal(input.password),
+    // SMTP is set up separately; re-adding an account keeps what it had.
+    smtp: existing?.smtp ?? null,
+    sentCopy: existing?.sentCopy ?? "append",
   };
   deps.store.saveAccount(stored);
   return toPublicAccount(stored);
@@ -78,6 +81,7 @@ export function toPublicAccount(stored: StoredAccount): Account {
     lastSyncAt: stored.lastSyncAt,
     lastError: stored.lastError,
     authFailed: stored.authFailed,
+    smtpConfigured: stored.smtp !== null,
   };
 }
 

@@ -9,6 +9,7 @@ import {
   createMailPlugin,
   NEEDS_KEY_MESSAGE,
   PASSWORD_NEEDED_MESSAGE,
+  COMPOSE_UNAVAILABLE_MESSAGE,
   PLUGIN_CALLER_MESSAGE,
   REMOVE_IN_THREAD_MESSAGE,
   renderSource,
@@ -51,6 +52,9 @@ const NEW_ACCOUNT = {
   host: "imap.example.org",
   port: 993,
   password: PASSWORD,
+  smtpHost: "smtp.example.org",
+  smtpPort: 465,
+  smtpSecurity: "tls",
 } as const;
 
 type LoadOptions = {
@@ -961,6 +965,36 @@ describe("makosh-mail server", () => {
 
     await expect(action(host, [id], "Junk", "spam")).rejects.toThrow("Already in Junk");
     expect(movePending(host, id)).toBeNull();
+  });
+
+  it("compose and outbox methods refuse other plugins and are not available yet", async () => {
+    const host = await load();
+    const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    const inputs: [string, unknown][] = [
+      ["compose_new", { accountId: "acc_1" }],
+      ["compose_prepare", { kind: "reply", messageId: "m" }],
+      ["compose_open", { draftId: "d" }],
+      ["compose_discard", { draftId: "d" }],
+      ["compose_attachment_remove", { draftId: "d", attachmentId: "a" }],
+      ["compose_send", { draftId: "d", baseRevision: 1, requestId: "6f1c2a52-3b5e-4f0a-9c1d-2e7b8a9c0d1e" }],
+      ["outbox_list", { accountId: null }],
+      ["outbox_cancel", { id: "o" }],
+      ["outbox_send_now", { id: "o" }],
+      ["outbox_retry", { id: "o" }],
+      ["outbox_resend", { id: "o" }],
+      ["outbox_dismiss", { id: "o" }],
+      ["recipients_suggest", { prefix: "an" }],
+      ["accounts_smtp_test", { accountId: "acc_1", host: "smtp.example.org", port: 465, security: "tls" }],
+      ["accounts_smtp_set", { accountId: "acc_1", host: "smtp.example.org", port: 465, security: "tls" }],
+    ];
+    for (const [method, input] of inputs) {
+      await expect(host.harness.behavior.callRpc(method, input, asPlugin)).rejects.toThrow(
+        PLUGIN_CALLER_MESSAGE,
+      );
+      await expect(host.harness.behavior.callRpc(method, input)).rejects.toThrow(
+        COMPOSE_UNAVAILABLE_MESSAGE,
+      );
+    }
   });
 
   it("write methods refuse other plugins and change nothing", async () => {

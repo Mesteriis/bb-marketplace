@@ -1,5 +1,10 @@
 // Ports: what the core needs from its host. Each host supplies adapters.
+import type { ReplySource } from "./compose-reply.ts";
 import type {
+  ComposeAttachment,
+  DraftFields,
+  DraftRecord,
+  DraftServerCopy,
   FetchedMessage,
   FlagChange,
   FlagIntent,
@@ -8,17 +13,27 @@ import type {
   MessageBody,
   MessageHeader,
   MessageSummary,
+  NewDraft,
+  NewOutboxRow,
+  OriginalMessage,
+  OutboxRecord,
+  OutboxState,
+  OutgoingMessage,
   ParsedQuery,
   RawRef,
   RemoteFolder,
   RoleCount,
+  SendErrorKind,
+  SmtpSecurity,
   SpecialUse,
   StoredAccount,
   SyncState,
   ThreadDetail,
   ThreadingInput,
   ThreadSummary,
+  MailAddress,
 } from "./model.ts";
+import type { OutboxChangedPayload } from "./contract.ts";
 
 export interface ImapConfig {
   host: string;
@@ -78,6 +93,28 @@ export interface FolderSession {
     uids: number[],
     destination: string,
   ): Promise<{ moved: Map<number, number> | null }>;
+  /** What the server advertised: UIDPLUS, and X-GM-EXT-1 (Gmail). */
+  capabilities(): { uidplus: boolean; gmail: boolean };
+  /**
+   * APPENDs the message to this session's own folder. `uid` and
+   * `uidValidity` come from APPENDUID, null when the server gave none.
+   * Throws on a read-only session and when the server refuses.
+   */
+  appendMessage(
+    raw: Uint8Array,
+    flags: string[],
+  ): Promise<{ uidValidity: number | null; uid: number | null }>;
+  /** UIDs whose Message-ID header is exactly `messageId` (UID SEARCH HEADER, then an exact match). */
+  findByMessageId(messageId: string): Promise<number[]>;
+  /**
+   * Removes exactly one message this plugin wrote (or the one foreign draft
+   * the owner continued): \Deleted then UID EXPUNGE of that uid alone,
+   * never a plain EXPUNGE. Throws code "ExpungeUnsupported" without UIDPLUS
+   * (checked before any command), "GuardMismatch" when the uid's Message-ID
+   * or RFC822.SIZE differ from `guard`, "ExpungeFailed" when the server
+   * refuses; and on a read-only session.
+   */
+  expungeOwn(uid: number, guard: { messageId: string; size: number }): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -87,6 +124,64 @@ export class ImapAuthError extends Error {
     super(message);
     this.name = "ImapAuthError";
   }
+}
+
+/** An SMTP server and its login, for one session. The password is dropped after it. */
+export interface SmtpConfig {
+  host: string;
+  port: number;
+  security: SmtpSecurity;
+  username: string;
+  password: string;
+}
+
+/** What the server accepted. No response text: it is never kept or logged. */
+export interface SendResult {
+  accepted: string[];
+  rejected: string[];
+}
+
+/** Transports throw this; `afterData` says whether DATA may have been accepted. */
+export class SendError extends Error {
+  readonly kind: SendErrorKind;
+  readonly afterData: boolean;
+  constructor(kind: SendErrorKind, afterData: boolean) {
+    super(`Send failed: ${kind}`);
+    this.name = "SendError";
+    this.kind = kind;
+    this.afterData = afterData;
+  }
+}
+
+export interface MailTransport {
+  /** Connect, TLS and AUTH; sends nothing. Throws SendError. */
+  verify(config: SmtpConfig): Promise<void>;
+  /** Sends the prepared bytes with an explicit envelope. Throws SendError. */
+  send(
+    config: SmtpConfig,
+    message: { envelopeFrom: string; envelopeTo: string[]; raw: Uint8Array },
+    signal: AbortSignal,
+  ): Promise<SendResult>;
+}
+
+export interface MessageBuilder {
+  /** RFC 5322 bytes, built once and never with a Bcc header. */
+  build(input: OutgoingMessage): Promise<Uint8Array>;
+}
+
+export interface OriginalReader {
+  /** Reply-To, HTML and attachments of a stored message, read from the server. */
+  read(messageId: string): Promise<OriginalMessage>;
+}
+
+/** Runs one account's server writes (APPEND, expunge, SMTP, sync rounds) one at a time. */
+export interface AccountWriteQueue {
+  run<T>(accountId: string, task: () => Promise<T>): Promise<T>;
+}
+
+export interface OutboxNotifier {
+  /** Ids and states only: never recipients, subjects or content. */
+  outboxChanged(payload: OutboxChangedPayload): void;
 }
 
 export interface SecretVault {
@@ -265,4 +360,71 @@ export interface MailStore {
    * with their thread rows; returns how many changed. Idempotent.
    */
   repairSnippets(): number;
+
+  // ---- Compose and send (slice 3b) ----
+
+  createDraft(input: NewDraft): DraftRecord;
+  getDraft(id: string): DraftRecord | null;
+  /**
+   * Compare-and-swap on the revision: a stale `baseRevision`, or a draft a
+   * live outbox row holds, answers `conflict` with the current revision.
+   */
+  saveDraft(
+    id: string,
+    baseRevision: number,
+    fields: DraftFields,
+  ): { revision: number } | { conflict: true; revision: number };
+  /** Cascades to its attachments. */
+  deleteDraft(id: string): void;
+  listDrafts(accountId: string): DraftRecord[];
+  /** The draft whose server copy is (folder, uid) of the account, or null. */
+  draftForServerCopy(accountId: string, folder: string, uid: number): string | null;
+  /** Records (or with null clears) where the draft's latest server copy lives. */
+  recordServerCopy(id: string, copy: DraftServerCopy | null): void;
+  addAttachment(
+    draftId: string,
+    input: { fileName: string; mimeType: string; size: number; sha256: string; data: Uint8Array },
+  ): ComposeAttachment;
+  listAttachments(draftId: string): ComposeAttachment[];
+  attachmentData(draftId: string): (ComposeAttachment & { data: Uint8Array })[];
+  removeAttachment(draftId: string, attachmentId: string): boolean;
+  /**
+   * One transaction: an existing row with this id (the requestId) is
+   * returned with `created: false`; otherwise the draft's revision must equal
+   * `draftBaseRevision` and the draft must have no live row, or `conflict`.
+   */
+  queueOutbox(
+    input: NewOutboxRow,
+    draftBaseRevision: number,
+  ): { row: OutboxRecord; created: boolean } | { conflict: true };
+  getOutbox(id: string): OutboxRecord | null;
+  /** Rows without their blobs; every account when null. */
+  listOutbox(accountId: string | null): OutboxRecord[];
+  outboxPayload(id: string): { mime: Uint8Array; bccHeader: string | null } | null;
+  /** The compare-and-swap every transition uses: false when the row is not in a `from` state. */
+  transitionOutbox(
+    id: string,
+    from: OutboxState[],
+    to: OutboxState,
+    patch?: {
+      errorKind?: SendErrorKind | null;
+      rejected?: string[];
+      sendAfter?: string;
+      countAttempt?: boolean;
+    },
+  ): boolean;
+  deleteOutbox(id: string, from: OutboxState[]): boolean;
+  /** The oldest due `queued` row of an account not in `busyAccounts`, moved to `sending` (attempts + 1). */
+  claimDueOutbox(nowIso: string, busyAccounts: string[]): OutboxRecord | null;
+  /** On start: `sending` becomes `unknown`, overdue `queued` becomes `held`. */
+  recoverOutboxOnStart(nowIso: string): { unknown: number; held: number };
+  /** Deletes the row and its draft. */
+  completeOutbox(id: string): void;
+  hasSendingOutbox(accountId: string): boolean;
+  /** `replyToKnown` is false for rows synced before Reply-To was stored. */
+  replySource(
+    messageId: string,
+  ): (ReplySource & { accountId: string; folder: string; replyToKnown: boolean }) | null;
+  /** Distinct From/To/Cc addresses of stored mail matching the prefix; the owner's Sent first. Local only. */
+  recipientSuggestions(prefix: string, limit: number): MailAddress[];
 }

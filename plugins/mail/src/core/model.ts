@@ -1,4 +1,6 @@
 import { z } from "zod";
+import type { OutgoingAddress } from "./compose-address.ts";
+import { composeDocInputSchema, type ComposeDoc } from "./compose-doc.ts";
 
 /** Which server preset an account was set up with. */
 export const accountPresetSchema = z.enum(["icloud", "gmail", "other"]);
@@ -9,6 +11,37 @@ export const mailAddressSchema = z.object({
   address: z.string(),
 });
 export type MailAddress = z.infer<typeof mailAddressSchema>;
+
+/** How an SMTP connection is secured. There is no plaintext value. */
+export const smtpSecuritySchema = z.enum(["tls", "starttls"]);
+export type SmtpSecurity = z.infer<typeof smtpSecuritySchema>;
+
+/** Who keeps the copy in Sent: the server itself (Gmail), or the plugin by APPEND. */
+export const sentCopyPolicySchema = z.enum(["server", "append"]);
+export type SentCopyPolicy = z.infer<typeof sentCopyPolicySchema>;
+
+/** An account's SMTP server. `username` null: the IMAP username. */
+export type StoredSmtp = {
+  host: string;
+  port: number;
+  security: SmtpSecurity;
+  username: string | null;
+};
+
+/** True when the text holds no CR, LF or NUL (header injection). */
+export function noLineBreaks(text: string): boolean {
+  return !/[\r\n\u0000]/.test(text);
+}
+
+/** A host name as typed: ASCII letters, digits, dots and hyphens. */
+export const hostInputSchema = z
+  .string()
+  .min(1)
+  .max(253)
+  .regex(/^[A-Za-z0-9.-]+$/, { message: "Not a host name" });
+const smtpUsernameInput = z.string().min(1).max(320).refine(noLineBreaks, {
+  message: "Line breaks are not allowed",
+});
 
 /** A connected account as the UI sees it. Never carries a credential. */
 export const accountSchema = z.object({
@@ -24,6 +57,8 @@ export const accountSchema = z.object({
   lastSyncAt: z.string().nullable(),
   lastError: z.string().nullable(),
   authFailed: z.boolean(),
+  /** The account has an SMTP server, so it can send. */
+  smtpConfigured: z.boolean(),
 });
 export type Account = z.infer<typeof accountSchema>;
 
@@ -36,7 +71,17 @@ export const newAccountInputSchema = z.object({
   port: z.number().int().min(1).max(65535).optional(),
   username: z.string().optional(),
   password: z.string().min(1),
-});
+  /** SMTP for "other"; iCloud and Gmail take it from the preset. */
+  smtpHost: hostInputSchema.optional(),
+  smtpPort: z.number().int().min(1).max(65535).optional(),
+  smtpSecurity: smtpSecuritySchema.optional(),
+  smtpUsername: smtpUsernameInput.optional(),
+}).refine(
+  (input) =>
+    input.preset !== "other" ||
+    (input.smtpHost !== undefined && input.smtpPort !== undefined && input.smtpSecurity !== undefined),
+  { message: "Another server needs its SMTP host, port and security", path: ["smtpHost"] },
+);
 export type NewAccountInput = z.infer<typeof newAccountInputSchema>;
 
 export const attachmentMetaSchema = z.object({
@@ -127,6 +172,8 @@ export const messageHeaderSchema = messageSummarySchema.extend({
   to: z.array(mailAddressSchema),
   cc: z.array(mailAddressSchema),
   attachments: z.array(attachmentMetaSchema),
+  /** The compose_drafts row whose server copy is this message, or null (drives Edit draft). */
+  draftId: z.string().nullable(),
 });
 export type MessageHeader = z.infer<typeof messageHeaderSchema>;
 
@@ -171,7 +218,11 @@ export const statusViewSchema = z.object({
 export type StatusView = z.infer<typeof statusViewSchema>;
 
 /** An account as the store keeps it. Never leaves the server. */
-export type StoredAccount = Account & { passwordSealed: string };
+export type StoredAccount = Omit<Account, "smtpConfigured"> & {
+  passwordSealed: string;
+  smtp: StoredSmtp | null;
+  sentCopy: SentCopyPolicy;
+};
 
 /** An inline (cid-referenced) image part of a message. */
 export type InlinePart = { contentId: string; mimeType: string; data: Uint8Array };
@@ -189,6 +240,7 @@ export type FetchedMessage = {
   from: MailAddress;
   to: MailAddress[];
   cc: MailAddress[];
+  replyTo: MailAddress[];
   subject: string;
   seen: boolean;
   flagged: boolean;
@@ -246,4 +298,200 @@ export type ParsedQuery = {
   unread?: boolean;
   after?: string;
   before?: string;
+};
+
+// ---- Compose and send (slice 3b) ----
+
+export const composeKindSchema = z.enum(["new", "reply", "reply_all", "forward"]);
+export type ComposeKind = z.infer<typeof composeKindSchema>;
+
+/**
+ * A queued send's state. `done` appears only in realtime events: a done row
+ * is deleted. There is no cancelled state: Undo deletes the row.
+ */
+export const outboxStateSchema = z.enum([
+  "queued",
+  "held",
+  "sending",
+  "sent",
+  "appending",
+  "failed",
+  "unknown",
+  "sent_no_copy",
+  "done",
+]);
+export type OutboxState = z.infer<typeof outboxStateSchema>;
+
+/** Why a send failed, as a kind only: never the server's response text. */
+export const sendErrorKindSchema = z.enum([
+  "auth",
+  "tls",
+  "connect",
+  "timeout_before_data",
+  "temporary",
+  "rejected_all",
+  "rejected_message",
+  "too_large",
+  "unknown_after_data",
+  "no_sent_folder",
+  "append_failed",
+]);
+export type SendErrorKind = z.infer<typeof sendErrorKindSchema>;
+
+export const composeAttachmentSchema = z.object({
+  id: z.string(),
+  fileName: z.string(),
+  mimeType: z.string(),
+  size: z.number().int(),
+});
+export type ComposeAttachment = z.infer<typeof composeAttachmentSchema>;
+
+/** Where the draft's copy in the account's Drafts folder stands. */
+export const draftServerCopySchema = z.enum(["none", "saved", "failed", "local_only"]);
+export type DraftServerCopyState = z.infer<typeof draftServerCopySchema>;
+
+/** A draft as the composer sees it. */
+export const draftViewSchema = z.object({
+  id: z.string(),
+  accountId: z.string(),
+  kind: composeKindSchema,
+  to: z.array(mailAddressSchema),
+  cc: z.array(mailAddressSchema),
+  bcc: z.array(mailAddressSchema),
+  subject: z.string(),
+  doc: composeDocInputSchema,
+  attachments: z.array(composeAttachmentSchema),
+  revision: z.number().int(),
+  serverCopy: draftServerCopySchema,
+  /** A send of this draft is queued: saving answers conflict until it settles. */
+  queued: z.boolean(),
+  /** Sanitized HTML the page loads into the editor once (quote of the original, or a foreign draft's body). */
+  import: z
+    .object({ html: z.string(), into: z.enum(["quote", "body"]) })
+    .nullable(),
+});
+export type DraftView = z.infer<typeof draftViewSchema>;
+
+/** One Outbox row as the UI sees it. `subject` is for local display only. */
+export const outboxRowSchema = z.object({
+  id: z.string(),
+  accountId: z.string(),
+  subject: z.string(),
+  state: outboxStateSchema,
+  errorKind: sendErrorKindSchema.nullable(),
+  /** Recipients the server refused. */
+  rejected: z.array(z.string()),
+  /** ISO 8601. */
+  sendAfter: z.string(),
+  attempts: z.number().int(),
+});
+export type OutboxRow = z.infer<typeof outboxRowSchema>;
+
+/** A file attached to an outgoing message. Always bytes, never a path or URL. */
+export type OutgoingAttachment = {
+  fileName: string;
+  mimeType: string;
+  bytes: Uint8Array;
+  contentId: string | null;
+};
+
+/** Everything the message builder needs; plain data, no host objects. */
+export type OutgoingMessage = {
+  from: OutgoingAddress;
+  to: OutgoingAddress[];
+  cc: OutgoingAddress[];
+  /** Never written into the built MIME; the Sent copy gets it spliced in. */
+  bcc: OutgoingAddress[];
+  subject: string;
+  messageId: string;
+  /** ISO 8601. */
+  date: string;
+  inReplyTo: string | null;
+  references: string[];
+  html: string;
+  text: string;
+  attachments: OutgoingAttachment[];
+};
+
+/** What a reply or forward reads from the original on the server. */
+export type OriginalMessage = {
+  replyTo: MailAddress[];
+  html: string | null;
+  attachments: OutgoingAttachment[];
+};
+
+/** The fields the composer saves on every autosave. */
+export type DraftFields = {
+  accountId: string;
+  to: MailAddress[];
+  cc: MailAddress[];
+  bcc: MailAddress[];
+  subject: string;
+  doc: ComposeDoc;
+};
+
+/** Where the draft's latest copy lives in the account's Drafts folder. */
+export type DraftServerCopy = {
+  folder: string;
+  uidValidity: number;
+  uid: number;
+  /** The draft revision that copy holds. */
+  revision: number;
+  /** Its RFC822.SIZE, for the expunge guard. */
+  size: number;
+};
+
+export type NewDraft = DraftFields & {
+  id: string;
+  kind: ComposeKind;
+  /** messages.id it replies to or forwards, or null. */
+  sourceMessageId: string | null;
+  /** The RFC 5322 Message-ID every version of this draft and its send carry. */
+  messageId: string;
+  inReplyTo: string | null;
+  references: string[];
+  /** A foreign Drafts message the owner continued: our first copy replaces it. */
+  serverCopy: DraftServerCopy | null;
+  /** The 3c seam; always "owner" in 3b. */
+  origin: "owner";
+  /** ISO 8601. */
+  createdAt: string;
+};
+
+/** A compose_drafts row. */
+export type DraftRecord = NewDraft & {
+  revision: number;
+  /** ISO 8601. */
+  updatedAt: string;
+};
+
+/** What queueing a send stores. `mime` is the exact bytes SMTP gets (no Bcc). */
+export type NewOutboxRow = {
+  /** The page's requestId: the idempotency key. */
+  id: string;
+  accountId: string;
+  draftId: string | null;
+  messageId: string;
+  subject: string;
+  envelopeFrom: string;
+  /** To, Cc and Bcc addresses. */
+  envelopeTo: string[];
+  mime: Uint8Array;
+  /** The folded Bcc line the Sent copy gets, or null. */
+  bccHeader: string | null;
+  /** ISO 8601. */
+  sendAfter: string;
+  origin: "owner";
+  /** ISO 8601. */
+  createdAt: string;
+};
+
+/** An outbox row without its blobs. */
+export type OutboxRecord = Omit<NewOutboxRow, "mime" | "bccHeader"> & {
+  state: OutboxState;
+  attempts: number;
+  errorKind: SendErrorKind | null;
+  rejected: string[];
+  /** ISO 8601. */
+  updatedAt: string;
 };

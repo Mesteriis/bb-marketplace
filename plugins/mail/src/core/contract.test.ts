@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
-import { MAIL_CHANGED_CHANNEL, rpcSchemas } from "./contract.ts";
+import { MAIL_CHANGED_CHANNEL, OUTBOX_CHANGED_CHANNEL, rpcSchemas } from "./contract.ts";
 import {
   accountSchema,
+  draftViewSchema,
+  newAccountInputSchema,
+  outboxRowSchema,
+  outboxStateSchema,
+  sendErrorKindSchema,
+  smtpSecuritySchema,
   folderSchema,
   messageActionSchema,
   messageHeaderSchema,
@@ -13,6 +19,32 @@ import {
 } from "./model.ts";
 
 const SECRET_KEY = /pass|secret|seal|key/i;
+
+/** The 19 owner-only methods slice 3b adds. */
+const COMPOSE_METHODS = [
+  "compose_new",
+  "compose_prepare",
+  "compose_open",
+  "compose_save",
+  "compose_discard",
+  "compose_attachment_begin",
+  "compose_attachment_chunk",
+  "compose_attachment_finish",
+  "compose_attachment_remove",
+  "compose_send",
+  "outbox_list",
+  "outbox_cancel",
+  "outbox_send_now",
+  "outbox_retry",
+  "outbox_resend",
+  "outbox_dismiss",
+  "recipients_suggest",
+  "accounts_smtp_test",
+  "accounts_smtp_set",
+] as const;
+
+/** Header-injection payloads every header field must refuse. */
+const LINE_BREAKS = ["x\r\nBcc: eve@example.net", "x\nBcc: eve@example.net", "x\rX", "x\u0000y"];
 
 /** Every object key reachable from a schema, through arrays and nesting. */
 function keysOf(schema: z.ZodType): string[] {
@@ -31,9 +63,10 @@ function keysOf(schema: z.ZodType): string[] {
 }
 
 describe("rpcSchemas", () => {
-  it("declares exactly the slice-1 methods plus the slice-2 and slice-3a additions", () => {
+  it("declares exactly the slice-1 methods plus the slice-2, 3a and 3b additions", () => {
     expect(Object.keys(rpcSchemas).sort()).toEqual(
       [
+        ...COMPOSE_METHODS,
         "status_get",
         "accounts_test",
         "accounts_add",
@@ -324,5 +357,319 @@ describe("credential-free views", () => {
     expect(keysOf(rpcSchemas.threads_list.input)).toEqual(
       expect.arrayContaining(["scope", "kind", "accountId", "folder", "role"]),
     );
+  });
+});
+
+describe("slice-3b contract", () => {
+  const parses = (method: keyof typeof rpcSchemas, input: unknown) =>
+    rpcSchemas[method].input.safeParse(input).success;
+
+  const save = (overrides: Record<string, unknown> = {}) => ({
+    draftId: "d_1",
+    baseRevision: 3,
+    accountId: "acc_1",
+    to: ["Anna <anna@example.org>"],
+    cc: [],
+    bcc: ["bob@example.com"],
+    subject: "Garden plans",
+    doc: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Hi" }] }] },
+    ...overrides,
+  });
+
+  it("adds exactly 19 methods to the 17 before it", () => {
+    expect(COMPOSE_METHODS).toHaveLength(19);
+    expect(Object.keys(rpcSchemas)).toHaveLength(36);
+  });
+
+  it("refuses empty and overlong ids in every new method", () => {
+    const idInputs: [keyof typeof rpcSchemas, Record<string, unknown>, string][] = [
+      ["compose_new", {}, "accountId"],
+      ["compose_prepare", { kind: "reply" }, "messageId"],
+      ["compose_open", {}, "draftId"],
+      ["compose_open", {}, "draftMessageId"],
+      ["compose_discard", {}, "draftId"],
+      ["compose_attachment_remove", { attachmentId: "a" }, "draftId"],
+      ["compose_attachment_remove", { draftId: "d" }, "attachmentId"],
+      ["outbox_cancel", {}, "id"],
+      ["outbox_send_now", {}, "id"],
+      ["outbox_retry", {}, "id"],
+      ["outbox_resend", {}, "id"],
+      ["outbox_dismiss", {}, "id"],
+      ["outbox_list", {}, "accountId"],
+    ];
+    for (const [method, rest, key] of idInputs) {
+      expect(parses(method, { ...rest, [key]: "x" })).toBe(true);
+      expect(parses(method, { ...rest, [key]: "" })).toBe(false);
+      expect(parses(method, { ...rest, [key]: "x".repeat(257) })).toBe(false);
+    }
+    expect(parses("outbox_list", { accountId: null })).toBe(true);
+  });
+
+  it("prepares only a reply, a reply-all or a forward", () => {
+    for (const kind of ["reply", "reply_all", "forward"]) {
+      expect(parses("compose_prepare", { kind, messageId: "m" })).toBe(true);
+    }
+    expect(parses("compose_prepare", { kind: "new", messageId: "m" })).toBe(false);
+    expect(parses("compose_prepare", { kind: "send", messageId: "m" })).toBe(false);
+  });
+
+  it("opens by exactly one of draftId and draftMessageId", () => {
+    expect(parses("compose_open", { draftId: "d" })).toBe(true);
+    expect(parses("compose_open", { draftMessageId: "m" })).toBe(true);
+    expect(parses("compose_open", { draftId: "d", draftMessageId: "m" })).toBe(false);
+    expect(parses("compose_open", {})).toBe(false);
+  });
+
+  it("saves a draft and refuses line breaks in every header field", () => {
+    expect(parses("compose_save", save())).toBe(true);
+    expect(parses("compose_save", save({ saveToServer: true }))).toBe(true);
+    for (const bad of LINE_BREAKS) {
+      expect(parses("compose_save", save({ subject: bad }))).toBe(false);
+      for (const field of ["to", "cc", "bcc"]) {
+        expect(parses("compose_save", save({ [field]: [`anna@example.org${bad}`] }))).toBe(false);
+      }
+    }
+  });
+
+  it("bounds the draft's subject, recipient lists and document", () => {
+    const list = (n: number) => Array.from({ length: n }, (_, i) => `p${i}@example.com`);
+    expect(parses("compose_save", save({ subject: "s".repeat(998) }))).toBe(true);
+    expect(parses("compose_save", save({ subject: "s".repeat(999) }))).toBe(false);
+    for (const field of ["to", "cc", "bcc"]) {
+      expect(parses("compose_save", save({ [field]: list(100) }))).toBe(true);
+      expect(parses("compose_save", save({ [field]: list(101) }))).toBe(false);
+      expect(parses("compose_save", save({ [field]: [`${"a".repeat(310)}@example.com`] }))).toBe(false);
+    }
+    expect(parses("compose_save", save({ baseRevision: -1 }))).toBe(false);
+    expect(parses("compose_save", save({ baseRevision: 1.5 }))).toBe(false);
+    expect(parses("compose_save", save({ doc: "<p>html</p>" }))).toBe(false);
+    expect(
+      parses("compose_save", save({ doc: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "x".repeat(2_100_000) }] }] } })),
+    ).toBe(false);
+    expect(
+      rpcSchemas.compose_save.output.safeParse({ revision: 4 }).success &&
+        rpcSchemas.compose_save.output.safeParse({ conflict: true, revision: 5 }).success,
+    ).toBe(true);
+  });
+
+  it("bounds attachment uploads and refuses line breaks in their names and types", () => {
+    const begin = (overrides: Record<string, unknown> = {}) => ({
+      draftId: "d",
+      fileName: "plan.pdf",
+      mimeType: "application/pdf",
+      size: 1200,
+      ...overrides,
+    });
+    expect(parses("compose_attachment_begin", begin())).toBe(true);
+    expect(parses("compose_attachment_begin", begin({ size: 25 * 1024 * 1024 }))).toBe(true);
+    expect(parses("compose_attachment_begin", begin({ size: 25 * 1024 * 1024 + 1 }))).toBe(false);
+    expect(parses("compose_attachment_begin", begin({ size: -1 }))).toBe(false);
+    expect(parses("compose_attachment_begin", begin({ fileName: "" }))).toBe(false);
+    expect(parses("compose_attachment_begin", begin({ fileName: "a".repeat(256) }))).toBe(false);
+    expect(parses("compose_attachment_begin", begin({ mimeType: "a".repeat(128) }))).toBe(false);
+    for (const bad of LINE_BREAKS) {
+      expect(parses("compose_attachment_begin", begin({ fileName: bad }))).toBe(false);
+      expect(parses("compose_attachment_begin", begin({ mimeType: `text/plain${bad}` }))).toBe(false);
+    }
+
+    const chunk = (dataBase64: string, offset = 0) => ({ uploadId: "u", offset, dataBase64 });
+    const maxBase64 = Math.ceil((512 * 1024) / 3) * 4;
+    expect(parses("compose_attachment_chunk", chunk("aGVsbG8="))).toBe(true);
+    expect(parses("compose_attachment_chunk", chunk("A".repeat(maxBase64)))).toBe(true);
+    expect(parses("compose_attachment_chunk", chunk("A".repeat(maxBase64 + 4)))).toBe(false);
+    expect(parses("compose_attachment_chunk", chunk("aGVsbG8"))).toBe(false);
+    expect(parses("compose_attachment_chunk", chunk("aGVs\nbG8="))).toBe(false);
+    expect(parses("compose_attachment_chunk", chunk("aGVs*bG8="))).toBe(false);
+    expect(parses("compose_attachment_chunk", chunk("aGVsbG8=", -1))).toBe(false);
+
+    const sha = "a".repeat(64);
+    expect(parses("compose_attachment_finish", { uploadId: "u", sha256: sha })).toBe(true);
+    expect(parses("compose_attachment_finish", { uploadId: "u", sha256: sha.toUpperCase() })).toBe(false);
+    expect(parses("compose_attachment_finish", { uploadId: "u", sha256: "a".repeat(63) })).toBe(false);
+  });
+
+  it("sends with a UUID requestId", () => {
+    const send = (requestId: string) => ({ draftId: "d", baseRevision: 2, requestId });
+    expect(parses("compose_send", send("6f1c2a52-3b5e-4f0a-9c1d-2e7b8a9c0d1e"))).toBe(true);
+    expect(parses("compose_send", send("not-a-uuid"))).toBe(false);
+    expect(parses("compose_send", send(""))).toBe(false);
+  });
+
+  it("suggests recipients for a 1-64 character prefix without line breaks", () => {
+    expect(parses("recipients_suggest", { prefix: "an" })).toBe(true);
+    expect(parses("recipients_suggest", { prefix: "" })).toBe(false);
+    expect(parses("recipients_suggest", { prefix: "a".repeat(65) })).toBe(false);
+    for (const bad of LINE_BREAKS) expect(parses("recipients_suggest", { prefix: bad })).toBe(false);
+    const suggestion = { name: null, address: "a@example.org" };
+    expect(
+      rpcSchemas.recipients_suggest.output.safeParse({ suggestions: Array(10).fill(suggestion) }).success,
+    ).toBe(true);
+    expect(
+      rpcSchemas.recipients_suggest.output.safeParse({ suggestions: Array(11).fill(suggestion) }).success,
+    ).toBe(false);
+  });
+
+  it("takes SMTP settings with TLS or STARTTLS only, and a clean host and username", () => {
+    const smtp = (overrides: Record<string, unknown> = {}) => ({
+      accountId: "acc_1",
+      host: "smtp.example.org",
+      port: 587,
+      security: "starttls",
+      ...overrides,
+    });
+    for (const method of ["accounts_smtp_test", "accounts_smtp_set"] as const) {
+      expect(parses(method, smtp())).toBe(true);
+      expect(parses(method, smtp({ username: "login@example.org" }))).toBe(true);
+      expect(parses(method, smtp({ security: "tls", port: 465 }))).toBe(true);
+      for (const security of ["none", "plain", "plaintext", "ssl", ""]) {
+        expect(parses(method, smtp({ security }))).toBe(false);
+      }
+      expect(parses(method, smtp({ port: 0 }))).toBe(false);
+      expect(parses(method, smtp({ port: 65536 }))).toBe(false);
+      expect(parses(method, smtp({ host: "" }))).toBe(false);
+      expect(parses(method, smtp({ host: "smtp.example.org:25" }))).toBe(false);
+      expect(parses(method, smtp({ host: "smtp example.org" }))).toBe(false);
+      for (const bad of LINE_BREAKS) {
+        expect(parses(method, smtp({ host: `smtp.example.org${bad}` }))).toBe(false);
+        expect(parses(method, smtp({ username: bad }))).toBe(false);
+      }
+      expect(rpcSchemas[method].output.safeParse({ ok: false, reason: "auth" }).success).toBe(true);
+    }
+  });
+
+  it("has no plaintext SMTP security value", () => {
+    expect(smtpSecuritySchema.options).toEqual(["tls", "starttls"]);
+  });
+
+  it("names the outbox states and error kinds; no cancelled state", () => {
+    expect(outboxStateSchema.options).toEqual([
+      "queued",
+      "held",
+      "sending",
+      "sent",
+      "appending",
+      "failed",
+      "unknown",
+      "sent_no_copy",
+      "done",
+    ]);
+    expect(outboxStateSchema.options).not.toContain("cancelled");
+    expect(sendErrorKindSchema.options).toEqual([
+      "auth",
+      "tls",
+      "connect",
+      "timeout_before_data",
+      "temporary",
+      "rejected_all",
+      "rejected_message",
+      "too_large",
+      "unknown_after_data",
+      "no_sent_folder",
+      "append_failed",
+    ]);
+  });
+
+  it("names the outbox realtime channel", () => {
+    expect(OUTBOX_CHANGED_CHANNEL).toBe("outbox-changed");
+  });
+
+  it("shapes an outbox row and a draft view", () => {
+    const row = {
+      id: "6f1c2a52-3b5e-4f0a-9c1d-2e7b8a9c0d1e",
+      accountId: "acc_1",
+      subject: "Garden plans",
+      state: "failed",
+      errorKind: "temporary",
+      rejected: [],
+      sendAfter: "2026-11-15T10:00:10.000Z",
+      attempts: 1,
+    };
+    expect(outboxRowSchema.safeParse(row).success).toBe(true);
+    expect(outboxRowSchema.safeParse({ ...row, state: "cancelled" }).success).toBe(false);
+    expect(outboxRowSchema.safeParse({ ...row, errorKind: "smtp said no" }).success).toBe(false);
+    const draft = {
+      id: "d_1",
+      accountId: "acc_1",
+      kind: "reply",
+      to: [{ name: "Anna", address: "anna@example.org" }],
+      cc: [],
+      bcc: [],
+      subject: "Re: Garden plans",
+      doc: { type: "doc", content: [{ type: "paragraph" }] },
+      attachments: [{ id: "a_1", fileName: "plan.pdf", mimeType: "application/pdf", size: 1200 }],
+      revision: 1,
+      serverCopy: "none",
+      queued: false,
+      import: { html: "<p>quoted</p>", into: "quote" },
+    };
+    expect(draftViewSchema.safeParse(draft).success).toBe(true);
+    expect(draftViewSchema.safeParse({ ...draft, import: null }).success).toBe(true);
+    expect(draftViewSchema.safeParse({ ...draft, serverCopy: "maybe" }).success).toBe(false);
+    expect(
+      rpcSchemas.compose_open.output.safeParse({ draft, warning: "original_unavailable" }).success,
+    ).toBe(true);
+    expect(rpcSchemas.compose_open.output.safeParse({ draft, warning: "other" }).success).toBe(false);
+  });
+
+  it("puts no credential, sealed password or raw MIME in any new output", () => {
+    const forbidden = /pass|secret|seal|key|^mime$|raw|bcc_?header|envelope/i;
+    for (const method of COMPOSE_METHODS) {
+      const keys = keysOf(rpcSchemas[method].output);
+      expect(keys.length).toBeGreaterThan(0);
+      expect(keys.filter((key) => forbidden.test(key))).toEqual([]);
+    }
+    expect(keysOf(rpcSchemas.compose_open.output)).toEqual(
+      expect.arrayContaining(["draft", "attachments", "revision", "import", "html"]),
+    );
+    expect(keysOf(rpcSchemas.outbox_list.output)).toEqual(
+      expect.arrayContaining(["rows", "state", "errorKind", "rejected"]),
+    );
+  });
+
+  it("tells the page whether an account can send", () => {
+    expect(Object.keys(accountSchema.shape)).toContain("smtpConfigured");
+    expect(keysOf(rpcSchemas.status_get.output)).toContain("smtpConfigured");
+    expect(keysOf(rpcSchemas.accounts_add.output)).toContain("smtpConfigured");
+  });
+});
+
+describe("newAccountInputSchema SMTP fields", () => {
+  const base = { email: "owner@example.org", password: "app-password" };
+
+  it("needs SMTP host, port and security for another server", () => {
+    const other = { ...base, preset: "other", host: "imap.example.org" };
+    expect(newAccountInputSchema.safeParse(other).success).toBe(false);
+    expect(
+      newAccountInputSchema.safeParse({ ...other, smtpHost: "smtp.example.org", smtpPort: 587 }).success,
+    ).toBe(false);
+    expect(
+      newAccountInputSchema.safeParse({
+        ...other,
+        smtpHost: "smtp.example.org",
+        smtpPort: 587,
+        smtpSecurity: "starttls",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("takes iCloud and Gmail without SMTP fields", () => {
+    expect(newAccountInputSchema.safeParse({ ...base, preset: "icloud" }).success).toBe(true);
+    expect(newAccountInputSchema.safeParse({ ...base, preset: "gmail" }).success).toBe(true);
+  });
+
+  it("refuses a plaintext security value and line breaks in the SMTP fields", () => {
+    const other = {
+      ...base,
+      preset: "other",
+      host: "imap.example.org",
+      smtpHost: "smtp.example.org",
+      smtpPort: 25,
+      smtpSecurity: "starttls",
+    };
+    expect(newAccountInputSchema.safeParse({ ...other, smtpSecurity: "none" }).success).toBe(false);
+    for (const bad of LINE_BREAKS) {
+      expect(newAccountInputSchema.safeParse({ ...other, smtpHost: `smtp${bad}` }).success).toBe(false);
+      expect(newAccountInputSchema.safeParse({ ...other, smtpUsername: bad }).success).toBe(false);
+    }
   });
 });

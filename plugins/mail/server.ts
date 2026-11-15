@@ -169,6 +169,14 @@ function refusePluginCaller(context: ExperimentalPluginRpcHandlerContext): void 
   if (context.experimental_caller.kind === "plugin") throw refuse("forbidden", PLUGIN_CALLER_MESSAGE);
 }
 
+export const COMPOSE_UNAVAILABLE_MESSAGE = "Sending mail is not available yet";
+
+/** Every compose and outbox method until it is wired: plugin callers are refused first, as on every write. */
+function composeUnavailable(_input: unknown, context: ExperimentalPluginRpcHandlerContext): never {
+  refusePluginCaller(context);
+  throw refuse("conflict", COMPOSE_UNAVAILABLE_MESSAGE);
+}
+
 /** Name and SQLite code of a failure, never its message (it may quote stored content). */
 function errorKind(error: unknown): string {
   if (!(error instanceof Error)) return "unknown";
@@ -653,6 +661,26 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         refusePluginCaller(context);
         return { removed: store.disallowImageSender(accountId, address) };
       },
+      // Compose and send (slice 3b): owner only, not available yet.
+      compose_new: composeUnavailable,
+      compose_prepare: composeUnavailable,
+      compose_open: composeUnavailable,
+      compose_save: composeUnavailable,
+      compose_discard: composeUnavailable,
+      compose_attachment_begin: composeUnavailable,
+      compose_attachment_chunk: composeUnavailable,
+      compose_attachment_finish: composeUnavailable,
+      compose_attachment_remove: composeUnavailable,
+      compose_send: composeUnavailable,
+      outbox_list: composeUnavailable,
+      outbox_cancel: composeUnavailable,
+      outbox_send_now: composeUnavailable,
+      outbox_retry: composeUnavailable,
+      outbox_resend: composeUnavailable,
+      outbox_dismiss: composeUnavailable,
+      recipients_suggest: composeUnavailable,
+      accounts_smtp_test: composeUnavailable,
+      accounts_smtp_set: composeUnavailable,
     },
     { experimental_discoverable: false },
   );
