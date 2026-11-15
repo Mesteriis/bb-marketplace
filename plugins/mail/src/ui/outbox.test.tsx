@@ -82,6 +82,21 @@ describe("OutboxSection", () => {
     expect((within(noCopy).getByRole("button", { name: "Dismiss" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("labels a send the owner confirmed in an agent's card", () => {
+    render(
+      <OutboxSection
+        rows={[row("queued", { origin: "agent" }), row("held")]}
+        onAction={() => undefined}
+        pending={new Set()}
+        marker={() => null}
+      />,
+    );
+    const agent = screen.getByRole("listitem", { name: "Made-up subject queued" });
+    expect(within(agent).getByText("Agent message")).toBeTruthy();
+    const owner = screen.getByRole("listitem", { name: "Made-up subject held" });
+    expect(within(owner).queryByText("Agent message")).toBeNull();
+  });
+
   it("renders nothing without rows", () => {
     const { container } = render(<OutboxSection rows={[row("done")]} onAction={() => undefined} pending={new Set()} marker={() => null} />);
     expect(container.innerHTML).toBe("");

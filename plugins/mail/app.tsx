@@ -12,6 +12,7 @@ import {
   definePluginApp,
   experimental_copyToClipboard,
   experimental_saveFile,
+  experimental_useQuestionFormHost,
   UrlLink,
   useBbNavigate,
   useComposer,
@@ -19,6 +20,8 @@ import {
   useRpc,
   type ExperimentalBadge,
   type PluginNavPanelProps,
+  type PluginPendingInteractionProps,
+  type PluginTimelineRendererProps,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server.ts";
@@ -63,7 +66,16 @@ import {
 import { outboxStateText, type OutboxAction } from "./src/ui/outbox.tsx";
 import type { BodyState } from "./src/ui/reading-pane.tsx";
 import { MailSidebar, type MailSidebarState } from "./src/ui/mail-sidebar.tsx";
-import { parseThreadSubPath, parseViewSubPath, viewSubPath, type ThreadLink } from "./src/ui/routes.ts";
+import {
+  draftSubPath,
+  parseDraftSubPath,
+  parseThreadSubPath,
+  parseViewSubPath,
+  viewSubPath,
+  type ThreadLink,
+} from "./src/ui/routes.ts";
+import { AgentSendCard, type ProposalViewResult } from "./src/ui/agent-send-card.tsx";
+import { AgentSendRow } from "./src/ui/agent-send-row.tsx";
 import { subjectOrPlaceholder } from "./src/ui/thread-list.tsx";
 
 // The channel name is checked against the core constant without importing it
@@ -369,7 +381,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     route.current = {
       subPath,
       serial: route.current.serial + 1,
-      view: parseThreadSubPath(subPath) !== null ? route.current.view : parseViewSubPath(subPath),
+      view:
+        parseThreadSubPath(subPath) !== null || parseDraftSubPath(subPath) !== null
+          ? route.current.view
+          : parseViewSubPath(subPath),
     };
   }
   const routeView = route.current.view;
@@ -1258,6 +1273,21 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     [],
   );
 
+  /** A draft the subPath names (an agent's card after Open in Mail, or its thread row): opened once per link. */
+  const openedDraftLink = useRef<string | null>(null);
+  useEffect(() => {
+    const draftId = parseDraftSubPath(subPath);
+    if (draftId === null || openedDraftLink.current === draftId) {
+      if (draftId === null) openedDraftLink.current = null;
+      return;
+    }
+    openedDraftLink.current = draftId;
+    rpc.call("compose_open", { draftId }).then(
+      ({ draft, warning }) => openComposer(draft, warning, [], null),
+      (error: unknown) => toast.error(`Could not open the draft: ${messageOf(error)}`),
+    );
+  }, [openComposer, rpc, subPath]);
+
   /** A new message from the account viewed (All accounts: the first account). */
   const compose = useCallback(async () => {
     const from = account?.id ?? accounts[0]?.id;
@@ -1371,10 +1401,11 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
 
   /** "Sending in N s · Undo" for a queued send, on every queued event. */
   const showUndo = useCallback(
-    (outboxId: string, sendAfter: string | null) => {
+    (outboxId: string, sendAfter: string | null, origin: OutboxRow["origin"] = "owner") => {
       const due = sendAfter === null ? NaN : Date.parse(sendAfter);
       const left = Number.isNaN(due) ? UNDO_WINDOW_MS : Math.max(0, due - Date.now());
-      toast(`Sending in ${Math.max(1, Math.ceil(left / 1000))} s`, {
+      const label = origin === "agent" ? "Agent message · " : "";
+      toast(`${label}Sending in ${Math.max(1, Math.ceil(left / 1000))} s`, {
         id: sendToastId(outboxId),
         duration: left + 2_000,
         action: { label: "Undo", onClick: () => void undoSend(outboxId) },
@@ -1389,7 +1420,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     if (!status?.vaultReady || outboxChecked.current) return;
     outboxChecked.current = true;
     void loadOutbox().then((rows) => {
-      for (const row of rows ?? []) if (row.state === "queued") showUndo(row.id, row.sendAfter);
+      for (const row of rows ?? []) if (row.state === "queued") showUndo(row.id, row.sendAfter, row.origin);
     });
   }, [loadOutbox, showUndo, status?.vaultReady]);
 
@@ -1407,7 +1438,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         const row = rows?.find((r) => r.id === event.id) ?? null;
         switch (event.state) {
           case "queued":
-            showUndo(event.id, row?.sendAfter ?? null);
+            showUndo(event.id, row?.sendAfter ?? null, row?.origin);
             break;
           case "sending":
           case "cancelled":
@@ -1662,6 +1693,85 @@ function MailFolderSidebar(_props: PluginNavPanelProps) {
   );
 }
 
+// ---- Agent proposals (slice 3c) ----
+
+/** The card's payload: the proposal id and content hash, nothing else (the server sets it). */
+function proposalPayload(payload: unknown): { proposalId: string; contentHash: string } | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const { proposalId, contentHash } = payload as Record<string, unknown>;
+  return typeof proposalId === "string" && typeof contentHash === "string" ? { proposalId, contentHash } : null;
+}
+
+/** The settled row's payload: `{ proposalId }`. */
+function settledProposalId(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const { proposalId } = payload as Record<string, unknown>;
+  return typeof proposalId === "string" && proposalId !== "" ? proposalId : null;
+}
+
+/**
+ * The confirmation card in an agent's thread: a thin adapter that hands the
+ * card its RPCs and the host's form. The submit value carries the proposal
+ * id, the content hash and the view token of this card's own view.
+ */
+function AgentSendInteraction({ interaction, submit, cancel }: PluginPendingInteractionProps) {
+  const rpc = useRpc<typeof rpcContract>();
+  const navigate = useBbNavigate();
+  const form = experimental_useQuestionFormHost();
+  const ids = proposalPayload(interaction.payload);
+  const proposalId = ids?.proposalId ?? null;
+  const contentHash = ids?.contentHash ?? null;
+  const load = useCallback(async (): Promise<ProposalViewResult> => {
+    if (proposalId === null || contentHash === null) return { state: "gone" };
+    return rpc.call("proposal_view", { proposalId, contentHash });
+  }, [contentHash, proposalId, rpc]);
+  const registerAction = useCallback(
+    (handler: (action: string) => boolean) => form.registerActionHandler(handler),
+    [form],
+  );
+  if (ids === null) {
+    return <AgentSendCard load={load} submit={async () => undefined} cancel={cancel} openDraft={() => undefined} />;
+  }
+  return (
+    <AgentSendCard
+      load={load}
+      submit={(action, viewToken) => submit({ action, proposalId: ids.proposalId, contentHash: ids.contentHash, viewToken })}
+      cancel={cancel}
+      openDraft={(draftId) => navigate.toPluginPanel("mail", { subPath: draftSubPath(draftId) })}
+      registerAction={registerAction}
+    />
+  );
+}
+
+/** A settled card's row in the thread: where the email stands now, with Undo while it waits. */
+function AgentSendTimelineRow({ payload }: PluginTimelineRendererProps) {
+  const rpc = useRpc<typeof rpcContract>();
+  const navigate = useBbNavigate();
+  const proposalId = settledProposalId(payload);
+  const [version, setVersion] = useState(0);
+  useDebouncedRealtime(OUTBOX_CHANGED_CHANNEL, (payloads) => {
+    if (payloads.some((p) => outboxEvent(p)?.id === proposalId)) setVersion((n) => n + 1);
+  });
+  const status = useCallback(async () => {
+    if (proposalId === null) throw new Error("not_found");
+    return rpc.call("proposal_status", { proposalId });
+  }, [proposalId, rpc]);
+  const outbox = useCallback(
+    async (outboxId: string) => (await rpc.call("outbox_list", { accountId: null })).rows.find((r) => r.id === outboxId) ?? null,
+    [rpc],
+  );
+  const undo = useCallback(async (outboxId: string) => (await rpc.call("outbox_cancel", { id: outboxId })).cancelled, [rpc]);
+  return (
+    <AgentSendRow
+      status={status}
+      outbox={outbox}
+      undo={undo}
+      openDraft={(draftId) => navigate.toPluginPanel("mail", { subPath: draftSubPath(draftId) })}
+      version={version}
+    />
+  );
+}
+
 // The default export must be definePluginApp(...); BB interprets it after
 // loading the bundle. navPanel adds a page to the left sidebar, routed at
 // /plugins/makosh-mail/mail; while it is open, BB's sidebar shows the mail
@@ -1676,4 +1786,8 @@ export default definePluginApp((app) => {
     experimental_sidebar: MailFolderSidebar,
     experimental_useBadge: useUnreadBadge,
   });
+  // The confirmation card mail_propose opens (rendererId "agent-send"), and
+  // its settled row in the thread timeline.
+  app.slots.pendingInteraction({ id: "agent-send", component: AgentSendInteraction });
+  app.slots.experimental_timelineRenderer({ kind: "makosh-mail/agent-send", component: AgentSendTimelineRow });
 });

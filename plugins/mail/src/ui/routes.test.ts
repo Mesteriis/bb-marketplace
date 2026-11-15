@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseThreadSubPath, parseViewSubPath, threadSubPath, viewSubPath } from "./routes.ts";
+import { draftSubPath, parseDraftSubPath, parseThreadSubPath, parseViewSubPath, threadSubPath, viewSubPath } from "./routes.ts";
 
 /** What the host does to a subPath before the panel receives it. */
 const hostEncode = (subPath: string) => subPath.split("/").map(encodeURIComponent).join("/");
@@ -89,5 +89,30 @@ describe("view subPath", () => {
   it("does not take a view for a conversation link or the reverse", () => {
     expect(parseThreadSubPath(viewSubPath({ kind: "role", role: "inbox" }))).toBeNull();
     expect(parseViewSubPath(threadSubPath("acc-1", "th-a"))).toBeNull();
+  });
+});
+
+describe("draft subPath", () => {
+  it("formats a plain id as it is", () => {
+    expect(draftSubPath("draft-1")).toBe("d/draft-1");
+    expect(parseDraftSubPath("d/draft-1")).toBe("draft-1");
+  });
+
+  it.each(["a/b", "100%", "with spaces", "%2F", "ü?#&="])("round-trips %j through the host's encoding", (draftId) => {
+    const subPath = draftSubPath(draftId);
+    expect(subPath.split("/")).toHaveLength(2);
+    expect(parseDraftSubPath(hostEncode(subPath))).toBe(draftId);
+  });
+
+  it.each(["", "d", "d/", "x/draft-1", "d/draft-1/extra", "d/%E0%A4%A", "t/acc-1/t_42", "v/all/inbox"])(
+    "rejects %j",
+    (subPath) => {
+      expect(parseDraftSubPath(subPath)).toBeNull();
+    },
+  );
+
+  it("is not a thread or a view", () => {
+    expect(parseThreadSubPath(draftSubPath("draft-1"))).toBeNull();
+    expect(parseViewSubPath(draftSubPath("draft-1"))).toBeNull();
   });
 });

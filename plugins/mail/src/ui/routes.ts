@@ -2,7 +2,8 @@
 //
 // A view is `v/all/<role>` (a role merged across accounts) or
 // `v/<accountId>/<folder path>` (one account's folder). A conversation is
-// `t/<accountId>/<threadId>`. Each id and path is percent-encoded
+// `t/<accountId>/<threadId>`. A draft to open in the composer (from an
+// agent's card) is `d/<draftId>`. Each id and path is percent-encoded
 // here, so an id holding `/` stays one segment. The host encodes every
 // segment once more on the way into the URL and hands the panel that form,
 // so parsing undoes both layers. Ids without reserved characters (the usual
@@ -69,4 +70,16 @@ export function parseViewSubPath(subPath: string): MailView | null {
     return ROLE_SEGMENTS.has(second) ? { kind: "role", role: second as RoleName } : null;
   }
   return { kind: "folder", accountId, path: second };
+}
+
+/** The subPath, as an unencoded segment for `toPluginPanel`, of a draft to open in the composer. */
+export function draftSubPath(draftId: string): string {
+  return `d/${encodeURIComponent(draftId)}`;
+}
+
+/** The draft a panel subPath (as the host passes it) names; null for anything else. */
+export function parseDraftSubPath(subPath: string): string | null {
+  const segments = subPath.split("/");
+  if (segments.length !== 2 || segments[0] !== "d") return null;
+  return decodeTwice(segments[1]!);
 }
