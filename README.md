@@ -7,9 +7,9 @@ the start of an agent's work.
 
 [Русская версия](README.ru.md)
 
-> **Status: pre-release.** The first plugin reads IMAP mail as an
+> **Status: pre-release.** The first plugin reads and sends IMAP mail as an
 > experimental slice: it marks, flags and moves mail only when you click or
-> press a key, and cannot send. No
+> press a key, and sends only what you write, after a 10-second Undo. No
 > release tag exists yet, and nothing is listed in the BB Community
 > marketplace.
 
@@ -17,7 +17,7 @@ the start of an agent's work.
 
 | Plugin | Id | What it does today |
 | --- | --- | --- |
-| [Makosh Mail](plugins/mail) | `makosh-mail` | Reads every folder of iCloud, Gmail and other IMAP accounts on a **Mail** page, with an All accounts view, search, read state and flags synced with the server, multi-select with Spam / Archive / Delete / Move to… on your click, .eml and attachment downloads, hotkeys and opt-in agent tools. It cannot send or reply yet. |
+| [Makosh Mail](plugins/mail) | `makosh-mail` | Reads every folder of iCloud, Gmail and other IMAP accounts on a **Mail** page, with an All accounts view, search, read state and flags synced with the server, multi-select with Spam / Archive / Delete / Move to… on your click, .eml and attachment downloads, hotkeys and opt-in agent tools. Composes, replies and forwards with drafts on the server, sends over SMTP with a 10-second Undo and an Outbox. Agents cannot send. |
 
 ## Install
 

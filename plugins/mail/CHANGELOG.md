@@ -56,18 +56,46 @@ All notable changes to Makosh Mail are recorded here. The format follows
 - Hotkeys on the Mail page with a `?` sheet: `j`, `k`, `o`, Enter, `u`, `/`,
   `x`, `e`, `#`, `!`, `s`, Shift+`u`, Shift+`i`, `v`, and `g` then `i`, `s`,
   `d`, `t` or `a`. Letters follow the physical key. `c`, `r`, `a` and `f`
-  are listed as coming later.
+  compose, reply, reply all and forward; Cmd/Ctrl+Enter sends.
 - **Stop showing** on a message from a sender whose images are always shown.
 - An experimental **Mail** thread list for the BB sidebar (Settings →
   Appearance → thread list): the merged Inbox of every account in place of
   the chat list. A row opens its conversation on the Mail page, which also
   opens a conversation from a `t/<accountId>/<threadId>` deep link.
+- **Compose**, **Reply**, **Reply all** and **Forward**, by the owner only:
+  address chips with suggestions from stored mail, a rich-text body (TipTap)
+  and attachments by picker, drag and drop or paste, up to 25 MB and 100
+  recipients. Reply threads with the original and uses Reply-To; Forward
+  carries the original's attachments.
+- Drafts saved locally within about two seconds and, on servers with
+  UIDPLUS, copied to the account's Drafts folder; without UIDPLUS they stay
+  local. A draft from another client opens with **Edit draft**.
+- Sending over SMTP with TLS through an outbox: a 10-second **Undo** toast,
+  then a background send and a Sent copy (APPEND with the Bcc line; Gmail
+  keeps its own copy, without Bcc). At most 10 sends a minute per account.
+  The **Outbox** at the top of Sent shows sends not done with only the safe
+  actions per state (Undo, Send now, Edit, Retry, Discard, Send again,
+  Retry copy, Dismiss); nothing resends on its own. A failed send can be
+  edited (the draft comes back) or discarded (send and draft deleted).
+- SMTP settings per account: iCloud and Gmail presets (also for accounts
+  added earlier), host and port for other servers, and an SMTP dialog that
+  tests before saving.
 
 ### Changed
 
 - The plugin's server writes are now `\Seen` and `\Flagged` added or
-  removed and moves, all on the owner's click or key; it still never
-  expunges. Agents gain nothing: no tool, command or mention marks, flags,
-  moves or downloads mail.
+  removed and moves, all on the owner's click or key. Agents gain nothing:
+  no tool, command or mention marks, flags, moves, downloads, drafts or
+  sends mail.
 - The note on agents with shell access to the BB server machine now names
-  the internal calls behind read state, flags, moves and download links.
+  the internal calls behind read state, flags, moves and download links, and
+  sending: such an agent could send. This is an accepted limit; the
+  always-visible Undo toast, the Outbox and the 10-a-minute cap limit it.
+- Server writes now also include drafts appended to Drafts and sent copies
+  appended to Sent. The plugin expunges only its own superseded drafts (or
+  the one foreign draft the owner continued), one UID at a time, on servers
+  with UIDPLUS; nothing else is marked `\Deleted`.
+- Drafts synced from the server are visible to `mail_search` and
+  `mail_read` like any other message.
+- The page bundle (`dist/app.js`) grew to about 600 KB with the TipTap
+  editor.

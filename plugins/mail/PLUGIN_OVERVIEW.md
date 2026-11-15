@@ -1,78 +1,74 @@
 This experimental release puts your mailbox next to your threads: connect an
-iCloud, Gmail or other IMAP account, read and search every folder, sort,
-flag and move mail with a click or a key, and give one message to an agent
-when you want help with it.
+iCloud, Gmail or other IMAP account, read, search, sort and move mail with a
+click or a key, write and send mail, and give one message to an agent.
 
 ## What you get
 
-- A **Mail** page in the sidebar with an unread badge, a folder list with
-  unread counts, conversation list, search and reading pane. HTML mail is
-  sanitized.
-- Every folder of each account syncs on the BB server every 5 minutes and
-  syncs the last 30 days; both are plugin settings. Gmail labels appear as
-  folders, Gmail All Mail is synced, and its Important and Starred folders
-  are skipped. A message Gmail keeps in several folders is counted once.
-- **All accounts** merges Inbox, Sent, Drafts, Spam, Archive and Trash
-  across accounts (Gmail All Mail does not count as Archive).
-- Read, unread and flags sync with the server both ways. Select several
-  conversations to mark, flag, archive, delete or **Move to…** a folder of
-  the same account at once.
-- **Details** shows a message's headers and MIME structure as text.
-- Download a message as .eml or its attachments through a one-time link
-  valid for 60 seconds. The plugin does not keep the files, refuses messages
-  over 50 MB or changed on the server, and saves risky types such as HTML as
-  plain binary files.
+- A **Mail** page with an unread badge, folders with unread counts,
+  conversations, search and a reading pane with sanitized HTML. Every folder
+  syncs on the BB server every 5 minutes, last 30 days (both settings).
+  Gmail labels are folders; Important and Starred are skipped.
+- **All accounts** merges Inbox, Sent, Drafts, Spam, Archive and Trash.
+- Read state and flags sync both ways. Select conversations to mark, flag,
+  archive, delete or **Move to…** at once.
+- **Details** shows headers and MIME structure. .eml and attachment
+  downloads use a one-time 60-second link; nothing is kept.
 - Gmail-style hotkeys; `?` lists them.
-- Images that are part of a message show (mail synced before this version
-  shows them only once it is fetched again, not automatically). Remote
-  images stay hidden until you click **Show images** for that message or
-  **Always show from** its sender.
-- **Hand to agent** opens a new thread draft that mentions the open message,
-  and an `@` mention under **Mail** adds a message's text to any prompt.
-- Optionally, your Inbox in place of the sidebar's chats: pick **Mail** as
-  the thread list in Settings → Appearance.
+- Remote images stay hidden until **Show images** or **Always show from**.
+- **Hand to agent** and an `@` mention under **Mail** give an agent a
+  message you picked.
+- Optionally, your Inbox in place of the sidebar's chats.
+
+## Writing and sending
+
+- **Compose**, **Reply**, **Reply all** and **Forward** (`c`, `r`, `a`,
+  `f`): address chips, rich text, attachments up to 25 MB.
+- Drafts save locally within seconds. On servers with UIDPLUS a copy goes
+  to Drafts so other clients see it; without it drafts stay local.
+- **Send** waits 10 seconds with **Undo**, then goes out over SMTP with TLS.
+  The Sent copy keeps Bcc; Gmail's own Sent copy does not show it.
+- The **Outbox** at the top of Sent shows every send not done: Undo while
+  queued, Send now or Edit if held after a restart, Retry, Edit or Discard
+  after a failure, Send again or Discard if it may have been sent. Nothing
+  resends on its own.
+- SMTP uses the app password: iCloud `smtp.mail.me.com` 587 STARTTLS,
+  Gmail `smtp.gmail.com` 465 TLS, filled in for you; other servers ask.
 
 ## Agent access
 
-The tools `mail_search` and `mail_read` and the `mail` skill are off until you
-turn on the setting `agentTools`, which also gates `bb makosh-mail accounts`,
-`search` and `read` inside agent threads. They search all folders and name
-the folder of each message. Mentions and Hand to agent work without it,
-because you pick the message. The CLI also has `sync`, and `remove`, which
-works only in your own terminal. No tool, command or mention marks, flags,
-moves or downloads mail.
+`mail_search`, `mail_read` and the `mail` skill are off until you turn on
+`agentTools`, which also gates the CLI's `accounts`, `search` and `read` in
+agent threads. Mentions and Hand to agent work without it. No tool, command
+or mention marks, moves, downloads, drafts or sends mail. Drafts synced from
+the server, yours included, are visible to `mail_search`.
 
-`agentTools` controls what agents are offered. It is not a barrier against an
-agent that has shell access to the machine running the BB server: such an
-agent can also reach the plugin's internal calls, including the ones behind
-the read, flag, move, image and download buttons.
+`agentTools` is not a barrier against an agent with shell access to the
+machine running the BB server: it can reach the plugin's internal calls,
+sending included. Every send still shows its Undo toast on an open Mail
+page, sits in the Outbox, and each account sends at most 10 a minute.
 
-Text handed to an agent (a mention, Hand to agent, or the tools) is sent to
-that agent's model provider.
+Text handed to an agent is sent to that agent's model provider.
 
 ## What it changes on the server
 
-Opening a message or Mark read marks it read; Mark unread and the star
-change read state and flags. Spam, Not spam, Archive, Delete and Move to…
-move mail. All of these happen only on your click or key. Details and
-downloads never mark mail read. Delete moves to Trash; nothing is ever
-permanently deleted. Moves work only on servers that support `MOVE` or
-`UIDPLUS`. A refused move is retried; after 3 refusals it is cancelled, the
-mail goes back to its folder and the account shows the error.
+Read state, flags and moves happen only on your click or key. Delete moves
+to Trash; moves need `MOVE` or `UIDPLUS`. Details and downloads never mark
+mail read. It appends your drafts to Drafts and sent copies to Sent (Gmail
+keeps its own). It expunges only its own superseded drafts, by UID, on
+servers with UIDPLUS; nothing else is permanently deleted.
 
 ## What it costs
 
-- An app password per account. Gmail needs 2-step verification for one, and
-  Google Workspace admins may disable app passwords.
-- Mail and credentials stay on the machine that runs the BB server. Passwords
-  are encrypted with a key kept in the plugin's secret settings.
-- Once you allow a sender's images, opening their mail loads images from the
-  web, which tells the sender's servers that you opened it.
+- An app password per account; Gmail needs 2-step verification for one.
+- Mail and credentials stay on the BB server machine; passwords are
+  encrypted.
+- Allowing a sender's images tells their servers you opened the mail.
+- The page bundle is about 600 KB, mostly the editor.
 
 ## Not yet
 
-Sending, replying, creating or renaming folders, and Gmail API or OAuth
-sign-in.
+Creating or renaming folders, Gmail API or OAuth, signatures, and agents
+that draft or send.
 
 ## Source
 
