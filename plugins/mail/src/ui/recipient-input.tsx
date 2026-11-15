@@ -96,9 +96,11 @@ export interface RecipientInputProps {
   /** Suggestions for a prefix; rejections show nothing. */
   suggest: (prefix: string) => Promise<MailAddress[]>;
   autoFocus?: boolean;
+  /** Lower-case addresses the pre-send check named: their chips are marked. */
+  marked?: ReadonlySet<string>;
 }
 
-export function RecipientInput({ label, chips, text, onChange, suggest, autoFocus }: RecipientInputProps) {
+export function RecipientInput({ label, chips, text, onChange, suggest, autoFocus, marked }: RecipientInputProps) {
   const id = useId();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
@@ -217,12 +219,14 @@ export function RecipientInput({ label, chips, text, onChange, suggest, autoFocu
         {chips.map((chip, index) => {
           const parsed = parseAddress(chip);
           const problemId = `${id}-problem-${index}`;
+          const isMarked = marked !== undefined && marked.has(addressKey(chip));
           return (
             <li
               key={`${chip}-${index}`}
               aria-describedby={parsed.ok ? undefined : problemId}
               aria-invalid={parsed.ok ? undefined : true}
               data-selected={selected === index ? "" : undefined}
+              data-marked={isMarked ? "" : undefined}
               title={parsed.ok ? parsed.value.address : addressProblemText(parsed.problem)}
               className={cn(
                 "flex h-6 max-w-64 items-center gap-0.5 rounded-md border pl-2 text-xs",
@@ -230,6 +234,7 @@ export function RecipientInput({ label, chips, text, onChange, suggest, autoFocu
                   ? "border-border bg-muted text-foreground"
                   : "border-destructive/60 bg-destructive/10 text-destructive",
                 selected === index && "ring-1 ring-ring",
+                isMarked && "ring-2 ring-primary",
               )}
             >
               <span className="min-w-0 truncate">{chipLabel(chip)}</span>

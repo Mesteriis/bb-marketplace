@@ -360,3 +360,14 @@ describe("isAllowedLinkUrl", () => {
     expect(isAllowedLinkUrl("#top")).toBe(false);
   });
 });
+
+describe("sanitizeEmailHtml and the signature class (slice 3d)", () => {
+  it("keeps the makosh-signature class, so a reply to own mail can find the block to leave out", () => {
+    const { html } = sanitizeEmailHtml(
+      '<p>Text</p><div class="makosh-signature" onclick="x()"><p>Made-up Name</p></div>',
+      { remoteImages: false },
+    );
+    expect(html).toContain('<div class="makosh-signature"><p>Made-up Name</p></div>');
+    expect(html).not.toContain("onclick");
+  });
+});

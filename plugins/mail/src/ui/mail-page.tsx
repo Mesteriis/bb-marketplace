@@ -18,6 +18,7 @@ import type {
   ThreadDetail,
   ThreadSummary,
 } from "../core/index.ts";
+import type { IdentityView } from "../core/model.ts";
 import { archiveAllowedFrom, ROLE_NAMES, roleFolders } from "../core/actions.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -25,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { AccountForm, type AccountFormInitial, type AccountFormProps } from "./account-form.tsx";
 import { Composer, type ComposerPorts, type ComposeWarningKind } from "./composer.tsx";
+import type { TemplateView } from "./mail-settings.tsx";
 import { DetailsPanel, type DetailsState } from "./details-panel.tsx";
 import {
   EmptyFolder,
@@ -164,6 +166,10 @@ export interface MailPageProps {
   /** The open composer, or null. */
   composer: ComposerState | null;
   composerPorts: ComposerPorts;
+  /** Sending identities of every account and the templates (slice 3d), for the composer. */
+  identities?: readonly IdentityView[];
+  templates?: readonly TemplateView[];
+  onManageTemplates?: () => void;
   /** New message (c, the rail's New message). */
   onCompose: () => void;
   /** Reply, Reply all or Forward (toolbar, r, a, f). */
@@ -671,6 +677,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         onSent={props.onSent}
         onOpenSmtpSettings={props.onOpenSmtp}
         onFocusWithin={setComposerFocused}
+        {...(props.identities !== undefined ? { identities: props.identities } : {})}
+        {...(props.templates !== undefined ? { templates: props.templates } : {})}
+        {...(props.onManageTemplates !== undefined ? { onManageTemplates: props.onManageTemplates } : {})}
       />
     ) : null;
   const docked = composer !== null && composer.dockThreadId !== null && composer.dockThreadId === reading.threadId;

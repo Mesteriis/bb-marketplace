@@ -184,3 +184,102 @@ describe("ComposeEditor", () => {
     expect(docs.at(-1)).toEqual({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Hi" }] }] });
   });
 });
+
+describe("ComposeEditor: the signature block (slice 3d)", () => {
+  const p = (text: string) => ({ type: "paragraph", content: [{ type: "text", text }] });
+  const SIG = { type: "signature", content: [p("Made-up Name"), p("Example Ltd")] };
+  const topTypes = (doc: EditorDoc) => (doc.content ?? []).map((node) => node.type);
+
+  it("keeps a signature with its paragraphs through getJSON, and an empty one too", () => {
+    const { editor } = mount({ initialDoc: { type: "doc", content: [{ type: "paragraph" }, SIG] } });
+    expect(editor().getJSON()).toEqual({ type: "doc", content: [{ type: "paragraph" }, SIG] });
+    const empty = mount({ initialDoc: { type: "doc", content: [{ type: "paragraph" }, { type: "signature" }] } });
+    expect(topTypes(empty.editor().getJSON())).toEqual(["paragraph", "signature"]);
+    expect(empty.view.container.querySelector("div.makosh-signature")).not.toBeNull();
+  });
+
+  it("renders div.makosh-signature and parses it back", () => {
+    const { view, editor } = mount({ initialDoc: { type: "doc", content: [{ type: "paragraph" }, SIG] } });
+    expect(view.container.querySelector("div.makosh-signature")?.textContent).toBe("Made-up NameExample Ltd");
+    act(() => {
+      editor().commands.setContent('<p>Hi</p><div class="makosh-signature"><p>Again</p></div>');
+    });
+    expect(editor().getJSON().content?.[1]).toEqual({ type: "signature", content: [p("Again")] });
+  });
+
+  it("survives select-all and type: the block stays as the empty placeholder after the text", () => {
+    const { editor, docs } = mount({ initialDoc: { type: "doc", content: [p("Body"), SIG] } });
+    act(() => {
+      editor().chain().focus().selectAll().insertContent("New text").run();
+    });
+    const doc = docs.at(-1)!;
+    expect(topTypes(doc)).toEqual(["paragraph", "signature"]);
+    expect(doc.content?.[0]).toEqual(p("New text"));
+    expect(doc.content?.[1]?.content ?? []).toEqual([]);
+  });
+
+  it("cannot sit inside a list or a quote: the schema allows it at the top level only", () => {
+    const { editor } = mount();
+    const schema = editor().schema;
+    const signature = schema.nodes.signature!;
+    expect(schema.nodes.listItem!.contentMatch.matchType(signature)).toBeNull();
+    expect(schema.nodes.blockquote!.contentMatch.matchType(signature)).toBeNull();
+    expect(schema.nodes.doc!.contentMatch.matchType(signature)).not.toBeNull();
+    act(() => {
+      editor().commands.setContent('<blockquote><div class="makosh-signature"><p>Inside</p></div></blockquote>');
+    });
+    // Parsing lifts it out of the quote; nothing nests it.
+    const doc = editor().getJSON();
+    const quote = doc.content?.find((node) => node.type === "blockquote");
+    expect(JSON.stringify(quote)).not.toContain('"signature"');
+    expect(topTypes(doc)).toContain("signature");
+  });
+
+  it("pasted HTML with the signature class becomes ordinary paragraphs", () => {
+    const { editor } = mount();
+    act(() => {
+      editor().view.pasteHTML('<div class="makosh-signature"><p>Copied Name</p><p>Copied Ltd</p></div>');
+    });
+    const doc = editor().getJSON();
+    expect(JSON.stringify(doc)).not.toContain('"signature"');
+    expect(editor().getText()).toContain("Copied Name");
+  });
+
+  it("a reply to own mail drops the quoted signature; foreign mail keeps its text without the class", () => {
+    const quoted = '<p>Earlier text</p><div class="makosh-signature"><p>Own Name</p></div>';
+    const own = mount({
+      initialDoc: { type: "doc", content: [{ type: "paragraph" }, SIG, p("Ada wrote:")] },
+      importFrom: { html: quoted, into: "quote", stripSignature: true },
+    });
+    const ownDoc = own.imports.at(-1)!;
+    expect(JSON.stringify(ownDoc)).not.toContain("Own Name");
+    expect(JSON.stringify(ownDoc)).toContain("Earlier text");
+    expect(topTypes(ownDoc).filter((t) => t === "signature")).toHaveLength(1);
+    cleanup();
+
+    const foreign = mount({
+      initialDoc: { type: "doc", content: [{ type: "paragraph" }, SIG, p("Ada wrote:")] },
+      importFrom: { html: quoted, into: "quote", stripSignature: false },
+    });
+    const foreignDoc = foreign.imports.at(-1)!;
+    expect(JSON.stringify(foreignDoc)).toContain("Own Name");
+    // Only the draft's own block is a signature; the quoted one is plain quoted text.
+    expect(JSON.stringify(foreignDoc).match(/"signature"/g)).toHaveLength(1);
+    const quote = foreignDoc.content?.find((node) => node.type === "blockquote");
+    expect(JSON.stringify(quote)).toContain("Own Name");
+  });
+
+  it("a continued draft's body loses the class too, and no placeholder is forced in", () => {
+    const { editor } = mount({
+      initialDoc: { type: "doc", content: [{ type: "paragraph" }, { type: "signature" }] },
+      importFrom: { html: '<p>Draft</p><div class="makosh-signature"><p>Theirs</p></div>', into: "body" },
+    });
+    expect(topTypes(editor().getJSON())).toEqual(["paragraph", "paragraph"]);
+  });
+
+  it("the template and signature editors have no signature node", () => {
+    const { editor } = mount({ features: { signature: false } });
+    expect(editor().schema.nodes.signature).toBeUndefined();
+  });
+});
+

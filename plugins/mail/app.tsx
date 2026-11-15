@@ -1376,6 +1376,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       },
       suggest: async (prefix) => (await rpc.call("recipients_suggest", { prefix })).suggestions,
       reload: async (draftId) => (await rpc.call("compose_open", { draftId })).draft,
+      check: (input) => rpc.call("compose_check", input),
     }),
     [rpc],
   );
@@ -1761,8 +1762,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   }, [rpc]);
   const accountIds = accounts.map((a) => a.id).join(",");
   useEffect(() => {
-    if (status?.vaultReady === true && accountIds !== "") void loadIdentities();
-  }, [accountIds, loadIdentities, status?.vaultReady]);
+    if (status?.vaultReady !== true || accountIds === "") return;
+    void loadIdentities();
+    void loadTemplates();
+  }, [accountIds, loadIdentities, loadTemplates, status?.vaultReady]);
   const openSettings = useCallback(
     (section: SettingsSection) => {
       setSettings({ open: true, section });
@@ -1935,6 +1938,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onCloseSmtp={() => setSmtpAccountId(null)}
       onTestSmtp={(input) => smtpCall("accounts_smtp_test", input)}
       onSaveSmtp={(input) => smtpCall("accounts_smtp_set", input)}
+      identities={identities}
+      templates={templates}
+      onManageTemplates={() => openSettings("templates")}
     />
     <TranslationSettings
       open={translateSettingsOpen}

@@ -64,10 +64,21 @@ export interface ComposeToolbarProps {
   onLinkOpenChange: (open: boolean) => void;
   /** The tools shown, in the toolbar's order; all of them by default. */
   tools?: readonly ToolId[];
+  /** The Templates button (the composer only): opens or closes the picker. */
+  onTemplates?: () => void;
+  templatesOpen?: boolean;
   className?: string;
 }
 
-export function ComposeToolbar({ editor, linkOpen, onLinkOpenChange, tools: shown, className }: ComposeToolbarProps) {
+export function ComposeToolbar({
+  editor,
+  linkOpen,
+  onLinkOpenChange,
+  tools: shown,
+  onTemplates,
+  templatesOpen,
+  className,
+}: ComposeToolbarProps) {
   const mod = modKeyLabel();
   const TOOLS = shown === undefined ? ALL_TOOLS : ALL_TOOLS.filter((tool) => shown.includes(tool.id));
   const [focusIndex, setFocusIndex] = useState(0);
@@ -132,40 +143,59 @@ export function ComposeToolbar({ editor, linkOpen, onLinkOpenChange, tools: show
 
   return (
     <div className={cn("flex flex-col", className)}>
-      <div
-        role="toolbar"
-        aria-label="Formatting"
-        aria-orientation="horizontal"
-        onKeyDown={onKeyDown}
-        className="flex flex-wrap items-center gap-0.5"
-      >
-        {TOOLS.map((tool, index) => {
-          const pressed = tool.id === "clear" ? undefined : (active?.[tool.id] ?? false);
-          const hint = tool.key !== undefined ? `${tool.label} (${mod}${tool.key})` : tool.label;
-          return (
-            <Button
-              key={tool.id}
-              ref={(element) => {
-                buttons.current[index] = element;
-              }}
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-7"
-              tabIndex={index === focusIndex ? 0 : -1}
-              aria-label={hint}
-              aria-keyshortcuts={tool.key !== undefined ? `Control+${tool.key} Meta+${tool.key}` : undefined}
-              aria-pressed={pressed}
-              disabled={editor === null}
-              onFocus={() => setFocusIndex(index)}
-              // Keeps the editor's selection while the mouse is down.
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => run(tool.id)}
-            >
-              <Icon name={tool.icon} fallback={tool.fallback} aria-hidden />
-            </Button>
-          );
-        })}
+      <div className="flex items-center gap-1">
+        <div
+          role="toolbar"
+          aria-label="Formatting"
+          aria-orientation="horizontal"
+          onKeyDown={onKeyDown}
+          className="flex flex-wrap items-center gap-0.5"
+        >
+          {TOOLS.map((tool, index) => {
+            const pressed = tool.id === "clear" ? undefined : (active?.[tool.id] ?? false);
+            const hint = tool.key !== undefined ? `${tool.label} (${mod}${tool.key})` : tool.label;
+            return (
+              <Button
+                key={tool.id}
+                ref={(element) => {
+                  buttons.current[index] = element;
+                }}
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                tabIndex={index === focusIndex ? 0 : -1}
+                aria-label={hint}
+                aria-keyshortcuts={tool.key !== undefined ? `Control+${tool.key} Meta+${tool.key}` : undefined}
+                aria-pressed={pressed}
+                disabled={editor === null}
+                onFocus={() => setFocusIndex(index)}
+                // Keeps the editor's selection while the mouse is down.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => run(tool.id)}
+              >
+                <Icon name={tool.icon} fallback={tool.fallback} aria-hidden />
+              </Button>
+            );
+          })}
+        </div>
+        {onTemplates !== undefined ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="ml-auto h-7 px-2"
+            aria-label={`Templates (${mod}${mod === "⌘" ? "⌥" : "Alt+"}T)`}
+            aria-keyshortcuts="Control+Alt+T Meta+Alt+T"
+            aria-expanded={templatesOpen === true}
+            disabled={editor === null}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={onTemplates}
+          >
+            <Icon name="FileText" fallback="Mail" aria-hidden />
+            Templates
+          </Button>
+        ) : null}
       </div>
       {linkOpen && editor !== null ? (
         <LinkField editor={editor} onClose={() => onLinkOpenChange(false)} />
