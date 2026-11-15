@@ -3457,7 +3457,7 @@ describe("Mail settings (slice 3d)", () => {
 });
 
 describe("Sending with the pre-send check (slice 3d)", () => {
-  it("Send saves From, runs compose_check, shows Before you send, and Send anyway queues it", async () => {
+  it("Send saves (From only when changed), runs compose_check, shows Before you send, and Send anyway queues it", async () => {
     const slot = render(
       composeRpc({
         compose_check: () => ({ issues: [{ kind: "empty_subject" }] }),
@@ -3470,7 +3470,7 @@ describe("Sending with the pre-send check (slice 3d)", () => {
     fireEvent.change(within(composer).getByRole("combobox", { name: "To" }), { target: { value: "ada@example.org," } });
     fireEvent.click(within(composer).getByRole("button", { name: "Send" }));
     const dialog = await slot.findByRole("dialog", { name: "Before you send" });
-    expect(callsTo(slot, "compose_save")[0]?.input).toMatchObject({ fromAddress: null });
+    expect(callsTo(slot, "compose_save")[0]?.input).not.toHaveProperty("fromAddress");
     expect(callsTo(slot, "compose_check")[0]?.input).toEqual({ draftId: "d-1", baseRevision: 2 });
     expect(callsTo(slot, "compose_send")).toHaveLength(0);
     fireEvent.click(within(dialog).getByRole("button", { name: "Send anyway" }));

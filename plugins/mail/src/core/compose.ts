@@ -477,8 +477,8 @@ export async function saveCompose(deps: ComposeDeps, input: SaveComposeInput): P
  * The draft's From after a save (spec resolution 10): on an account switch,
  * the requested (or current) address only when it is an alias of the new
  * account, else null; on the same account, an explicit address must be one
- * of its active identities (`invalid` otherwise), and an absent one keeps
- * the current value. The own address is stored as null.
+ * of its active identities (`invalid` otherwise) or the stored From itself,
+ * and an absent one keeps the current value. The own address is stored as null.
  */
 function savedFromAddress(
   store: MailStore,
@@ -494,7 +494,15 @@ function savedFromAddress(
   }
   if (requested === undefined) return before.fromAddress;
   const identity = identityOf(identities, requested);
-  if (identity === null) throw new ComposeError("invalid");
+  if (identity === null) {
+    // The stored From sent back unchanged (an alias removed since): kept, so
+    // the draft still saves; the Drafts copy falls back to the own address
+    // and a send refuses it with from_unknown.
+    if (requested !== null && before.fromAddress !== null && requested.trim().toLowerCase() === before.fromAddress.toLowerCase()) {
+      return before.fromAddress;
+    }
+    throw new ComposeError("invalid");
+  }
   return fromAddressOf(identity);
 }
 

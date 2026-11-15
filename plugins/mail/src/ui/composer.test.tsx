@@ -497,6 +497,29 @@ describe("Composer: identities, signatures, checks and templates (slice 3d)", ()
     await waitFor(() => expect(ports.save.mock.calls.at(-1)![0]).toMatchObject({ fromAddress: null }));
   });
 
+  it("omits fromAddress from a save while From is unchanged (a removed alias still saves)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { ports } = mount({ identities, draft: draft({ fromAddress: "gone@example.org" }) });
+    fireEvent.change(subject(), { target: { value: "Plan" } });
+    await act(async () => {
+      vi.advanceTimersByTime(AUTOSAVE_MS);
+    });
+    await waitFor(() => expect(ports.save).toHaveBeenCalledTimes(1));
+    expect(ports.save.mock.calls[0]![0]).not.toHaveProperty("fromAddress");
+    await chooseFrom(/Team/);
+    await act(async () => {
+      vi.advanceTimersByTime(AUTOSAVE_MS);
+    });
+    await waitFor(() => expect(ports.save).toHaveBeenCalledTimes(2));
+    expect(ports.save.mock.calls[1]![0]).toMatchObject({ fromAddress: "team@example.org" });
+    fireEvent.change(subject(), { target: { value: "Plan B" } });
+    await act(async () => {
+      vi.advanceTimersByTime(AUTOSAVE_MS);
+    });
+    await waitFor(() => expect(ports.save).toHaveBeenCalledTimes(3));
+    expect(ports.save.mock.calls[2]![0]).not.toHaveProperty("fromAddress");
+  });
+
   it("an empty signature block takes the new identity's; an edited one stays with the note", async () => {
     mount({ identities, draft: withSignature("My own edit") });
     await chooseFrom(/Team/);

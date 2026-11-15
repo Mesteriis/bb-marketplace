@@ -1028,3 +1028,5 @@ These override the sections above. Items marked *(owner)* were decided by the ow
     - Undoing **Move to <label>** on Gmail is a move back: a MOVE out of the label removes that label, which is the true inverse; a COPY there would leave the label on the message.
     - Undo out of Trash or Spam stays a move back, as before. Every non-Gmail server moves back as before.
     - README and `PLUGIN_OVERVIEW.md` "What it changes on the server" therefore say: "Undo of Archive on Gmail adds the message back to the folder it came from with UID COPY; nothing else uses COPY."
+20. **Review fixes.**
+    - A `compose_save` that keeps the account and sends the draft's stored `fromAddress` back unchanged is accepted even when that alias is no longer active; the Drafts copy falls back to the own address (resolution 10) and Send refuses it with `from_unknown`. A newly chosen inactive address is still `invalid`. The composer sends `fromAddress` only when From (or the account) changed since the last save.
