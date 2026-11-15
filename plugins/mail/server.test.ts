@@ -3816,3 +3816,195 @@ describe("sending polish: undo", () => {
     });
   });
 });
+
+describe("makosh-mail server: new mail, block and notifications (slice 3e)", () => {
+  const KNOWN = "known@example.com";
+  const HOUR = 3_600_000;
+  const recent = new Date(NOW.getTime() - HOUR).toISOString();
+
+  /** An account whose Sent folder shows the owner wrote to KNOWN, with Junk and Archive, synced once. */
+  async function started(options: { settings?: Record<string, string | number | boolean>; archive?: Partial<FetchedMessage>[]; junk?: Partial<FetchedMessage>[] } = {}) {
+    const host = await load({
+      settings: { vaultKey: generateVaultKey(), ...options.settings },
+      server: (gateway) => {
+        gateway.addFolder({ path: "Sent", specialUse: "sent" });
+        gateway.addFolder({ path: "Junk", specialUse: "junk" });
+        gateway.addFolder({ path: "Archive", specialUse: "archive" });
+        gateway.deliver({ from: { name: null, address: "owner@example.org" }, to: [{ name: null, address: KNOWN }] }, "Sent");
+        for (const message of options.archive ?? []) gateway.deliver(message, "Archive");
+        for (const message of options.junk ?? []) gateway.deliver(message, "Junk");
+      },
+    });
+    const account = (await host.harness.behavior.callRpc("accounts_add", NEW_ACCOUNT)) as { id: string };
+    const service = host.harness.behavior.runService("sync");
+    await vi.waitFor(() => expect(roundsOk(host, account.id)).toBe(1));
+    return { host, accountId: account.id, service };
+  }
+
+  function roundsOk(host: Host, accountId: string): number {
+    return host.harness.inspection.logEntries.filter((entry) => JSON.stringify(entry).includes(`sync ${accountId}: ok`)).length;
+  }
+
+  function newMailSignals(host: Host) {
+    return host.harness.inspection.realtimeSignals.filter((signal) => signal.channel === "mail-new");
+  }
+
+  async function wakeAndWait(host: Host, accountId: string) {
+    const before = roundsOk(host, accountId);
+    await host.harness.behavior.callRpc("sync_now", { accountId });
+    await vi.waitFor(() => expect(roundsOk(host, accountId)).toBeGreaterThan(before));
+  }
+
+  function addRule(host: Host, kind: "address" | "domain", value: string) {
+    createSqliteStore(host.bb.storage.database()).addBlockRule(kind, value, `rule_${value}`, NOW.toISOString());
+  }
+
+  it("defines the four settings with their defaults and validates quiet hours", async () => {
+    const host = await load();
+    const descriptors = host.harness.inspection.registrations.settingsDescriptors as Record<string, { default?: unknown }>;
+    expect(descriptors.instantMail?.default).toBe(true);
+    expect(descriptors.notifyNewMail?.default).toBe(true);
+    expect(descriptors.quietHours?.default).toBe("");
+    expect(descriptors.agentTriage?.default).toBe(false);
+    for (const ok of ["", "22:00-08:00", "22:00\u201308:00", "00:00-23:59"]) {
+      await expect(host.harness.behavior.setSettings({ quietHours: ok })).resolves.toBeUndefined();
+    }
+    for (const bad of ["22:00", "24:00-08:00", "22:00 - 08:00", "10pm-8am"]) {
+      await expect(host.harness.behavior.setSettings({ quietHours: bad })).rejects.toThrow();
+    }
+  });
+
+  it("toasts new unread Inbox mail from someone the owner wrote to, publishing only a token", async () => {
+    const { host, accountId, service } = await started({
+      archive: [{ messageId: "<back@example.com>", from: { name: "Known", address: KNOWN }, date: recent }],
+    });
+    const gateway = host.gateway;
+    gateway.deliver({ from: { name: "Known \u200bPerson", address: KNOWN }, date: recent, subject: "Invented hello" });
+    gateway.deliver({ from: { name: "Stranger", address: "stranger@example.com" }, date: recent });
+    gateway.deliver({ from: { name: "Me", address: "owner@example.org" }, date: recent });
+    gateway.deliver({ from: { name: "Known", address: KNOWN }, date: recent, seen: true });
+    gateway.deliver({ from: { name: "Known", address: KNOWN }, date: new Date(NOW.getTime() - 7 * HOUR).toISOString() });
+    gateway.deliver({
+      from: { name: "Known", address: KNOWN },
+      date: recent,
+      bulkHeaders: { listId: "<news.example.com>", listUnsubscribe: "<mailto:u@example.com>", precedence: "bulk", autoSubmitted: null },
+    });
+    // A second copy of mail already stored (moved back on the phone): returning, never toasted.
+    gateway.deliver({ messageId: "<back@example.com>", from: { name: "Known", address: KNOWN }, date: recent });
+    await wakeAndWait(host, accountId);
+    await vi.waitFor(() => expect(newMailSignals(host)).toHaveLength(1));
+    const [signal] = newMailSignals(host);
+    expect(Object.keys(signal!.payload as object)).toEqual(["token"]);
+    const got = (await host.harness.behavior.callRpc("new_mail_get", signal!.payload)) as {
+      items: { accountId: string; name: string; address: string; messageId: string }[];
+      more: number;
+    };
+    expect(got.more).toBe(0);
+    expect(got.items).toHaveLength(1);
+    expect(got.items[0]).toMatchObject({ accountId, address: KNOWN });
+    expect(got.items[0]!.name).not.toContain("\u200b");
+    expect(got.items[0]!.messageId).toBe(messageIdAt(host, "INBOX", 2));
+    const logs = logText(host);
+    expect(logs).toContain(`notify ${accountId}: 1`);
+    expect(logs).not.toMatch(/known@|stranger@|Invented hello/);
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("new_mail_get caps at three, newest first, and refuses an unknown token", async () => {
+    const { host, accountId, service } = await started();
+    for (let i = 0; i < 5; i++) {
+      host.gateway.deliver({ from: { name: `Known ${i}`, address: KNOWN }, date: new Date(NOW.getTime() - (i + 1) * 60_000).toISOString() });
+    }
+    await wakeAndWait(host, accountId);
+    await vi.waitFor(() => expect(newMailSignals(host)).toHaveLength(1));
+    const got = (await host.harness.behavior.callRpc("new_mail_get", newMailSignals(host)[0]!.payload)) as {
+      items: { name: string }[];
+      more: number;
+    };
+    expect(got.items.map((item) => item.name)).toEqual(["Known 0", "Known 1", "Known 2"]);
+    expect(got.more).toBe(2);
+    await expect(host.harness.behavior.callRpc("new_mail_get", { token: "unknown-token" })).rejects.toMatchObject({
+      code: "not_found",
+    });
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("quiet hours and notifyNewMail off publish nothing", async () => {
+    const variants: Record<string, string | boolean>[] = [{ quietHours: "00:00-23:59" }, { notifyNewMail: false }];
+    for (const settings of variants) {
+      const { host, accountId, service } = await started({ settings });
+      host.gateway.deliver({ from: { name: "Known", address: KNOWN }, date: recent });
+      await wakeAndWait(host, accountId);
+      expect(newMailSignals(host)).toEqual([]);
+      service.controller.abort();
+      await service.done;
+    }
+  });
+
+  it("block moves new Inbox mail of a blocked sender to Spam and does not toast it; stored, own and rescued mail stay", async () => {
+    const { host, accountId, service } = await started({
+      junk: [{ messageId: "<rescued@example.com>", from: { name: "Blocked", address: "blocked@example.com" }, date: recent }],
+    });
+    addRule(host, "address", "blocked@example.com");
+    addRule(host, "address", KNOWN);
+    addRule(host, "domain", "example.org");
+    const stored = messageIdAt(host, "INBOX", 1);
+    // The owner moved the rescued message out of Spam on another device: its row is gone, spam_seen stays.
+    const junk = host.gateway.mailboxes.get("Junk")!;
+    const rescuedMessage = junk.messages.splice(0, 1)[0]!;
+    host.bb.storage.database().prepare("DELETE FROM messages WHERE folder = 'Junk'").run();
+    host.gateway.deliver({ from: { name: "Blocked", address: "blocked@example.com" }, date: recent }); // uid 2
+    host.gateway.deliver({ from: { name: "Known", address: KNOWN }, date: recent }); // uid 3: blocked, known
+    host.gateway.deliver({ from: { name: "Me", address: "owner@example.org" }, date: recent }); // uid 4: own
+    host.gateway.deliver({ ...rescuedMessage, uid: 0 }); // uid 5: rescued
+    await wakeAndWait(host, accountId);
+    await vi.waitFor(() => expect(logText(host)).toContain(`block ${accountId}: moved 2`));
+    expect(movePending(host, messageIdAt(host, "INBOX", 2))).toBe("Junk");
+    expect(movePending(host, messageIdAt(host, "INBOX", 3))).toBe("Junk");
+    expect(movePending(host, messageIdAt(host, "INBOX", 4))).toBeNull();
+    expect(movePending(host, messageIdAt(host, "INBOX", 5))).toBeNull();
+    expect(movePending(host, stored)).toBeNull();
+    expect(newMailSignals(host)).toEqual([]);
+    expect(logText(host)).not.toMatch(/blocked@|example\.org"|known@/);
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("without a Spam folder block logs it and moves nothing", async () => {
+    const host = await load();
+    const account = (await host.harness.behavior.callRpc("accounts_add", NEW_ACCOUNT)) as { id: string };
+    const service = host.harness.behavior.runService("sync");
+    await vi.waitFor(() => expect(logText(host)).toContain(`sync ${account.id}: ok`));
+    addRule(host, "address", "blocked@example.com");
+    host.gateway.deliver({ from: { name: "Blocked", address: "blocked@example.com" }, date: recent });
+    await host.harness.behavior.callRpc("sync_now", { accountId: account.id });
+    await vi.waitFor(() => expect(logText(host)).toContain(`block ${account.id}: no spam folder`));
+    expect(movePending(host, messageIdAt(host, "INBOX", 2))).toBeNull();
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("the sync service starts and stops the IDLE supervisor and the snooze clock", async () => {
+    const host = await load({ server: (gateway) => gateway.addFolder({ path: "Snoozed" }) });
+    const account = (await host.harness.behavior.callRpc("accounts_add", NEW_ACCOUNT)) as { id: string };
+    const service = host.harness.behavior.runService("sync");
+    // The scripted server has no IDLE: the watch starts after the first ok round and ends unsupported.
+    await vi.waitFor(() => expect(host.gateway.watched).toEqual(["INBOX"]));
+    await vi.waitFor(() => expect(logText(host)).toContain(`idle ${account.id}: unsupported`));
+    // The snooze clock ticks after a round end: a snooze whose message left the snooze folder is dropped.
+    const store = createSqliteStore(host.bb.storage.database());
+    store.setSnoozeFolder(account.id, "Snoozed");
+    const messageId = messageIdAt(host, "INBOX", 1);
+    store.createSnoozes(
+      [{ messageId, accountId: account.id, returnTo: "INBOX", dueAt: NOW.toISOString(), state: "snoozed" }],
+      NOW.toISOString(),
+    );
+    await host.harness.behavior.callRpc("sync_now", { accountId: account.id });
+    await vi.waitFor(() => expect(logText(host)).toContain(`snooze ${account.id}: returning 0, back 0, cancelled 0, dropped 1`));
+    service.controller.abort();
+    await service.done;
+    expect(store.listSnoozes(account.id, { limit: 10 })).toEqual([]);
+  });
+});
