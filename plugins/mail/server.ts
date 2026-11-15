@@ -300,6 +300,12 @@ function refuse(
   return new experimental_PluginRpcRefusal({ code, message });
 }
 
+/** A slice-3d method before its server task: plugin callers refused, then `conflict`. */
+function notYet3d(_input: unknown, context: ExperimentalPluginRpcHandlerContext): never {
+  refusePluginCaller(context);
+  throw refuse("conflict", "Not available yet");
+}
+
 export const PLUGIN_CALLER_MESSAGE = "Only the owner's Mail page can change mail or accounts.";
 export const PASSWORD_NEEDED_MESSAGE = "This account needs its password re-entered";
 /** Role "all" (Gmail All Mail) stays under its account; All accounts does not merge it. */
@@ -1063,7 +1069,8 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       message_action: (input, context) => {
         refusePluginCaller(context);
         if (input.role === "all") throw refuse("invalid", ALL_ROLE_MESSAGE);
-        return runMessageAction(deps, input);
+        // Undo recording (undoId) is wired in slice 3d task 11.
+        return { ...runMessageAction(deps, input), undoable: false };
       },
       // Details panel: read-only session, BODY.PEEK, never \Seen; nothing is logged.
       // Owner only: it logs in to the server and shows headers no other RPC gives.
@@ -1273,6 +1280,18 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { ok: true as const };
       }),
       translate_clear: translating("translate_clear", () => ({ removed: store.clearTranslations() })),
+      // Slice 3d: wired in tasks 10 (identities, templates, compose_check) and 11 (action_undo).
+      identities_list: notYet3d,
+      identity_add: notYet3d,
+      identity_update: notYet3d,
+      identity_remove: notYet3d,
+      identity_suggestions: notYet3d,
+      identity_dismiss: notYet3d,
+      templates_list: notYet3d,
+      template_save: notYet3d,
+      template_delete: notYet3d,
+      compose_check: notYet3d,
+      action_undo: notYet3d,
     },
     { experimental_discoverable: false },
   );

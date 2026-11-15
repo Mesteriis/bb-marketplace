@@ -62,7 +62,11 @@ import {
   type Contact,
   type ContactMessage,
 } from "../contacts.ts";
-import { ImapAuthError, type NewProposal, type ProposalRecord, type TranslationRecord, type AccountWriteQueue, type MailTransport, type MessageBuilder, type OriginalReader, type OutboxNotifier, type SendResult, type SmtpConfig } from "../ports.ts";
+import type { ComposeDoc } from "../compose-doc.ts";
+import type { SignatureDoc } from "../compose-signature.ts";
+import type { AliasRow, InboundRow, SendCheck } from "../identities.ts";
+import type { UndoRow } from "../undo.ts";
+import { ImapAuthError, type NewProposal, type ProposalRecord, type TemplateRecord, type TranslationRecord, type AccountWriteQueue, type MailTransport, type MessageBuilder, type OriginalReader, type OutboxNotifier, type SendResult, type SmtpConfig } from "../ports.ts";
 import type { OutboxChangedPayload } from "../contract.ts";
 import { snippetOf as snippetFromBody } from "../snippet.ts";
 import {
@@ -105,6 +109,7 @@ export function makeStoredAccount(overrides: Partial<StoredAccount> = {}): Store
     passwordSealed: "sealed-password",
     smtp: null,
     sentCopy: "append",
+    signature: null,
     ...overrides,
   };
 }
@@ -1270,6 +1275,86 @@ export class InMemoryMailStore implements MailStore {
     return removed;
   }
 
+  // ---- Sending polish (slice 3d) ----
+  // Reads answer empty and writes throw until the tasks that implement them.
+
+  listIdentities(_accountId: string | null): AliasRow[] {
+    return [];
+  }
+
+  upsertIdentity(_input: { accountId: string; address: string; displayName: string | null }, _nowIso: string): AliasRow {
+    throw new Error("Not available yet");
+  }
+
+  updateIdentity(
+    _accountId: string,
+    _address: string,
+    _patch: { displayName?: string | null; signature?: SignatureDoc | null },
+    _nowIso: string,
+  ): AliasRow | null {
+    throw new Error("Not available yet");
+  }
+
+  setAccountSignature(_accountId: string, _signature: SignatureDoc | null): boolean {
+    throw new Error("Not available yet");
+  }
+
+  removeIdentity(_accountId: string, _address: string): boolean {
+    throw new Error("Not available yet");
+  }
+
+  dismissIdentity(_accountId: string, _address: string, _nowIso: string): void {
+    throw new Error("Not available yet");
+  }
+
+  setSendCheck(_accountId: string, _address: string, _check: SendCheck, _checkMessageId: string | null, _nowIso: string): void {
+    throw new Error("Not available yet");
+  }
+
+  resolveSendChecks(_accountId: string, _nowIso: string): number {
+    return 0;
+  }
+
+  inboundAddressRows(_accountId: string): InboundRow[] {
+    return [];
+  }
+
+  conversationAddresses(_messageId: string): Set<string> | null {
+    return null;
+  }
+
+  deliveredToOf(_messageId: string): string[] {
+    return [];
+  }
+
+  undoRows(_ids: string[]): UndoRow[] {
+    return [];
+  }
+
+  cancelMove(_ids: string[], _folder: string, _destination: string): string[] {
+    throw new Error("Not available yet");
+  }
+
+  listTemplates(): TemplateRecord[] {
+    return [];
+  }
+
+  saveTemplate(
+    _input: { id: string | null; name: string; nameKey: string; doc: ComposeDoc },
+    _newId: string,
+    _nowIso: string,
+  ): { id: string } | { conflict: true } {
+    throw new Error("Not available yet");
+  }
+
+  deleteTemplate(_id: string): boolean {
+    throw new Error("Not available yet");
+  }
+
+  getTemplateByKey(_nameKey: string): TemplateRecord | null {
+    return null;
+  }
+
   /** Translations follow their message: dropped with every removed row (as SQLite deleteRows). */
   private dropOrphanTranslations(): void {
     const ids = new Set(this.state.rows.map((r) => r.id));
@@ -1926,6 +2011,21 @@ export class ScriptedImapGateway implements ImapGateway {
           moved.set(uid, newUid);
         }
         return { moved: this.moveUidMap ? moved : null };
+      },
+      copyMessages: async (uids, destination) => {
+        record({ method: "copyMessages", uids: [...uids], destination });
+        if (options.readOnly) throw imapError("ReadOnly");
+        const target = this.mailboxes.get(destination);
+        if (!target) throw imapError("CopyFailed");
+        const copied = new Map<number, number>();
+        for (const uid of uids) {
+          const message = box().messages.find((m) => m.uid === uid);
+          if (message === undefined) continue;
+          const newUid = target.uidNext++;
+          target.messages.push({ ...message, uid: newUid });
+          copied.set(uid, newUid);
+        }
+        return { copied: this.moveUidMap ? copied : null };
       },
       capabilities: () => {
         record({ method: "capabilities" });

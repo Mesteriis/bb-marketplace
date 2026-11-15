@@ -307,6 +307,7 @@ export async function proposeMail(
       added: merged.added,
       contentSha256: hash,
       leftOut: created.leftOut,
+      templateName: null,
       expiresAt: new Date(now.getTime() + PROPOSAL_TTL_MS).toISOString(),
       createdAt: now.toISOString(),
     }, admit);
@@ -454,6 +455,10 @@ function buildView(store: MailStore, proposal: ProposalRecord, draft: DraftRecor
     attachments: store.listAttachments(draft.id).map((a) => ({ fileName: a.fileName, mimeType: a.mimeType, size: a.size })),
     leftOut: proposal.leftOut,
     expiresAt: proposal.expiresAt,
+    fromAlias: false,
+    signatureText: null,
+    templateName: proposal.templateName,
+    checks: [],
   };
   view.hiddenChars = hidden;
   return view;

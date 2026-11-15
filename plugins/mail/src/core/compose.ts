@@ -145,6 +145,7 @@ export function planNew(deps: Pick<ComposeDeps, "store" | "newId">, accountId: s
     bcc: [],
     subject: "",
     doc: EMPTY_DOC,
+    fromAddress: null,
     serverCopy: null,
     importHtml: null,
     attachments: [],
@@ -223,6 +224,7 @@ export async function planCompose(
     bcc: [],
     subject,
     doc,
+    fromAddress: null,
     serverCopy: null,
     importHtml: html === null ? null : { html, into: "quote" },
     attachments: input.kind === "forward" && original !== null ? original.attachments : [],
@@ -356,6 +358,7 @@ export async function openDraft(
     bcc: (original?.bcc ?? []).map(chip),
     subject: source.subject,
     doc: html !== null || text === "" ? EMPTY_DOC : docFromLines(splitLines(text)),
+    fromAddress: null,
     serverCopy,
     importHtml: html === null ? null : { html, into: "body" },
     origin: "owner",
@@ -430,6 +433,7 @@ export async function saveCompose(deps: ComposeDeps, input: SaveComposeInput): P
       bcc: input.bcc.map(chipOf),
       subject: input.subject.replace(/[\r\n\u0000]+/g, " "),
       doc: normalizeDoc(input.doc),
+      fromAddress: before.fromAddress,
     },
     deps.clock.now().toISOString(),
   );
@@ -667,8 +671,12 @@ export function draftView(store: MailStore, draft: DraftRecord): DraftView {
     serverCopy: draft.serverState,
     queued: isQueued(store, draft),
     continues: draft.kind === "new" && draft.sourceMessageId !== null,
-    import: draft.importHtml,
+    import:
+      draft.importHtml === null
+        ? null
+        : { html: draft.importHtml.html, into: draft.importHtml.into, stripSignature: draft.importHtml.stripSignature ?? false },
     origin: draft.origin,
+    fromAddress: draft.fromAddress,
   };
 }
 

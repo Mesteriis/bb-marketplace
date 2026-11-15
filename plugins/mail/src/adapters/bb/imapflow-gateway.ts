@@ -323,6 +323,11 @@ export function createSession(
       return { moved };
     }),
 
+    // UID COPY for undo of a Gmail archive: slice 3d task 9.
+    copyMessages: async () => {
+      throw new SafeImapError("CopyFailed");
+    },
+
     capabilities: () => ({
       uidplus: client.capabilities?.has("UIDPLUS") === true,
       gmail: client.capabilities?.has("X-GM-EXT-1") === true,

@@ -108,11 +108,6 @@ describe("identitiesOf", () => {
     expect(aliased!.sendCheck).toBe("rewritten");
   });
 
-  it("works without a stored signature on the account", () => {
-    const { signature: _drop, ...bare } = account("a1", "anna@example.com");
-    expect(identitiesOf(bare, [])[0]!.signature).toBeNull();
-  });
-
   it("caps aliases at 50 per account", () => {
     expect(IDENTITIES_MAX_PER_ACCOUNT).toBe(50);
   });

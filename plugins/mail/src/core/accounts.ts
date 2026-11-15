@@ -124,6 +124,7 @@ export async function addAccount(deps: AccountDeps, input: NewAccountInput): Pro
     passwordSealed: deps.vault.seal(input.password),
     smtp,
     sentCopy,
+    signature: existing?.signature ?? null,
   };
   deps.store.saveAccount(stored);
   return toPublicAccount(stored);

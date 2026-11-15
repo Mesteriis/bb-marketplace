@@ -42,6 +42,7 @@ function draft(overrides: Partial<DraftRecord> = {}): DraftRecord {
     doc: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Invented reply" }] }] },
     serverCopy: null,
     importHtml: null,
+    fromAddress: null,
     origin: "owner",
     proposalId: null,
     createdAt: "2026-11-15T10:00:00.000Z",

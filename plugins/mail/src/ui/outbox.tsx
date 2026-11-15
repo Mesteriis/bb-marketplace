@@ -73,6 +73,7 @@ const REASONS: Record<SendErrorKind, string> = {
   too_large: "too large for the server",
   unknown_after_data: "the connection was lost while sending",
   no_sent_folder: "no Sent folder to copy to",
+  sender_refused: "the server refused to send from this address",
   append_failed: "the copy to Sent failed",
 };
 

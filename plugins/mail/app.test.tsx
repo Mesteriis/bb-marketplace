@@ -2736,6 +2736,7 @@ function draftView(overrides: Partial<DraftView> = {}): DraftView {
     continues: false,
     import: null,
     origin: "owner",
+    fromAddress: null,
     ...overrides,
   };
 }
