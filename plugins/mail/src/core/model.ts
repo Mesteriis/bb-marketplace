@@ -365,6 +365,8 @@ export const draftViewSchema = z.object({
   serverCopy: draftServerCopySchema,
   /** A send of this draft is queued: saving answers conflict until it settles. */
   queued: z.boolean(),
+  /** It continues a foreign Drafts message: closed untouched without a server copy, it is dropped. */
+  continues: z.boolean(),
   /** Sanitized HTML the page loads into the editor once (quote of the original, or a foreign draft's body). */
   import: z
     .object({ html: z.string(), into: z.enum(["quote", "body"]) })
@@ -446,7 +448,11 @@ export type DraftServerCopy = {
 export type NewDraft = DraftFields & {
   id: string;
   kind: ComposeKind;
-  /** messages.id it replies to or forwards, or null. */
+  /**
+   * messages.id it replies to or forwards; for a "new" draft, the foreign
+   * Drafts message it continues (so opening that message again returns this
+   * draft); else null.
+   */
   sourceMessageId: string | null;
   /** The RFC 5322 Message-ID every version of this draft and its send carry. */
   messageId: string;

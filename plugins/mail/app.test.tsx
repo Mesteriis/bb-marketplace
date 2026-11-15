@@ -2613,6 +2613,7 @@ function draftView(overrides: Partial<DraftView> = {}): DraftView {
     revision: 1,
     serverCopy: "none",
     queued: false,
+    continues: false,
     import: null,
     ...overrides,
   };

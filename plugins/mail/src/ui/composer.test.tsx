@@ -47,6 +47,7 @@ function draft(overrides: Partial<DraftView> = {}): DraftView {
     revision: 1,
     serverCopy: "none",
     queued: false,
+    continues: false,
     import: null,
     ...overrides,
   };
@@ -315,6 +316,53 @@ describe("Composer", () => {
     fireEvent.keyDown(subject(), { key: "Escape" });
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(ports.save).toHaveBeenCalledTimes(1);
+    expect(ports.discard).not.toHaveBeenCalled();
+  });
+
+  it("drops an untouched continuation of a kept original on close", async () => {
+    const ports = fakePorts();
+    const { onClose } = mount(
+      { draft: draft({ subject: "Half written", to: [{ name: null, address: "bob@example.com" }], continues: true }) },
+      ports,
+    );
+    fireEvent.keyDown(subject(), { key: "Escape" });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(ports.discard).toHaveBeenCalledWith("draft-1");
+  });
+
+  it("drops an untouched continuation whose import let the original go", async () => {
+    const ports = fakePorts();
+    ports.save.mockResolvedValueOnce({ revision: 1, originalKept: true });
+    const { onClose } = mount(
+      { draft: draft({ subject: "Half written", serverCopy: "saved", continues: true, import: { html: "<h1>Body</h1>", into: "body" } }) },
+      ports,
+    );
+    await screen.findByText(/The original draft stays on the server/);
+    fireEvent.keyDown(subject(), { key: "Escape" });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(ports.discard).toHaveBeenCalledWith("draft-1");
+  });
+
+  it("keeps a continuation that still points at the original, or that was edited", async () => {
+    let ports = fakePorts();
+    let mounted = mount({ draft: draft({ subject: "Half written", serverCopy: "saved", continues: true }) }, ports);
+    fireEvent.keyDown(subject(), { key: "Escape" });
+    await waitFor(() => expect(mounted.onClose).toHaveBeenCalled());
+    expect(ports.discard).not.toHaveBeenCalled();
+    cleanup();
+
+    ports = fakePorts();
+    mounted = mount({ draft: draft({ subject: "Half written", continues: true, revision: 3 }) }, ports);
+    fireEvent.keyDown(subject(), { key: "Escape" });
+    await waitFor(() => expect(mounted.onClose).toHaveBeenCalled());
+    expect(ports.discard).not.toHaveBeenCalled();
+    cleanup();
+
+    ports = fakePorts();
+    mounted = mount({ draft: draft({ subject: "Half written", continues: true }) }, ports);
+    fireEvent.change(subject(), { target: { value: "Half written, more" } });
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(mounted.onClose).toHaveBeenCalled());
     expect(ports.discard).not.toHaveBeenCalled();
   });
 

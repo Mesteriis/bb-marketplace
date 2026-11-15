@@ -700,6 +700,18 @@ export class InMemoryMailStore implements MailStore {
     return null;
   }
 
+  draftContinuing(sourceMessageId: string): string | null {
+    const found = [...this.state.drafts.values()]
+      .filter((d) => d.kind === "new" && d.sourceMessageId === sourceMessageId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+    return found[0]?.id ?? null;
+  }
+
+  renewMessageId(id: string, messageId: string): void {
+    const draft = this.state.drafts.get(id);
+    if (draft) draft.messageId = messageId;
+  }
+
   recordServerCopy(id: string, copy: DraftServerCopy | null): void {
     const draft = this.state.drafts.get(id);
     if (!draft) return;

@@ -216,12 +216,13 @@ export async function prepareCompose(
 
 /**
  * One of our drafts by id, or a synced Drafts message by its message id: the
- * row whose server copy it is, else a new row continuing it (its Message-ID,
- * recipients with Bcc, body and attachments). Only an original read in full
- * (the server answered, every attachment within the cap, HTML the editor
- * holds without loss) with a Message-ID and UIDVALIDITY to guard it has its
- * uid recorded, so our first copy replaces it; any other stays on the
- * server untouched (`original_kept`).
+ * row whose server copy it is or that already continues it, else a new row
+ * continuing it (recipients with Bcc, body, attachments and threading). Only
+ * an original read in full (the server answered, every attachment within the
+ * cap, HTML the editor holds without loss) with a Message-ID and UIDVALIDITY
+ * to guard it has its uid recorded and keeps its Message-ID, so our first copy replaces it; any
+ * other stays on the server untouched (`original_kept`) and the draft gets
+ * its own Message-ID.
  */
 export async function openDraft(
   deps: ComposeDeps,
@@ -235,7 +236,8 @@ export async function openDraft(
 
   const ref = deps.store.rawRef(input.draftMessageId);
   if (ref === null) throw new ComposeError("not_found");
-  const existing = deps.store.draftForServerCopy(ref.accountId, ref.folder, ref.uid);
+  const existing =
+    deps.store.draftForServerCopy(ref.accountId, ref.folder, ref.uid) ?? deps.store.draftContinuing(input.draftMessageId);
   if (existing !== null) {
     const draft = deps.store.getDraft(existing);
     if (draft !== null) return { draft: draftView(deps.store, draft), warning: null };
@@ -270,8 +272,10 @@ export async function openDraft(
     id: deps.newId(),
     kind: "new",
     accountId: account.id,
-    sourceMessageId: null,
-    messageId: ownId !== "" ? `<${ownId}>` : newMessageIdFor(deps, account),
+    sourceMessageId: input.draftMessageId,
+    // Only the draft that replaces the original carries its Message-ID; one
+    // saved beside it gets its own, so Drafts never holds two sharing one.
+    messageId: serverCopy !== null ? `<${ownId}>` : newMessageIdFor(deps, account),
     inReplyTo: source.inReplyTo,
     references: source.references,
     to: source.to.map(chip),
@@ -320,7 +324,8 @@ export type SaveComposeResult =
  * `imported`: the editor loaded the draft's import. Only the document is
  * stored, the revision stays (so no server copy becomes due), and when the
  * load lost content a continued foreign draft is let go: it stays on the
- * server and is never expunged (`originalKept`).
+ * server and is never expunged (`originalKept`), and the draft takes its own
+ * Message-ID.
  */
 export async function saveCompose(deps: ComposeDeps, input: SaveComposeInput): Promise<SaveComposeResult> {
   const before = deps.store.getDraft(input.draftId);
@@ -331,6 +336,12 @@ export async function saveCompose(deps: ComposeDeps, input: SaveComposeInput): P
     if ("conflict" in result) return result;
     if (before.serverCopy !== null && docLosesContent(input.doc)) {
       deps.store.recordServerCopy(input.draftId, null);
+      // Still pointing at the foreign original it continues: the draft now
+      // lives beside it, so it stops sharing its Message-ID.
+      const original = before.sourceMessageId === null ? null : deps.store.rawRef(before.sourceMessageId);
+      if (original !== null && original.folder === before.serverCopy.folder && original.uid === before.serverCopy.uid) {
+        deps.store.renewMessageId(input.draftId, newMessageIdFor(deps, requireAccount(deps.store, before.accountId)));
+      }
       return { revision: result.revision, originalKept: true };
     }
     return result;
@@ -580,6 +591,7 @@ export function draftView(store: MailStore, draft: DraftRecord): DraftView {
     revision: draft.revision,
     serverCopy: draft.serverState,
     queued: isQueued(store, draft),
+    continues: draft.kind === "new" && draft.sourceMessageId !== null,
     import: draft.importHtml,
   };
 }

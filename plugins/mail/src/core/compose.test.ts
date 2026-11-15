@@ -415,6 +415,64 @@ describe("continuing a foreign draft", () => {
     expect(h.drafts.messages.map((m) => m.uid)).toContain(41);
   });
 
+  it("a kept original is continued once: opening it again returns that draft, its attachments copied once", async () => {
+    const id = foreign();
+    const small = { fileName: "a.txt", mimeType: "text/plain", bytes: new Uint8Array(3), contentId: null };
+    h.reader.originals.set(id, { replyTo: [], html: '<p style="color:red">Draft</p>', attachments: [small], bcc: [] });
+    const first = await openDraft(h.deps, { draftMessageId: id });
+    expect(first.warning).toBe("original_kept");
+    expect(first.draft.continues).toBe(true);
+    await save(first.draft.id);
+    const again = await openDraft(h.deps, { draftMessageId: id });
+    expect(again.draft.id).toBe(first.draft.id);
+    expect(again.draft.attachments).toHaveLength(1);
+    expect(h.store.listDrafts("acc_1")).toHaveLength(1);
+  });
+
+  it("a kept original continued again after its draft was discarded starts a new draft", async () => {
+    const id = foreign();
+    const { draft } = await openDraft(h.deps, { draftMessageId: id });
+    await discardCompose(h.deps, draft.id);
+    const again = await openDraft(h.deps, { draftMessageId: id });
+    expect(again.draft.id).not.toBe(draft.id);
+    expect(h.store.listDrafts("acc_1")).toHaveLength(1);
+  });
+
+  it("a kept original's continuation has its own Message-ID and keeps the reply threading", async () => {
+    h.drafts.messages.push(
+      makeFetchedMessage(41, {
+        messageId: "foreign@example.org",
+        inReplyTo: "<parent@example.org>",
+        references: ["<root@example.org>", "<parent@example.org>"],
+        subject: "Re: Plan",
+      }),
+    );
+    h.store.saveSyncState("acc_1", "Drafts", { uidValidity: 7, lastUid: 41, syncedSince: "1970-01-01T00:00:00.000Z" });
+    const id = stored(structuredClone(h.drafts.messages[0]!), "Drafts", 41);
+    const { draft, warning } = await openDraft(h.deps, { draftMessageId: id });
+    expect(warning).toBe("original_kept");
+    const record = h.store.getDraft(draft.id)!;
+    expect(record.messageId).not.toBe("<foreign@example.org>");
+    expect(record.messageId).toMatch(/^<id\d+@example\.org>$/);
+    expect(record.inReplyTo).toBe("<parent@example.org>");
+    expect(record.references).toEqual(["<root@example.org>", "<parent@example.org>"]);
+    await save(draft.id, { saveToServer: true });
+    expect(h.drafts.messages.filter((m) => m.messageId === "foreign@example.org")).toHaveLength(1);
+  });
+
+  it("an import that lets the original go gives the draft its own Message-ID, and reopening returns it", async () => {
+    const id = foreign();
+    h.reader.originals.set(id, { replyTo: [], html: "<p>Draft text</p>", attachments: [], bcc: [] });
+    const { draft } = await openDraft(h.deps, { draftMessageId: id });
+    expect(h.store.getDraft(draft.id)!.messageId).toBe("<foreign@example.org>");
+    await save(draft.id, {
+      doc: { type: "doc", content: [{ type: "heading", content: [{ type: "text", text: "Draft text" }] }] },
+      imported: true,
+    });
+    expect(h.store.getDraft(draft.id)!.messageId).not.toBe("<foreign@example.org>");
+    expect((await openDraft(h.deps, { draftMessageId: id })).draft.id).toBe(draft.id);
+  });
+
   it("an original with attachments over the cap is kept", async () => {
     const id = foreign();
     const big = { fileName: "big.bin", mimeType: "application/octet-stream", bytes: new Uint8Array(ATTACHMENT_CAP_BYTES), contentId: null };

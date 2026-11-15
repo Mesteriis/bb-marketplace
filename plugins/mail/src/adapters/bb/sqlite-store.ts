@@ -704,6 +704,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
     `SELECT id FROM compose_drafts WHERE account_id = ? AND server_folder = ? AND server_uid = ?
      ORDER BY created_at, id LIMIT 1`,
   );
+  const draftContinuing = db.prepare<[string], { id: string }>(
+    `SELECT id FROM compose_drafts WHERE kind = 'new' AND source_message_id = ?
+     ORDER BY created_at, id LIMIT 1`,
+  );
   const draftById = db.prepare<[string], DraftRow>("SELECT * FROM compose_drafts WHERE id = ?");
   const outboxById = db.prepare<[string], OutboxRow>(`SELECT ${OUTBOX_COLUMNS} FROM outbox WHERE id = ?`);
   /** The oldest due queued row of an account not busy (with onlyId, that row only), or null. */
@@ -1949,6 +1953,14 @@ export function createSqliteStore(db: Database.Database): MailStore {
 
     draftForServerCopy(accountId, folder, uid) {
       return draftByServerCopy.get(accountId, folder, uid)?.id ?? null;
+    },
+
+    draftContinuing(sourceMessageId) {
+      return draftContinuing.get(sourceMessageId)?.id ?? null;
+    },
+
+    renewMessageId(id, messageId) {
+      db.prepare("UPDATE compose_drafts SET message_id = ? WHERE id = ?").run(messageId, id);
     },
 
     recordServerCopy(id, copy) {
