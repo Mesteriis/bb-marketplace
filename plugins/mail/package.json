@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-makosh-mail",
   "version": "0.1.0",
-  "description": "Reads iCloud, Gmail and other IMAP mail on a Mail page; flags, moves and downloads it on your click, and hands a message to an agent.",
+  "description": "Reads, flags, moves and sends iCloud, Gmail and IMAP mail on a Mail page, with replies, drafts and 10 s Undo; hands a message to an agent.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,7 @@
   },
   "bb": {
     "name": "Makosh Mail [Experimental]",
-    "description": "Reads iCloud, Gmail and other IMAP mail on a Mail page; flags, moves and downloads it on your click, and hands a message to an agent.",
+    "description": "Reads, flags, moves and sends iCloud, Gmail and IMAP mail on a Mail page, with replies, drafts and 10 s Undo; hands a message to an agent.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

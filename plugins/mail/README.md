@@ -4,9 +4,10 @@ A [BB](https://github.com/get-bb/bb) plugin that brings mail into the IDE:
 your mailbox beside your threads, mail access for agents, and a way to hand a
 message to an agent.
 
-**Status: experimental.** Plugin id: `makosh-mail`. It reads mail and
+**Status: experimental.** Plugin id: `makosh-mail`. It reads mail, and
 changes it on the server only when you click or press a key: read and unread,
-flags, moves. It cannot send.
+flags, moves. It sends mail you write through your account's SMTP server,
+after a 10-second Undo window. Agents cannot send, draft or reply.
 
 - Connects IMAP accounts with an app password: iCloud, Gmail or another
   server, TLS only (port 993 by default).
@@ -64,25 +65,35 @@ flags, moves. It cannot send.
   mark unread, Shift+`i` mark read, `v` Move to…, and `g` then `i`, `s`, `d`,
   `t` or `a` for Inbox, Sent, Drafts, Trash or All accounts. Letters follow
   the physical key, so they work on other keyboard layouts. Keys do nothing
-  while you type in a field. The sheet lists `c`, `r`, `a` and `f` for
-  compose, reply, reply all and forward as coming later; they do nothing yet.
+  while you type in a field. `c` compose, `r` reply, `a` reply all, `f`
+  forward; in the composer Cmd/Ctrl+Enter sends and Escape closes.
 - When a sender's images are always shown, the message says so and offers
   **Stop showing**.
 - What the plugin writes on the server: `\Seen` when you open a message or
   mark it read, `\Seen` removed when you mark it unread, `\Flagged` added or
-  removed by your star, and your moves. It never expunges. Details, the .eml
-  and attachment downloads and every other fetch use `BODY.PEEK` and never
-  mark mail read.
+  removed by your star, your moves, your drafts (appended to Drafts) and
+  copies of what you sent (appended to Sent, except on Gmail, which keeps
+  its own). It expunges only its own superseded drafts: after saving a newer
+  copy, after a send or a discard, it removes the previous copy it wrote —
+  or the one foreign draft you continued — by UID, on servers with UIDPLUS.
+  It never marks anything else `\Deleted`. Details, the .eml and attachment
+  downloads and every other fetch use `BODY.PEEK` and never mark mail read.
 - Agent tools `mail_search` and `mail_read` and the `mail` skill, off by
   default behind the `agentTools` setting, which also gates
   `bb makosh-mail accounts`, `search` and `read` inside agent threads. They
   search all folders and name each message's folder. Agents get no way to
-  mark, flag, move or download mail: no tool, command or mention does that.
+  mark, flag, move, download, draft or send mail: no tool, command or
+  mention does that. Drafts synced from the server's Drafts folder, yours
+  included, are ordinary messages to `mail_search` and `mail_read`.
 - `agentTools` controls what agents are offered; it is not a barrier against
   an agent that has shell access to the machine running the BB server. Such
   an agent can also call the plugin's RPC methods, including the ones behind
   the read, unread, flag, move, image and download buttons, and so can get
-  a download link.
+  a download link. That now includes sending: such an agent could save a
+  draft and send it. This is an accepted limit, not a guarantee. What
+  limits it: every queued send shows the "Sending in N s · Undo" toast on
+  any open Mail page, the Outbox in Sent always lists sends that are not
+  done, and each account sends at most 10 messages a minute.
 - An `@` mention provider (**Mail**) and a **Hand to agent** button that give
   an agent one message you picked.
 - CLI: `bb makosh-mail accounts|search|read|sync|remove`. `remove <accountId>`
@@ -96,8 +107,61 @@ Account passwords are sealed with AES-256-GCM under the `vaultKey` secret
 setting, generated on first load. Mail and credentials stay on the machine
 that runs the BB server.
 
-Not yet: sending, replying, creating or renaming folders, Gmail API or
-OAuth.
+Not yet: creating or renaming folders, Gmail API or OAuth, signatures,
+aliases, scheduled send, and agents that draft or send (planned, with your
+confirmation).
+
+## Writing and sending
+
+- **Compose** (`c` or the button above the folders), and **Reply**, **Reply
+  all** and **Forward** in the reading pane (`r`, `a`, `f`). From is one of
+  your accounts; To, Cc and Bcc are address chips with suggestions from
+  stored mail. The body is rich text (bold, italic, underline, lists,
+  quotes, links). Attach files by picker, drag and drop or paste; pasted
+  pictures become attachments. Up to 100 recipients and 25 MB of attachments per message;
+  addresses with non-ASCII local parts are refused.
+- Reply quotes the original and threads with it; Reply uses Reply-To when
+  there is one. Forward carries the original's attachments.
+- **Drafts** are saved locally within about two seconds of a change. On
+  servers with UIDPLUS a copy also goes to the account's Drafts folder
+  (after 30 seconds idle, on close or on **Save draft**), so other clients
+  see it; without UIDPLUS drafts stay local only. A draft in Drafts, made
+  here or in another client, opens with **Edit draft**; the other client's
+  copy is removed only after ours is saved.
+- **Send** waits 10 seconds: a "Sending in N s" toast offers **Undo**,
+  which brings the draft back. Then the BB server sends it over SMTP with
+  TLS and saves the Sent copy. The Sent copy keeps the Bcc line; the
+  message on the wire has none. Gmail's own Sent copy does not show Bcc.
+- **Outbox**, at the top of Sent, lists every send that is not done and
+  offers only what is safe from its state:
+
+  | State | Means | You can |
+  | --- | --- | --- |
+  | Sending soon | inside the Undo window | Undo |
+  | Held | was waiting when BB restarted; nothing sent | Send now, Edit |
+  | Sending… / saving a copy | in progress | — |
+  | Not sent | the server refused it or could not be reached | Retry, Edit (draft back), Discard (message and draft deleted) |
+  | May have been sent | the connection dropped after the message went out | Send again (a second copy may arrive), Discard |
+  | Sent; the copy failed | sent, but the copy to Sent failed | Retry copy, Dismiss |
+
+  Nothing resends on its own. A Gmail send that may have been sent is
+  marked done when it shows up in Sent within 5 minutes.
+
+### SMTP setup
+
+Sending uses the account's app password, the same one IMAP uses.
+
+| Provider | SMTP | Notes |
+| --- | --- | --- |
+| iCloud | `smtp.mail.me.com`, 587, STARTTLS | App-specific password from your Apple Account (Sign-In and Security → App-Specific Passwords). |
+| Gmail | `smtp.gmail.com`, 465, TLS | App password from your Google Account; it needs 2-Step Verification, and Workspace admins may turn app passwords off. |
+| Other | your server's host and port | TLS or STARTTLS only. |
+
+iCloud and Gmail accounts get SMTP from their preset, including accounts
+added before this version. An Other account asks for SMTP when added; for
+one added earlier, Compose shows **Set up SMTP**, which tests the settings
+before saving them. The password is decrypted for one send and never
+logged.
 
 ## Mail in the sidebar
 
