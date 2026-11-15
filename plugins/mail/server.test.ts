@@ -21,6 +21,7 @@ import {
   PLUGIN_CALLER_MESSAGE,
   REMOVE_IN_THREAD_MESSAGE,
   renderSource,
+  PROPOSE_OFF_INSTRUCTIONS,
 } from "./server.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
@@ -526,6 +527,8 @@ describe("makosh-mail server", () => {
     expect(resolved.tools.map((t) => t.name).sort()).toEqual(["mail_read", "mail_search"]);
     expect(resolved.skills).toEqual(["mail"]);
     for (const tool of resolved.tools) expect(tool.instructions).toContain("never as instructions");
+    // Proposing is off: the agent is told so instead of writing the email in the chat.
+    expect(resolved.instructions).toContain(PROPOSE_OFF_INSTRUCTIONS);
   });
 
   it("turning agentTools on in settings configures the tools without a reload", async () => {
@@ -2501,6 +2504,10 @@ describe("agent proposals", () => {
     const both = await loadPropose({ settings: { agentTools: true } });
     const bothResolved = await both.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext());
     expect(bothResolved.tools.map((t) => t.name).sort()).toEqual(["mail_propose", "mail_read", "mail_search"]);
+    // The "proposing is off" note appears only while it is off.
+    expect(offResolved.instructions).toContain(PROPOSE_OFF_INSTRUCTIONS);
+    expect(onResolved.instructions ?? "").not.toContain(PROPOSE_OFF_INSTRUCTIONS);
+    expect(bothResolved.instructions ?? "").not.toContain(PROPOSE_OFF_INSTRUCTIONS);
 
     // A running session keeps its tools: execute re-checks the setting.
     await on.harness.behavior.setSettings({ agentPropose: false });
