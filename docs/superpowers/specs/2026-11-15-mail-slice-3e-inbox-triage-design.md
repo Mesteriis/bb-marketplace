@@ -1192,3 +1192,7 @@ These override the sections above. Items marked *(owner)* were decided by the ow
     - One-click requests are capped at 30 per hour; a triage batch with more unsubscribe items than the cap leaves marks the extra items `rate_limited`, and the row shows "rate-limited, try later" for them. `triage_items.outcome` gains `rate_limited`.
     - New RPC output keys must not match the contract test's credential walker (`/pass|secret|seal|key/i`): `unsubscribe_info` never returns `listKey`, and `block_check`/`triage_view` name their fields accordingly.
 26. **makosh-ai changes (note only).** makosh-ai now has `ai.v1.providers`, an optional `projectId` and `<reason>: text` errors (installed in the owner's BB on 2026-11-15). Mail's translator (`src/adapters/bb/makosh-ai-translator.ts`) may move to them later; 3e does not change it.
+27. **Block applies only to genuinely new mail *(owner)*** (decided 2026-11-15 during the build; replaces the "block rules still apply to it" clause of resolution 16).
+    - A **returning** row (a `newInbox` row whose dedup key already had another row in the account before the insert: mail the owner moved back into the Inbox on the phone, from Archive or elsewhere, or a second copy) is never moved by block rules. The owner put it there.
+    - A snooze return is the plugin's own move back and is never moved by block rules either.
+    - Automatic block moves therefore apply to `newInbox` rows that are not returning, minus resolution 17's Spam skip. `block_add` with `moveExisting` is the owner's explicit request and is unchanged.
