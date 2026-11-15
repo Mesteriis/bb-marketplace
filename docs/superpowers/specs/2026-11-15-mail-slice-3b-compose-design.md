@@ -989,7 +989,7 @@ Each task ends with `npm run check`; the last also with `npm run build` and
 
 ## Resolutions after the builder check
 
-These override the sections above. Items marked *(owner)* wait for the owner's sign-off; until then the recommended form is the plan's default.
+These override the sections above. Items marked *(owner)* were approved by the owner on 2026-11-15 in the recommended form (send boundary, dependencies, expunge exception, foreign drafts, chunked upload, held sends, Bcc in the Sent copy).
 
 1. **Send boundary *(owner)*.** `refusePluginCaller` refuses only `kind: "plugin"`; the app, the `bb` CLI and agents with shell access are all `client` callers, so "only the owner sends" is an accepted limit, not a guarantee. Mitigations: every queued send publishes `outbox-changed` and any open Mail page shows its Undo toast; the Outbox is always reachable; a cap of 10 sends per minute per account.
 2. **No `is_deleted` column.** `fetchFlags` does not return `\Deleted`, and hiding other clients' `\Deleted` mail is out of scope. Drop the column and `markDeleted`. Without UIDPLUS, drafts stay local only.
