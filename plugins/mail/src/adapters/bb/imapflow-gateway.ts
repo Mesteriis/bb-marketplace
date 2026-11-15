@@ -1,7 +1,9 @@
 // ImapGateway on imapflow. TLS only (secure: true whatever the port, never
 // STARTTLS or plaintext), one folder per session, every body fetch is
-// BODY.PEEK (imapflow fetches `source` with PEEK), and the only writes are
-// \Seen on owner-opened mail (markSeen) and owner-clicked moves (moveMessages).
+// BODY.PEEK (imapflow fetches `source` with PEEK, and `download` of the whole
+// message fetches `source` in chunks), and the only writes are \Seen on
+// owner-opened mail (markSeen), owner-clicked or hotkeyed \Seen / \Flagged
+// add/remove (setFlags) and owner-clicked moves (moveMessages).
 // Errors leaving this file are rebuilt from codes: imapflow errors can carry
 // server responses and the sent command, so their text is never passed on.
 import { ImapFlow } from "imapflow";
@@ -13,12 +15,13 @@ import type {
   MessageAddressObject,
 } from "imapflow";
 import PostalMime from "postal-mime";
-import type { Address, Attachment, Email } from "postal-mime";
+import type { Address, Attachment, Email, RawEmail } from "postal-mime";
 import {
   ImapAuthError,
   capInlineParts,
   type AttachmentMeta,
   type FetchedMessage,
+  type FlagChange,
   type ImapConfig,
   type ImapGateway,
   type FolderSession,
@@ -71,6 +74,8 @@ export type SessionClient = Pick<
   | "search"
   | "fetch"
   | "messageFlagsAdd"
+  | "messageFlagsRemove"
+  | "download"
   | "messageMove"
   | "logout"
   | "close"
@@ -80,7 +85,12 @@ export type ParseMail = (source: Buffer | string) => Promise<Email>;
 
 const EMPTY_MAIL: Email = { headers: [], headerLines: [], attachments: [] };
 
-function parseWithPostalMime(source: Buffer | string): Promise<Email> {
+/**
+ * The one MIME parser of the plugin: fetchMessages uses it, and downloads
+ * reuse it so a part index (partId) means the same part in both. Keep the
+ * options here; postal-mime is pinned to an exact version for the same reason.
+ */
+export function parseMail(source: Extract<RawEmail, string | ArrayBuffer | ArrayBufferView>): Promise<Email> {
   return PostalMime.parse(source, { attachmentEncoding: "arraybuffer" });
 }
 
@@ -143,7 +153,7 @@ export function createImapflowGateway(options: ImapflowGatewayOptions = {}): Ima
 export function createSession(
   client: SessionClient,
   readOnly: boolean,
-  parse: ParseMail = parseWithPostalMime,
+  parse: ParseMail = parseMail,
 ): FolderSession {
   const guarded =
     <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
@@ -213,13 +223,55 @@ export function createSession(
       if (!stored) throw new SafeImapError("StoreFailed");
     }),
 
-    setFlags: async () => {
-      throw new Error("not implemented: setFlags");
-    },
+    setFlags: guarded(async (uids: number[], change: FlagChange) => {
+      if (readOnly) throw new SafeImapError("ReadOnly", "IMAP error (mailbox is read-only)");
+      if (uids.length === 0) return;
+      const stores: [flag: string, add: boolean | undefined][] = [
+        ["\\Seen", change.seen],
+        ["\\Flagged", change.flagged],
+      ];
+      for (const [flag, add] of stores) {
+        if (add === undefined) continue;
+        // imapflow resolves false when the server refuses the STORE.
+        const stored = add
+          ? await client.messageFlagsAdd(uids, [flag], { uid: true })
+          : await client.messageFlagsRemove(uids, [flag], { uid: true });
+        if (!stored) throw new SafeImapError("StoreFailed");
+      }
+    }),
 
-    fetchRaw: async () => {
-      throw new Error("not implemented: fetchRaw");
-    },
+    fetchRaw: guarded(async (uid: number, maxBytes: number) => {
+      // No part: imapflow downloads `source`, which it always asks as
+      // BODY.PEEK[]<start.len>, so \Seen is never set. Its own maxBytes only
+      // truncates quietly; one byte over the cap lets it stop pulling chunks
+      // while this code still sees the overflow and refuses.
+      const download = await client.download(String(uid), undefined, { uid: true, maxBytes: maxBytes + 1 });
+      const content = download.content;
+      if (!content) throw new SafeImapError("NotFound");
+      if ((download.meta.expectedSize ?? 0) > maxBytes) {
+        content.destroy();
+        throw new SafeImapError("TooLarge");
+      }
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      try {
+        for await (const chunk of content as AsyncIterable<Buffer | string>) {
+          const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+          total += bytes.byteLength;
+          if (total > maxBytes) throw new SafeImapError("TooLarge");
+          chunks.push(bytes);
+        }
+      } finally {
+        if (!content.destroyed) content.destroy();
+      }
+      const raw = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        raw.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return raw;
+    }),
 
     moveMessages: guarded(async (uids: number[], destination: string) => {
       if (readOnly) throw new SafeImapError("ReadOnly", "IMAP error (mailbox is read-only)");
