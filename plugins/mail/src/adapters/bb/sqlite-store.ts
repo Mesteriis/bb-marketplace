@@ -3140,6 +3140,22 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return found;
     },
 
+    sentToCount(address) {
+      const wanted = address.trim().toLowerCase();
+      if (wanted === "") return 0;
+      const keys = new Set<string>();
+      const rows = db
+        .prepare<[], { account_id: string; dedup_key: string; to_json: string; cc_json: string }>(
+          `SELECT m.account_id, m.dedup_key, m.to_json, m.cc_json FROM ${MESSAGES_WITH_FOLDER} WHERE ${ROW_ROLE} = 'sent'`,
+        )
+        .iterate();
+      for (const row of rows) {
+        const listed = [...(JSON.parse(row.to_json) as MailAddress[]), ...(JSON.parse(row.cc_json) as MailAddress[])];
+        if (listed.some((a) => a.address.trim().toLowerCase() === wanted)) keys.add(`${row.account_id}\u0000${row.dedup_key}`);
+      }
+      return keys.size;
+    },
+
     getTranslation(messageId, targetLanguage) {
       const row = db
         .prepare<[string, string], TranslationRow>(

@@ -4270,3 +4270,368 @@ describe("inbox triage: unsubscribe (slice 3e)", () => {
     ).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Inbox triage (slice 3e): snooze, block and their undo
+// ---------------------------------------------------------------------------
+
+const SPAMMER = "spam@example.com";
+const FUTURE = new Date(NOW.getTime() + 24 * 3_600_000).toISOString();
+const ICLOUD_TRIAGE_FOLDERS: SeedFolder[] = [...ICLOUD_FOLDERS, { path: "Sent", specialUse: "sent" }];
+
+type TriageMessage = { folder: string; uid: number; from?: string; messageId?: string; to?: string[] };
+
+/** acc_1 (and optionally acc_2) on one preset's layout, password sealed under COMPOSE_KEY; the server lists the same folders. */
+function loadTriage(
+  options: {
+    preset?: AccountPreset;
+    folders?: SeedFolder[];
+    messages?: TriageMessage[];
+    second?: TriageMessage[];
+    server?: (gateway: RawGateway) => void;
+    settings?: Record<string, string | number | boolean>;
+    poster?: FakePoster;
+  } = {},
+) {
+  const preset = options.preset ?? "icloud";
+  const folders = options.folders ?? (preset === "gmail" ? [...GMAIL_FOLDERS, { path: "Sent", specialUse: "sent" as const }] : ICLOUD_TRIAGE_FOLDERS);
+  const fetched = (m: TriageMessage) =>
+    makeFetchedMessage(m.uid, {
+      messageId: m.messageId ?? `<${m.folder.replace(/\W/g, "")}-${m.uid}@example.org>`,
+      from: { name: null, address: m.from ?? SPAMMER },
+      ...(m.to === undefined ? {} : { to: m.to.map((address) => ({ name: null, address })) }),
+    });
+  return load({
+    settings: { vaultKey: COMPOSE_KEY, ...options.settings },
+    ...(options.poster === undefined ? {} : { poster: options.poster }),
+    seed: (bb) => {
+      seedMail(bb, { preset, folders, messages: (options.messages ?? []).map((m) => ({ folder: m.folder, message: fetched(m) })) });
+      if (options.second !== undefined) {
+        seedMail(bb, { accountId: "acc_2", preset, folders, messages: options.second.map((m) => ({ folder: m.folder, message: fetched(m) })) });
+      }
+      const store = createSqliteStore(bb.storage.database());
+      for (const account of store.listAccounts()) {
+        store.saveAccount({ ...account, passwordSealed: createVault(COMPOSE_KEY).seal(PASSWORD) });
+      }
+    },
+    server: (gateway) => {
+      for (const folder of folders) {
+        if (folder.path !== "INBOX") gateway.addFolder({ path: folder.path, specialUse: folder.specialUse ?? null, ...(folder.selectable === false ? { selectable: false } : {}) });
+      }
+      options.server?.(gateway);
+    },
+  });
+}
+
+const snooze = (host: Host, messageIds: string[], extra: Record<string, unknown> = {}) =>
+  call(host, "message_snooze", { messageIds, folder: "INBOX", until: FUTURE, ...extra }) as Promise<{
+    groups: { accountId: string; folder: string; queued: number; destination: string | null; error: string | null }[];
+    undoable: boolean;
+    needsFolder: { accountId: string; proposedName: string }[];
+  }>;
+
+describe("inbox triage: snooze (slice 3e)", () => {
+  it("asks for a folder first, creates it on the owner's call, then snoozes into it", async () => {
+    const host = await loadTriage({ messages: [{ folder: "INBOX", uid: 1 }] });
+    const id = messageIdAt(host, "INBOX", 1);
+    expect(await snooze(host, [id])).toEqual({ groups: [], undoable: false, needsFolder: [{ accountId: "acc_1", proposedName: "Snoozed" }] });
+    expect(movePending(host, id)).toBeNull();
+    expect(host.gateway.created).toEqual([]);
+
+    expect(await call(host, "snooze_folder_create", { accountId: "acc_1" })).toEqual({ path: "Snoozed" });
+    expect(host.gateway.created).toEqual(["Snoozed"]);
+    expect(sqlStore(host).getAccount("acc_1")!.snoozeFolder).toBe("Snoozed");
+    expect(sqlStore(host).listFolders("acc_1").map((f) => f.path)).toContain("Snoozed");
+    // Already set: no second CREATE.
+    expect(await call(host, "snooze_folder_create", { accountId: "acc_1" })).toEqual({ path: "Snoozed" });
+    expect(host.gateway.created).toEqual(["Snoozed"]);
+
+    const result = await snooze(host, [id], { undoId: UNDO_A });
+    expect(result).toEqual({
+      groups: [{ accountId: "acc_1", folder: "INBOX", queued: 1, destination: "Snoozed", error: null }],
+      undoable: true,
+      needsFolder: [],
+    });
+    expect(movePending(host, id)).toBe("Snoozed");
+    expect(sqlStore(host).listSnoozes("acc_1", { limit: 10 })).toEqual([
+      { messageId: id, accountId: "acc_1", returnTo: "INBOX", dueAt: FUTURE, state: "moving" },
+    ]);
+    expect(logText(host)).toContain("snooze acc_1: folder created");
+  });
+
+  it("accepts an existing folder, falls back once on iCloud, and uses the Gmail name from the start", async () => {
+    const existing = await loadTriage({ server: (gateway) => gateway.addFolder({ path: "Snoozed" }) });
+    expect(await call(existing, "snooze_folder_create", { accountId: "acc_1" })).toEqual({ path: "Snoozed" });
+    expect(logText(existing)).toContain("snooze acc_1: folder existing");
+
+    const refused = await loadTriage({ server: (gateway) => gateway.refuseCreate.add("Snoozed") });
+    expect(await call(refused, "snooze_folder_create", { accountId: "acc_1" })).toEqual({ path: "Snoozed (Makosh)" });
+    expect(refused.gateway.created).toEqual(["Snoozed", "Snoozed (Makosh)"]);
+
+    const noselect = await loadTriage({ server: (gateway) => gateway.addFolder({ path: "Snoozed", selectable: false }) });
+    expect(await call(noselect, "snooze_folder_create", { accountId: "acc_1" })).toEqual({ path: "Snoozed (Makosh)" });
+
+    const gmail = await loadTriage({ preset: "gmail" });
+    expect(await call(gmail, "snooze_folder_create", { accountId: "acc_1" })).toEqual({ path: "Snoozed (Makosh)" });
+    expect(gmail.gateway.created).toEqual(["Snoozed (Makosh)"]);
+
+    const gmailRefused = await loadTriage({ preset: "gmail", server: (gateway) => gateway.refuseCreate.add("Snoozed (Makosh)") });
+    await expect(call(gmailRefused, "snooze_folder_create", { accountId: "acc_1" })).rejects.toThrow(
+      "The server refused to create the folder; choose an existing one",
+    );
+    expect(gmailRefused.gateway.created).toEqual(["Snoozed (Makosh)"]);
+    expect(sqlStore(gmailRefused).getAccount("acc_1")!.snoozeFolder).toBeNull();
+  });
+
+  it("snooze_folder_use refuses system folders and takes one of the owner's", async () => {
+    const host = await loadTriage();
+    for (const path of ["INBOX", "Sent", "Junk", "Deleted Messages"]) {
+      await expect(call(host, "snooze_folder_use", { accountId: "acc_1", path }), path).rejects.toMatchObject({ code: "invalid" });
+    }
+    await expect(call(host, "snooze_folder_use", { accountId: "acc_1", path: "Nope" })).rejects.toMatchObject({ code: "not_found" });
+    expect(await call(host, "snooze_folder_use", { accountId: "acc_1", path: "Work" })).toEqual({ ok: true });
+    expect(sqlStore(host).getAccount("acc_1")!.snoozeFolder).toBe("Work");
+  });
+
+  it("refuses mail outside the Inbox and a time out of range", async () => {
+    const host = await loadTriage({ messages: [{ folder: "INBOX", uid: 1 }, { folder: "Sent", uid: 1, from: "owner@example.org" }] });
+    sqlStore(host).setSnoozeFolder("acc_1", "Work");
+    await expect(call(host, "message_snooze", { messageIds: [messageIdAt(host, "Sent", 1)], folder: "Sent", until: FUTURE })).rejects.toThrow(
+      "Only Inbox mail can be snoozed",
+    );
+    const soon = new Date(NOW.getTime() + 60_000).toISOString();
+    await expect(snooze(host, [messageIdAt(host, "INBOX", 1)], { until: soon })).rejects.toMatchObject({ code: "invalid" });
+    expect(movePending(host, messageIdAt(host, "INBOX", 1))).toBeNull();
+  });
+
+  it("undo before the push cancels the move and deletes the snooze; after the push it moves back and deletes it", async () => {
+    const host = await loadTriage({ messages: [{ folder: "INBOX", uid: 1 }, { folder: "INBOX", uid: 2 }] });
+    sqlStore(host).setSnoozeFolder("acc_1", "Work");
+    const [a, b] = [messageIdAt(host, "INBOX", 1), messageIdAt(host, "INBOX", 2)];
+    await snooze(host, [a], { undoId: UNDO_A });
+    expect(await undo(host)).toMatchObject({ outcome: "done", restored: 1 });
+    expect(movePending(host, a)).toBeNull();
+    expect(sqlStore(host).listSnoozes("acc_1", { limit: 10 })).toEqual([]);
+
+    await snooze(host, [b], { undoId: UNDO_B });
+    pushMove(host, "INBOX", "Work", [2]);
+    expect(await undo(host, UNDO_B)).toMatchObject({ outcome: "done", restored: 1 });
+    expect(rowOf(host, b)).toMatchObject({ folder: "Work", movePending: "INBOX" });
+    expect(sqlStore(host).listSnoozes("acc_1", { limit: 10 })).toEqual([]);
+  });
+
+  it("Return now moves a snoozed message back unread through the clock", async () => {
+    const host = await loadTriage({ messages: [{ folder: "INBOX", uid: 1 }] });
+    sqlStore(host).setSnoozeFolder("acc_1", "Work");
+    const id = messageIdAt(host, "INBOX", 1);
+    await snooze(host, [id]);
+    pushMove(host, "INBOX", "Work", [1]);
+    sqlStore(host).updateSnooze(id, { state: "snoozed" }, NOW.toISOString());
+    expect(await call(host, "message_unsnooze", { messageIds: [id] })).toEqual({ ok: true });
+    expect(rowOf(host, id)).toMatchObject({ folder: "Work", movePending: "INBOX" });
+    expect(desired(host, id).seen).toBe(0);
+    expect(sqlStore(host).listSnoozes("acc_1", { limit: 10 })).toMatchObject([{ state: "returning", dueAt: NOW.toISOString() }]);
+    expect(await call(host, "message_unsnooze", { messageIds: ["unknown"] })).toEqual({ ok: false });
+  });
+});
+
+describe("inbox triage: block (slice 3e)", () => {
+  /**
+   * acc_1: INBOX 1 from the spammer, INBOX 2 a friend in the same
+   * conversation, INBOX 3 someone else at example.com, Archive 1 from the
+   * spammer, Sent 1 to the spammer. acc_2: INBOX 1 from the spammer, INBOX 2
+   * from the spammer but also in its Junk (rescued: skipped).
+   */
+  function loadBlock() {
+    return loadTriage({
+      messages: [
+        { folder: "INBOX", uid: 1, messageId: "<b1@example.com>" },
+        { folder: "INBOX", uid: 2, from: "friend@example.net" },
+        { folder: "INBOX", uid: 3, from: "other@example.com" },
+        { folder: "Archive", uid: 1 },
+        { folder: "Sent", uid: 1, from: "owner@example.org", to: [SPAMMER] },
+      ],
+      second: [
+        { folder: "INBOX", uid: 1, messageId: "<b2@example.com>" },
+        { folder: "INBOX", uid: 2, messageId: "<rescued@example.com>" },
+        { folder: "Junk", uid: 1, messageId: "<rescued@example.com>" },
+      ],
+    });
+  }
+  const idOf = (host: Host, accountId: string, folder: string, uid: number) =>
+    (
+      host.bb.storage.database().prepare("SELECT id FROM messages WHERE account_id = ? AND folder = ? AND uid = ?").get(accountId, folder, uid) as {
+        id: string;
+      }
+    ).id;
+
+  it("block_check offers the address and the domain with counts", async () => {
+    const host = await loadBlock();
+    expect(await call(host, "block_check", { messageId: idOf(host, "acc_1", "INBOX", 1) })).toEqual({
+      address: SPAMMER,
+      domain: "example.com",
+      sentToCount: 1,
+      storedCount: { address: 2, domain: 3 },
+    });
+  });
+
+  it("refuses the owner's own address and domain, and a public domain", async () => {
+    const host = await loadTriage({
+      messages: [
+        { folder: "INBOX", uid: 1, from: "owner@example.org" },
+        { folder: "INBOX", uid: 2, from: "colleague@example.org" },
+        { folder: "INBOX", uid: 3, from: "someone@gmail.com" },
+      ],
+    });
+    await expect(call(host, "block_add", { messageId: messageIdAt(host, "INBOX", 1), kind: "address", moveExisting: true })).rejects.toThrow(
+      "You cannot block your own address",
+    );
+    await expect(call(host, "block_add", { messageId: messageIdAt(host, "INBOX", 2), kind: "domain", moveExisting: true })).rejects.toThrow(
+      "You cannot block your own address",
+    );
+    await expect(call(host, "block_add", { messageId: messageIdAt(host, "INBOX", 3), kind: "domain", moveExisting: true })).rejects.toThrow(
+      "public mail domain",
+    );
+    expect(await call(host, "block_check", { messageId: messageIdAt(host, "INBOX", 3) })).toMatchObject({ domain: null, storedCount: { domain: null } });
+    expect(sqlStore(host).listBlockRules()).toEqual([]);
+  });
+
+  it("moves only matching Inbox mail across accounts to Spam, never conversation members, Sent, Archive or rescued mail", async () => {
+    const host = await loadBlock();
+    const clicked = idOf(host, "acc_1", "INBOX", 1);
+    const result = (await call(host, "block_add", { messageId: clicked, kind: "address", moveExisting: true, undoId: UNDO_A })) as {
+      ruleId: string;
+      groups: { accountId: string; queued: number; destination: string | null }[];
+      undoable: boolean;
+    };
+    expect(result.undoable).toBe(true);
+    expect(result.groups).toEqual([
+      { accountId: "acc_1", folder: "INBOX", queued: 1, destination: "Junk", error: null },
+      { accountId: "acc_2", folder: "INBOX", queued: 1, destination: "Junk", error: null },
+    ]);
+    expect(movePending(host, clicked)).toBe("Junk");
+    expect(movePending(host, idOf(host, "acc_2", "INBOX", 1))).toBe("Junk");
+    for (const [accountId, folder, uid] of [
+      ["acc_1", "INBOX", 2],
+      ["acc_1", "INBOX", 3],
+      ["acc_1", "Archive", 1],
+      ["acc_1", "Sent", 1],
+      ["acc_2", "INBOX", 2],
+    ] as const) {
+      expect(movePending(host, idOf(host, accountId, folder, uid)), `${accountId} ${folder} ${uid}`).toBeNull();
+    }
+    expect(sqlStore(host).listBlockRules()).toMatchObject([{ id: result.ruleId, kind: "address", value: SPAMMER }]);
+    expect(await call(host, "block_list", {})).toEqual({
+      rules: [{ id: result.ruleId, kind: "address", value: SPAMMER, createdAt: NOW.toISOString() }],
+    });
+    expect(logText(host)).toContain(`block ${result.ruleId}: added, moved 2`);
+    expectNoLeak(host, [SPAMMER, "example.com"]);
+  });
+
+  it("without moveExisting only the clicked message moves; undo removes the rule and the moves", async () => {
+    const host = await loadBlock();
+    const clicked = idOf(host, "acc_1", "INBOX", 1);
+    const { ruleId } = (await call(host, "block_add", { messageId: clicked, kind: "address", moveExisting: false, undoId: UNDO_A })) as {
+      ruleId: string;
+    };
+    expect(movePending(host, idOf(host, "acc_2", "INBOX", 1))).toBeNull();
+    expect(await undo(host)).toMatchObject({ outcome: "done", restored: 1 });
+    expect(movePending(host, clicked)).toBeNull();
+    expect(sqlStore(host).listBlockRules()).toEqual([]);
+    expect(logText(host)).toContain(`undo: block rule ${ruleId} removed`);
+  });
+
+  it("a block that moves nothing is still undoable; an existing rule is never removed by an undo", async () => {
+    const host = await loadBlock();
+    const archived = idOf(host, "acc_1", "Archive", 1);
+    const first = (await call(host, "block_add", { messageId: archived, kind: "address", moveExisting: false, undoId: UNDO_A })) as {
+      groups: unknown[];
+      undoable: boolean;
+    };
+    expect(first).toMatchObject({ groups: [], undoable: true });
+    expect(await undo(host)).toMatchObject({ outcome: "done", restored: 0 });
+    expect(sqlStore(host).listBlockRules()).toEqual([]);
+
+    await call(host, "block_add", { messageId: archived, kind: "address", moveExisting: false });
+    const again = (await call(host, "block_add", { messageId: archived, kind: "address", moveExisting: false, undoId: UNDO_B })) as {
+      undoable: boolean;
+    };
+    expect(again.undoable).toBe(false);
+    expect(sqlStore(host).listBlockRules()).toHaveLength(1);
+  });
+
+  it("block_remove deletes the rule only; nothing moves", async () => {
+    const host = await loadBlock();
+    const clicked = idOf(host, "acc_1", "INBOX", 1);
+    const { ruleId } = (await call(host, "block_add", { messageId: clicked, kind: "domain", moveExisting: false })) as { ruleId: string };
+    expect(sqlStore(host).listBlockRules()).toMatchObject([{ kind: "domain", value: "example.com" }]);
+    expect(await call(host, "block_remove", { id: ruleId })).toEqual({ ok: true });
+    expect(sqlStore(host).listBlockRules()).toEqual([]);
+    expect(movePending(host, clicked)).toBe("Junk");
+  });
+
+  it("refuses a rule beyond the cap", async () => {
+    const host = await loadBlock();
+    const store = sqlStore(host);
+    for (let i = 0; i < 1000; i++) store.addBlockRule("address", `sender${i}@example.net`, `rule_${i}`, NOW.toISOString());
+    await expect(
+      call(host, "block_add", { messageId: idOf(host, "acc_1", "INBOX", 1), kind: "address", moveExisting: false }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+});
+
+describe("inbox triage: owner only and server writes (slice 3e)", () => {
+  it("every snooze and block method refuses a plugin caller and changes nothing", async () => {
+    const host = await loadTriage({ messages: [{ folder: "INBOX", uid: 1 }] });
+    const id = messageIdAt(host, "INBOX", 1);
+    const inputs: [string, unknown][] = [
+      ["message_snooze", { messageIds: [id], folder: "INBOX", until: FUTURE }],
+      ["message_unsnooze", { messageIds: [id] }],
+      ["snooze_folder_create", { accountId: "acc_1" }],
+      ["snooze_folder_use", { accountId: "acc_1", path: "Work" }],
+      ["block_check", { messageId: id }],
+      ["block_add", { messageId: id, kind: "address", moveExisting: true }],
+      ["block_list", {}],
+      ["block_remove", { id: "rule_1" }],
+    ];
+    for (const [method, input] of inputs) {
+      await expect(host.harness.behavior.callRpc(method, input, asPlugin), method).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    }
+    expect(host.gateway.created).toEqual([]);
+    expect(sqlStore(host).listBlockRules()).toEqual([]);
+    expect(sqlStore(host).getAccount("acc_1")!.snoozeFolder).toBeNull();
+    expect(movePending(host, id)).toBeNull();
+  });
+
+  it("snooze and block reach the server as moves only: no \\Deleted, no EXPUNGE", async () => {
+    const host = await load({
+      settings: { vaultKey: generateVaultKey() },
+      server: (gateway) => {
+        gateway.addFolder({ path: "Junk", specialUse: "junk" });
+        gateway.deliver({ from: { name: null, address: SPAMMER } });
+        gateway.deliver({ from: { name: null, address: "friend@example.net" } });
+      },
+    });
+    const account = (await host.harness.behavior.callRpc("accounts_add", NEW_ACCOUNT)) as { id: string };
+    const service = host.harness.behavior.runService("sync");
+    await vi.waitFor(() => expect(logText(host)).toContain(`sync ${account.id}: ok`));
+    service.controller.abort();
+    await service.done;
+    const spam = messageIdAt(host, "INBOX", 2);
+    const friend = messageIdAt(host, "INBOX", 3);
+    await call(host, "block_add", { messageId: spam, kind: "address", moveExisting: true });
+    await call(host, "snooze_folder_create", { accountId: account.id });
+    await call(host, "message_snooze", { messageIds: [friend], folder: "INBOX", until: FUTURE });
+    // The queued wakes share the next round.
+    const again = host.harness.behavior.runService("sync");
+    await vi.waitFor(() => {
+      const moves = host.gateway.sessions.flatMap((s) => s.calls).filter((c) => c.method === "moveMessages");
+      expect(moves.map((c) => (c as { destination: string }).destination).sort()).toEqual(["Junk", "Snoozed"]);
+    });
+    again.controller.abort();
+    await again.done;
+    const commands = host.gateway.sessions.flatMap((s) => s.calls);
+    expect(commands.map((c) => c.method)).not.toContain("expungeOwn");
+    expect(JSON.stringify(commands)).not.toMatch(/deleted/i);
+  });
+});

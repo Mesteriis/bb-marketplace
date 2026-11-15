@@ -630,6 +630,8 @@ export interface MailStore {
    * (every accepted envelope recipient, slice 3d).
    */
   addressesSentTo(addresses: string[]): Set<string>;
+  /** Stored messages in a Sent-role folder with the address (any case) in To or Cc, one per dedup key (slice 3e, the block dialog). */
+  sentToCount(address: string): number;
   /**
    * People the owner corresponds with whose name, address or exchanged mail
    * match the query, best first (rankContacts). Header addresses only; junk,

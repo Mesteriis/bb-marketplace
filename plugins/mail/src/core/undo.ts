@@ -239,7 +239,8 @@ export function recordGroups(
  * whatever the action, keeps the first expiry and the first action, which
  * becomes "triage" only when the caller passes it; a new id, or the same one
  * after it expired, replaces the record. A call that queued nothing leaves
- * the slot as it is. `ruleId`: a block's rule, kept once set.
+ * the slot as it is, unless it carries `ruleId` (a block's new rule, kept
+ * once set).
  */
 export function mergeRecord(
   current: UndoRecord | null,
@@ -249,7 +250,8 @@ export function mergeRecord(
   now: Date,
   ruleId?: string,
 ): UndoRecord | null {
-  if (groups.length === 0) return current;
+  // A block that moved nothing is still undoable: its rule goes.
+  if (groups.length === 0 && ruleId === undefined) return current;
   const nowIso = now.toISOString();
   if (current !== null && current.id === undoId && current.expiresAt > nowIso) {
     const merged: UndoRecord = {

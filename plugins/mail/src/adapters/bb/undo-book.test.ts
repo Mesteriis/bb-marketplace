@@ -40,6 +40,16 @@ describe("UndoBook", () => {
     expect(undo.has(ID_A)).toBe(true);
   });
 
+  it("records a snooze, a block with its rule (also with no groups) and a triage batch", () => {
+    const { undo } = book();
+    expect(undo.record(ID_A, "snooze", [{ ...group("acc_1", ["m_1"]), kind: "snooze", snoozeIds: ["m_1"] }])).toBe(true);
+    expect(undo.peek(ID_A)).toMatchObject({ action: "snooze", groups: [{ kind: "snooze", snoozeIds: ["m_1"] }] });
+    expect(undo.record(ID_B, "block", [], "rule_1")).toBe(true);
+    expect(undo.peek(ID_B)).toMatchObject({ action: "block", groups: [], ruleId: "rule_1" });
+    expect(undo.record(ID_A, "triage", [group("acc_1", ["m_2"])])).toBe(true);
+    expect(undo.peek(ID_A)!.action).toBe("triage");
+  });
+
   it("take consumes a matching record once; a stale or foreign id takes nothing", () => {
     const { undo } = book();
     undo.record(ID_A, "archive", [group("acc_1", ["m_1"])]);

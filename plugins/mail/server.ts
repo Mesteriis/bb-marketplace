@@ -181,6 +181,14 @@ import {
   type UnsubscribeInfoView,
   type UnsubscribePoster,
   type UnsubscribeState,
+  BLOCK_RULES_MAX,
+  ImapAuthError,
+  blockCandidates,
+  blockRefusal,
+  snoozeFallbackName,
+  snoozeFolderName,
+  validUntil,
+  type BlockRule,
 } from "./src/core/index.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
@@ -1304,10 +1312,14 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
     else if (store.getAccount(group.accountId)?.authFailed === true) refusals.set(group.accountId, PASSWORD_NEEDED_MESSAGE);
   }
   const runnable = record.groups.filter((group) => !refusals.has(group.accountId));
-  if (runnable.length === 0) throw refuse("conflict", refusals.values().next().value ?? NEEDS_KEY_MESSAGE);
+  if (record.groups.length > 0 && runnable.length === 0) {
+    throw refuse("conflict", refusals.values().next().value ?? NEEDS_KEY_MESSAGE);
+  }
   deps.undo.take(undoId);
   const refused = record.groups.filter((group) => refusals.has(group.accountId));
   if (refused.length > 0) deps.undo.putBack({ ...record, groups: refused });
+  // A block: its rule goes first, so no round moves the mail back to Spam.
+  if (record.ruleId !== undefined && store.removeBlockRule(record.ruleId)) log(`undo: block rule ${record.ruleId} removed`);
 
   const restoredIds = new Set<string>();
   const skipped = new Map<UndoSkipped["reason"], number>();
@@ -1323,7 +1335,7 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
   };
 
   // Flag steps: at once, pushed by sync like any flag change.
-  const flagGroups = runnable.filter((group) => group.destination === null);
+  const flagGroups = runnable.filter((group) => group.kind === "flags");
   if (flagGroups.length > 0) {
     const plan = planUndo({ ...record, groups: flagGroups }, rowsOf(flagGroups), foldersOf);
     const touched = new Set<string>();
@@ -1349,12 +1361,20 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
       } else restoredIds.add(id);
     }
   };
+  /** The kind of the group a move-back step came from: a snooze stays a snooze in the slot. */
+  const kindOf = (step: Extract<UndoStep, { kind: "move_back" }>): "move" | "snooze" =>
+    runnable.some(
+      (group) => group.kind === "snooze" && group.accountId === step.accountId && group.source === step.to && group.destination === step.from,
+    )
+      ? "snooze"
+      : "move";
   /** Puts rows back into the slot under the same undoId and expiry (refused once a newer action took it). */
   const retryLater = (step: Extract<UndoStep, { kind: "move_back" }>, ids: string[], use: UndoGroup["destinationUse"]) => {
     if (ids.length === 0) return;
+    const { ruleId: _rule, ...rest } = record;
     deps.undo.putBack({
-      ...record,
-      groups: [{ accountId: step.accountId, kind: "move", change: null, source: step.to, destination: step.from, destinationUse: use, ids }],
+      ...rest,
+      groups: [{ accountId: step.accountId, kind: kindOf(step), change: null, source: step.to, destination: step.from, destinationUse: use, ids }],
     });
   };
   /** The server could not be reached: counted as failed, and put back for another Undo. */
@@ -1425,12 +1445,16 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
 
   const byAccount = new Map<string, UndoGroup[]>();
   for (const group of runnable) {
-    if (group.destination === null) continue;
+    if (group.kind === "flags" || group.destination === null) continue;
     byAccount.set(group.accountId, [...(byAccount.get(group.accountId) ?? []), group]);
   }
   const tasks = [...byAccount].map(([accountId, groups]) =>
     composeDeps.queue
       .run(accountId, async () => {
+        // A snooze's rows go first (spec "Undo for snooze and block"): the
+        // clock never returns a message the undo already moves back.
+        const snoozeIds = groups.flatMap((group) => (group.kind === "snooze" ? (group.snoozeIds ?? []) : []));
+        if (snoozeIds.length > 0) store.deleteSnoozes(snoozeIds);
         // Inside the account's task: a round may have pushed the move meanwhile.
         const rows = rowsOf(groups);
         const plan = planUndo({ ...record, groups }, rows, foldersOf);
@@ -1470,7 +1494,7 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
       accountId: group.accountId,
       folder: group.source,
       queued: error === null ? group.ids.filter((id) => restoredIds.has(id)).length : 0,
-      destination: group.destination === null || error !== null ? null : folderName(group.accountId, group.source),
+      destination: group.kind === "flags" || group.destination === null || error !== null ? null : folderName(group.accountId, group.source),
       error,
     };
   });
@@ -1483,6 +1507,243 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
   };
   log(`undo: ${result.outcome}, restored ${result.restored}, skipped ${[...skipped.values()].reduce((a, b) => a + b, 0)}, failed ${failed}`);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Snooze and block (slice 3e)
+// ---------------------------------------------------------------------------
+
+export const SNOOZE_INBOX_MESSAGE = "Only Inbox mail can be snoozed";
+export const SNOOZE_TIME_MESSAGE = "Pick a time from 5 minutes to a year from now";
+export const SNOOZE_FULL_MESSAGE = "This account has too many snoozed messages";
+export const SNOOZE_CREATE_REFUSED_MESSAGE = "The server refused to create the folder; choose an existing one";
+export const SNOOZE_FOLDER_REFUSED_MESSAGE = "Snoozed mail needs a folder of its own, not a system folder";
+export const BLOCK_PUBLIC_DOMAIN_MESSAGE = "This is a public mail domain; block the address instead";
+export const BLOCK_FULL_MESSAGE = "You have blocked the most senders Makosh Mail keeps; unblock some first";
+/** Folders that never hold snoozed mail (snooze_folder_use). */
+const SNOOZE_REFUSED_USES: ReadonlySet<SpecialUse> = new Set(["inbox", "sent", "drafts", "junk", "trash", "all"]);
+
+class SnoozeFull extends Error {}
+
+/** A rule as blockMatches takes it, for counting before anything is stored. */
+function probeRule(kind: BlockRule["kind"], value: string): BlockRule {
+  return { id: "", kind, value, createdAt: "" };
+}
+
+type SnoozeInput = { messageIds: string[]; folder?: string; role?: SpecialUse; until: string };
+
+/**
+ * message_snooze (spec "Snoozing"): Inbox-role sources only, grouped by
+ * account and source folder. An account without a snooze folder is listed
+ * in `needsFolder` and nothing of it is queued; otherwise each group's move
+ * into the snooze folder and its snooze rows (`moving`, back to the source)
+ * are written in one transaction. A batch that is one refused group throws.
+ */
+function runSnooze(
+  deps: RpcDeps,
+  input: SnoozeInput,
+): { groups: ActionGroup[]; undo: UndoGroup[]; needsFolder: { accountId: string; proposedName: string }[] } {
+  const { store } = deps;
+  const now = deps.composeDeps.clock.now();
+  if (!validUntil(input.until, now)) throw refuse("invalid", SNOOZE_TIME_MESSAGE);
+  const dueAt = new Date(Date.parse(input.until)).toISOString();
+  type Group = { accountId: string; folder: string; ids: string[] };
+  const grouped = new Map<string, Group>();
+  for (const id of new Set(input.messageIds)) {
+    const message = store.getMessage(id);
+    if (message === null) continue;
+    if (input.folder !== undefined && message.folder !== input.folder) throw refuse("conflict", SNOOZE_INBOX_MESSAGE);
+    if (roleOfFolder(store, message.accountId, message.folder) !== "inbox") throw refuse("conflict", SNOOZE_INBOX_MESSAGE);
+    const key = `${message.accountId}\u0000${message.folder}`;
+    const group = grouped.get(key) ?? { accountId: message.accountId, folder: message.folder, ids: [] };
+    group.ids.push(id);
+    grouped.set(key, group);
+  }
+  if (grouped.size === 0) throw refuse("not_found", "Unknown message");
+
+  const needsFolder: { accountId: string; proposedName: string }[] = [];
+  const results: ActionGroup[] = [];
+  const recordable: RecordableGroup[] = [];
+  const touched = new Set<string>();
+  for (const group of grouped.values()) {
+    const failed = (error: string) =>
+      results.push({ accountId: group.accountId, folder: group.folder, queued: 0, destination: null, error });
+    const account = store.getAccount(group.accountId);
+    if (account === null) {
+      failed("Unknown message");
+      continue;
+    }
+    if (!deps.vaultReady()) {
+      failed(NEEDS_KEY_MESSAGE);
+      continue;
+    }
+    if (account.authFailed) {
+      failed(PASSWORD_NEEDED_MESSAGE);
+      continue;
+    }
+    const snoozeFolder = account.snoozeFolder;
+    if (snoozeFolder === null) {
+      if (!needsFolder.some((entry) => entry.accountId === account.id)) {
+        needsFolder.push({ accountId: account.id, proposedName: snoozeFolderName(account.preset) });
+      }
+      continue;
+    }
+    let queued = false;
+    try {
+      queued = store.transaction(() => {
+        if (store.queueMove(group.ids, snoozeFolder) === null) return false;
+        const rows = group.ids.map((messageId) => ({
+          messageId,
+          accountId: account.id,
+          returnTo: group.folder,
+          dueAt,
+          state: "moving" as const,
+        }));
+        if ("full" in store.createSnoozes(rows, now.toISOString())) throw new SnoozeFull();
+        return true;
+      });
+    } catch (error) {
+      if (!(error instanceof SnoozeFull)) throw error;
+      failed(SNOOZE_FULL_MESSAGE);
+      continue;
+    }
+    if (!queued) {
+      failed(`These messages are not all in ${ROLE_NAMES.inbox}`);
+      continue;
+    }
+    touched.add(account.id);
+    const destination = store.listFolders(account.id).find((f) => f.path === snoozeFolder);
+    results.push({
+      accountId: account.id,
+      folder: group.folder,
+      queued: group.ids.length,
+      destination: destination?.name ?? snoozeFolder,
+      error: null,
+    });
+    recordable.push({
+      accountId: account.id,
+      folder: group.folder,
+      ids: group.ids,
+      queued: group.ids.length,
+      destinationPath: snoozeFolder,
+      destinationUse: destination?.specialUse ?? null,
+    });
+  }
+  if (results.length === 1 && needsFolder.length === 0 && results[0]!.error !== null) {
+    const error = results[0]!.error;
+    throw refuse(error === "Unknown message" ? "not_found" : "conflict", error);
+  }
+  for (const accountId of touched) {
+    deps.publishChanged(accountId);
+    deps.loop.wake(accountId);
+  }
+  return { groups: results, undo: recordGroups("snooze", recordable, new Map()), needsFolder };
+}
+
+/** A SafeImapError the gateway throws when the server refuses a CREATE. */
+function isCreateRefused(error: unknown): boolean {
+  return error instanceof Error && (error as { code?: unknown }).code === "CreateFailed";
+}
+
+/**
+ * The account's snooze folder, created first when it has none (only after
+ * the owner's confirmation: snooze_folder_create or a ticked triage box).
+ * Inside the account's queue: CREATE of the preset's name ("Snoozed", or
+ * "Snoozed (Makosh)" on Gmail; spec resolution 8), an existing folder of
+ * that name accepted; on iCloud and other servers a refusal or a
+ * non-selectable folder tries "Snoozed (Makosh)" once; then the listing is
+ * saved and the path stored. Log lines carry the account id and codes only.
+ */
+async function ensureSnoozeFolder(deps: RpcDeps, accountId: string, log: (line: string) => void): Promise<string> {
+  const { store, composeDeps } = deps;
+  const account = store.getAccount(accountId);
+  if (account === null) throw refuse("not_found", "Unknown account");
+  if (account.snoozeFolder !== null) return account.snoozeFolder;
+  if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
+  if (account.authFailed) throw refuse("conflict", PASSWORD_NEEDED_MESSAGE);
+  return composeDeps.queue.run(accountId, async () => {
+    const fresh = store.getAccount(accountId);
+    if (fresh === null) throw refuse("not_found", "Unknown account");
+    if (fresh.snoozeFolder !== null) return fresh.snoozeFolder;
+    const config = imapConfigOf(fresh, composeDeps.vault);
+    const fallback = snoozeFallbackName(fresh.preset);
+    const names = [snoozeFolderName(fresh.preset), ...(fallback === null ? [] : [fallback])];
+    for (const name of names) {
+      let made: { path: string; created: boolean };
+      try {
+        made = await composeDeps.gateway.createFolder(config, name);
+      } catch (error) {
+        if (error instanceof ImapAuthError) throw refuse("conflict", PASSWORD_NEEDED_MESSAGE);
+        if (!isCreateRefused(error)) throw error;
+        log(`snooze ${accountId}: create refused`);
+        continue;
+      }
+      const listing = await composeDeps.gateway.listFolders(config);
+      if (listing.some((f) => f.selectable && effectiveSpecialUse(f.path, f.specialUse) === "inbox")) {
+        store.saveFolders(accountId, listing);
+        deps.idle.refresh();
+      }
+      const listed = listing.find((f) => f.path === made.path);
+      if (listed !== undefined && !listed.selectable) {
+        log(`snooze ${accountId}: folder not selectable`);
+        continue;
+      }
+      store.setSnoozeFolder(accountId, made.path);
+      deps.publishChanged(accountId);
+      log(`snooze ${accountId}: folder ${made.created ? "created" : "existing"}`);
+      return made.path;
+    }
+    throw refuse("conflict", SNOOZE_CREATE_REFUSED_MESSAGE);
+  });
+}
+
+/**
+ * block_add (spec "Adding", resolutions 13, 17, 24): the rule (an existing
+ * one reused), then the clicked message when it sits in an Inbox-role
+ * folder and, with moveExisting, every stored Inbox-role row of every
+ * account whose From matches (blockMatches: never the owner's own mail,
+ * never mail rescued from Spam), moved to each account's Spam folder
+ * through message_action's grouping. Logs the rule id and counts only.
+ */
+function runBlock(
+  deps: RpcDeps,
+  input: { messageId: string; kind: BlockRule["kind"]; moveExisting: boolean },
+  log: (line: string) => void,
+): { ruleId: string; created: boolean; groups: ActionGroup[]; undo: UndoGroup[] } {
+  const { store } = deps;
+  const message = store.getMessage(input.messageId);
+  if (message === null) throw refuse("not_found", "Unknown message");
+  if (message.from.address.trim() === "") throw refuse("invalid", "This message has no sender address");
+  const candidates = blockCandidates(message.from.address);
+  const value = input.kind === "address" ? candidates.address : candidates.domain;
+  if (value === null) throw refuse("invalid", BLOCK_PUBLIC_DOMAIN_MESSAGE);
+  const refusal = blockRefusal(input.kind, value, ownAddresses(store));
+  if (refusal !== null) throw refuse("invalid", refusal);
+  const rules = store.listBlockRules();
+  const existing = rules.find((rule) => rule.kind === input.kind && rule.value === value);
+  if (existing === undefined && rules.length >= BLOCK_RULES_MAX) throw refuse("conflict", BLOCK_FULL_MESSAGE);
+  const { rule, created } = store.addBlockRule(input.kind, value, `blk_${randomUUID()}`, deps.composeDeps.clock.now().toISOString());
+
+  const ids = new Set<string>();
+  const [clicked] = store.notifyRows([message.id], deps.composeDeps.clock.now().toISOString());
+  if (clicked !== undefined && clicked.folderRole === "inbox" && clicked.movePending === null && clicked.uid !== null) {
+    ids.add(message.id);
+  }
+  if (input.moveExisting) for (const match of store.blockMatches(rule)) ids.add(match.id);
+  let groups: ActionGroup[] = [];
+  let undo: UndoGroup[] = [];
+  if (ids.size > 0) {
+    try {
+      ({ groups, undo } = runMessageAction(deps, { messageIds: [...ids], action: "spam", role: "inbox" }));
+    } catch (error) {
+      // One refused group (no Spam folder, a locked vault): the rule stays, nothing moved.
+      if (!(error instanceof experimental_PluginRpcRefusal)) throw error;
+      groups = [{ accountId: message.accountId, folder: message.folder, queued: 0, destination: null, error: error.message }];
+    }
+  }
+  const moved = groups.reduce((sum, group) => sum + group.queued, 0);
+  log(`block ${rule.id}: ${created ? "added" : "existing"}, moved ${moved}`);
+  return { ruleId: rule.id, created, groups, undo };
 }
 
 // ---------------------------------------------------------------------------
@@ -2066,14 +2327,66 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return unsubscribeView(deps, messageId, (line) => bb.log.info(line));
       },
       unsubscribe_run: owner("unsubscribe_run", (input) => runUnsubscribe(deps, input, (line) => bb.log.info(line))),
-      message_snooze: notYetAvailable,
-      message_unsnooze: notYetAvailable,
-      snooze_folder_create: notYetAvailable,
-      snooze_folder_use: notYetAvailable,
-      block_add: notYetAvailable,
-      block_list: notYetAvailable,
-      block_remove: notYetAvailable,
-      block_check: notYetAvailable,
+      // Snooze (slice 3e): Inbox mail only, into the account's snooze folder.
+      message_snooze: (input, context) => {
+        refusePluginCaller(context);
+        if (input.role === "all") throw refuse("invalid", ALL_ROLE_MESSAGE);
+        const { groups, undo, needsFolder } = runSnooze(deps, input);
+        const undoable = input.undoId !== undefined && deps.undo.record(input.undoId, "snooze", undo);
+        return { groups, undoable, needsFolder };
+      },
+      message_unsnooze: async ({ messageIds }, context) => {
+        refusePluginCaller(context);
+        const at = nowIso();
+        const accounts = new Set<string>();
+        for (const id of new Set(messageIds)) {
+          const message = store.getMessage(id);
+          if (message !== null && store.updateSnooze(id, { dueAt: at }, at)) accounts.add(message.accountId);
+        }
+        // The clock moves them back (a full round, never an Inbox-only one).
+        if (accounts.size > 0) await deps.snoozeClock.tick([...accounts]);
+        return { ok: accounts.size > 0 };
+      },
+      snooze_folder_create: owner("snooze_folder_create", async ({ accountId }) => ({
+        path: await ensureSnoozeFolder(deps, accountId, (line) => bb.log.info(line)),
+      })),
+      snooze_folder_use: owner("snooze_folder_use", ({ accountId, path }) => {
+        if (store.getAccount(accountId) === null) throw refuse("not_found", "Unknown account");
+        const folder = store.listFolders(accountId).find((f) => f.path === path);
+        if (folder === undefined) throw refuse("not_found", "Unknown folder");
+        const use = effectiveSpecialUse(folder.path, folder.specialUse);
+        if (!folder.selectable || (use !== null && SNOOZE_REFUSED_USES.has(use))) throw refuse("invalid", SNOOZE_FOLDER_REFUSED_MESSAGE);
+        store.setSnoozeFolder(accountId, path);
+        publishChanged(accountId);
+        return { ok: true };
+      }),
+      // Block (slice 3e): global rules; moves only matching Inbox mail to Spam.
+      block_check: owner("block_check", ({ messageId }) => {
+        const message = store.getMessage(messageId);
+        if (message === null) throw refuse("not_found", "Unknown message");
+        if (message.from.address.trim() === "") throw refuse("invalid", "This message has no sender address");
+        const { address, domain } = blockCandidates(message.from.address);
+        return {
+          address,
+          domain,
+          sentToCount: store.sentToCount(address),
+          storedCount: {
+            address: store.blockMatches(probeRule("address", address)).length,
+            domain: domain === null ? null : store.blockMatches(probeRule("domain", domain)).length,
+          },
+        };
+      }),
+      block_add: owner("block_add", (input) => {
+        const { ruleId, created, groups, undo } = runBlock(deps, input, (line) => bb.log.info(line));
+        const undoable =
+          input.undoId !== undefined && deps.undo.record(input.undoId, "block", undo, created ? ruleId : undefined);
+        return { ruleId, groups, undoable };
+      }),
+      block_list: owner("block_list", () => ({
+        rules: store.listBlockRules().map((rule) => ({ id: rule.id, kind: rule.kind, value: rule.value, createdAt: rule.createdAt })),
+      })),
+      // The rule only: mail already in Spam stays there.
+      block_remove: owner("block_remove", ({ id }) => ({ ok: store.removeBlockRule(id) })),
       triage_view: notYetAvailable,
       triage_status: notYetAvailable,
     },
