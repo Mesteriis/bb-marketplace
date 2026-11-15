@@ -72,3 +72,75 @@ export function compareFolders(
  * `archive` folders only.
  */
 export const UNIFIED_ROLES: readonly SpecialUse[] = ["inbox", "sent", "drafts", "junk", "archive", "trash"];
+
+/** One address seen in stored mail, for recipient suggestions. */
+export type SuggestionEntry = {
+  address: string;
+  name: string | null;
+  /** ISO 8601 date of the message, or null. */
+  date: string | null;
+  /** A To or Cc address of a message in the owner's Sent folder. */
+  ownerSent: boolean;
+};
+
+/**
+ * Recipient suggestions from stored mail: distinct addresses (case-folded)
+ * whose address, or a word of whose display name, starts with the prefix;
+ * addresses the owner sent to first, then the most recent, then the most
+ * frequent, then by address. The name is the latest non-empty one seen.
+ */
+export function rankRecipientSuggestions(
+  entries: Iterable<SuggestionEntry>,
+  prefix: string,
+  limit: number,
+): { name: string | null; address: string }[] {
+  const wanted = prefix.trim().toLowerCase();
+  if (wanted === "" || limit <= 0) return [];
+  type Tally = {
+    address: string;
+    name: string | null;
+    nameTime: number;
+    latest: number;
+    count: number;
+    ownerSent: boolean;
+  };
+  const tallies = new Map<string, Tally>();
+  for (const entry of entries) {
+    const address = entry.address.trim();
+    if (!address.includes("@") || /[\s<>,;"\u0000-\u001f]/.test(address)) continue;
+    const key = address.toLowerCase();
+    const parsed = entry.date === null ? Number.NaN : Date.parse(entry.date);
+    const time = Number.isFinite(parsed) ? parsed : -Infinity;
+    const name = entry.name?.trim() || null;
+    const tally = tallies.get(key);
+    if (tally === undefined) {
+      tallies.set(key, { address: key, name, nameTime: name === null ? -Infinity : time, latest: time, count: 1, ownerSent: entry.ownerSent });
+      continue;
+    }
+    tally.count++;
+    tally.latest = Math.max(tally.latest, time);
+    tally.ownerSent ||= entry.ownerSent;
+    if (name !== null && (tally.name === null || time >= tally.nameTime)) {
+      tally.name = name;
+      tally.nameTime = time;
+    }
+  }
+  const matches = (tally: Tally) =>
+    tally.address.startsWith(wanted) ||
+    (tally.name !== null &&
+      tally.name
+        .toLowerCase()
+        .split(/\s+/)
+        .some((word) => word.startsWith(wanted) || word.replace(/^["'(]+/, "").startsWith(wanted)));
+  return [...tallies.values()]
+    .filter(matches)
+    .sort(
+      (a, b) =>
+        Number(b.ownerSent) - Number(a.ownerSent) ||
+        (b.latest === a.latest ? 0 : b.latest > a.latest ? 1 : -1) ||
+        b.count - a.count ||
+        (a.address < b.address ? -1 : a.address > b.address ? 1 : 0),
+    )
+    .slice(0, limit)
+    .map((tally) => ({ name: tally.name, address: tally.address }));
+}

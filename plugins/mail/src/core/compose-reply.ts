@@ -30,13 +30,15 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
  * any account) the original To. Reply all: that target plus the original To,
  * Cc = the original Cc, every own address removed, deduped across both, Cc
  * moved into To when To ends up empty. Bcc is never carried. Addresses that
- * cannot be sent to are left out; domains come back punycoded.
+ * cannot be sent to are left out of `to`/`cc` and listed in `dropped` (as
+ * stored, deduped, empty ones skipped) so the page can tell the owner;
+ * domains come back punycoded.
  */
 export function replyRecipients(
   source: ReplySource,
   kind: ReplyKind,
   ownAddresses: string[],
-): { to: OutgoingAddress[]; cc: OutgoingAddress[] } {
+): { to: OutgoingAddress[]; cc: OutgoingAddress[]; dropped: string[] } {
   const own = new Set(ownAddresses.map((address) => address.trim().toLowerCase()));
   const isOwn = (address: string) => own.has(address.toLowerCase());
   const fromSelf = own.has(source.from.address.trim().toLowerCase());
@@ -45,18 +47,22 @@ export function replyRecipients(
     : source.replyTo.length > 0
       ? source.replyTo
       : [source.from];
+  const dropped: string[] = [];
+  const keep = (list: MailAddress[]) => sendable(list, dropped);
 
   if (kind === "reply") {
-    const to = dedupeAddresses(sendable(target));
-    return { to: to.length > 0 ? to : dedupeAddresses(sendable([source.from])), cc: [] };
+    let to = dedupeAddresses(keep(target));
+    if (to.length === 0) to = dedupeAddresses(keep([source.from]));
+    return { to, cc: [], dropped: unique(dropped) };
   }
 
-  const to = dedupeAddresses(sendable([...target, ...source.to])).filter((a) => !isOwn(a.address));
+  const to = dedupeAddresses(keep([...target, ...source.to])).filter((a) => !isOwn(a.address));
   const inTo = new Set(to.map((a) => a.address.toLowerCase()));
-  const cc = dedupeAddresses(sendable(source.cc)).filter(
+  const cc = dedupeAddresses(keep(source.cc)).filter(
     (a) => !isOwn(a.address) && !inTo.has(a.address.toLowerCase()),
   );
-  return to.length > 0 ? { to, cc } : { to: cc, cc: [] };
+  const result = to.length > 0 ? { to, cc } : { to: cc, cc: [] };
+  return { ...result, dropped: unique(dropped) };
 }
 
 /** In-Reply-To = the original's Message-ID; References = its References (or In-Reply-To) plus that id. */
@@ -97,15 +103,30 @@ export function quoteHeaderText(source: ReplySource, kind: ReplyKind | "forward"
   return lines;
 }
 
-function sendable(list: MailAddress[]): OutgoingAddress[] {
+function sendable(list: MailAddress[], dropped: string[]): OutgoingAddress[] {
   const kept: OutgoingAddress[] = [];
   for (const entry of list) {
     const parsed = parseAddress(entry.address);
-    if (!parsed.ok) continue;
+    if (!parsed.ok) {
+      const shown = clean(entry.address);
+      if (shown !== "") dropped.push(shown);
+      continue;
+    }
     const name = entry.name === null ? "" : clean(entry.name);
     kept.push({ name: name === "" ? null : name, address: parsed.value.address });
   }
   return kept;
+}
+
+/** First occurrence of each entry, compared case-insensitively. */
+function unique(list: string[]): string[] {
+  const seen = new Set<string>();
+  return list.filter((entry) => {
+    const key = entry.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /** `<id>`, or null when the id is empty or holds whitespace, controls or brackets. */

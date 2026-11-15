@@ -18,4 +18,7 @@ export * from "./compose-subjects.ts";
 export * from "./compose-reply.ts";
 export * from "./compose-doc.ts";
 export * from "./compose-bcc.ts";
+export * from "./compose-drafts.ts";
+export * from "./compose.ts";
+export * from "./compose-outbox.ts";
 export { removeControls, removeInvisible } from "./html-entities.ts";

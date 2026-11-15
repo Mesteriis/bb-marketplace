@@ -35,6 +35,7 @@ import type {
   ThreadSummary,
 } from "./src/core/index.ts";
 import {
+  FakeTransport,
   FixedClock,
   ScriptedImapGateway,
   imapError,
@@ -114,8 +115,9 @@ async function load(options: LoadOptions = {}) {
   const bb = options.wrap ? options.wrap(host.bb) : host.bb;
   options.seed?.(host.bb);
   const clock = new FixedClock(NOW);
-  await createMailPlugin({ gateway, clock })(bb);
-  return { ...host, gateway, clock };
+  const transport = new FakeTransport();
+  await createMailPlugin({ gateway, clock, transport })(bb);
+  return { ...host, gateway, clock, transport };
 }
 
 /** A bb whose settings handles reject experimental_set, like a host that cannot write secrets. */

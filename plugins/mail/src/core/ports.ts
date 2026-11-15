@@ -3,6 +3,7 @@ import type { ReplySource } from "./compose-reply.ts";
 import type {
   ComposeAttachment,
   DraftFields,
+  DraftServerCopyState,
   DraftRecord,
   DraftServerCopy,
   FetchedMessage,
@@ -369,24 +370,43 @@ export interface MailStore {
    * Compare-and-swap on the revision: a stale `baseRevision`, or a draft a
    * live outbox row holds, answers `conflict` with the current revision.
    */
+  /** Also clears `importHtml` and sets `updatedAt` (ISO 8601). */
   saveDraft(
     id: string,
     baseRevision: number,
     fields: DraftFields,
+    updatedAt: string,
   ): { revision: number } | { conflict: true; revision: number };
   /** Cascades to its attachments. */
   deleteDraft(id: string): void;
   listDrafts(accountId: string): DraftRecord[];
   /** The draft whose server copy is (folder, uid) of the account, or null. */
   draftForServerCopy(accountId: string, folder: string, uid: number): string | null;
-  /** Records (or with null clears) where the draft's latest server copy lives. */
+  /**
+   * Records (or with null clears) where the draft's latest server copy
+   * lives; serverState becomes "saved" (or "none"). Only uids from our own
+   * APPENDUID reach it; createDraft alone takes a foreign draft's uid.
+   */
   recordServerCopy(id: string, copy: DraftServerCopy | null): void;
+  /** Marks a failed or local-only server copy without touching the recorded copy. */
+  setServerCopyState(id: string, state: DraftServerCopyState): void;
+  /** Appends after the draft's last attachment. `contentId`: a forwarded inline part's Content-ID. */
   addAttachment(
     draftId: string,
-    input: { fileName: string; mimeType: string; size: number; sha256: string; data: Uint8Array },
+    input: {
+      fileName: string;
+      mimeType: string;
+      size: number;
+      sha256: string;
+      data: Uint8Array;
+      contentId?: string | null;
+    },
   ): ComposeAttachment;
+  /** In the order added. */
   listAttachments(draftId: string): ComposeAttachment[];
-  attachmentData(draftId: string): (ComposeAttachment & { data: Uint8Array })[];
+  attachmentData(
+    draftId: string,
+  ): (ComposeAttachment & { data: Uint8Array; sha256: string; contentId: string | null })[];
   removeAttachment(draftId: string, attachmentId: string): boolean;
   /**
    * One transaction: an existing row with this id (the requestId) is
@@ -411,15 +431,21 @@ export interface MailStore {
       rejected?: string[];
       sendAfter?: string;
       countAttempt?: boolean;
+      /** ISO 8601; the row's updatedAt stays when absent. */
+      updatedAt?: string;
     },
   ): boolean;
   deleteOutbox(id: string, from: OutboxState[]): boolean;
   /** The oldest due `queued` row of an account not in `busyAccounts`, moved to `sending` (attempts + 1). */
   claimDueOutbox(nowIso: string, busyAccounts: string[]): OutboxRecord | null;
-  /** On start: `sending` becomes `unknown`, overdue `queued` becomes `held`. */
+  /**
+   * On start: `sending` becomes `unknown`, overdue `queued` becomes `held`,
+   * and `appending` goes back to `sent` (the copy step is idempotent).
+   */
   recoverOutboxOnStart(nowIso: string): { unknown: number; held: number };
   /** Deletes the row and its draft. */
   completeOutbox(id: string): void;
+  /** A row of the account is `sending` or `appending` (talking to a server). */
   hasSendingOutbox(accountId: string): boolean;
   /** `replyToKnown` is false for rows synced before Reply-To was stored. */
   replySource(
