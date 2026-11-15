@@ -23,7 +23,7 @@
 // the next). One failing folder is recorded and the round goes on; a rejected
 // login stops the account. Never throws; error text is built from error
 // classes and codes, so it never carries the password.
-import type { FetchedMessage, FlagChange, FlagIntent, Folder, RemoteFolder } from "./model.ts";
+import type { AccountPreset, FetchedMessage, FlagChange, FlagIntent, Folder, RemoteFolder } from "./model.ts";
 import {
   ImapAuthError,
   type ChangeNotifier,
@@ -35,6 +35,7 @@ import {
   type SecretVault,
 } from "./ports.ts";
 import { buildThreads } from "./threading.ts";
+import { unsubscribeInfoOf } from "./unsubscribe.ts";
 
 export const INBOX = "INBOX";
 
@@ -100,6 +101,13 @@ export type SyncOutcome =
 
 type FolderCounts = { fetched: number; removed: number; flagsChanged: number };
 
+/** What one folder's sync needs beyond the session: how to judge headers, and where new Inbox rows go. */
+type FolderContext = {
+  preset: AccountPreset;
+  /** Set for an Inbox-role folder: its incremental fetch collects inserted rows here. */
+  collect: { newInbox: string[]; returning: string[] } | null;
+};
+
 /** What a round has done so far, kept across folders and failures. */
 type RoundProgress = {
   pushedSeen: number;
@@ -156,6 +164,7 @@ export async function syncAccount(
     };
   }
 
+  const inboxOnly = options.only === "inbox";
   let password: string | null = null;
   const progress: RoundProgress = {
     pushedSeen: 0,
@@ -168,14 +177,24 @@ export async function syncAccount(
   try {
     password = vault.open(account.passwordSealed);
     const config = { host: account.host, port: account.port, user: account.username, password };
-    saveListing(store, accountId, await gateway.listFolders(config), progress);
-    const folders = store.listFolders(accountId).filter((folder) => folder.selectable);
+    // An Inbox-only round (IDLE) lists nothing: the stored listing stands.
+    if (!inboxOnly) {
+      saveListing(store, accountId, account.snoozeFolder, await gateway.listFolders(config), progress);
+    }
+    const folders = store
+      .listFolders(accountId)
+      .filter((folder) => folder.selectable && (!inboxOnly || folder.specialUse === "inbox"));
 
     const totals: FolderCounts = { fetched: 0, removed: 0, flagsChanged: 0 };
+    const collected = { newInbox: [] as string[], returning: [] as string[] };
     let synced = 0;
     for (const folder of folders) {
       try {
-        const counts = await syncOneFolder(deps, config, accountId, folder, options, progress);
+        const context: FolderContext = {
+          preset: account.preset,
+          collect: folder.specialUse === "inbox" ? collected : null,
+        };
+        const counts = await syncOneFolder(deps, config, accountId, folder, options, progress, context);
         totals.fetched += counts.fetched;
         totals.removed += counts.removed;
         totals.flagsChanged += counts.flagsChanged;
@@ -195,7 +214,7 @@ export async function syncAccount(
       const error = lastError ?? describeError(null);
       store.recordSyncResult(accountId, {
         lastSyncAt: account.lastSyncAt,
-        lastError: error,
+        lastError: inboxOnly ? mergeErrors(account.lastError, progress.problems.length > 0 ? progress.problems : [error]) : error,
         authFailed: false,
       });
       if (progress.changed) notifier.mailChanged(accountId);
@@ -206,9 +225,11 @@ export async function syncAccount(
         ...cancelledField(progress),
       };
     }
+    // An Inbox-only round keeps the full round's time and its lastError,
+    // adding its own problems (spec resolution 16).
     store.recordSyncResult(accountId, {
-      lastSyncAt: clock.now().toISOString(),
-      lastError,
+      lastSyncAt: inboxOnly ? account.lastSyncAt : clock.now().toISOString(),
+      lastError: inboxOnly ? mergeErrors(account.lastError, progress.problems) : lastError,
       authFailed: false,
     });
     notifier.mailChanged(accountId);
@@ -219,8 +240,8 @@ export async function syncAccount(
       pushedFlags: progress.pushedFlags,
       folders: synced,
       movesCancelled: progress.movesCancelled,
-      newInbox: [],
-      returning: [],
+      newInbox: collected.newInbox,
+      returning: collected.returning,
     };
   } catch (error) {
     const authFailed = error instanceof ImapAuthError;
@@ -229,9 +250,10 @@ export async function syncAccount(
       if (progress.changed) {
         store.assignThreads(accountId, buildThreads(store.threadingInputs(accountId)));
       }
+      const roundError = [message, problemText(progress)].filter((t) => t !== null).join("; ");
       store.recordSyncResult(accountId, {
         lastSyncAt: account.lastSyncAt,
-        lastError: [message, problemText(progress)].filter((t) => t !== null).join("; "),
+        lastError: inboxOnly && !authFailed ? mergeErrors(account.lastError, [message, ...progress.problems]) : roundError,
         authFailed,
       });
       if (progress.changed) notifier.mailChanged(accountId);
@@ -240,6 +262,16 @@ export async function syncAccount(
     }
     return { status: "error", error: message, authFailed, ...cancelledField(progress) };
   }
+}
+
+/**
+ * The stored lastError with `problems` appended, each part once; never
+ * cleared (an Inbox-only round does not see the other folders).
+ */
+function mergeErrors(stored: string | null, problems: string[]): string | null {
+  const parts = stored === null || stored === "" ? [] : stored.split("; ");
+  for (const problem of problems) if (!parts.includes(problem)) parts.push(problem);
+  return parts.length > 0 ? parts.join("; ") : null;
 }
 
 /** The round's problems, each once, in the order they happened. */
@@ -252,11 +284,14 @@ function problemText(progress: RoundProgress): string | null {
  * Saves the server's folder listing. A listing without a selectable INBOX is
  * taken as a broken answer, not as every folder being deleted: nothing is
  * saved and the round fails. Moves still queued in a folder the listing drops
- * go with its rows and are reported as cancelled.
+ * go with its rows and are reported as cancelled. A snooze folder the listing
+ * no longer has (renamed or deleted elsewhere) is cleared, so the next snooze
+ * asks again (spec resolution 18).
  */
 function saveListing(
   store: MailStore,
   accountId: string,
+  snoozeFolder: string | null,
   listing: RemoteFolder[],
   progress: RoundProgress,
 ): void {
@@ -271,6 +306,9 @@ function saveListing(
     .map((f) => ({ name: f.name, ids: store.pendingMoves(accountId, f.path).map((m) => m.id) }))
     .filter((f) => f.ids.length > 0);
   store.saveFolders(accountId, listing);
+  if (snoozeFolder !== null && !listing.some((f) => f.path === snoozeFolder && f.selectable)) {
+    store.setSnoozeFolder(accountId, null);
+  }
   for (const folder of doomed) {
     progress.movesCancelled.push(...folder.ids);
     progress.problems.push(
@@ -291,6 +329,7 @@ async function syncOneFolder(
   folder: Folder,
   options: SyncOptions,
   progress: RoundProgress,
+  context: FolderContext,
 ): Promise<FolderCounts> {
   await pushPending(deps, accountId, folder, progress, () =>
     deps.gateway.openFolder(config, folder.path, { readOnly: false }),
@@ -304,6 +343,7 @@ async function syncOneFolder(
       folder.path,
       deps.clock.now(),
       options,
+      context,
     );
     if (counts.droppedMoves.length > 0) {
       progress.changed = true;
@@ -491,6 +531,7 @@ async function syncFolder(
   path: string,
   now: Date,
   options: SyncOptions,
+  context: FolderContext,
 ): Promise<FolderCounts & { droppedMoves: string[] }> {
   const since = new Date(now.getTime() - options.windowDays * DAY_MS);
   const status = await session.status();
@@ -524,26 +565,41 @@ async function syncFolder(
    * server no longer returns was expunged, and a window message missed by an
    * interrupted round is backfilled by reconcile whatever lastUid says.
    */
-  const fetchAndStore = async (batchUids: number[]): Promise<number> => {
+  const fetchAndStore = async (
+    batchUids: number[],
+    collect: FolderContext["collect"] = null,
+  ): Promise<number> => {
     let count = 0;
     for (let i = 0; i < batchUids.length; i += options.batchSize) {
       const batch = batchUids.slice(i, i + options.batchSize);
-      const messages: FetchedMessage[] = await session.fetchMessages(batch);
+      const messages: FetchedMessage[] = (await session.fetchMessages(batch)).map((message) =>
+        withUnsubscribe(message, context.preset),
+      );
       for (const uid of batch) lastUid = Math.max(lastUid, uid);
       for (const message of messages) lastUid = Math.max(lastUid, message.uid);
       count += messages.length;
-      store.transaction(() => {
-        store.upsertMessages(accountId, path, messages);
+      const stored = store.transaction(() => {
+        const result = store.upsertMessages(accountId, path, messages);
         store.saveSyncState(accountId, path, { ...baseState, lastUid });
+        return result;
       });
+      if (collect !== null) {
+        collect.newInbox.push(...stored.inserted);
+        collect.returning.push(...stored.returning);
+      }
     }
     return count;
   };
 
   // A uid already stored here is a message a completed move re-homed into this
   // folder with its new uid: it is not fetched again, but lastUid covers it.
+  // Only this incremental fetch of an Inbox folder collects new mail: never
+  // an initial sync, a reset or reconcile's backfill (spec resolution 16).
   const known = new Set(store.localFolderIndex(accountId, path, EPOCH_ISO).map((e) => e.uid));
-  let fetched = await fetchAndStore(uids.filter((uid) => !known.has(uid)));
+  let fetched = await fetchAndStore(
+    uids.filter((uid) => !known.has(uid)),
+    initial ? null : context.collect,
+  );
   const highest = uids.reduce((max, uid) => Math.max(max, uid), lastUid);
   if (highest > lastUid) {
     lastUid = highest;
@@ -615,6 +671,15 @@ async function reconcile(
   const gone = local.filter((uid) => !onServer.has(uid));
   const removed = gone.length > 0 ? store.deleteByUids(accountId, path, gone) : 0;
   return { backfilled, removed, flagsChanged };
+}
+
+/**
+ * The message with its unsubscribe info judged from the fetched header lines
+ * (spec "Parsing at sync"): absent headers leave the stored info alone.
+ */
+function withUnsubscribe(message: FetchedMessage, preset: AccountPreset): FetchedMessage {
+  if (message.unsubscribeHeaders === undefined) return message;
+  return { ...message, unsubscribe: unsubscribeInfoOf(message.unsubscribeHeaders, preset, message.from) };
 }
 
 async function closeQuietly(session: FolderSession): Promise<void> {

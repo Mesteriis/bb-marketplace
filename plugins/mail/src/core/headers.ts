@@ -208,6 +208,20 @@ export function headerValue(raw: Uint8Array, name: string): string | null {
   return field ? field[1].replace(/\s+/g, " ").trim() : null;
 }
 
+/** Header lines at most headerLines returns. */
+export const HEADER_LINES_MAX = 64;
+
+/**
+ * The top-level header fields as unsubscribe parsing reads them (slice 3e):
+ * lower-case names, values unfolded and trimmed but not decoded, in message
+ * order, at most HEADER_LINES_MAX.
+ */
+export function headerLines(raw: Uint8Array): { key: string; value: string }[] {
+  return parseFields(topHeaderBlock(raw))
+    .slice(0, HEADER_LINES_MAX)
+    .map(([name, value]) => ({ key: name.toLowerCase(), value }));
+}
+
 /** A Message-ID as compared: at most 998 characters, trimmed, without its angle brackets. */
 export function normalizeMessageId(value: string): string {
   // No regex with a repeated class before `$`: index scans stay linear.

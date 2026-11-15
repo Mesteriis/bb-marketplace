@@ -155,6 +155,7 @@ import {
   type SecretVault,
   type SpecialUse,
   type SyncDeps,
+  isHiddenDraft,
 } from "./src/core/index.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
@@ -1254,7 +1255,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
    */
   const ownerDraft = (draftId: string): DraftRecord => {
     const draft = store.getDraft(draftId);
-    if (draft === null || draft.proposalId !== null) throw new ComposeError("not_found");
+    if (draft === null || isHiddenDraft(draft)) throw new ComposeError("not_found");
     return draft;
   };
   /** A server draft copy was written or removed: the page reloads, sync picks it up. */

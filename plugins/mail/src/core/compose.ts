@@ -28,6 +28,7 @@ import { forwardSubject, replySubject } from "./compose-subjects.ts";
 import { normalizeMessageId } from "./headers.ts";
 import type {
   DraftOrigin,
+  DraftPurpose,
   DraftRecord,
   DraftServerCopy,
   DraftServerCopyState,
@@ -259,6 +260,16 @@ export async function planCompose(
 }
 
 /**
+ * A draft the owner never sees as a draft (spec resolution 19): an agent
+ * proposal's (reached only through its card) or one the plugin made for a
+ * purpose (an unsubscribe email). No compose RPC, Drafts list or server copy
+ * reaches it. The proposal flow reads `proposalId` itself.
+ */
+export function isHiddenDraft(draft: Pick<DraftRecord, "proposalId" | "purpose">): boolean {
+  return draft.proposalId !== null || draft.purpose !== null;
+}
+
+/**
  * Writes a plan: one createDraft with its origin and proposal id (so a
  * hidden proposal draft is never visible for a moment), then its
  * attachments in order while they fit the cap. `leftOut` counts those that
@@ -267,7 +278,7 @@ export async function planCompose(
 export async function createComposeDraft(
   deps: Pick<ComposeDeps, "store" | "newId" | "clock">,
   plan: ComposePlan,
-  options: { origin: DraftOrigin; proposalId: string | null },
+  options: { origin: DraftOrigin; proposalId: string | null; purpose?: DraftPurpose | null },
 ): Promise<{ draftId: string; warning: ComposeWarning; dropped: string[]; leftOut: number }> {
   const { attachments, warning, dropped, original: _original, ...fields } = plan;
   const draft = deps.store.createDraft({
@@ -275,6 +286,7 @@ export async function createComposeDraft(
     id: deps.newId(),
     origin: options.origin,
     proposalId: options.proposalId,
+    purpose: options.purpose ?? null,
     createdAt: deps.clock.now().toISOString(),
   });
   const leftOut = await addWithinCap(deps.store, draft.id, attachments);
@@ -522,8 +534,8 @@ export async function writeServerCopy(
   reason: ServerCopyReason,
 ): Promise<ServerCopyOutcome> {
   const first = deps.store.getDraft(draftId);
-  // A hidden agent proposal draft never gets a server copy (slice 3c).
-  if (first === null || first.proposalId !== null) return "skipped";
+  // A hidden draft (an agent proposal's, or an unsubscribe email's) never gets a server copy.
+  if (first === null || isHiddenDraft(first)) return "skipped";
   if (reason === "tick" && first.serverState === "local_only") return "skipped";
   const drafts = roleFolder(deps.store, first.accountId, "drafts");
   if (drafts === null) {
@@ -546,7 +558,7 @@ export async function writeServerCopy(
   try {
     return await deps.queue.run(first.accountId, async () => {
       const draft = deps.store.getDraft(draftId);
-      if (draft === null || draft.accountId !== first.accountId || draft.proposalId !== null) return "skipped";
+      if (draft === null || draft.accountId !== first.accountId || isHiddenDraft(draft)) return "skipped";
       if (isQueued(deps.store, draft)) return "skipped";
       const account = requireAccount(deps.store, draft.accountId);
       const session = await deps.gateway.openFolder(imapConfigOf(account, deps.vault), drafts, {

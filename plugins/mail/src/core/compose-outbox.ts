@@ -254,6 +254,14 @@ export function cancelSend(
     deps.notifier.outboxChanged({ accountId: row.accountId, id, state: "cancelled" });
     return { cancelled: true, draftId: undone.draftId ?? row.draftId };
   }
+  // A purpose draft (an unsubscribe email) never becomes an owner draft:
+  // the row and the draft go in one transaction (spec resolution 19).
+  if (draft !== null && draft.purpose !== null) {
+    if (!deps.store.cancelSendPurpose(id, fromStates("undo")).cancelled) return { cancelled: false, draftId: null };
+    deps.undone.add(id);
+    deps.notifier.outboxChanged({ accountId: row.accountId, id, state: "cancelled" });
+    return { cancelled: true, draftId: null };
+  }
   if (!deps.store.deleteOutbox(id, fromStates("undo"))) return { cancelled: false, draftId: row.draftId };
   deps.undone.add(id);
   deps.notifier.outboxChanged({ accountId: row.accountId, id, state: "cancelled" });
