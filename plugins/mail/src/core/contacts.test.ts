@@ -68,8 +68,8 @@ describe("queryWords and textMask", () => {
 });
 
 const OWNERS = [
-  { id: "acc_1", email: "owner@example.org" },
-  { id: "acc_2", email: "second@example.org" },
+  { id: "acc_1", addresses: ["owner@example.org"] },
+  { id: "acc_2", addresses: ["second@example.org"] },
 ];
 
 function msg(overrides: Partial<ContactMessage>): ContactMessage {
@@ -251,5 +251,31 @@ describe("correspondenceOf and pickSendingAccount", () => {
     ["an account that no longer exists is skipped", [{ accountId: "acc_9", lastReceived: "2026-06-01T00:00:00.000Z", lastSent: null }], null],
   ])("%s", (_name, history, picked) => {
     expect(pickSendingAccount(OWNERS, history)).toBe(picked);
+  });
+});
+
+describe("own addresses by account (slice 3d)", () => {
+  const WITH_ALIAS = [
+    { id: "acc_1", addresses: ["owner@example.org", "alias@example.net"] },
+    { id: "acc_2", addresses: ["second@example.org"] },
+  ];
+
+  it("never ranks an alias as a contact, and mail sent from it counts as the owner's", () => {
+    const messages = [
+      msg({ from: { name: null, address: "anna@example.net" }, to: [{ name: null, address: "alias@example.net" }] }),
+      msg({ from: { name: "Me", address: "Alias@example.net" }, to: [{ name: "Bob", address: "bob@example.net" }] }),
+    ];
+    const found = rankContacts(messages, ["example"], WITH_ALIAS, new Set(), 10);
+    expect(found.map((c) => c.address).sort()).toEqual(["anna@example.net", "bob@example.net"]);
+    expect(found.find((c) => c.address === "bob@example.net")).toMatchObject({ sentByOwner: 1, ownerAccount: "owner@example.org" });
+  });
+
+  it("picks the alias's account for correspondence sent from the alias", () => {
+    const messages = [
+      msg({ accountId: "acc_1", from: { name: null, address: "alias@example.net" }, to: [{ name: null, address: "carl@example.net" }], date: "2026-06-01T00:00:00.000Z" }),
+    ];
+    const history = correspondenceOf(messages, ["carl@example.net"], WITH_ALIAS);
+    expect(history).toEqual([{ accountId: "acc_1", lastReceived: null, lastSent: "2026-06-01T00:00:00.000Z" }]);
+    expect(pickSendingAccount(WITH_ALIAS, history)).toBe("acc_1");
   });
 });

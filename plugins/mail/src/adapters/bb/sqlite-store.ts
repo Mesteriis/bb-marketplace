@@ -837,9 +837,21 @@ export function createSqliteStore(db: Database.Database): MailStore {
     const text = (value: unknown) => (typeof value === "string" ? value : null);
     return messageTextMask(text(subject), text(snippet), text(body), maskWords.words);
   });
-  /** The owner's accounts as a contact lookup needs them, in listAccounts order. */
+  /**
+   * The owner's accounts as a contact lookup needs them, in listAccounts
+   * order: the email, then the username when it holds `@` (the active
+   * aliases join with migration element 7, slice 3d task 8).
+   */
   const ownerAccounts = () =>
-    db.prepare<[], { id: string; email: string }>("SELECT id, email FROM accounts ORDER BY created_at, id").all();
+    db
+      .prepare<[], { id: string; email: string; username: string }>("SELECT id, email, username FROM accounts ORDER BY created_at, id")
+      .all()
+      .map((row) => ({
+        id: row.id,
+        addresses: [
+          ...new Set([row.email, ...(row.username.includes("@") ? [row.username] : [])].map((a) => a.trim().toLowerCase())),
+        ],
+      }));
   const accountById = db.prepare<[string], AccountRow>("SELECT * FROM accounts WHERE id = ?");
 
   const findAttached = db.prepare<[string, string, number], { id: string }>(

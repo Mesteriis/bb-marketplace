@@ -564,6 +564,12 @@ describe("agentQuoteLines", () => {
   };
   const header = ["On 14 Nov 2026 09:05 UTC, Anna Lind <anna@example.org> wrote:"];
 
+  it("drops the own signature only when asked (a reply to own mail)", () => {
+    const body = { text: "Words\n-- \nSig line\n\nAfter", html: null };
+    expect(agentQuoteLines(source, "reply", body, true)).toEqual([...header, "Words", "", "After"]);
+    expect(agentQuoteLines(source, "reply", body)).toEqual([...header, "Words", "-- ", "Sig line", "", "After"]);
+  });
+
   it("text only", () => {
     expect(agentQuoteLines(source, "reply", { text: "Line one\r\nLine two", html: null })).toEqual([
       ...header,

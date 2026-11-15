@@ -2886,7 +2886,7 @@ describe("agent proposals", () => {
       { threadId: THREAD },
     )) as { content: { text: string }[]; isError: boolean };
     expect(refused.isError).toBe(true);
-    expect(refused.content[0]!.text).toContain("sent from the account that received the message");
+    expect(refused.content[0]!.text).toContain("sent from the address the message came to");
     expect(host.harness.inspection.pendingInteractions).toEqual([]);
   });
 });

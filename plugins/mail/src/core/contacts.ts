@@ -131,7 +131,16 @@ export type Contact = {
   lastDate: string | null;
 };
 
-type Owner = { id: string; email: string };
+/**
+ * One of the owner's accounts with every address that is the owner's on it
+ * (its email first, its username when it holds `@`, its active aliases;
+ * spec resolution 11).
+ */
+export type Owner = { id: string; addresses: readonly string[] };
+
+function ownSet(owners: readonly Owner[]): Set<string> {
+  return new Set(owners.flatMap((o) => o.addresses.map((a) => a.trim().toLowerCase())));
+}
 
 const BAD_ADDRESS = /[\s<>,;"\u0000-\u001f]/;
 
@@ -202,8 +211,8 @@ export function rankContacts(
   limit: number,
 ): Contact[] {
   if (words.length === 0 || limit <= 0) return [];
-  const own = new Set(owners.map((o) => o.email.trim().toLowerCase()));
-  const emailOf = new Map(owners.map((o) => [o.id, o.email.trim().toLowerCase()]));
+  const own = ownSet(owners);
+  const emailOf = new Map(owners.map((o) => [o.id, (o.addresses[0] ?? "").trim().toLowerCase()]));
   const tallies = new Map<string, Tally>();
   for (const message of distinctPersonal(messages)) {
     const time = timeOf(message.date);
@@ -289,7 +298,7 @@ export function correspondenceOf(
   owners: readonly Owner[],
 ): AccountCorrespondence[] {
   const wanted = new Set(addresses.map((a) => a.trim().toLowerCase()));
-  const own = new Set(owners.map((o) => o.email.trim().toLowerCase()));
+  const own = ownSet(owners);
   const latest = new Map<string, { received: number; receivedDate: string | null; sent: number; sentDate: string | null }>();
   for (const message of distinctPersonal(messages)) {
     const time = timeOf(message.date);

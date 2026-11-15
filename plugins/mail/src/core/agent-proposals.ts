@@ -27,13 +27,18 @@ import {
   docFromLines,
   type ComposeBlock,
   type ComposeDoc,
+  type ComposeInline,
   type ComposeListItem,
   type ComposeSignature,
 } from "./compose-doc.ts";
+import { signatureBlock, signatureText } from "./compose-signature.ts";
 import {
   ComposeError,
   MAX_RECIPIENTS,
+  accountIdentities,
   createComposeDraft,
+  identityOfDraft,
+  ownAddresses,
   planCompose,
   planNew,
   sha256Hex,
@@ -41,9 +46,12 @@ import {
 } from "./compose.ts";
 import { queueSend, type QueueDeps } from "./compose-outbox.ts";
 import { headerAddressInput } from "./contract.ts";
-import { pickSendingAccount, type AccountCorrespondence } from "./contacts.ts";
+import { pickSendingAccount, type AccountCorrespondence, type Owner } from "./contacts.ts";
+import { identityOf, ownerAddressSets, type Identity } from "./identities.ts";
 import { composeKindSchema, noLineBreaks, type DraftRecord, type MailAddress, type ProposalView } from "./model.ts";
 import type { MailStore, ProposalRecord } from "./ports.ts";
+import { cardChecks, presendIssues } from "./presend.ts";
+import { TEMPLATE_NAME_MAX, templateBlocks, templateNameKey } from "./templates.ts";
 
 export type ProposalDeps = QueueDeps & {
   /** 32 random bytes as unpadded base64url (43 characters). */
@@ -62,10 +70,11 @@ export const mailProposeParamsSchema = z.object({
   /** reply / reply_all / forward: a message id from mail_search, mail_read or a mention. */
   sourceMessageId: z.string().min(1).max(200).optional(),
   /**
-   * new: the sending account, by id or by its email address; may be left out
-   * (the only account, else the one that corresponds with the To recipients;
-   * refused when none does). reply / forward: leave it out (the source
-   * message's account sends; another one is refused).
+   * new: the sending account, by id, by its email address or by one of its
+   * aliases (which sends from that alias); may be left out (the only
+   * account, else the one that corresponds with the To recipients; refused
+   * when none does). reply / forward: leave it out (the address the source
+   * came to sends; another account or address is refused).
    */
   accountId: z.string().min(1).max(320).optional(),
   to: z.array(headerAddressInput).max(MAX_RECIPIENTS).default([]),
@@ -77,6 +86,8 @@ export const mailProposeParamsSchema = z.object({
   body: z.string().max(AGENT_BODY_MAX_CHARS),
   /** forward only: which of the source's attachments to carry (indexes); default all. */
   forwardAttachments: z.array(z.number().int().min(0)).max(50).optional(),
+  /** One of the owner's templates by name (mail_templates): its text follows the body (slice 3d). */
+  template: z.string().min(1).max(TEMPLATE_NAME_MAX).optional(),
 });
 export type MailProposeParams = z.output<typeof mailProposeParamsSchema>;
 
@@ -100,7 +111,8 @@ export type ProposalErrorKind =
   | "too_large"
   | "source_not_found"
   | "attachment_index"
-  | "hidden_text";
+  | "hidden_text"
+  | "template_unknown";
 
 const ADDRESS_PROBLEM_TEXT: Record<AddressProblem, string> = {
   empty: "it is empty",
@@ -125,7 +137,7 @@ const ERROR_TEXT: Record<string, string> = {
   account_required:
     "The owner has several mail accounts and none has corresponded with these To recipients; pass accountId as one of their addresses.",
   account_unknown: "accountId is not one of the owner's mail accounts; pass one of their addresses.",
-  account_mismatch: "A reply or forward is sent from the account that received the message; leave accountId out.",
+  account_mismatch: "A reply or forward is sent from the address the message came to; leave accountId out.",
   smtp_missing: "SMTP is not set for this account.",
   too_many_recipients: `An email can have at most ${MAX_RECIPIENTS} recipients.`,
   no_recipients: "The email has no recipients.",
@@ -134,6 +146,7 @@ const ERROR_TEXT: Record<string, string> = {
   source_not_found: "The source message was not found.",
   attachment_index: "An attachment index is not one of the source message's attachments.",
   hidden_text: "The subject or text holds invisible tag or filler characters; write it without them.",
+  template_unknown: "No template has that name; call mail_templates for the names.",
 };
 
 function errorText(kind: ProposalErrorKind): string {
@@ -217,14 +230,25 @@ export async function proposeMail(
     throw new ProposalError("attachment_index");
   }
 
+  // The template is resolved by its name key; what is inlined is frozen in the hidden draft.
+  const template =
+    params.template === undefined ? null : deps.store.getTemplateByKey(templateNameKey(params.template));
+  if (params.template !== undefined && template === null) throw new ProposalError("template_unknown");
+
   let plan: ComposePlan;
   if (params.kind === "new") {
-    const accountId = resolveSendingAccount(deps.store.listAccounts(), params.accountId, () =>
+    const owners = ownerAddressSets(deps.store.listAccounts(), deps.store.listIdentities(null));
+    const sending = resolveSendingAccount(owners, params.accountId, () =>
       deps.store.correspondence(agent.to.map((a) => a.address)),
     );
     if (params.subject === undefined || params.subject.trim() === "") throw new ProposalError("subject_missing");
     try {
-      plan = planNew(deps, accountId);
+      const account = deps.store.getAccount(sending.accountId);
+      const alias =
+        account === null || sending.address === null
+          ? null
+          : identityOf(accountIdentities(deps.store, account), sending.address);
+      plan = planNew(deps, sending.accountId, alias === null || alias.primary ? null : alias.address);
     } catch (error) {
       throw asProposalError(error, "account");
     }
@@ -235,16 +259,19 @@ export async function proposeMail(
     } catch (error) {
       throw asProposalError(error, "source_not_found");
     }
-    // A reply or forward goes out from the account the source came to: its
-    // Reply rules and its Message-ID domain were computed for that account.
-    if (params.accountId !== undefined && params.accountId !== plan.accountId) {
-      throw new ProposalError("account_mismatch");
-    }
   }
 
   const account = deps.store.getAccount(plan.accountId);
   if (account === null || account.authFailed) throw new ProposalError("account");
   if (account.smtp === null) throw new ProposalError("smtp_missing");
+  const identity = identityOf(accountIdentities(deps.store, account), plan.fromAddress);
+  if (identity === null) throw new ProposalError("account");
+  // A reply or forward goes out from the address the source came to (the
+  // reply-from rule): its Reply rules and Message-ID domain were computed
+  // for it. Naming another account or another of its addresses refuses.
+  if (params.kind !== "new" && params.accountId !== undefined && !namesIdentity(params.accountId, account, identity)) {
+    throw new ProposalError("account_mismatch");
+  }
 
   const merged = mergeAgentRecipients(params.kind, { to: plan.to, cc: plan.cc }, agent);
   for (const entry of [...merged.to, ...merged.cc, ...merged.bcc]) {
@@ -255,14 +282,17 @@ export async function proposeMail(
   if (count === 0) throw new ProposalError("no_recipients");
   if (count > MAX_RECIPIENTS) throw new ProposalError("too_many_recipients");
 
+  const own = new Set(ownAddresses(deps.store));
   const quote =
     params.kind === "new" || plan.original === null
       ? undefined
-      : agentQuoteLines(plan.original.source, params.kind, {
-          text: plan.original.text,
-          html: plan.original.html,
-        });
-  const doc = docFromLines(params.body.replace(/\r\n?/g, "\n").split("\n"), quote);
+      : agentQuoteLines(
+          plan.original.source,
+          params.kind,
+          { text: plan.original.text, html: plan.original.html },
+          params.kind !== "forward" && own.has(plan.original.source.from.address.trim().toLowerCase()),
+        );
+  const doc = proposalDoc(params.body, template === null ? null : templateBlocks(template.doc), identity, quote);
   if (new TextEncoder().encode(JSON.stringify(doc)).length > DOC_MAX_BYTES) throw new ProposalError("too_large");
 
   let attachments = plan.attachments;
@@ -307,7 +337,7 @@ export async function proposeMail(
       added: merged.added,
       contentSha256: hash,
       leftOut: created.leftOut,
-      templateName: null,
+      templateName: template?.name ?? null,
       expiresAt: new Date(now.getTime() + PROPOSAL_TTL_MS).toISOString(),
       createdAt: now.toISOString(),
     }, admit);
@@ -316,6 +346,40 @@ export async function proposeMail(
     deps.store.deleteDraft(created.draftId);
     throw error;
   }
+}
+
+/**
+ * The proposal's document (spec resolution 6): the body's lines as
+ * paragraphs, then (with a template) an empty paragraph when the body is
+ * not empty and the template's blocks, then the identity's signature
+ * block, then the quote.
+ */
+function proposalDoc(
+  body: string,
+  template: ComposeBlock[] | null,
+  identity: Identity,
+  quote: string[] | undefined,
+): ComposeDoc {
+  const bodyEmpty = body.trim() === "";
+  const content: (ComposeBlock | ComposeSignature)[] = [];
+  if (template === null || !bodyEmpty) {
+    content.push(...docFromLines(body.replace(/\r\n?/g, "\n").split("\n")).content);
+  }
+  if (template !== null) {
+    if (!bodyEmpty) content.push({ type: "paragraph" });
+    content.push(...template);
+  }
+  content.push(signatureBlock(identity.signature));
+  if (quote !== undefined) content.push(...docFromLines([], quote).content.filter((b) => b.type === "blockquote"));
+  return { type: "doc", content };
+}
+
+/** The agent's accountId for a reply names the chosen identity: the account's id, or that identity's address. */
+function namesIdentity(given: string, account: { id: string; email: string; username: string }, identity: Identity): boolean {
+  if (given === account.id) return true;
+  const wanted = given.trim().toLowerCase();
+  if (!identity.primary) return wanted === identity.address;
+  return wanted === account.email.trim().toLowerCase() || wanted === account.username.trim().toLowerCase();
 }
 
 function parseAll(list: readonly string[]): OutgoingAddress[] {
@@ -331,29 +395,41 @@ function asMailAddress(entry: OutgoingAddress): MailAddress {
 }
 
 /**
- * The account a new proposal sends from: the given id or email address
- * (case-insensitive); when none is given, the only account, else the one
- * that corresponds with the To recipients (`history`, read only then). The
- * agent does not know account ids, so a refusal names the owner's addresses.
+ * The account and identity a new proposal sends from: the given id, or any
+ * of an account's addresses (case-insensitive; an alias selects that
+ * identity: `address` set, which a username that is no alias also gets, and
+ * the caller resolves with identityOf); when none is given, the only account, else the
+ * one that corresponds with the To recipients (`history`, read only then),
+ * from its own address. `owners` lists each account's addresses, its email
+ * first (ownerAddressSets). The agent does not know account ids, so a
+ * refusal names the owner's account addresses.
  */
 export function resolveSendingAccount(
-  accounts: readonly { id: string; email: string }[],
+  owners: readonly Owner[],
   given: string | undefined,
   history: () => readonly AccountCorrespondence[] = () => [],
-): string {
-  const choices = () => `Accounts: ${accounts.map((a) => a.email).join(", ")}.`;
+): { accountId: string; address: string | null } {
+  const choices = () => `Accounts: ${owners.map((o) => o.addresses[0] ?? "").join(", ")}.`;
+  const own = (accountId: string) => ({ accountId, address: null });
   if (given === undefined) {
-    if (accounts.length === 1) return accounts[0]!.id;
-    if (accounts.length === 0) throw new ProposalError("account");
+    if (owners.length === 1) return own(owners[0]!.id);
+    if (owners.length === 0) throw new ProposalError("account");
     // Several accounts: the one that corresponds with the To recipients (pickSendingAccount).
-    const picked = pickSendingAccount(accounts, history());
-    if (picked !== null) return picked;
+    const picked = pickSendingAccount(owners, history());
+    if (picked !== null) return own(picked);
     throw new ProposalError("account_required", choices());
   }
+  const byId = owners.find((o) => o.id === given);
+  if (byId !== undefined) return own(byId.id);
   const wanted = given.trim().toLowerCase();
-  const match = accounts.find((a) => a.id === given || a.email.toLowerCase() === wanted);
-  if (match === undefined) throw new ProposalError(accounts.length === 0 ? "account" : "account_unknown", accounts.length === 0 ? undefined : choices());
-  return match.id;
+  for (const owner of owners) {
+    const index = owner.addresses.findIndex((a) => a.trim().toLowerCase() === wanted);
+    if (index === -1) continue;
+    // The email is the own address; another match (an alias, or a username
+    // that is not one) is resolved by the caller against the identities.
+    return { accountId: owner.id, address: index === 0 ? null : wanted };
+  }
+  throw new ProposalError(owners.length === 0 ? "account" : "account_unknown", owners.length === 0 ? undefined : choices());
 }
 
 function asProposalError(error: unknown, kind: ProposalErrorKind): Error {
@@ -361,12 +437,27 @@ function asProposalError(error: unknown, kind: ProposalErrorKind): Error {
   return error instanceof Error ? error : new ProposalError(kind);
 }
 
-/** The hash of a draft's canonical content as it is stored now, or null when its account is gone. */
-export async function draftHash(store: MailStore, draft: DraftRecord): Promise<string | null> {
+/**
+ * The From a proposal's draft is sent with (spec resolution 12): its
+ * identity's effective name and address; null when the account is gone or
+ * the alias was removed.
+ */
+function draftFrom(store: MailStore, draft: DraftRecord): { name: string | null; address: string; identity: Identity } | null {
   const account = store.getAccount(draft.accountId);
-  if (account === null) return null;
-  const fromName = account.displayName?.trim() || null;
-  return contentHash(proposalContent(draft, fromName, account.email, store.attachmentData(draft.id)));
+  const identity = identityOfDraft(store, draft);
+  if (account === null || identity === null) return null;
+  return {
+    name: identity.displayName?.trim() || null,
+    address: identity.primary ? account.email : identity.address,
+    identity,
+  };
+}
+
+/** The hash of a draft's canonical content as it is stored now, or null when its account or identity is gone. */
+export async function draftHash(store: MailStore, draft: DraftRecord): Promise<string | null> {
+  const from = draftFrom(store, draft);
+  if (from === null) return null;
+  return contentHash(proposalContent(draft, from.name, from.address, store.attachmentData(draft.id)));
 }
 
 // ---------------------------------------------------------------------------
@@ -413,11 +504,10 @@ export async function viewProposal(
 
 function buildView(store: MailStore, proposal: ProposalRecord, draft: DraftRecord): ProposalView {
   const account = store.getAccount(draft.accountId)!;
-  const ownDomains = store
-    .listAccounts()
-    .flatMap((a) => [a.email, a.username])
-    .filter((a) => a.includes("@"))
-    .map((a) => a.slice(a.lastIndexOf("@") + 1).toLowerCase());
+  // Called after draftHash matched, so the identity is still there.
+  const from = draftFrom(store, draft)!;
+  const own = ownAddresses(store);
+  const ownDomains = own.filter((a) => a.includes("@")).map((a) => a.slice(a.lastIndexOf("@") + 1).toLowerCase());
   const all = [...draft.to, ...draft.cc, ...draft.bcc].map((a) => asciiAddress(a.address));
   const sentTo = store.addressesSentTo(all);
   let hidden = 0;
@@ -435,14 +525,30 @@ function buildView(store: MailStore, proposal: ProposalRecord, draft: DraftRecor
         flags: recipientFlags(address, { sentTo, ownDomains, added: proposal.added }),
       };
     });
-  const { body, quote } = docParts(draft.doc as ComposeDoc);
+  const doc = draft.doc as ComposeDoc;
+  const { body, signature, quote } = docParts(doc);
+  const signatureShown = signatureText(doc);
   const source = proposal.sourceMessageId === null ? null : store.getMessage(proposal.sourceMessageId);
+  const attachments = store.listAttachments(draft.id);
+  const reply = draft.kind === "reply" || draft.kind === "reply_all";
+  const checks = cardChecks(
+    presendIssues({
+      kind: draft.kind,
+      subject: draft.subject,
+      doc,
+      attachmentCount: attachments.length,
+      recipients: all,
+      own: new Set(own),
+      sentTo,
+      conversation: reply && draft.sourceMessageId !== null ? store.conversationAddresses(draft.sourceMessageId) : null,
+    }),
+  );
   const view: ProposalView = {
     proposalId: proposal.id,
     draftId: draft.id,
     kind: draft.kind,
-    account: { id: account.id, name: account.displayName?.trim() || account.email, address: account.email },
-    fromName: account.displayName?.trim() || null,
+    account: { id: account.id, name: account.displayName?.trim() || account.email, address: from.address },
+    fromName: from.name,
     source: source === null ? null : { fromAddress: source.from.address, subject: shown(source.subject) },
     to: row(draft.to),
     cc: row(draft.cc),
@@ -451,14 +557,14 @@ function buildView(store: MailStore, proposal: ProposalRecord, draft: DraftRecor
     hiddenChars: 0,
     bodyText: shown(body),
     quoteText: quote === null ? null : shown(quote),
-    links: linksIn(body),
-    attachments: store.listAttachments(draft.id).map((a) => ({ fileName: a.fileName, mimeType: a.mimeType, size: a.size })),
+    links: cardLinks(`${body}\n${signature}`, doc),
+    attachments: attachments.map((a) => ({ fileName: a.fileName, mimeType: a.mimeType, size: a.size })),
     leftOut: proposal.leftOut,
     expiresAt: proposal.expiresAt,
-    fromAlias: false,
-    signatureText: null,
-    templateName: proposal.templateName,
-    checks: [],
+    fromAlias: !from.identity.primary,
+    signatureText: signatureShown === null ? null : shown(signatureShown),
+    templateName: proposal.templateName === null ? null : shown(proposal.templateName),
+    checks,
   };
   view.hiddenChars = hidden;
   return view;
@@ -469,21 +575,56 @@ function asciiAddress(address: string): string {
   return parsed.ok ? parsed.value.address : address;
 }
 
-/** The agent's text (blocks before the quote) and the quote's text, one line per paragraph. */
-function docParts(doc: ComposeDoc): { body: string; quote: string | null } {
+/**
+ * The agent's text with any template (blocks other than the signature and
+ * the quote), the signature's text, and the quote's text, one line per
+ * paragraph (spec resolution 12).
+ */
+function docParts(doc: ComposeDoc): { body: string; signature: string; quote: string | null } {
   const body: string[] = [];
+  const signature: string[] = [];
   let quote: string[] | null = null;
   for (const block of doc.content) {
     if (block.type === "blockquote") {
       quote = [...(quote ?? []), ...block.content.map(blockText)];
+    } else if (block.type === "signature") {
+      signature.push(...block.content.map(blockText));
     } else {
       body.push(blockText(block));
     }
   }
-  return { body: body.join("\n"), quote: quote === null ? null : quote.join("\n") };
+  return { body: body.join("\n"), signature: signature.join("\n"), quote: quote === null ? null : quote.join("\n") };
 }
 
-// A signature block (slice 3d) counts as body text here until docParts gives it its own part.
+/**
+ * The card's links: those written in the body, template and signature text,
+ * and the `href` of every link mark outside the quote, once each.
+ */
+function cardLinks(text: string, doc: ComposeDoc): { url: string; host: string }[] {
+  const found = linksIn(text);
+  const seen = new Set(found.map((l) => l.url));
+  const hrefs: string[] = [];
+  const walk = (nodes: readonly (ComposeBlock | ComposeListItem | ComposeSignature | ComposeInline)[]) => {
+    for (const node of nodes) {
+      if (node.type === "blockquote") continue;
+      if (node.type === "text") {
+        for (const mark of node.marks ?? []) if (mark.type === "link") hrefs.push(mark.attrs.href);
+      } else if (node.type !== "hardBreak") {
+        walk((node.content ?? []) as (ComposeBlock | ComposeListItem | ComposeSignature | ComposeInline)[]);
+      }
+    }
+  };
+  walk(doc.content);
+  for (const href of hrefs) {
+    for (const link of linksIn(href)) {
+      if (seen.has(link.url)) continue;
+      seen.add(link.url);
+      found.push(link);
+    }
+  }
+  return found;
+}
+
 function blockText(block: ComposeBlock | ComposeListItem | ComposeSignature): string {
   if (block.type === "paragraph") {
     return (block.content ?? []).map((inline) => (inline.type === "text" ? inline.text : "\n")).join("");
@@ -615,7 +756,9 @@ export async function queueConfirmed(
     refuse(deps.store, proposalId, ["confirming"], at());
     return { refused: "changed" };
   };
-  const from = { name: account.displayName?.trim() || null, address: account.email };
+  const sender = draftFrom(deps.store, draft);
+  if (sender === null) return changed();
+  const from = { name: sender.name, address: sender.address };
   const hashed = await contentHash(proposalContent(draft, from.name, from.address, deps.store.attachmentData(draft.id)));
   if (hashed !== proposal.contentSha256) return changed();
   let outboxId: string;
@@ -629,11 +772,11 @@ export async function queueConfirmed(
     }));
   } catch (error) {
     const kind = error instanceof ComposeError ? error.kind : null;
-    // expectFrom's refusal: the account changed between the hash and the build.
-    const now = deps.store.getAccount(draft.accountId);
+    // expectFrom's refusal: the account or identity changed between the hash and the build.
+    const now = draftFrom(deps.store, draft);
     const sameFrom =
-      now !== null && (now.displayName?.trim() || null) === from.name && now.email.trim().toLowerCase() === from.address.trim().toLowerCase();
-    if (kind === "conflict" && !sameFrom) return changed();
+      now !== null && now.name === from.name && now.address.trim().toLowerCase() === from.address.trim().toLowerCase();
+    if ((kind === "conflict" || kind === "from_unknown") && !sameFrom) return changed();
     return release(kind === "rate_limited" ? "rate_limited" : kind === "too_large" ? "too_large" : "account");
   }
   deps.store.transitionProposal(proposalId, ["confirming"], "queued", at(), { outboxId });
