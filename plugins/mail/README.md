@@ -243,7 +243,7 @@ conversations gets one too. **Undo**, or `z` on the Mail page within 10
 minutes and until your next undoable action, takes it back. `z` undoes only
 what this page did, never another window's action. The toast says
 "Moving back…", then "Undone" or "Undone for 5 of 7 messages" with the
-reason (moved elsewhere since, folder gone, not synced yet, server not
+reason (moved elsewhere since, folder gone; not synced yet or server not
 reached: try Undo again).
 
 - A move not pushed yet is cancelled; a pushed one is moved back from where

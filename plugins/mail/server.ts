@@ -1013,8 +1013,9 @@ type UndoOutput = {
  * twice); flag steps run at once, move steps per account inside its queue
  * with the plan recomputed from fresh rows. A move back is queued through
  * queueMove; only a row now in All Mail on a session that reports Gmail is
- * copied back (UID COPY adds, never removes). Failed copies go back into the
- * slot. Nothing here sets \Deleted or expunges.
+ * copied back (UID COPY adds, never removes). A move back is queued per row.
+ * Failed copies (and a failed STATUS) count as failed; they and rows not
+ * synced yet go back into the slot. Nothing here sets \Deleted or expunges.
  */
 async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => void): Promise<UndoOutput> {
   const { store, composeDeps } = deps;
@@ -1059,18 +1060,38 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
     for (const accountId of touched) changed(accountId);
   }
 
+  /**
+   * The move back, per row: a row the owner moved or queued elsewhere since
+   * the plan (an await may lie between) is skipped; the others still go back.
+   */
   const queueBack = (step: Extract<UndoStep, { kind: "move_back" }>) => {
-    if (store.queueMove(step.ids, step.to) === null) skip("moved_elsewhere", step.ids.length);
-    else for (const id of step.ids) restoredIds.add(id);
+    const now = new Map(store.undoRows(step.ids).map((row) => [row.id, row]));
+    for (const id of step.ids) {
+      const row = now.get(id);
+      if (row === undefined) skip("gone", 1);
+      else if (row.folder !== step.from || row.movePending !== null || store.queueMove([id], step.to) === null) {
+        skip("moved_elsewhere", 1);
+      } else restoredIds.add(id);
+    }
   };
-  const putBack = (step: Extract<UndoStep, { kind: "move_back" }>, ids: string[], use: UndoGroup["destinationUse"]) => {
-    failed += ids.length;
+  /** Puts rows back into the slot under the same undoId and expiry (refused once a newer action took it). */
+  const retryLater = (step: Extract<UndoStep, { kind: "move_back" }>, ids: string[], use: UndoGroup["destinationUse"]) => {
+    if (ids.length === 0) return;
     deps.undo.putBack({
       ...record,
       groups: [{ accountId: step.accountId, source: step.to, destination: step.from, destinationUse: use, ids }],
     });
   };
-  /** A row now in All Mail: UID COPY back on Gmail, else a queued move back. */
+  /** The server could not be reached: counted as failed, and put back for another Undo. */
+  const putBack = (step: Extract<UndoStep, { kind: "move_back" }>, ids: string[], use: UndoGroup["destinationUse"]) => {
+    failed += ids.length;
+    retryLater(step, ids, use);
+  };
+  /**
+   * A row now in All Mail: UID COPY back on Gmail, else a queued move back.
+   * Rows not synced yet (detached, or the folder's UIDVALIDITY changed) are
+   * put back into the slot, so Undo can run again once sync caught up.
+   */
   const copyBack = async (step: Extract<UndoStep, { kind: "move_back" }>, rows: ReadonlyMap<string, UndoRow>) => {
     const account = store.getAccount(step.accountId);
     if (account === null) {
@@ -1086,23 +1107,36 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
       return;
     }
     const attached = step.ids.filter((id) => rows.get(id)?.uid != null);
+    const detached = step.ids.filter((id) => rows.get(id)?.uid == null);
     try {
       if (!session.capabilities().gmail) {
         queueBack(step);
         return;
       }
-      const status = await session.status();
-      if (store.getSyncState(step.accountId, step.from)?.uidValidity !== status.uidValidity) {
-        skip("not_synced", step.ids.length);
+      let uidValidity: number;
+      try {
+        uidValidity = (await session.status()).uidValidity;
+      } catch (error) {
+        log(`undo ${step.accountId}: status failed (${errorKind(error)})`);
+        putBack(step, step.ids, "all");
         return;
       }
-      skip("not_synced", step.ids.length - attached.length);
+      if (store.getSyncState(step.accountId, step.from)?.uidValidity !== uidValidity) {
+        skip("not_synced", step.ids.length);
+        retryLater(step, step.ids, "all");
+        return;
+      }
+      skip("not_synced", detached.length);
+      retryLater(step, detached, "all");
       if (attached.length === 0) return;
-      await session.copyMessages(attached.map((id) => rows.get(id)!.uid!), step.to);
+      try {
+        await session.copyMessages(attached.map((id) => rows.get(id)!.uid!), step.to);
+      } catch (error) {
+        log(`undo ${step.accountId}: copy failed (${errorKind(error)})`);
+        putBack(step, attached, "all");
+        return;
+      }
       for (const id of attached) restoredIds.add(id);
-    } catch (error) {
-      log(`undo ${step.accountId}: copy failed (${errorKind(error)})`);
-      putBack(step, attached, "all");
     } finally {
       await session.close().catch(() => undefined);
     }

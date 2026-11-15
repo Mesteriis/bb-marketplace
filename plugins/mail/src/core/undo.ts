@@ -256,7 +256,7 @@ export function undoToastText(action: MessageAction, count: number, destinationN
   }
 }
 
-/** What an undo did, summed over its groups. `not_synced`: a copy whose row has no uid yet. */
+/** What an undo did, summed over its groups. `not_synced`: a copy whose row has no uid yet, or whose folder must resync. */
 export type UndoResultSummary = {
   outcome: "done" | "pending" | "nothing";
   restored: number;
@@ -269,7 +269,8 @@ const REASON_TEXT: Record<UndoSkipReason | "not_synced", string> = {
   // A row that could not be found again reads as moved elsewhere to the owner.
   gone: "moved elsewhere",
   folder_gone: "folder no longer exists",
-  not_synced: "not synced yet",
+  // Put back into the slot (runUndo): Undo can run again once sync caught up.
+  not_synced: "not synced yet; try again in a minute",
 };
 
 /** The toast after an undo. */

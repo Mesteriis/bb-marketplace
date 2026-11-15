@@ -323,7 +323,7 @@ describe("texts", () => {
     );
     expect(
       undoResultText({ outcome: "done", restored: 0, skipped: [{ reason: "not_synced", count: 1 }], failed: 2 }),
-    ).toBe("Undone for 0 of 3 messages · not synced yet, could not reach the server; try Undo again");
+    ).toBe("Undone for 0 of 3 messages · not synced yet; try again in a minute, could not reach the server; try Undo again");
     expect(undoResultText({ outcome: "pending", restored: 0, skipped: [], failed: 0 })).toBe(
       "Undo will finish after the current sync",
     );
