@@ -99,6 +99,20 @@ that runs the BB server.
 Not yet: sending, replying, creating or renaming folders, Gmail API or
 OAuth.
 
+## Mail in the sidebar
+
+The plugin also offers an experimental thread list for BB's sidebar (the
+`experimental_threadList` slot). To use it, open Settings → Appearance and
+choose **Mail** as the thread list. The sidebar then shows the merged Inbox of
+every account (newest first, 50 at a time, with **Load more**) instead of chat
+threads; BB's New thread button, search, navigation rows and footer stay.
+Clicking a conversation opens it on the Mail page and highlights it in the
+list; **Open Mail** opens the page itself. Choose BB's own list again to get
+chats back.
+
+The Mail page takes a deep link to a conversation as its route remainder:
+`t/<accountId>/<threadId>`, each id percent-encoded.
+
 ## Run it
 
 ```sh

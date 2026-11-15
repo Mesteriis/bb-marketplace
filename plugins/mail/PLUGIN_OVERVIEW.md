@@ -29,6 +29,8 @@ when you want help with it.
   **Always show from** its sender.
 - **Hand to agent** opens a new thread draft that mentions the open message,
   and an `@` mention under **Mail** adds a message's text to any prompt.
+- Optionally, your Inbox in place of the sidebar's chats: pick **Mail** as
+  the thread list in Settings → Appearance.
 
 ## Agent access
 

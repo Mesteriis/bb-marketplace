@@ -2429,3 +2429,139 @@ describe("One action toolbar", () => {
     }
   });
 });
+
+describe("Sidebar thread list", () => {
+  const threadList = app.threadLists[0]!;
+  const otherAccount: Account = {
+    ...account,
+    id: "acc-2",
+    displayName: "Second",
+    email: "second@example.net",
+    username: "second@example.net",
+    host: "imap.example.net",
+  };
+  const threadC: ThreadSummary = {
+    ...threadB,
+    id: "th-c",
+    accountId: "acc-2",
+    subject: "Garden club",
+    participants: [{ name: "Cy Example", address: "cy@example.net" }],
+  };
+
+  function renderList(rpc: Record<string, unknown>, onNavigate = vi.fn()) {
+    const slot = renderSlot(
+      threadList,
+      {
+        activeThreadId: null,
+        activeProjectId: null,
+        isCompactViewport: false,
+        onNavigate,
+        searchQuery: "",
+      },
+      { rpc: rpc as never },
+    );
+    return { slot, onNavigate };
+  }
+
+  it("registers the Mail thread list", () => {
+    expect(threadList).toMatchObject({
+      id: "mail",
+      title: "Mail",
+      description: "Inbox conversations from all mail accounts instead of chats.",
+    });
+  });
+
+  it("lists the merged Inbox of every account", async () => {
+    const { slot } = renderList(
+      mailRpc({
+        status_get: () => status({ accounts: [account, otherAccount] }),
+        threads_list: () => ({ threads: [threadA, threadC], nextCursor: null }),
+      }),
+    );
+
+    const rows = within(await slot.findByRole("list", { name: "Inbox conversations" })).getAllByRole("button");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.textContent).toContain("Ada Example");
+    expect(rows[0]!.textContent).toContain("Quarterly plan");
+    expect(rows[1]!.textContent).toContain("Garden club");
+    // Several accounts: each row names its account.
+    expect(rows[1]!.textContent).toContain("Second");
+    expect(callsTo(slot, "threads_list")[0]?.input).toEqual({
+      scope: { kind: "all", role: "inbox" },
+      cursor: null,
+      limit: 50,
+    });
+  });
+
+  it("opens a row's conversation on the Mail page", async () => {
+    const { slot, onNavigate } = renderList(mailRpc());
+
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+
+    expect(slot.inspection.navigateCalls).toEqual([
+      { method: "toPluginPanel", path: "mail", options: { subPath: "t/acc-1/th-a" } },
+    ]);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers to add an account when there is none", async () => {
+    const { slot, onNavigate } = renderList(
+      mailRpc({ status_get: () => status({ accounts: [], unreadCount: 0 }) }),
+    );
+
+    fireEvent.click(await slot.findByRole("button", { name: "Add a mail account" }));
+
+    expect(callsTo(slot, "threads_list")).toHaveLength(0);
+    expect(slot.inspection.navigateCalls).toEqual([{ method: "toPluginPanel", path: "mail" }]);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+  });
+
+  it("says when the Inbox is empty", async () => {
+    const { slot } = renderList(mailRpc({ threads_list: () => ({ threads: [], nextCursor: null }) }));
+
+    expect(await slot.findByText("Inbox is empty")).toBeTruthy();
+  });
+
+  it("the Mail page opens the conversation its subPath names, and the sidebar marks it", async () => {
+    const page = renderSlot(panel, { subPath: "t/acc-1/th-a" }, {
+      rpc: mailRpc() as never,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+
+    expect(await page.findByRole("heading", { name: "Quarterly plan" })).toBeTruthy();
+    expect(callsTo(page, "thread_get")[0]?.input).toMatchObject({ threadId: "th-a" });
+
+    const { slot } = renderList(mailRpc());
+    const list = within(await slot.findByRole("list", { name: "Inbox conversations" }));
+    expect(list.getByRole("button", { name: /Quarterly plan/ }).getAttribute("aria-current")).toBe("page");
+    expect(list.getByRole("button", { name: /Lunch/ }).getAttribute("aria-current")).toBeNull();
+
+    page.lifecycle.unmount();
+    await waitFor(() =>
+      expect(list.getByRole("button", { name: /Quarterly plan/ }).getAttribute("aria-current")).toBeNull(),
+    );
+  });
+
+  it("a row opens its conversation in a Mail page that is already showing", async () => {
+    const page = render(mailRpc());
+    await page.findByText("Lunch");
+    const { slot } = renderList(mailRpc());
+    const list = within(await slot.findByRole("list", { name: "Inbox conversations" }));
+
+    fireEvent.click(list.getByRole("button", { name: /Quarterly plan/ }));
+
+    expect(await page.findByRole("heading", { name: "Quarterly plan" })).toBeTruthy();
+    expect(callsTo(page, "thread_get")).toHaveLength(1);
+    expect(callsTo(page, "thread_get")[0]?.input).toMatchObject({ threadId: "th-a" });
+  });
+
+  it("the Mail page ignores a malformed subPath", async () => {
+    const page = renderSlot(panel, { subPath: "t/acc-1" }, {
+      rpc: mailRpc() as never,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+
+    expect(await page.findByText("Lunch")).toBeTruthy();
+    expect(callsTo(page, "thread_get")).toHaveLength(0);
+  });
+});

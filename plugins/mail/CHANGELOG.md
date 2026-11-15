@@ -58,6 +58,10 @@ All notable changes to Makosh Mail are recorded here. The format follows
   `d`, `t` or `a`. Letters follow the physical key. `c`, `r`, `a` and `f`
   are listed as coming later.
 - **Stop showing** on a message from a sender whose images are always shown.
+- An experimental **Mail** thread list for the BB sidebar (Settings →
+  Appearance → thread list): the merged Inbox of every account in place of
+  the chat list. A row opens its conversation on the Mail page, which also
+  opens a conversation from a `t/<accountId>/<threadId>` deep link.
 
 ### Changed
 
