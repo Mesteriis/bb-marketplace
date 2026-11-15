@@ -124,6 +124,37 @@ describe("queueSend", () => {
     expect(h.store.listOutbox(null)).toHaveLength(SEND_RATE_PER_MINUTE + 1);
   });
 
+  it("Retry, Send again and Send now count against the same cap; Retry copy does not", async () => {
+    const failed = await queued();
+    const unknown = await queued();
+    const held = await queued();
+    const noCopy = await queued();
+    h.store.transitionOutbox(failed.id, ["queued"], "failed", { errorKind: "auth" });
+    h.store.transitionOutbox(unknown.id, ["queued"], "unknown", { errorKind: "unknown_after_data" });
+    h.store.transitionOutbox(held.id, ["queued"], "held");
+    h.store.transitionOutbox(noCopy.id, ["queued"], "sent_no_copy", { errorKind: "append_failed" });
+    for (let i = 4; i < SEND_RATE_PER_MINUTE; i++) expect(rate.take("acc_1")).toBe(true);
+    expect(() => retrySend(deps, failed.id)).toThrow(expect.objectContaining({ kind: "rate_limited" }));
+    expect(() => resendUnknown(deps, unknown.id)).toThrow(expect.objectContaining({ kind: "rate_limited" }));
+    expect(() => sendNow(deps, held.id)).toThrow(expect.objectContaining({ kind: "rate_limited" }));
+    expect(retrySend(deps, noCopy.id)).toEqual({ ok: true });
+    expect([failed, unknown, held].map((r) => h.store.getOutbox(r.id)!.state)).toEqual(["failed", "unknown", "held"]);
+    h.advance(60_000);
+    retrySend(deps, failed.id);
+    resendUnknown(deps, unknown.id);
+    sendNow(deps, held.id);
+    expect([failed, unknown, held].map((r) => h.store.getOutbox(r.id)!.state)).toEqual(["queued", "queued", "queued"]);
+  });
+
+  it("a refused Retry does not use up the cap", async () => {
+    const { id } = await queued();
+    for (let i = 1; i < SEND_RATE_PER_MINUTE; i++) expect(rate.take("acc_1")).toBe(true);
+    h.advance(60_000);
+    expect(() => retrySend(deps, id)).toThrow(expect.objectContaining({ kind: "conflict" }));
+    expect(() => sendNow(deps, id)).toThrow(expect.objectContaining({ kind: "conflict" }));
+    for (let i = 0; i < SEND_RATE_PER_MINUTE; i++) expect(rate.take("acc_1")).toBe(true);
+  });
+
   it("a queued draft cannot be saved over (conflict) until the send settles", async () => {
     const { draftId, baseRevision } = await queued();
     const result = await saveCompose(h.deps, {
@@ -342,8 +373,8 @@ describe("failure matrix", () => {
     const { id } = await queued();
     h.advance(UNDO_MS);
     await drain();
-    expect(() => retrySend(h.deps, id)).toThrow(ComposeError);
-    expect(resendUnknown(h.deps, id)).toEqual({ ok: true });
+    expect(() => retrySend(deps, id)).toThrow(ComposeError);
+    expect(resendUnknown(deps, id)).toEqual({ ok: true });
     expect(h.store.getOutbox(id)).toMatchObject({ state: "queued", errorKind: null });
     expect(await runOutboxOnce(h.deps, signal)).toBe(false);
     h.advance(UNDO_MS);
@@ -357,8 +388,8 @@ describe("failure matrix", () => {
     const { id } = await queued();
     h.advance(UNDO_MS);
     await drain();
-    expect(() => resendUnknown(h.deps, id)).toThrow(ComposeError);
-    retrySend(h.deps, id);
+    expect(() => resendUnknown(deps, id)).toThrow(ComposeError);
+    retrySend(deps, id);
     h.advance(UNDO_MS);
     await drain();
     expect(h.transport.sent).toHaveLength(2);
@@ -436,13 +467,13 @@ describe("restart", () => {
     const { id } = await queued();
     h.advance(UNDO_MS);
     h.store.recoverOutboxOnStart(h.clock.now().toISOString());
-    expect(() => retrySend(h.deps, id)).toThrow(ComposeError);
-    sendNow(h.deps, id);
+    expect(() => retrySend(deps, id)).toThrow(ComposeError);
+    sendNow(deps, id);
     expect(await runOutboxOnce(h.deps, signal)).toBe(false);
     h.advance(UNDO_MS);
     await drain();
     expect(h.transport.sent).toHaveLength(1);
-    expect(() => sendNow(h.deps, id)).toThrow(ComposeError);
+    expect(() => sendNow(deps, id)).toThrow(ComposeError);
   });
 
   it("a send accepted before the restart resumes at the copy step without sending again", async () => {
@@ -480,7 +511,7 @@ describe("Sent copy", () => {
     expect(searches).toHaveLength(APPEND_ATTEMPTS);
     expect(h.store.getOutbox(id)).toMatchObject({ state: "sent_no_copy", errorKind: "append_failed" });
     h.gateway.clearFailure("appendMessage");
-    retrySend(h.deps, id);
+    retrySend(deps, id);
     await drain();
     expect(h.transport.sent).toHaveLength(1);
     expect(h.store.getOutbox(id)).toBeNull();
