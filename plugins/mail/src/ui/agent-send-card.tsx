@@ -56,6 +56,15 @@ export function shownText(text: string): string {
   return text.replace(HIDDEN, "");
 }
 
+/** The file name's last extension (".exe"), or null; shown on its own so a long or padded name cannot hide it. */
+export function extensionOf(fileName: string): string | null {
+  const name = fileName.trimEnd();
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return null;
+  const ext = name.slice(dot);
+  return /\s/.test(ext) ? null : ext.toLowerCase();
+}
+
 const KIND_LABELS: Record<ProposalView["kind"], string> = {
   new: "New",
   reply: "Reply",
@@ -310,8 +319,11 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
           <>
             <ul className="flex flex-col gap-0.5">
               {v.attachments.map((a, i) => (
-                <li key={`${i}-${a.fileName}`} className="flex min-w-0 gap-2 text-xs">
-                  <span className="min-w-0 truncate text-foreground">{shownText(a.fileName)}</span>
+                <li key={`${i}-${a.fileName}`} className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+                  <span className="min-w-0 whitespace-pre-wrap break-all text-foreground">{shownText(a.fileName)}</span>
+                  <span className="shrink-0 rounded-sm border border-border px-1 font-medium text-foreground">
+                    {extensionOf(shownText(a.fileName)) ?? "no extension"}
+                  </span>
                   <span className="shrink-0 text-muted-foreground">{a.mimeType}</span>
                   <span className="shrink-0 text-muted-foreground">{formatBytes(a.size)}</span>
                 </li>

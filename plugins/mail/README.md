@@ -205,8 +205,10 @@ thread with all of it:
   Hangul fillers in the agent's subject or text refuse the proposal. An
   internationalized domain shows as `xn--` punycode.
 - The subject, the body as plain text, the quote of the original (folded),
-  every link in the agent's text by host (also ones without `https://`),
-  and the attachments.
+  every link in the agent's text by host (also ones without `https://`,
+  any `scheme://`, and `mailto:`, `tel:`, `javascript:`, `data:` and the
+  like by scheme), and the attachments with their full names and their
+  extension shown apart.
 - **Send** stays disabled for 1.5 seconds, until every new address is
   acknowledged, and, when the body is taller than the card, until you have
   scrolled to its end.

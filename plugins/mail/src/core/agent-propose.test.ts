@@ -338,6 +338,29 @@ describe("linksIn", () => {
     ]);
   });
 
+  it("lists links of any scheme with ://, by host or by scheme when there is none", () => {
+    expect(linksIn("Get ftp://Files.example.com/x, ssh://git@evil.example:22/r and file:///etc/passwd and foo://bar")).toEqual([
+      { url: "ftp://Files.example.com/x", host: "files.example.com" },
+      { url: "ssh://git@evil.example:22/r", host: "evil.example" },
+      { url: "file:///etc/passwd", host: "file:" },
+      { url: "foo://bar", host: "bar" },
+    ]);
+  });
+
+  it("lists opaque schemes like tel:, sms:, javascript: and data: by scheme", () => {
+    expect(linksIn("Call tel:+15550100 or sms:+15550100, run javascript:alert(1) and data:text/html,hi xmpp:a@b.example")).toEqual([
+      { url: "tel:+15550100", host: "tel:" },
+      { url: "sms:+15550100", host: "sms:" },
+      { url: "javascript:alert", host: "javascript:" },
+      { url: "data:text/html,hi", host: "data:" },
+      { url: "xmpp:a@b.example", host: "xmpp:" },
+    ]);
+  });
+
+  it("does not take ordinary words with a colon for links", () => {
+    expect(linksIn("Note: Re: the plan at 10:30, ratio 3:2, Subject:hello")).toEqual([]);
+  });
+
   it("finds www., host.tld/path and bare host.tld", () => {
     expect(linksIn("Go to www.example.com, then evil.example/login or just Example.org.")).toEqual([
       { url: "www.example.com", host: "www.example.com" },

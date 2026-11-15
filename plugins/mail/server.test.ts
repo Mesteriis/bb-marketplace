@@ -2698,6 +2698,20 @@ describe("agent proposals", () => {
     }
   });
 
+  it("an account renamed between the confirmation and the queue refuses with changed and queues nothing", async () => {
+    const host = await loadPropose();
+    const p = await proposeCard(host);
+    const token = await viewToken(host, p);
+    const described = await p.card.describeSubmission!(submitValue("send", p, token));
+    expect(described.title).toBe("Email confirmed");
+    const store = sqlStore(host);
+    store.saveAccount({ ...store.getAccount("acc_1")!, displayName: "Renamed Invented Owner" });
+    host.harness.behavior.submitInteraction(p.card.id, submitValue("send", p, token));
+    expect(await p.result).toBe(AGENT_RESULT.changed);
+    expect(store.listOutbox(null)).toEqual([]);
+    await expect(call(host, "proposal_status", { proposalId: p.proposalId })).resolves.toMatchObject({ state: "refused", reason: "changed" });
+  });
+
   it("a cancelled card deletes the hidden draft: the owner's Cancel or a stop is cancelled, a timeout, restart or disposal expired", async () => {
     const cards: Card[] = [];
     const host = await loadPropose({ wrap: scriptedCards(cards) });
@@ -2942,6 +2956,27 @@ async function translateToEnd(host: Host, messageId: string, input: Record<strin
 }
 
 describe("translation", () => {
+  it("status_get does not wait on a slow makosh-ai: it answers unknown, then the probe's result once it lands", async () => {
+    const ai = new MakoshAiStub();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const sdk = ai.sdk();
+    const discover = sdk.plugins.experimental_discoverRpc;
+    sdk.plugins.experimental_discoverRpc = async () => {
+      await gate;
+      return discover();
+    };
+    const host = await load({ settings: { vaultKey: COMPOSE_KEY }, sdk: sdk as never });
+    const started = Date.now();
+    const first = (await call(host, "status_get", null)) as { translate: { gateway: string } };
+    expect(Date.now() - started).toBeLessThan(2_500);
+    expect(first.translate).toEqual({ gateway: "unknown" });
+    release();
+    await vi.waitFor(async () =>
+      expect(((await call(host, "status_get", null)) as { translate: { gateway: string } }).translate).toEqual({ gateway: "ok" }),
+    );
+  });
+
   it("translates with the first provider and model when the settings are empty, then answers from the cache", async () => {
     const { host, ai, messageId } = await loadTranslate();
     const done = await translateToEnd(host, messageId);

@@ -224,8 +224,8 @@ export const translateErrorKindSchema = z.enum([
   "cancelled",
 ]);
 
-/** The translation gateway's state: "ok", or why it cannot be used. */
-export const translateGatewaySchema = z.union([z.literal("ok"), translateErrorKindSchema]);
+/** The translation gateway's state: "ok", why it cannot be used, or "unknown" while a check is still running. */
+export const translateGatewaySchema = z.union([z.literal("ok"), z.literal("unknown"), translateErrorKindSchema]);
 
 export const statusViewSchema = z.object({
   vaultReady: z.boolean(),

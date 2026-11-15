@@ -533,7 +533,7 @@ export function describeProposalSubmission(
 export async function queueConfirmed(
   deps: ProposalDeps,
   proposalId: string,
-): Promise<{ outboxId: string } | { notQueued: NotQueuedReason } | { lost: true }> {
+): Promise<{ outboxId: string } | { notQueued: NotQueuedReason } | { lost: true } | { refused: "changed" }> {
   const at = () => deps.clock.now().toISOString();
   const proposal = deps.store.getProposal(proposalId);
   if (proposal === null || proposal.state !== "confirming") return { notQueued: "account" };
@@ -553,6 +553,15 @@ export async function queueConfirmed(
   if (!deps.vaultReady() || account === null || account.authFailed || account.smtp === null) {
     return release("account");
   }
+  // The From the owner confirmed is part of the hash: the account's name
+  // and address now must still hash to it, and queueSend must use them.
+  const changed = (): { refused: "changed" } => {
+    refuse(deps.store, proposalId, ["confirming"], at());
+    return { refused: "changed" };
+  };
+  const from = { name: account.displayName?.trim() || null, address: account.email };
+  const hashed = await contentHash(proposalContent(draft, from.name, from.address, deps.store.attachmentData(draft.id)));
+  if (hashed !== proposal.contentSha256) return changed();
   let outboxId: string;
   try {
     ({ outboxId } = await queueSend(deps, {
@@ -560,9 +569,15 @@ export async function queueConfirmed(
       baseRevision: draft.revision,
       requestId: proposalId,
       origin: "agent",
+      expectFrom: from,
     }));
   } catch (error) {
     const kind = error instanceof ComposeError ? error.kind : null;
+    // expectFrom's refusal: the account changed between the hash and the build.
+    const now = deps.store.getAccount(draft.accountId);
+    const sameFrom =
+      now !== null && (now.displayName?.trim() || null) === from.name && now.email.trim().toLowerCase() === from.address.trim().toLowerCase();
+    if (kind === "conflict" && !sameFrom) return changed();
     return release(kind === "rate_limited" ? "rate_limited" : kind === "too_large" ? "too_large" : "account");
   }
   deps.store.transitionProposal(proposalId, ["confirming"], "queued", at(), { outboxId });

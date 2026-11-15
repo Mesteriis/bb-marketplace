@@ -514,6 +514,34 @@ describe("queueConfirmed", () => {
     await expect(propose()).resolves.toMatchObject({ proposalId: expect.any(String) });
   });
 
+  it("a From name or address changed after the check refuses with changed and queues nothing", async () => {
+    for (const [field, value, thread] of [["displayName", "Renamed Owner", "thread_f1"], ["email", "renamed@example.org", "thread_f2"]] as const) {
+      const p = await viewed({}, thread);
+      expect(await checkSubmit(d, p.proposalId, submit("send", p))).toEqual({ action: "send" });
+      const account = h.store.getAccount("acc_1")!;
+      h.store.saveAccount({ ...account, [field]: value });
+      expect(await queueConfirmed(d, p.proposalId), field).toEqual({ refused: "changed" });
+      expect(h.store.getProposal(p.proposalId), field).toMatchObject({ state: "refused", draftId: null });
+      expect(h.store.listOutbox(null), field).toEqual([]);
+      h.store.saveAccount(account);
+    }
+  });
+
+  it("a From renamed while the hash is computed is caught by queueSend's From check", async () => {
+    const p = await confirmed();
+    const account = h.store.getAccount("acc_1")!;
+    const original = h.store.attachmentData.bind(h.store);
+    let calls = 0;
+    h.store.attachmentData = (id: string) => {
+      calls += 1;
+      if (calls === 1) queueMicrotask(() => h.store.saveAccount({ ...account, displayName: "Renamed Owner" }));
+      return original(id);
+    };
+    expect(await queueConfirmed(d, p.proposalId)).toEqual({ refused: "changed" });
+    expect(h.store.getProposal(p.proposalId)).toMatchObject({ state: "refused", draftId: null });
+    expect(h.store.listOutbox(null)).toEqual([]);
+  });
+
   it("the send cap after the click keeps the message as an owner draft", async () => {
     const p = await confirmed();
     for (let i = 0; i < SEND_RATE_PER_MINUTE; i++) d.rate.take("acc_1");
