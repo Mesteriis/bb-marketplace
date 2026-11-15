@@ -8,6 +8,8 @@ import {
   messageBodySchema,
   messageSummarySchema,
   newAccountInputSchema,
+  roleCountSchema,
+  specialUseSchema,
   statusViewSchema,
   threadDetailSchema,
   threadSummarySchema,
@@ -17,6 +19,28 @@ import {
 const idInput = z.string().min(1).max(256);
 /** An email address coming in from the page. */
 const addressInput = z.string().min(3).max(320);
+
+/** One account's folder, or a role merged across every account. */
+const threadScope = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("account"),
+    accountId: idInput,
+    /** Folder path; the UI passes the account's inbox path by default. */
+    folder: idInput,
+  }),
+  z.object({ kind: z.literal("all"), role: specialUseSchema }),
+]);
+
+/** The result of one (account, source folder) group of a message_action batch. */
+const actionGroupSchema = z.object({
+  accountId: z.string(),
+  folder: z.string(),
+  queued: z.number().int().min(0),
+  /** The destination folder's name for a move; null for a flag change or a refusal. */
+  destination: z.string().nullable(),
+  /** Why nothing was done for this group, or null. */
+  error: z.string().nullable(),
+});
 
 export const rpcSchemas = {
   status_get: {
@@ -41,9 +65,7 @@ export const rpcSchemas = {
   },
   threads_list: {
     input: z.object({
-      accountId: z.string(),
-      /** Folder path; the UI passes the account's inbox path by default. */
-      folder: idInput,
+      scope: threadScope,
       cursor: z.string().nullable(),
       limit: z.number().int().min(1).max(100),
     }),
@@ -81,22 +103,66 @@ export const rpcSchemas = {
     }),
     output: z.object({ hits: z.array(messageSummarySchema) }),
   },
+  /** One account's folders, or (null) every account's with the merged roles. */
   folders_list: {
-    input: z.object({ accountId: idInput }),
-    output: z.object({ folders: z.array(folderSchema) }),
+    input: z.object({ accountId: idInput.nullable() }),
+    output: z.object({
+      folders: z.array(folderSchema),
+      /** Filled only when `accountId` is null. */
+      roles: z.array(roleCountSchema),
+    }),
   },
   /**
-   * Owner-clicked moves only; never exposed to agents, mentions or CLI. One
-   * batch shares one account and one source folder (the folder being viewed):
-   * the server refuses ids that are unknown or not in `folder`.
+   * Owner-clicked or hotkeyed actions only; never exposed to agents, mentions
+   * or CLI. The source is `folder` (the folder being viewed) or, in All
+   * accounts, each message's copy in a folder of `role`; the server groups
+   * the ids by account and source folder and reports each group.
+   * `destination` (a folder path of the same account) goes with `move` only.
    */
   message_action: {
-    input: z.object({
-      messageIds: z.array(idInput).min(1).max(200),
-      folder: idInput,
-      action: messageActionSchema,
+    input: z
+      .object({
+        messageIds: z.array(idInput).min(1).max(200),
+        action: messageActionSchema,
+        folder: idInput.optional(),
+        role: specialUseSchema.optional(),
+        destination: idInput.optional(),
+      })
+      .refine((input) => (input.folder === undefined) !== (input.role === undefined), {
+        message: "Give exactly one of folder and role",
+      })
+      .refine((input) => (input.action === "move") === (input.destination !== undefined), {
+        message: "A destination goes with move, and only with move",
+      }),
+    output: z.object({ groups: z.array(actionGroupSchema) }),
+  },
+  /** Raw headers and MIME structure of one message; never marks it read. */
+  message_source: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({
+      headers: z.array(z.tuple([z.string(), z.string()])),
+      structure: z.array(z.string()),
+      size: z.number().int(),
+      uid: z.number().int(),
+      folder: z.string(),
+      accountEmail: z.string(),
     }),
-    output: z.object({ queued: z.number().int().min(0), destination: z.string() }),
+  },
+  /**
+   * A one-time, short-lived URL for downloading an attachment or the whole
+   * message as .eml; never marks it read. Owner only, like the other writes.
+   */
+  download_ticket: {
+    input: z
+      .object({
+        kind: z.enum(["attachment", "eml"]),
+        messageId: idInput,
+        partId: idInput.optional(),
+      })
+      .refine((input) => (input.kind === "attachment") === (input.partId !== undefined), {
+        message: "A partId goes with an attachment, and only with one",
+      }),
+    output: z.object({ url: z.string(), fileName: z.string() }),
   },
   /** Allows remote images from the message's sender. */
   images_allow_sender: {

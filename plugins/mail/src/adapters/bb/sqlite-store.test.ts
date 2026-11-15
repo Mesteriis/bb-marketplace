@@ -111,6 +111,7 @@ describe("createSqliteStore", () => {
         { name: "Second", address: "second@example.org" },
       ],
       snippet: "Second reply text",
+      flagged: false,
     });
     expect(detail.messages[1]).toEqual({
       id: second,
@@ -786,6 +787,20 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
     ]);
     s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
   };
+
+  it("a thread row is flagged when a message of it in the viewed folder is flagged", () => {
+    gmail();
+    // Flag only the All Mail copy of the archived message (uid 51).
+    s.applyFlags("acc_1", ALL_MAIL, [{ uid: 51, seen: false, flagged: true }]);
+    const inbox = s.listThreads("acc_1", INBOX, null, 10).threads;
+    expect(inbox.map((t) => t.flagged)).toEqual([false]);
+    const all = s.listThreads("acc_1", ALL_MAIL, null, 10).threads;
+    const flaggedIds = all.filter((t) => t.flagged).map((t) => t.id);
+    expect(flaggedIds).toHaveLength(1);
+    expect(flaggedIds).not.toContain(inbox[0]!.id);
+    expect(s.getThread(flaggedIds[0]!, ALL_MAIL)!.thread.flagged).toBe(true);
+    expect(s.getThread(inbox[0]!.id, INBOX)!.thread.flagged).toBe(false);
+  });
 
   it("gmail copies in INBOX and All Mail count once in thread, folder and badge counts", () => {
     gmail();

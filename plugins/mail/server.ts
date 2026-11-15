@@ -29,6 +29,7 @@ import {
   UNTRUSTED_NOTICE,
   addAccount,
   inlineCidImages,
+  isRoleMoveAction,
   parseQuery,
   removeAccount,
   removeControls,
@@ -371,8 +372,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         deps.loop.wake(accountId);
         return { started: true };
       },
-      threads_list: ({ accountId, folder, cursor, limit }) =>
-        store.listThreads(accountId, folder, cursor, limit),
+      threads_list: ({ scope, cursor, limit }) =>
+        scope.kind === "account"
+          ? store.listThreads(scope.accountId, scope.folder, cursor, limit)
+          : store.listThreadsAll(scope.role, cursor, limit),
       thread_get: ({ threadId, folder }) => {
         const thread = store.getThread(threadId, folder);
         if (thread === null) throw refuse("not_found", "Unknown thread");
@@ -403,10 +406,20 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       search: ({ query, accountId, limit }) => ({
         hits: store.search(parseQuery(query), accountId, limit),
       }),
-      folders_list: ({ accountId }) => ({ folders: store.listFolders(accountId) }),
+      folders_list: ({ accountId }) =>
+        accountId === null
+          ? {
+              folders: store.listAccounts().flatMap((account) => store.listFolders(account.id)),
+              roles: store.listRoles(),
+            }
+          : { folders: store.listFolders(accountId), roles: [] },
       // Owner-clicked moves; the sync loop pushes them to the server.
-      message_action: ({ messageIds, folder, action }, context) => {
+      message_action: ({ messageIds, folder, role, action }, context) => {
         refusePluginCaller(context);
+        if (role !== undefined || folder === undefined) {
+          throw new Error("not implemented: message_action role");
+        }
+        if (!isRoleMoveAction(action)) throw new Error(`not implemented: message_action ${action}`);
         if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
         const first = store.getMessage(messageIds[0]!);
         if (first === null) throw refuse("not_found", "Unknown message");
@@ -425,7 +438,24 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         if (queued === null || queued.folder !== folder) throw notAllIn();
         publishChanged(queued.accountId);
         deps.loop.wake(queued.accountId);
-        return { queued: new Set(messageIds).size, destination: destination.name };
+        return {
+          groups: [
+            {
+              accountId: queued.accountId,
+              folder,
+              queued: new Set(messageIds).size,
+              destination: destination.name,
+              error: null,
+            },
+          ],
+        };
+      },
+      message_source: () => {
+        throw new Error("not implemented: message_source");
+      },
+      download_ticket: (_input, context) => {
+        refusePluginCaller(context);
+        throw new Error("not implemented: download_ticket");
       },
       images_allow_sender: ({ messageId }, context) => {
         refusePluginCaller(context);

@@ -1,13 +1,18 @@
 // Ports: what the core needs from its host. Each host supplies adapters.
 import type {
   FetchedMessage,
+  FlagChange,
+  FlagIntent,
   Folder,
   InlinePart,
   MessageBody,
   MessageHeader,
   MessageSummary,
   ParsedQuery,
+  RawRef,
   RemoteFolder,
+  RoleCount,
+  SpecialUse,
   StoredAccount,
   SyncState,
   ThreadDetail,
@@ -47,6 +52,17 @@ export interface FolderSession {
   ): Promise<{ uid: number; seen: boolean; flagged: boolean; gmMsgId: string | null }[]>;
   /** Throws on a read-only session. */
   markSeen(uids: number[]): Promise<void>;
+  /**
+   * Adds (true) or removes (false) \Seen / \Flagged on the uids; an absent
+   * field is left alone. Throws SafeImapError "StoreFailed" when the server
+   * refuses, and on a read-only session.
+   */
+  setFlags(uids: number[], change: FlagChange): Promise<void>;
+  /**
+   * The whole message (BODY.PEEK[], never sets \Seen). Throws before
+   * returning more than `maxBytes`.
+   */
+  fetchRaw(uid: number, maxBytes: number): Promise<Uint8Array>;
   /**
    * Moves the uids to `destination`. `moved` maps source uid to destination
    * uid (COPYUID), or is null when the server returned none. Throws when the
@@ -118,6 +134,20 @@ export interface MailStore {
   pendingSeenUids(accountId: string, folder: string): number[];
   clearSeenPending(accountId: string, folder: string, uids: number[]): void;
   /**
+   * Records an owner-asked \Seen / \Flagged change on every copy with the
+   * same dedup key: local is_read / is_flagged change at once on all copies,
+   * and each attached copy (with a uid) gets the desired values to push.
+   * Returns the accounts touched.
+   */
+  setDesired(messageIds: string[], change: FlagChange): { accountId: string }[];
+  /** Attached rows of the folder with a pending desired value. */
+  pendingFlagIntents(accountId: string, folder: string): FlagIntent[];
+  /**
+   * Compare-and-clear: clears a desired value only where it still equals
+   * what was pushed (a later click stays pending).
+   */
+  clearFlagIntents(accountId: string, folder: string, pushed: FlagIntent[]): void;
+  /**
    * Marks every row with the same dedup key read locally, and `seen_pending`
    * on each such row that has a uid (attached), so every copy is pushed.
    */
@@ -132,6 +162,20 @@ export interface MailStore {
     cursor: string | null,
     limit: number,
   ): { threads: ThreadSummary[]; nextCursor: string | null };
+  /**
+   * Threads from every account with a member (not waiting to move) in a
+   * folder of `role`; keyset paging by (last date, id) across accounts.
+   * Archive merges `archive` folders only, never Gmail All Mail.
+   */
+  listThreadsAll(
+    role: SpecialUse,
+    cursor: string | null,
+    limit: number,
+  ): { threads: ThreadSummary[]; nextCursor: string | null };
+  /** Counts per special-use role summed across accounts (as listFolders counts). */
+  listRoles(): RoleCount[];
+  /** Null when the message is unknown, detached (no uid) or waiting to move. */
+  rawRef(messageId: string): RawRef | null;
   /**
    * Each message once. Of the copies sharing a dedup key, prefer the one in
    * `folder` (the folder being viewed) unless it is waiting to move, then a

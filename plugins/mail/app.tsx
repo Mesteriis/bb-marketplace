@@ -207,7 +207,11 @@ function MailPanel() {
         let cursor = mode === "more" ? current.nextCursor : null;
         do {
           const limit = Math.min(wanted - threads.length, MAX_PAGE);
-          const page = await rpc.call("threads_list", { accountId: forAccount, folder, cursor, limit });
+          const page = await rpc.call("threads_list", {
+            scope: { kind: "account", accountId: forAccount, folder },
+            cursor,
+            limit,
+          });
           if (token !== requests.current.list) return;
           threads.push(...page.threads);
           cursor = page.nextCursor;
@@ -479,8 +483,13 @@ function MailPanel() {
       if (active === null || threadId === null || messageIds.length === 0) return;
       setActionPending(true);
       try {
-        const { destination } = await rpc.call("message_action", { messageIds, folder, action });
-        toast.success(`Moved to ${destination}`);
+        // One account and one source folder: the result has one group.
+        const { groups } = await rpc.call("message_action", { messageIds, folder, action });
+        const group = groups[0];
+        if (group === undefined || group.error !== null) {
+          throw new Error(group?.error ?? "Nothing was moved");
+        }
+        toast.success(`Moved to ${group.destination}`);
         if (latest.current.reading.threadId === threadId) {
           requests.current.thread++;
           setReading(NO_READING);

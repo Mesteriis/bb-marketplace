@@ -213,6 +213,14 @@ export function createSession(
       if (!stored) throw new SafeImapError("StoreFailed");
     }),
 
+    setFlags: async () => {
+      throw new Error("not implemented: setFlags");
+    },
+
+    fetchRaw: async () => {
+      throw new Error("not implemented: fetchRaw");
+    },
+
     moveMessages: guarded(async (uids: number[], destination: string) => {
       if (readOnly) throw new SafeImapError("ReadOnly", "IMAP error (mailbox is read-only)");
       if (uids.length === 0) return { moved: new Map<number, number>() };

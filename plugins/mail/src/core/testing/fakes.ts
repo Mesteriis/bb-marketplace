@@ -13,6 +13,8 @@
 //     search; moves re-home rows (same id), detaching them without a uid map.
 import type {
   FetchedMessage,
+  FlagChange,
+  FlagIntent,
   Folder,
   InlinePart,
   MailAddress,
@@ -20,7 +22,10 @@ import type {
   MessageHeader,
   MessageSummary,
   ParsedQuery,
+  RawRef,
   RemoteFolder,
+  RoleCount,
+  SpecialUse,
   StoredAccount,
   SyncState,
   ThreadDetail,
@@ -372,6 +377,18 @@ export class InMemoryMailStore implements MailStore {
     }
   }
 
+  setDesired(_messageIds: string[], _change: FlagChange): { accountId: string }[] {
+    throw new Error("not implemented: setDesired");
+  }
+
+  pendingFlagIntents(_accountId: string, _folder: string): FlagIntent[] {
+    throw new Error("not implemented: pendingFlagIntents");
+  }
+
+  clearFlagIntents(_accountId: string, _folder: string, _pushed: FlagIntent[]): void {
+    throw new Error("not implemented: clearFlagIntents");
+  }
+
   markOpened(messageId: string): { accountId: string } | null {
     const row = this.state.rows.find((r) => r.id === messageId);
     if (!row) return null;
@@ -423,10 +440,26 @@ export class InMemoryMailStore implements MailStore {
     return { threads, nextCursor: next < all.length ? String(next) : null };
   }
 
+  listThreadsAll(
+    _role: SpecialUse,
+    _cursor: string | null,
+    _limit: number,
+  ): { threads: ThreadSummary[]; nextCursor: string | null } {
+    throw new Error("not implemented: listThreadsAll");
+  }
+
+  listRoles(): RoleCount[] {
+    throw new Error("not implemented: listRoles");
+  }
+
+  rawRef(_messageId: string): RawRef | null {
+    throw new Error("not implemented: rawRef");
+  }
+
   getThread(threadId: string, folder: string): ThreadDetail | null {
     const rows = this.state.rows.filter((r) => r.threadId === threadId);
     if (rows.length === 0) return null;
-    const thread = this.summarize(threadId, rows);
+    const thread = this.summarize(threadId, rows, folder);
     const messages = this.onePerKey(rows, (r) => r.dedupKey, folder)
       .sort(oldestFirst)
       .map((r) => this.header(r));
@@ -733,7 +766,8 @@ export class InMemoryMailStore implements MailStore {
     };
   }
 
-  private summarize(threadId: string, rows: Row[]): ThreadSummary {
+  /** `flagged` covers the thread's rows in `folder` not waiting to move. */
+  private summarize(threadId: string, rows: Row[], folder: string): ThreadSummary {
     const sorted = [...rows].sort(oldestFirst);
     const latest = sorted[sorted.length - 1]!;
     const participants: MailAddress[] = [];
@@ -751,6 +785,7 @@ export class InMemoryMailStore implements MailStore {
       unreadCount: new Set(rows.filter((r) => !r.isRead).map((r) => r.dedupKey)).size,
       participants,
       snippet: snippetOf(latest.message),
+      flagged: rows.some((r) => r.folder === folder && r.movePending === null && r.isFlagged),
     };
   }
 
@@ -769,7 +804,7 @@ export class InMemoryMailStore implements MailStore {
       else groups.set(row.threadId, [row]);
     }
     return [...groups.entries()]
-      .map(([id, rows]) => this.summarize(id, rows))
+      .map(([id, rows]) => this.summarize(id, rows, folder))
       .sort((a, b) => (timeOf(b.lastDate) ?? -Infinity) - (timeOf(a.lastDate) ?? -Infinity));
   }
 }
@@ -1024,6 +1059,12 @@ export class ScriptedImapGateway implements ImapGateway {
         for (const message of box().messages) {
           if (uids.includes(message.uid)) message.seen = true;
         }
+      },
+      setFlags: async () => {
+        throw new Error("not implemented: setFlags");
+      },
+      fetchRaw: async () => {
+        throw new Error("not implemented: fetchRaw");
       },
       moveMessages: async (uids, destination) => {
         record({ method: "moveMessages", uids: [...uids], destination });

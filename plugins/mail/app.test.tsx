@@ -66,6 +66,7 @@ const threadA: ThreadSummary = {
     { name: null, address: "owner@example.org" },
   ],
   snippet: "Here is the draft we talked about",
+  flagged: false,
 };
 
 const threadB: ThreadSummary = {
@@ -77,6 +78,7 @@ const threadB: ThreadSummary = {
   unreadCount: 0,
   participants: [{ name: "Bo Example", address: "bo@example.org" }],
   snippet: "Friday works",
+  flagged: false,
 };
 
 function message(overrides: Partial<MessageHeader> & { id: string }): MessageHeader {
@@ -193,7 +195,10 @@ describe("Mail page", () => {
 
     expect(await slot.findByText("Lunch")).toBeTruthy();
     const row = await slot.findByRole("button", { name: /Quarterly plan/ });
-    expect(callsTo(slot, "threads_list")[0]?.input).toMatchObject({ accountId: "acc-1", cursor: null });
+    expect(callsTo(slot, "threads_list")[0]?.input).toMatchObject({
+      scope: { kind: "account", accountId: "acc-1" },
+      cursor: null,
+    });
 
     fireEvent.click(row);
 
@@ -351,8 +356,8 @@ describe("Mail page", () => {
 
     await waitFor(() => expect(callsTo(slot, "threads_list").length).toBe(listBefore + 2));
     expect(callsTo(slot, "threads_list").slice(listBefore).map((call) => call.input)).toEqual([
-      { accountId: "acc-1", folder: "INBOX", cursor: null, limit: 100 },
-      { accountId: "acc-1", folder: "INBOX", cursor: "100", limit: 50 },
+      { scope: { kind: "account", accountId: "acc-1", folder: "INBOX" }, cursor: null, limit: 100 },
+      { scope: { kind: "account", accountId: "acc-1", folder: "INBOX" }, cursor: "100", limit: 50 },
     ]);
     expect(await slot.findByText("Invented subject 149")).toBeTruthy();
     expect(slot.queryByText("Invented subject 150")).toBeNull();
@@ -449,13 +454,18 @@ function detailIn(inFolder: string): ThreadDetail {
   };
 }
 
+/** A message_action result: two messages of one folder moved, no error. */
+function movedTo(folder: string, destination: string) {
+  return { groups: [{ accountId: "acc-1", folder, queued: 2, destination, error: null }] };
+}
+
 /** RPC fakes that answer per folder: threads_list and thread_get follow the folder listed. */
 function folderRpc(overrides: Record<string, (input: never) => unknown> = {}) {
   let listed = "INBOX";
   return mailRpc({
     folders_list: () => ({ folders: FOLDERS }),
-    threads_list: ({ folder: path }: { folder: string }) => {
-      listed = path;
+    threads_list: ({ scope }: { scope: { kind: "account"; folder: string } }) => {
+      listed = scope.folder;
       return { threads: [threadA, threadB], nextCursor: null };
     },
     thread_get: () => detailIn(listed),
@@ -490,7 +500,9 @@ describe("Mail folders", () => {
     expect(rail.getByText("Projects").closest("button")).toBeNull();
     expect(rail.getByRole("button", { name: /Alpha/ })).toBeTruthy();
     expect(callsTo(slot, "folders_list")[0]?.input).toEqual({ accountId: "acc-1" });
-    expect(callsTo(slot, "threads_list")[0]?.input).toMatchObject({ folder: "INBOX" });
+    expect(callsTo(slot, "threads_list")[0]?.input).toMatchObject({
+      scope: { kind: "account", folder: "INBOX" },
+    });
   });
 
   it("defaults to the account's inbox path", async () => {
@@ -503,11 +515,16 @@ describe("Mail folders", () => {
     );
 
     await waitFor(() =>
-      expect(callsTo(slot, "threads_list").map((call) => (call.input as { folder: string }).folder)).toContain(
-        "Inbox",
-      ),
+      expect(
+        callsTo(slot, "threads_list").map(
+          (call) => (call.input as { scope: { folder: string } }).scope.folder,
+        ),
+      ).toContain("Inbox"),
     );
-    expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ folder: "Inbox", cursor: null });
+    expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({
+      scope: { kind: "account", folder: "Inbox" },
+      cursor: null,
+    });
   });
 
   it("switching folders lists that folder and closes the open conversation", async () => {
@@ -520,8 +537,7 @@ describe("Mail folders", () => {
 
     await waitFor(() =>
       expect(callsTo(slot, "threads_list").at(-1)?.input).toEqual({
-        accountId: "acc-1",
-        folder: "[Gmail]/Spam",
+        scope: { kind: "account", accountId: "acc-1", folder: "[Gmail]/Spam" },
         cursor: null,
         limit: 50,
       }),
@@ -576,7 +592,7 @@ describe("Message actions", () => {
       folderRpc({
         message_action: () => {
           moved = true;
-          return { queued: 2, destination: "Spam" };
+          return movedTo("INBOX", "Spam");
         },
         threads_list: () => ({ threads: moved ? [threadB] : [threadA, threadB], nextCursor: null }),
       }),
@@ -600,7 +616,7 @@ describe("Message actions", () => {
   });
 
   it("Not spam is offered only in Spam and moves from there", async () => {
-    const slot = render(folderRpc({ message_action: () => ({ queued: 2, destination: "Inbox" }) }));
+    const slot = render(folderRpc({ message_action: () => movedTo("[Gmail]/Spam", "Inbox") }));
 
     fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
     await slot.findByRole("heading", { name: "Quarterly plan" });
@@ -635,6 +651,27 @@ describe("Message actions", () => {
     fireEvent.click(toolbar(slot).getByRole("button", { name: "Archive" }));
 
     await waitFor(() => expect(toasts.error).toEqual(["Already archived"]));
+    expect(toasts.success).toEqual([]);
+    expect(slot.getByRole("heading", { name: "Quarterly plan" })).toBeTruthy();
+    expect(slot.getByRole("button", { name: /Quarterly plan/ })).toBeTruthy();
+  });
+
+  it("a group refused in the result toasts its error and keeps the conversation", async () => {
+    const slot = render(
+      folderRpc({
+        message_action: () => ({
+          groups: [
+            { accountId: "acc-1", folder: "INBOX", queued: 0, destination: null, error: "Invented refusal" },
+          ],
+        }),
+      }),
+    );
+
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "Archive" }));
+
+    await waitFor(() => expect(toasts.error).toEqual(["Invented refusal"]));
     expect(toasts.success).toEqual([]);
     expect(slot.getByRole("heading", { name: "Quarterly plan" })).toBeTruthy();
     expect(slot.getByRole("button", { name: /Quarterly plan/ })).toBeTruthy();
@@ -873,7 +910,7 @@ describe("Fix round 1", () => {
     const slot = render(
       folderRpc({
         search: () => ({ hits: [{ ...message({ id: "m-new" }) }] }),
-        message_action: () => ({ queued: 2, destination: "Trash" }),
+        message_action: () => movedTo("INBOX", "Trash"),
       }),
     );
 

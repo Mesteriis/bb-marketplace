@@ -1,6 +1,11 @@
 // Where an owner-clicked message action moves mail, from the account's
 // folders by special use. Pure: the server queues the move it returns.
-import type { AccountPreset, Folder, MessageAction, SpecialUse } from "./model.ts";
+import type { AccountPreset, Folder, MessageAction, RoleMoveAction, SpecialUse } from "./model.ts";
+
+/** Whether the action moves mail to a folder chosen by its role. */
+export function isRoleMoveAction(action: MessageAction): action is RoleMoveAction {
+  return action === "spam" || action === "not_spam" || action === "archive" || action === "delete";
+}
 
 export type ActionDestination = { destination: Folder } | { refusal: string };
 
@@ -41,7 +46,7 @@ export function archiveAllowedFrom(
  * the folder is missing, cannot hold messages, or is the source itself.
  */
 export function resolveActionDestination(
-  action: MessageAction,
+  action: RoleMoveAction,
   sourcePath: string,
   folders: Folder[],
   preset: AccountPreset,
