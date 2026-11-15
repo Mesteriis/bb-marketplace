@@ -26,8 +26,13 @@ export type ComposeBlock =
   | ComposeParagraph
   | { type: "bulletList" | "orderedList"; content: ComposeListItem[] }
   | { type: "blockquote"; content: ComposeBlock[] };
+/**
+ * The sending identity's signature (slice 3d): top level only, at most one,
+ * paragraphs only. Empty, it is the placeholder a From change fills.
+ */
+export type ComposeSignature = { type: "signature"; content: ComposeParagraph[] };
 /** A normalized document: only the nodes and marks the renderer knows. */
-export type ComposeDoc = { type: "doc"; content: ComposeBlock[] };
+export type ComposeDoc = { type: "doc"; content: (ComposeBlock | ComposeSignature)[] };
 
 export const DOC_MAX_BYTES = 2 * 1024 * 1024;
 export const DOC_MAX_DEPTH = 32;
@@ -37,7 +42,9 @@ const TEXT_WIDTH = 76;
 const MIN_WIDTH = 20;
 const HREF_MAX = 2048;
 const LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
-const BLOCK_TYPES = new Set(["paragraph", "bulletList", "orderedList", "listItem", "blockquote"]);
+const BLOCK_TYPES = new Set(["paragraph", "bulletList", "orderedList", "listItem", "blockquote", "signature"]);
+/** The fixed class of the signature's `div`; the page never supplies attributes. */
+export const SIGNATURE_CLASS = "makosh-signature";
 
 const attrsSchema = z.record(z.string(), z.unknown()).nullable().optional();
 const docMarkSchema = z.object({ type: z.string().min(1).max(64), attrs: attrsSchema });
@@ -103,11 +110,44 @@ function boundsProblem(value: unknown): string | null {
  * blockquote and the bold, italic, underline and link marks. Unknown nodes
  * and marks are stripped and their text kept; a link keeps its href only
  * for http, https and mailto; the structure is repaired so TipTap can load
- * the result again.
+ * the result again. At most one top-level `signature` is kept, holding
+ * paragraphs only; a second one, or one nested in a list or quote, becomes
+ * ordinary paragraphs with its text kept.
  */
 export function normalizeDoc(input: DocNodeInput): ComposeDoc {
-  const content = blocks(input.type === "doc" ? (input.content ?? []) : [input]);
+  const content: (ComposeBlock | ComposeSignature)[] = [];
+  let signatureSeen = false;
+  const nodes = input.type === "doc" ? (input.content ?? []) : [input];
+  let run: DocNodeInput[] = [];
+  const flushRun = () => {
+    if (run.length > 0) content.push(...blocks(run));
+    run = [];
+  };
+  for (const node of nodes) {
+    if (node.type !== "signature") {
+      run.push(node);
+      continue;
+    }
+    flushRun();
+    const paragraphs = flattenParagraphs(blocks(node.content ?? []));
+    if (signatureSeen) {
+      content.push(...paragraphs);
+    } else {
+      signatureSeen = true;
+      content.push({ type: "signature", content: paragraphs });
+    }
+  }
+  flushRun();
   return { type: "doc", content: content.length > 0 ? content : [{ type: "paragraph" }] };
+}
+
+/** Every paragraph of the blocks, in order: lists and quotes are opened up. */
+export function flattenParagraphs(list: (ComposeBlock | ComposeListItem | ComposeSignature)[]): ComposeParagraph[] {
+  return list.flatMap((block) =>
+    block.type === "paragraph"
+      ? [block]
+      : flattenParagraphs(block.content as (ComposeBlock | ComposeListItem)[]),
+  );
 }
 
 function blocks(nodes: DocNodeInput[]): ComposeBlock[] {
@@ -324,7 +364,9 @@ function lineParagraph(line: string): ComposeParagraph {
 
 /** True when the document holds no visible text. */
 export function isDocEmpty(doc: ComposeDoc): boolean {
-  const stack: (ComposeBlock | ComposeListItem | ComposeInline)[] = [...doc.content];
+  const stack: (ComposeBlock | ComposeListItem | ComposeInline)[] = doc.content.filter(
+    (block): block is ComposeBlock => block.type !== "signature",
+  );
   while (stack.length > 0) {
     const node = stack.pop() as ComposeBlock | ComposeListItem | ComposeInline;
     if (node.type === "text") {
@@ -338,10 +380,42 @@ export function isDocEmpty(doc: ComposeDoc): boolean {
 
 /** Message HTML (fixed skeleton, whitelisted tags, only `href` attributes) and the text alternative. */
 export function renderDoc(doc: ComposeDoc): { html: string; text: string } {
-  const body = doc.content.map(blockHtml).join("");
+  // An empty signature renders nothing, not even the blank line around it.
+  const content = doc.content.filter((block) => block.type !== "signature" || !isSignatureEmpty(block));
+  const last = content.length - 1;
+  const body = content
+    .map((block, index) => (block.type === "signature" ? signatureHtml(block, index === last) : blockHtml(block)))
+    .join("");
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>${body}</body></html>`;
-  const text = blocksText(doc.content, TEXT_WIDTH, "\n\n").join("\n");
-  return { html, text };
+  const lines: string[] = [];
+  content.forEach((block, index) => {
+    if (index > 0) lines.push("");
+    lines.push(...(block.type === "signature" ? signatureLines(block, index === last) : blockText(block, TEXT_WIDTH)));
+  });
+  return { html, text: lines.join("\n") };
+}
+
+/** True when the signature holds no visible text. */
+export function isSignatureEmpty(signature: ComposeSignature): boolean {
+  return isDocEmpty({ type: "doc", content: signature.content });
+}
+
+/**
+ * The `-- ` delimiter only when the signature is the last block (a new
+ * message): RFC 3676 clients hide what follows it, so a reply's quote below
+ * the signature must not follow a delimiter.
+ */
+function signatureHtml(signature: ComposeSignature, last: boolean): string {
+  const delimiter = last ? "<p>-- </p>" : "";
+  return `<div class="${SIGNATURE_CLASS}">${delimiter}${signature.content.map(blockHtml).join("")}</div>`;
+}
+
+/** The signature's lines with no blank line inside, after `-- ` when it is last. */
+export function signatureLines(signature: ComposeSignature, last: boolean): string[] {
+  const lines = signature.content
+    .flatMap((paragraph) => blockText(paragraph, TEXT_WIDTH))
+    .filter((line) => line.trim() !== "");
+  return last ? ["-- ", ...lines] : lines;
 }
 
 function escapeHtml(text: string): string {

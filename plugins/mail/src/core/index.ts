@@ -19,6 +19,7 @@ export * from "./compose-address.ts";
 export * from "./compose-subjects.ts";
 export * from "./compose-reply.ts";
 export * from "./compose-doc.ts";
+export * from "./compose-signature.ts";
 export * from "./compose-bcc.ts";
 export * from "./compose-drafts.ts";
 export * from "./compose.ts";
