@@ -4,8 +4,9 @@ A [BB](https://github.com/get-bb/bb) plugin that brings mail into the IDE:
 your mailbox beside your threads, mail access for agents, and a way to hand a
 message to an agent.
 
-**Status: experimental.** Plugin id: `makosh-mail`. It reads mail and moves
-it only when you click; it cannot send.
+**Status: experimental.** Plugin id: `makosh-mail`. It reads mail and
+changes it on the server only when you click or press a key: read and unread,
+flags, moves. It cannot send.
 
 - Connects IMAP accounts with an app password: iCloud, Gmail or another
   server, TLS only (port 993 by default).
@@ -18,6 +19,21 @@ it only when you click; it cannot send.
   list, search, unread badge (Inbox mail of all accounts) and a reading pane
   that sanitizes HTML. A message Gmail keeps in several folders is counted
   and listed once.
+- **All accounts**, the default view when you have more than one account: a
+  rail of Inbox, Sent, Drafts, Spam, Archive and Trash merged across accounts,
+  then each account's own folders under its address. Archive means the
+  folders marked Archive; Gmail All Mail is not part of it and stays under
+  the Gmail account. Rows show which account they belong to.
+- Read and unread state and flags (stars) come from the server and go back
+  to it. The plugin changes them only on your click or hotkey: the star on a
+  conversation or a message, **Mark read**, **Mark unread**, or opening a
+  message.
+- Select conversations with their checkboxes (Shift-click for a range, or
+  select the whole page) and act on all of them at once: mark read or unread,
+  flag or unflag, Archive, Spam, Not spam, Delete, or **Move to…** any
+  selectable folder of the same account. A selection across accounts can
+  use an action only where it applies to every account, and cannot use
+  Move to….
 - Images: inline images that are part of the message (`cid:`, up to 512 KB
   each and 2 MB per message) always show. Mail synced by an earlier version
   has no stored inline images: they show only once that message is fetched
@@ -33,17 +49,40 @@ it only when you click; it cannot send.
   sync loop and only to servers that support `MOVE` or `UIDPLUS`; a refused
   move is retried and cancelled after 3 refusals, the mail returns to its
   folder and the account shows the error.
-- Opening a message on the Mail page marks it read on the server. Reads and
-  your moves are the only writes; every other fetch uses `BODY.PEEK`.
+- **Details** on a message shows its headers and MIME structure as plain
+  text, with a Copy button.
+- **Download .eml** and the attachment buttons save a file through a
+  one-time link that is valid for 60 seconds. The plugin fetches the message
+  from the server for each download and does not store the bytes. A message
+  that changed on the server since the last sync is refused (sync and try
+  again), and messages over 50 MB are refused. Files of types outside a short
+  list of safe ones (HTML, SVG and scripts among them) are saved as generic
+  binary files.
+- Hotkeys on the Mail page; `?` shows them all. `j` / `k` next and previous
+  conversation, `o` or Enter open, `u` back to the list, `/` search, `x`
+  select, `e` archive, `#` delete, `!` spam, `s` flag or unflag, Shift+`u`
+  mark unread, Shift+`i` mark read, `v` Move to…, and `g` then `i`, `s`, `d`,
+  `t` or `a` for Inbox, Sent, Drafts, Trash or All accounts. Letters follow
+  the physical key, so they work on other keyboard layouts. Keys do nothing
+  while you type in a field. The sheet lists `c`, `r`, `a` and `f` for
+  compose, reply, reply all and forward as coming later; they do nothing yet.
+- When a sender's images are always shown, the message says so and offers
+  **Stop showing**.
+- What the plugin writes on the server: `\Seen` when you open a message or
+  mark it read, `\Seen` removed when you mark it unread, `\Flagged` added or
+  removed by your star, and your moves. It never expunges. Details, the .eml
+  and attachment downloads and every other fetch use `BODY.PEEK` and never
+  mark mail read.
 - Agent tools `mail_search` and `mail_read` and the `mail` skill, off by
   default behind the `agentTools` setting, which also gates
   `bb makosh-mail accounts`, `search` and `read` inside agent threads. They
   search all folders and name each message's folder. Agents get no way to
-  move mail.
+  mark, flag, move or download mail: no tool, command or mention does that.
 - `agentTools` controls what agents are offered; it is not a barrier against
   an agent that has shell access to the machine running the BB server. Such
   an agent can also call the plugin's RPC methods, including the ones behind
-  the move and image buttons.
+  the read, unread, flag, move, image and download buttons, and so can get
+  a download link.
 - An `@` mention provider (**Mail**) and a **Hand to agent** button that give
   an agent one message you picked.
 - CLI: `bb makosh-mail accounts|search|read|sync|remove`. `remove <accountId>`
@@ -57,8 +96,8 @@ Account passwords are sealed with AES-256-GCM under the `vaultKey` secret
 setting, generated on first load. Mail and credentials stay on the machine
 that runs the BB server.
 
-Not yet: sending, replying, creating or renaming folders, attachment
-download, Gmail API or OAuth.
+Not yet: sending, replying, creating or renaming folders, Gmail API or
+OAuth.
 
 ## Run it
 

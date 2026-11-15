@@ -57,7 +57,8 @@ is off they refuse with "Mail access for agents is off".
   inside agent threads. Do not try to run it.
 
 Reading through the tools, mentions or the CLI never marks a message read;
-only the owner opening it on the Mail page does. Nothing here sends, deletes,
-moves or flags mail: Spam, Not spam, Archive and Delete are buttons on the
-owner's Mail page only, and there is no tool or command for them. If the owner
-wants a message moved, tell them which message and let them click it.
+only the owner does, on the Mail page. Nothing here sends, deletes, moves,
+flags, marks or downloads mail: read and unread, flags, Spam, Not spam,
+Archive, Delete, Move to… and downloads are controls on the owner's Mail page
+only, and there is no tool or command for them. If the owner wants a message
+moved or flagged, tell them which message and let them do it.
