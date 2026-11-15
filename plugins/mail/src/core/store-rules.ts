@@ -65,3 +65,10 @@ export function compareFolders(
   if (byName !== 0) return byName;
   return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
 }
+
+/**
+ * Roles the All accounts view merges, in display order. All Mail is left
+ * out: Gmail's All Mail stays under its account, and Archive merges
+ * `archive` folders only.
+ */
+export const UNIFIED_ROLES: readonly SpecialUse[] = ["inbox", "sent", "drafts", "junk", "archive", "trash"];

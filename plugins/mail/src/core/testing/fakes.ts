@@ -1,12 +1,13 @@
 // Test doubles for the core ports. Imports only the core, so tests of any layer
 // can drive core use cases without a database or an IMAP server. The in-memory
 // MailStore follows the semantics the SQLite store implements:
-//   - a pending local read (seen_pending) wins over server flags;
+//   - a pending desired \Seen / \Flagged value (seenDesired / flagDesired,
+//     null = nothing pending) wins over server flags until cleared;
 //   - beginFolderReset detaches uids but keeps message ids, upsertMessages
 //     reattaches a detached row with the same non-null Message-ID, and
 //     finishFolderReset deletes the rows still detached;
-//   - markOpened marks every unread copy (same dedup key) read and pending;
-//     a detached copy (no uid to push) is only marked read;
+//   - markOpened marks every unread copy (same dedup key) read with a read
+//     to push; a detached copy (no uid to push) is only marked read;
 //   - localFolderIndex treats a message without a date as inside the window;
 //   - thread, folder, badge and search counts count distinct dedup keys, and
 //     rows waiting to move out are hidden from their folder, the badge and
@@ -39,6 +40,7 @@ import {
   compareFolders,
   dedupKeyOf,
   effectiveSpecialUse,
+  UNIFIED_ROLES,
 } from "../store-rules.ts";
 import type {
   ChangeNotifier,
@@ -143,8 +145,11 @@ type Row = {
   uid: number | null;
   message: FetchedMessage;
   isRead: boolean;
-  seenPending: boolean;
   isFlagged: boolean;
+  /** Pending \Seen value to push; null when nothing is pending. */
+  seenDesired: boolean | null;
+  /** Pending \Flagged value to push; null when nothing is pending. */
+  flagDesired: boolean | null;
   threadId: string;
   gmMsgId: string | null;
   dedupKey: string;
@@ -284,8 +289,8 @@ export class InMemoryMailStore implements MailStore {
       if (row) {
         row.uid = message.uid;
         row.message = structuredClone(message);
-        row.isRead = row.seenPending || message.seen;
-        row.isFlagged = message.flagged;
+        row.isRead = row.seenDesired ?? message.seen;
+        row.isFlagged = row.flagDesired ?? message.flagged;
         row.gmMsgId = message.gmMsgId ?? row.gmMsgId;
         row.dedupKey = dedupKeyOf(row.gmMsgId, message.messageId, message.size, row.id);
         row.inlineParts = inlineParts;
@@ -299,8 +304,9 @@ export class InMemoryMailStore implements MailStore {
         uid: message.uid,
         message: structuredClone(message),
         isRead: message.seen,
-        seenPending: false,
         isFlagged: message.flagged,
+        seenDesired: null,
+        flagDesired: null,
         threadId: `t_${id}`,
         gmMsgId: message.gmMsgId,
         dedupKey: dedupKeyOf(message.gmMsgId, message.messageId, message.size, id),
@@ -334,11 +340,12 @@ export class InMemoryMailStore implements MailStore {
     for (const flag of flags) {
       const row = this.attachedRows(accountId, folder).find((r) => r.uid === flag.uid);
       if (!row) continue;
-      const isRead = row.seenPending || flag.seen;
+      const isRead = row.seenDesired ?? flag.seen;
+      const isFlagged = row.flagDesired ?? flag.flagged;
       let rowChanged = false;
-      if (row.isRead !== isRead || row.isFlagged !== flag.flagged) {
+      if (row.isRead !== isRead || row.isFlagged !== isFlagged) {
         row.isRead = isRead;
-        row.isFlagged = flag.flagged;
+        row.isFlagged = isFlagged;
         rowChanged = true;
       }
       if (flag.gmMsgId !== undefined && flag.gmMsgId !== null) {
@@ -364,42 +371,67 @@ export class InMemoryMailStore implements MailStore {
     return before - this.state.rows.length;
   }
 
+  /** Slice-2 view over seenDesired, until sync switches to pendingFlagIntents. */
   pendingSeenUids(accountId: string, folder: string): number[] {
     return this.attachedRows(accountId, folder)
-      .filter((r) => r.seenPending)
+      .filter((r) => r.seenDesired === true)
+      .sort((a, b) => a.uid - b.uid)
       .map((r) => r.uid);
   }
 
   clearSeenPending(accountId: string, folder: string, uids: number[]): void {
-    const cleared = new Set(uids);
-    for (const row of this.attachedRows(accountId, folder)) {
-      if (cleared.has(row.uid)) row.seenPending = false;
+    this.clearFlagIntents(
+      accountId,
+      folder,
+      uids.map((uid) => ({ uid, seen: true, flagged: null })),
+    );
+  }
+
+  setDesired(messageIds: string[], change: FlagChange): { accountId: string }[] {
+    const accounts: string[] = [];
+    for (const id of messageIds) {
+      const row = this.state.rows.find((r) => r.id === id);
+      if (!row) continue;
+      if (!accounts.includes(row.accountId)) accounts.push(row.accountId);
+      for (const copy of this.state.rows) {
+        if (copy.accountId !== row.accountId || copy.dedupKey !== row.dedupKey) continue;
+        const attached = copy.uid !== null;
+        if (change.seen !== undefined) {
+          copy.isRead = change.seen;
+          copy.seenDesired = attached ? change.seen : null;
+        }
+        if (change.flagged !== undefined) {
+          copy.isFlagged = change.flagged;
+          copy.flagDesired = attached ? change.flagged : null;
+        }
+      }
     }
+    return accounts.map((accountId) => ({ accountId }));
   }
 
-  setDesired(_messageIds: string[], _change: FlagChange): { accountId: string }[] {
-    throw new Error("not implemented: setDesired");
+  pendingFlagIntents(accountId: string, folder: string): FlagIntent[] {
+    return this.attachedRows(accountId, folder)
+      .filter((r) => r.seenDesired !== null || r.flagDesired !== null)
+      .sort((a, b) => a.uid - b.uid)
+      .map((r) => ({ uid: r.uid, seen: r.seenDesired, flagged: r.flagDesired }));
   }
 
-  pendingFlagIntents(_accountId: string, _folder: string): FlagIntent[] {
-    throw new Error("not implemented: pendingFlagIntents");
-  }
-
-  clearFlagIntents(_accountId: string, _folder: string, _pushed: FlagIntent[]): void {
-    throw new Error("not implemented: clearFlagIntents");
+  clearFlagIntents(accountId: string, folder: string, pushed: FlagIntent[]): void {
+    for (const intent of pushed) {
+      const row = this.attachedRows(accountId, folder).find((r) => r.uid === intent.uid);
+      if (!row) continue;
+      if (intent.seen !== null && row.seenDesired === intent.seen) row.seenDesired = null;
+      if (intent.flagged !== null && row.flagDesired === intent.flagged) row.flagDesired = null;
+    }
   }
 
   markOpened(messageId: string): { accountId: string } | null {
     const row = this.state.rows.find((r) => r.id === messageId);
     if (!row) return null;
-    if (!row.isRead) {
-      row.isRead = true;
-      row.seenPending = true;
-    }
     for (const copy of this.state.rows) {
       if (copy.accountId !== row.accountId || copy.dedupKey !== row.dedupKey || copy.isRead) continue;
       copy.isRead = true;
-      if (copy.uid !== null) copy.seenPending = true;
+      copy.seenDesired = copy.uid !== null ? true : null;
     }
     return { accountId: row.accountId };
   }
@@ -441,25 +473,65 @@ export class InMemoryMailStore implements MailStore {
   }
 
   listThreadsAll(
-    _role: SpecialUse,
-    _cursor: string | null,
-    _limit: number,
+    role: SpecialUse,
+    cursor: string | null,
+    limit: number,
   ): { threads: ThreadSummary[]; nextCursor: string | null } {
-    throw new Error("not implemented: listThreadsAll");
+    if (role === "all") return { threads: [], nextCursor: null };
+    const inRole = (r: Row) => r.movePending === null && this.roleOf(r.accountId, r.folder) === role;
+    const listed = new Set(this.state.rows.filter(inRole).map((r) => r.threadId));
+    const groups = new Map<string, Row[]>();
+    for (const row of this.state.rows) {
+      if (!listed.has(row.threadId)) continue;
+      const group = groups.get(row.threadId);
+      if (group) group.push(row);
+      else groups.set(row.threadId, [row]);
+    }
+    // Newest first, undated last, then id descending (the SQLite keyset order).
+    const all = [...groups.entries()]
+      .map(([id, rows]) => this.summarize(id, rows, inRole))
+      .sort((a, b) => {
+        const byDate = (timeOf(b.lastDate) ?? -Infinity) - (timeOf(a.lastDate) ?? -Infinity);
+        if (byDate !== 0) return byDate;
+        return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+      });
+    const offset = cursor === null ? 0 : Number(cursor);
+    const threads = all.slice(offset, offset + limit);
+    const next = offset + threads.length;
+    return { threads, nextCursor: next < all.length ? String(next) : null };
   }
 
   listRoles(): RoleCount[] {
-    throw new Error("not implemented: listRoles");
+    return UNIFIED_ROLES.map((role) => {
+      const rows = this.state.rows.filter(
+        (r) => r.movePending === null && this.roleOf(r.accountId, r.folder) === role,
+      );
+      const key = (r: Row) => `${r.accountId}\u0000${r.dedupKey}`;
+      return {
+        role,
+        unreadCount: new Set(rows.filter((r) => !r.isRead).map(key)).size,
+        totalCount: new Set(rows.map(key)).size,
+      };
+    });
   }
 
-  rawRef(_messageId: string): RawRef | null {
-    throw new Error("not implemented: rawRef");
+  rawRef(messageId: string): RawRef | null {
+    const row = this.state.rows.find((r) => r.id === messageId);
+    if (!row || row.uid === null || row.movePending !== null) return null;
+    return {
+      accountId: row.accountId,
+      folder: row.folder,
+      uid: row.uid,
+      size: row.message.size,
+      messageId: row.message.messageId,
+      uidValidity: this.getSyncState(row.accountId, row.folder)?.uidValidity ?? null,
+    };
   }
 
   getThread(threadId: string, folder: string): ThreadDetail | null {
     const rows = this.state.rows.filter((r) => r.threadId === threadId);
     if (rows.length === 0) return null;
-    const thread = this.summarize(threadId, rows, folder);
+    const thread = this.summarize(threadId, rows, this.inFolder(folder));
     const messages = this.onePerKey(rows, (r) => r.dedupKey, folder)
       .sort(oldestFirst)
       .map((r) => this.header(r));
@@ -618,10 +690,11 @@ export class InMemoryMailStore implements MailStore {
       } else if (occupant.movePending !== null) {
         row.uid = null;
       } else {
-        if (occupant.seenPending) {
-          row.seenPending = true;
-          row.isRead = true;
-        }
+        // The moved row's own desired values win, else the occupant's.
+        row.seenDesired = row.seenDesired ?? occupant.seenDesired;
+        row.flagDesired = row.flagDesired ?? occupant.flagDesired;
+        row.isRead = row.seenDesired ?? row.isRead;
+        row.isFlagged = row.flagDesired ?? row.isFlagged;
         row.uid = occupant.uid;
         this.state.rows = this.state.rows.filter((r) => r !== occupant);
       }
@@ -766,8 +839,19 @@ export class InMemoryMailStore implements MailStore {
     };
   }
 
-  /** `flagged` covers the thread's rows in `folder` not waiting to move. */
-  private summarize(threadId: string, rows: Row[], folder: string): ThreadSummary {
+  /** Rows of `folder` not waiting to move: the scope of a folder view's star. */
+  private inFolder(folder: string): (row: Row) => boolean {
+    return (r) => r.folder === folder && r.movePending === null;
+  }
+
+  /** The effective special use of a folder (store-rules effectiveSpecialUse). */
+  private roleOf(accountId: string, path: string): SpecialUse | null {
+    const saved = (this.state.folders.get(accountId) ?? []).find((f) => f.path === path);
+    return effectiveSpecialUse(path, saved?.specialUse ?? null);
+  }
+
+  /** `flagged` covers the thread's rows in the viewed scope (`inScope`). */
+  private summarize(threadId: string, rows: Row[], inScope: (row: Row) => boolean): ThreadSummary {
     const sorted = [...rows].sort(oldestFirst);
     const latest = sorted[sorted.length - 1]!;
     const participants: MailAddress[] = [];
@@ -785,7 +869,7 @@ export class InMemoryMailStore implements MailStore {
       unreadCount: new Set(rows.filter((r) => !r.isRead).map((r) => r.dedupKey)).size,
       participants,
       snippet: snippetOf(latest.message),
-      flagged: rows.some((r) => r.folder === folder && r.movePending === null && r.isFlagged),
+      flagged: rows.some((r) => inScope(r) && r.isFlagged),
     };
   }
 
@@ -804,7 +888,7 @@ export class InMemoryMailStore implements MailStore {
       else groups.set(row.threadId, [row]);
     }
     return [...groups.entries()]
-      .map(([id, rows]) => this.summarize(id, rows, folder))
+      .map(([id, rows]) => this.summarize(id, rows, this.inFolder(folder)))
       .sort((a, b) => (timeOf(b.lastDate) ?? -Infinity) - (timeOf(a.lastDate) ?? -Infinity));
   }
 }

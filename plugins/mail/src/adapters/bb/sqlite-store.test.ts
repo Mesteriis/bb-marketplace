@@ -677,9 +677,10 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 2).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 3).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
+      "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
     ]);
   });
 
@@ -790,16 +791,21 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
 
   it("a thread row is flagged when a message of it in the viewed folder is flagged", () => {
     gmail();
-    // Flag only the All Mail copy of the archived message (uid 51).
-    s.applyFlags("acc_1", ALL_MAIL, [{ uid: 51, seen: false, flagged: true }]);
+    // A second Inbox message of the same thread, flagged but waiting to move out.
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(2, { messageId: "g2@example.org", gmMsgId: "102", gmThreadId: "900", flagged: true }),
+    ]);
+    s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+    s.queueMove([idIn(s, INBOX, 2)], "Trash");
+    // Flag only the All Mail copy (uid 50) of the Inbox message (uid 1).
+    s.applyFlags("acc_1", ALL_MAIL, [{ uid: 50, seen: false, flagged: true }]);
     const inbox = s.listThreads("acc_1", INBOX, null, 10).threads;
     expect(inbox.map((t) => t.flagged)).toEqual([false]);
+    const threadId = inbox[0]!.id;
     const all = s.listThreads("acc_1", ALL_MAIL, null, 10).threads;
-    const flaggedIds = all.filter((t) => t.flagged).map((t) => t.id);
-    expect(flaggedIds).toHaveLength(1);
-    expect(flaggedIds).not.toContain(inbox[0]!.id);
-    expect(s.getThread(flaggedIds[0]!, ALL_MAIL)!.thread.flagged).toBe(true);
-    expect(s.getThread(inbox[0]!.id, INBOX)!.thread.flagged).toBe(false);
+    expect(all.filter((t) => t.flagged).map((t) => t.id)).toEqual([threadId]);
+    expect(s.getThread(threadId, ALL_MAIL)!.thread.flagged).toBe(true);
+    expect(s.getThread(threadId, INBOX)!.thread.flagged).toBe(false);
   });
 
   it("gmail copies in INBOX and All Mail count once in thread, folder and badge counts", () => {
@@ -1200,5 +1206,390 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
     s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
     expect(s.unreadCount("acc_1")).toBe(1);
     expect(s.listFolders("acc_1").map((f) => [f.path, f.name, f.specialUse])).toEqual([[INBOX, "Inbox", "inbox"]]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 3a: desired flag state, all accounts, roles, raw refs.
+// ---------------------------------------------------------------------------
+
+describe("slice-3a migration (SQLite)", () => {
+  it("element 3 adds desired-state columns, backfills pending reads and indexes thread dates", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 3).forEach((s) => old.exec(s)))();
+    old
+      .prepare(
+        `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+         VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner', 'sealed', 'other', ?)`,
+      )
+      .run(EPOCH);
+    const insert = old.prepare(
+      `INSERT INTO messages (id, account_id, folder, uid, message_id, thread_id, from_address, subject, date,
+         snippet, is_read, seen_pending, dedup_key)
+       VALUES (?, 'acc_1', 'INBOX', ?, ?, ?, 'sender@example.org', 'Invented', '2026-11-10T00:00:00.000Z',
+         'Invented', ?, ?, ?)`,
+    );
+    insert.run("m_a", 1, "a@example.org", "t_m_a", 1, 1, "mid:a@example.org:0");
+    insert.run("m_b", 2, "b@example.org", "t_m_b", 0, 0, "mid:b@example.org:0");
+    insert.run("m_c", null, "c@example.org", "t_m_c", 1, 1, "mid:c@example.org:0");
+
+    old.transaction(() => MIGRATIONS.slice(3).forEach((s) => old.exec(s)))();
+
+    expect(MIGRATIONS).toHaveLength(4);
+    expect(
+      old.prepare("SELECT id, seen_pending, seen_desired, flag_desired FROM messages ORDER BY id").all(),
+    ).toEqual([
+      { id: "m_a", seen_pending: 1, seen_desired: 1, flag_desired: null },
+      { id: "m_b", seen_pending: 0, seen_desired: null, flag_desired: null },
+      { id: "m_c", seen_pending: 1, seen_desired: 1, flag_desired: null },
+    ]);
+    const index = old
+      .prepare("SELECT tbl_name, sql FROM sqlite_master WHERE type = 'index' AND name = 'threads_last_date'")
+      .get() as { tbl_name: string; sql: string };
+    expect(index.tbl_name).toBe("threads");
+    expect(index.sql).toMatch(/threads\s*\(last_date, id\)/);
+
+    const migrated = createSqliteStore(old);
+    // Only the attached row is pushed; the backfilled read still wins over the server.
+    expect(migrated.pendingFlagIntents("acc_1", INBOX)).toEqual([{ uid: 1, seen: true, flagged: null }]);
+    expect(migrated.pendingSeenUids("acc_1", INBOX)).toEqual([1]);
+    migrated.applyFlags("acc_1", INBOX, [{ uid: 1, seen: false, flagged: false }]);
+    expect(migrated.getMessage("m_a")?.isRead).toBe(true);
+  });
+
+  it("seen_pending is frozen: opening and pushing leave it alone", () => {
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    const id = idOf(store, 1);
+    store.markOpened(id);
+    store.setDesired([id], { flagged: true });
+    const row = () =>
+      db.prepare("SELECT seen_pending, seen_desired, flag_desired FROM messages WHERE id = ?").get(id);
+    expect(row()).toEqual({ seen_pending: 0, seen_desired: 1, flag_desired: 1 });
+    store.clearSeenPending("acc_1", INBOX, [1]);
+    expect(row()).toEqual({ seen_pending: 0, seen_desired: null, flag_desired: 1 });
+  });
+
+  it("listThreadsAll pages in thread-date order using the (last_date, id) index", () => {
+    const plan = (
+      db
+        .prepare("EXPLAIN QUERY PLAN SELECT * FROM threads ORDER BY last_date DESC, id DESC LIMIT 51")
+        .all() as { detail: string }[]
+    ).map((r) => r.detail);
+    expect(plan.join("\n")).toMatch(/threads_last_date/);
+    expect(plan.join("\n")).not.toMatch(/TEMP B-TREE/);
+
+    store.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org" }));
+    for (const accountId of ["acc_1", "acc_2"]) {
+      store.upsertMessages(
+        accountId,
+        INBOX,
+        Array.from({ length: 1_500 }, (_, i) =>
+          makeFetchedMessage(i + 1, {
+            messageId: `perf-${accountId}-${i}@example.org`,
+            date: new Date(Date.UTC(2026, 9, 1) + i * 60_000).toISOString(),
+          }),
+        ),
+      );
+      store.assignThreads(accountId, new Map());
+    }
+    const started = performance.now();
+    let cursor: string | null = null;
+    let listed = 0;
+    do {
+      const page = store.listThreadsAll("inbox", cursor, 50);
+      listed += page.threads.length;
+      cursor = page.nextCursor;
+    } while (cursor !== null && listed < 200);
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(listed).toBe(200);
+  });
+});
+
+describe.each(storeKinds)("slice-3a store semantics (%s)", (_kind, make) => {
+  let s: MailStore;
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org" }));
+  });
+
+  const flags = (id: string) => {
+    const message = s.getMessage(id)!;
+    return [message.isRead, message.isFlagged];
+  };
+
+  /** acc_1 as Gmail: message g in INBOX (uid 1) and All Mail (uid 50), a copy in Old (uid 7). */
+  const gmail = () => {
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder(ALL_MAIL, "all"), remoteFolder("Old")]);
+    const g = { messageId: "g@example.org", gmMsgId: "100", gmThreadId: "900" };
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, g)]);
+    s.upsertMessages("acc_1", ALL_MAIL, [
+      makeFetchedMessage(50, g),
+      makeFetchedMessage(51, { messageId: "other@example.org", gmMsgId: "101" }),
+    ]);
+    s.upsertMessages("acc_1", "Old", [makeFetchedMessage(7, g)]);
+    s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+  };
+
+  it("setDesired changes every copy at once and records intents on attached copies", () => {
+    gmail();
+    const detached = idIn(s, "Old", 7);
+    s.beginFolderReset("acc_1", "Old");
+    const inboxCopy = idIn(s, INBOX, 1);
+    expect(s.setDesired([inboxCopy, "m_unknown", inboxCopy], { flagged: true })).toEqual([
+      { accountId: "acc_1" },
+    ]);
+    expect(flags(inboxCopy)).toEqual([false, true]);
+    expect(flags(idIn(s, ALL_MAIL, 50))).toEqual([false, true]);
+    expect(flags(detached)).toEqual([false, true]);
+    expect(flags(idIn(s, ALL_MAIL, 51))).toEqual([false, false]);
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([{ uid: 1, seen: null, flagged: true }]);
+    expect(s.pendingFlagIntents("acc_1", ALL_MAIL)).toEqual([{ uid: 50, seen: null, flagged: true }]);
+    expect(s.pendingFlagIntents("acc_1", "Old")).toEqual([]);
+    expect(s.setDesired(["m_unknown"], { seen: true })).toEqual([]);
+  });
+
+  it("setDesired stays inside each account and returns each touched account once", () => {
+    // Same Message-ID and size in both accounts: the same dedup key text.
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    s.upsertMessages("acc_2", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)]);
+    expect(s.setDesired([idIn(s, INBOX, 1, "acc_2"), idIn(s, INBOX, 2, "acc_2")], { seen: true })).toEqual([
+      { accountId: "acc_2" },
+    ]);
+    expect(flags(idIn(s, INBOX, 1))).toEqual([false, false]);
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([]);
+    expect(
+      s.setDesired([idIn(s, INBOX, 1, "acc_2"), idIn(s, INBOX, 1), idIn(s, INBOX, 2, "acc_2")], { seen: false }),
+    ).toEqual([{ accountId: "acc_2" }, { accountId: "acc_1" }]);
+  });
+
+  it("setDesired reaches rows waiting to move, overwrites an opposite intent and pushes an equal value", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { seen: true }), makeFetchedMessage(2)]);
+    const [id1, id2] = [idIn(s, INBOX, 1), idIn(s, INBOX, 2)];
+    // Already read locally and nothing pending: still pushed.
+    s.setDesired([id1], { seen: true });
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([{ uid: 1, seen: true, flagged: null }]);
+    s.queueMove([id2], "Trash");
+    s.setDesired([id2], { seen: true, flagged: true });
+    s.setDesired([id2], { seen: false });
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([
+      { uid: 1, seen: true, flagged: null },
+      { uid: 2, seen: false, flagged: true },
+    ]);
+    expect(flags(id2)).toEqual([false, true]);
+  });
+
+  it("a pending desired value wins over reconcile and refetch until cleared", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { seen: true })]);
+    const id = idIn(s, INBOX, 1);
+    s.setDesired([id], { seen: false, flagged: true });
+    const server = [{ uid: 1, seen: true, flagged: false }];
+    expect(s.applyFlags("acc_1", INBOX, server)).toBe(0);
+    expect(flags(id)).toEqual([false, true]);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { seen: true, flagged: false })]);
+    expect(flags(id)).toEqual([false, true]);
+
+    s.clearFlagIntents("acc_1", INBOX, [{ uid: 1, seen: false, flagged: null }]);
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([{ uid: 1, seen: null, flagged: true }]);
+    expect(s.applyFlags("acc_1", INBOX, server)).toBe(1);
+    expect(flags(id)).toEqual([true, true]);
+
+    s.clearFlagIntents("acc_1", INBOX, [{ uid: 1, seen: null, flagged: true }]);
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([]);
+    expect(s.applyFlags("acc_1", INBOX, server)).toBe(1);
+    expect(flags(id)).toEqual([true, false]);
+  });
+
+  it("clearFlagIntents clears only values that still equal what was pushed", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)]);
+    const [id1, id2] = [idIn(s, INBOX, 1), idIn(s, INBOX, 2)];
+    s.setDesired([id1, id2], { seen: true, flagged: true });
+    const pushed = s.pendingFlagIntents("acc_1", INBOX);
+    // The owner clicks again while the push is in flight.
+    s.setDesired([id1], { flagged: false });
+    s.clearFlagIntents("acc_1", "Other", pushed);
+    s.clearFlagIntents("acc_1", INBOX, pushed);
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([{ uid: 1, seen: null, flagged: false }]);
+  });
+
+  it("pendingFlagIntents lists attached rows only; a reattached row is pushed again", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    const id = idIn(s, INBOX, 1);
+    s.setDesired([id], { flagged: true });
+    s.beginFolderReset("acc_1", INBOX);
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([]);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(9, { messageId: "msg-1@example.org" })]);
+    expect(idIn(s, INBOX, 9)).toBe(id);
+    expect(flags(id)).toEqual([false, true]);
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([{ uid: 9, seen: null, flagged: true }]);
+  });
+
+  it("completeMove re-homes rows carrying both intents (non-null wins)", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { messageId: "keep@example.org" })]);
+    s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(77, { messageId: "keep@example.org" })]);
+    const [moving, early] = [idIn(s, INBOX, 1), idIn(s, "Archive", 77)];
+    // The moving row ends with a read intent, the destination copy with a flag intent.
+    s.setDesired([moving], { seen: true, flagged: true });
+    s.clearFlagIntents("acc_1", INBOX, [{ uid: 1, seen: null, flagged: true }]);
+    s.clearFlagIntents("acc_1", "Archive", [{ uid: 77, seen: true, flagged: null }]);
+    s.queueMove([moving], "Archive");
+
+    s.completeMove("acc_1", INBOX, "Archive", new Map([[1, 77]]), [1]);
+
+    expect(s.getMessage(early)).toBeNull();
+    expect(s.getMessage(moving)).toMatchObject({ folder: "Archive", isRead: true, isFlagged: true });
+    expect(s.pendingFlagIntents("acc_1", "Archive")).toEqual([{ uid: 77, seen: true, flagged: true }]);
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([]);
+  });
+
+  it("markOpened reads every copy and records a read intent on attached unread copies only", () => {
+    gmail();
+    s.beginFolderReset("acc_1", "Old");
+    const inboxCopy = idIn(s, INBOX, 1);
+    expect(s.markOpened(inboxCopy)).toEqual({ accountId: "acc_1" });
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([{ uid: 1, seen: true, flagged: null }]);
+    expect(s.pendingFlagIntents("acc_1", ALL_MAIL)).toEqual([{ uid: 50, seen: true, flagged: null }]);
+    // The detached copy was read locally only; reattached, it follows the server.
+    s.upsertMessages("acc_1", "Old", [
+      makeFetchedMessage(8, { messageId: "g@example.org", gmMsgId: "100", gmThreadId: "900" }),
+    ]);
+    expect(flags(idIn(s, "Old", 8))).toEqual([false, false]);
+    expect(s.pendingFlagIntents("acc_1", "Old")).toEqual([]);
+    // A read copy gets no new intent.
+    s.clearFlagIntents("acc_1", INBOX, [{ uid: 1, seen: true, flagged: null }]);
+    s.markOpened(inboxCopy);
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([]);
+  });
+
+  /**
+   * acc_1 (Gmail-like): INBOX uids 1 (11-10) and 2 (11-12), uid 1 also in All
+   * Mail (uid 60); All Mail-only uid 61 (11-13); Archive uid 3 (11-09).
+   * acc_2: INBOX uids 1 (11-11, seen) and 2 (11-14); Archive uid 3 (11-08).
+   */
+  const twoAccounts = () => {
+    s.saveFolders("acc_1", [
+      remoteFolder(INBOX, "inbox"),
+      remoteFolder(ALL_MAIL, "all"),
+      remoteFolder("Archive", "archive"),
+      remoteFolder("Spam", "junk"),
+    ]);
+    s.saveFolders("acc_2", [remoteFolder(INBOX), remoteFolder("Archived", "archive")]);
+    const day = (d: number) => `2026-11-${String(d).padStart(2, "0")}T09:00:00.000Z`;
+    const first = { gmMsgId: "1", date: day(10), subject: "a1 inbox old" };
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, first),
+      makeFetchedMessage(2, { gmMsgId: "2", date: day(12), subject: "a1 inbox new" }),
+    ]);
+    s.upsertMessages("acc_1", ALL_MAIL, [
+      makeFetchedMessage(60, first),
+      makeFetchedMessage(61, { gmMsgId: "61", date: day(13), subject: "a1 all mail only" }),
+    ]);
+    s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(3, { gmMsgId: "3", date: day(9), subject: "a1 archived" })]);
+    s.upsertMessages("acc_2", INBOX, [
+      makeFetchedMessage(1, { date: day(11), subject: "a2 inbox old", seen: true }),
+      makeFetchedMessage(2, { date: day(14), subject: "a2 inbox new" }),
+    ]);
+    s.upsertMessages("acc_2", "Archived", [makeFetchedMessage(3, { date: day(8), subject: "a2 archived" })]);
+    s.assignThreads("acc_1", new Map());
+    s.assignThreads("acc_2", new Map());
+  };
+
+  const allSubjects = (role: Parameters<MailStore["listThreadsAll"]>[0], limit = 10) => {
+    const out: [string, string, boolean][] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const page = s.listThreadsAll(role, cursor, limit);
+      out.push(...page.threads.map((t): [string, string, boolean] => [t.accountId, t.subject, t.flagged]));
+      cursor = page.nextCursor;
+      pages++;
+    } while (cursor !== null && pages < 10);
+    return out;
+  };
+
+  it("listThreadsAll merges accounts newest first across pages", () => {
+    twoAccounts();
+    const firstPage = s.listThreadsAll("inbox", null, 2);
+    expect(firstPage.threads.map((t) => t.subject)).toEqual(["a2 inbox new", "a1 inbox new"]);
+    expect(firstPage.nextCursor).not.toBeNull();
+    expect(allSubjects("inbox", 2)).toEqual([
+      ["acc_2", "a2 inbox new", false],
+      ["acc_1", "a1 inbox new", false],
+      ["acc_2", "a2 inbox old", false],
+      ["acc_1", "a1 inbox old", false],
+    ]);
+    expect(s.listThreadsAll("inbox", null, 4).nextCursor).toBeNull();
+    expect(allSubjects("sent")).toEqual([]);
+  });
+
+  it("the Archive role merges archive folders only, never Gmail All Mail", () => {
+    twoAccounts();
+    expect(allSubjects("archive", 1)).toEqual([
+      ["acc_1", "a1 archived", false],
+      ["acc_2", "a2 archived", false],
+    ]);
+    expect(s.listThreadsAll("all", null, 10)).toEqual({ threads: [], nextCursor: null });
+  });
+
+  it("listThreadsAll leaves out rows waiting to move and flags threads per role", () => {
+    twoAccounts();
+    s.queueMove([idIn(s, INBOX, 2, "acc_2")], "Archived");
+    // The All Mail copy of an Inbox message is flagged: starred in All Mail only.
+    s.applyFlags("acc_1", ALL_MAIL, [{ uid: 60, seen: false, flagged: true }]);
+    s.setDesired([idIn(s, "Archive", 3)], { flagged: true });
+    expect(allSubjects("inbox")).toEqual([
+      ["acc_1", "a1 inbox new", false],
+      ["acc_2", "a2 inbox old", false],
+      ["acc_1", "a1 inbox old", false],
+    ]);
+    expect(allSubjects("archive")).toEqual([
+      ["acc_1", "a1 archived", true],
+      ["acc_2", "a2 archived", false],
+    ]);
+    expect(s.listThreads("acc_1", ALL_MAIL, null, 10).threads.find((t) => t.subject === "a1 inbox old")?.flagged).toBe(
+      true,
+    );
+  });
+
+  it("listRoles sums distinct messages per role across accounts, zeros included", () => {
+    twoAccounts();
+    s.queueMove([idIn(s, INBOX, 2)], "Spam");
+    expect(s.listRoles()).toEqual([
+      // acc_1 uid 1, acc_2 uids 1 (read) and 2; acc_1 uid 2 waits to move.
+      { role: "inbox", unreadCount: 2, totalCount: 3 },
+      { role: "sent", unreadCount: 0, totalCount: 0 },
+      { role: "drafts", unreadCount: 0, totalCount: 0 },
+      { role: "junk", unreadCount: 0, totalCount: 0 },
+      { role: "archive", unreadCount: 2, totalCount: 2 },
+      { role: "trash", unreadCount: 0, totalCount: 0 },
+    ]);
+  });
+
+  it("rawRef points at an attached row with its folder's UIDVALIDITY", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { size: 321 })]);
+    s.upsertMessages("acc_1", "Other", [makeFetchedMessage(4, { messageId: null })]);
+    s.saveSyncState("acc_1", INBOX, { uidValidity: 7, lastUid: 1, syncedSince: EPOCH });
+    const id = idIn(s, INBOX, 1);
+    expect(s.rawRef(id)).toEqual({
+      accountId: "acc_1",
+      folder: INBOX,
+      uid: 1,
+      size: 321,
+      messageId: "msg-1@example.org",
+      uidValidity: 7,
+    });
+    expect(s.rawRef(idIn(s, "Other", 4))).toEqual({
+      accountId: "acc_1",
+      folder: "Other",
+      uid: 4,
+      size: 100,
+      messageId: null,
+      uidValidity: null,
+    });
+    expect(s.rawRef("m_unknown")).toBeNull();
+    s.queueMove([idIn(s, "Other", 4)], "Trash");
+    expect(s.rawRef(idIn(s, "Other", 4))).toBeNull();
+    s.beginFolderReset("acc_1", INBOX);
+    expect(s.rawRef(id)).toBeNull();
   });
 });
