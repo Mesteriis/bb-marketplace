@@ -358,6 +358,40 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     // rowKey stands for rowIds.
   }, [rowKey]);
 
+  /** Focus that fell out of the page goes to the cursor row, else the page root. */
+  const refocusIfLost = () => {
+    if (!focusLost()) return;
+    if (focusedId === null || !focusRowElement(focusedId)) focusRoot();
+  };
+
+  // A selection-bar action clicked with the mouse: its button unmounts with the bar.
+  const selectionEmpty = selection.size === 0;
+  useEffect(() => {
+    if (selectionEmpty || !props.actionPending) refocusIfLost();
+  }, [selectionEmpty, props.actionPending]);
+
+  /**
+   * A value picked in the account or folder select: focus returns to the
+   * page instead of the select, so the hotkeys work without a click.
+   */
+  const picked = useRef(false);
+  const notePick = () => {
+    picked.current = true;
+    // The drawer layout (compact viewport) has no close-focus event.
+    setTimeout(() => {
+      if (!picked.current) return;
+      picked.current = false;
+      if (focusedId === null || !focusRowElement(focusedId)) focusRoot();
+    }, 150);
+  };
+  const selectCloseFocus = (event: Event) => {
+    if (!picked.current) return;
+    picked.current = false;
+    event.preventDefault();
+    if (focusedId === null || !focusRowElement(focusedId)) focusRoot();
+  };
+  const pickFocus: PickFocus = { notePick, onCloseAutoFocus: selectCloseFocus };
+
   // Back to the list (u, Back, Mark unread, an action): focus returns to the cursor row.
   const wasOpen = useRef(threadOpen);
   useEffect(() => {
@@ -420,13 +454,14 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     setFocusedId(id);
     focusRowElement(id);
   };
-  const step = (delta: 1 | -1) => {
+  /** A held j/k (`repeat`) only moves the cursor: passing a conversation never opens it. */
+  const step = (delta: 1 | -1, repeat: boolean) => {
     if (rowIds.length === 0) return;
     const current = focusedId === null ? -1 : rowIds.indexOf(focusedId);
     const nextIndex = current < 0 ? 0 : Math.min(Math.max(current + delta, 0), rowIds.length - 1);
     const next = rowIds[nextIndex]!;
     focusRow(next);
-    if (threadOpen) openRow(next);
+    if (threadOpen && !repeat) openRow(next);
   };
   const toggleChecked = (id: string, range: boolean) => {
     props.onSelectionChange(toggleSelection(rowIds, selection, id, range, anchor.current));
@@ -448,12 +483,12 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     setMoveTargets(ids);
   };
 
-  const onKeyDown = useShortcuts((command: ShortcutCommand) => {
+  const onKeyDown = useShortcuts((command: ShortcutCommand, repeat: boolean) => {
     switch (command.kind) {
       case "next":
-        return step(1);
+        return step(1, repeat);
       case "previous":
-        return step(-1);
+        return step(-1, repeat);
       case "open":
         if (focusedId !== null && rowIds.includes(focusedId)) openRow(focusedId);
         return;
@@ -461,7 +496,8 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         if (threadOpen) props.onCloseThread();
         return;
       case "select":
-        if (!searching && focusedId !== null && rowIds.includes(focusedId)) toggleChecked(focusedId, false);
+        // While a conversation is open (the list may be hidden), x does nothing.
+        if (!threadOpen && !searching && focusedId !== null && rowIds.includes(focusedId)) toggleChecked(focusedId, false);
         return;
       case "archive":
         return runIfAllowed(targets(), "archive");
@@ -517,7 +553,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       onKeyDown={onKeyDown}
       className="@container flex h-full min-h-0 flex-1 flex-col outline-none"
     >
-      <MailHeader {...props} searchRef={searchRef} onShowShortcuts={() => {
+      <MailHeader {...props} pickFocus={pickFocus} searchRef={searchRef} onShowShortcuts={() => {
           rememberOpener();
           setSheetOpen(true);
         }}
@@ -558,7 +594,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           className="hidden min-h-0 w-48 shrink-0 flex-col overflow-y-auto border-r border-border @4xl:flex @6xl:w-56"
         >
           <div className="px-1.5 pb-1 pt-2">
-            <AccountChooser {...props} className="w-full max-w-none" />
+            <AccountChooser {...props} pickFocus={pickFocus} className="w-full max-w-none" />
           </div>
           {props.unified ? (
             <UnifiedRail
@@ -757,16 +793,30 @@ function ListMessage({ text, role = "status" }: { text: string; role?: "status" 
   );
 }
 
+/** Returns focus to the page after a pick in the account or folder select. */
+interface PickFocus {
+  notePick: () => void;
+  onCloseAutoFocus: (event: Event) => void;
+}
+
 /** The account select (several accounts, with All accounts) or the account's name. */
-function AccountChooser(props: MailPageProps & { status: StatusView; className?: string }) {
-  const { account, status } = props;
+function AccountChooser(
+  props: MailPageProps & { status: StatusView; pickFocus: PickFocus; className?: string },
+) {
+  const { account, status, pickFocus } = props;
   if (status.accounts.length > 1) {
     return (
-      <Select value={props.unified ? ALL_ACCOUNTS : (account?.id ?? ALL_ACCOUNTS)} onValueChange={props.onSelectAccount}>
+      <Select
+        value={props.unified ? ALL_ACCOUNTS : (account?.id ?? ALL_ACCOUNTS)}
+        onValueChange={(value) => {
+          pickFocus.notePick();
+          props.onSelectAccount(value);
+        }}
+      >
         <SelectTrigger aria-label="Account" className={cn("h-8 w-auto max-w-56", props.className)}>
           <SelectValue />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent onCloseAutoFocus={pickFocus.onCloseAutoFocus}>
           <SelectItem value={ALL_ACCOUNTS}>All accounts</SelectItem>
           {status.accounts.map((item) => (
             <SelectItem key={item.id} value={item.id}>
@@ -800,6 +850,7 @@ function MailHeader(
     status: StatusView;
     searchRef: RefObject<HTMLInputElement | null>;
     onShowShortcuts: () => void;
+    pickFocus: PickFocus;
   },
 ) {
   const [draft, setDraft] = useState(props.search.query);
@@ -830,13 +881,21 @@ function MailHeader(
             folders={props.folders ?? []}
             accounts={props.status.accounts}
             view={props.view}
-            onSelect={props.onSelectView}
+            onSelect={(view) => {
+              props.pickFocus.notePick();
+              props.onSelectView(view);
+            }}
+            onCloseAutoFocus={props.pickFocus.onCloseAutoFocus}
           />
         ) : props.account !== null ? (
           <FolderSelect
             folders={props.folders ?? []}
             selectedPath={props.view.kind === "folder" ? props.view.path : ""}
-            onSelect={(path) => props.onSelectView({ kind: "folder", accountId: props.account!.id, path })}
+            onSelect={(path) => {
+              props.pickFocus.notePick();
+              props.onSelectView({ kind: "folder", accountId: props.account!.id, path });
+            }}
+            onCloseAutoFocus={props.pickFocus.onCloseAutoFocus}
           />
         ) : null}
       </div>

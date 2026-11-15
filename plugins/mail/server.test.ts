@@ -976,7 +976,9 @@ describe("makosh-mail server", () => {
     const call = (method: string, input: unknown) =>
       host.harness.behavior.callRpc(method, input, asPlugin);
 
+    const unreadBefore = ((await call("status_get", null)) as { unreadCount: number }).unreadCount;
     const calls = [
+      call("message_open", { messageId }),
       call("message_action", { messageIds: [messageId], folder: "INBOX", action: "delete" }),
       call("images_allow_sender", { messageId }),
       call("images_disallow_sender", { accountId: "acc_1", address: "sender@example.org" }),
@@ -999,6 +1001,7 @@ describe("makosh-mail server", () => {
     for (const result of calls) await expect(result).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
 
     expect(movePending(host, messageId)).toBeNull();
+    expect(((await call("status_get", null)) as { unreadCount: number }).unreadCount).toBe(unreadBefore);
     expect(sealedPasswords(host)).toEqual(["sealed-password"]);
     const body = (await call("message_body", { messageId })) as MessageBody;
     expect(body.remoteImagesAllowed).toBe(false);

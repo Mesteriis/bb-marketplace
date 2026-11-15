@@ -286,13 +286,19 @@ export function UnifiedRail({ roles, folders, accounts, view, onSelect, error }:
 }
 
 /** All accounts' rail as a select, for pages too narrow for the rail. */
+/** Where focus goes after a value is picked; passed to the select's content. */
+export interface SelectFocusProps {
+  onCloseAutoFocus?: (event: Event) => void;
+}
+
 export function UnifiedSelect({
   roles,
   folders,
   accounts,
   view,
   onSelect,
-}: Omit<UnifiedRailProps, "error">) {
+  onCloseAutoFocus,
+}: Omit<UnifiedRailProps, "error"> & SelectFocusProps) {
   const shownRoles = roles.filter((r): r is RoleCount & { role: RoleName } => r.role !== "all");
   const views = new Map<string, MailView>();
   for (const { role } of shownRoles) views.set(viewKey({ kind: "role", role }), { kind: "role", role });
@@ -318,7 +324,7 @@ export function UnifiedSelect({
       <SelectTrigger aria-label="Folder" className="h-8 w-auto max-w-48">
         <SelectValue />
       </SelectTrigger>
-      <SelectContent>
+      <SelectContent onCloseAutoFocus={onCloseAutoFocus}>
         {shownRoles.map(({ role, unreadCount }) => (
           <SelectItem key={role} value={viewKey({ kind: "role", role })}>
             {label(unreadCount, ROLE_NAMES[role])}
@@ -342,7 +348,12 @@ export function UnifiedSelect({
 }
 
 /** The same choice as a select, for pages too narrow for the rail. */
-export function FolderSelect({ folders, selectedPath, onSelect }: FolderListProps) {
+export function FolderSelect({
+  folders,
+  selectedPath,
+  onSelect,
+  onCloseAutoFocus,
+}: FolderListProps & SelectFocusProps) {
   const selectable = folders.filter((f) => f.selectable);
   if (selectable.length === 0) return null;
   return (
@@ -350,7 +361,7 @@ export function FolderSelect({ folders, selectedPath, onSelect }: FolderListProp
       <SelectTrigger aria-label="Folder" className="h-8 w-auto max-w-48">
         <SelectValue />
       </SelectTrigger>
-      <SelectContent>
+      <SelectContent onCloseAutoFocus={onCloseAutoFocus}>
         {selectable.map((folder) => (
           <SelectItem key={folder.path} value={folder.path}>
             {folder.unreadCount > 0 ? `${folder.name} (${folder.unreadCount})` : folder.name}

@@ -2207,3 +2207,107 @@ describe("Stars and bulk flags", () => {
     expect(actionInputs(slot)[1]).toEqual({ messageIds: ["a-1", "a-3"], action: "unflag", folder: "INBOX" });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Final fix wave: held j/k never opens, focus after bar actions and selects, x while open.
+
+describe("Final fix wave", () => {
+  const threadD: ThreadSummary = { ...threadB, id: "th-d", subject: "Dinner", snippet: "Row D" };
+  const unreadRows = () => {
+    const threads = [threadA, threadB, threadC, threadD];
+    return rowsRpc({
+      threads_list: () => ({ threads, nextCursor: null }),
+      thread_get: ({ threadId }: { threadId: string }) => {
+        const thread = threads.find((t) => t.id === threadId)!;
+        return {
+          thread,
+          messages: [message({ id: `${threadId}-m`, threadId, isRead: false, snippet: `Note ${threadId}` })],
+        };
+      },
+    });
+  };
+
+  it("a held j with a conversation open only moves the cursor; a single j opens", async () => {
+    const slot = render(unreadRows());
+    await slot.findByText("Dinner");
+    pageRoot(slot).focus();
+    key(J);
+    key({ key: "o", code: "KeyO" });
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    await waitFor(() => expect(callsTo(slot, "message_open")).toHaveLength(1));
+
+    key({ ...J, repeat: true });
+    key({ ...J, repeat: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(callsTo(slot, "message_open").map((call) => call.input)).toEqual([{ messageId: "th-a-m" }]);
+    expect(callsTo(slot, "thread_get").map((call) => (call.input as { threadId: string }).threadId)).toEqual(["th-a"]);
+
+    key(J);
+    await waitFor(() =>
+      expect(callsTo(slot, "message_open").map((call) => call.input)).toEqual([
+        { messageId: "th-a-m" },
+        { messageId: "th-d-m" },
+      ]),
+    );
+    expect(callsTo(slot, "thread_get").map((call) => (call.input as { threadId: string }).threadId)).toEqual([
+      "th-a",
+      "th-d",
+    ]);
+  });
+
+  for (const label of ["Delete", "Mark read"]) {
+    it(`hotkeys work after the bar's ${label} clicked with the mouse`, async () => {
+      const slot = render(rowsRpc());
+      await slot.findByText("Tickets");
+      const check = slot.getByRole("checkbox", { name: "Select Quarterly plan" });
+      check.focus();
+      fireEvent.click(check);
+      const button = within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByRole("button", {
+        name: label,
+      });
+      button.focus();
+      fireEvent.click(button);
+      await waitFor(() => expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull());
+      await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+
+      key(J);
+      expect(document.activeElement?.closest("li")?.textContent).toMatch(label === "Delete" ? /Lunch/ : /Quarterly plan/);
+    });
+  }
+
+  it("after choosing a folder in the select, focus is back on the page", async () => {
+    const proto = Element.prototype as unknown as Record<string, unknown>;
+    proto.scrollIntoView ??= () => {};
+    proto.hasPointerCapture ??= () => false;
+    proto.releasePointerCapture ??= () => {};
+    const slot = render(rowsRpc());
+    await slot.findByText("Tickets");
+    const select = await slot.findByRole("combobox", { name: "Folder" });
+    await waitFor(() => expect(select.textContent).toContain("Inbox"));
+    select.focus();
+    fireEvent.keyDown(select, { key: "Enter", code: "Enter" });
+    const option = await slot.findByRole("option", { name: /Spam/ });
+    // Typing on the open select is the select's own.
+    press(option, { key: "j", code: "KeyJ" });
+    expect(callsTo(slot, "message_action")).toHaveLength(0);
+    fireEvent.keyDown(option, { key: "Enter", code: "Enter" });
+    await waitFor(() =>
+      expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ scope: { folder: "[Gmail]/Spam" } }),
+    );
+    await waitFor(() => expect(slot.queryByRole("listbox")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(pageRoot(slot)));
+  });
+
+  it("x does nothing while a conversation is open", async () => {
+    const slot = render(rowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+    key(J);
+    key({ key: "o", code: "KeyO" });
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+
+    key({ key: "x", code: "KeyX" });
+    expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull();
+    expect(slot.getByRole("checkbox", { name: "Select Quarterly plan" }).getAttribute("aria-checked")).toBe("false");
+  });
+});

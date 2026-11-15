@@ -194,10 +194,11 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
 ];
 
 /**
- * A keydown handler for the page root: runs `onCommand` for each hotkey and
+ * A keydown handler for the page root: runs `onCommand` for each hotkey (with
+ * whether the key is held, which only j and k pass through) and
  * keeps the `g` sequence, which ends after G_SEQUENCE_MS or on the next key.
  */
-export function useShortcuts(onCommand: (command: ShortcutCommand) => void) {
+export function useShortcuts(onCommand: (command: ShortcutCommand, repeat: boolean) => void) {
   const commandRef = useRef(onCommand);
   commandRef.current = onCommand;
   const gTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -224,7 +225,7 @@ export function useShortcuts(onCommand: (command: ShortcutCommand) => void) {
         }, G_SEQUENCE_MS);
         return;
       }
-      commandRef.current(match);
+      commandRef.current(match, event.repeat);
     },
     [endSequence],
   );
