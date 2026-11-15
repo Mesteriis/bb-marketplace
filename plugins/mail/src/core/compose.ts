@@ -87,11 +87,15 @@ const COMPOSE_ERROR_TEXT: Record<ComposeErrorKind, string> = {
   undone: "This send was undone",
 };
 
-/** A refusal with fixed text: never an address, subject, file name or server reply. */
+/**
+ * A refusal with fixed text: never an address, subject, file name or server
+ * reply. `text` replaces the kind's text with another fixed string (a
+ * literal in the code, never data).
+ */
 export class ComposeError extends Error {
   readonly kind: ComposeErrorKind;
-  constructor(kind: ComposeErrorKind) {
-    super(COMPOSE_ERROR_TEXT[kind]);
+  constructor(kind: ComposeErrorKind, text?: string) {
+    super(text ?? COMPOSE_ERROR_TEXT[kind]);
     this.name = "ComposeError";
     this.kind = kind;
   }
