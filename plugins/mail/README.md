@@ -207,9 +207,13 @@ aliases you added.
   end, under a `-- ` line. A reply or forward has it above the quote, with no
   `-- `, so mail clients that fold everything after `-- ` never fold the
   quote. Reply and Reply all to your own mail leave your old signature out
-  of the quote; Forward keeps it. Changing From swaps an unedited signature
-  for the new address's; an edited one stays, with **Use <address>'s**.
-  A signature pasted from elsewhere becomes ordinary text.
+  of the quote; Forward keeps it. When the original has no HTML, only a
+  signature under a `-- ` line is found, so one from your own reply (written
+  without `-- `) stays in the quote. Changing From swaps an unedited
+  signature for the new address's; an edited one stays, with
+  **Use <address>'s**. A signature pasted from elsewhere becomes ordinary text.
+- A draft's Message-ID is made at the domain of the address it started
+  from; changing From later keeps it.
 - From lists every sending address of every account with SMTP. A reply
   starts from the address the original came to (Delivered-To,
   X-Original-To, To, Cc), within the same account only.
