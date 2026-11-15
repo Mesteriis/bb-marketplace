@@ -195,10 +195,15 @@ thread with all of it:
   "I know this address" click before Send), **Added by the agent** (on a
   reply, beyond what Reply or Reply all would address), **Outside your
   domains**, and hidden characters. A non-empty Bcc row is marked "Hidden
-  recipients — the others will not see them". A row over 10 addresses
-  collapses to "and N more" with one acknowledgement for all its new ones.
-- Bidi and zero-width characters are removed from what the card shows, with
-  a count; an internationalized domain shows as `xn--` punycode.
+  recipients — the others will not see them". Flagged addresses come first
+  in their row and are always shown; a row over 10 addresses collapses only
+  the unflagged ones to "and N more", with one acknowledgement for the new
+  ones on screen.
+- Invisible characters (bidi and zero-width marks, every other format
+  character, soft hyphens, variation selectors, line separators) are
+  removed from what the card shows, with a count; tag characters and
+  Hangul fillers in the agent's subject or text refuse the proposal. An
+  internationalized domain shows as `xn--` punycode.
 - The subject, the body as plain text, the quote of the original (folded),
   every link in the agent's text by host (also ones without `https://`),
   and the attachments.

@@ -17,6 +17,7 @@ import {
   parseSubmitValue,
   proposalContent,
   recipientFlags,
+  refusedHidden,
   revealHidden,
   type ProposalCapHit,
 } from "./agent-propose.ts";
@@ -83,7 +84,8 @@ export type ProposalErrorKind =
   | "subject_missing"
   | "too_large"
   | "source_not_found"
-  | "attachment_index";
+  | "attachment_index"
+  | "hidden_text";
 
 const ADDRESS_PROBLEM_TEXT: Record<AddressProblem, string> = {
   empty: "it is empty",
@@ -113,6 +115,7 @@ const ERROR_TEXT: Record<string, string> = {
   too_large: "The email is too large.",
   source_not_found: "The source message was not found.",
   attachment_index: "An attachment index is not one of the source message's attachments.",
+  hidden_text: "The subject or text holds invisible tag or filler characters; write it without them.",
 };
 
 function errorText(kind: ProposalErrorKind): string {
@@ -184,6 +187,10 @@ export async function proposeMail(
     bcc: parseAll(params.bcc),
   };
   if (params.body.length > AGENT_BODY_MAX_CHARS) throw new ProposalError("too_large");
+  // Tag characters and fillers can carry hidden text; they are refused, not only revealed.
+  if (refusedHidden(params.body) || (params.subject !== undefined && refusedHidden(params.subject))) {
+    throw new ProposalError("hidden_text");
+  }
   if (params.kind !== "forward" && params.forwardAttachments !== undefined) {
     throw new ProposalError("attachment_index");
   }

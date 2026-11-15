@@ -583,7 +583,7 @@ export const proposalViewSchema = z.object({
   cc: z.array(proposalRecipientSchema),
   bcc: z.array(proposalRecipientSchema),
   subject: z.string(),
-  /** Bidi and zero-width characters removed from what is shown. */
+  /** Invisible characters removed from what is shown (revealHidden). */
   hiddenChars: z.number().int(),
   bodyText: z.string(),
   quoteText: z.string().nullable(),

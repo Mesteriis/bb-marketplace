@@ -178,6 +178,10 @@ describe("proposeMail", () => {
         "too_many_recipients",
       ],
       ["subject missing", () => propose({ subject: undefined }), "subject_missing"],
+      ["tag characters in the body", () => propose({ body: "Hello\u{E0049}\u{E0047}\u{E004E}" }), "hidden_text"],
+      ["a filler letter in the body", () => propose({ body: "Hello \u3164 there" }), "hidden_text"],
+      ["tag characters in the subject", () => propose({ subject: "Plan\u{E0041}" }), "hidden_text"],
+      ["a filler letter in the subject", () => propose({ subject: "Plan\uFFA0" }), "hidden_text"],
       ["unknown source", () => propose({ kind: "reply", sourceMessageId: "m_missing", subject: undefined }), "source_not_found"],
       ["no source id", () => propose({ kind: "reply", subject: undefined }), "source_not_found"],
       ["unknown account", () => propose({ accountId: "acc_missing" }), "account"],
@@ -330,6 +334,16 @@ describe("viewProposal", () => {
       refused: "changed",
     });
     expect(h.store.getProposal(proposed.proposalId)!.state).toBe("refused");
+  });
+});
+
+describe("viewProposal hidden text", () => {
+  it("reveals soft hyphens, invisible operators, variation selectors and line separators, and counts them", async () => {
+    const proposed = await propose({ body: "Pay\u00AD now\u2062\uFE0F\u2028done" });
+    const result = await viewProposal(d, proposed);
+    if (result.state !== "ready") throw new Error(result.state);
+    expect(result.view.bodyText).toBe("Pay nowdone");
+    expect(result.view.hiddenChars).toBe(4);
   });
 });
 

@@ -3,8 +3,8 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProposalView } from "../core/model.ts";
-import { RECIPIENT_ROW_COLLAPSE } from "../core/agent-propose.ts";
-import { AgentSendCard, ROW_COLLAPSE, SEND_DWELL_MS, type AgentSendCardProps, type ProposalViewResult } from "./agent-send-card.tsx";
+import { RECIPIENT_ROW_COLLAPSE, revealHidden } from "../core/agent-propose.ts";
+import { AgentSendCard, ROW_COLLAPSE, SEND_DWELL_MS, shownText, type AgentSendCardProps, type ProposalViewResult } from "./agent-send-card.tsx";
 
 installTestPluginRuntime();
 afterEach(() => {
@@ -116,6 +116,18 @@ describe("AgentSendCard", () => {
     expect(screen.getByRole("note").textContent).toContain("2 hidden characters removed");
     expect(screen.getByText("Invoice")).toBeTruthy();
     expect(screen.getByText("Pay now")).toBeTruthy();
+  });
+
+  it("strips exactly the characters the server reveals, over every code point", () => {
+    const all: string[] = [];
+    for (let cp = 0; cp <= 0x10ffff; cp += 1) {
+      if (cp >= 0xd800 && cp <= 0xdfff) continue;
+      all.push(String.fromCodePoint(cp));
+    }
+    const text = all.join("");
+    const core = revealHidden(text);
+    expect(shownText(text)).toBe(core.shown);
+    expect([...text].length - [...shownText(text)].length).toBe(core.hidden);
   });
 
   it("shows an IDN domain in its punycode form as the server sends it", async () => {
