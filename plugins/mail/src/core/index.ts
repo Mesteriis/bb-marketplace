@@ -31,4 +31,5 @@ export * from "./compose-outbox.ts";
 export * from "./agent-propose.ts";
 export * from "./agent-proposals.ts";
 export * from "./translate.ts";
+export * from "./unsubscribe.ts";
 export { removeControls, removeInvisible } from "./html-entities.ts";
