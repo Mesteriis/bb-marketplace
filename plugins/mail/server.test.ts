@@ -982,6 +982,18 @@ describe("makosh-mail server", () => {
       call("accounts_remove", { accountId: "acc_1" }),
       call("accounts_add", NEW_ACCOUNT),
       call("download_ticket", { kind: "eml", messageId }),
+      call("download_ticket", { kind: "attachment", messageId, partId: "1" }),
+      call("message_source", { messageId }),
+      ...["mark_read", "mark_unread", "flag", "unflag"].map((kind) =>
+        call("message_action", { messageIds: [messageId], folder: "INBOX", action: kind }),
+      ),
+      call("message_action", { messageIds: [messageId], role: "inbox", action: "flag" }),
+      call("message_action", {
+        messageIds: [messageId],
+        folder: "INBOX",
+        action: "move",
+        destination: "Work",
+      }),
     ];
     for (const result of calls) await expect(result).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
 
@@ -1730,3 +1742,105 @@ describe("makosh-mail server: source and downloads", () => {
   });
 });
 
+function downloadPath(url: string): string {
+  return url.replace("/api/v1/plugins/makosh-mail/http", "");
+}
+
+describe("makosh-mail server: fix round 1", () => {
+  it("serves one of two concurrent redemptions of a ticket and fetches once", async () => {
+    const { host, messageId } = await loadRaw(rawMail());
+    const { url } = (await host.harness.behavior.callRpc("download_ticket", { kind: "eml", messageId })) as {
+      url: string;
+    };
+
+    const responses = await Promise.all([
+      host.harness.behavior.fetchHttp("GET", downloadPath(url)),
+      host.harness.behavior.fetchHttp("GET", downloadPath(url)),
+    ]);
+
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 404]);
+    expect(host.gateway.sessions.flatMap((s) => s.calls).filter((c) => c.method === "fetchRaw")).toHaveLength(1);
+  });
+
+  it("refuses with 409 when the message changes between minting and redeeming", async () => {
+    const attachment = { filename: "report.pdf", mimeType: "application/pdf", content: "Invented" };
+    const changes: [string, (host: Host, messageId: string) => void][] = [
+      ["uidValidity", (host) => (host.gateway.mailbox.uidValidity = 4)],
+      [
+        "pending move",
+        (host, messageId) => createSqliteStore(host.bb.storage.database()).queueMove([messageId], "Junk"),
+      ],
+      [
+        "size",
+        (host) => host.bb.storage.database().prepare("UPDATE messages SET size = size + 1").run(),
+      ],
+      [
+        "Message-ID",
+        (host) => host.gateway.setRaw("INBOX", 1, rawMail({ messageId: "<msg-2@example.org>", attachment })),
+      ],
+      [
+        "part MIME type",
+        (host) =>
+          host.bb.storage.database().prepare("UPDATE attachments SET mime_type = 'application/zip'").run(),
+      ],
+    ];
+    for (const [what, change] of changes) {
+      const { host, messageId } = await loadRaw(rawMail({ attachment }));
+      const { url } = (await host.harness.behavior.callRpc("download_ticket", {
+        kind: "attachment",
+        messageId,
+        partId: "1",
+      })) as { url: string };
+      change(host, messageId);
+      const response = await host.harness.behavior.fetchHttp("GET", downloadPath(url));
+      expect(response.status, what).toBe(409);
+      expect(await response.text(), what).toMatch(/sync and try again$/);
+    }
+  });
+
+  it("names the download from the stored message when the ticket is redeemed", async () => {
+    const { host, messageId } = await loadRaw(rawMail());
+    const { url } = (await host.harness.behavior.callRpc("download_ticket", { kind: "eml", messageId })) as {
+      url: string;
+    };
+    host.bb.storage.database().prepare("UPDATE messages SET subject = 'Renamed note'").run();
+
+    const response = await host.harness.behavior.fetchHttp("GET", downloadPath(url));
+    expect(response.headers.get("content-disposition")).toContain('filename="2026-11-13 Renamed note.eml"');
+  });
+
+  it("degrades instead of failing when headers are huge", async () => {
+    const word = `=?UTF-8?B?${Buffer.from("a".repeat(225_000)).toString("base64")}?=`;
+    const { host, messageId } = await loadRaw(rawMail({ subject: `${word} ${word}` }));
+
+    const source = (await host.harness.behavior.callRpc("message_source", { messageId })) as Source;
+    expect(source.headers.at(-1)).toEqual(["…", "truncated"]);
+  });
+
+  it("applies nothing of a group with a refused id, and counts only stored ids", async () => {
+    const host = await load({ seed: (bb) => seedTwoAccounts(bb) });
+    const [a1, a2] = idsIn(host, "acc_1", "INBOX");
+    const [b1] = idsIn(host, "acc_2", "INBOX");
+    createSqliteStore(host.bb.storage.database()).queueMove([a2!], "Work");
+
+    const { groups } = (await host.harness.behavior.callRpc("message_action", {
+      messageIds: [a1, a2, b1, "missing"],
+      role: "inbox",
+      action: "delete",
+    })) as { groups: { accountId: string; queued: number; error: string | null }[] };
+
+    expect(groups.map((g) => [g.accountId, g.queued, g.error])).toEqual([
+      ["acc_1", 0, "These messages are not all in INBOX"],
+      ["acc_2", 1, null],
+    ]);
+    expect(movePending(host, a1!)).toBeNull();
+    expect(movePending(host, b1!)).toBe("Trash");
+
+    const flagged = (await host.harness.behavior.callRpc("message_action", {
+      messageIds: [a1, "missing"],
+      folder: "INBOX",
+      action: "flag",
+    })) as { groups: { queued: number }[] };
+    expect(flagged.groups[0]!.queued).toBe(1);
+  });
+});
