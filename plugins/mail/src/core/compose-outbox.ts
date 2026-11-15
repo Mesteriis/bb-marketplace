@@ -107,7 +107,35 @@ export class SendRateLimit {
   }
 }
 
-export type QueueDeps = ComposeDeps & { notifier: OutboxNotifier; rate: SendRateLimit };
+/** How long an undone request id is remembered, so a late duplicate of that Send is refused. */
+export const UNDONE_TTL_MS = 10 * 60_000;
+
+/**
+ * Request ids of sends the owner undid (or took back to Edit), in memory for
+ * UNDONE_TTL_MS. The row is deleted on Undo, so without this a delayed or
+ * retried compose_send carrying the same id would queue the send again.
+ */
+export class UndoneSends {
+  private readonly ids = new Map<string, number>();
+  constructor(private readonly clock: Clock) {}
+
+  add(id: string): void {
+    this.prune();
+    this.ids.set(id, this.clock.now().getTime());
+  }
+
+  has(id: string): boolean {
+    this.prune();
+    return this.ids.has(id);
+  }
+
+  private prune(): void {
+    const now = this.clock.now().getTime();
+    for (const [id, at] of this.ids) if (now - at >= UNDONE_TTL_MS) this.ids.delete(id);
+  }
+}
+
+export type QueueDeps = ComposeDeps & { notifier: OutboxNotifier; rate: SendRateLimit; undone: UndoneSends };
 export type OutboxDeps = ComposeDeps & {
   notifier: OutboxNotifier;
   transport: MailTransport;
@@ -132,7 +160,8 @@ function timerSleep(ms: number, signal: AbortSignal): Promise<void> {
 /**
  * Queues the saved draft. The requestId is the row id: the same id again
  * returns the row already queued (a double click or a retried RPC cannot
- * send twice). Validates at least one recipient, every chip, the
+ * send twice), and an id whose send was undone is refused (`undone`), so
+ * a late duplicate cannot bring it back. Validates at least one recipient, every chip, the
  * recipient count, the size cap, SMTP and the rate cap; builds the MIME
  * once (no Bcc) and stores the Bcc line for the Sent copy. The cap is
  * shared with Retry, Send again and Send now.
@@ -141,6 +170,7 @@ export async function queueSend(
   deps: QueueDeps,
   input: { draftId: string; baseRevision: number; requestId: string; origin: "owner" },
 ): Promise<{ outboxId: string; sendAfter: string }> {
+  if (deps.undone.has(input.requestId)) throw new ComposeError("undone");
   const repeated = deps.store.getOutbox(input.requestId);
   if (repeated !== null) {
     if (repeated.draftId !== input.draftId) throw new ComposeError("conflict");
@@ -188,12 +218,13 @@ export async function queueSend(
  * unchanged, and can be saved and sent again.
  */
 export function cancelSend(
-  deps: Pick<QueueDeps, "store" | "notifier">,
+  deps: Pick<QueueDeps, "store" | "notifier" | "undone">,
   id: string,
 ): { cancelled: boolean; draftId: string | null } {
   const row = deps.store.getOutbox(id);
   if (row === null) return { cancelled: false, draftId: null };
   if (!deps.store.deleteOutbox(id, fromStates("undo"))) return { cancelled: false, draftId: row.draftId };
+  deps.undone.add(id);
   deps.notifier.outboxChanged({ accountId: row.accountId, id, state: "cancelled" });
   return { cancelled: true, draftId: row.draftId };
 }

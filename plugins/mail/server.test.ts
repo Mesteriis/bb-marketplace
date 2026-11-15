@@ -2081,6 +2081,11 @@ describe("compose and send", () => {
     const { draft } = (await call(host, "compose_open", { draftId })) as { draft: { subject: string; queued: boolean } };
     expect(draft).toMatchObject({ subject: SUBJECT, queued: false });
     await expect(call(host, "outbox_cancel", { id: REQUEST_ID })).resolves.toEqual({ cancelled: false, draftId: null });
+    // A late duplicate of the undone Send is refused, not queued again.
+    await expect(call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID })).rejects.toThrow(
+      "This send was undone",
+    );
+    expect(sqlStore(host).listOutbox(null)).toEqual([]);
   });
 
   it("a restart while sending makes the row unknown, with no SMTP call; Retry is refused", async () => {

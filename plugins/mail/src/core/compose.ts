@@ -70,7 +70,8 @@ export type ComposeErrorKind =
   | "queued"
   | "too_large"
   | "smtp_missing"
-  | "rate_limited";
+  | "rate_limited"
+  | "undone";
 
 const COMPOSE_ERROR_TEXT: Record<ComposeErrorKind, string> = {
   not_found: "Not found",
@@ -80,6 +81,7 @@ const COMPOSE_ERROR_TEXT: Record<ComposeErrorKind, string> = {
   too_large: "Attachments are over the size limit",
   smtp_missing: "SMTP is not set for this account",
   rate_limited: "Too many messages sent in the last minute",
+  undone: "This send was undone",
 };
 
 /** A refusal with fixed text: never an address, subject, file name or server reply. */

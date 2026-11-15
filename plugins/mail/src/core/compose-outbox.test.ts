@@ -6,6 +6,8 @@ import {
   SEND_RATE_PER_MINUTE,
   SendRateLimit,
   UNDO_MS,
+  UNDONE_TTL_MS,
+  UndoneSends,
   canTransition,
   cancelSend,
   classifySendError,
@@ -24,13 +26,13 @@ import { composeHarness, imapError, makeFetchedMessage } from "./testing/fakes.t
 
 let h: ReturnType<typeof composeHarness>;
 let rate: SendRateLimit;
-let deps: ReturnType<typeof composeHarness>["deps"] & { rate: SendRateLimit };
+let deps: ReturnType<typeof composeHarness>["deps"] & { rate: SendRateLimit; undone: UndoneSends };
 const signal = new AbortController().signal;
 
 beforeEach(() => {
   h = composeHarness();
   rate = new SendRateLimit(h.clock);
-  deps = { ...h.deps, rate };
+  deps = { ...h.deps, rate, undone: new UndoneSends(h.clock) };
 });
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
@@ -182,7 +184,7 @@ describe("Undo", () => {
     const before = { draft: h.store.getDraft(draft.draftId), files: h.store.attachmentData(draft.draftId) };
     const id = requestId();
     await queueSend(deps, { ...draft, requestId: id, origin: "owner" });
-    expect(cancelSend(h.deps, id)).toEqual({ cancelled: true, draftId: draft.draftId });
+    expect(cancelSend(deps, id)).toEqual({ cancelled: true, draftId: draft.draftId });
     h.advance(UNDO_MS);
     await drain();
     expect(h.transport.sent).toEqual([]);
@@ -202,6 +204,30 @@ describe("Undo", () => {
     };
   }
 
+  it("a late duplicate of an undone send (same requestId) is refused, never queued again", async () => {
+    const draft = await readyDraft();
+    const id = requestId();
+    await queueSend(deps, { ...draft, requestId: id, origin: "owner" });
+    expect(cancelSend(deps, id).cancelled).toBe(true);
+    await expect(queueSend(deps, { ...draft, requestId: id, origin: "owner" })).rejects.toMatchObject({
+      kind: "undone",
+      message: "This send was undone",
+    });
+    expect(h.store.listOutbox(null)).toEqual([]);
+    // A new Send of the same draft is a new request id and goes through.
+    await queueSend(deps, { ...draft, requestId: requestId(), origin: "owner" });
+    expect(h.store.listOutbox(null)).toHaveLength(1);
+  });
+
+  it("forgets an undone request id after its time to live", () => {
+    const undone = new UndoneSends(h.clock);
+    undone.add("a");
+    h.advance(UNDONE_TTL_MS - 1);
+    expect(undone.has("a")).toBe(true);
+    h.advance(1);
+    expect(undone.has("a")).toBe(false);
+  });
+
   it("still works while the send waits behind another write of the account", async () => {
     const { id, draftId } = await queued();
     h.advance(UNDO_MS);
@@ -209,7 +235,7 @@ describe("Undo", () => {
     const running = runOutboxOnce(h.deps, signal);
     await Promise.resolve();
     expect(h.store.getOutbox(id)!.state).toBe("queued");
-    expect(cancelSend(h.deps, id)).toEqual({ cancelled: true, draftId });
+    expect(cancelSend(deps, id)).toEqual({ cancelled: true, draftId });
     release();
     await running;
     await drain();
@@ -238,7 +264,7 @@ describe("Undo", () => {
     const gate = h.transport.gateSend();
     const running = runOutboxOnce(h.deps, signal);
     await gate.entered;
-    expect(cancelSend(h.deps, id)).toEqual({ cancelled: false, draftId: expect.any(String) });
+    expect(cancelSend(deps, id)).toEqual({ cancelled: false, draftId: expect.any(String) });
     gate.release();
     await running;
     await drain();
@@ -403,7 +429,7 @@ describe("failure matrix", () => {
     h.advance(UNDO_MS);
     await drain();
     const before = h.store.getDraft(draftId);
-    expect(cancelSend(h.deps, id)).toEqual({ cancelled: true, draftId });
+    expect(cancelSend(deps, id)).toEqual({ cancelled: true, draftId });
     expect(h.store.getOutbox(id)).toBeNull();
     expect(h.store.getDraft(draftId)).toEqual(before);
     expect(states().at(-1)).toBe("cancelled");
