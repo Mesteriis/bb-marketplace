@@ -54,8 +54,21 @@ import type {
   ThreadSummary,
 } from "../../core/model.ts";
 import type { ComposeDoc } from "../../core/compose-doc.ts";
+import type { SignatureDoc } from "../../core/compose-signature.ts";
+import { ComposeError } from "../../core/compose.ts";
+import { normalizeMessageId } from "../../core/headers.ts";
+import {
+  IDENTITIES_MAX_PER_ACCOUNT,
+  ownerAddressSets,
+  resolveSendCheck,
+  type AliasRow,
+  type InboundRow,
+  type SendCheck,
+} from "../../core/identities.ts";
+import { TEMPLATES_MAX } from "../../core/templates.ts";
+import type { UndoRow } from "../../core/undo.ts";
 import { cleanSnippet, needsSnippetRepair, snippetOf } from "../../core/snippet.ts";
-import type { MailStore, ProposalRecord, TranslationRecord } from "../../core/ports.ts";
+import type { MailStore, ProposalRecord, TemplateRecord, TranslationRecord } from "../../core/ports.ts";
 import type { ProposalCapRow, ProposalState } from "../../core/agent-propose.ts";
 import { TRANSLATION_CACHE_ROWS } from "../../core/translate.ts";
 import {
@@ -371,9 +384,53 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE messages ADD COLUMN bulk INTEGER;
   `,
+  // 7: slice 3d — signatures, aliases (identities), the draft's From,
+  // Delivered-To of synced mail, templates and the addresses sent to. No
+  // REFERENCES: deletes are explicit (deleteAccount).
+  `
+  ALTER TABLE accounts ADD COLUMN signature_json TEXT;
+
+  CREATE TABLE identities (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    address TEXT NOT NULL,
+    display_name TEXT,
+    signature_json TEXT,
+    state TEXT NOT NULL,
+    send_check TEXT NOT NULL DEFAULT 'unknown',
+    check_message_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX identities_account_address ON identities(account_id, address);
+
+  ALTER TABLE compose_drafts ADD COLUMN from_address TEXT;
+
+  ALTER TABLE messages ADD COLUMN delivered_to_json TEXT;
+
+  ALTER TABLE agent_proposals ADD COLUMN template_name TEXT;
+
+  CREATE TABLE templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL UNIQUE,
+    doc_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE sent_recipients (
+    account_id TEXT NOT NULL,
+    address TEXT NOT NULL,
+    last_sent_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, address)
+  );
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
+/** Delivered-To / X-Original-To addresses kept per message (slice 3d). */
+const DELIVERED_TO_MAX = 10;
 /** Rows per transaction when stale snippets are repaired on load. */
 const SNIPPET_REPAIR_BATCH = 500;
 /** Trigram FTS needs at least three characters; shorter text uses LIKE. */
@@ -397,6 +454,7 @@ type AccountRow = {
   smtp_security: SmtpSecurity | null;
   smtp_username: string | null;
   sent_copy: SentCopyPolicy | null;
+  signature_json: string | null;
 };
 
 type MessageRow = {
@@ -439,6 +497,29 @@ type DraftRow = {
   server_size: number | null;
   origin: DraftOrigin;
   proposal_id: string | null;
+  from_address: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type IdentityRow = {
+  id: string;
+  account_id: string;
+  address: string;
+  display_name: string | null;
+  signature_json: string | null;
+  state: AliasRow["state"];
+  send_check: SendCheck;
+  check_message_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type TemplateRow = {
+  id: string;
+  name: string;
+  name_key: string;
+  doc_json: string;
   created_at: string;
   updated_at: string;
 };
@@ -457,6 +538,7 @@ type ProposalRow = {
   viewed_at: string | null;
   state: ProposalState;
   outbox_id: string | null;
+  template_name: string | null;
   expires_at: string;
   created_at: string;
   updated_at: string;
@@ -656,8 +738,7 @@ function toAccount(row: AccountRow): StoredAccount {
           }
         : null,
     sentCopy: row.sent_copy ?? "append",
-    // Stored from migration element 7 (slice 3d task 8).
-    signature: null,
+    signature: row.signature_json === null ? null : (JSON.parse(row.signature_json) as SignatureDoc),
   };
 }
 
@@ -693,8 +774,7 @@ function toDraft(row: DraftRow): DraftRecord {
         : null,
     origin: row.origin,
     proposalId: row.proposal_id,
-    // Stored from migration element 7 (slice 3d task 8).
-    fromAddress: null,
+    fromAddress: row.from_address,
     createdAt: row.created_at,
     revision: row.revision,
     serverState: row.server_state,
@@ -702,9 +782,41 @@ function toDraft(row: DraftRow): DraftRecord {
   };
 }
 
-/** A slice-3d store write before its migration element exists. */
-function notYet(): never {
-  throw new Error("Not available yet");
+function toAlias(row: IdentityRow): AliasRow {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    address: row.address,
+    displayName: row.display_name,
+    signature: row.signature_json === null ? null : (JSON.parse(row.signature_json) as SignatureDoc),
+    state: row.state,
+    sendCheck: row.send_check,
+    checkMessageId: row.check_message_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toTemplate(row: TemplateRow): TemplateRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    nameKey: row.name_key,
+    doc: JSON.parse(row.doc_json) as ComposeDoc,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function newIdentityId(): string {
+  return `ident_${randomBytes(8).toString("hex")}`;
+}
+
+/** Delivered-To / X-Original-To as stored: lower case, distinct, at most 10; null when the fetch read no headers. */
+function deliveredToJson(addresses: string[] | undefined): string | null {
+  if (addresses === undefined) return null;
+  const out = [...new Set(addresses.map((a) => a.trim().toLowerCase()).filter((a) => a !== ""))].slice(0, DELIVERED_TO_MAX);
+  return JSON.stringify(out);
 }
 
 function toProposal(row: ProposalRow): ProposalRecord {
@@ -718,8 +830,7 @@ function toProposal(row: ProposalRow): ProposalRecord {
     added: JSON.parse(row.added_json) as string[],
     contentSha256: row.content_sha256,
     leftOut: row.left_out,
-    // Stored from migration element 7 (slice 3d task 8).
-    templateName: null,
+    templateName: row.template_name,
     expiresAt: row.expires_at,
     createdAt: row.created_at,
     state: row.state,
@@ -839,20 +950,14 @@ export function createSqliteStore(db: Database.Database): MailStore {
   });
   /**
    * The owner's accounts as a contact lookup needs them, in listAccounts
-   * order: the email, then the username when it holds `@` (the active
-   * aliases join with migration element 7, slice 3d task 8).
+   * order: the email, the username when it holds `@`, and the active
+   * aliases (spec resolution 11).
    */
-  const ownerAccounts = () =>
-    db
-      .prepare<[], { id: string; email: string; username: string }>("SELECT id, email, username FROM accounts ORDER BY created_at, id")
-      .all()
-      .map((row) => ({
-        id: row.id,
-        addresses: [
-          ...new Set([row.email, ...(row.username.includes("@") ? [row.username] : [])].map((a) => a.trim().toLowerCase())),
-        ],
-      }));
+  const ownerAccounts = () => ownerAddressSets(store.listAccounts(), store.listIdentities(null));
   const accountById = db.prepare<[string], AccountRow>("SELECT * FROM accounts WHERE id = ?");
+  const activeAlias = db.prepare<[string, string], IdentityRow>(
+    "SELECT * FROM identities WHERE account_id = ? AND address = ? AND state = 'active'",
+  );
 
   const findAttached = db.prepare<[string, string, number], { id: string }>(
     "SELECT id FROM messages WHERE account_id = ? AND folder = ? AND uid = ?",
@@ -871,11 +976,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
     `INSERT INTO messages (id, account_id, folder, uid, message_id, in_reply_to, refs, thread_id,
        from_name, from_address, to_json, cc_json, subject, date, snippet, body_text, body_html,
        html_truncated, is_read, is_flagged, has_attachments, size, gm_thrid, gm_msgid, dedup_key,
-       reply_to_json, bulk)
+       reply_to_json, bulk, delivered_to_json)
      VALUES (@id, @accountId, @folder, @uid, @messageId, @inReplyTo, @refs, @threadId,
        @fromName, @fromAddress, @toJson, @ccJson, @subject, @date, @snippet, @bodyText, @bodyHtml,
        @htmlTruncated, @seen, @flagged, @hasAttachments, @size, @gmThreadId, @gmMsgId, @dedupKey,
-       @replyToJson, @bulk)`,
+       @replyToJson, @bulk, @deliveredTo)`,
   );
   const updateMessage = db.prepare(
     `UPDATE messages SET uid = @uid, message_id = @messageId, in_reply_to = @inReplyTo,
@@ -884,6 +989,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
        body_text = @bodyText, body_html = @bodyHtml, html_truncated = @htmlTruncated,
        is_read = COALESCE(seen_desired, @seen), is_flagged = COALESCE(flag_desired, @flagged),
        has_attachments = @hasAttachments, size = @size, gm_thrid = @gmThreadId, bulk = @bulk,
+       delivered_to_json = COALESCE(@deliveredTo, delivered_to_json),
        gm_msgid = COALESCE(@gmMsgId, gm_msgid),
        dedup_key = CASE
          WHEN COALESCE(@gmMsgId, gm_msgid) IS NOT NULL THEN 'gm:' || COALESCE(@gmMsgId, gm_msgid)
@@ -1127,10 +1233,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
       db.prepare(
         `INSERT INTO accounts (id, email, display_name, host, port, username, password_sealed,
            preset, created_at, last_sync_at, last_error, auth_failed,
-           smtp_host, smtp_port, smtp_security, smtp_username, sent_copy)
+           smtp_host, smtp_port, smtp_security, smtp_username, sent_copy, signature_json)
          VALUES (@id, @email, @displayName, @host, @port, @username, @passwordSealed,
            @preset, @createdAt, @lastSyncAt, @lastError, @authFailed,
-           @smtpHost, @smtpPort, @smtpSecurity, @smtpUsername, @sentCopy)
+           @smtpHost, @smtpPort, @smtpSecurity, @smtpUsername, @sentCopy, @signature)
          ON CONFLICT(id) DO UPDATE SET email = excluded.email,
            display_name = excluded.display_name, host = excluded.host, port = excluded.port,
            username = excluded.username, password_sealed = excluded.password_sealed,
@@ -1138,7 +1244,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
            last_sync_at = excluded.last_sync_at, last_error = excluded.last_error,
            auth_failed = excluded.auth_failed, smtp_host = excluded.smtp_host,
            smtp_port = excluded.smtp_port, smtp_security = excluded.smtp_security,
-           smtp_username = excluded.smtp_username, sent_copy = excluded.sent_copy`,
+           smtp_username = excluded.smtp_username, sent_copy = excluded.sent_copy,
+           signature_json = excluded.signature_json`,
       ).run({
         id: account.id,
         email: account.email,
@@ -1157,6 +1264,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         smtpSecurity: account.smtp?.security ?? null,
         smtpUsername: account.smtp?.username ?? null,
         sentCopy: account.sentCopy,
+        signature: account.signature === null ? null : JSON.stringify(account.signature),
       });
     },
 
@@ -1189,6 +1297,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
         db.prepare("DELETE FROM compose_drafts WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM outbox WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM agent_proposals WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM identities WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM sent_recipients WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
       });
     },
@@ -1270,6 +1380,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
             gmMsgId: message.gmMsgId,
             // NULL: not known (the fetch read no headers).
             bulk: message.bulkHeaders === undefined ? null : classifyBulk(message.bulkHeaders, message.from.address) ? 1 : 0,
+            // NULL: not known; an update leaves a known value alone.
+            deliveredTo: deliveredToJson(message.deliveredTo),
           };
           // A detached row (folder reset, or a move without a uid map) is
           // reattached by Gmail id first, then by Message-ID.
@@ -2111,10 +2223,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
         `INSERT INTO compose_drafts (id, account_id, kind, source_message_id, message_id, in_reply_to,
            refs_json, to_json, cc_json, bcc_json, subject, doc_json, import_json, revision, server_state,
            server_folder, server_uidvalidity, server_uid, server_revision, server_size, origin,
-           proposal_id, created_at, updated_at)
+           proposal_id, from_address, created_at, updated_at)
          VALUES (@id, @accountId, @kind, @sourceMessageId, @messageId, @inReplyTo, @refs, @to, @cc, @bcc,
            @subject, @doc, @importHtml, 1, @serverState, @folder, @uidValidity, @uid, @serverRevision,
-           @size, @origin, @proposalId, @createdAt, @createdAt)`,
+           @size, @origin, @proposalId, @fromAddress, @createdAt, @createdAt)`,
       ).run({
         id: input.id,
         accountId: input.accountId,
@@ -2137,6 +2249,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         size: copy?.size ?? null,
         origin: input.origin,
         proposalId: input.proposalId,
+        fromAddress: input.fromAddress,
         createdAt: input.createdAt,
       });
       return toDraft(draftById.get(input.id)!);
@@ -2155,7 +2268,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
           .prepare(
             `UPDATE compose_drafts SET account_id = @accountId, to_json = @to, cc_json = @cc,
                bcc_json = @bcc, subject = @subject, doc_json = @doc, import_json = NULL,
-               revision = revision + 1, updated_at = @updatedAt
+               from_address = @fromAddress, revision = revision + 1, updated_at = @updatedAt
              WHERE id = @id AND revision = @baseRevision
                AND NOT EXISTS (SELECT 1 FROM outbox WHERE draft_id = @id)`,
           )
@@ -2168,6 +2281,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
             bcc: JSON.stringify(fields.bcc),
             subject: fields.subject,
             doc: JSON.stringify(fields.doc),
+            fromAddress: fields.fromAddress,
             updatedAt,
           }).changes;
         const revision = draftById.get(id)!.revision;
@@ -2376,14 +2490,32 @@ export function createSqliteStore(db: Database.Database): MailStore {
         sets.push("updated_at = @updatedAt");
         params.updatedAt = isoOf(patch.updatedAt);
       }
-      return (
-        db
-          .prepare(
-            `UPDATE outbox SET ${sets.join(", ")}
-             WHERE id = @id AND state IN (SELECT value FROM json_each(@from))`,
-          )
-          .run(params).changes === 1
-      );
+      return atomic(() => {
+        const changed =
+          db
+            .prepare(
+              `UPDATE outbox SET ${sets.join(", ")}
+               WHERE id = @id AND state IN (SELECT value FROM json_each(@from))`,
+            )
+            .run(params).changes === 1;
+        if (changed && to === "sent") {
+          // sent_recipients: every accepted envelope recipient, in the same transaction (slice 3d).
+          const row = db
+            .prepare<[string], { account_id: string; envelope_to_json: string; rejected_json: string; updated_at: string }>(
+              "SELECT account_id, envelope_to_json, rejected_json, updated_at FROM outbox WHERE id = ?",
+            )
+            .get(id)!;
+          const refused = new Set((JSON.parse(row.rejected_json) as string[]).map((a) => a.trim().toLowerCase()));
+          const insert = db.prepare(
+            `INSERT INTO sent_recipients (account_id, address, last_sent_at) VALUES (?, ?, ?)
+             ON CONFLICT(account_id, address) DO UPDATE SET last_sent_at = excluded.last_sent_at`,
+          );
+          for (const address of new Set((JSON.parse(row.envelope_to_json) as string[]).map((a) => a.trim().toLowerCase()))) {
+            if (address !== "" && !refused.has(address)) insert.run(row.account_id, address, row.updated_at);
+          }
+        }
+        return changed;
+      });
     },
 
     deleteOutbox(id, from) {
@@ -2542,9 +2674,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
         db.prepare(
           `INSERT INTO agent_proposals (id, thread_id, draft_id, account_id, kind, source_message_id,
              added_json, content_sha256, left_out, view_token_sha256, viewed_at, state, outbox_id,
-             expires_at, created_at, updated_at)
+             template_name, expires_at, created_at, updated_at)
            VALUES (@id, @threadId, @draftId, @accountId, @kind, @sourceMessageId, @added, @contentSha256,
-             @leftOut, NULL, NULL, 'pending', NULL, @expiresAt, @createdAt, @createdAt)`,
+             @leftOut, NULL, NULL, 'pending', NULL, @templateName, @expiresAt, @createdAt, @createdAt)`,
         ).run({
           id: input.id,
           threadId: input.threadId,
@@ -2555,6 +2687,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
           added: JSON.stringify(input.added),
           contentSha256: input.contentSha256,
           leftOut: input.leftOut,
+          templateName: input.templateName,
           expiresAt: input.expiresAt,
           createdAt: input.createdAt,
         });
@@ -2731,6 +2864,12 @@ export function createSqliteStore(db: Database.Database): MailStore {
           if (wanted.has(key)) found.add(key);
         }
       }
+      const recorded = db
+        .prepare<[string], { address: string }>(
+          "SELECT DISTINCT address FROM sent_recipients WHERE address IN (SELECT value FROM json_each(?))",
+        )
+        .all(JSON.stringify([...wanted]));
+      for (const row of recorded) found.add(row.address);
       return found;
     },
 
@@ -2766,26 +2905,263 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return db.prepare("DELETE FROM translations").run().changes;
     },
 
-    // ---- Sending polish (slice 3d): the tables come with migration
-    // element 7 (task 8). Until then reads answer empty and writes throw. ----
+    // ---- Sending polish (slice 3d) ----
 
-    listIdentities: () => [],
-    upsertIdentity: () => notYet(),
-    updateIdentity: () => notYet(),
-    setAccountSignature: () => notYet(),
-    removeIdentity: () => notYet(),
-    dismissIdentity: () => notYet(),
-    setSendCheck: () => notYet(),
-    resolveSendChecks: () => 0,
-    inboundAddressRows: () => [],
-    conversationAddresses: () => null,
-    deliveredToOf: () => [],
-    undoRows: () => [],
-    cancelMove: () => notYet(),
-    listTemplates: () => [],
-    saveTemplate: () => notYet(),
-    deleteTemplate: () => notYet(),
-    getTemplateByKey: () => null,
+    listIdentities(accountId) {
+      return db
+        .prepare<[string | null, string | null], IdentityRow>(
+          "SELECT * FROM identities WHERE ? IS NULL OR account_id = ? ORDER BY created_at, rowid",
+        )
+        .all(accountId, accountId)
+        .map(toAlias);
+    },
+
+    upsertIdentity(input, nowIso) {
+      return atomic(() => {
+        const address = input.address.trim().toLowerCase();
+        if (!accountById.get(input.accountId)) throw new ComposeError("not_found");
+        const ownTaken = db
+          .prepare<[string, string], { id: string }>(
+            "SELECT id FROM accounts WHERE mail_lower(trim(email)) = ? OR mail_lower(trim(username)) = ? LIMIT 1",
+          )
+          .get(address, address);
+        if (ownTaken) throw new ComposeError("conflict");
+        const aliasTaken = db
+          .prepare<[string, string], { id: string }>(
+            "SELECT id FROM identities WHERE address = ? AND account_id <> ? AND state = 'active' LIMIT 1",
+          )
+          .get(address, input.accountId);
+        if (aliasTaken) throw new ComposeError("conflict");
+        const existing = db
+          .prepare<[string, string], IdentityRow>("SELECT * FROM identities WHERE account_id = ? AND address = ?")
+          .get(input.accountId, address);
+        if (existing?.state !== "active") {
+          const active = db
+            .prepare<[string], { n: number }>("SELECT count(*) AS n FROM identities WHERE account_id = ? AND state = 'active'")
+            .get(input.accountId)!.n;
+          if (active >= IDENTITIES_MAX_PER_ACCOUNT) throw new ComposeError("conflict");
+        }
+        if (existing) {
+          db.prepare("UPDATE identities SET state = 'active', display_name = ?, updated_at = ? WHERE id = ?").run(
+            input.displayName,
+            nowIso,
+            existing.id,
+          );
+          return toAlias(db.prepare<[string], IdentityRow>("SELECT * FROM identities WHERE id = ?").get(existing.id)!);
+        }
+        const id = newIdentityId();
+        db.prepare(
+          `INSERT INTO identities (id, account_id, address, display_name, signature_json, state, send_check,
+             check_message_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, NULL, 'active', 'unknown', NULL, ?, ?)`,
+        ).run(id, input.accountId, address, input.displayName, nowIso, nowIso);
+        return toAlias(db.prepare<[string], IdentityRow>("SELECT * FROM identities WHERE id = ?").get(id)!);
+      });
+    },
+
+    updateIdentity(accountId, address, patch, nowIso) {
+      return atomic(() => {
+        const row = activeAlias.get(accountId, address.trim().toLowerCase());
+        if (!row) return null;
+        const displayName = patch.displayName !== undefined ? patch.displayName : row.display_name;
+        const signature =
+          patch.signature !== undefined ? (patch.signature === null ? null : JSON.stringify(patch.signature)) : row.signature_json;
+        db.prepare("UPDATE identities SET display_name = ?, signature_json = ?, updated_at = ? WHERE id = ?").run(
+          displayName,
+          signature,
+          nowIso,
+          row.id,
+        );
+        return toAlias(db.prepare<[string], IdentityRow>("SELECT * FROM identities WHERE id = ?").get(row.id)!);
+      });
+    },
+
+    setAccountSignature(accountId, signature) {
+      return (
+        db
+          .prepare("UPDATE accounts SET signature_json = ? WHERE id = ?")
+          .run(signature === null ? null : JSON.stringify(signature), accountId).changes === 1
+      );
+    },
+
+    removeIdentity(accountId, address) {
+      return (
+        db
+          .prepare("DELETE FROM identities WHERE account_id = ? AND address = ? AND state = 'active'")
+          .run(accountId, address.trim().toLowerCase()).changes === 1
+      );
+    },
+
+    dismissIdentity(accountId, address, nowIso) {
+      db.prepare(
+        `INSERT INTO identities (id, account_id, address, display_name, signature_json, state, send_check,
+           check_message_id, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, NULL, 'dismissed', 'unknown', NULL, ?, ?)
+         ON CONFLICT(account_id, address) DO NOTHING`,
+      ).run(newIdentityId(), accountId, address.trim().toLowerCase(), nowIso, nowIso);
+    },
+
+    setSendCheck(accountId, address, check, checkMessageId, nowIso) {
+      db.prepare(
+        `UPDATE identities SET send_check = ?, check_message_id = ?, updated_at = ?
+         WHERE account_id = ? AND address = ? AND state = 'active'`,
+      ).run(check, checkMessageId, nowIso, accountId, address.trim().toLowerCase());
+    },
+
+    resolveSendChecks(accountId, nowIso) {
+      return atomic(() => {
+        const pending = db
+          .prepare<[string], { id: string; address: string; check_message_id: string }>(
+            `SELECT id, address, check_message_id FROM identities
+             WHERE account_id = ? AND state = 'active' AND send_check = 'pending' AND check_message_id IS NOT NULL`,
+          )
+          .all(accountId);
+        if (pending.length === 0) return 0;
+        const findSent = db.prepare<[string, string, string], { from_address: string }>(
+          `SELECT m.from_address FROM ${MESSAGES_WITH_FOLDER}
+           WHERE m.account_id = ? AND ${ROW_ROLE} = 'sent' AND m.message_id IN (?, ?)
+           ORDER BY m.seq LIMIT 1`,
+        );
+        const update = db.prepare("UPDATE identities SET send_check = ?, updated_at = ? WHERE id = ?");
+        let changed = 0;
+        for (const alias of pending) {
+          const bare = normalizeMessageId(alias.check_message_id);
+          const sent = findSent.get(accountId, bare, `<${bare}>`);
+          const resolved = resolveSendCheck(alias.address, sent?.from_address ?? null);
+          if (resolved === null) continue;
+          update.run(resolved, nowIso, alias.id);
+          changed++;
+        }
+        return changed;
+      });
+    },
+
+    inboundAddressRows(accountId) {
+      return db
+        .prepare<[string], { to_json: string; cc_json: string; delivered_to_json: string | null; date: string | null }>(
+          `SELECT m.to_json, m.cc_json, m.delivered_to_json, m.date FROM ${MESSAGES_WITH_FOLDER}
+           WHERE m.account_id = ? AND m.bulk IS NOT 1
+             AND COALESCE(${ROW_ROLE}, '') NOT IN ('sent', 'drafts', 'junk', 'trash')
+           ORDER BY m.seq`,
+        )
+        .all(accountId)
+        .map(
+          (row): InboundRow => ({
+            to: (JSON.parse(row.to_json) as MailAddress[]).map((a) => a.address),
+            cc: (JSON.parse(row.cc_json) as MailAddress[]).map((a) => a.address),
+            deliveredTo: row.delivered_to_json === null ? null : (JSON.parse(row.delivered_to_json) as string[]),
+            date: row.date ?? "",
+          }),
+        );
+    },
+
+    conversationAddresses(messageId) {
+      const source = db
+        .prepare<[string], { account_id: string; thread_id: string }>("SELECT account_id, thread_id FROM messages WHERE id = ?")
+        .get(messageId);
+      if (!source) return null;
+      const out = new Set<string>();
+      const rows = db
+        .prepare<[string, string], { from_address: string; to_json: string; cc_json: string; reply_to_json: string | null }>(
+          "SELECT from_address, to_json, cc_json, reply_to_json FROM messages WHERE account_id = ? AND thread_id = ?",
+        )
+        .all(source.account_id, source.thread_id);
+      for (const row of rows) {
+        const addresses = [
+          row.from_address,
+          ...[row.to_json, row.cc_json, row.reply_to_json ?? "[]"].flatMap((json) => (JSON.parse(json) as MailAddress[]).map((a) => a.address)),
+        ];
+        for (const address of addresses) out.add(address.trim().toLowerCase());
+      }
+      return out;
+    },
+
+    deliveredToOf(messageId) {
+      const row = db
+        .prepare<[string], { delivered_to_json: string | null }>("SELECT delivered_to_json FROM messages WHERE id = ?")
+        .get(messageId);
+      return row?.delivered_to_json ? (JSON.parse(row.delivered_to_json) as string[]) : [];
+    },
+
+    undoRows(ids) {
+      const wanted = [...new Set(ids)];
+      if (wanted.length === 0) return [];
+      return db
+        .prepare<
+          [string],
+          { id: string; account_id: string; folder: string; uid: number | null; move_pending: string | null; is_read: number; is_flagged: number }
+        >(
+          `SELECT id, account_id, folder, uid, move_pending, is_read, is_flagged FROM messages
+           WHERE id IN (SELECT value FROM json_each(?)) ORDER BY seq`,
+        )
+        .all(JSON.stringify(wanted))
+        .map(
+          (row): UndoRow => ({
+            id: row.id,
+            accountId: row.account_id,
+            folder: row.folder,
+            uid: row.uid,
+            movePending: row.move_pending,
+            isRead: row.is_read === 1,
+            isFlagged: row.is_flagged === 1,
+          }),
+        );
+    },
+
+    cancelMove(ids, folder, destination) {
+      return atomic(() => {
+        const cleared: string[] = [];
+        const clear = db.prepare(
+          "UPDATE messages SET move_pending = NULL, move_failures = 0 WHERE id = ? AND folder = ? AND move_pending = ?",
+        );
+        for (const id of new Set(ids)) {
+          if (clear.run(id, folder, destination).changes === 1) cleared.push(id);
+        }
+        return cleared;
+      });
+    },
+
+    listTemplates() {
+      return db.prepare<[], TemplateRow>("SELECT * FROM templates ORDER BY name_key, id").all().map(toTemplate);
+    },
+
+    saveTemplate(input, newId, nowIso) {
+      return atomic(() => {
+        const clash = db
+          .prepare<[string, string | null], { id: string }>("SELECT id FROM templates WHERE name_key = ? AND id IS NOT ? LIMIT 1")
+          .get(input.nameKey, input.id);
+        if (clash) return { conflict: true as const };
+        const existing =
+          input.id === null ? undefined : db.prepare<[string], TemplateRow>("SELECT * FROM templates WHERE id = ?").get(input.id);
+        const doc = JSON.stringify(input.doc);
+        if (existing) {
+          db.prepare("UPDATE templates SET name = ?, name_key = ?, doc_json = ?, updated_at = ? WHERE id = ?").run(
+            input.name,
+            input.nameKey,
+            doc,
+            nowIso,
+            existing.id,
+          );
+          return { id: existing.id };
+        }
+        const total = db.prepare<[], { n: number }>("SELECT count(*) AS n FROM templates").get()!.n;
+        if (total >= TEMPLATES_MAX) throw new ComposeError("conflict", "There are too many templates");
+        const id = input.id ?? newId;
+        db.prepare(
+          "INSERT INTO templates (id, name, name_key, doc_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ).run(id, input.name, input.nameKey, doc, nowIso, nowIso);
+        return { id };
+      });
+    },
+
+    deleteTemplate(id) {
+      return db.prepare("DELETE FROM templates WHERE id = ?").run(id).changes === 1;
+    },
+
+    getTemplateByKey(nameKey) {
+      const row = db.prepare<[string], TemplateRow>("SELECT * FROM templates WHERE name_key = ?").get(nameKey);
+      return row ? toTemplate(row) : null;
+    },
   };
   return store;
 }

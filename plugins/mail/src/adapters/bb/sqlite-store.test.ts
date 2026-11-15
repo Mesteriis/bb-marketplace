@@ -2836,3 +2836,343 @@ describe("bulk backfill (SQLite)", () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Slice 3d: identities, send checks, templates, undo rows, sent_recipients
+// ---------------------------------------------------------------------------
+
+const SIG = { type: "doc" as const, content: [{ type: "paragraph" as const, content: [{ type: "text" as const, text: "Invented Name" }] }] };
+const TEMPLATE_DOC = { type: "doc" as const, content: [{ type: "paragraph" as const, content: [{ type: "text" as const, text: "Invented template" }] }] };
+
+describe("slice-3d migration (SQLite)", () => {
+  it("element 7 on a 3c database: existing rows get NULLs and drafts send from the own address; new tables carry no REFERENCES", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 7).forEach((s) => old.exec(s)))();
+    old.prepare(
+      `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+       VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner@example.org', 'sealed', 'other', ?)`,
+    ).run(EPOCH);
+    old.prepare(
+      `INSERT INTO compose_drafts (id, account_id, kind, message_id, refs_json, to_json, cc_json, bcc_json,
+         subject, doc_json, revision, created_at, updated_at)
+       VALUES ('d_old', 'acc_1', 'new', '<old@example.org>', '[]', '[]', '[]', '[]', 'Invented', '{"type":"doc","content":[]}', 2, ?, ?)`,
+    ).run(T0, T0);
+
+    old.transaction(() => MIGRATIONS.slice(7).forEach((s) => old.exec(s)))();
+
+    const migrated = createSqliteStore(old);
+    expect(migrated.getAccount("acc_1")!.signature).toBeNull();
+    expect(migrated.getDraft("d_old")).toMatchObject({ fromAddress: null, revision: 2 });
+    expect(migrated.listIdentities(null)).toEqual([]);
+    expect(migrated.listTemplates()).toEqual([]);
+    const objects = old
+      .prepare("SELECT name, sql FROM sqlite_master WHERE name IN ('identities', 'templates', 'sent_recipients', 'identities_account_address')")
+      .all() as { name: string; sql: string }[];
+    expect(objects.map((o) => o.name).sort()).toEqual(["identities", "identities_account_address", "sent_recipients", "templates"]);
+    for (const object of objects) expect(object.sql).not.toMatch(/REFERENCES/i);
+  });
+
+  it("delivered_to_json is written from upsert, lower case and at most 10, and left alone when absent", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { deliveredTo: ["Alias@Example.org", ...Array.from({ length: 12 }, (_, i) => `x${i}@example.org`)] }),
+    ]);
+    const id = idOf(store, 1);
+    expect(store.deliveredToOf(id)).toEqual(["alias@example.org", ...Array.from({ length: 9 }, (_, i) => `x${i}@example.org`)]);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { subject: "Again" })]);
+    expect(store.deliveredToOf(id)[0]).toBe("alias@example.org");
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(2)]);
+    expect(store.deliveredToOf(idOf(store, 2))).toEqual([]);
+    expect(db.prepare("SELECT delivered_to_json AS d FROM messages WHERE uid = 2").get()).toEqual({ d: null });
+  });
+
+  it("sent_recipients is written with the sent transition and rolled back with it", () => {
+    store.createDraft(newDraft());
+    store.queueOutbox(newOutbox(), 1);
+    store.transitionOutbox("out_1", ["queued"], "sending");
+    db.exec(`CREATE TRIGGER fail_recipients BEFORE INSERT ON sent_recipients BEGIN SELECT RAISE(ABORT, 'forced'); END`);
+    expect(() => store.transitionOutbox("out_1", ["sending"], "sent", { updatedAt: later(1) })).toThrow(/forced/);
+    expect(store.getOutbox("out_1")!.state).toBe("sending");
+    db.exec("DROP TRIGGER fail_recipients");
+    expect(store.transitionOutbox("out_1", ["sending"], "sent", { rejected: ["hidden@example.net"], updatedAt: later(1) })).toBe(true);
+    expect(db.prepare("SELECT account_id, address, last_sent_at FROM sent_recipients").all()).toEqual([
+      { account_id: "acc_1", address: "bob@example.com", last_sent_at: later(1) },
+    ]);
+  });
+
+  it("deleteAccount removes identities and sent_recipients; templates stay", () => {
+    store.upsertIdentity({ accountId: "acc_1", address: "alias@example.org", displayName: null }, T0);
+    store.dismissIdentity("acc_1", "other@example.org", T0);
+    store.createDraft(newDraft());
+    store.queueOutbox(newOutbox(), 1);
+    store.transitionOutbox("out_1", ["queued"], "sent");
+    store.saveTemplate({ id: null, name: "Thanks", nameKey: "thanks", doc: TEMPLATE_DOC }, "tpl_1", T0);
+    expect(count(db, "sent_recipients")).toBe(2);
+    store.deleteAccount("acc_1");
+    expect(count(db, "identities")).toBe(0);
+    expect(count(db, "sent_recipients")).toBe(0);
+    expect(count(db, "templates")).toBe(1);
+  });
+});
+
+describe.each(storeKinds)("slice-3d store semantics (%s)", (_kind, make) => {
+  let s: MailStore;
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.com", username: "second-login", createdAt: "2026-02-01T00:00:00.000Z" }));
+  });
+
+  describe("accounts and drafts", () => {
+    it("saveAccount keeps the signature; setAccountSignature sets and clears it", () => {
+      s.saveAccount(makeStoredAccount({ signature: SIG }));
+      expect(s.getAccount("acc_1")!.signature).toEqual(SIG);
+      expect(s.setAccountSignature("acc_1", null)).toBe(true);
+      expect(s.getAccount("acc_1")!.signature).toBeNull();
+      expect(s.setAccountSignature("acc_1", SIG)).toBe(true);
+      expect(s.listAccounts()[0]!.signature).toEqual(SIG);
+      expect(s.setAccountSignature("nope", SIG)).toBe(false);
+    });
+
+    it("from_address round-trips through createDraft and saveDraft", () => {
+      expect(s.createDraft(newDraft({ fromAddress: "alias@example.org" })).fromAddress).toBe("alias@example.org");
+      expect(s.getDraft("d_1")!.fromAddress).toBe("alias@example.org");
+      s.saveDraft("d_1", 1, { ...FIELDS, fromAddress: null }, later(1));
+      expect(s.getDraft("d_1")!.fromAddress).toBeNull();
+      s.saveDraft("d_1", 2, { ...FIELDS, fromAddress: "other@example.org" }, later(2));
+      expect(s.getDraft("d_1")!.fromAddress).toBe("other@example.org");
+    });
+
+    it("createProposal records templateName", () => {
+      s.createDraft(newDraft({ origin: "agent", proposalId: "p_1" }));
+      expect(s.createProposal(newProposal({ templateName: "Thanks" })).templateName).toBe("Thanks");
+      expect(s.getProposal("p_1")!.templateName).toBe("Thanks");
+    });
+  });
+
+  describe("identities", () => {
+    it("upsert adds, updates the name, and turns a dismissed row active", () => {
+      const added = s.upsertIdentity({ accountId: "acc_1", address: " Alias@Example.org ", displayName: "Alias" }, T0);
+      expect(added).toMatchObject({
+        accountId: "acc_1",
+        address: "alias@example.org",
+        displayName: "Alias",
+        signature: null,
+        state: "active",
+        sendCheck: "unknown",
+        checkMessageId: null,
+        createdAt: T0,
+        updatedAt: T0,
+      });
+      const renamed = s.upsertIdentity({ accountId: "acc_1", address: "alias@example.org", displayName: null }, later(1));
+      expect(renamed).toMatchObject({ id: added.id, displayName: null, updatedAt: later(1), createdAt: T0 });
+      s.dismissIdentity("acc_1", "maybe@example.org", T0);
+      expect(s.listIdentities("acc_1").map((r) => [r.address, r.state])).toEqual([
+        ["alias@example.org", "active"],
+        ["maybe@example.org", "dismissed"],
+      ]);
+      s.dismissIdentity("acc_1", "alias@example.org", later(2));
+      expect(s.listIdentities("acc_1")[0]!.state).toBe("active");
+      expect(s.upsertIdentity({ accountId: "acc_1", address: "maybe@example.org", displayName: null }, later(3)).state).toBe("active");
+      expect(s.listIdentities(null)).toHaveLength(2);
+      expect(s.listIdentities("acc_2")).toEqual([]);
+    });
+
+    it("upsert refuses another account's address, username or active alias, the own address, and an unknown account", () => {
+      s.upsertIdentity({ accountId: "acc_2", address: "taken@example.org", displayName: null }, T0);
+      for (const address of ["second@example.com", "second-login", "taken@example.org", "owner@example.org"]) {
+        expect(() => s.upsertIdentity({ accountId: "acc_1", address, displayName: null }, T0)).toThrow(
+          expect.objectContaining({ kind: "conflict" }),
+        );
+      }
+      expect(() => s.upsertIdentity({ accountId: "nope", address: "x@example.org", displayName: null }, T0)).toThrow(
+        expect.objectContaining({ kind: "not_found" }),
+      );
+      expect(s.listIdentities("acc_1")).toEqual([]);
+    });
+
+    it("upsert caps active aliases at 50 per account", () => {
+      for (let i = 0; i < 50; i++) s.upsertIdentity({ accountId: "acc_1", address: `a${i}@example.org`, displayName: null }, T0);
+      expect(() => s.upsertIdentity({ accountId: "acc_1", address: "one-more@example.org", displayName: null }, T0)).toThrow(
+        expect.objectContaining({ kind: "conflict" }),
+      );
+      // Updating an existing active alias is not an addition.
+      expect(s.upsertIdentity({ accountId: "acc_1", address: "a3@example.org", displayName: "Three" }, T0).displayName).toBe("Three");
+    });
+
+    it("update, send check and remove act on active aliases only", () => {
+      s.upsertIdentity({ accountId: "acc_1", address: "alias@example.org", displayName: "Alias" }, T0);
+      s.dismissIdentity("acc_1", "gone@example.org", T0);
+      expect(s.updateIdentity("acc_1", "alias@example.org", { signature: SIG }, later(1))).toMatchObject({ displayName: "Alias", signature: SIG });
+      expect(s.updateIdentity("acc_1", "ALIAS@example.org", { displayName: null }, later(2))).toMatchObject({ displayName: null, signature: SIG });
+      expect(s.updateIdentity("acc_1", "gone@example.org", { displayName: "X" }, later(2))).toBeNull();
+      s.setSendCheck("acc_1", "alias@example.org", "pending", "<m1@example.org>", later(3));
+      expect(s.listIdentities("acc_1")[0]).toMatchObject({ sendCheck: "pending", checkMessageId: "<m1@example.org>" });
+      expect(s.removeIdentity("acc_1", "gone@example.org")).toBe(false);
+      expect(s.removeIdentity("acc_1", "alias@example.org")).toBe(true);
+      expect(s.removeIdentity("acc_1", "alias@example.org")).toBe(false);
+      expect(s.listIdentities("acc_1").map((r) => r.address)).toEqual(["gone@example.org"]);
+    });
+
+    it("resolveSendChecks: confirmed, rewritten and still pending from Sent-role rows", () => {
+      s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder(SENT, "sent")]);
+      for (const address of ["kept@example.org", "rewritten@example.org", "waiting@example.org"]) {
+        s.upsertIdentity({ accountId: "acc_1", address, displayName: null }, T0);
+      }
+      s.setSendCheck("acc_1", "kept@example.org", "pending", "<k1@example.org>", T0);
+      s.setSendCheck("acc_1", "rewritten@example.org", "pending", "<r1@example.org>", T0);
+      s.setSendCheck("acc_1", "waiting@example.org", "pending", "<w1@example.org>", T0);
+      s.upsertMessages("acc_1", SENT, [
+        makeFetchedMessage(1, { messageId: "<k1@example.org>", from: { name: null, address: "Kept@example.org" } }),
+        makeFetchedMessage(2, { messageId: "<r1@example.org>", from: { name: null, address: "owner@example.org" } }),
+      ]);
+      // A copy outside Sent does not count.
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(3, { messageId: "<w1@example.org>", from: { name: null, address: "waiting@example.org" } })]);
+      expect(s.resolveSendChecks("acc_1", later(1))).toBe(2);
+      expect(Object.fromEntries(s.listIdentities("acc_1").map((r) => [r.address, r.sendCheck]))).toEqual({
+        "kept@example.org": "confirmed",
+        "rewritten@example.org": "rewritten",
+        "waiting@example.org": "pending",
+      });
+      expect(s.resolveSendChecks("acc_1", later(2))).toBe(0);
+    });
+  });
+
+  describe("message reads", () => {
+    beforeEach(() => {
+      s.saveFolders("acc_1", [
+        remoteFolder(INBOX, "inbox"),
+        remoteFolder(SENT, "sent"),
+        remoteFolder("Drafts", "drafts"),
+        remoteFolder(SPAM, "junk"),
+        remoteFolder(TRASH, "trash"),
+        remoteFolder("Archive", "archive"),
+      ]);
+    });
+
+    it("inboundAddressRows leaves out Sent, Drafts, Spam, Trash and bulk rows", () => {
+      const to = (address: string) => ({ to: [{ name: null, address }] });
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { ...to("in@example.org"), deliveredTo: ["alias@example.org"], date: "2026-11-01T00:00:00.000Z" }),
+        makeFetchedMessage(2, { ...to("bulk@example.org"), bulkHeaders: LIST_HEADERS }),
+      ]);
+      s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(3, { ...to("arch@example.org"), cc: [{ name: null, address: "cc@example.org" }], date: "2026-11-02T00:00:00.000Z" })]);
+      s.upsertMessages("acc_1", SENT, [makeFetchedMessage(4, to("sent@example.org"))]);
+      s.upsertMessages("acc_1", "Drafts", [makeFetchedMessage(5, to("draft@example.org"))]);
+      s.upsertMessages("acc_1", SPAM, [makeFetchedMessage(6, to("spam@example.org"))]);
+      s.upsertMessages("acc_1", TRASH, [makeFetchedMessage(7, to("trash@example.org"))]);
+      const rows = s.inboundAddressRows("acc_1").sort((a, b) => (a.date < b.date ? -1 : 1));
+      expect(rows).toEqual([
+        { to: ["in@example.org"], cc: [], deliveredTo: ["alias@example.org"], date: "2026-11-01T00:00:00.000Z" },
+        { to: ["arch@example.org"], cc: ["cc@example.org"], deliveredTo: null, date: "2026-11-02T00:00:00.000Z" },
+      ]);
+      expect(s.inboundAddressRows("acc_2")).toEqual([]);
+    });
+
+    it("conversationAddresses collects From, To, Cc and Reply-To of the source's thread; null when gone", () => {
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, {
+          messageId: "<t1@example.org>",
+          from: { name: null, address: "Ann@example.com" },
+          cc: [{ name: null, address: "cc@example.com" }],
+          replyTo: [{ name: null, address: "reply@example.com" }],
+        }),
+        makeFetchedMessage(2, {
+          messageId: "<t2@example.org>",
+          inReplyTo: "<t1@example.org>",
+          references: ["<t1@example.org>"],
+          from: { name: null, address: "bob@example.com" },
+        }),
+        makeFetchedMessage(3, { messageId: "<other@example.org>", from: { name: null, address: "stranger@example.com" } }),
+      ]);
+      s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+      const first = idIn(s, INBOX, 1);
+      expect([...s.conversationAddresses(first)!].sort()).toEqual([
+        "ann@example.com",
+        "bob@example.com",
+        "cc@example.com",
+        "owner@example.org",
+        "reply@example.com",
+      ]);
+      expect(s.conversationAddresses("m_nope")).toBeNull();
+    });
+
+    it("undoRows reports where each id is now; cancelMove is a compare-and-swap", () => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { seen: true }), makeFetchedMessage(2, { flagged: true }), makeFetchedMessage(3)]);
+      const [a, b, c] = [1, 2, 3].map((uid) => idIn(s, INBOX, uid));
+      s.queueMove([a!, b!], "Archive");
+      expect(s.undoRows([a!, b!, c!, "m_nope"]).sort((x, y) => (x.id < y.id ? -1 : 1))).toEqual(
+        [
+          { id: a, accountId: "acc_1", folder: INBOX, uid: 1, movePending: "Archive", isRead: true, isFlagged: false },
+          { id: b, accountId: "acc_1", folder: INBOX, uid: 2, movePending: "Archive", isRead: false, isFlagged: true },
+          { id: c, accountId: "acc_1", folder: INBOX, uid: 3, movePending: null, isRead: false, isFlagged: false },
+        ].sort((x, y) => (x.id! < y.id! ? -1 : 1)),
+      );
+      // Wrong destination or wrong folder: nothing cleared.
+      expect(s.cancelMove([a!], INBOX, TRASH)).toEqual([]);
+      expect(s.cancelMove([a!], "Archive", "Archive")).toEqual([]);
+      expect(s.cancelMove([a!, c!], INBOX, "Archive")).toEqual([a]);
+      expect(s.pendingMoves("acc_1", INBOX).map((m) => m.id)).toEqual([b]);
+      // Once pushed (the row is in the destination) the swap is a no-op.
+      s.completeMove("acc_1", INBOX, "Archive", new Map([[2, 20]]), [2]);
+      expect(s.cancelMove([b!], INBOX, "Archive")).toEqual([]);
+      expect(s.undoRows([b!])[0]).toMatchObject({ folder: "Archive", uid: 20, movePending: null });
+    });
+  });
+
+  describe("sent recipients", () => {
+    it("addressesSentTo unions Sent-role rows and sent_recipients", () => {
+      s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder(SENT, "sent")]);
+      s.upsertMessages("acc_1", SENT, [makeFetchedMessage(1, { to: [{ name: null, address: "Synced@example.com" }] })]);
+      s.createDraft(newDraft());
+      s.queueOutbox(newOutbox({ envelopeTo: ["Bob@example.com", "refused@example.com"] }), 1);
+      s.transitionOutbox("out_1", ["queued"], "sending");
+      expect([...s.addressesSentTo(["bob@example.com", "synced@example.com"])]).toEqual(["synced@example.com"]);
+      s.transitionOutbox("out_1", ["sending"], "sent", { rejected: ["refused@example.com"], updatedAt: later(1) });
+      expect([...s.addressesSentTo(["BOB@example.com", "synced@example.com", "refused@example.com", "nobody@example.com"])].sort()).toEqual([
+        "bob@example.com",
+        "synced@example.com",
+      ]);
+    });
+
+    it("contacts and correspondence treat active aliases as the owner's own", () => {
+      s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox")]);
+      s.upsertIdentity({ accountId: "acc_1", address: "alias@example.org", displayName: null }, T0);
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { from: { name: "Invented Ann", address: "ann@example.com" }, to: [{ name: null, address: "alias@example.org" }], bulkHeaders: PERSONAL_HEADERS }),
+      ]);
+      expect(s.contacts("alias", 10)).toEqual([]);
+      expect(s.correspondence(["ann@example.com"]).map((c) => c.accountId)).toEqual(["acc_1"]);
+    });
+  });
+
+  describe("templates", () => {
+    it("save inserts, rename keeps the id, a duplicate key conflicts, an unknown id creates it", () => {
+      expect(s.saveTemplate({ id: null, name: "Thanks", nameKey: "thanks", doc: TEMPLATE_DOC }, "tpl_1", T0)).toEqual({ id: "tpl_1" });
+      expect(s.saveTemplate({ id: "tpl_1", name: "Thank you", nameKey: "thank you", doc: TEMPLATE_DOC }, "tpl_x", later(1))).toEqual({ id: "tpl_1" });
+      expect(s.getTemplateByKey("thank you")).toEqual({
+        id: "tpl_1",
+        name: "Thank you",
+        nameKey: "thank you",
+        doc: TEMPLATE_DOC,
+        createdAt: T0,
+        updatedAt: later(1),
+      });
+      expect(s.getTemplateByKey("thanks")).toBeNull();
+      expect(s.saveTemplate({ id: null, name: "THANK YOU", nameKey: "thank you", doc: TEMPLATE_DOC }, "tpl_2", T0)).toEqual({ conflict: true });
+      expect(s.saveTemplate({ id: "tpl_9", name: "Later", nameKey: "later", doc: TEMPLATE_DOC }, "tpl_3", T0)).toEqual({ id: "tpl_9" });
+      expect(s.listTemplates().map((t) => t.nameKey)).toEqual(["later", "thank you"]);
+      expect(s.deleteTemplate("tpl_9")).toBe(true);
+      expect(s.deleteTemplate("tpl_9")).toBe(false);
+      expect(s.listTemplates().map((t) => t.id)).toEqual(["tpl_1"]);
+    });
+
+    it("caps templates at 200; an update at the cap still saves", () => {
+      for (let i = 0; i < 200; i++) s.saveTemplate({ id: null, name: `T${i}`, nameKey: `t${i}`, doc: TEMPLATE_DOC }, `tpl_${i}`, T0);
+      expect(() => s.saveTemplate({ id: null, name: "More", nameKey: "more", doc: TEMPLATE_DOC }, "tpl_more", T0)).toThrow(
+        expect.objectContaining({ kind: "conflict" }),
+      );
+      expect(s.saveTemplate({ id: "tpl_5", name: "Five", nameKey: "five", doc: TEMPLATE_DOC }, "tpl_x", T0)).toEqual({ id: "tpl_5" });
+      expect(s.listTemplates()).toHaveLength(200);
+    });
+  });
+});

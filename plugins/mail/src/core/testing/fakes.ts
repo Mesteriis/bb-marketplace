@@ -66,6 +66,7 @@ import type { ComposeDoc } from "../compose-doc.ts";
 import type { SignatureDoc } from "../compose-signature.ts";
 import { IDENTITIES_MAX_PER_ACCOUNT, ownerAddressSets, resolveSendCheck, type AliasRow, type InboundRow, type SendCheck } from "../identities.ts";
 import { ComposeError } from "../compose.ts";
+import { TEMPLATES_MAX } from "../templates.ts";
 import type { UndoRow } from "../undo.ts";
 import { ImapAuthError, type NewProposal, type ProposalRecord, type TemplateRecord, type TranslationRecord, type AccountWriteQueue, type MailTransport, type MessageBuilder, type OriginalReader, type OutboxNotifier, type SendResult, type SmtpConfig } from "../ports.ts";
 import type { OutboxChangedPayload } from "../contract.ts";
@@ -113,6 +114,15 @@ export function makeStoredAccount(overrides: Partial<StoredAccount> = {}): Store
     signature: null,
     ...overrides,
   };
+}
+
+/** A fetched message as stored: Delivered-To lower case, distinct, at most 10 (as the SQLite upsert). */
+function storedMessage(message: FetchedMessage): FetchedMessage {
+  const copy = structuredClone(message);
+  if (copy.deliveredTo !== undefined) {
+    copy.deliveredTo = [...new Set(copy.deliveredTo.map((a) => a.trim().toLowerCase()).filter((a) => a !== ""))].slice(0, 10);
+  }
+  return copy;
 }
 
 /** The mark the store keeps for a fetched message (as the SQLite upsert). */
@@ -412,8 +422,11 @@ export class InMemoryMailStore implements MailStore {
           : rows.find((r) => r.uid === null && r.message.messageId === message.messageId));
       const inlineParts = capInlineParts(message.inlineParts).map((p) => structuredClone(p));
       if (row) {
+        const known = row.message.deliveredTo;
         row.uid = message.uid;
-        row.message = structuredClone(message);
+        row.message = storedMessage(message);
+        // A fetch without headers leaves a known Delivered-To alone (as SQLite's COALESCE).
+        if (row.message.deliveredTo === undefined && known !== undefined) row.message.deliveredTo = known;
         row.isRead = row.seenDesired ?? message.seen;
         row.isFlagged = row.flagDesired ?? message.flagged;
         row.gmMsgId = message.gmMsgId ?? row.gmMsgId;
@@ -428,7 +441,7 @@ export class InMemoryMailStore implements MailStore {
         accountId,
         folder,
         uid: message.uid,
-        message: structuredClone(message),
+        message: storedMessage(message),
         isRead: message.seen,
         isFlagged: message.flagged,
         seenDesired: null,
@@ -1302,7 +1315,6 @@ export class InMemoryMailStore implements MailStore {
   }
 
   // ---- Sending polish (slice 3d) ----
-  // Reads answer empty and writes throw until the tasks that implement them.
 
   listIdentities(accountId: string | null): AliasRow[] {
     return this.state.identities
@@ -1457,12 +1469,31 @@ export class InMemoryMailStore implements MailStore {
     return row?.message.deliveredTo === undefined ? [] : [...row.message.deliveredTo];
   }
 
-  undoRows(_ids: string[]): UndoRow[] {
-    return [];
+  undoRows(ids: string[]): UndoRow[] {
+    const wanted = new Set(ids);
+    return this.state.rows
+      .filter((row) => wanted.has(row.id))
+      .map((row) => ({
+        id: row.id,
+        accountId: row.accountId,
+        folder: row.folder,
+        uid: row.uid,
+        movePending: row.movePending,
+        isRead: row.isRead,
+        isFlagged: row.isFlagged,
+      }));
   }
 
-  cancelMove(_ids: string[], _folder: string, _destination: string): string[] {
-    throw new Error("Not available yet");
+  cancelMove(ids: string[], folder: string, destination: string): string[] {
+    const cleared: string[] = [];
+    for (const id of new Set(ids)) {
+      const row = this.state.rows.find((r) => r.id === id);
+      if (row === undefined || row.folder !== folder || row.movePending !== destination) continue;
+      row.movePending = null;
+      row.moveFailures = 0;
+      cleared.push(id);
+    }
+    return cleared;
   }
 
   listTemplates(): TemplateRecord[] {
@@ -1479,6 +1510,9 @@ export class InMemoryMailStore implements MailStore {
     const clash = [...this.state.templates.values()].some((row) => row.nameKey === input.nameKey && row.id !== input.id);
     if (clash) return { conflict: true };
     const existing = input.id === null ? undefined : this.state.templates.get(input.id);
+    if (existing === undefined && this.state.templates.size >= TEMPLATES_MAX) {
+      throw new ComposeError("conflict", "There are too many templates");
+    }
     const id = existing?.id ?? input.id ?? newId;
     this.state.templates.set(id, {
       id,
