@@ -52,6 +52,7 @@ import { MoveDialog } from "./move-dialog.tsx";
 import { ReadingPane, type BodyState } from "./reading-pane.tsx";
 import {
   SelectionBar,
+  SelectionPanel,
   selectionActions,
   toggleSelection,
   type BarAction,
@@ -216,6 +217,28 @@ export function MailPage(props: MailPageProps) {
 }
 
 
+/** The page's own @3xl breakpoint (48rem): below it, one column. */
+const WIDE_MIN_PX = 768;
+
+/**
+ * Whether the page is two columns wide, measured on its root like the
+ * container queries. Without ResizeObserver it counts as wide.
+ */
+function useWideLayout(ref: RefObject<HTMLElement | null>): boolean {
+  const [wide, setWide] = useState(true);
+  useEffect(() => {
+    const element = ref.current;
+    if (element === null || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width !== undefined && width > 0) setWide(width >= WIDE_MIN_PX);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref]);
+  return wide;
+}
+
 /** Short, distinct labels for the account marker on rows in All accounts. */
 export function accountMarkers(accounts: readonly Account[]): Map<string, string> {
   const short = (account: Account) =>
@@ -289,6 +312,8 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [moveTargets, setMoveTargets] = useState<string[] | null>(null);
   const searching = search.query !== "";
+  const selecting = selection.size > 0;
+  const wide = useWideLayout(rootRef);
   const markers = accountMarkers(status.accounts);
   const marker = (accountId: string) => (props.unified ? (markers.get(accountId) ?? null) : null);
 
@@ -412,6 +437,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     return [...accounts].map((accountId) => ({ accountId, archiveAllowed: model.archiveAllowed(accountId) }));
   };
   const selected = list.threads.filter((t) => selection.has(t.id));
+  const perAccount = status.accounts
+    .map((a) => ({ label: accountLabel(a), count: selected.filter((t) => t.accountId === a.id).length }))
+    .filter((entry) => entry.count > 0);
   const barActions = selectionActions(model.use, groupsOf([...selection]), {
     anyUnread: selected.some((t) => t.unreadCount > 0),
     anyRead: selected.some((t) => t.unreadCount < t.messageCount),
@@ -420,15 +448,16 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   });
 
   /**
-   * What an action key acts on: the open conversation (never the selection
-   * while one is open), else the selection, else the cursor row.
+   * What an action key acts on follows the visible toolbar: the selection
+   * (its panel hides the open conversation), else the open conversation,
+   * else the cursor row.
    */
   const targets = (): string[] => {
+    if (selection.size > 0) return [...selection];
     if (reading.threadId !== null) {
       const messages = reading.detail?.messages ?? [];
       return messages.some(model.inView) ? [reading.threadId] : [];
     }
-    if (selection.size > 0) return [...selection];
     if (!searching && focusedId !== null && rowIds.includes(focusedId)) return [focusedId];
     return [];
   };
@@ -461,7 +490,23 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     const nextIndex = current < 0 ? 0 : Math.min(Math.max(current + delta, 0), rowIds.length - 1);
     const next = rowIds[nextIndex]!;
     focusRow(next);
-    if (threadOpen && !repeat) openRow(next);
+    // Behind the selection panel nothing opens (it would be marked read unseen).
+    if (threadOpen && !repeat && !selecting) openRow(next);
+  };
+  /**
+   * A row click (or o/Enter on the cursor row). With a selection: in one
+   * column it toggles the row's checkbox (Gmail on phones); in two columns it
+   * ends the selection and opens the row, as Apple Mail does.
+   */
+  const activateRow = (id: string) => {
+    if (selecting && !searching) {
+      if (!wide) {
+        toggleChecked(id, false);
+        return;
+      }
+      props.onSelectionChange(new Set());
+    }
+    openRow(id);
   };
   const toggleChecked = (id: string, range: boolean) => {
     props.onSelectionChange(toggleSelection(rowIds, selection, id, range, anchor.current));
@@ -470,7 +515,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const flagTargets = () => {
     const ids = targets();
     if (ids.length === 0) return;
-    if (reading.threadId !== null || selection.size === 0) {
+    if (selection.size === 0) {
       props.onToggleThreadFlag(ids[0]!);
       return;
     }
@@ -490,14 +535,14 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       case "previous":
         return step(-1, repeat);
       case "open":
-        if (focusedId !== null && rowIds.includes(focusedId)) openRow(focusedId);
+        if (focusedId !== null && rowIds.includes(focusedId)) activateRow(focusedId);
         return;
       case "back":
         if (threadOpen) props.onCloseThread();
         return;
       case "select":
-        // While a conversation is open (the list may be hidden), x does nothing.
-        if (!threadOpen && !searching && focusedId !== null && rowIds.includes(focusedId)) toggleChecked(focusedId, false);
+        // In one column an open conversation hides the list: x does nothing there.
+        if (!(threadOpen && !wide) && !searching && focusedId !== null && rowIds.includes(focusedId)) toggleChecked(focusedId, false);
         return;
       case "archive":
         return runIfAllowed(targets(), "archive");
@@ -618,7 +663,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           aria-label={model.title}
           className={cn(
             "min-h-0 w-full shrink-0 flex-col overflow-y-auto @3xl:flex @3xl:w-80 @3xl:border-r @3xl:border-border @6xl:w-96",
-            threadOpen ? "hidden" : "flex",
+            threadOpen && !selecting ? "hidden" : "flex",
           )}
         >
           {!searching ? (
@@ -627,9 +672,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               pageIds={list.threads.map((t) => t.id)}
               selection={selection}
               onSelectionChange={props.onSelectionChange}
-              actions={barActions}
-              onAction={onBarAction}
-              pending={props.actionPending}
+              compactActions={
+                wide ? null : { actions: barActions, onAction: onBarAction, pending: props.actionPending }
+              }
             />
           ) : null}
           <ListColumn
@@ -638,7 +683,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
             marker={marker}
             onOpenRow={(id) => {
               setFocusedId(id);
-              openRow(id);
+              activateRow(id);
             }}
             onToggleChecked={toggleChecked}
             emptyName={model.title}
@@ -648,10 +693,18 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           aria-label="Conversation"
           className={cn(
             "min-h-0 min-w-0 flex-1 flex-col overflow-y-auto @3xl:flex",
-            threadOpen ? "flex" : "hidden",
+            threadOpen && !selecting ? "flex" : "hidden",
           )}
         >
-          {threadOpen ? (
+          {selecting && wide ? (
+            <SelectionPanel
+              count={selection.size}
+              perAccount={perAccount}
+              actions={barActions}
+              onAction={onBarAction}
+              pending={props.actionPending}
+            />
+          ) : threadOpen ? (
             <ReadingPane
               detail={reading.detail}
               loading={reading.loading}
