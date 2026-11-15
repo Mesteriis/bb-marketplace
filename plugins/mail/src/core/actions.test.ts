@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { archiveAllowedFrom, resolveActionDestination } from "./actions.ts";
-import type { Folder, SpecialUse } from "./model.ts";
+import { archiveAllowedFrom, isRoleMoveAction, resolveActionDestination } from "./actions.ts";
+import { type Folder, messageActionSchema, type SpecialUse } from "./model.ts";
 
 function folder(path: string, specialUse: SpecialUse | null, overrides: Partial<Folder> = {}): Folder {
   return {
@@ -171,5 +171,16 @@ describe("archiveAllowedFrom", () => {
         expect("destination" in result, `${preset} ${source.path}`).toBe(allowed);
       }
     }
+  });
+});
+
+describe("isRoleMoveAction", () => {
+  it("is true for the moves by role only", () => {
+    expect(messageActionSchema.options.filter((action) => isRoleMoveAction(action))).toEqual([
+      "spam",
+      "not_spam",
+      "archive",
+      "delete",
+    ]);
   });
 });

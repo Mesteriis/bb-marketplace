@@ -183,10 +183,14 @@ function action(host: Host, messageIds: string[], folder: string, kind: string) 
   return host.harness.behavior.callRpc("message_action", { messageIds, folder, action: kind });
 }
 
+/** A message_action result: one (account, source folder) group, queued with no error. */
+function movedGroup(accountId: string, folder: string, queued: number, destination: string) {
+  return { groups: [{ accountId, folder, queued, destination, error: null }] };
+}
+
 async function listThreads(host: Host, folder: string, accountId = "acc_1"): Promise<ThreadSummary[]> {
   const { threads } = (await host.harness.behavior.callRpc("threads_list", {
-    accountId,
-    folder,
+    scope: { kind: "account", accountId, folder },
     cursor: null,
     limit: 50,
   })) as { threads: ThreadSummary[] };
@@ -317,8 +321,7 @@ describe("makosh-mail server", () => {
       added,
       await host.harness.behavior.callRpc("status_get", null),
       await host.harness.behavior.callRpc("threads_list", {
-        accountId,
-        folder: "INBOX",
+        scope: { kind: "account", accountId, folder: "INBOX" },
         cursor: null,
         limit: 50,
       }),
@@ -677,9 +680,12 @@ describe("makosh-mail server", () => {
   it("folders_list returns the account's folders in system order", async () => {
     const host = await load({ seed: (bb) => seedMail(bb, { folders: ICLOUD_FOLDERS, messages: [] }) });
 
-    const { folders } = (await host.harness.behavior.callRpc("folders_list", {
+    const { folders, roles } = (await host.harness.behavior.callRpc("folders_list", {
       accountId: "acc_1",
-    })) as { folders: Folder[] };
+    })) as { folders: Folder[]; roles: unknown[] };
+
+    // Merged role counts come only with All accounts (accountId null).
+    expect(roles).toEqual([]);
 
     expect(folders.map((f) => f.path)).toEqual(["INBOX", "Junk", "Archive", "Deleted Messages", "Work"]);
     expect(folders[0]).toMatchObject({ unreadCount: 0, totalCount: 0, specialUse: "inbox" });
@@ -731,7 +737,7 @@ describe("makosh-mail server", () => {
         folder: "INBOX",
         action: "spam",
       }),
-    ).resolves.toEqual({ queued: 1, destination: "Junk" });
+    ).resolves.toEqual(movedGroup(accountId, "INBOX", 1, "Junk"));
 
     expect(host.harness.inspection.realtimeSignals[signalsBefore]).toEqual({
       channel: MAIL_CHANGED_CHANNEL,
@@ -761,10 +767,9 @@ describe("makosh-mail server", () => {
     });
     const id = messageIdAt(host, "Work", 1);
 
-    await expect(action(host, [id], "Work", "delete")).resolves.toEqual({
-      queued: 1,
-      destination: "Trash",
-    });
+    await expect(action(host, [id], "Work", "delete")).resolves.toEqual(
+      movedGroup("acc_1", "Work", 1, "Trash"),
+    );
     expect(movePending(host, id)).toBe("Deleted Messages");
   });
 
@@ -783,10 +788,9 @@ describe("makosh-mail server", () => {
     const inbox = messageIdAt(host, "INBOX", 1);
     const allMail = messageIdAt(host, "[Gmail]/All Mail", 9);
 
-    await expect(action(host, [inbox], "INBOX", "archive")).resolves.toEqual({
-      queued: 1,
-      destination: "All Mail",
-    });
+    await expect(action(host, [inbox], "INBOX", "archive")).resolves.toEqual(
+      movedGroup("acc_1", "INBOX", 1, "All Mail"),
+    );
     expect(movePending(host, inbox)).toBe("[Gmail]/All Mail");
     expect(movePending(host, allMail)).toBeNull();
     await expect(action(host, [allMail], "[Gmail]/All Mail", "archive")).rejects.toThrow(
@@ -812,10 +816,9 @@ describe("makosh-mail server", () => {
       "Not spam works only in Spam",
     );
     expect(movePending(host, inbox)).toBeNull();
-    await expect(action(host, [junk], "Junk", "not_spam")).resolves.toEqual({
-      queued: 1,
-      destination: "INBOX",
-    });
+    await expect(action(host, [junk], "Junk", "not_spam")).resolves.toEqual(
+      movedGroup("acc_1", "Junk", 1, "INBOX"),
+    );
   });
 
   it("message_action refuses what it cannot move and changes nothing", async () => {
@@ -877,19 +880,19 @@ describe("makosh-mail server", () => {
       "These messages are not all in INBOX",
     );
     expect(movePending(host, one)).toBeNull();
-    await expect(action(host, [one], "INBOX", "delete")).resolves.toMatchObject({ queued: 1 });
+    await expect(action(host, [one], "INBOX", "delete")).resolves.toEqual(
+      movedGroup("acc_1", "INBOX", 1, "Trash"),
+    );
     await expect(action(host, [one, two], "INBOX", "delete")).rejects.toThrow(
       "These messages are not all in INBOX",
     );
     expect(movePending(host, two)).toBeNull();
-    await expect(action(host, [work], "Work", "archive")).resolves.toEqual({
-      queued: 1,
-      destination: "Archive",
-    });
-    await expect(action(host, [two], "INBOX", "spam")).resolves.toEqual({
-      queued: 1,
-      destination: "Junk",
-    });
+    await expect(action(host, [work], "Work", "archive")).resolves.toEqual(
+      movedGroup("acc_1", "Work", 1, "Archive"),
+    );
+    await expect(action(host, [two], "INBOX", "spam")).resolves.toEqual(
+      movedGroup("acc_1", "INBOX", 1, "Junk"),
+    );
   });
 
   it("message_action refuses a move into the folder the messages are in", async () => {
@@ -925,6 +928,7 @@ describe("makosh-mail server", () => {
       call("images_disallow_sender", { accountId: "acc_1", address: "sender@example.org" }),
       call("accounts_remove", { accountId: "acc_1" }),
       call("accounts_add", NEW_ACCOUNT),
+      call("download_ticket", { kind: "eml", messageId }),
     ];
     for (const result of calls) await expect(result).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
 
@@ -977,7 +981,13 @@ describe("makosh-mail server", () => {
     const { registrations } = host.harness.inspection;
 
     expect(registrations.rpcMethods).toEqual(
-      expect.arrayContaining(["message_action", "images_allow_sender", "images_disallow_sender"]),
+      expect.arrayContaining([
+        "message_action",
+        "images_allow_sender",
+        "images_disallow_sender",
+        "message_source",
+        "download_ticket",
+      ]),
     );
     // No RPC method is published to agents as discoverable.
     expect(registrations.experimental_publishedRpcMethods).toEqual([]);

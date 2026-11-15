@@ -254,6 +254,9 @@ type ThreadRow = {
   snippet: string;
 };
 
+/** A thread row with whether a message of it in the listed folder is flagged. */
+type ListedThreadRow = ThreadRow & { flagged: number };
+
 type AttachmentRow = {
   message_id: string;
   part_id: string;
@@ -345,7 +348,8 @@ function toSummary(row: MessageRow): MessageSummary {
   };
 }
 
-function toThread(row: ThreadRow): ThreadSummary {
+/** `flagged` covers the thread's messages in the viewed folder. */
+function toThread(row: ThreadRow, flagged: boolean): ThreadSummary {
   return {
     id: row.id,
     accountId: row.account_id,
@@ -355,6 +359,7 @@ function toThread(row: ThreadRow): ThreadSummary {
     unreadCount: row.unread_count,
     participants: JSON.parse(row.participants_json) as MailAddress[],
     snippet: row.snippet,
+    flagged,
   };
 }
 
@@ -802,6 +807,18 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
+    setDesired() {
+      throw new Error("not implemented: setDesired");
+    },
+
+    pendingFlagIntents() {
+      throw new Error("not implemented: pendingFlagIntents");
+    },
+
+    clearFlagIntents() {
+      throw new Error("not implemented: clearFlagIntents");
+    },
+
     markOpened(messageId) {
       return atomic(() => {
         const row = db
@@ -884,18 +901,21 @@ export function createSqliteStore(db: Database.Database): MailStore {
       // (account_id, folder, move_pending) index, so the cost stays linear.
       const inFolder = `threads.id IN (SELECT m.thread_id FROM messages m
         WHERE m.account_id = @accountId AND m.folder = @folder AND m.move_pending IS NULL)`;
-      let rows: ThreadRow[];
+      const columns = `threads.*, EXISTS (SELECT 1 FROM messages f
+        WHERE f.thread_id = threads.id AND f.account_id = @accountId AND f.folder = @folder
+          AND f.move_pending IS NULL AND f.is_flagged = 1) AS flagged`;
+      let rows: (ListedThreadRow)[];
       if (after === null) {
         rows = db
-          .prepare<[{ accountId: string; folder: string; limit: number }], ThreadRow>(
-            `SELECT * FROM threads WHERE account_id = @accountId AND ${inFolder}
+          .prepare<[{ accountId: string; folder: string; limit: number }], ListedThreadRow>(
+            `SELECT ${columns} FROM threads WHERE account_id = @accountId AND ${inFolder}
              ORDER BY last_date DESC, id DESC LIMIT @limit`,
           )
           .all({ accountId, folder, limit: limit + 1 });
       } else if (after.lastDate === null) {
         rows = db
-          .prepare<[{ accountId: string; folder: string; id: string; limit: number }], ThreadRow>(
-            `SELECT * FROM threads WHERE account_id = @accountId AND last_date IS NULL AND id < @id
+          .prepare<[{ accountId: string; folder: string; id: string; limit: number }], ListedThreadRow>(
+            `SELECT ${columns} FROM threads WHERE account_id = @accountId AND last_date IS NULL AND id < @id
                AND ${inFolder}
              ORDER BY id DESC LIMIT @limit`,
           )
@@ -904,9 +924,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
         rows = db
           .prepare<
             [{ accountId: string; folder: string; lastDate: string; id: string; limit: number }],
-            ThreadRow
+            ListedThreadRow
           >(
-            `SELECT * FROM threads WHERE account_id = @accountId
+            `SELECT ${columns} FROM threads WHERE account_id = @accountId
                AND (last_date < @lastDate OR (last_date = @lastDate AND id < @id) OR last_date IS NULL)
                AND ${inFolder}
              ORDER BY last_date DESC, id DESC LIMIT @limit`,
@@ -916,9 +936,21 @@ export function createSqliteStore(db: Database.Database): MailStore {
       const page = rows.slice(0, limit);
       const last = page[page.length - 1];
       return {
-        threads: page.map(toThread),
+        threads: page.map((row) => toThread(row, row.flagged === 1)),
         nextCursor: rows.length > limit && last ? encodeCursor(last.last_date, last.id) : null,
       };
+    },
+
+    listThreadsAll() {
+      throw new Error("not implemented: listThreadsAll");
+    },
+
+    listRoles() {
+      throw new Error("not implemented: listRoles");
+    },
+
+    rawRef() {
+      throw new Error("not implemented: rawRef");
     },
 
     /**
@@ -943,7 +975,14 @@ export function createSqliteStore(db: Database.Database): MailStore {
         )
         .all({ threadId, folder })
         .map(header);
-      return { thread: toThread(thread), messages };
+      const flagged =
+        db
+          .prepare<[{ threadId: string; folder: string }], { one: number }>(
+            `SELECT 1 AS one FROM messages WHERE thread_id = @threadId AND folder = @folder
+               AND move_pending IS NULL AND is_flagged = 1 LIMIT 1`,
+          )
+          .get({ threadId, folder }) !== undefined;
+      return { thread: toThread(thread, flagged), messages };
     },
 
     getMessage(messageId) {
