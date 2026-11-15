@@ -31,8 +31,20 @@ export function cleanEditorHtml(html: string): string {
 /** Link protocols the editor and the server's renderer keep. */
 export const LINK_PROTOCOLS = ["http", "https", "mailto"];
 
+/**
+ * What an editor offers beyond paragraphs and marks. The composer has
+ * everything; the signature editor has no lists or quotes, the template
+ * editor no quotes (slice 3d).
+ */
+export interface EditorFeatures {
+  lists?: boolean;
+  quotes?: boolean;
+}
+
 /** The StarterKit as the composer uses it: the server's schema, nothing more. */
-export function composeExtensions() {
+export function composeExtensions(features: EditorFeatures = {}) {
+  const lists = features.lists ?? true;
+  const quotes = features.quotes ?? true;
   return [
     StarterKit.configure({
       heading: false,
@@ -40,6 +52,8 @@ export function composeExtensions() {
       codeBlock: false,
       strike: false,
       horizontalRule: false,
+      ...(lists ? {} : { bulletList: false, orderedList: false, listItem: false, listKeymap: false }),
+      ...(quotes ? {} : { blockquote: false }),
       link: { openOnClick: false, autolink: true, protocols: LINK_PROTOCOLS, defaultProtocol: "https" },
     }),
   ];
@@ -91,6 +105,8 @@ export interface ComposeEditorProps {
   /** Cmd/Ctrl+K in the editor. */
   onLinkShortcut: () => void;
   label: string;
+  /** Lists and quotes; both on unless turned off. */
+  features?: EditorFeatures;
   className?: string;
 }
 
@@ -103,6 +119,7 @@ export function ComposeEditor({
   onImported,
   onLinkShortcut,
   label,
+  features,
   className,
 }: ComposeEditorProps) {
   const handlers = useRef({ onChange, onFiles, onLinkShortcut, onImported });
@@ -111,7 +128,7 @@ export function ComposeEditor({
   const importing = useRef(false);
 
   const editor = useEditor({
-    extensions: composeExtensions(),
+    extensions: composeExtensions(features),
     content: initialDoc,
     immediatelyRender: true,
     shouldRerenderOnTransaction: false,
