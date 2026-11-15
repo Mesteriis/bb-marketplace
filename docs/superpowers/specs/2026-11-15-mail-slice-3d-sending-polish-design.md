@@ -1023,3 +1023,8 @@ These override the sections above. Items marked *(owner)* were decided by the ow
     - For rows synced before element 7 (`delivered_to_json` NULL), suggestions use To and Cc, so the provider-domain rule may offer another person's `gmail.com` or `icloud.com` address that shared a message. Accepted: the owner dismisses it with **Not mine**.
     - `sent_recipients` keeps every accepted envelope recipient, Bcc included, until the account is removed. README states it.
     - `addressesSentTo` reads Sent-role rows and `sent_recipients` together, so the 3c card's "New address" flag and the pre-send check use one union without a second store method.
+19. **On Gmail, COPY only undoes an archive *(owner)*** (narrows resolutions 1 and 7).
+    - Undo uses UID COPY only when the message now sits in All Mail (`specialUse` `all`, `\All`) and goes back to the folder it was archived from (the Inbox, or the action's source). `planUndo` sets `copyIfGmail` true only when the folder the row is in now is All Mail; `runUndo` still copies only when that session reports `capabilities().gmail`.
+    - Undoing **Move to <label>** on Gmail is a move back: a MOVE out of the label removes that label, which is the true inverse; a COPY there would leave the label on the message.
+    - Undo out of Trash or Spam stays a move back, as before. Every non-Gmail server moves back as before.
+    - README and `PLUGIN_OVERVIEW.md` "What it changes on the server" therefore say: "Undo of Archive on Gmail adds the message back to the folder it came from with UID COPY; nothing else uses COPY."

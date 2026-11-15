@@ -23,6 +23,7 @@ export * from "./compose-signature.ts";
 export * from "./identities.ts";
 export * from "./templates.ts";
 export * from "./presend.ts";
+export * from "./undo.ts";
 export * from "./compose-bcc.ts";
 export * from "./compose-drafts.ts";
 export * from "./compose.ts";
