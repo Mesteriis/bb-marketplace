@@ -670,6 +670,16 @@ export class InMemoryMailStore implements MailStore {
     return { revision: draft.revision };
   }
 
+  saveImport(id: string, baseRevision: number, doc: DraftFields["doc"]): { revision: number } | { conflict: true; revision: number } {
+    const draft = this.state.drafts.get(id);
+    if (!draft) throw new Error("Draft not found");
+    if (draft.revision !== baseRevision || draft.importHtml === null || this.draftHeld(id)) {
+      return { conflict: true, revision: draft.revision };
+    }
+    Object.assign(draft, { doc: structuredClone(doc), importHtml: null });
+    return { revision: draft.revision };
+  }
+
   deleteDraft(id: string): void {
     this.state.drafts.delete(id);
     this.state.composeAttachments = this.state.composeAttachments.filter((a) => a.draftId !== id);

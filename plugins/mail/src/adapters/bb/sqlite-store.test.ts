@@ -1929,6 +1929,17 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       expect(() => s.saveDraft("nope", 1, FIELDS, T0)).toThrow();
     });
 
+    it("saveImport stores the loaded import without bumping the revision or updatedAt, once", () => {
+      s.createDraft(newDraft({ importHtml: { html: "<p>q</p>", into: "body" } }));
+      const doc = { type: "doc" as const, content: [{ type: "paragraph" as const, content: [{ type: "text" as const, text: "q" }] }] };
+      expect(s.saveImport("d_1", 1, doc)).toEqual({ revision: 1 });
+      expect(s.getDraft("d_1")).toMatchObject({ doc, revision: 1, importHtml: null, updatedAt: T0 });
+      expect(s.saveImport("d_1", 1, doc)).toEqual({ conflict: true, revision: 1 });
+      s.createDraft(newDraft({ id: "d_2", importHtml: { html: "<p>q</p>", into: "body" } }));
+      expect(s.saveImport("d_2", 0, doc)).toEqual({ conflict: true, revision: 1 });
+      expect(() => s.saveImport("nope", 1, doc)).toThrow();
+    });
+
     it("saveDraft answers conflict while a send of the draft is queued", () => {
       s.createDraft(newDraft());
       s.queueOutbox(newOutbox(), 1);

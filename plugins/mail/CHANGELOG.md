@@ -93,8 +93,11 @@ All notable changes to Makosh Mail are recorded here. The format follows
   always-visible Undo toast, the Outbox and the 10-a-minute cap limit it.
 - Server writes now also include drafts appended to Drafts and sent copies
   appended to Sent. The plugin expunges only its own superseded drafts (or
-  the one foreign draft the owner continued), one UID at a time, on servers
-  with UIDPLUS; nothing else is marked `\Deleted`.
+  the one foreign draft the owner continued, and only when it was read in
+  full: body, Bcc, every attachment within the cap, and HTML the editor
+  holds without loss; any other stays on the server), one UID at a time, on
+  servers with UIDPLUS; nothing else is marked `\Deleted`. Opening a draft
+  is not an edit: nothing is written to the server until the owner changes it.
 - Drafts synced from the server are visible to `mail_search` and
   `mail_read` like any other message.
 - The page bundle (`dist/app.js`) grew to about 600 KB with the TipTap

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   composeDocInputSchema,
   docFromLines,
+  docLosesContent,
+  htmlFitsDoc,
   isDocEmpty,
   normalizeDoc,
   renderDoc,
@@ -263,5 +265,57 @@ describe("isDocEmpty", () => {
     expect(isDocEmpty(norm(doc(p(text("  "), { type: "hardBreak" }), { type: "bulletList", content: [{ type: "listItem", content: [p()] }] })))).toBe(true);
     expect(isDocEmpty(docFromLines(["", "x"]))).toBe(false);
     expect(isDocEmpty(norm(doc({ type: "blockquote", content: [p(text("q"))] })))).toBe(false);
+  });
+});
+
+describe("htmlFitsDoc", () => {
+  it("accepts our own rendered HTML and plain schema markup", () => {
+    const doc = normalizeDoc({
+      type: "doc",
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "Hi", marks: [{ type: "bold" }, { type: "link", attrs: { href: "https://example.org/" } }] }] },
+        { type: "bulletList", content: [{ type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "a" }] }] }] },
+        { type: "blockquote", content: [{ type: "paragraph" }] },
+      ],
+    });
+    expect(htmlFitsDoc(renderDoc(doc).html)).toBe(true);
+    expect(htmlFitsDoc("<div>Line<br></div><div><i>two</i> <a href=\"mailto:a@example.org\">x</a></div>")).toBe(true);
+  });
+
+  it("refuses images, tables, headings, styles and links the editor drops", () => {
+    for (const html of [
+      '<p>Hi <img src="cid:part1"></p>',
+      "<table><tr><td>cell</td></tr></table>",
+      "<h1>Title</h1>",
+      '<p style="color:red">red</p>',
+      "<style>p{color:red}</style><p>x</p>",
+      '<p><font color="red">x</font></p>',
+      '<p><a href="ftp://example.org/f">file</a></p>',
+      "<pre>code</pre>",
+      "<s>gone</s>",
+    ]) {
+      expect(htmlFitsDoc(html), html).toBe(false);
+    }
+  });
+});
+
+describe("docLosesContent", () => {
+  it("is false for the schema the server keeps, whatever attributes TipTap adds", () => {
+    expect(
+      docLosesContent({
+        type: "doc",
+        content: [
+          { type: "orderedList", attrs: { start: 1, type: null }, content: [{ type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "x", marks: [{ type: "link", attrs: { href: "https://example.org/", target: "_blank", rel: null } }] }] }] }] },
+          { type: "paragraph", content: [{ type: "text", text: "y" }, { type: "hardBreak" }] },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it("is true when normalizeDoc would strip a node, a mark or a link", () => {
+    expect(docLosesContent({ type: "doc", content: [{ type: "heading", content: [{ type: "text", text: "x" }] }] })).toBe(true);
+    expect(docLosesContent({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "x", marks: [{ type: "strike" }] }] }] })).toBe(true);
+    expect(docLosesContent({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "x", marks: [{ type: "link", attrs: { href: "javascript:alert(1)" } }] }] }] })).toBe(true);
+    expect(docLosesContent({ type: "doc", content: [{ type: "image", attrs: { src: "cid:x" } }] })).toBe(true);
   });
 });

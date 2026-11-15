@@ -6,7 +6,15 @@
 // draft the owner continued), on servers with UIDPLUS.
 import { parseAddress, type OutgoingAddress } from "./compose-address.ts";
 import { insertBccHeader, bccHeaderLine } from "./compose-bcc.ts";
-import { docFromLines, normalizeDoc, renderDoc, type DocNodeInput, type ComposeDoc } from "./compose-doc.ts";
+import {
+  docFromLines,
+  docLosesContent,
+  htmlFitsDoc,
+  normalizeDoc,
+  renderDoc,
+  type DocNodeInput,
+  type ComposeDoc,
+} from "./compose-doc.ts";
 import { serverCopyDue, type ServerCopyReason } from "./compose-drafts.ts";
 import {
   quoteHeaderText,
@@ -84,7 +92,12 @@ export class ComposeError extends Error {
   }
 }
 
-export type ComposeWarning = "original_unavailable" | "attachments_left_out" | null;
+/**
+ * original_kept: a continued foreign draft could not be read in full (the
+ * server did not answer, attachments over the cap, or HTML the editor
+ * cannot hold), so it stays on the server and this draft is saved beside it.
+ */
+export type ComposeWarning = "original_unavailable" | "attachments_left_out" | "original_kept" | null;
 
 const EMPTY_DOC: ComposeDoc = { type: "doc", content: [{ type: "paragraph" }] };
 const DRAFT_FLAGS = ["\\Draft", "\\Seen"];
@@ -201,9 +214,12 @@ export async function prepareCompose(
 
 /**
  * One of our drafts by id, or a synced Drafts message by its message id: the
- * row whose server copy it is, else a new row continuing it (its Message-ID
- * kept, its uid recorded so our first copy replaces it, its body loaded into
- * the editor, its attachments copied).
+ * row whose server copy it is, else a new row continuing it (its Message-ID,
+ * recipients with Bcc, body and attachments). Only an original read in full
+ * (the server answered, every attachment within the cap, HTML the editor
+ * holds without loss) with a Message-ID and UIDVALIDITY to guard it has its
+ * uid recorded, so our first copy replaces it; any other stays on the
+ * server untouched (`original_kept`).
  */
 export async function openDraft(
   deps: ComposeDeps,
@@ -228,20 +244,23 @@ export async function openDraft(
   const source = deps.store.replySource(input.draftMessageId);
   if (source === null) throw new ComposeError("not_found");
 
-  let warning: ComposeWarning = null;
   let original: Awaited<ReturnType<OriginalReader["read"]>> | null = null;
   try {
     original = await deps.reader.read(input.draftMessageId);
   } catch {
-    warning = "original_unavailable";
+    original = null;
   }
   const html = original?.html ?? null;
   const text = deps.store.getBody(input.draftMessageId)?.text ?? "";
   const ownId = ref.messageId === null ? "" : normalizeMessageId(ref.messageId);
+  const attachmentBytes = (original?.attachments ?? []).reduce((sum, a) => sum + a.bytes.length, 0);
+  const readInFull =
+    original !== null && attachmentBytes <= ATTACHMENT_CAP_BYTES && (html === null || htmlFitsDoc(html));
   // Without its Message-ID (or a synced UIDVALIDITY) the foreign copy cannot
-  // be guarded, so it is never removed: our copy is added beside it.
+  // be guarded, and without the whole of it our copy would lose content: in
+  // both cases it is never removed, and our copy is added beside it.
   const serverCopy: DraftServerCopy | null =
-    ownId !== "" && ref.uidValidity !== null
+    readInFull && ownId !== "" && ref.uidValidity !== null
       ? { folder: ref.folder, uidValidity: ref.uidValidity, uid: ref.uid, revision: 1, size: ref.size }
       : null;
 
@@ -255,7 +274,7 @@ export async function openDraft(
     references: source.references,
     to: source.to.map(chip),
     cc: source.cc.map(chip),
-    bcc: [],
+    bcc: (original?.bcc ?? []).map(chip),
     subject: source.subject,
     doc: html !== null || text === "" ? EMPTY_DOC : docFromLines(splitLines(text)),
     serverCopy,
@@ -263,10 +282,8 @@ export async function openDraft(
     origin: "owner",
     createdAt: deps.clock.now().toISOString(),
   });
-  if (original !== null) {
-    const leftOut = await addWithinCap(deps.store, draft.id, original.attachments);
-    if (leftOut && warning === null) warning = "attachments_left_out";
-  }
+  if (original !== null) await addWithinCap(deps.store, draft.id, original.attachments);
+  const warning: ComposeWarning = serverCopy === null ? "original_kept" : null;
   return { draft: draftView(deps.store, deps.store.getDraft(draft.id)!), warning };
 }
 
@@ -285,20 +302,37 @@ export type SaveComposeInput = {
   subject: string;
   doc: DocNodeInput;
   saveToServer?: boolean;
+  /** The editor's one-time load of the draft's import: not an edit. */
+  imported?: boolean;
 };
+
+export type SaveComposeResult =
+  | { revision: number; originalKept?: true }
+  | { conflict: true; revision: number };
 
 /**
  * Autosave: the local row first (compare-and-swap on the revision; conflict
  * while a send of it is queued), then, on Save draft, the server copy. A
  * change of account removes the copy from the old account's Drafts.
+ *
+ * `imported`: the editor loaded the draft's import. Only the document is
+ * stored, the revision stays (so no server copy becomes due), and when the
+ * load lost content a continued foreign draft is let go: it stays on the
+ * server and is never expunged (`originalKept`).
  */
-export async function saveCompose(
-  deps: ComposeDeps,
-  input: SaveComposeInput,
-): Promise<{ revision: number } | { conflict: true; revision: number }> {
+export async function saveCompose(deps: ComposeDeps, input: SaveComposeInput): Promise<SaveComposeResult> {
   const before = deps.store.getDraft(input.draftId);
   if (before === null) throw new ComposeError("not_found");
   requireAccount(deps.store, input.accountId);
+  if (input.imported === true) {
+    const result = deps.store.saveImport(input.draftId, input.baseRevision, normalizeDoc(input.doc));
+    if ("conflict" in result) return result;
+    if (before.serverCopy !== null && docLosesContent(input.doc)) {
+      deps.store.recordServerCopy(input.draftId, null);
+      return { revision: result.revision, originalKept: true };
+    }
+    return result;
+  }
   const result = deps.store.saveDraft(
     input.draftId,
     input.baseRevision,

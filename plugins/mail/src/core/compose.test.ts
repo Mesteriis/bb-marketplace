@@ -104,7 +104,7 @@ describe("prepareCompose", () => {
 
   it("reads Reply-To from the server for a row stored before it was kept", async () => {
     const id = stored({ replyTo: undefined as unknown as MailAddress[] });
-    h.reader.originals.set(id, { replyTo: [addr("desk@example.net")], html: null, attachments: [] });
+    h.reader.originals.set(id, { replyTo: [addr("desk@example.net")], html: null, attachments: [], bcc: [] });
     const result = await prepareCompose(h.deps, { kind: "reply", messageId: id });
     expect(h.reader.reads).toEqual([id]);
     expect(h.store.getDraft(result.draftId)!.to).toEqual([addr("desk@example.net")]);
@@ -141,6 +141,7 @@ describe("prepareCompose", () => {
     const file = new Uint8Array([1, 2, 3]);
     h.reader.originals.set(id, {
       replyTo: [],
+      bcc: [],
       html: "<p>Body</p>",
       attachments: [
         { fileName: "report.txt", mimeType: "text/plain", bytes: file, contentId: null },
@@ -165,6 +166,7 @@ describe("prepareCompose", () => {
     const id = stored();
     h.reader.originals.set(id, {
       replyTo: [],
+      bcc: [],
       html: null,
       attachments: [
         { fileName: "big.bin", mimeType: "application/octet-stream", bytes: new Uint8Array(ATTACHMENT_CAP_BYTES + 1), contentId: null },
@@ -331,6 +333,13 @@ describe("server copy", () => {
     expect(await writeServerCopy(h.deps, other, "close")).toBe("saved");
   });
 
+  it("a tick never copies a draft the owner has not saved yet", async () => {
+    const { draftId } = newCompose(h.deps, "acc_1");
+    h.advance(SERVER_COPY_IDLE_MS);
+    expect(await writeServerCopy(h.deps, draftId, "tick")).toBe("skipped");
+    expect(h.gateway.appended).toEqual([]);
+  });
+
   it("the synced copy of our draft carries its draftId (Edit draft)", async () => {
     const { draftId } = newCompose(h.deps, "acc_1");
     await save(draftId, { saveToServer: true });
@@ -369,7 +378,7 @@ describe("continuing a foreign draft", () => {
 
   it("opens it as a draft that keeps its Message-ID, loads its body and points at its uid", async () => {
     const id = foreign();
-    h.reader.originals.set(id, { replyTo: [], html: "<p>Draft text</p>", attachments: [] });
+    h.reader.originals.set(id, { replyTo: [], html: "<p>Draft text</p>", attachments: [], bcc: [] });
     const { draft, warning } = await openDraft(h.deps, { draftMessageId: id });
     expect(warning).toBeNull();
     expect(draft).toMatchObject({ kind: "new", to: [addr("bob@example.com")], subject: "Half written", revision: 1 });
@@ -383,11 +392,89 @@ describe("continuing a foreign draft", () => {
 
   it("our first server copy replaces it under the guard", async () => {
     const id = foreign();
+    h.reader.originals.set(id, { replyTo: [], html: "<p>Draft text</p>", attachments: [], bcc: [] });
     const { draft } = await openDraft(h.deps, { draftMessageId: id });
     await save(draft.id, { saveToServer: true });
     expect(expungeCalls()).toEqual([{ path: "Drafts", uid: 41 }]);
     expect(h.drafts.messages.map((m) => m.messageId)).toEqual(["foreign@example.org"]);
     expect(h.drafts.messages[0]!.uid).toBe(h.gateway.appended[0]!.uid);
+  });
+
+  /** Our first server copy of the continued draft, then every uid expunged. */
+  async function firstCopy(draftId: string) {
+    await save(draftId, { saveToServer: true });
+    return expungeCalls();
+  }
+
+  it("an original that could not be read is kept: a new local draft that never expunges it", async () => {
+    const id = foreign();
+    const { draft, warning } = await openDraft(h.deps, { draftMessageId: id });
+    expect(warning).toBe("original_kept");
+    expect(h.store.getDraft(draft.id)!.serverCopy).toBeNull();
+    expect(await firstCopy(draft.id)).toEqual([]);
+    expect(h.drafts.messages.map((m) => m.uid)).toContain(41);
+  });
+
+  it("an original with attachments over the cap is kept", async () => {
+    const id = foreign();
+    const big = { fileName: "big.bin", mimeType: "application/octet-stream", bytes: new Uint8Array(ATTACHMENT_CAP_BYTES), contentId: null };
+    const small = { fileName: "a.txt", mimeType: "text/plain", bytes: new Uint8Array(3), contentId: null };
+    h.reader.originals.set(id, { replyTo: [], html: "<p>Draft text</p>", attachments: [small, big], bcc: [] });
+    const { draft, warning } = await openDraft(h.deps, { draftMessageId: id });
+    expect(warning).toBe("original_kept");
+    expect(await firstCopy(draft.id)).toEqual([]);
+  });
+
+  it("an original whose HTML the editor cannot hold (an image, styles) is kept", async () => {
+    const id = foreign();
+    const inline = { fileName: "p.png", mimeType: "image/png", bytes: new Uint8Array(3), contentId: "part1" };
+    h.reader.originals.set(id, { replyTo: [], html: '<p style="color:red">Draft <img src="cid:part1"></p>', attachments: [inline], bcc: [] });
+    const { draft, warning } = await openDraft(h.deps, { draftMessageId: id });
+    expect(warning).toBe("original_kept");
+    expect(await firstCopy(draft.id)).toEqual([]);
+  });
+
+  it("carries the original's Bcc over", async () => {
+    const id = foreign();
+    h.reader.originals.set(id, { replyTo: [], html: "<p>Draft text</p>", attachments: [], bcc: [addr("hidden@example.net", "Hidden")] });
+    const { draft } = await openDraft(h.deps, { draftMessageId: id });
+    expect(draft.bcc).toEqual([addr("hidden@example.net", "Hidden")]);
+  });
+
+  it("loading its body is not an edit: no revision bump, no server copy due, the original stays", async () => {
+    const id = foreign();
+    h.reader.originals.set(id, { replyTo: [], html: "<p>Draft text</p>", attachments: [], bcc: [] });
+    const { draft } = await openDraft(h.deps, { draftMessageId: id });
+    const imported = await save(draft.id, {
+      to: ["bob@example.com"],
+      bcc: [],
+      subject: "Half written",
+      doc: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Draft text" }] }] },
+      imported: true,
+    });
+    expect(imported).toEqual({ revision: 1 });
+    const record = h.store.getDraft(draft.id)!;
+    expect(record).toMatchObject({ revision: 1, importHtml: null, serverCopy: { uid: 41, revision: 1 } });
+    expect(JSON.stringify(record.doc)).toContain("Draft text");
+    h.advance(SERVER_COPY_IDLE_MS);
+    expect(await writeServerCopy(h.deps, draft.id, "tick")).toBe("skipped");
+    expect(h.gateway.appended).toEqual([]);
+    expect(expungeCalls()).toEqual([]);
+    // A second import (another window) is refused: the first one already consumed it.
+    expect(await save(draft.id, { imported: true })).toEqual({ conflict: true, revision: 1 });
+  });
+
+  it("an import the server schema has to strip keeps the original", async () => {
+    const id = foreign();
+    h.reader.originals.set(id, { replyTo: [], html: "<p>Draft text</p>", attachments: [], bcc: [] });
+    const { draft } = await openDraft(h.deps, { draftMessageId: id });
+    const result = await save(draft.id, {
+      doc: { type: "doc", content: [{ type: "heading", content: [{ type: "text", text: "Draft text" }] }] },
+      imported: true,
+    });
+    expect(result).toEqual({ revision: 1, originalKept: true });
+    expect(h.store.getDraft(draft.id)!.serverCopy).toBeNull();
+    expect(await firstCopy(draft.id)).toEqual([]);
   });
 
   it("refuses a message outside a Drafts folder", async () => {

@@ -1905,6 +1905,22 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
+    saveImport(id, baseRevision, doc) {
+      return atomic(() => {
+        const current = draftById.get(id);
+        if (!current) throw new Error("Draft not found");
+        const changed = db
+          .prepare(
+            `UPDATE compose_drafts SET doc_json = @doc, import_json = NULL
+             WHERE id = @id AND revision = @baseRevision AND import_json IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM outbox WHERE draft_id = @id)`,
+          )
+          .run({ id, baseRevision, doc: JSON.stringify(doc) }).changes;
+        const revision = draftById.get(id)!.revision;
+        return changed === 1 ? { revision } : { conflict: true as const, revision };
+      });
+    },
+
     deleteDraft(id) {
       atomic(() => deleteDraftRows(id));
     },

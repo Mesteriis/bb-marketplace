@@ -303,6 +303,31 @@ describe("Composer", () => {
     expect(saved.to).toEqual(["Ada Example <ada@example.org>"]);
   });
 
+  it("saves a continued draft's import as a load, not an edit: closing untouched writes no server copy", async () => {
+    const ports = fakePorts();
+    const { onClose } = mount(
+      { draft: draft({ subject: "Half written", serverCopy: "saved", import: { html: "<p>Draft body</p>", into: "body" } }) },
+      ports,
+    );
+    await waitFor(() => expect(ports.save).toHaveBeenCalledTimes(1));
+    expect(ports.save.mock.calls[0]![0]).toMatchObject({ imported: true });
+    expect(ports.save.mock.calls[0]![0].saveToServer).toBeUndefined();
+    fireEvent.keyDown(subject(), { key: "Escape" });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(ports.save).toHaveBeenCalledTimes(1);
+    expect(ports.discard).not.toHaveBeenCalled();
+  });
+
+  it("says the original draft stays on the server", async () => {
+    const ports = fakePorts();
+    ports.save.mockResolvedValueOnce({ revision: 1, originalKept: true });
+    mount({ draft: draft({ import: { html: "<p>Draft body</p>", into: "body" } }) }, ports);
+    expect(await screen.findByText(/The original draft stays on the server/)).toBeTruthy();
+    cleanup();
+    mount({ warning: "original_kept" });
+    expect(screen.getByText(/The original draft stays on the server/)).toBeTruthy();
+  });
+
   it("uploads files dropped on the composer as attachments", async () => {
     const { ports } = mount();
     const file = new File([new Uint8Array([1, 2, 3, 4])], "shot.png", { type: "image/png" });

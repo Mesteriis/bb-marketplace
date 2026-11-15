@@ -377,6 +377,13 @@ export interface MailStore {
     fields: DraftFields,
     updatedAt: string,
   ): { revision: number } | { conflict: true; revision: number };
+  /**
+   * The editor's first load of `importHtml`: writes the document and clears
+   * the import, keeping the revision and `updatedAt` (loading is not an
+   * edit, so no server copy becomes due). `conflict` when the revision is
+   * stale, the import was already taken, or a live outbox row holds it.
+   */
+  saveImport(id: string, baseRevision: number, doc: DraftFields["doc"]): { revision: number } | { conflict: true; revision: number };
   /** Cascades to its attachments. */
   deleteDraft(id: string): void;
   listDrafts(accountId: string): DraftRecord[];
@@ -385,7 +392,8 @@ export interface MailStore {
   /**
    * Records (or with null clears) where the draft's latest server copy
    * lives; serverState becomes "saved" (or "none"). Only uids from our own
-   * APPENDUID reach it; createDraft alone takes a foreign draft's uid.
+   * APPENDUID reach it; createDraft alone takes a foreign draft's uid (and
+   * only one read in full).
    */
   recordServerCopy(id: string, copy: DraftServerCopy | null): void;
   /** Marks a failed or local-only server copy without touching the recorded copy. */

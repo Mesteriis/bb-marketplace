@@ -83,8 +83,11 @@ export interface ComposeEditorProps {
   onFiles: (files: File[]) => void;
   /** The editor, once it exists (the toolbar drives it). */
   onReady: (editor: Editor) => void;
-  /** The imported HTML is in the document (the host saves it now, so it is imported once). */
-  onImported?: () => void;
+  /**
+   * The imported HTML is in the document (the host saves it now, so it is
+   * imported once). A load, not an edit: onChange does not fire for it.
+   */
+  onImported?: (doc: EditorDoc) => void;
   /** Cmd/Ctrl+K in the editor. */
   onLinkShortcut: () => void;
   label: string;
@@ -105,6 +108,7 @@ export function ComposeEditor({
   const handlers = useRef({ onChange, onFiles, onLinkShortcut, onImported });
   handlers.current = { onChange, onFiles, onLinkShortcut, onImported };
   const imported = useRef(false);
+  const importing = useRef(false);
 
   const editor = useEditor({
     extensions: composeExtensions(),
@@ -146,7 +150,9 @@ export function ComposeEditor({
         return false;
       },
     },
-    onUpdate: ({ editor: current }) => handlers.current.onChange(current.getJSON()),
+    onUpdate: ({ editor: current }) => {
+      if (!importing.current) handlers.current.onChange(current.getJSON());
+    },
   });
 
   useEffect(() => {
@@ -154,9 +160,13 @@ export function ComposeEditor({
     onReady(editor);
     if (importFrom !== null && !imported.current) {
       imported.current = true;
-      importHtml(editor, importFrom.html, importFrom.into);
-      handlers.current.onChange(editor.getJSON());
-      handlers.current.onImported?.();
+      importing.current = true;
+      try {
+        importHtml(editor, importFrom.html, importFrom.into);
+      } finally {
+        importing.current = false;
+      }
+      handlers.current.onImported?.(editor.getJSON());
     }
     // onReady and importFrom are read once per editor.
   }, [editor]);
