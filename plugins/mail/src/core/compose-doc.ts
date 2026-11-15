@@ -1,0 +1,401 @@
+// The composer's document: the TipTap (ProseMirror) JSON the page sends, the
+// subset the server keeps, and the renderer to message HTML and text. The
+// server never takes HTML from the page; it renders HTML itself from the
+// normalized document, so only the whitelisted tags below can come out.
+import { z } from "zod";
+
+/** A node as the page sends it: generic, checked for shape, size and depth only. */
+export type DocNodeInput = {
+  type: string;
+  content?: DocNodeInput[];
+  text?: string;
+  marks?: DocMarkInput[];
+  attrs?: Record<string, unknown> | null;
+};
+export type DocMarkInput = { type: string; attrs?: Record<string, unknown> | null };
+
+export type ComposeMark =
+  | { type: "bold" | "italic" | "underline" }
+  | { type: "link"; attrs: { href: string } };
+export type ComposeInline =
+  | { type: "text"; text: string; marks?: ComposeMark[] }
+  | { type: "hardBreak" };
+export type ComposeParagraph = { type: "paragraph"; content?: ComposeInline[] };
+export type ComposeListItem = { type: "listItem"; content: ComposeBlock[] };
+export type ComposeBlock =
+  | ComposeParagraph
+  | { type: "bulletList" | "orderedList"; content: ComposeListItem[] }
+  | { type: "blockquote"; content: ComposeBlock[] };
+/** A normalized document: only the nodes and marks the renderer knows. */
+export type ComposeDoc = { type: "doc"; content: ComposeBlock[] };
+
+export const DOC_MAX_BYTES = 2 * 1024 * 1024;
+export const DOC_MAX_DEPTH = 32;
+/** Nesting of JSON objects and arrays: two per node level, plus marks and attributes. */
+const MAX_CONTAINER_DEPTH = DOC_MAX_DEPTH * 2 + 8;
+const TEXT_WIDTH = 76;
+const MIN_WIDTH = 20;
+const HREF_MAX = 2048;
+const LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
+const BLOCK_TYPES = new Set(["paragraph", "bulletList", "orderedList", "listItem", "blockquote"]);
+
+const attrsSchema = z.record(z.string(), z.unknown()).nullable().optional();
+const docMarkSchema = z.object({ type: z.string().min(1).max(64), attrs: attrsSchema });
+const docNodeSchema: z.ZodType<DocNodeInput> = z.lazy(() =>
+  z.object({
+    type: z.string().min(1).max(64),
+    content: z.array(docNodeSchema).optional(),
+    text: z.string().optional(),
+    marks: z.array(docMarkSchema).optional(),
+    attrs: attrsSchema,
+  }),
+);
+
+/**
+ * The document as the page may send it. Depth and size are checked first,
+ * without recursion, so a hostile document cannot overflow the stack.
+ */
+export const composeDocInputSchema = z
+  .unknown()
+  .superRefine((value, ctx) => {
+    const problem = boundsProblem(value);
+    if (problem !== null) ctx.addIssue({ code: "custom", message: problem });
+  })
+  .pipe(docNodeSchema);
+
+function boundsProblem(value: unknown): string | null {
+  const stack: { value: unknown; containers: number; nodes: number }[] = [
+    { value, containers: 0, nodes: 1 },
+  ];
+  while (stack.length > 0) {
+    const item = stack.pop() as { value: unknown; containers: number; nodes: number };
+    if (item.value === null || typeof item.value !== "object") continue;
+    const containers = item.containers + 1;
+    if (containers > MAX_CONTAINER_DEPTH) return "The document is nested too deeply";
+    if (item.nodes > DOC_MAX_DEPTH) return "The document is nested too deeply";
+    if (Array.isArray(item.value)) {
+      for (const child of item.value) stack.push({ value: child, containers, nodes: item.nodes });
+      continue;
+    }
+    for (const [key, child] of Object.entries(item.value)) {
+      if (key === "content" && Array.isArray(child)) {
+        stack.push({ value: child, containers, nodes: item.nodes + 1 });
+      } else {
+        stack.push({ value: child, containers, nodes: item.nodes });
+      }
+    }
+  }
+  let json: string;
+  try {
+    json = JSON.stringify(value);
+  } catch {
+    return "The document cannot be read";
+  }
+  if (json === undefined) return "The document cannot be read";
+  if (json.length > DOC_MAX_BYTES || new TextEncoder().encode(json).length > DOC_MAX_BYTES) {
+    return "The document is too large";
+  }
+  return null;
+}
+
+/**
+ * Keeps doc, paragraph, text, hardBreak, bulletList, orderedList, listItem,
+ * blockquote and the bold, italic, underline and link marks. Unknown nodes
+ * and marks are stripped and their text kept; a link keeps its href only
+ * for http, https and mailto; the structure is repaired so TipTap can load
+ * the result again.
+ */
+export function normalizeDoc(input: DocNodeInput): ComposeDoc {
+  const content = blocks(input.type === "doc" ? (input.content ?? []) : [input]);
+  return { type: "doc", content: content.length > 0 ? content : [{ type: "paragraph" }] };
+}
+
+function blocks(nodes: DocNodeInput[]): ComposeBlock[] {
+  const out: ComposeBlock[] = [];
+  let pending: ComposeInline[] = [];
+  const flush = () => {
+    if (pending.length > 0) out.push(paragraph(pending));
+    pending = [];
+  };
+  for (const node of nodes) {
+    switch (node.type) {
+      case "paragraph":
+        flush();
+        out.push(paragraph(inlines(node.content ?? [])));
+        break;
+      case "bulletList":
+      case "orderedList": {
+        flush();
+        const items = listItems(node.content ?? []);
+        if (items.length > 0) out.push({ type: node.type, content: items });
+        break;
+      }
+      case "blockquote": {
+        flush();
+        const inner = blocks(node.content ?? []);
+        if (inner.length > 0) out.push({ type: "blockquote", content: inner });
+        break;
+      }
+      case "listItem":
+        flush();
+        out.push(...blocks(node.content ?? []));
+        break;
+      case "text":
+      case "hardBreak":
+        pending.push(...inlines([node]));
+        break;
+      default: {
+        const children = node.content ?? [];
+        if (children.length === 0) break;
+        flush();
+        if (inlineOnly(children)) {
+          const content = inlines(children);
+          if (content.length > 0) out.push(paragraph(content));
+        } else {
+          out.push(...blocks(children));
+        }
+      }
+    }
+  }
+  flush();
+  return out;
+}
+
+function inlineOnly(nodes: DocNodeInput[]): boolean {
+  return nodes.every(
+    (node) =>
+      node.type === "text" ||
+      node.type === "hardBreak" ||
+      (!BLOCK_TYPES.has(node.type) && inlineOnly(node.content ?? [])),
+  );
+}
+
+function listItems(nodes: DocNodeInput[]): ComposeListItem[] {
+  const items: ComposeListItem[] = [];
+  for (const node of nodes) {
+    const inner = node.type === "listItem" ? blocks(node.content ?? []) : blocks([node]);
+    if (node.type !== "listItem" && inner.length === 0) continue;
+    if (inner[0]?.type !== "paragraph") inner.unshift({ type: "paragraph" });
+    items.push({ type: "listItem", content: inner });
+  }
+  return items;
+}
+
+function paragraph(content: ComposeInline[]): ComposeParagraph {
+  return content.length > 0 ? { type: "paragraph", content } : { type: "paragraph" };
+}
+
+function inlines(nodes: DocNodeInput[]): ComposeInline[] {
+  const out: ComposeInline[] = [];
+  for (const node of nodes) {
+    if (node.type === "hardBreak") {
+      out.push({ type: "hardBreak" });
+    } else if (node.type === "text") {
+      const marks = normalizeMarks(node.marks ?? []);
+      cleanText(node.text ?? "")
+        .split("\n")
+        .forEach((piece, index) => {
+          if (index > 0) out.push({ type: "hardBreak" });
+          if (piece === "") return;
+          out.push(marks.length > 0 ? { type: "text", text: piece, marks } : { type: "text", text: piece });
+        });
+    } else {
+      out.push(...inlines(node.content ?? []));
+    }
+  }
+  return out;
+}
+
+/** Line breaks become "\n", tabs spaces; every other control character goes. */
+function cleanText(text: string): string {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .replace(/\t/g, " ")
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, "");
+}
+
+function normalizeMarks(marks: DocMarkInput[]): ComposeMark[] {
+  const out: ComposeMark[] = [];
+  for (const mark of marks) {
+    if (out.some((kept) => kept.type === mark.type)) continue;
+    if (mark.type === "bold" || mark.type === "italic" || mark.type === "underline") {
+      out.push({ type: mark.type });
+    } else if (mark.type === "link") {
+      const href = safeHref(mark.attrs?.href);
+      if (href !== null) out.push({ type: "link", attrs: { href } });
+    }
+  }
+  return out;
+}
+
+function safeHref(raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.length > HREF_MAX) return null;
+  // The URL parser silently drops tabs and line breaks; refuse them instead.
+  if (/[\u0000- \u007f-\u009f]/.test(raw.trim()) || raw.trim() === "") return null;
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return null;
+  }
+  if (!LINK_PROTOCOLS.has(url.protocol)) return null;
+  return url.href.length > HREF_MAX ? null : url.href;
+}
+
+/** The server-built document: one paragraph per line, then the quote (if any) as a blockquote. */
+export function docFromLines(lines: string[], quote?: string[]): ComposeDoc {
+  const content: ComposeBlock[] = lines.map(lineParagraph);
+  if (quote !== undefined && quote.length > 0) {
+    content.push({ type: "blockquote", content: quote.map(lineParagraph) });
+  }
+  return { type: "doc", content: content.length > 0 ? content : [{ type: "paragraph" }] };
+}
+
+function lineParagraph(line: string): ComposeParagraph {
+  return paragraph(inlines([{ type: "text", text: line }]));
+}
+
+/** True when the document holds no visible text. */
+export function isDocEmpty(doc: ComposeDoc): boolean {
+  const stack: (ComposeBlock | ComposeListItem | ComposeInline)[] = [...doc.content];
+  while (stack.length > 0) {
+    const node = stack.pop() as ComposeBlock | ComposeListItem | ComposeInline;
+    if (node.type === "text") {
+      if (node.text.trim() !== "") return false;
+    } else if (node.type !== "hardBreak") {
+      stack.push(...(node.content ?? []));
+    }
+  }
+  return true;
+}
+
+/** Message HTML (fixed skeleton, whitelisted tags, only `href` attributes) and the text alternative. */
+export function renderDoc(doc: ComposeDoc): { html: string; text: string } {
+  const body = doc.content.map(blockHtml).join("");
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>${body}</body></html>`;
+  const text = blocksText(doc.content, TEXT_WIDTH, "\n\n").join("\n");
+  return { html, text };
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+const MARK_TAGS = { bold: "strong", italic: "em", underline: "u" } as const;
+
+function blockHtml(block: ComposeBlock | ComposeListItem): string {
+  switch (block.type) {
+    case "paragraph": {
+      const content = block.content ?? [];
+      return `<p>${content.length > 0 ? content.map(inlineHtml).join("") : "<br>"}</p>`;
+    }
+    case "bulletList":
+      return `<ul>${block.content.map(blockHtml).join("")}</ul>`;
+    case "orderedList":
+      return `<ol>${block.content.map(blockHtml).join("")}</ol>`;
+    case "listItem":
+      return `<li>${block.content.map(blockHtml).join("")}</li>`;
+    case "blockquote":
+      return `<blockquote>${block.content.map(blockHtml).join("")}</blockquote>`;
+  }
+}
+
+function inlineHtml(node: ComposeInline): string {
+  if (node.type === "hardBreak") return "<br>";
+  let html = escapeHtml(node.text);
+  const marks = node.marks ?? [];
+  for (const type of ["underline", "italic", "bold"] as const) {
+    if (marks.some((mark) => mark.type === type)) {
+      html = `<${MARK_TAGS[type]}>${html}</${MARK_TAGS[type]}>`;
+    }
+  }
+  const link = linkOf(node);
+  return link === null ? html : `<a href="${escapeHtml(link)}">${html}</a>`;
+}
+
+function linkOf(node: ComposeInline): string | null {
+  if (node.type !== "text") return null;
+  for (const mark of node.marks ?? []) if (mark.type === "link") return mark.attrs.href;
+  return null;
+}
+
+/** Lines of the blocks, each block's lines separated by `separator` ("\n\n" or "\n"). */
+function blocksText(list: ComposeBlock[], width: number, separator: "\n\n" | "\n"): string[] {
+  const lines: string[] = [];
+  list.forEach((block, index) => {
+    if (index > 0 && separator === "\n\n") lines.push("");
+    lines.push(...blockText(block, width));
+  });
+  return lines;
+}
+
+function blockText(block: ComposeBlock, width: number): string[] {
+  switch (block.type) {
+    case "paragraph":
+      return paragraphText(block.content ?? []).flatMap((line) => wrap(line, width));
+    case "bulletList":
+    case "orderedList":
+      return block.content.flatMap((item, index) => {
+        const marker = block.type === "bulletList" ? "- " : `${index + 1}. `;
+        const inner = blocksText(item.content, Math.max(MIN_WIDTH, width - marker.length), "\n");
+        const indent = " ".repeat(marker.length);
+        return inner.map((line, i) => (i === 0 ? marker : line === "" ? "" : indent) + line);
+      });
+    case "blockquote":
+      return blocksText(block.content, Math.max(MIN_WIDTH, width - 2), "\n\n").map((line) =>
+        line === "" ? ">" : `> ${line}`,
+      );
+  }
+}
+
+/** The paragraph's lines (split at hard breaks), links written as `text <url>`. */
+function paragraphText(content: ComposeInline[]): string[] {
+  const lines: string[] = [""];
+  let runText = "";
+  let runHref: string | null = null;
+  const closeRun = () => {
+    if (runHref !== null && runText !== runHref && `mailto:${runText}` !== runHref) {
+      lines[lines.length - 1] += ` <${runHref}>`;
+    }
+    runText = "";
+    runHref = null;
+  };
+  for (const node of content) {
+    if (node.type === "hardBreak") {
+      closeRun();
+      lines.push("");
+      continue;
+    }
+    const href = linkOf(node);
+    if (href !== runHref) closeRun();
+    runHref = href;
+    runText += node.text;
+    lines[lines.length - 1] += node.text;
+  }
+  closeRun();
+  return lines;
+}
+
+/** Greedy word wrap; a word longer than the width stays whole on its own line. */
+function wrap(line: string, width: number): string[] {
+  if (line.length <= width) return [line];
+  const out: string[] = [];
+  let current = "";
+  for (const word of line.split(" ")) {
+    if (current === "") {
+      current = word;
+    } else if (current.length + 1 + word.length <= width) {
+      current += ` ${word}`;
+    } else {
+      out.push(current);
+      current = word;
+    }
+  }
+  out.push(current);
+  return out;
+}
