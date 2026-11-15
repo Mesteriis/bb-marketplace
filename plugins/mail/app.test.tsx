@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { useEffect, useMemo, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   Account,
@@ -48,14 +49,41 @@ const saves = vi.hoisted(() => ({
   calls: [] as { fileName: string; url: string }[],
   outcome: "started" as "started" | "failed" | "throw",
 }));
-vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  experimental_saveFile: (request: { fileName: string; url: string }) => {
-    if (saves.outcome === "throw") throw new Error("needs the bb app's plugin runtime");
-    saves.calls.push(request);
-    return Promise.resolve(saves.outcome);
-  },
-}));
+// The host's router: a test that renders the page with its sidebar follows
+// toPluginPanel("mail") into the subPath both receive, as BB does.
+const routing = vi.hoisted(() => ({ follow: null as ((subPath: string) => void) | null }));
+type PanelNavigate = { toPluginPanel: (path: string, options?: { subPath?: string; replace?: boolean }) => void };
+vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const useActualNavigate = actual.useBbNavigate as () => PanelNavigate;
+  return {
+    ...actual,
+    experimental_saveFile: (request: { fileName: string; url: string }) => {
+      if (saves.outcome === "throw") throw new Error("needs the bb app's plugin runtime");
+      saves.calls.push(request);
+      return Promise.resolve(saves.outcome);
+    },
+    useBbNavigate: () => {
+      const navigate = useActualNavigate();
+      return useMemo(
+        () =>
+          new Proxy(navigate, {
+            get(target, key) {
+              if (key === "toPluginPanel") {
+                return (path: string, options?: { subPath?: string; replace?: boolean }) => {
+                  target.toPluginPanel(path, options);
+                  if (path === "mail") routing.follow?.(options?.subPath ?? "");
+                };
+              }
+              const value = Reflect.get(target, key) as unknown;
+              return typeof value === "function" ? value.bind(target) : value;
+            },
+          }),
+        [navigate],
+      );
+    },
+  };
+});
 
 afterEach(() => {
   cleanup();
@@ -70,6 +98,28 @@ afterEach(() => {
 
 const app = await loadPluginApp(() => import("./app.tsx"));
 const panel = app.navPanels[0]!;
+const MailFolderSidebar = panel.experimental_sidebar!;
+
+/** What the host does to a subPath before the panel receives it. */
+const hostEncode = (subPath: string) => subPath.split("/").map(encodeURIComponent).join("/");
+
+/** The Mail page with BB's sidebar showing its rail, on one route. */
+function MailWithSidebar({ subPath: initial }: { subPath: string }) {
+  const [subPath, setSubPath] = useState(initial);
+  useEffect(() => {
+    routing.follow = (next) => setSubPath(hostEncode(next));
+    return () => {
+      routing.follow = null;
+    };
+  }, []);
+  const Page = panel.component;
+  return (
+    <>
+      <MailFolderSidebar subPath={subPath} />
+      <Page subPath={subPath} />
+    </>
+  );
+}
 
 const account: Account = {
   id: "acc-1",
@@ -169,8 +219,8 @@ function mailRpc(overrides: Record<string, (input: never) => unknown> = {}) {
   };
 }
 
-function render(rpc: Record<string, unknown>) {
-  return renderSlot(panel, { subPath: "" }, {
+function render(rpc: Record<string, unknown>, subPath = "") {
+  return renderSlot({ component: MailWithSidebar }, { subPath }, {
     rpc: rpc as never,
     composer: { scope: { kind: "new-thread", projectId: null } },
   });
@@ -869,14 +919,19 @@ describe("Fix round 1", () => {
     expect(await within(rail).findByText("Folders appear after the first sync.")).toBeTruthy();
   });
 
-  it("the header folder select shows the folder being viewed", async () => {
+  it("the page has no folder rail or folder select of its own; the sidebar marks the folder viewed", async () => {
     const slot = render(folderRpc());
 
-    const select = await slot.findByRole("combobox", { name: "Folder" });
-    await waitFor(() => expect(select.textContent).toContain("Inbox (2)"));
+    await slot.findByText("Lunch");
+    expect(slot.getAllByRole("navigation", { name: "Folders" })).toHaveLength(1);
+    expect(pageRoot(slot).querySelector("nav")).toBeNull();
+    expect(slot.queryByRole("combobox", { name: "Folder" })).toBeNull();
 
     await openFolder(slot, /Spam/);
-    await waitFor(() => expect(slot.getByRole("combobox", { name: "Folder" }).textContent).toContain("Spam (4)"));
+    await waitFor(() =>
+      expect(folderRail(slot).getByRole("button", { name: /Spam/ }).getAttribute("aria-current")).toBe("page"),
+    );
+    expect(folderRail(slot).getByRole("button", { name: /Inbox/ }).getAttribute("aria-current")).toBeNull();
   });
 
   it("hides the moves when the conversation has no copy in the viewed folder", async () => {
@@ -2307,27 +2362,16 @@ describe("Final fix wave", () => {
     });
   }
 
-  it("after choosing a folder in the select, focus is back on the page", async () => {
-    const proto = Element.prototype as unknown as Record<string, unknown>;
-    proto.scrollIntoView ??= () => {};
-    proto.hasPointerCapture ??= () => false;
-    proto.releasePointerCapture ??= () => {};
+  it("after choosing a folder in the sidebar, focus is on the page and the hotkeys work", async () => {
     const slot = render(rowsRpc());
     await slot.findByText("Tickets");
-    const select = await slot.findByRole("combobox", { name: "Folder" });
-    await waitFor(() => expect(select.textContent).toContain("Inbox"));
-    select.focus();
-    fireEvent.keyDown(select, { key: "Enter", code: "Enter" });
-    const option = await slot.findByRole("option", { name: /Spam/ });
-    // Typing on the open select is the select's own.
-    press(option, { key: "j", code: "KeyJ" });
-    expect(callsTo(slot, "message_action")).toHaveLength(0);
-    fireEvent.keyDown(option, { key: "Enter", code: "Enter" });
+    const spam = await folderRail(slot).findByRole("button", { name: /Spam/ });
+    spam.focus();
+    fireEvent.click(spam);
     await waitFor(() =>
       expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ scope: { folder: "[Gmail]/Spam" } }),
     );
-    await waitFor(() => expect(slot.queryByRole("listbox")).toBeNull());
-    await waitFor(() => expect(document.activeElement).toBe(pageRoot(slot)));
+    await waitFor(() => expect(pageRoot(slot).contains(document.activeElement)).toBe(true));
   });
 
   it("x selects while a conversation is open on the wide layout", async () => {
@@ -2461,8 +2505,7 @@ describe("One action toolbar", () => {
   });
 });
 
-describe("Sidebar thread list", () => {
-  const threadList = app.threadLists[0]!;
+describe("Mail in BB's sidebar", () => {
   const otherAccount: Account = {
     ...account,
     id: "acc-2",
@@ -2471,118 +2514,125 @@ describe("Sidebar thread list", () => {
     username: "second@example.net",
     host: "imap.example.net",
   };
-  const threadC: ThreadSummary = {
-    ...threadB,
-    id: "th-c",
-    accountId: "acc-2",
-    subject: "Garden club",
-    participants: [{ name: "Cy Example", address: "cy@example.net" }],
-  };
 
-  function renderList(rpc: Record<string, unknown>, onNavigate = vi.fn()) {
-    const slot = renderSlot(
-      threadList,
-      {
-        activeThreadId: null,
-        activeProjectId: null,
-        isCompactViewport: false,
-        onNavigate,
-        searchQuery: "",
-      },
-      { rpc: rpc as never },
-    );
-    return { slot, onNavigate };
+  function renderSidebar() {
+    return renderSlot({ component: MailFolderSidebar }, { subPath: "" }, { rpc: mailRpc() as never });
   }
 
-  it("registers the Mail thread list", () => {
-    expect(threadList).toMatchObject({
-      id: "mail",
-      title: "Mail",
-      description: "Inbox conversations from all mail accounts instead of chats.",
-    });
+  it("registers the rail as the Mail page's sidebar and no thread list", () => {
+    expect(panel.experimental_sidebar).toBeTypeOf("function");
+    expect(app.threadLists).toEqual([]);
   });
 
-  it("lists the merged Inbox of every account", async () => {
-    const { slot } = renderList(
-      mailRpc({
-        status_get: () => status({ accounts: [account, otherAccount] }),
-        threads_list: () => ({ threads: [threadA, threadC], nextCursor: null }),
+  it("selecting a folder in the sidebar navigates to its view's subPath", async () => {
+    const slot = render(folderRpc());
+
+    await openFolder(slot, /Spam/);
+    await waitFor(() =>
+      expect(slot.inspection.navigateCalls.at(-1)).toEqual({
+        method: "toPluginPanel",
+        path: "mail",
+        options: { subPath: "v/acc-1/%5BGmail%5D%2FSpam" },
       }),
     );
-
-    const rows = within(await slot.findByRole("list", { name: "Inbox conversations" })).getAllByRole("button");
-    expect(rows).toHaveLength(2);
-    expect(rows[0]!.textContent).toContain("Ada Example");
-    expect(rows[0]!.textContent).toContain("Quarterly plan");
-    expect(rows[1]!.textContent).toContain("Garden club");
-    // Several accounts: each row names its account.
-    expect(rows[1]!.textContent).toContain("Second");
-    expect(callsTo(slot, "threads_list")[0]?.input).toEqual({
-      scope: { kind: "all", role: "inbox" },
-      cursor: null,
-      limit: 50,
-    });
-  });
-
-  it("opens a row's conversation on the Mail page", async () => {
-    const { slot, onNavigate } = renderList(mailRpc());
-
-    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
-
-    expect(slot.inspection.navigateCalls).toEqual([
-      { method: "toPluginPanel", path: "mail", options: { subPath: "t/acc-1/th-a" } },
-    ]);
-    expect(onNavigate).toHaveBeenCalledTimes(1);
-  });
-
-  it("offers to add an account when there is none", async () => {
-    const { slot, onNavigate } = renderList(
-      mailRpc({ status_get: () => status({ accounts: [], unreadCount: 0 }) }),
+    await waitFor(() =>
+      expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({
+        scope: { kind: "account", accountId: "acc-1", folder: "[Gmail]/Spam" },
+      }),
     );
-
-    fireEvent.click(await slot.findByRole("button", { name: "Add a mail account" }));
-
-    expect(callsTo(slot, "threads_list")).toHaveLength(0);
-    expect(slot.inspection.navigateCalls).toEqual([{ method: "toPluginPanel", path: "mail" }]);
-    expect(onNavigate).toHaveBeenCalledTimes(1);
   });
 
-  it("says when the Inbox is empty", async () => {
-    const { slot } = renderList(mailRpc({ threads_list: () => ({ threads: [], nextCursor: null }) }));
+  it("a merged role goes to v/all/<role>", async () => {
+    const slot = render(unifiedRpc());
 
-    expect(await slot.findByText("Inbox is empty")).toBeTruthy();
+    await openFolder(slot, /^Spam/);
+    await waitFor(() =>
+      expect(slot.inspection.navigateCalls.at(-1)).toEqual({
+        method: "toPluginPanel",
+        path: "mail",
+        options: { subPath: "v/all/junk" },
+      }),
+    );
   });
 
-  it("the Mail page opens the conversation its subPath names, and the sidebar marks it", async () => {
+  it("a page opened on v/… lists that view first", async () => {
+    const slot = render(folderRpc(), hostEncode("v/acc-1/%5BGmail%5D%2FSpam"));
+
+    await slot.findByText("Lunch");
+    expect(callsTo(slot, "threads_list").map((call) => call.input)).toEqual([
+      { scope: { kind: "account", accountId: "acc-1", folder: "[Gmail]/Spam" }, cursor: null, limit: 50 },
+    ]);
+    await waitFor(() =>
+      expect(folderRail(slot).getByRole("button", { name: /Spam/ }).getAttribute("aria-current")).toBe("page"),
+    );
+  });
+
+  it("a merged role in the subPath shows it in All accounts", async () => {
+    const slot = render(unifiedRpc(), "v/all/sent");
+
+    await slot.findByText("Invoice");
+    expect(callsTo(slot, "threads_list")[0]?.input).toMatchObject({ scope: { kind: "all", role: "sent" } });
+  });
+
+  it("an unknown or malformed view falls back to the inbox", async () => {
+    const slot = render(folderRpc(), "v/acc-9/Nowhere");
+
+    await slot.findByText("Lunch");
+    await waitFor(() =>
+      expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ scope: { folder: "INBOX" } }),
+    );
+  });
+
+  it("the g i hotkey goes through the subPath too", async () => {
+    const slot = render(folderRpc(), hostEncode("v/acc-1/%5BGmail%5D%2FSpam"));
+    await slot.findByText("Lunch");
+    pageRoot(slot).focus();
+
+    press(pageRoot(slot), { key: "g", code: "KeyG" });
+    press(pageRoot(slot), { key: "i", code: "KeyI" });
+
+    await waitFor(() =>
+      expect(slot.inspection.navigateCalls.at(-1)).toEqual({
+        method: "toPluginPanel",
+        path: "mail",
+        options: { subPath: "v/acc-1/INBOX" },
+      }),
+    );
+    await waitFor(() =>
+      expect(folderRail(slot).getByRole("button", { name: /Inbox/ }).getAttribute("aria-current")).toBe("page"),
+    );
+  });
+
+  it("choosing an account in the sidebar leaves the routed view for its inbox", async () => {
+    const proto = Element.prototype as unknown as Record<string, unknown>;
+    proto.scrollIntoView ??= () => {};
+    proto.hasPointerCapture ??= () => false;
+    proto.releasePointerCapture ??= () => {};
+    const slot = render(unifiedRpc(), "v/all/junk");
+    await slot.findByText("Invoice");
+
+    const chooser = folderRail(slot).getByRole("combobox", { name: "Account" });
+    chooser.focus();
+    fireEvent.keyDown(chooser, { key: "Enter", code: "Enter" });
+    fireEvent.keyDown(await slot.findByRole("option", { name: "me@work.example.org" }), { key: "Enter", code: "Enter" });
+
+    await waitFor(() =>
+      expect(slot.inspection.navigateCalls.at(-1)).toEqual({ method: "toPluginPanel", path: "mail", options: { subPath: "" } }),
+    );
+    await waitFor(() =>
+      expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({
+        scope: { kind: "account", accountId: "acc-2", folder: "INBOX" },
+      }),
+    );
+  });
+
+  it("the Mail page opens the conversation its subPath names", async () => {
     const page = renderSlot(panel, { subPath: "t/acc-1/th-a" }, {
       rpc: mailRpc() as never,
       composer: { scope: { kind: "new-thread", projectId: null } },
     });
 
     expect(await page.findByRole("heading", { name: "Quarterly plan" })).toBeTruthy();
-    expect(callsTo(page, "thread_get")[0]?.input).toMatchObject({ threadId: "th-a" });
-
-    const { slot } = renderList(mailRpc());
-    const list = within(await slot.findByRole("list", { name: "Inbox conversations" }));
-    expect(list.getByRole("button", { name: /Quarterly plan/ }).getAttribute("aria-current")).toBe("page");
-    expect(list.getByRole("button", { name: /Lunch/ }).getAttribute("aria-current")).toBeNull();
-
-    page.lifecycle.unmount();
-    await waitFor(() =>
-      expect(list.getByRole("button", { name: /Quarterly plan/ }).getAttribute("aria-current")).toBeNull(),
-    );
-  });
-
-  it("a row opens its conversation in a Mail page that is already showing", async () => {
-    const page = render(mailRpc());
-    await page.findByText("Lunch");
-    const { slot } = renderList(mailRpc());
-    const list = within(await slot.findByRole("list", { name: "Inbox conversations" }));
-
-    fireEvent.click(list.getByRole("button", { name: /Quarterly plan/ }));
-
-    expect(await page.findByRole("heading", { name: "Quarterly plan" })).toBeTruthy();
-    expect(callsTo(page, "thread_get")).toHaveLength(1);
     expect(callsTo(page, "thread_get")[0]?.input).toMatchObject({ threadId: "th-a" });
   });
 
@@ -2594,6 +2644,40 @@ describe("Sidebar thread list", () => {
 
     expect(await page.findByText("Lunch")).toBeTruthy();
     expect(callsTo(page, "thread_get")).toHaveLength(0);
+  });
+
+  it("without a page the sidebar waits and loads nothing itself", async () => {
+    const slot = renderSidebar();
+
+    expect(slot.getByText("Loading mail…")).toBeTruthy();
+    expect(callsTo(slot, "folders_list")).toHaveLength(0);
+  });
+
+  it("several accounts: the sidebar lists the account chooser with All accounts", async () => {
+    const slot = render(
+      mailRpc({
+        status_get: () => status({ accounts: [account, otherAccount] }),
+        folders_list: () => ({ folders: [], roles: [] }),
+      }),
+    );
+    const chooser = await folderRail(slot).findByRole("combobox", { name: "Account" });
+    expect(chooser.textContent).toContain("All accounts");
+  });
+
+  it("shows the Outbox while sends are pending and opens Sent from it", async () => {
+    const slot = render(
+      folderRpc({
+        outbox_list: () => ({ rows: [outboxRow({ id: "o-1", state: "failed", errorKind: "auth" })] }),
+      }),
+    );
+
+    const outbox = within(await folderRail(slot).findByRole("list", { name: "Outbox" }));
+    const row = outbox.getByRole("button", { name: /Outbox/ });
+    expect(row.textContent).toMatch(/1/);
+    fireEvent.click(row);
+    await waitFor(() =>
+      expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ scope: { folder: "[Gmail]/Sent Mail" } }),
+    );
   });
 });
 

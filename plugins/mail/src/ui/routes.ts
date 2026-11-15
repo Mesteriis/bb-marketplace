@@ -1,10 +1,14 @@
 // Locations inside the Mail page, as the subPath of its nav panel route.
 //
-// A conversation is `t/<accountId>/<threadId>`. Each id is percent-encoded
+// A view is `v/all/<role>` (a role merged across accounts) or
+// `v/<accountId>/<folder path>` (one account's folder). A conversation is
+// `t/<accountId>/<threadId>`. Each id and path is percent-encoded
 // here, so an id holding `/` stays one segment. The host encodes every
 // segment once more on the way into the URL and hands the panel that form,
 // so parsing undoes both layers. Ids without reserved characters (the usual
 // case) pass through both layers unchanged.
+
+import type { MailView, RoleName } from "./folder-list.tsx";
 
 export interface ThreadLink {
   accountId: string;
@@ -33,4 +37,36 @@ export function parseThreadSubPath(subPath: string): ThreadLink | null {
   const threadId = decodeTwice(segments[2]!);
   if (accountId === null || threadId === null) return null;
   return { accountId, threadId };
+}
+
+/** The account segment of a merged role's view; account ids are generated UUIDs. */
+const ALL_SEGMENT = "all";
+
+const ROLE_SEGMENTS: ReadonlySet<string> = new Set<RoleName>([
+  "inbox",
+  "sent",
+  "drafts",
+  "junk",
+  "trash",
+  "archive",
+]);
+
+/** The subPath, as unencoded segments for `toPluginPanel`, of a view. */
+export function viewSubPath(view: MailView): string {
+  return view.kind === "role"
+    ? `v/${ALL_SEGMENT}/${view.role}`
+    : `v/${encodeURIComponent(view.accountId)}/${encodeURIComponent(view.path)}`;
+}
+
+/** The view a panel subPath (as the host passes it) names; null for anything else. */
+export function parseViewSubPath(subPath: string): MailView | null {
+  const segments = subPath.split("/");
+  if (segments.length !== 3 || segments[0] !== "v") return null;
+  const accountId = decodeTwice(segments[1]!);
+  const second = decodeTwice(segments[2]!);
+  if (accountId === null || second === null) return null;
+  if (accountId === ALL_SEGMENT) {
+    return ROLE_SEGMENTS.has(second) ? { kind: "role", role: second as RoleName } : null;
+  }
+  return { kind: "folder", accountId, path: second };
 }
