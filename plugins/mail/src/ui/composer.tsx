@@ -63,8 +63,8 @@ export interface ComposerSaveInput {
   saveToServer?: boolean;
   /** The editor's one-time load of the draft's import: not an edit. */
   imported?: boolean;
-  /** The identity to send from: null = the account's own address (slice 3d). */
-  fromAddress: string | null;
+  /** The identity to send from: null = the account's own address; absent = unchanged (slice 3d). */
+  fromAddress?: string | null;
 }
 
 export type ComposerSaveResult = { revision: number; originalKept?: true } | { conflict: true; revision: number };
@@ -314,6 +314,8 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   fields.current = { accountId, fromAddress: from.address, to, cc, bcc, subject, attachments };
   const doc = useRef<EditorDoc>(draft.doc as EditorDoc);
   const revision = useRef(draft.revision);
+  /** The From the server has: a save sends fromAddress only when it differs, so a removed alias still saves. */
+  const savedFrom = useRef({ accountId: draft.accountId, fromAddress: draft.fromAddress });
   /** Bumped by every change; `savedVersion` is the one the last save held. */
   const version = useRef(0);
   const savedVersion = useRef(0);
@@ -348,13 +350,15 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       if (conflictRef.current !== null) return "conflict";
       const at = version.current;
       const current = fields.current;
+      const fromChanged =
+        current.accountId !== savedFrom.current.accountId || current.fromAddress !== savedFrom.current.fromAddress;
       setSaveState({ kind: "saving" });
       try {
         const result = await portsRef.current.save({
           draftId: draft.id,
           baseRevision: revision.current,
           accountId: current.accountId,
-          fromAddress: current.fromAddress,
+          ...(fromChanged ? { fromAddress: current.fromAddress } : {}),
           to: savable(current.to.chips),
           cc: savable(current.cc.chips),
           bcc: savable(current.bcc.chips),
@@ -371,6 +375,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           return "conflict";
         }
         revision.current = result.revision;
+        if (fromChanged && !imported) savedFrom.current = { accountId: current.accountId, fromAddress: current.fromAddress };
         if (result.originalKept === true) setOriginalKept(true);
         savedVersion.current = Math.max(savedVersion.current, at);
         setSaveState(version.current === at ? { kind: "saved" } : { kind: "unsaved" });

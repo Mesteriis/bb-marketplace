@@ -7,6 +7,7 @@ import {
   discardCompose,
   newCompose,
   openDraft,
+  outgoingOf,
   planCompose,
   planNew,
   prepareCompose,
@@ -35,12 +36,14 @@ function stored(overrides: Parameters<typeof makeFetchedMessage>[1] = {}, folder
   return id;
 }
 
+/** Saves as a page may: fromAddress is sent as stored unless overridden. */
 async function save(draftId: string, overrides: Partial<SaveComposeInput> = {}) {
   const draft = h.store.getDraft(draftId)!;
   return saveCompose(h.deps, {
     draftId,
     baseRevision: draft.revision,
     accountId: draft.accountId,
+    fromAddress: draft.fromAddress,
     to: ["bob@example.com"],
     cc: [],
     bcc: ["hidden@example.net"],
@@ -780,8 +783,18 @@ describe("identities in compose (slice 3d)", () => {
     expect(h.builder.built.at(-1)!.from.address).toBe(ALIAS);
     h.store.removeIdentity("acc_1", ALIAS);
     h.advance(SERVER_COPY_IDLE_MS);
-    await save(draftId, { subject: "Changed", saveToServer: true });
+    // The stored alias is sent back unchanged: tolerated, not refused.
+    await save(draftId, { subject: "Changed", fromAddress: ALIAS, saveToServer: true });
+    expect(h.store.getDraft(draftId)!.fromAddress).toBe(ALIAS);
     expect(h.builder.built.at(-1)!.from).toEqual({ name: null, address: "owner@example.org" });
+    // Send still refuses it: the owner must choose another From.
+    const account = h.store.getAccount("acc_1")!;
+    expect(() => outgoingOf(h.deps, account, h.store.getDraft(draftId)!, true)).toThrow(
+      expect.objectContaining({ kind: "from_unknown" }),
+    );
+    // Choosing the removed alias anew is still refused.
+    const other = newCompose(h.deps, "acc_1").draftId;
+    await expect(save(other, { fromAddress: ALIAS })).rejects.toThrow(ComposeError);
   });
 
   it("From carries the alias's display name, else the account's", async () => {
