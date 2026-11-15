@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { docFromLines, type ComposeDoc, type ComposeParagraph } from "./compose-doc.ts";
 import type { ComposeKind } from "./model.ts";
-import { attachmentMention, cardChecks, ownText, presendIssues, type PresendIssue } from "./presend.ts";
+import { attachmentMention, cardChecks, inheritedSubject, ownText, presendIssues, type PresendIssue } from "./presend.ts";
 
 const para = (value: string): ComposeParagraph =>
   value === "" ? { type: "paragraph" } : { type: "paragraph", content: [{ type: "text", text: value }] };
@@ -127,6 +127,7 @@ describe("presendIssues", () => {
     own: new Set(["anna@example.com", "sales@example.com"]),
     sentTo: new Set(["bob@example.org"]),
     conversation: null as ReadonlySet<string> | null,
+    inheritedSubject: null as string | null,
   };
 
   it("finds nothing in an ordinary message", () => {
@@ -144,6 +145,36 @@ describe("presendIssues", () => {
     expect(presendIssues({ ...base, kind: "reply", doc: reply, conversation: new Set(["bob@example.org"]) })).toEqual([]);
     const forward = docFromLines(["FYI", "---------- Forwarded message ----------", "Subject: attached"]);
     expect(presendIssues({ ...base, kind: "forward", subject: "Fwd: x", doc: forward })).toEqual([]);
+  });
+
+  it("checks a reply's or forward's subject only when the owner changed the inherited one", () => {
+    const conversation = new Set(["bob@example.org"]);
+    const reply = { ...base, kind: "reply" as ComposeKind, conversation, subject: "Re: Report attached", inheritedSubject: "Re: Report attached" };
+    expect(presendIssues(reply)).toEqual([]);
+    expect(presendIssues({ ...reply, kind: "reply_all" })).toEqual([]);
+    expect(presendIssues({ ...reply, subject: "Re: Report attached, v2" })).toEqual([
+      { kind: "attachment_mentioned", phrase: "attached" },
+    ]);
+    const forward = { ...base, kind: "forward" as ComposeKind, subject: "Fwd: Enclosed plan", inheritedSubject: "Fwd: Enclosed plan" };
+    expect(presendIssues(forward)).toEqual([]);
+    // The body still counts.
+    expect(presendIssues({ ...reply, doc: docFromLines(["I attach it"]) })).toEqual([
+      { kind: "attachment_mentioned", phrase: "attach" },
+    ]);
+    // A new message is checked as before, whatever is passed.
+    expect(presendIssues({ ...base, subject: "Report attached", inheritedSubject: "Report attached" })).toEqual([
+      { kind: "attachment_mentioned", phrase: "attached" },
+    ]);
+    // No source to compare with: the subject is checked.
+    expect(presendIssues({ ...reply, inheritedSubject: null })).toEqual([{ kind: "attachment_mentioned", phrase: "attached" }]);
+  });
+
+  it("inheritedSubject computes Re:/Fwd: from the source subject", () => {
+    expect(inheritedSubject("reply", "Report attached")).toBe("Re: Report attached");
+    expect(inheritedSubject("reply_all", "Re: Report attached")).toBe("Re: Report attached");
+    expect(inheritedSubject("forward", "Report attached")).toBe("Fwd: Report attached");
+    expect(inheritedSubject("new", "Report attached")).toBeNull();
+    expect(inheritedSubject("reply", null)).toBeNull();
   });
 
   it("flags an empty subject", () => {

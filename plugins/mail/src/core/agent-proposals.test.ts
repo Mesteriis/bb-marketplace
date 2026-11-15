@@ -897,6 +897,14 @@ describe("proposals by identity (slice 3d)", () => {
     expect(view.to[0]!.flags).toContain("new");
   });
 
+  it("the card's checks ignore attachment words in an inherited Re: subject", async () => {
+    const id = stored({ from: { name: "Anna", address: "anna@example.org" }, subject: "Report attached" });
+    const proposed = await propose({ kind: "reply", sourceMessageId: id, accountId: undefined, subject: undefined, to: [], body: "Thanks" });
+    const view = await cardOf(proposed);
+    expect(view.subject).toBe("Re: Report attached");
+    expect(view.checks.filter((c) => c.kind === "attachment_mentioned")).toEqual([]);
+  });
+
   it("a reply to own mail leaves the own signature out of the agent's quote", async () => {
     const id = stored({
       from: { name: "Owner", address: "owner@example.org" },
