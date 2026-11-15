@@ -2,10 +2,15 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   BACKFILL_BUDGET,
   LIST_HEADER_FIELDS,
+  UNSUBSCRIBE_BACKFILL_BUDGET,
   backfillBulk,
+  backfillUnsubscribe,
   bulkHeadersOf,
+  cursorKey,
+  unsubscribeCursorKey,
   type BackfillCursors,
 } from "./bulk-backfill.ts";
+import { UNSUBSCRIBE_HEADER_FIELDS, type HeaderLine } from "./unsubscribe.ts";
 import { NO_BULK_HEADERS, classifyBulk } from "./contacts.ts";
 import { ImapAuthError, type SyncState } from "./index.ts";
 import {
@@ -244,5 +249,134 @@ describe("backfillBulk", () => {
       throw new Error("database is locked");
     };
     await expect(backfillBulk(deps(), "acc_1", { cursors })).resolves.toMatchObject({ marked: 0, failed: 1 });
+  });
+});
+
+describe("backfillUnsubscribe", () => {
+  let store: InMemoryMailStore;
+  let gateway: ScriptedImapGateway;
+  let cursors: BackfillCursors;
+  const deps = () => ({ store, gateway, vault: new IdentityVault() });
+  const state: SyncState = { uidValidity: 1, lastUid: 0, syncedSince: "2026-10-01T00:00:00.000Z" };
+  const line = (key: string, value: string): HeaderLine => ({ key, value });
+  const LIST_LINES = [
+    line("From", "News <news@example.com>"),
+    line("List-Id", "Weekly News <weekly.example.com>"),
+    line("List-Unsubscribe", "<mailto:leave@example.com?subject=stop>"),
+  ];
+
+  /** A bulk message on the server with list headers, stored without unsubscribe info (as before element 8). */
+  function oldBulk(path: string, unsubscribeHeaders: HeaderLine[] = LIST_LINES) {
+    const message = gateway.deliver(
+      { bulkHeaders: LIST, from: { name: "News", address: "news@example.com" }, unsubscribeHeaders },
+      path,
+    );
+    const { unsubscribeHeaders: _dropped, ...withoutHeaders } = message;
+    store.upsertMessages("acc_1", path, [withoutHeaders]);
+    return message.uid;
+  }
+  const infoOf = (path: string, uid: number) => {
+    const id = store.localFolderIndex("acc_1", path, "1970-01-01T00:00:00.000Z").find((e) => e.uid === uid)!.id;
+    return store.getUnsubscribeInfo(id);
+  };
+
+  beforeEach(() => {
+    store = new InMemoryMailStore();
+    gateway = new ScriptedImapGateway({ uidValidity: 1, uidNext: 1, messages: [] });
+    cursors = new Map();
+    store.saveAccount(makeStoredAccount());
+    gateway.addFolder({ path: "Archive" });
+    store.saveFolders("acc_1", [
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
+    ]);
+    store.saveSyncState("acc_1", "INBOX", state);
+    store.saveSyncState("acc_1", "Archive", state);
+  });
+
+  it("fills Inbox bulk rows from exactly the unsubscribe fields, read-only, and never other folders", async () => {
+    const inbox = oldBulk("INBOX");
+    const archived = oldBulk("Archive");
+
+    const outcome = await backfillUnsubscribe(deps(), "acc_1", { cursors });
+
+    expect(outcome).toEqual({ marked: 1, unanswered: 0, folders: 1, skipped: 0, failed: 0 });
+    expect(infoOf("INBOX", inbox)).toMatchObject({
+      listKey: "weekly.example.com",
+      listName: "Weekly News",
+      mailto: { address: "leave@example.com", subject: "stop" },
+      trust: "untrusted_provider",
+    });
+    expect(infoOf("Archive", archived)).toBeNull();
+    expect(gateway.sessions.map((s) => [s.path, s.readOnly])).toEqual([["INBOX", true]]);
+    const call = gateway.sessions[0]!.calls.find((c) => c.method === "fetchHeaderFields")!;
+    expect(call.fields).toEqual([...UNSUBSCRIBE_HEADER_FIELDS]);
+    expect(gateway.sessions[0]!.calls.map((c) => c.method)).toEqual(["status", "fetchHeaderFields"]);
+  });
+
+  it("takes personal rows never, and rows whose info is known never", async () => {
+    const personal = gateway.deliver({ bulkHeaders: NO_BULK_HEADERS, unsubscribeHeaders: LIST_LINES });
+    const { unsubscribeHeaders: _p, ...personalStored } = personal;
+    store.upsertMessages("acc_1", "INBOX", [personalStored]);
+    const known = gateway.deliver({ bulkHeaders: LIST, unsubscribeHeaders: LIST_LINES });
+    store.upsertMessages("acc_1", "INBOX", [
+      {
+        ...known,
+        unsubscribe: {
+          listKey: "kept.example.com",
+          listName: null,
+          https: null,
+          oneClick: false,
+          mailto: null,
+          trust: "no_dkim",
+        },
+      },
+    ]);
+
+    const outcome = await backfillUnsubscribe(deps(), "acc_1", { cursors });
+
+    expect(outcome.folders).toBe(0);
+    expect(gateway.sessions).toHaveLength(0);
+    expect(infoOf("INBOX", known.uid)).toMatchObject({ listKey: "kept.example.com" });
+    expect(infoOf("INBOX", personal.uid)).toBeNull();
+  });
+
+  it("goes newest first within its budget, with its own cursor beside the bulk pass's", async () => {
+    const uids = Array.from({ length: 5 }, () => oldBulk("INBOX"));
+    expect(UNSUBSCRIBE_BACKFILL_BUDGET).toBe(200);
+
+    const first = await backfillUnsubscribe(deps(), "acc_1", { cursors, budget: 3, batchSize: 2 });
+    expect(first.marked).toBe(3);
+    const fetched = gateway.sessions[0]!.calls.filter((c) => c.method === "fetchHeaderFields").map((c) => c.uids);
+    expect(fetched).toEqual([[5, 4], [3]]);
+    expect(cursors.get(unsubscribeCursorKey("acc_1", "INBOX"))).toEqual({ uidValidity: 1, belowUid: 3 });
+    expect(cursors.has(cursorKey("acc_1", "INBOX"))).toBe(false);
+
+    const second = await backfillUnsubscribe(deps(), "acc_1", { cursors, budget: 3, batchSize: 2 });
+    expect(second.marked).toBe(2);
+    expect(uids.every((uid) => infoOf("INBOX", uid) !== null)).toBe(true);
+  });
+
+  it("a message without List-Unsubscribe stays NULL and is not asked again", async () => {
+    const bare = oldBulk("INBOX", [line("From", "News <news@example.com>")]);
+
+    const first = await backfillUnsubscribe(deps(), "acc_1", { cursors });
+    expect(first).toMatchObject({ marked: 0, unanswered: 0, folders: 1 });
+    expect(infoOf("INBOX", bare)).toBeNull();
+
+    await backfillUnsubscribe(deps(), "acc_1", { cursors });
+    expect(gateway.sessions).toHaveLength(1);
+  });
+
+  it("skips a folder whose UIDVALIDITY changed and fills only while the stored one matches", async () => {
+    const uid = oldBulk("INBOX");
+    gateway.mailboxes.get("INBOX")!.uidValidity = 2;
+
+    const outcome = await backfillUnsubscribe(deps(), "acc_1", { cursors });
+
+    expect(outcome).toMatchObject({ marked: 0, skipped: 1, folders: 0 });
+    expect(infoOf("INBOX", uid)).toBeNull();
+    expect(gateway.sessions[0]!.calls.map((c) => c.method)).toEqual(["status"]);
+    expect(store.fillUnsubscribe("acc_1", "INBOX", 2, [{ uid, info: null }])).toBe(0);
   });
 });

@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { OutgoingAddress } from "./compose-address.ts";
 import { composeDocInputSchema, type ComposeDoc } from "./compose-doc.ts";
 import type { SignatureDoc } from "./compose-signature.ts";
-import type { HeaderLine } from "./unsubscribe.ts";
+import type { HeaderLine, UnsubscribeInfo } from "./unsubscribe.ts";
 
 /** Which server preset an account was set up with. */
 export const accountPresetSchema = z.enum(["icloud", "gmail", "other"]);
@@ -299,6 +299,11 @@ export type FetchedMessage = {
    * fetch did not read headers: the stored unsubscribe info is left alone.
    */
   unsubscribeHeaders?: HeaderLine[];
+  /**
+   * The unsubscribe info sync judged from `unsubscribeHeaders` (null: no
+   * List-Unsubscribe). Absent: the store leaves the stored info alone.
+   */
+  unsubscribe?: UnsubscribeInfo | null;
 };
 
 /** A folder as the server lists it. */

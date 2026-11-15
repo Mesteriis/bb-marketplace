@@ -1325,3 +1325,234 @@ describe("syncAccount flag push", () => {
     expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe("INBOX: Sync failed");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Slice 3e: Inbox-only rounds, new Inbox mail and unsubscribe info at sync
+// ---------------------------------------------------------------------------
+
+/** A synthetic Gmail-shaped header set whose DKIM signature covers both list headers. */
+function gmailListHeaders(): { key: string; value: string }[] {
+  const h = (key: string, value: string) => ({ key: key.toLowerCase(), value });
+  return [
+    h("Delivered-To", "owner@example.org"),
+    h("Received", "by 2002:a05:0000:0000 with SMTP id x"),
+    h("Authentication-Results", "mx.google.com;\r\n dkim=pass header.i=@example.com header.s=sel1 header.b=AbCdEf12"),
+    h("Return-Path", "<bounce@example.com>"),
+    h(
+      "DKIM-Signature",
+      "v=1; a=rsa-sha256; d=example.com; s=sel1; h=from:subject:list-unsubscribe:list-unsubscribe-post; bh=AAAA; b=AbCdEf12xyz",
+    ),
+    h("From", "News <news@example.com>"),
+    h("List-Unsubscribe", "<https://u.example.com/x>, <mailto:leave@example.com>"),
+    h("List-Unsubscribe-Post", "List-Unsubscribe=One-Click"),
+  ];
+}
+
+describe("slice-3e sync", () => {
+  it("an Inbox-only round lists nothing and pushes and fetches only the Inbox", async () => {
+    const { store, gateway, deps } = setupWithArchive(2, 1);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const archived = idByUid(store, "Archive", 1);
+    store.setDesired([archived], { flagged: true });
+    gateway.deliver({}, INBOX);
+    gateway.deliver({ messageId: "late-archive@example.org" }, "Archive");
+    const listings = gateway.listFoldersCalls;
+    const before = gateway.sessions.length;
+    const threads = vi.spyOn(store, "assignThreads");
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, only: "inbox" });
+
+    expect(outcome).toMatchObject({ status: "ok", folders: 1, fetched: 1, pushedFlags: 0 });
+    expect(gateway.listFoldersCalls).toBe(listings);
+    expect(gateway.sessions.slice(before).map((s) => s.path)).toEqual([INBOX]);
+    expect(store.pendingFlagIntents(ACCOUNT_ID, "Archive")).toHaveLength(1);
+    expect(threads).toHaveBeenCalledTimes(1);
+  });
+
+  it("an Inbox-only round keeps lastSyncAt and the full round's lastError, appending its own problem", async () => {
+    const { store, gateway, deps } = setupWithArchive(2);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const synced = store.getAccount(ACCOUNT_ID)!.lastSyncAt;
+    store.recordSyncResult(ACCOUNT_ID, { lastSyncAt: synced, lastError: "Archive: Sync failed (X)", authFailed: false });
+    store.setDesired([idByUid(store, INBOX, 1)], { flagged: true });
+    gateway.failNext("setFlags", imapError("StoreFailed"), INBOX);
+    (deps.clock as FixedClock).set(new Date(NOW.getTime() + 60_000));
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, only: "inbox" });
+
+    expect(outcome.status).toBe("ok");
+    const account = store.getAccount(ACCOUNT_ID)!;
+    expect(account.lastSyncAt).toBe(synced);
+    expect(account.lastError).toBe("Archive: Sync failed (X); INBOX: could not update flags on the server");
+
+    // A clean Inbox-only round never clears it; a full round does.
+    await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, only: "inbox" });
+    expect(store.getAccount(ACCOUNT_ID)!.lastError).toBe(
+      "Archive: Sync failed (X); INBOX: could not update flags on the server",
+    );
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(store.getAccount(ACCOUNT_ID)!.lastError).toBeNull();
+    expect(store.getAccount(ACCOUNT_ID)!.lastSyncAt).not.toBe(synced);
+  });
+
+  it("an Inbox-only round whose Inbox fails merges the error and keeps lastSyncAt", async () => {
+    const { store, gateway, deps } = setupWithArchive(1);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const synced = store.getAccount(ACCOUNT_ID)!.lastSyncAt;
+    store.recordSyncResult(ACCOUNT_ID, { lastSyncAt: synced, lastError: "Archive: Sync failed (X)", authFailed: false });
+    gateway.failOpenFolder(INBOX, imapError("Busy"));
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, only: "inbox" });
+
+    expect(outcome.status).toBe("error");
+    expect(store.getAccount(ACCOUNT_ID)).toMatchObject({
+      lastSyncAt: synced,
+      lastError: "Archive: Sync failed (X); INBOX: Sync failed (Busy)",
+      authFailed: false,
+    });
+  });
+
+  it("an Inbox-only round still records an authentication failure", async () => {
+    const { store, gateway, deps } = setup(mailbox(1));
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    gateway.failOpenFolder(INBOX, new ImapAuthError());
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, only: "inbox" });
+
+    expect(outcome).toMatchObject({ status: "error", authFailed: true });
+    expect(store.getAccount(ACCOUNT_ID)).toMatchObject({ authFailed: true, lastError: "Authentication failed" });
+  });
+
+  it("newInbox has the incremental fetch's inserted Inbox rows, never an initial sync's", async () => {
+    const { store, gateway, deps } = setupWithArchive(3);
+    const initial = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(initial).toMatchObject({ status: "ok", fetched: 3, newInbox: [], returning: [] });
+
+    const fresh = gateway.deliver({}, INBOX);
+    gateway.deliver({ messageId: "archive-new@example.org" }, "Archive");
+    const next = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(next).toMatchObject({ status: "ok", newInbox: [idByUid(store, INBOX, fresh.uid)], returning: [] });
+  });
+
+  it("newInbox leaves out a UIDVALIDITY reset and a reconcile backfill", async () => {
+    const { store, gateway, deps } = setup(mailbox(3));
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    // Lost locally but inside the window on the server: reconcile backfills it.
+    store.deleteByUids(ACCOUNT_ID, INBOX, [2]);
+    const backfilled = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(backfilled).toMatchObject({ status: "ok", fetched: 1, newInbox: [] });
+
+    const box = gateway.mailboxes.get(INBOX)!;
+    box.uidValidity = 99;
+    gateway.deliver({}, INBOX);
+    const reset = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(reset).toMatchObject({ status: "ok", newInbox: [] });
+  });
+
+  it("newInbox leaves out a row a move re-homed into the Inbox, with or without a uid map", async () => {
+    const { store, gateway, deps } = setupWithArchive(1, 2);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const rehomed = idByUid(store, "Archive", 1);
+    store.queueMove([rehomed], INBOX);
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok", newInbox: [] });
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok", newInbox: [] });
+    expect(store.getMessage(rehomed)).toMatchObject({ folder: INBOX });
+
+    gateway.moveUidMap = false;
+    const reattached = idByUid(store, "Archive", 2);
+    store.queueMove([reattached], INBOX);
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok", newInbox: [] });
+    // The Inbox comes first in the round, so its sync reattaches the row in the next one.
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok", newInbox: [] });
+    expect(store.getMessage(reattached)).toMatchObject({ folder: INBOX });
+  });
+
+  it("a new Inbox row whose dedup key another row already had is returning", async () => {
+    const { store, gateway, deps } = setupWithArchive(1, 1);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const copy = gateway.deliver({ messageId: "archived-1@example.org" }, INBOX);
+    const fresh = gateway.deliver({}, INBOX);
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    const copyId = idByUid(store, INBOX, copy.uid);
+    expect(outcome).toMatchObject({
+      status: "ok",
+      newInbox: [copyId, idByUid(store, INBOX, fresh.uid)],
+      returning: [copyId],
+    });
+  });
+
+  it("an Inbox-only round collects newInbox too", async () => {
+    const { store, gateway, deps } = setup(mailbox(1));
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const fresh = gateway.deliver({}, INBOX);
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, only: "inbox" });
+
+    expect(outcome).toMatchObject({ status: "ok", newInbox: [idByUid(store, INBOX, fresh.uid)] });
+  });
+
+  it("stores unsubscribe info judged by the account's preset, and none without headers", async () => {
+    for (const [preset, trust] of [["gmail", "covered"], ["other", "untrusted_provider"]] as const) {
+      const { store, gateway, deps } = setup(mailbox(0));
+      store.saveAccount(makeStoredAccount({ id: ACCOUNT_ID, passwordSealed: PASSWORD, preset }));
+      const listed = gateway.deliver({
+        from: { name: "News", address: "news@example.com" },
+        unsubscribeHeaders: gmailListHeaders(),
+      });
+      const plain = gateway.deliver();
+
+      await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+      expect(store.getUnsubscribeInfo(idByUid(store, INBOX, listed.uid)), preset).toMatchObject({
+        listKey: "news@example.com",
+        https: "https://u.example.com/x",
+        oneClick: true,
+        mailto: { address: "leave@example.com" },
+        trust,
+      });
+      expect(store.getUnsubscribeInfo(idByUid(store, INBOX, plain.uid)), preset).toBeNull();
+    }
+  });
+
+  it("a fetch without headers leaves stored unsubscribe info alone", () => {
+    const store = new InMemoryMailStore();
+    const withHeaders = makeFetchedMessage(1, {
+      unsubscribe: {
+        listKey: "news@example.com",
+        listName: "News",
+        https: null,
+        oneClick: false,
+        mailto: { address: "leave@example.com", subject: "unsubscribe", body: "" },
+        trust: "untrusted_provider",
+      },
+    });
+    store.upsertMessages(ACCOUNT_ID, INBOX, [withHeaders]);
+    const { unsubscribe: _info, ...without } = withHeaders;
+    store.upsertMessages(ACCOUNT_ID, INBOX, [without]);
+    const id = store.localFolderIndex(ACCOUNT_ID, INBOX, EPOCH)[0]!.id;
+    expect(store.getUnsubscribeInfo(id)).toMatchObject({ listKey: "news@example.com" });
+  });
+
+  it("a listing without the snooze folder clears it; a listing with it keeps it", async () => {
+    const { store, gateway, deps } = setupWithArchive(1);
+    store.saveAccount({ ...store.getAccount(ACCOUNT_ID)!, snoozeFolder: "Archive" });
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(store.getAccount(ACCOUNT_ID)!.snoozeFolder).toBe("Archive");
+
+    gateway.removeFolder("Archive");
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(store.getAccount(ACCOUNT_ID)!.snoozeFolder).toBeNull();
+  });
+
+  it("an Inbox-only round never clears the snooze folder (it lists nothing)", async () => {
+    const { store, gateway, deps } = setupWithArchive(1);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    store.saveAccount({ ...store.getAccount(ACCOUNT_ID)!, snoozeFolder: "Archive" });
+    gateway.removeFolder("Archive");
+    await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, only: "inbox" });
+    expect(store.getAccount(ACCOUNT_ID)!.snoozeFolder).toBe("Archive");
+  });
+});

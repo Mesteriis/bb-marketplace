@@ -1,5 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { ComposeError, addComposeAttachment, newCompose, saveCompose } from "./compose.ts";
+import {
+  ComposeError,
+  addComposeAttachment,
+  createComposeDraft,
+  isHiddenDraft,
+  newCompose,
+  planNew,
+  saveCompose,
+  writeServerCopy,
+} from "./compose.ts";
 import {
   APPEND_ATTEMPTS,
   APPEND_BACKOFF_MS,
@@ -792,5 +801,71 @@ describe("sending from an alias (slice 3d)", () => {
     expect(outboxErrorText("rejected_message", ALIAS, "accepted")).toBeNull();
     expect(outboxErrorText("rejected_message", null, null)).toBeNull();
     expect(outboxErrorText("auth", ALIAS, "unknown")).toBeNull();
+  });
+});
+
+describe("purpose drafts (slice 3e)", () => {
+  /** An unsubscribe email's draft: origin owner, purpose unsubscribe. */
+  async function unsubscribeDraft(): Promise<{ draftId: string; baseRevision: number }> {
+    const plan = planNew(h.deps, "acc_1");
+    const { draftId } = await createComposeDraft(
+      h.deps,
+      {
+        ...plan,
+        to: [{ name: null, address: "leave@example.com" }],
+        subject: "unsubscribe",
+        doc: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "unsubscribe" }] }] },
+      },
+      { origin: "owner", proposalId: null, purpose: "unsubscribe" },
+    );
+    return { draftId, baseRevision: 1 };
+  }
+
+  it("isHiddenDraft covers proposal and purpose drafts only", () => {
+    expect(isHiddenDraft({ proposalId: null, purpose: null })).toBe(false);
+    expect(isHiddenDraft({ proposalId: "p1", purpose: null })).toBe(true);
+    expect(isHiddenDraft({ proposalId: null, purpose: "unsubscribe" })).toBe(true);
+  });
+
+  it("a purpose draft never gets a server copy", async () => {
+    const { draftId } = await unsubscribeDraft();
+    expect(h.store.getDraft(draftId)).toMatchObject({ origin: "owner", proposalId: null, purpose: "unsubscribe" });
+    for (const reason of ["save", "tick", "close"] as const) {
+      expect(await writeServerCopy(h.deps, draftId, reason)).toBe("skipped");
+    }
+    expect(h.gateway.sessions).toHaveLength(0);
+  });
+
+  it("Undo of a purpose send deletes the row and the draft and hands back no draft", async () => {
+    const draft = await unsubscribeDraft();
+    const id = requestId();
+    await queueSend(deps, { ...draft, requestId: id, origin: "owner" });
+
+    expect(cancelSend(deps, id)).toEqual({ cancelled: true, draftId: null });
+    expect(h.store.getOutbox(id)).toBeNull();
+    expect(h.store.getDraft(draft.draftId)).toBeNull();
+    expect(states()).toEqual(["queued", "cancelled"]);
+    h.advance(UNDO_MS);
+    await drain();
+    expect(h.transport.sent).toEqual([]);
+  });
+
+  it("a purpose send that already left cannot be cancelled and keeps its draft", async () => {
+    const draft = await unsubscribeDraft();
+    const id = requestId();
+    await queueSend(deps, { ...draft, requestId: id, origin: "owner" });
+    const sending = h.store.claimDueOutbox(new Date(Date.parse("2026-11-15T11:00:00.000Z")).toISOString(), [], id);
+    expect(sending?.state).toBe("sending");
+
+    expect(cancelSend(deps, id)).toEqual({ cancelled: false, draftId: null });
+    expect(h.store.getDraft(draft.draftId)).not.toBeNull();
+  });
+
+  it("an owner draft without a purpose still hands its draft back on Undo", async () => {
+    const draft = await readyDraft();
+    const id = requestId();
+    await queueSend(deps, { ...draft, requestId: id, origin: "owner" });
+    expect(cancelSend(deps, id)).toEqual({ cancelled: true, draftId: draft.draftId });
+    expect(h.store.getDraft(draft.draftId)).toMatchObject({ purpose: null });
   });
 });

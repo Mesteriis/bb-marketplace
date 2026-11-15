@@ -741,8 +741,12 @@ export interface MailStore {
   spamSeen(accountId: string, dedupKeys: string[]): Set<string>;
   /** Deletes `spam_seen` rows seen before `olderThanIso`; returns how many. */
   pruneSpamSeen(olderThanIso: string): number;
-  /** Stored rows as notify and block judge them; unknown ids are left out. */
-  notifyRows(ids: string[]): (NotifyRow & { dedupKey: string })[];
+  /**
+   * Stored rows as notify and block judge them; unknown ids are left out.
+   * The store keeps no fetch time, so `fetchedAt` is `nowIso` (the rows were
+   * just fetched by the round that asks).
+   */
+  notifyRows(ids: string[], nowIso: string): (NotifyRow & { dedupKey: string })[];
   /**
    * Writes unsubscribe info by uid, only where it is still NULL and only
    * while the folder's stored UIDVALIDITY equals `uidValidity`; a null info
@@ -758,7 +762,12 @@ export interface MailStore {
    * Attached bulk rows of the folder whose unsubscribe info is unknown (NULL),
    * highest uid first, only uids below `belowUid` when given, at most `limit`.
    */
-  unsubscribeUnknown(accountId: string, folder: string, belowUid: number | null, limit: number): number[];
+  unsubscribeUnknown(
+    accountId: string,
+    folder: string,
+    belowUid: number | null,
+    limit: number,
+  ): { uid: number; from: MailAddress }[];
   getUnsubscribeInfo(messageId: string): UnsubscribeInfo | null;
   getUnsubscribe(accountId: string, listKey: string): UnsubscribeRecord | null;
   /** Upsert by (account, list key). */

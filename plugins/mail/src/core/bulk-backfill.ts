@@ -13,9 +13,10 @@
 // for the life of the process) moves below it, so it is not asked again
 // until a restart. Never throws; returns counts only, never mail text.
 import { classifyBulk } from "./contacts.ts";
-import { headerValue } from "./headers.ts";
-import type { BulkHeaders } from "./model.ts";
-import { ImapAuthError, type ImapGateway, type MailStore, type SecretVault } from "./ports.ts";
+import { headerLines, headerValue } from "./headers.ts";
+import type { BulkHeaders, Folder } from "./model.ts";
+import { ImapAuthError, type FolderSession, type ImapGateway, type MailStore, type SecretVault } from "./ports.ts";
+import { UNSUBSCRIBE_HEADER_FIELDS, unsubscribeInfoOf } from "./unsubscribe.ts";
 
 /** The header fields the classifier reads, as asked from the server. */
 export const LIST_HEADER_FIELDS = ["List-Id", "List-Unsubscribe", "Precedence", "Auto-Submitted"] as const;
@@ -42,7 +43,7 @@ export interface BackfillOptions {
 }
 
 export type BackfillOutcome = {
-  /** Rows whose mark was filled. */
+  /** Rows whose mark (or unsubscribe info) was filled. */
   marked: number;
   /** Rows asked for that the server did not return (they stay NULL). */
   unanswered: number;
@@ -73,11 +74,81 @@ export async function backfillBulk(
   accountId: string,
   options: BackfillOptions,
 ): Promise<BackfillOutcome> {
+  return backfillPass(deps, accountId, options, BACKFILL_BUDGET, {
+    folders: () => true,
+    cursorKey,
+    unknown: (path, below, limit) => deps.store.bulkUnknown(accountId, path, below, limit),
+    fetch: (session, uids) => session.fetchListHeaders(uids),
+    fill: (path, uidValidity, found) =>
+      deps.store.fillBulk(
+        accountId,
+        path,
+        uidValidity,
+        found.map(({ row, block }) => ({ uid: row.uid, bulk: classifyBulk(bulkHeadersOf(block), row.fromAddress) })),
+      ),
+  });
+}
+
+/** Rows one account's unsubscribe backfill takes per round (spec "Mail synced before element 8"). */
+export const UNSUBSCRIBE_BACKFILL_BUDGET = 200;
+
+/** The cursor key of the unsubscribe pass: its own, beside the bulk pass's. */
+export function unsubscribeCursorKey(accountId: string, folder: string): string {
+  return `${accountId}\u0000${folder}\u0000unsubscribe`;
+}
+
+/**
+ * The second pass (slice 3e): unsubscribe info for Inbox-role bulk rows
+ * synced before it existed (`unsubscribe_json` NULL), from the header fields
+ * unsubscribeInfoOf reads (UNSUBSCRIBE_HEADER_FIELDS), with the same
+ * UIDVALIDITY guard and fill-where-NULL rule as the bulk pass. A message
+ * without List-Unsubscribe stays NULL; the cursor moves below it.
+ */
+export async function backfillUnsubscribe(
+  deps: BackfillDeps,
+  accountId: string,
+  options: BackfillOptions,
+): Promise<BackfillOutcome> {
+  const preset = deps.store.getAccount(accountId)?.preset ?? "other";
+  return backfillPass(deps, accountId, options, UNSUBSCRIBE_BACKFILL_BUDGET, {
+    folders: (folder) => folder.specialUse === "inbox",
+    cursorKey: unsubscribeCursorKey,
+    unknown: (path, below, limit) => deps.store.unsubscribeUnknown(accountId, path, below, limit),
+    fetch: (session, uids) => session.fetchHeaderFields(uids, UNSUBSCRIBE_HEADER_FIELDS),
+    fill: (path, uidValidity, found) =>
+      deps.store.fillUnsubscribe(
+        accountId,
+        path,
+        uidValidity,
+        found.map(({ row, block }) => ({ uid: row.uid, info: unsubscribeInfoOf(headerLines(block), preset, row.from) })),
+      ),
+  });
+}
+
+type PassRow = { uid: number };
+
+/** What one backfill pass reads and writes; the loop, guards and cursors are shared. */
+type Pass<R extends PassRow> = {
+  folders: (folder: Folder) => boolean;
+  cursorKey: (accountId: string, folder: string) => string;
+  unknown: (path: string, belowUid: number | null, limit: number) => R[];
+  fetch: (session: FolderSession, uids: number[]) => Promise<{ uid: number; block: Uint8Array }[]>;
+  /** Writes what the found blocks say; returns how many rows changed. */
+  fill: (path: string, uidValidity: number, found: { row: R; block: Uint8Array }[]) => number;
+};
+
+async function backfillPass<R extends PassRow>(
+  deps: BackfillDeps,
+  accountId: string,
+  options: BackfillOptions,
+  defaultBudget: number,
+  pass: Pass<R>,
+): Promise<BackfillOutcome> {
   const { store, gateway, vault } = deps;
   const batchSize = Math.max(1, options.batchSize ?? BACKFILL_BATCH);
   const aborted = () => options.signal?.aborted === true;
   const outcome: BackfillOutcome = { marked: 0, unanswered: 0, folders: 0, skipped: 0, failed: 0 };
-  let left = options.budget ?? BACKFILL_BUDGET;
+  let left = options.budget ?? defaultBudget;
 
   try {
     if (aborted()) return outcome;
@@ -93,14 +164,14 @@ export async function backfillBulk(
 
     for (const folder of store.listFolders(accountId)) {
       if (aborted() || left <= 0) break;
-      if (!folder.selectable) continue;
+      if (!folder.selectable || !pass.folders(folder)) continue;
       const path = folder.path;
       const state = store.getSyncState(accountId, path);
       if (state === null) continue;
-      const key = cursorKey(accountId, path);
+      const key = pass.cursorKey(accountId, path);
       const cursor = options.cursors.get(key);
       const below = cursor !== undefined && cursor.uidValidity === state.uidValidity ? cursor.belowUid : null;
-      const rows = store.bulkUnknown(accountId, path, below, left);
+      const rows = pass.unknown(path, below, left);
       if (rows.length === 0) continue;
 
       let session;
@@ -121,14 +192,14 @@ export async function backfillBulk(
         for (let i = 0; i < rows.length && !aborted(); i += batchSize) {
           const batch = rows.slice(i, i + batchSize);
           const blocks = new Map(
-            (await session.fetchListHeaders(batch.map((row) => row.uid))).map((found) => [found.uid, found.block]),
+            (await pass.fetch(session, batch.map((row) => row.uid))).map((found) => [found.uid, found.block]),
           );
-          const marks = batch.flatMap((row) => {
+          const found = batch.flatMap((row) => {
             const block = blocks.get(row.uid);
-            return block === undefined ? [] : [{ uid: row.uid, bulk: classifyBulk(bulkHeadersOf(block), row.fromAddress) }];
+            return block === undefined ? [] : [{ row, block }];
           });
-          outcome.marked += store.fillBulk(accountId, path, state.uidValidity, marks);
-          outcome.unanswered += batch.length - marks.length;
+          outcome.marked += pass.fill(path, state.uidValidity, found);
+          outcome.unanswered += batch.length - found.length;
           left -= batch.length;
           options.cursors.set(key, {
             uidValidity: state.uidValidity,

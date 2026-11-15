@@ -45,6 +45,7 @@ import type {
   ThreadDetail,
   ThreadingInput,
   ThreadSummary,
+  ThreadFilter,
 } from "../model.ts";
 import { headerValue, normalizeMessageId } from "../headers.ts";
 import type { ProposalCapRow, ProposalState } from "../agent-propose.ts";
@@ -68,11 +69,11 @@ import { IDENTITIES_MAX_PER_ACCOUNT, ownerAddressSets, resolveSendCheck, type Al
 import { ComposeError } from "../compose.ts";
 import { TEMPLATES_MAX } from "../templates.ts";
 import type { UndoRow } from "../undo.ts";
-import type { BlockRule } from "../blocking.ts";
+import { matchesBlock, type BlockRule } from "../blocking.ts";
 import type { NotifyRow } from "../notify.ts";
-import type { SnoozeRow, SnoozeState, SnoozeView } from "../snooze.ts";
+import { SNOOZES_MAX_PER_ACCOUNT, type SnoozeRow, type SnoozeState, type SnoozeView } from "../snooze.ts";
 import type { TriageBatchState, TriageHistoryRow, TriageItemOutcome } from "../triage.ts";
-import type { UnsubscribeInfo } from "../unsubscribe.ts";
+import { UNSUBSCRIBE_INFO_MAX_BYTES, type UnsubscribeInfo } from "../unsubscribe.ts";
 import type { WatchEnd } from "../idle-policy.ts";
 import { ImapAuthError, type NewProposal, type ProposalRecord, type TemplateRecord, type TranslationRecord, type AccountWriteQueue, type MailTransport, type MessageBuilder, type OriginalReader, type OutboxNotifier, type SendResult, type SmtpConfig } from "../ports.ts";
 import type { OutboxChangedPayload } from "../contract.ts";
@@ -252,7 +253,20 @@ type Row = {
   inlineParts: InlinePart[];
   /** The stored bulk mark: null when not known (the fetch read no headers). */
   bulk: boolean | null;
+  /** `unsubscribe_json` (slice 3e): null when not known. */
+  unsubscribe: UnsubscribeInfo | null;
 };
+
+type StoredSnooze = SnoozeRow & { createdAt: string; updatedAt: string };
+
+function snoozeRowOf(row: StoredSnooze): SnoozeRow {
+  return { messageId: row.messageId, accountId: row.accountId, returnTo: row.returnTo, dueAt: row.dueAt, state: row.state };
+}
+
+/** The patch without its undefined fields, so a spread leaves those alone. */
+function definedOnly<T extends object>(patch: T): Partial<T> {
+  return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)) as Partial<T>;
+}
 
 type StoreState = {
   accounts: Map<string, StoredAccount>;
@@ -275,6 +289,16 @@ type StoreState = {
   sentRecipients: Map<string, string>;
   /** Templates by id (slice 3d). */
   templates: Map<string, TemplateRecord>;
+  /** Snoozes by message id (slice 3e). */
+  snoozes: Map<string, StoredSnooze>;
+  /** Global block rules, oldest first. */
+  blockRules: BlockRule[];
+  /** By stateKey(accountId, listKey). */
+  unsubscribes: Map<string, UnsubscribeRecord>;
+  /** stateKey(accountId, dedupKey) → seen at. */
+  spamSeen: Map<string, string>;
+  triageBatches: Map<string, TriageBatchRecord>;
+  triageItems: TriageItemRecord[];
 };
 
 type StoredComposeAttachment = ComposeAttachment & {
@@ -312,6 +336,12 @@ function timeOf(date: string | null): number | null {
   return Number.isFinite(time) ? time : null;
 }
 
+/** The stored info: null over the size cap (as the SQLite upsert). */
+function storedUnsubscribe(info: UnsubscribeInfo | null): UnsubscribeInfo | null {
+  if (info === null) return null;
+  return new TextEncoder().encode(JSON.stringify(info)).length > UNSUBSCRIBE_INFO_MAX_BYTES ? null : structuredClone(info);
+}
+
 function snippetOf(message: FetchedMessage): string {
   return snippetFromBody(message.bodyText, message.bodyHtml);
 }
@@ -336,6 +366,12 @@ export class InMemoryMailStore implements MailStore {
     identities: [],
     sentRecipients: new Map(),
     templates: new Map(),
+    snoozes: new Map(),
+    blockRules: [],
+    unsubscribes: new Map(),
+    spamSeen: new Map(),
+    triageBatches: new Map(),
+    triageItems: [],
   };
 
   /** Runs fn; on a throw restores the state from before the call, like a rollback. */
@@ -403,6 +439,16 @@ export class InMemoryMailStore implements MailStore {
     for (const key of [...this.state.sentRecipients.keys()]) {
       if (key.startsWith(`${id}\u0000`)) this.state.sentRecipients.delete(key);
     }
+    for (const map of [this.state.unsubscribes, this.state.spamSeen]) {
+      for (const key of [...map.keys()]) if (key.startsWith(`${id}\u0000`)) map.delete(key);
+    }
+    for (const [key, snooze] of [...this.state.snoozes]) if (snooze.accountId === id) this.state.snoozes.delete(key);
+    // Block rules are global: they stay (spec resolution 5).
+    this.state.triageItems = this.state.triageItems.filter((item) => item.accountId !== id);
+    const withItems = new Set(this.state.triageItems.map((item) => item.batchId));
+    for (const batchId of [...this.state.triageBatches.keys()]) {
+      if (!withItems.has(batchId)) this.state.triageBatches.delete(batchId);
+    }
     this.dropOrphanTranslations();
   }
 
@@ -433,6 +479,9 @@ export class InMemoryMailStore implements MailStore {
   // Messages ---------------------------------------------------------------
 
   upsertMessages(accountId: string, folder: string, messages: FetchedMessage[]): { inserted: string[]; returning: string[] } {
+    const inserted: string[] = [];
+    const returning: string[] = [];
+    const junk = this.roleOf(accountId, folder) === "junk";
     for (const message of messages) {
       const rows = this.folderRows(accountId, folder);
       const row =
@@ -456,9 +505,14 @@ export class InMemoryMailStore implements MailStore {
         row.dedupKey = dedupKeyOf(row.gmMsgId, message.messageId, message.size, row.id);
         row.inlineParts = inlineParts;
         row.bulk = bulkMarkOf(message);
+        if (message.unsubscribe !== undefined) row.unsubscribe = storedUnsubscribe(message.unsubscribe);
+        if (junk) this.markSpamSeen(row);
         continue;
       }
       const id = `m_${this.state.nextId++}`;
+      const dedupKey = dedupKeyOf(message.gmMsgId, message.messageId, message.size, id);
+      inserted.push(id);
+      if (this.state.rows.some((r) => r.accountId === accountId && r.dedupKey === dedupKey)) returning.push(id);
       this.state.rows.push({
         id,
         accountId,
@@ -471,14 +525,16 @@ export class InMemoryMailStore implements MailStore {
         flagDesired: null,
         threadId: `t_${id}`,
         gmMsgId: message.gmMsgId,
-        dedupKey: dedupKeyOf(message.gmMsgId, message.messageId, message.size, id),
+        dedupKey,
         movePending: null,
         moveFailures: 0,
         inlineParts,
         bulk: bulkMarkOf(message),
+        unsubscribe: message.unsubscribe === undefined ? null : storedUnsubscribe(message.unsubscribe),
       });
+      if (junk) this.markSpamSeen(this.state.rows[this.state.rows.length - 1]!);
     }
-    return { inserted: [], returning: [] };
+    return { inserted, returning };
   }
 
   localFolderIndex(
@@ -652,8 +708,9 @@ export class InMemoryMailStore implements MailStore {
     folder: string,
     cursor: string | null,
     limit: number,
+    filter?: ThreadFilter,
   ): { threads: ThreadSummary[]; nextCursor: string | null } {
-    const all = this.threadSummaries(accountId, folder);
+    const all = this.threadSummaries(accountId, folder, filter);
     const offset = cursor === null ? 0 : Number(cursor);
     const threads = all.slice(offset, offset + limit);
     const next = offset + threads.length;
@@ -664,10 +721,11 @@ export class InMemoryMailStore implements MailStore {
     role: SpecialUse,
     cursor: string | null,
     limit: number,
+    filter?: ThreadFilter,
   ): { threads: ThreadSummary[]; nextCursor: string | null } {
     if (role === "all") return { threads: [], nextCursor: null };
     const inRole = (r: Row) => r.movePending === null && this.roleOf(r.accountId, r.folder) === role;
-    const listed = new Set(this.state.rows.filter(inRole).map((r) => r.threadId));
+    const listed = new Set(this.state.rows.filter(this.member(inRole, filter)).map((r) => r.threadId));
     const groups = new Map<string, Row[]>();
     for (const row of this.state.rows) {
       if (!listed.has(row.threadId)) continue;
@@ -1559,120 +1617,296 @@ export class InMemoryMailStore implements MailStore {
     return row === undefined ? null : structuredClone(row);
   }
 
-  // Inbox triage (slice 3e): stubs until the store implements them ------------
+  // Inbox triage (slice 3e) ---------------------------------------------------
 
-  setSnoozeFolder(_accountId: string, _path: string | null): void {
-    throw new Error("Not available yet");
+  setSnoozeFolder(accountId: string, path: string | null): void {
+    const account = this.state.accounts.get(accountId);
+    if (account) this.state.accounts.set(accountId, { ...account, snoozeFolder: path });
   }
 
-  createSnoozes(_rows: SnoozeRow[], _nowIso: string): { created: number } | { full: true } {
-    throw new Error("Not available yet");
+  createSnoozes(rows: SnoozeRow[], nowIso: string): { created: number } | { full: true } {
+    const replaced = new Set(rows.map((row) => row.messageId));
+    const perAccount = new Map<string, number>();
+    for (const snooze of this.state.snoozes.values()) {
+      if (replaced.has(snooze.messageId)) continue;
+      perAccount.set(snooze.accountId, (perAccount.get(snooze.accountId) ?? 0) + 1);
+    }
+    for (const row of rows) perAccount.set(row.accountId, (perAccount.get(row.accountId) ?? 0) + 1);
+    if ([...perAccount.values()].some((count) => count > SNOOZES_MAX_PER_ACCOUNT)) return { full: true };
+    for (const row of rows) {
+      this.state.snoozes.set(row.messageId, { ...row, createdAt: nowIso, updatedAt: nowIso });
+    }
+    return { created: rows.length };
   }
 
-  listSnoozes(_accountId: string, _opts: { dueBefore?: string; limit: number }): SnoozeRow[] {
-    return [];
+  listSnoozes(accountId: string, opts: { dueBefore?: string; limit: number }): SnoozeRow[] {
+    return [...this.state.snoozes.values()]
+      .filter((row) => row.accountId === accountId && (opts.dueBefore === undefined || row.dueAt <= opts.dueBefore))
+      .sort((a, b) => (a.dueAt < b.dueAt ? -1 : a.dueAt > b.dueAt ? 1 : a.messageId < b.messageId ? -1 : 1))
+      .slice(0, opts.limit)
+      .map(snoozeRowOf);
   }
 
-  updateSnooze(_messageId: string, _patch: { state?: SnoozeState; dueAt?: string; returnTo?: string }, _nowIso: string): boolean {
-    throw new Error("Not available yet");
+  updateSnooze(
+    messageId: string,
+    patch: { state?: SnoozeState; dueAt?: string; returnTo?: string },
+    nowIso: string,
+  ): boolean {
+    const row = this.state.snoozes.get(messageId);
+    if (!row) return false;
+    this.state.snoozes.set(messageId, { ...row, ...definedOnly(patch), updatedAt: nowIso });
+    return true;
   }
 
-  deleteSnoozes(_messageIds: string[]): number {
-    throw new Error("Not available yet");
+  deleteSnoozes(messageIds: string[]): number {
+    let deleted = 0;
+    for (const id of messageIds) if (this.state.snoozes.delete(id)) deleted++;
+    return deleted;
   }
 
-  snoozeViews(_accountId: string, _limit: number): SnoozeView[] {
-    return [];
+  snoozeViews(accountId: string, limit: number): SnoozeView[] {
+    return [...this.state.snoozes.values()]
+      .filter((row) => row.accountId === accountId)
+      .sort((a, b) => {
+        const flight = Number(a.state === "snoozed") - Number(b.state === "snoozed");
+        if (flight !== 0) return flight;
+        return a.dueAt < b.dueAt ? -1 : a.dueAt > b.dueAt ? 1 : a.messageId < b.messageId ? -1 : 1;
+      })
+      .slice(0, limit)
+      .map((snooze) => {
+        const row = this.state.rows.find((r) => r.id === snooze.messageId);
+        return {
+          snooze: snoozeRowOf(snooze),
+          row: row ? { folder: row.folder, uid: row.uid, movePending: row.movePending } : null,
+        };
+      });
   }
 
   listBlockRules(): BlockRule[] {
-    return [];
+    return this.state.blockRules.map((rule) => ({ ...rule }));
   }
 
-  addBlockRule(_kind: BlockRule["kind"], _value: string, _id: string, _nowIso: string): { rule: BlockRule; created: boolean } {
-    throw new Error("Not available yet");
+  addBlockRule(kind: BlockRule["kind"], value: string, id: string, nowIso: string): { rule: BlockRule; created: boolean } {
+    const existing = this.state.blockRules.find((rule) => rule.kind === kind && rule.value === value);
+    if (existing) return { rule: { ...existing }, created: false };
+    const rule: BlockRule = { id, kind, value, createdAt: nowIso };
+    this.state.blockRules.push(rule);
+    return { rule: { ...rule }, created: true };
   }
 
-  removeBlockRule(_id: string): boolean {
-    throw new Error("Not available yet");
+  removeBlockRule(id: string): boolean {
+    const before = this.state.blockRules.length;
+    this.state.blockRules = this.state.blockRules.filter((rule) => rule.id !== id);
+    return this.state.blockRules.length !== before;
   }
 
-  blockMatches(_rule: BlockRule): { id: string; accountId: string; folder: string }[] {
-    return [];
+  blockMatches(rule: BlockRule): { id: string; accountId: string; folder: string }[] {
+    const own = new Set(
+      ownerAddressSets(this.listAccounts(), this.state.identities).flatMap((set) => set.addresses.map((a) => a.toLowerCase())),
+    );
+    return this.state.rows
+      .filter(
+        (row) =>
+          row.uid !== null &&
+          row.movePending === null &&
+          this.roleOf(row.accountId, row.folder) === "inbox" &&
+          !own.has(row.message.from.address.trim().toLowerCase()) &&
+          matchesBlock(row.message.from.address, [rule]) !== null &&
+          this.spamSeen(row.accountId, [row.dedupKey]).size === 0,
+      )
+      .map((row) => ({ id: row.id, accountId: row.accountId, folder: row.folder }));
   }
 
-  spamSeen(_accountId: string, _dedupKeys: string[]): Set<string> {
-    return new Set();
+  spamSeen(accountId: string, dedupKeys: string[]): Set<string> {
+    const found = new Set<string>();
+    for (const key of dedupKeys) {
+      if (this.state.spamSeen.has(stateKey(accountId, key))) found.add(key);
+      else if (
+        this.state.rows.some(
+          (row) => row.accountId === accountId && row.dedupKey === key && this.roleOf(row.accountId, row.folder) === "junk",
+        )
+      ) {
+        found.add(key);
+      }
+    }
+    return found;
   }
 
-  pruneSpamSeen(_olderThanIso: string): number {
-    throw new Error("Not available yet");
+  pruneSpamSeen(olderThanIso: string): number {
+    let pruned = 0;
+    for (const [key, seenAt] of [...this.state.spamSeen]) {
+      if (seenAt < olderThanIso) {
+        this.state.spamSeen.delete(key);
+        pruned++;
+      }
+    }
+    return pruned;
   }
 
-  notifyRows(_ids: string[]): (NotifyRow & { dedupKey: string })[] {
-    return [];
+  notifyRows(ids: string[], nowIso: string): (NotifyRow & { dedupKey: string })[] {
+    return ids.flatMap((id) => {
+      const row = this.state.rows.find((r) => r.id === id);
+      if (!row) return [];
+      return [
+        {
+          id: row.id,
+          accountId: row.accountId,
+          threadId: row.threadId,
+          folderRole: this.roleOf(row.accountId, row.folder),
+          isRead: row.isRead,
+          movePending: row.movePending,
+          uid: row.uid,
+          bulk: row.bulk,
+          fromName: row.message.from.name,
+          fromAddress: row.message.from.address,
+          date: row.message.date,
+          fetchedAt: nowIso,
+          dedupKey: row.dedupKey,
+        },
+      ];
+    });
   }
 
-  fillUnsubscribe(_accountId: string, _folder: string, _uidValidity: number, _values: { uid: number; info: UnsubscribeInfo | null }[]): number {
-    throw new Error("Not available yet");
+  fillUnsubscribe(
+    accountId: string,
+    folder: string,
+    uidValidity: number,
+    values: { uid: number; info: UnsubscribeInfo | null }[],
+  ): number {
+    if (this.getSyncState(accountId, folder)?.uidValidity !== uidValidity) return 0;
+    let changed = 0;
+    for (const value of values) {
+      if (value.info === null) continue;
+      const row = this.attachedRows(accountId, folder).find((r) => r.uid === value.uid);
+      if (!row || row.unsubscribe !== null) continue;
+      row.unsubscribe = structuredClone(value.info);
+      changed++;
+    }
+    return changed;
   }
 
-  unsubscribeUnknown(_accountId: string, _folder: string, _belowUid: number | null, _limit: number): number[] {
-    return [];
+  unsubscribeUnknown(
+    accountId: string,
+    folder: string,
+    belowUid: number | null,
+    limit: number,
+  ): { uid: number; from: MailAddress }[] {
+    return this.attachedRows(accountId, folder)
+      .filter((row) => row.bulk === true && row.unsubscribe === null && (belowUid === null || row.uid < belowUid))
+      .sort((a, b) => b.uid - a.uid)
+      .slice(0, limit)
+      .map((row) => ({ uid: row.uid, from: { ...row.message.from } }));
   }
 
-  getUnsubscribeInfo(_messageId: string): UnsubscribeInfo | null {
-    return null;
+  getUnsubscribeInfo(messageId: string): UnsubscribeInfo | null {
+    const row = this.state.rows.find((r) => r.id === messageId);
+    return row?.unsubscribe ? structuredClone(row.unsubscribe) : null;
   }
 
-  getUnsubscribe(_accountId: string, _listKey: string): UnsubscribeRecord | null {
-    return null;
+  getUnsubscribe(accountId: string, listKey: string): UnsubscribeRecord | null {
+    const row = this.state.unsubscribes.get(stateKey(accountId, listKey));
+    return row ? { ...row } : null;
   }
 
-  putUnsubscribe(_row: UnsubscribeRecord): void {
-    throw new Error("Not available yet");
+  putUnsubscribe(row: UnsubscribeRecord): void {
+    this.state.unsubscribes.set(stateKey(row.accountId, row.listKey), { ...row });
   }
 
-  createTriageBatch(_batch: NewTriageBatch, _items: TriageItemRecord[]): void {
-    throw new Error("Not available yet");
+  createTriageBatch(batch: NewTriageBatch, items: TriageItemRecord[]): void {
+    if (this.state.triageBatches.has(batch.id)) throw new Error("Duplicate triage batch");
+    this.state.triageBatches.set(batch.id, {
+      ...batch,
+      state: "pending",
+      viewTokenHash: null,
+      approved: null,
+      createSnoozeFolder: null,
+      updatedAt: batch.createdAt,
+    });
+    this.state.triageItems.push(...items.map((item) => ({ ...item, batchId: batch.id })));
   }
 
-  getTriageBatch(_id: string): { batch: TriageBatchRecord; items: TriageItemRecord[] } | null {
-    return null;
+  getTriageBatch(id: string): { batch: TriageBatchRecord; items: TriageItemRecord[] } | null {
+    const batch = this.state.triageBatches.get(id);
+    if (!batch) return null;
+    const items = this.state.triageItems
+      .filter((item) => item.batchId === id)
+      .sort((a, b) => a.position - b.position)
+      .map((item) => ({ ...item }));
+    return { batch: structuredClone(batch), items };
   }
 
   transitionTriageBatch(
-    _id: string,
-    _from: TriageBatchState[],
-    _to: TriageBatchState,
-    _patch: { viewTokenHash?: string | null; approved?: number[]; createSnoozeFolder?: string[] },
-    _nowIso: string,
+    id: string,
+    from: TriageBatchState[],
+    to: TriageBatchState,
+    patch: { viewTokenHash?: string | null; approved?: number[]; createSnoozeFolder?: string[] },
+    nowIso: string,
   ): boolean {
-    throw new Error("Not available yet");
+    const batch = this.state.triageBatches.get(id);
+    if (!batch || !from.includes(batch.state)) return false;
+    this.state.triageBatches.set(id, {
+      ...batch,
+      ...structuredClone(definedOnly(patch)),
+      state: to,
+      updatedAt: nowIso,
+    });
+    return true;
   }
 
-  setTriageOutcomes(_id: string, _outcomes: { position: number; outcome: TriageItemOutcome }[]): void {
-    throw new Error("Not available yet");
+  setTriageOutcomes(id: string, outcomes: { position: number; outcome: TriageItemOutcome }[]): void {
+    for (const { position, outcome } of outcomes) {
+      const item = this.state.triageItems.find((i) => i.batchId === id && i.position === position);
+      if (item) item.outcome = outcome;
+    }
   }
 
-  triageHistory(_sinceIso: string): TriageHistoryRow[] {
-    return [];
+  triageHistory(sinceIso: string): TriageHistoryRow[] {
+    return [...this.state.triageBatches.values()]
+      .filter((batch) => batch.createdAt >= sinceIso || batch.state === "pending" || batch.state === "confirming")
+      .map((batch) => ({ threadId: batch.threadId, state: batch.state, createdAt: batch.createdAt, updatedAt: batch.updatedAt }));
   }
 
-  settleTriageAtStart(_nowIso: string): { interrupted: number; expired: number } {
-    throw new Error("Not available yet");
+  settleTriageAtStart(nowIso: string): { interrupted: number; expired: number } {
+    let interrupted = 0;
+    let expired = 0;
+    for (const batch of this.state.triageBatches.values()) {
+      if (batch.state === "applying") {
+        batch.state = "interrupted";
+        batch.updatedAt = nowIso;
+        interrupted++;
+      } else if (batch.state === "pending" || batch.state === "confirming") {
+        batch.state = "expired";
+        batch.updatedAt = nowIso;
+        expired++;
+      }
+    }
+    return { interrupted, expired };
   }
 
-  cancelSendPurpose(_outboxId: string, _states: OutboxState[]): { cancelled: boolean } {
-    throw new Error("Not available yet");
+  cancelSendPurpose(outboxId: string, states: OutboxState[]): { cancelled: boolean } {
+    const entry = this.state.outbox.get(outboxId);
+    if (!entry || !states.includes(entry.record.state)) return { cancelled: false };
+    const draft = entry.record.draftId === null ? undefined : this.state.drafts.get(entry.record.draftId);
+    if (!draft || draft.purpose === null) return { cancelled: false };
+    this.state.outbox.delete(outboxId);
+    this.deleteDraft(draft.id);
+    return { cancelled: true };
   }
 
-  /** Translations follow their message: dropped with every removed row (as SQLite deleteRows). */
+  /** Translations and snoozes follow their message: dropped with every removed row (as SQLite deleteRows). */
   private dropOrphanTranslations(): void {
     const ids = new Set(this.state.rows.map((r) => r.id));
     for (const [key, row] of [...this.state.translations]) {
       if (!ids.has(row.messageId)) this.state.translations.delete(key);
     }
+    for (const id of [...this.state.snoozes.keys()]) {
+      if (!ids.has(id)) this.state.snoozes.delete(id);
+    }
+  }
+
+  /** The row landed in a junk-role folder: block never moves its dedup key again (spec resolution 17). */
+  private markSpamSeen(row: Row): void {
+    this.state.spamSeen.set(stateKey(row.accountId, row.dedupKey), new Date().toISOString());
   }
 
   /** A live outbox row holds the draft (done rows are deleted). */
@@ -1778,10 +2012,12 @@ export class InMemoryMailStore implements MailStore {
     moved: Map<number, number> | null,
     uids: number[],
   ): void {
+    const junk = this.roleOf(accountId, destination) === "junk";
     const takeOver = (row: Row, occupant: Row | undefined, uid: number | null) => {
       row.movePending = null;
       row.moveFailures = 0;
       row.folder = destination;
+      if (junk) this.markSpamSeen(row);
       if (occupant === undefined || occupant === row) {
         row.uid = uid;
       } else if (occupant.movePending !== null) {
@@ -1969,17 +2205,38 @@ export class InMemoryMailStore implements MailStore {
       participants,
       snippet: snippetOf(latest.message),
       flagged: rows.some((r) => inScope(r) && r.isFlagged),
-      snoozedUntil: null,
+      snoozedUntil: this.snoozedUntil(rows.filter(inScope)),
+    };
+  }
+
+  /** The earliest snooze due time of these rows, or null. */
+  private snoozedUntil(rows: Row[]): string | null {
+    const due = rows.flatMap((r) => {
+      const snooze = this.state.snoozes.get(r.id);
+      return snooze ? [snooze.dueAt] : [];
+    });
+    return due.length === 0 ? null : due.sort()[0]!;
+  }
+
+  /**
+   * A row that lists its thread: in scope and matching every filter flag on
+   * itself, or (with `keep`) any in-scope row of the kept thread.
+   */
+  private member(inScope: (row: Row) => boolean, filter: ThreadFilter | undefined): (row: Row) => boolean {
+    return (r) => {
+      if (!inScope(r)) return false;
+      if (filter?.keep !== undefined && r.threadId === filter.keep) return true;
+      if (filter?.unread === true && r.isRead) return false;
+      if (filter?.flagged === true && !r.isFlagged) return false;
+      if (filter?.attachments === true && !r.message.attachments.some((a) => !a.isInline)) return false;
+      return true;
     };
   }
 
   /** Whole threads (all folders) that have at least one message in `folder`. */
-  private threadSummaries(accountId: string, folder: string): ThreadSummary[] {
-    const inFolder = new Set(
-      this.state.rows
-        .filter((r) => r.accountId === accountId && r.folder === folder && r.movePending === null)
-        .map((r) => r.threadId),
-    );
+  private threadSummaries(accountId: string, folder: string, filter?: ThreadFilter): ThreadSummary[] {
+    const inScope = (r: Row) => r.accountId === accountId && r.folder === folder && r.movePending === null;
+    const inFolder = new Set(this.state.rows.filter(this.member(inScope, filter)).map((r) => r.threadId));
     const groups = new Map<string, Row[]>();
     for (const row of this.state.rows) {
       if (row.accountId !== accountId || !inFolder.has(row.threadId)) continue;

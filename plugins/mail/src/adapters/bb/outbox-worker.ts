@@ -16,6 +16,7 @@
 // database, which only means the next start recovers it. Nothing here
 // rejects; log lines carry outbox ids, counts and error kinds only.
 import {
+  isHiddenDraft,
   runOutboxOnce,
   settleGmailUnknown,
   writeServerCopy,
@@ -118,8 +119,8 @@ export function createOutboxWorker(
       }
       for (const draft of drafts) {
         if (stop.aborted) return;
-        // A hidden agent-proposal draft never gets a server copy (listDrafts returns it raw).
-        if (draft.proposalId !== null) continue;
+        // A hidden draft never gets a server copy (listDrafts returns it raw).
+        if (isHiddenDraft(draft)) continue;
         if (draft.serverState === "local_only") continue;
         if (draft.serverCopy !== null && draft.serverCopy.revision >= draft.revision) continue;
         const failedAt = failedCopyAt.get(draft.id);
