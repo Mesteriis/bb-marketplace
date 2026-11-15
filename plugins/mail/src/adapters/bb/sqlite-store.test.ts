@@ -695,11 +695,12 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 4).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 5).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
       "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
       "d32d0c6bafc6b6259c1bf6448fe0a24ee944f1c46dd8cf87e0e443eb7301103c",
+      "910621e83320dbef912d682fbb78f4016bb53ea56704075fd1e578a7890a538f",
     ]);
   });
 
@@ -1918,6 +1919,27 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       expect(s.draftForServerCopy("acc_1", "Drafts", 41)).toBe("d_1");
       expect(s.draftForServerCopy("acc_2", "Drafts", 41)).toBeNull();
       expect(s.draftForServerCopy("acc_1", "Drafts", 42)).toBeNull();
+    });
+
+    it("finds the draft continuing a foreign message, never a reply or forward of it", () => {
+      s.createDraft(newDraft({ id: "d_r", kind: "reply", sourceMessageId: "m_9" }));
+      expect(s.draftContinuing("m_9")).toBeNull();
+      s.createDraft(newDraft({ sourceMessageId: "m_9" }));
+      expect(s.draftContinuing("m_9")).toBe("d_1");
+      expect(s.draftContinuing("m_8")).toBeNull();
+      s.deleteDraft("d_1");
+      expect(s.draftContinuing("m_9")).toBeNull();
+    });
+
+    it("renewMessageId gives the draft another Message-ID and nothing else", () => {
+      s.createDraft(newDraft());
+      s.renewMessageId("d_1", "<fresh@example.org>");
+      expect(s.getDraft("d_1")).toEqual({
+        ...newDraft({ messageId: "<fresh@example.org>" }),
+        revision: 1,
+        serverState: "none",
+        updatedAt: T0,
+      });
     });
 
     it("saveDraft is a compare-and-swap on the revision and clears the import", () => {

@@ -326,7 +326,12 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
     after();
   };
 
-  /** Close: an untouched empty new draft is dropped, anything else saved with its server copy. */
+  /**
+   * Close: an untouched empty new draft is dropped, and so is an untouched
+   * continuation of a foreign draft that stays on the server (no server copy
+   * of its own; the original is still there). Anything else is saved with
+   * its server copy.
+   */
   const close = async () => {
     if (closing) return;
     const now = commitAll();
@@ -337,9 +342,16 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       fields.current.attachments.length === 0 &&
       docIsEmpty(doc.current) &&
       draft.serverCopy === "none";
+    const untouchedContinuation =
+      draft.continues &&
+      draft.revision === 1 &&
+      revision.current === 1 &&
+      !edited.current &&
+      !dirty() &&
+      (draft.serverCopy === "none" || originalKept);
     setClosing(true);
     try {
-      if (empty) {
+      if (empty || untouchedContinuation) {
         await portsRef.current.discard(draft.id).catch(() => undefined);
         finish(props.onClose);
         return;

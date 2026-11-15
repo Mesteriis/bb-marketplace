@@ -600,6 +600,7 @@ describe("slice-3b contract", () => {
       revision: 1,
       serverCopy: "none",
       queued: false,
+      continues: false,
       import: { html: "<p>quoted</p>", into: "quote" },
     };
     expect(draftViewSchema.safeParse(draft).success).toBe(true);

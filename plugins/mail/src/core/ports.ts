@@ -389,6 +389,10 @@ export interface MailStore {
   listDrafts(accountId: string): DraftRecord[];
   /** The draft whose server copy is (folder, uid) of the account, or null. */
   draftForServerCopy(accountId: string, folder: string, uid: number): string | null;
+  /** The "new" draft continuing that foreign Drafts message (messages.id), or null. */
+  draftContinuing(sourceMessageId: string): string | null;
+  /** Gives the draft another Message-ID; nothing else changes. */
+  renewMessageId(id: string, messageId: string): void;
   /**
    * Records (or with null clears) where the draft's latest server copy
    * lives; serverState becomes "saved" (or "none"). Only uids from our own
