@@ -1,13 +1,16 @@
 # Makosh Mail
 
 A [BB](https://github.com/get-bb/bb) plugin that brings mail into the IDE:
-your mailbox beside your threads, mail access for agents, and a way to hand a
-message to an agent.
+your mailbox beside your threads, mail access for agents, a way to hand a
+message to an agent, emails an agent proposes for you to send, and machine
+translation of a message.
 
 **Status: experimental.** Plugin id: `makosh-mail`. It reads mail, and
 changes it on the server only when you click or press a key: read and unread,
 flags, moves. It sends mail you write through your account's SMTP server,
-after a 10-second Undo window. Agents cannot send, draft or reply.
+after a 10-second Undo window. Agents cannot send on their own: with
+`agentPropose` on (off by default) an agent can propose an email, and it goes
+out only when you press **Send** on its card in that agent's thread.
 
 - Connects IMAP accounts with an app password: iCloud, Gmail or another
   server, TLS only (port 993 by default).
@@ -67,7 +70,8 @@ after a 10-second Undo window. Agents cannot send, draft or reply.
   `t` or `a` for Inbox, Sent, Drafts, Trash or All accounts. Letters follow
   the physical key, so they work on other keyboard layouts. Keys do nothing
   while you type in a field. `c` compose, `r` reply, `a` reply all, `f`
-  forward; in the composer Cmd/Ctrl+Enter sends and Escape closes.
+  forward, `t` translate (again: show the original); in the composer
+  Cmd/Ctrl+Enter sends and Escape closes.
 - When a sender's images are always shown, the message says so and offers
   **Stop showing**.
 - What the plugin writes on the server: `\Seen` when you open a message or
@@ -85,9 +89,11 @@ after a 10-second Undo window. Agents cannot send, draft or reply.
   default behind the `agentTools` setting, which also gates
   `bb makosh-mail accounts`, `search` and `read` inside agent threads. They
   search all folders and name each message's folder. Agents get no way to
-  mark, flag, move, download, draft or send mail: no tool, command or
-  mention does that. Drafts synced from the server's Drafts folder, yours
-  included, are ordinary messages to `mail_search` and `mail_read`.
+  mark, flag, move or download mail: no tool, command or mention does that.
+  The one way an agent writes mail is `mail_propose`, behind its own
+  `agentPropose` setting (see [Emails an agent proposes](#emails-an-agent-proposes)).
+  Drafts synced from the server's Drafts folder, yours included, are
+  ordinary messages to `mail_search` and `mail_read`.
 - `agentTools` controls what agents are offered; it is not a barrier against
   an agent that has shell access to the machine running the BB server. Such
   an agent can also call the plugin's RPC methods, including the ones behind
@@ -97,7 +103,8 @@ after a 10-second Undo window. Agents cannot send, draft or reply.
   limits it: every queued send shows the "Sending in N s · Undo" toast on
   any open Mail page, the Outbox in Sent always lists sends that are not
   done, and each account sends at most 10 messages a minute (Retry, Send
-  again and Send now count too).
+  again and Send now count too). The same holds for agent proposals and
+  translation; the next sections say what it means there.
 - An `@` mention provider (**Mail**) and a **Hand to agent** button that give
   an agent one message you picked.
 - CLI: `bb makosh-mail accounts|search|read|sync|remove`. `remove <accountId>`
@@ -112,8 +119,7 @@ setting, generated on first load. Mail and credentials stay on the machine
 that runs the BB server.
 
 Not yet: creating or renaming folders, Gmail API or OAuth, signatures,
-aliases, scheduled send, and agents that draft or send (planned, with your
-confirmation).
+aliases and scheduled send.
 
 ## Writing and sending
 
@@ -171,6 +177,90 @@ itself; for any other server (even smtp.<same domain>) the dialog asks for the
 account password, which the IMAP server must accept first, and which is
 stored only when both servers accept it.
 
+## Emails an agent proposes
+
+Off by default. Turn on `agentPropose` ("Let agents propose mail for you to
+send"); it is separate from `agentTools`. Then agents in a thread get one
+tool, `mail_propose`: a new message, a reply, a reply to all or a forward of
+a message they found with `mail_search`, `mail_read` or a mention. The body
+is plain text; a forward can carry only the original's own attachments.
+
+The tool never sends. It freezes the message and shows a card in that
+thread with all of it:
+
+- From, and To, Cc and Bcc rows that are always there ("none" when empty),
+  each address in full. A display name the agent made up is dropped; names
+  computed from your stored mail stay as secondary text.
+- Flags on each address: **New address** (you never sent to it; it needs an
+  "I know this address" click before Send), **Added by the agent** (on a
+  reply, beyond what Reply or Reply all would address), **Outside your
+  domains**, and hidden characters. A non-empty Bcc row is marked "Hidden
+  recipients — the others will not see them". A row over 10 addresses
+  collapses to "and N more" with one acknowledgement for all its new ones.
+- Bidi and zero-width characters are removed from what the card shows, with
+  a count; an internationalized domain shows as `xn--` punycode.
+- The subject, the body as plain text, the quote of the original (folded),
+  every link in the agent's text by host (also ones without `https://`),
+  and the attachments.
+- **Send** stays disabled for 1.5 seconds, until every new address is
+  acknowledged, and, when the body is taller than the card, until you have
+  scrolled to its end.
+
+**Send** queues exactly what the card showed, through the Outbox with the
+same 10-second Undo; the Undo toast and the Outbox say "Agent message".
+**Open in Mail** turns it into an ordinary draft, opened in the composer with
+a "Started by an agent" badge; what you send from there is your own send.
+**Cancel** discards it. Undo (or Edit in the Outbox) on an agent's send also
+turns it back into an ordinary draft. The settled card stays in the thread as
+a row with where the send stands now, and Undo while it waits (expand the
+row). A card waits 24 hours; a BB restart cancels it and never sends.
+
+Caps: one card waiting per thread and three in all, five proposals per thread
+an hour and 30 a day, and a one-hour pause in a thread after three in a row
+were cancelled or refused.
+
+**The limit you accept by turning it on.** BB does not tell a plugin who
+answered a card. An agent whose thread can run shell commands on the machine
+of the BB server can read the card (`bb thread interactions show`), call the
+plugin's RPC methods and answer the card itself (`bb thread interactions
+respond`), so it could press Send for you. It can also start and read
+translations (spending your Makosh AI quota, within 30 an hour) and open the
+card's view again, which only breaks your copy of the card ("This card was
+opened elsewhere; reopen it") and sends nothing. Inside the plugin nothing
+else confirms a proposal, and those commands show up in the thread's command
+log. What limits a forged Send: `agentPropose` is off until you turn it on,
+every agent send waits 10 seconds with an "Agent message · Sending in N s ·
+Undo" toast on any open Mail page and Undo on the thread's row, it sits in
+the Outbox, and the caps above apply. A BB change that marks answers given by
+a person in the app would remove this limit; it has been written up for BB
+but not filed.
+
+## Translation
+
+**Translate** in the reading pane (after Forward, key `t`) translates the
+message you have open. It needs the Makosh AI plugin; without it the button
+is disabled and says so. The first time, Translation settings ask which
+Makosh AI provider and model to use; nothing is chosen for you.
+
+Translate sends the message's subject and plain text, never its attachments,
+images, addresses or other headers, to the provider you chose in Makosh AI.
+The translation streams in under the message header as plain text, labelled
+"Machine translation · provider · model · into language", with a picker for
+the language, **Translate again**, **Stop** while it runs, and **Show
+original**. A model wrote it, so it may be wrong, and the text is never
+shown as HTML or turned into links. Messages over 30 000 characters are
+translated in their first part, and a long translation can be cut short;
+both are noted. When Makosh AI, its route to the provider, the provider or
+the model refuses, the block says which, in fixed words.
+
+Translations are kept in the plugin's database per message and language, and
+show at once, marked "cached", the next time. **Clear translations** in
+Translation settings removes them all; they also go when the message or its
+account is removed. Only you start a translation: there is no translate tool
+for agents, and `mail_read` does not include translations. The translate
+calls are open to an agent with shell access as described above (accepted,
+within 30 an hour).
+
 ## Mail in the sidebar
 
 While the Mail page is open, BB's sidebar shows the mail rail instead of the
@@ -185,8 +275,9 @@ phone-sized window the folders are in BB's sidebar drawer.
 The folder you view is the page's route remainder, so BB's back and forward
 walk it: `v/all/<role>` for a merged role (`inbox`, `sent`, `drafts`, `junk`,
 `trash`, `archive`) and `v/<accountId>/<folder path>` for one account's
-folder. `t/<accountId>/<threadId>` opens a conversation. Ids and paths are
-percent-encoded.
+folder. `t/<accountId>/<threadId>` opens a conversation and `d/<draftId>` opens a
+draft in the composer (what an agent card's **Open in Mail** uses). Ids and
+paths are percent-encoded.
 
 ## Run it
 

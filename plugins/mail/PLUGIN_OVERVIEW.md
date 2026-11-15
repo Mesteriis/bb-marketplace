@@ -1,6 +1,7 @@
 This experimental release puts your mailbox next to your threads: connect an
 iCloud, Gmail or other IMAP account, read, search, sort and move mail with a
-click or a key, write and send mail, and give one message to an agent.
+click or a key, write and send mail, translate a message, and let an agent
+propose mail you confirm.
 
 ## What you get
 
@@ -11,9 +12,12 @@ click or a key, write and send mail, and give one message to an agent.
 - **All accounts** merges Inbox, Sent, Drafts, Spam, Archive and Trash.
 - Read state and flags sync both ways. Select conversations to mark, flag,
   archive, delete or **Move to…** at once.
-- **Details** shows headers and MIME structure. .eml and attachment
-  downloads use a one-time 60-second link; nothing is kept.
+- **Details** shows headers and MIME structure. Downloads use a one-time
+  60-second link; nothing is kept.
 - Gmail-style hotkeys; `?` lists them.
+- **Translate** (`t`) streams a plain-text translation through the
+  provider and model you pick in Makosh AI. Only the subject and text are
+  sent, never attachments; kept locally until **Clear translations**.
 - Remote images stay hidden until **Show images** or **Always show from**.
 - **Hand to agent** and an `@` mention under **Mail** give an agent a
   message you picked.
@@ -32,21 +36,24 @@ click or a key, write and send mail, and give one message to an agent.
   queued, Send now or Edit if held after a restart, Retry, Edit or Discard
   after a failure, Send again or Discard if it may have been sent. Nothing
   resends on its own.
-- SMTP uses the app password: iCloud `smtp.mail.me.com` 587 STARTTLS,
-  Gmail `smtp.gmail.com` 465 TLS, filled in for you; other servers ask.
+- SMTP uses the app password; iCloud and Gmail are filled in for you.
 
 ## Agent access
 
 `mail_search`, `mail_read` and the `mail` skill are off until you turn on
-`agentTools`, which also gates the CLI's `accounts`, `search` and `read` in
-agent threads. Mentions and Hand to agent work without it. No tool, command
-or mention marks, moves, downloads, drafts or sends mail. Drafts synced from
-the server, yours included, are visible to `mail_search`.
+`agentTools`, which also gates the CLI in agent threads. Mentions and Hand
+to agent work without it. No tool marks, moves or downloads mail.
 
-`agentTools` is not a barrier against an agent with shell access to the
-machine running the BB server: it can reach the plugin's internal calls,
-sending included. Every send still shows its Undo toast on an open Mail
-page, sits in the Outbox, and each account sends at most 10 a minute.
+`mail_propose`, off until you turn on `agentPropose`, lets an agent propose
+a message, reply or forward. It never sends: a card in its thread shows
+every address (new, agent-added and outside ones flagged, Bcc always
+shown), the text, its links and attachments. **Send** queues exactly that
+with the 10 s Undo, **Open in Mail** makes it your draft, **Cancel** drops it.
+
+Neither setting is a barrier against an agent with shell access to the BB
+server machine: it can reach the plugin's internal calls, sending, answering
+a card and translating included. Each send still shows its Undo toast on an
+open Mail page and sits in the Outbox; cards and sends are capped.
 
 Text handed to an agent is sent to that agent's model provider.
 
@@ -64,12 +71,11 @@ servers with UIDPLUS; nothing else is permanently deleted.
 - Mail and credentials stay on the BB server machine; passwords are
   encrypted.
 - Allowing a sender's images tells their servers you opened the mail.
-- The page bundle is about 600 KB, mostly the editor.
+- The page bundle is about 640 KB, mostly the editor.
 
 ## Not yet
 
-Creating or renaming folders, Gmail API or OAuth, signatures, and agents
-that draft or send.
+Creating or renaming folders, Gmail API or OAuth, signatures.
 
 ## Source
 
