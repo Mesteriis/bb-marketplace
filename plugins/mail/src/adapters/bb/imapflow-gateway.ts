@@ -3,7 +3,9 @@
 // BODY.PEEK (imapflow fetches `source` with PEEK, and `download` of the whole
 // message fetches `source` in chunks), and the only writes are \Seen on
 // owner-opened mail (markSeen), owner-clicked or hotkeyed \Seen / \Flagged
-// add/remove (setFlags) and owner-clicked moves (moveMessages).
+// add/remove (setFlags), owner-clicked moves (moveMessages), and for slice 3b
+// APPEND of the owner's drafts and Sent copies (appendMessage) and the UID
+// EXPUNGE of exactly one superseded draft copy (expungeOwn, UIDPLUS only).
 // Errors leaving this file are rebuilt from codes: imapflow errors can carry
 // server responses and the sent command, so their text is never passed on.
 import { ImapFlow } from "imapflow";
@@ -15,6 +17,7 @@ import type {
   MessageAddressObject,
 } from "imapflow";
 import PostalMime from "postal-mime";
+import { normalizeMessageId } from "../../core/headers.ts";
 import type { Address, Attachment, Email, RawEmail } from "postal-mime";
 import {
   ImapAuthError,
@@ -51,6 +54,9 @@ const MESSAGE_QUERY: FetchQueryObject = {
 
 const FLAGS_QUERY: FetchQueryObject = { uid: true, flags: true, emailId: true };
 
+/** What the expunge guard and the Message-ID search compare: no body, never \Seen. */
+const GUARD_QUERY: FetchQueryObject = { uid: true, envelope: true, size: true };
+
 const SAFE_CODE = /^[A-Za-z][A-Za-z0-9_]{0,40}$/;
 
 /** An error this file built: its message and code are safe to pass on as they are. */
@@ -77,6 +83,8 @@ export type SessionClient = Pick<
   | "messageFlagsRemove"
   | "download"
   | "messageMove"
+  | "append"
+  | "messageDelete"
   | "logout"
   | "close"
 >;
@@ -295,19 +303,66 @@ export function createSession(
       return { moved };
     }),
 
-    // Slice 3b server writes; not implemented yet.
-    capabilities: () => {
-      throw new SafeImapError("NotImplemented");
-    },
-    appendMessage: async () => {
-      throw new SafeImapError("NotImplemented");
-    },
-    findByMessageId: async () => {
-      throw new SafeImapError("NotImplemented");
-    },
-    expungeOwn: async () => {
-      throw new SafeImapError("NotImplemented");
-    },
+    capabilities: () => ({
+      uidplus: client.capabilities?.has("UIDPLUS") === true,
+      gmail: client.capabilities?.has("X-GM-EXT-1") === true,
+    }),
+
+    appendMessage: guarded(async (raw: Uint8Array, flags: string[]) => {
+      if (readOnly) throw new SafeImapError("ReadOnly", "IMAP error (mailbox is read-only)");
+      const path = client.mailbox ? client.mailbox.path : null;
+      if (!path) throw new SafeImapError("NoMailboxSelected");
+      const result = await client.append(path, Buffer.from(raw), flags);
+      if (!result) throw new SafeImapError("AppendFailed");
+      // Only an APPENDUID (uid together with uidValidity) identifies our copy;
+      // imapflow's sequence-number lookup without it could name another message.
+      if (result.uidValidity === undefined || result.uid === undefined) {
+        return { uidValidity: null, uid: null };
+      }
+      return { uidValidity: Number(result.uidValidity), uid: result.uid };
+    }),
+
+    findByMessageId: guarded(async (messageId: string) => {
+      const wanted = normalizeMessageId(messageId);
+      if (wanted === "") return [];
+      // SEARCH HEADER is a substring match: the hits are checked exactly.
+      const candidates = await searchUids(client, { header: { "message-id": wanted } });
+      if (candidates.length === 0) return [];
+      const found: number[] = [];
+      for await (const message of client.fetch(candidates, GUARD_QUERY, { uid: true })) {
+        const id = message.envelope?.messageId;
+        if (typeof id === "string" && normalizeMessageId(id) === wanted) found.push(message.uid);
+      }
+      return found.sort((a, b) => a - b);
+    }),
+
+    expungeOwn: guarded(async (uid: number, guard: { messageId: string; size: number }) => {
+      if (readOnly) throw new SafeImapError("ReadOnly", "IMAP error (mailbox is read-only)");
+      // Without UIDPLUS imapflow would send a plain EXPUNGE, which removes every
+      // \Deleted message of the folder: refuse before any command.
+      if (client.capabilities?.has("UIDPLUS") !== true) throw new SafeImapError("ExpungeUnsupported");
+      if (!Number.isInteger(uid) || uid <= 0) throw new SafeImapError("GuardMismatch");
+      const wanted = normalizeMessageId(guard.messageId);
+      let matched = false;
+      for await (const message of client.fetch(String(uid), GUARD_QUERY, { uid: true })) {
+        if (message.uid !== uid) continue;
+        const id = message.envelope?.messageId;
+        matched =
+          wanted !== "" &&
+          typeof id === "string" &&
+          normalizeMessageId(id) === wanted &&
+          message.size === guard.size;
+      }
+      if (!matched) throw new SafeImapError("GuardMismatch");
+      // imapflow: STORE +FLAGS \Deleted, then UID EXPUNGE <uid> (UIDPLUS).
+      const removed = await client.messageDelete(String(uid), { uid: true });
+      if (!removed) {
+        // Never leave our \Deleted behind without its expunge.
+        await client.messageFlagsRemove(String(uid), ["\\Deleted"], { uid: true }).catch(() => false);
+        throw new SafeImapError("ExpungeFailed");
+      }
+    }),
+
     close: () => logoutQuietly(client),
   };
 }
