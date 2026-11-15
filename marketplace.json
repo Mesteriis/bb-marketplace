@@ -8,7 +8,7 @@
     {
       "id": "makosh-mail",
       "displayName": "Makosh Mail [Experimental]",
-      "description": "Reads, moves, sends and translates iCloud, Gmail and IMAP mail with 10 s Undo; agents propose emails you confirm on a card in their thread.",
+      "description": "Reads, sorts, sends and translates iCloud, Gmail and IMAP mail with aliases, signatures, templates and Undo; agents propose mail to confirm.",
       "icon": {
         "url": "./icons/makosh-mail.svg"
       },

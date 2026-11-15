@@ -8,6 +8,40 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Sending addresses (slice 3d): **Mail settings** (the gear in the mail rail)
+  lists each account's own address and the aliases added by hand or from
+  suggestions found in inbound mail (`Delivered-To`, `X-Original-To`, To and
+  Cc); nothing adds one on its own. From in the composer offers every
+  address of every account with SMTP; a reply starts from the address the
+  original came to. An alias is not verified: Gmail's rewrite (seen in the
+  Sent copy) and iCloud's refusal are shown on the address. A queued send
+  keeps its From when the alias is removed.
+- Signatures per sending address: at the end of a new message under `-- `,
+  above the quote with no `-- ` in a reply or forward. Reply and Reply all to
+  own mail leave the old signature out of the quote; Forward keeps it.
+  Changing From swaps an unedited signature and keeps an edited one.
+- Templates, written in Mail settings and inserted at the cursor from the
+  composer's **Templates** button or Cmd/Ctrl+Alt+T. Agents list them with
+  `mail_templates` (under `agentPropose`; their text goes to the agent's
+  model provider) and name one in `mail_propose`.
+- **Before you send**: advisory checks for a mentioned but missing
+  attachment (English and Russian), an empty subject, a reply recipient
+  outside the conversation and an address never sent to, with Fix and Send
+  anyway; nothing blocks a send. The addresses sends went to, Bcc included,
+  are kept locally until the account is removed.
+- Undo the last action: after Archive, Delete, Spam, Not spam, Move to…, or a
+  flag or read change on two or more conversations, a toast offers **Undo**
+  for 10 seconds, and `z` undoes the page's last action for 10 minutes. A
+  move not pushed yet is cancelled; a pushed one is moved back where the
+  message still is. On Gmail an archive is undone with UID COPY, the only use
+  of COPY. Gmail labels lost by Delete or Spam are not restored. Undo is
+  forgotten on restart.
+- The agent's card shows the alias badge, the template name, the signature
+  and the check results (as warnings; Send stays enabled).
+- Migration element 7: identities, templates, sent recipients, the
+  accounts' signature, the drafts' From, the messages' Delivered-To and the
+  proposals' template name.
+
 - Agent tool `mail_contacts`, offered while `agentTools` or `agentPropose`
   is on: people the owner corresponds with, matched by name, address, domain
   or the mail exchanged with them, from header addresses only (never from
