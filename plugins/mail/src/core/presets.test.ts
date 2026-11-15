@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PRESETS, resolveServer } from "./presets.ts";
+import { PRESETS, resolveServer, resolveSmtp } from "./presets.ts";
 import type { NewAccountInput } from "./model.ts";
 
 function input(overrides: Partial<NewAccountInput>): NewAccountInput {
@@ -64,5 +64,72 @@ describe("resolveServer", () => {
     expect(resolveServer(input({ preset: "gmail", username: "anna.login" })).username).toBe(
       "anna.login",
     );
+  });
+});
+
+describe("SMTP presets", () => {
+  it("carries iCloud's and Gmail's SMTP servers and Sent-copy policy", () => {
+    expect(PRESETS.icloud.smtp).toEqual({
+      host: "smtp.mail.me.com",
+      port: 587,
+      security: "starttls",
+      sentCopy: "append",
+    });
+    expect(PRESETS.gmail.smtp).toEqual({
+      host: "smtp.gmail.com",
+      port: 465,
+      security: "tls",
+      sentCopy: "server",
+    });
+    expect(PRESETS.other.smtp).toBeNull();
+  });
+});
+
+describe("resolveSmtp", () => {
+  it("uses the preset for iCloud and Gmail, the IMAP username by default", () => {
+    expect(resolveSmtp(input({ preset: "icloud" }))).toEqual({
+      smtp: { host: "smtp.mail.me.com", port: 587, security: "starttls", username: null },
+      sentCopy: "append",
+    });
+    expect(resolveSmtp(input({ preset: "gmail" }))).toEqual({
+      smtp: { host: "smtp.gmail.com", port: 465, security: "tls", username: null },
+      sentCopy: "server",
+    });
+  });
+
+  it("ignores typed SMTP host fields for a preset but keeps an explicit username", () => {
+    expect(
+      resolveSmtp(
+        input({ preset: "gmail", smtpHost: "smtp.example.net", smtpPort: 25, smtpUsername: " anna.login " }),
+      ).smtp,
+    ).toEqual({ host: "smtp.gmail.com", port: 465, security: "tls", username: "anna.login" });
+  });
+
+  it("takes another server's typed SMTP fields and appends its Sent copy", () => {
+    expect(
+      resolveSmtp(
+        input({
+          preset: "other",
+          host: "imap.example.org",
+          smtpHost: " smtp.example.org ",
+          smtpPort: 587,
+          smtpSecurity: "starttls",
+        }),
+      ),
+    ).toEqual({
+      smtp: { host: "smtp.example.org", port: 587, security: "starttls", username: null },
+      sentCopy: "append",
+    });
+  });
+
+  it("refuses another server without SMTP host, port or security", () => {
+    const other = { preset: "other" as const, host: "imap.example.org" };
+    expect(() => resolveSmtp(input(other))).toThrow("SMTP host, port and security are required");
+    expect(() =>
+      resolveSmtp(input({ ...other, smtpHost: "smtp.example.org", smtpSecurity: "tls" })),
+    ).toThrow("SMTP host, port and security are required");
+    expect(() =>
+      resolveSmtp(input({ ...other, smtpHost: "smtp.example.org", smtpPort: 465 })),
+    ).toThrow("SMTP host, port and security are required");
   });
 });

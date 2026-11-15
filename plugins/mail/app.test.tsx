@@ -58,6 +58,7 @@ const account: Account = {
   lastSyncAt: "2026-11-14T09:00:00.000Z",
   lastError: null,
   authFailed: false,
+  smtpConfigured: false,
 };
 
 function status(overrides: Partial<StatusView> = {}): StatusView {
@@ -112,6 +113,7 @@ function message(overrides: Partial<MessageHeader> & { id: string }): MessageHea
     to: [{ name: null, address: "owner@example.org" }],
     cc: [],
     attachments: [],
+    draftId: null,
     ...overrides,
   };
 }
