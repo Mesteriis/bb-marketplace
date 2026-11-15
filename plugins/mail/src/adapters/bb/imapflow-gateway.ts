@@ -162,6 +162,15 @@ export function createImapflowGateway(options: ImapflowGatewayOptions = {}): Ima
       }
       return createSession(client, readOnly);
     },
+
+    // Slice 3e stubs until the gateway task: no watch, no CREATE.
+    async watchFolder() {
+      return { kind: "unsupported" };
+    },
+
+    async createFolder() {
+      throw new SafeImapError("CreateFailed");
+    },
   };
 }
 
@@ -226,6 +235,16 @@ export function createSession(
       if (uids.length === 0) return [];
       const found: { uid: number; block: Uint8Array }[] = [];
       for await (const message of client.fetch(uids, LIST_HEADERS_QUERY, { uid: true })) {
+        if (!message.headers) continue;
+        found.push({ uid: message.uid, block: new Uint8Array(message.headers) });
+      }
+      return found;
+    }),
+
+    fetchHeaderFields: guarded(async (uids: number[], fields: readonly string[]) => {
+      if (uids.length === 0) return [];
+      const found: { uid: number; block: Uint8Array }[] = [];
+      for await (const message of client.fetch(uids, { uid: true, headers: [...fields] }, { uid: true })) {
         if (!message.headers) continue;
         found.push({ uid: message.uid, block: new Uint8Array(message.headers) });
       }

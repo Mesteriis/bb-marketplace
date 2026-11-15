@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
-import { MAIL_CHANGED_CHANNEL, OUTBOX_CHANGED_CHANNEL, headerAddressInput, rpcSchemas } from "./contract.ts";
+import {
+  MAIL_CHANGED_CHANNEL,
+  NEW_MAIL_CHANNEL,
+  OUTBOX_CHANGED_CHANNEL,
+  headerAddressInput,
+  newMailPayloadSchema,
+  rpcSchemas,
+} from "./contract.ts";
 import {
   accountSchema,
   draftViewSchema,
@@ -73,6 +80,23 @@ const SLICE_3D_METHODS = [
   "action_undo",
 ] as const;
 
+/** The 13 owner-only methods slice 3e adds. */
+const SLICE_3E_METHODS = [
+  "new_mail_get",
+  "unsubscribe_info",
+  "unsubscribe_run",
+  "message_snooze",
+  "message_unsnooze",
+  "snooze_folder_create",
+  "snooze_folder_use",
+  "block_add",
+  "block_list",
+  "block_remove",
+  "block_check",
+  "triage_view",
+  "triage_status",
+] as const;
+
 /** Header-injection payloads every header field must refuse. */
 const LINE_BREAKS = ["x\r\nBcc: eve@example.net", "x\nBcc: eve@example.net", "x\rX", "x\u0000y"];
 
@@ -93,12 +117,13 @@ function keysOf(schema: z.ZodType): string[] {
 }
 
 describe("rpcSchemas", () => {
-  it("declares exactly the slice-1 methods plus the slice-2, 3a, 3b, 3c and 3d additions", () => {
+  it("declares exactly the slice-1 methods plus the slice-2, 3a, 3b, 3c, 3d and 3e additions", () => {
     expect(Object.keys(rpcSchemas).sort()).toEqual(
       [
         ...COMPOSE_METHODS,
         ...SLICE_3C_METHODS,
         ...SLICE_3D_METHODS,
+        ...SLICE_3E_METHODS,
         "status_get",
         "accounts_test",
         "accounts_add",
@@ -410,7 +435,7 @@ describe("slice-3b contract", () => {
 
   it("adds exactly 19 methods to the 17 before it", () => {
     expect(COMPOSE_METHODS).toHaveLength(19);
-    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS];
+    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(36);
   });
 
@@ -719,7 +744,8 @@ describe("slice-3c contract", () => {
 
   it("adds exactly 8 methods to the 36 before it", () => {
     expect(SLICE_3C_METHODS).toHaveLength(8);
-    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3D_METHODS as readonly string[]).includes(m))).toHaveLength(44);
+    const later: readonly string[] = [...SLICE_3D_METHODS, ...SLICE_3E_METHODS];
+    expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(44);
     expect(COMPOSE_METHODS).toHaveLength(19);
   });
 
@@ -784,7 +810,7 @@ describe("slice-3c contract", () => {
     expect(parses("translate_clear", {})).toBe(true);
   });
 
-  it("puts no credential-like key in any new output; viewToken only in proposal_view", () => {
+  it("puts no credential-like key in any new output; viewToken only in proposal_view and triage_view", () => {
     for (const method of SLICE_3C_METHODS) {
       const keys = keysOf(rpcSchemas[method].output);
       expect(keys.length, method).toBeGreaterThan(0);
@@ -792,7 +818,7 @@ describe("slice-3c contract", () => {
     }
     for (const [name, method] of Object.entries(rpcSchemas)) {
       const tokens = keysOf(method.output as z.ZodType).filter((key) => /token/i.test(key));
-      expect(tokens, name).toEqual(name === "proposal_view" ? ["viewToken"] : []);
+      expect(tokens, name).toEqual(name === "proposal_view" || name === "triage_view" ? ["viewToken"] : []);
     }
   });
 
@@ -945,7 +971,7 @@ describe("slice-3d contract", () => {
 
   it("adds exactly 11 methods to the 44 before it", () => {
     expect(SLICE_3D_METHODS).toHaveLength(11);
-    expect(Object.keys(rpcSchemas)).toHaveLength(55);
+    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3E_METHODS as readonly string[]).includes(m))).toHaveLength(55);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
   });
@@ -1109,5 +1135,150 @@ describe("slice-3d contract", () => {
       expect(keys.length, method).toBeGreaterThan(0);
       expect(keys.filter((key) => SECRET_KEY.test(key)), method).toEqual([]);
     }
+  });
+});
+
+describe("slice-3e contract", () => {
+  const parses = (method: keyof typeof rpcSchemas, input: unknown) =>
+    rpcSchemas[method].input.safeParse(input).success;
+  const outputs = (method: keyof typeof rpcSchemas, output: unknown) =>
+    rpcSchemas[method].output.safeParse(output).success;
+  const UUID = "8f14e45f-ceea-467a-9575-6ab4a1b2c3d4";
+  const HASH = "a".repeat(64);
+  const UNTIL = "2026-11-16T08:00:00.000Z";
+
+  it("adds exactly 13 methods to the 55 before it", () => {
+    expect(SLICE_3E_METHODS).toHaveLength(13);
+    expect(Object.keys(rpcSchemas)).toHaveLength(68);
+    expect(COMPOSE_METHODS).toHaveLength(19);
+    expect(SLICE_3C_METHODS).toHaveLength(8);
+    expect(SLICE_3D_METHODS).toHaveLength(11);
+  });
+
+  it("refuses empty and overlong ids in every new method", () => {
+    const idInputs: [keyof typeof rpcSchemas, Record<string, unknown>, string][] = [
+      ["unsubscribe_info", {}, "messageId"],
+      ["unsubscribe_run", { method: "mailto", requestId: UUID }, "messageId"],
+      ["message_snooze", { messageIds: ["m"], until: UNTIL }, "folder"],
+      ["snooze_folder_create", {}, "accountId"],
+      ["snooze_folder_use", { path: "Snoozed" }, "accountId"],
+      ["snooze_folder_use", { accountId: "a" }, "path"],
+      ["block_add", { kind: "address", moveExisting: false }, "messageId"],
+      ["block_remove", {}, "id"],
+      ["block_check", {}, "messageId"],
+      ["triage_view", { contentHash: HASH }, "batchId"],
+      ["triage_status", {}, "batchId"],
+    ];
+    for (const [method, rest, key] of idInputs) {
+      expect(parses(method, { ...rest, [key]: "x" }), `${method} ${key}`).toBe(true);
+      expect(parses(method, { ...rest, [key]: "" }), `${method} ${key}`).toBe(false);
+      expect(parses(method, { ...rest, [key]: "x".repeat(257) }), `${method} ${key}`).toBe(false);
+    }
+    for (const method of ["message_snooze", "message_unsnooze"] as const) {
+      const rest = method === "message_snooze" ? { folder: "INBOX", until: UNTIL } : {};
+      expect(parses(method, { ...rest, messageIds: ["m"] }), method).toBe(true);
+      expect(parses(method, { ...rest, messageIds: [""] }), method).toBe(false);
+      expect(parses(method, { ...rest, messageIds: ["x".repeat(257)] }), method).toBe(false);
+    }
+  });
+
+  it("bounds the message lists at 200 and refuses an empty one", () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `m${i}`);
+    expect(parses("message_snooze", { messageIds: ids(200), folder: "INBOX", until: UNTIL })).toBe(true);
+    expect(parses("message_snooze", { messageIds: ids(201), folder: "INBOX", until: UNTIL })).toBe(false);
+    expect(parses("message_snooze", { messageIds: [], folder: "INBOX", until: UNTIL })).toBe(false);
+    expect(parses("message_unsnooze", { messageIds: ids(200) })).toBe(true);
+    expect(parses("message_unsnooze", { messageIds: ids(201) })).toBe(false);
+    expect(parses("message_unsnooze", { messageIds: [] })).toBe(false);
+  });
+
+  it("takes exactly one of folder and role and an ISO until on message_snooze", () => {
+    const base = { messageIds: ["m"], until: UNTIL };
+    expect(parses("message_snooze", { ...base, role: "inbox" })).toBe(true);
+    expect(parses("message_snooze", { ...base, folder: "INBOX", undoId: UUID })).toBe(true);
+    expect(parses("message_snooze", { ...base, folder: "INBOX", role: "inbox" })).toBe(false);
+    expect(parses("message_snooze", base)).toBe(false);
+    expect(parses("message_snooze", { ...base, folder: "INBOX", undoId: "x" })).toBe(false);
+    for (const until of ["tomorrow", "2026-11-16", "2026-11-16 08:00", "", "1763280000000"]) {
+      expect(parses("message_snooze", { ...base, folder: "INBOX", until }), until).toBe(false);
+    }
+  });
+
+  it("requires a uuid requestId and a known method on unsubscribe_run", () => {
+    const run = { messageId: "m", method: "one_click", requestId: UUID };
+    expect(parses("unsubscribe_run", run)).toBe(true);
+    expect(parses("unsubscribe_run", { ...run, requestId: "not-a-uuid" })).toBe(false);
+    expect(parses("unsubscribe_run", { messageId: "m", method: "one_click" })).toBe(false);
+    expect(parses("unsubscribe_run", { ...run, method: "https" })).toBe(false);
+  });
+
+  it("bounds the new-mail token at 64 characters", () => {
+    expect(parses("new_mail_get", { token: "t".repeat(64) })).toBe(true);
+    expect(parses("new_mail_get", { token: "t".repeat(65) })).toBe(false);
+    expect(parses("new_mail_get", { token: "" })).toBe(false);
+    expect(outputs("new_mail_get", { items: [], more: 0 })).toBe(true);
+    const item = { accountId: "a", threadId: "t", messageId: "m", name: "Ada", address: "ada@example.org" };
+    expect(outputs("new_mail_get", { items: [item, item, item], more: 2 })).toBe(true);
+    expect(outputs("new_mail_get", { items: [item, item, item, item], more: 0 })).toBe(false);
+  });
+
+  it("takes block kinds address and domain, a boolean moveExisting and an optional uuid undoId", () => {
+    const add = { messageId: "m", kind: "address", moveExisting: true };
+    expect(parses("block_add", add)).toBe(true);
+    expect(parses("block_add", { ...add, kind: "domain", undoId: UUID })).toBe(true);
+    expect(parses("block_add", { ...add, kind: "everyone" })).toBe(false);
+    expect(parses("block_add", { ...add, moveExisting: "yes" })).toBe(false);
+    expect(parses("block_add", { ...add, undoId: "x" })).toBe(false);
+    expect(parses("block_list", {})).toBe(true);
+    expect(
+      outputs("block_check", {
+        address: "news@example.com",
+        domain: null,
+        sentToCount: 0,
+        storedCount: { address: 3, domain: null },
+      }),
+    ).toBe(true);
+  });
+
+  it("checks the triage content hash shape", () => {
+    expect(parses("triage_view", { batchId: "b", contentHash: HASH })).toBe(true);
+    expect(parses("triage_view", { batchId: "b", contentHash: "A".repeat(64) })).toBe(false);
+    expect(parses("triage_view", { batchId: "b", contentHash: "a".repeat(63) })).toBe(false);
+    expect(outputs("triage_view", { state: "changed" })).toBe(true);
+    expect(outputs("triage_view", { state: "gone" })).toBe(true);
+    expect(outputs("triage_view", { state: "pending" })).toBe(false);
+  });
+
+  it("filters threads_list by true flags only, plus the open thread", () => {
+    const list = { scope: { kind: "account", accountId: "a", folder: "INBOX" }, cursor: null, limit: 50 };
+    expect(parses("threads_list", list)).toBe(true);
+    expect(parses("threads_list", { ...list, filter: {} })).toBe(true);
+    expect(parses("threads_list", { ...list, filter: { unread: true, flagged: true, attachments: true } })).toBe(true);
+    expect(parses("threads_list", { ...list, filter: { unread: true, keep: "t_1" } })).toBe(true);
+    for (const flag of ["unread", "flagged", "attachments"]) {
+      expect(parses("threads_list", { ...list, filter: { [flag]: false } }), flag).toBe(false);
+      expect(parses("threads_list", { ...list, filter: { [flag]: "true" } }), flag).toBe(false);
+    }
+    expect(parses("threads_list", { ...list, filter: { keep: "" } })).toBe(false);
+    expect(parses("threads_list", { ...list, filter: { keep: "x".repeat(257) } })).toBe(false);
+    expect(Object.keys(threadSummarySchema.shape)).toContain("snoozedUntil");
+  });
+
+  it("puts no credential-like key in any new output, and no list key in unsubscribe_info", () => {
+    for (const method of SLICE_3E_METHODS) {
+      const keys = keysOf(rpcSchemas[method].output);
+      expect(keys.length, method).toBeGreaterThan(0);
+      expect(keys.filter((key) => SECRET_KEY.test(key)), method).toEqual([]);
+    }
+    expect(keysOf(rpcSchemas.unsubscribe_info.output)).not.toContain("listKey");
+    expect(keysOf(rpcSchemas.triage_view.output)).toEqual(expect.arrayContaining(["viewToken", "available", "note"]));
+  });
+
+  it("publishes mail-new with a token and nothing else", () => {
+    expect(NEW_MAIL_CHANNEL).toBe("mail-new");
+    expect(newMailPayloadSchema.safeParse({ token: "abc" }).success).toBe(true);
+    expect(newMailPayloadSchema.safeParse({ token: "abc", accountId: "a" }).success).toBe(false);
+    expect(newMailPayloadSchema.safeParse({ token: "t".repeat(65) }).success).toBe(false);
+    expect(newMailPayloadSchema.safeParse({}).success).toBe(false);
   });
 });

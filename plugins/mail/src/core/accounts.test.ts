@@ -151,6 +151,8 @@ describe("addAccount", () => {
       },
       listFolders: (config) => gateway.listFolders(config),
       openFolder: (config, path, options) => gateway.openFolder(config, path, options),
+      watchFolder: (...args) => gateway.watchFolder(...args),
+      createFolder: (config, name) => gateway.createFolder(config, name),
     };
     await addAccount(
       { ...deps, gateway: recording },
@@ -277,6 +279,8 @@ describe("testSmtp and setSmtp", () => {
       },
       listFolders: (config) => gateway.listFolders(config),
       openFolder: (config, path, options) => gateway.openFolder(config, path, options),
+      watchFolder: (...args) => gateway.watchFolder(...args),
+      createFolder: (config, name) => gateway.createFolder(config, name),
     };
     return { tested, recording };
   };
@@ -401,7 +405,7 @@ describe("toPublicAccount", () => {
     const account = toPublicAccount(stored);
     expect("passwordSealed" in account).toBe(false);
     expect(JSON.stringify(account)).not.toContain("sealed-secret");
-    const { passwordSealed: _omitted, smtp: _smtp, sentCopy: _sentCopy, signature: _signature, ...rest } = stored;
+    const { passwordSealed: _omitted, smtp: _smtp, sentCopy: _sentCopy, signature: _signature, snoozeFolder: _snooze, ...rest } = stored;
     expect(account).toEqual({ ...rest, smtpConfigured: false });
   });
 

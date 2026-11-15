@@ -161,6 +161,7 @@ const threadA: ThreadSummary = {
   ],
   snippet: "Here is the draft we talked about",
   flagged: false,
+  snoozedUntil: null,
 };
 
 const threadB: ThreadSummary = {
@@ -173,6 +174,7 @@ const threadB: ThreadSummary = {
   participants: [{ name: "Bo Example", address: "bo@example.org" }],
   snippet: "Friday works",
   flagged: false,
+  snoozedUntil: null,
 };
 
 function message(overrides: Partial<MessageHeader> & { id: string }): MessageHeader {

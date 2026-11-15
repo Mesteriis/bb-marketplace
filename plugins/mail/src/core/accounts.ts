@@ -134,6 +134,7 @@ export async function addAccount(deps: AccountDeps, input: NewAccountInput): Pro
     smtp,
     sentCopy,
     signature: existing?.signature ?? null,
+    snoozeFolder: existing?.snoozeFolder ?? null,
   };
   deps.store.saveAccount(stored);
   return toPublicAccount(stored);

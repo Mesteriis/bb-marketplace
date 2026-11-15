@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { OutgoingAddress } from "./compose-address.ts";
 import { composeDocInputSchema, type ComposeDoc } from "./compose-doc.ts";
 import type { SignatureDoc } from "./compose-signature.ts";
+import type { HeaderLine } from "./unsubscribe.ts";
 
 /** Which server preset an account was set up with. */
 export const accountPresetSchema = z.enum(["icloud", "gmail", "other"]);
@@ -189,6 +190,8 @@ export const threadSummarySchema = z.object({
   snippet: z.string(),
   /** Any message of the thread in the viewed folder (or role) is flagged. */
   flagged: z.boolean(),
+  /** The earliest snooze due time of the thread's rows in the viewed folder (slice 3e); null when none. */
+  snoozedUntil: z.string().nullable(),
 });
 export type ThreadSummary = z.infer<typeof threadSummarySchema>;
 
@@ -246,6 +249,8 @@ export type StoredAccount = Omit<Account, "smtpConfigured"> & {
   sentCopy: SentCopyPolicy;
   /** The own address's signature (slice 3d); null = none. */
   signature: SignatureDoc | null;
+  /** The folder snoozed mail waits in (slice 3e); null until the owner created or chose one. */
+  snoozeFolder: string | null;
 };
 
 /** An inline (cid-referenced) image part of a message. */
@@ -288,6 +293,12 @@ export type FetchedMessage = {
    * 3d). Absent when the fetch did not read headers.
    */
   deliveredTo?: string[];
+  /**
+   * The header lines unsubscribe parsing reads (UNSUBSCRIBE_HEADER_FIELDS and
+   * the provider's trace names), in message order (slice 3e). Absent when the
+   * fetch did not read headers: the stored unsubscribe info is left alone.
+   */
+  unsubscribeHeaders?: HeaderLine[];
 };
 
 /** A folder as the server lists it. */
@@ -538,12 +549,21 @@ export type NewDraft = DraftFields & {
    * RPC, Drafts list or server copy sees it.
    */
   proposalId: string | null;
+  /**
+   * Why the plugin made a draft the owner did not write (slice 3e): an
+   * unsubscribe email. A purpose draft is hidden like a proposal draft
+   * (isHiddenDraft). Absent: null.
+   */
+  purpose?: DraftPurpose | null;
   /** ISO 8601. */
   createdAt: string;
 };
 
+export type DraftPurpose = "unsubscribe";
+
 /** A compose_drafts row. Starts at revision 1; every save bumps it. */
 export type DraftRecord = NewDraft & {
+  purpose: DraftPurpose | null;
   revision: number;
   /** Where the copy in Drafts stands: "saved" with a serverCopy, else none, failed or local_only. */
   serverState: DraftServerCopyState;
@@ -679,3 +699,117 @@ export const translationViewSchema = z.object({
   createdAt: z.string(),
 });
 export type TranslationView = z.infer<typeof translationViewSchema>;
+
+// ---- Inbox triage (slice 3e) ----
+
+/**
+ * Quick filters of a thread list: a thread qualifies when one member row in
+ * the viewed folder (or role), not moving, matches every flag given. `keep`
+ * is the open conversation, listed whatever the flags say.
+ */
+export const threadFilterSchema = z.object({
+  unread: z.literal(true).optional(),
+  flagged: z.literal(true).optional(),
+  attachments: z.literal(true).optional(),
+  keep: z.string().min(1).max(256).optional(),
+});
+export type ThreadFilter = z.infer<typeof threadFilterSchema>;
+
+/** One sender of a new-mail toast; the address always shows beside the name. */
+export const newMailItemSchema = z.object({
+  accountId: z.string(),
+  threadId: z.string(),
+  messageId: z.string(),
+  /** From display name revealed, one line, at most 60 characters; the address when empty. */
+  name: z.string(),
+  address: z.string(),
+});
+export type NewMailItem = z.infer<typeof newMailItemSchema>;
+
+export const unsubscribeTrustSchema = z.enum(["covered", "not_covered", "no_dkim", "untrusted_provider"]);
+export const unsubscribeStateSchema = z.enum(["done", "redirected", "failed", "queued", "sent", "cancelled"]);
+export type UnsubscribeState = z.infer<typeof unsubscribeStateSchema>;
+
+/** What the reading pane may offer to unsubscribe (never the list's own key). */
+export const unsubscribeInfoViewSchema = z.object({
+  methods: z.object({
+    oneClick: z.object({ host: z.string() }).nullable(),
+    mailto: z.object({ address: z.string(), subject: z.string(), foreignDomain: z.boolean() }).nullable(),
+  }),
+  trust: unsubscribeTrustSchema,
+  listName: z.string().nullable(),
+  /** An earlier request for this list in this account. */
+  already: z.object({ state: unsubscribeStateSchema, at: z.string() }).nullable(),
+  /** The message sits in Spam or Trash: nothing is offered. */
+  hidden: z.boolean(),
+});
+export type UnsubscribeInfoView = z.infer<typeof unsubscribeInfoViewSchema>;
+
+export const blockKindSchema = z.enum(["address", "domain"]);
+
+export const blockRuleViewSchema = z.object({
+  id: z.string(),
+  kind: blockKindSchema,
+  value: z.string(),
+  /** ISO 8601. */
+  createdAt: z.string(),
+});
+export type BlockRuleView = z.infer<typeof blockRuleViewSchema>;
+
+export const triageActionSchema = z.enum(["archive", "reply", "snooze", "mark_read", "spam", "unsubscribe"]);
+export const triageBatchStateSchema = z.enum([
+  "pending",
+  "confirming",
+  "applying",
+  "applied",
+  "cancelled",
+  "changed",
+  "expired",
+  "interrupted",
+]);
+export const triageOutcomeSchema = z.enum([
+  "done",
+  "reply_approved",
+  "not_approved",
+  "skipped",
+  "rate_limited",
+  "failed",
+]);
+
+/** One item of the triage card, with what the store says about its message now. */
+export const triageItemViewSchema = z.object({
+  position: z.number().int(),
+  messageId: z.string(),
+  accountId: z.string(),
+  accountEmail: z.string(),
+  action: triageActionSchema,
+  /** ISO 8601; snooze items only. */
+  snoozeUntil: z.string().nullable(),
+  /** The agent's note, revealed; shown as agent text under its own label. */
+  note: z.string().nullable(),
+  fromName: z.string().nullable(),
+  fromAddress: z.string(),
+  subject: z.string(),
+  date: z.string().nullable(),
+  folder: z.string(),
+  /** False when the message moved or went away since the agent proposed it. */
+  available: z.boolean(),
+  reason: z.string().nullable(),
+  /** Unsubscribe items: the method offered now and where it goes. */
+  unsubscribe: z
+    .object({ method: z.enum(["one_click", "mailto"]), host: z.string().nullable(), address: z.string().nullable() })
+    .nullable(),
+});
+export type TriageItemView = z.infer<typeof triageItemViewSchema>;
+
+export const triageViewSchema = z.object({
+  batchId: z.string(),
+  /** The agent's one-line summary, revealed; agent text. */
+  summary: z.string().nullable(),
+  items: z.array(triageItemViewSchema),
+  /** Accounts of snooze items that have no snooze folder yet. */
+  needsFolder: z.array(z.object({ accountId: z.string(), accountEmail: z.string(), proposedName: z.string() })),
+  /** ISO 8601. */
+  expiresAt: z.string(),
+});
+export type TriageView = z.infer<typeof triageViewSchema>;

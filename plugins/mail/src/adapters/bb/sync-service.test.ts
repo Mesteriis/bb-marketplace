@@ -35,6 +35,12 @@ class OneBadUserGateway implements ImapGateway {
     if (config.user === this.badUser) return Promise.reject(new Error("connection dropped"));
     return this.inner.openFolder(config, path, options);
   }
+  watchFolder(...args: Parameters<ImapGateway["watchFolder"]>) {
+    return this.inner.watchFolder(...args);
+  }
+  createFolder(config: ImapConfig, name: string) {
+    return this.inner.createFolder(config, name);
+  }
 }
 
 function setup() {
@@ -206,6 +212,10 @@ describe("createSyncLoop", () => {
         opened = true;
         return new Promise<FolderSession>(() => {});
       },
+      watchFolder: async () => ({ kind: "unsupported" }),
+      createFolder: async () => {
+        throw new Error("unused");
+      },
     };
     const loop = createSyncLoop({ ...deps, gateway: stuck }, SETTINGS);
     const controller = new AbortController();
@@ -233,6 +243,8 @@ describe("createSyncLoop", () => {
         if (opens === 1) await gate;
         return scripted.openFolder(config, path, options);
       },
+      watchFolder: (...args) => scripted.watchFolder(...args),
+      createFolder: (config, name) => scripted.createFolder(config, name),
     };
     const loop = createSyncLoop({ ...deps, gateway: gated }, SETTINGS);
     const controller = new AbortController();

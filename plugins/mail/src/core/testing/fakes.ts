@@ -68,6 +68,12 @@ import { IDENTITIES_MAX_PER_ACCOUNT, ownerAddressSets, resolveSendCheck, type Al
 import { ComposeError } from "../compose.ts";
 import { TEMPLATES_MAX } from "../templates.ts";
 import type { UndoRow } from "../undo.ts";
+import type { BlockRule } from "../blocking.ts";
+import type { NotifyRow } from "../notify.ts";
+import type { SnoozeRow, SnoozeState, SnoozeView } from "../snooze.ts";
+import type { TriageBatchState, TriageHistoryRow, TriageItemOutcome } from "../triage.ts";
+import type { UnsubscribeInfo } from "../unsubscribe.ts";
+import type { WatchEnd } from "../idle-policy.ts";
 import { ImapAuthError, type NewProposal, type ProposalRecord, type TemplateRecord, type TranslationRecord, type AccountWriteQueue, type MailTransport, type MessageBuilder, type OriginalReader, type OutboxNotifier, type SendResult, type SmtpConfig } from "../ports.ts";
 import type { OutboxChangedPayload } from "../contract.ts";
 import { snippetOf as snippetFromBody } from "../snippet.ts";
@@ -88,7 +94,11 @@ import type {
   FolderSession,
   ImapTestResult,
   MailStore,
+  NewTriageBatch,
   SecretVault,
+  TriageBatchRecord,
+  TriageItemRecord,
+  UnsubscribeRecord,
 } from "../ports.ts";
 
 // ---------------------------------------------------------------------------
@@ -112,6 +122,7 @@ export function makeStoredAccount(overrides: Partial<StoredAccount> = {}): Store
     smtp: null,
     sentCopy: "append",
     signature: null,
+    snoozeFolder: null,
     ...overrides,
   };
 }
@@ -142,6 +153,18 @@ function listHeaderBlock(message: FetchedMessage): Uint8Array {
       ]
     : [];
   const lines = fields.flatMap(([name, value]) => (value === null ? [] : [`${name}: ${value}\r\n`]));
+  return new TextEncoder().encode(`${lines.join("")}\r\n`);
+}
+
+/**
+ * The HEADER.FIELDS block a server returns for `fields`: the message's
+ * unsubscribe header lines (in order) whose names were asked, then a blank line.
+ */
+function headerFieldsBlock(message: FetchedMessage, fields: readonly string[]): Uint8Array {
+  const asked = new Set(fields.map((field) => field.toLowerCase()));
+  const lines = (message.unsubscribeHeaders ?? [])
+    .filter((line) => asked.has(line.key.toLowerCase()))
+    .map((line) => `${line.key}: ${line.value}\r\n`);
   return new TextEncoder().encode(`${lines.join("")}\r\n`);
 }
 
@@ -409,7 +432,7 @@ export class InMemoryMailStore implements MailStore {
 
   // Messages ---------------------------------------------------------------
 
-  upsertMessages(accountId: string, folder: string, messages: FetchedMessage[]): void {
+  upsertMessages(accountId: string, folder: string, messages: FetchedMessage[]): { inserted: string[]; returning: string[] } {
     for (const message of messages) {
       const rows = this.folderRows(accountId, folder);
       const row =
@@ -455,6 +478,7 @@ export class InMemoryMailStore implements MailStore {
         bulk: bulkMarkOf(message),
       });
     }
+    return { inserted: [], returning: [] };
   }
 
   localFolderIndex(
@@ -759,6 +783,7 @@ export class InMemoryMailStore implements MailStore {
   createDraft(input: NewDraft): DraftRecord {
     const record: DraftRecord = {
       ...structuredClone(input),
+      purpose: input.purpose ?? null,
       revision: 1,
       serverState: input.serverCopy === null ? "none" : "saved",
       updatedAt: input.createdAt,
@@ -1534,6 +1559,114 @@ export class InMemoryMailStore implements MailStore {
     return row === undefined ? null : structuredClone(row);
   }
 
+  // Inbox triage (slice 3e): stubs until the store implements them ------------
+
+  setSnoozeFolder(_accountId: string, _path: string | null): void {
+    throw new Error("Not available yet");
+  }
+
+  createSnoozes(_rows: SnoozeRow[], _nowIso: string): { created: number } | { full: true } {
+    throw new Error("Not available yet");
+  }
+
+  listSnoozes(_accountId: string, _opts: { dueBefore?: string; limit: number }): SnoozeRow[] {
+    return [];
+  }
+
+  updateSnooze(_messageId: string, _patch: { state?: SnoozeState; dueAt?: string; returnTo?: string }, _nowIso: string): boolean {
+    throw new Error("Not available yet");
+  }
+
+  deleteSnoozes(_messageIds: string[]): number {
+    throw new Error("Not available yet");
+  }
+
+  snoozeViews(_accountId: string, _limit: number): SnoozeView[] {
+    return [];
+  }
+
+  listBlockRules(): BlockRule[] {
+    return [];
+  }
+
+  addBlockRule(_kind: BlockRule["kind"], _value: string, _id: string, _nowIso: string): { rule: BlockRule; created: boolean } {
+    throw new Error("Not available yet");
+  }
+
+  removeBlockRule(_id: string): boolean {
+    throw new Error("Not available yet");
+  }
+
+  blockMatches(_rule: BlockRule): { id: string; accountId: string; folder: string }[] {
+    return [];
+  }
+
+  spamSeen(_accountId: string, _dedupKeys: string[]): Set<string> {
+    return new Set();
+  }
+
+  pruneSpamSeen(_olderThanIso: string): number {
+    throw new Error("Not available yet");
+  }
+
+  notifyRows(_ids: string[]): (NotifyRow & { dedupKey: string })[] {
+    return [];
+  }
+
+  fillUnsubscribe(_accountId: string, _folder: string, _uidValidity: number, _values: { uid: number; info: UnsubscribeInfo | null }[]): number {
+    throw new Error("Not available yet");
+  }
+
+  unsubscribeUnknown(_accountId: string, _folder: string, _belowUid: number | null, _limit: number): number[] {
+    return [];
+  }
+
+  getUnsubscribeInfo(_messageId: string): UnsubscribeInfo | null {
+    return null;
+  }
+
+  getUnsubscribe(_accountId: string, _listKey: string): UnsubscribeRecord | null {
+    return null;
+  }
+
+  putUnsubscribe(_row: UnsubscribeRecord): void {
+    throw new Error("Not available yet");
+  }
+
+  createTriageBatch(_batch: NewTriageBatch, _items: TriageItemRecord[]): void {
+    throw new Error("Not available yet");
+  }
+
+  getTriageBatch(_id: string): { batch: TriageBatchRecord; items: TriageItemRecord[] } | null {
+    return null;
+  }
+
+  transitionTriageBatch(
+    _id: string,
+    _from: TriageBatchState[],
+    _to: TriageBatchState,
+    _patch: { viewTokenHash?: string | null; approved?: number[]; createSnoozeFolder?: string[] },
+    _nowIso: string,
+  ): boolean {
+    throw new Error("Not available yet");
+  }
+
+  setTriageOutcomes(_id: string, _outcomes: { position: number; outcome: TriageItemOutcome }[]): void {
+    throw new Error("Not available yet");
+  }
+
+  triageHistory(_sinceIso: string): TriageHistoryRow[] {
+    return [];
+  }
+
+  settleTriageAtStart(_nowIso: string): { interrupted: number; expired: number } {
+    throw new Error("Not available yet");
+  }
+
+  cancelSendPurpose(_outboxId: string, _states: OutboxState[]): { cancelled: boolean } {
+    throw new Error("Not available yet");
+  }
+
   /** Translations follow their message: dropped with every removed row (as SQLite deleteRows). */
   private dropOrphanTranslations(): void {
     const ids = new Set(this.state.rows.map((r) => r.id));
@@ -1836,6 +1969,7 @@ export class InMemoryMailStore implements MailStore {
       participants,
       snippet: snippetOf(latest.message),
       flagged: rows.some((r) => inScope(r) && r.isFlagged),
+      snoozedUntil: null,
     };
   }
 
@@ -1896,6 +2030,7 @@ export type SessionCall = {
   raw?: Uint8Array;
   messageId?: string;
   guard?: { messageId: string; size: number };
+  fields?: string[];
 };
 
 export type OpenedSession = {
@@ -2054,6 +2189,32 @@ export class ScriptedImapGateway implements ImapGateway {
       : { ok: true };
   }
 
+  /** Every watchFolder call (slice 3e); the watch ends at once with `watchEnd`. */
+  readonly watched: string[] = [];
+  watchEnd: WatchEnd = { kind: "unsupported" };
+  /** Every createFolder call, in order; a name in `refuseCreate` throws CreateFailed. */
+  readonly created: string[] = [];
+  readonly refuseCreate = new Set<string>();
+
+  async watchFolder(
+    _config: ImapConfig,
+    path: string,
+    _onChange: (change: "exists" | "expunge" | "flags") => void,
+    _signal: AbortSignal,
+  ): Promise<WatchEnd> {
+    this.watched.push(path);
+    return this.watchEnd;
+  }
+
+  async createFolder(_config: ImapConfig, name: string): Promise<{ path: string; created: boolean }> {
+    this.created.push(name);
+    if (this.openFailure) throw this.openFailure;
+    if (this.refuseCreate.has(name)) throw imapError("CreateFailed");
+    if (this.folders.some((folder) => folder.path === name)) return { path: name, created: false };
+    this.addFolder({ path: name });
+    return { path: name, created: true };
+  }
+
   async listFolders(_config: ImapConfig): Promise<RemoteFolder[]> {
     this.listFoldersCalls++;
     if (this.openFailure) throw this.openFailure;
@@ -2137,6 +2298,13 @@ export class ScriptedImapGateway implements ImapGateway {
         return uids.flatMap((uid) => {
           const message = box().messages.find((m) => m.uid === uid);
           return message ? [{ uid, block: listHeaderBlock(message) }] : [];
+        });
+      },
+      fetchHeaderFields: async (uids, fields) => {
+        record({ method: "fetchHeaderFields", uids: [...uids], fields: [...fields] });
+        return uids.flatMap((uid) => {
+          const message = box().messages.find((m) => m.uid === uid);
+          return message ? [{ uid, block: headerFieldsBlock(message, fields) }] : [];
         });
       },
       fetchFlags: async (uids) => {

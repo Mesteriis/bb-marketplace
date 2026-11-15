@@ -45,6 +45,7 @@ function draft(overrides: Partial<DraftRecord> = {}): DraftRecord {
     fromAddress: null,
     origin: "owner",
     proposalId: null,
+    purpose: null,
     createdAt: "2026-11-15T10:00:00.000Z",
     revision: 1,
     serverState: "none",

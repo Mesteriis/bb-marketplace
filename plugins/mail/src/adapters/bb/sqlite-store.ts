@@ -739,6 +739,7 @@ function toAccount(row: AccountRow): StoredAccount {
         : null,
     sentCopy: row.sent_copy ?? "append",
     signature: row.signature_json === null ? null : (JSON.parse(row.signature_json) as SignatureDoc),
+    snoozeFolder: null,
   };
 }
 
@@ -774,6 +775,7 @@ function toDraft(row: DraftRow): DraftRecord {
         : null,
     origin: row.origin,
     proposalId: row.proposal_id,
+    purpose: null,
     fromAddress: row.from_address,
     createdAt: row.created_at,
     revision: row.revision,
@@ -910,6 +912,7 @@ function toThread(row: ThreadRow, flagged: boolean): ThreadSummary {
     participants: JSON.parse(row.participants_json) as MailAddress[],
     snippet: row.snippet,
     flagged,
+    snoozedUntil: null,
   };
 }
 
@@ -921,6 +924,10 @@ function toAttachment(row: AttachmentRow): AttachmentMeta {
     size: row.size,
     isInline: row.is_inline === 1,
   };
+}
+
+function notYet(): never {
+  throw new Error("Not available yet");
 }
 
 export function createSqliteStore(db: Database.Database): MailStore {
@@ -1417,6 +1424,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
           touched.add(threadIdOf.get(id)!.thread_id);
         }
         refreshThreads(accountId, touched);
+        return { inserted: [] as string[], returning: [] as string[] };
       });
     },
 
@@ -3162,6 +3170,34 @@ export function createSqliteStore(db: Database.Database): MailStore {
       const row = db.prepare<[string], TemplateRow>("SELECT * FROM templates WHERE name_key = ?").get(nameKey);
       return row ? toTemplate(row) : null;
     },
+
+    // ---- Inbox triage (slice 3e): stubs until migration element 8 ----
+
+    setSnoozeFolder: notYet,
+    createSnoozes: notYet,
+    listSnoozes: () => [],
+    updateSnooze: notYet,
+    deleteSnoozes: notYet,
+    snoozeViews: () => [],
+    listBlockRules: () => [],
+    addBlockRule: notYet,
+    removeBlockRule: notYet,
+    blockMatches: () => [],
+    spamSeen: () => new Set<string>(),
+    pruneSpamSeen: notYet,
+    notifyRows: () => [],
+    fillUnsubscribe: notYet,
+    unsubscribeUnknown: () => [],
+    getUnsubscribeInfo: () => null,
+    getUnsubscribe: () => null,
+    putUnsubscribe: notYet,
+    createTriageBatch: notYet,
+    getTriageBatch: () => null,
+    transitionTriageBatch: notYet,
+    setTriageOutcomes: notYet,
+    triageHistory: () => [],
+    settleTriageAtStart: notYet,
+    cancelSendPurpose: notYet,
   };
   return store;
 }

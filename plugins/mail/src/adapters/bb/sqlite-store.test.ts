@@ -130,6 +130,7 @@ describe("createSqliteStore", () => {
       ],
       snippet: "Second reply text",
       flagged: false,
+      snoozedUntil: null,
     });
     expect(detail.messages[1]).toEqual({
       id: second,
@@ -1734,6 +1735,7 @@ function newDraft(overrides: Partial<NewDraft> = {}): NewDraft {
     fromAddress: null,
     origin: "owner",
     proposalId: null,
+    purpose: null,
     createdAt: T0,
     ...overrides,
   };

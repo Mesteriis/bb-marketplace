@@ -29,6 +29,13 @@ import {
   statusViewSchema,
   threadDetailSchema,
   threadSummarySchema,
+  blockKindSchema,
+  blockRuleViewSchema,
+  newMailItemSchema,
+  threadFilterSchema,
+  triageBatchStateSchema,
+  triageViewSchema,
+  unsubscribeInfoViewSchema,
 } from "./model.ts";
 import { languageTagSchema } from "./translate.ts";
 
@@ -93,6 +100,11 @@ const identityKeyInput = z.object({ accountId: idInput, address: headerAddressIn
 /** Why an undo left messages where they are (core undo.ts). */
 const undoSkipReasonSchema = z.enum(["moved_elsewhere", "gone", "folder_gone", "not_synced"]);
 
+/** Messages of one owner batch (as message_action). */
+const messageIdList = z.array(idInput).min(1).max(200);
+/** A new-mail token: what the realtime signal carries. */
+const newMailToken = z.string().min(1).max(64);
+
 /** The result of one (account, source folder) group of a message_action batch. */
 const actionGroupSchema = z.object({
   accountId: z.string(),
@@ -130,6 +142,8 @@ export const rpcSchemas = {
       scope: threadScope,
       cursor: z.string().nullable(),
       limit: z.number().int().min(1).max(100),
+      /** Quick filters (slice 3e); absent: every thread. */
+      filter: threadFilterSchema.optional(),
     }),
     output: z.object({
       threads: z.array(threadSummarySchema),
@@ -525,6 +539,117 @@ export const rpcSchemas = {
       groups: z.array(actionGroupSchema),
     }),
   },
+
+  // ---- Inbox triage (slice 3e). Owner only, like 3b-3d: every write
+  // refuses plugin callers, none is discoverable, none is a tool, CLI or
+  // mention. ----
+
+  /** The senders behind a mail-new token, newest first; `not_found` once it expired. */
+  new_mail_get: {
+    input: z.object({ token: newMailToken }),
+    output: z.object({ items: z.array(newMailItemSchema).max(3), more: z.number().int().min(0) }),
+  },
+  /** What the reading pane may offer to unsubscribe from the message's list. */
+  unsubscribe_info: {
+    input: z.object({ messageId: idInput }),
+    output: unsubscribeInfoViewSchema,
+  },
+  /** Idempotent per requestId; refuses a method unsubscribe_info would not offer now. */
+  unsubscribe_run: {
+    input: z.object({ messageId: idInput, method: z.enum(["one_click", "mailto"]), requestId: z.uuid() }),
+    output: z.object({
+      outcome: z.enum(["done", "redirected", "failed", "queued"]),
+      reason: z.string().nullable(),
+      outboxId: z.string().nullable(),
+    }),
+  },
+  /** Moves Inbox mail to the account's snooze folder until `until`; `needsFolder` when it has none. */
+  message_snooze: {
+    input: z
+      .object({
+        messageIds: messageIdList,
+        folder: idInput.optional(),
+        role: specialUseSchema.optional(),
+        until: z.iso.datetime(),
+        undoId: z.uuid().optional(),
+      })
+      .refine((input) => (input.folder === undefined) !== (input.role === undefined), {
+        message: "Give exactly one of folder and role",
+      }),
+    output: z.object({
+      groups: z.array(actionGroupSchema),
+      undoable: z.boolean(),
+      needsFolder: z.array(z.object({ accountId: z.string(), proposedName: z.string() })),
+    }),
+  },
+  /** Returns snoozed messages now. */
+  message_unsnooze: {
+    input: z.object({ messageIds: messageIdList }),
+    output: okOutput,
+  },
+  /** Creates the account's snooze folder (the owner confirmed it). */
+  snooze_folder_create: {
+    input: z.object({ accountId: idInput }),
+    output: z.object({ path: z.string() }),
+  },
+  /** Uses an existing folder for snoozed mail; never a system folder. */
+  snooze_folder_use: {
+    input: z.object({ accountId: idInput, path: idInput }),
+    output: okOutput,
+  },
+  /** Adds a global rule; moves the message (and with moveExisting, stored Inbox mail) to Spam. */
+  block_add: {
+    input: z.object({
+      messageId: idInput,
+      kind: blockKindSchema,
+      moveExisting: z.boolean(),
+      undoId: z.uuid().optional(),
+    }),
+    output: z.object({ ruleId: z.string(), groups: z.array(actionGroupSchema), undoable: z.boolean() }),
+  },
+  block_list: {
+    input: z.object({}),
+    output: z.object({ rules: z.array(blockRuleViewSchema) }),
+  },
+  /** Deletes the rule only; mail already in Spam stays. */
+  block_remove: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+  /** What the block dialog offers for a message, with the counts it would move. */
+  block_check: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({
+      address: z.string(),
+      /** Null for a public mail domain. */
+      domain: z.string().nullable(),
+      sentToCount: z.number().int().min(0),
+      storedCount: z.object({ address: z.number().int().min(0), domain: z.number().int().min(0).nullable() }),
+    }),
+  },
+  /** The triage card's content and a fresh view token, or where the batch stands. */
+  triage_view: {
+    input: z.object({ batchId: idInput, contentHash: contentHashInput }),
+    output: z.union([
+      z.object({ state: z.literal("ready"), view: triageViewSchema, viewToken: z.string() }),
+      z.object({ state: z.union([triageBatchStateSchema.exclude(["pending"]), z.literal("gone")]) }),
+    ]),
+  },
+  /** Where a triage batch stands, for its thread row: counts and ids only. */
+  triage_status: {
+    input: z.object({ batchId: idInput }),
+    output: z.object({
+      state: triageBatchStateSchema,
+      total: z.number().int().min(0),
+      approved: z.number().int().min(0),
+      done: z.number().int().min(0),
+      skipped: z.number().int().min(0),
+      failed: z.number().int().min(0),
+      rateLimited: z.number().int().min(0),
+      byAction: z.array(z.object({ action: z.string(), done: z.number().int().min(0) })),
+      undoable: z.boolean(),
+    }),
+  },
 } as const;
 
 /** Realtime channel the server publishes on when stored mail changes. */
@@ -546,3 +671,10 @@ export type OutboxChangedPayload = {
   id: string;
   state: OutboxState | "cancelled";
 };
+
+/** Realtime channel the server publishes on when new mail toasts (slice 3e). */
+export const NEW_MAIL_CHANNEL = "mail-new";
+
+/** Payload on NEW_MAIL_CHANNEL: a token for new_mail_get, nothing else. */
+export const newMailPayloadSchema = z.strictObject({ token: newMailToken });
+export type NewMailPayload = z.infer<typeof newMailPayloadSchema>;
