@@ -3647,6 +3647,14 @@ describe.each(storeKinds)("slice-3e store semantics (%s)", (_kind, make) => {
       expect(s.getUnsubscribe("acc_1", "l.example.com")).toEqual({ ...request, state: "sent" });
       expect(s.getUnsubscribe("acc_2", "l.example.com")).toBeNull();
     });
+
+    it("a mailto request follows its outbox row by outbox id", () => {
+      const request = { accountId: "acc_1", listKey: "l.example.com", method: "mailto" as const, state: "queued" as const, outboxId: "out_1", requestedAt: T0 };
+      s.putUnsubscribe(request);
+      expect(s.setUnsubscribeStateByOutbox("out_1", "sent")).toBe(true);
+      expect(s.setUnsubscribeStateByOutbox("out_2", "failed")).toBe(false);
+      expect(s.getUnsubscribe("acc_1", "l.example.com")).toEqual({ ...request, state: "sent" });
+    });
   });
 
   describe("notifyRows", () => {

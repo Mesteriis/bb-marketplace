@@ -464,6 +464,11 @@ export const outboxRowSchema = z.object({
    * Absent or null when the kind's own text is enough.
    */
   errorText: z.string().nullable().optional(),
+  /**
+   * "unsubscribe": a send the plugin made for the owner's Unsubscribe click
+   * (slice 3e): the Outbox labels it "Unsubscribe request" and offers no Edit.
+   */
+  purpose: z.enum(["unsubscribe"]).nullable().optional(),
 });
 export type OutboxRow = z.infer<typeof outboxRowSchema>;
 

@@ -61,7 +61,7 @@ import {
   makeFetchedMessage,
   makeStoredAccount,
 } from "./src/core/testing/fakes.ts";
-import type { FolderSession, ImapConfig } from "./src/core/index.ts";
+import type { FolderSession, ImapConfig, PostOutcome, UnsubscribeInfo, UnsubscribePoster } from "./src/core/index.ts";
 
 const PLUGIN_ID = "makosh-mail";
 const PASSWORD = "Pa55-word-never-leaks";
@@ -88,6 +88,9 @@ type LoadOptions = {
   outboxIntervalMs?: number;
   /** bb.sdk stubs (makosh-ai, projects). */
   sdk?: NonNullable<Parameters<typeof createFakePluginHost>[0]>["sdk"];
+  /** The one-click POST (slice 3e). */
+  poster?: UnsubscribePoster;
+  queue?: ReturnType<typeof createAccountQueue>;
 };
 
 /**
@@ -139,7 +142,14 @@ async function load(options: LoadOptions = {}) {
   options.seed?.(host.bb);
   const clock = new FixedClock(NOW);
   const transport = new FakeTransport();
-  await createMailPlugin({ gateway, clock, transport, outboxIntervalMs: options.outboxIntervalMs })(bb);
+  await createMailPlugin({
+    gateway,
+    clock,
+    transport,
+    outboxIntervalMs: options.outboxIntervalMs,
+    ...(options.poster === undefined ? {} : { poster: options.poster }),
+    ...(options.queue === undefined ? {} : { queue: options.queue }),
+  })(bb);
   return { ...host, gateway, clock, transport };
 }
 
@@ -4006,5 +4016,257 @@ describe("makosh-mail server: new mail, block and notifications (slice 3e)", () 
     service.controller.abort();
     await service.done;
     expect(store.listSnoozes(account.id, { limit: 10 })).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inbox triage (slice 3e): unsubscribe
+// ---------------------------------------------------------------------------
+
+const UNSUB_URL = "https://unsub.example.com/u/invented-1";
+const UNSUB_INFO: UnsubscribeInfo = {
+  listKey: "weekly.example.com",
+  listName: "Invented Weekly",
+  https: UNSUB_URL,
+  oneClick: true,
+  mailto: { address: "leave@example.com", subject: "unsubscribe", body: "Invented removal request" },
+  trust: "covered",
+};
+const LIST_FROM = { name: "Invented Weekly", address: "news@example.com" };
+const LIST_BULK = { listId: "<weekly.example.com>", listUnsubscribe: "<mailto:leave@example.com>", precedence: "bulk", autoSubmitted: null };
+const UNSUB_SECRETS = [UNSUB_URL, "unsub.example.com", "leave@example.com", "news@example.com", "weekly.example.com", "Invented removal request"];
+const REQ_A = "3d4e5f60-7182-4c9d-8e0f-2a3b4c5d6e7f";
+const REQ_B = "4e5f6071-8293-4dae-9f10-3b4c5d6e7f80";
+
+class FakePoster implements UnsubscribePoster {
+  readonly urls: string[] = [];
+  outcome: PostOutcome = { kind: "done" };
+  async post(url: string): Promise<PostOutcome> {
+    this.urls.push(url);
+    return this.outcome;
+  }
+}
+
+/**
+ * acc_1 as seedCompose with Junk and Trash; INBOX uid 1 a list message with
+ * stored unsubscribe info, uid 2 a bulk message synced before 3e (info NULL,
+ * its headers only on the server); Junk uid 1 a list message.
+ */
+function loadUnsubscribe(options: { info?: UnsubscribeInfo; poster?: FakePoster; queue?: ReturnType<typeof createAccountQueue> } = {}) {
+  const inbox = [
+    makeFetchedMessage(1, { messageId: "<list-1@example.com>", from: LIST_FROM, bulkHeaders: LIST_BULK, unsubscribe: options.info ?? UNSUB_INFO }),
+    makeFetchedMessage(2, {
+      messageId: "<list-2@example.com>",
+      from: LIST_FROM,
+      bulkHeaders: LIST_BULK,
+      unsubscribeHeaders: [
+        { key: "List-Id", value: "Invented Weekly <weekly.example.com>" },
+        { key: "List-Unsubscribe", value: "<mailto:leave@example.com?subject=stop>" },
+      ],
+    }),
+  ];
+  const junk = [makeFetchedMessage(1, { messageId: "<list-3@example.com>", from: LIST_FROM, bulkHeaders: LIST_BULK, unsubscribe: UNSUB_INFO })];
+  return load({
+    settings: { vaultKey: COMPOSE_KEY },
+    poster: options.poster ?? new FakePoster(),
+    ...(options.queue === undefined ? {} : { queue: options.queue }),
+    outboxIntervalMs: 5,
+    seed: (bb) => {
+      seedCompose(bb);
+      const store = createSqliteStore(bb.storage.database());
+      store.saveFolders("acc_1", [
+        { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+        { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true },
+        { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true },
+        { path: "Junk", name: "Junk", delimiter: "/", specialUse: "junk", selectable: true },
+      ]);
+      // As synced before 3e: no unsubscribe info for uid 2.
+      store.upsertMessages("acc_1", "INBOX", inbox.map(({ unsubscribeHeaders: _h, ...m }) => structuredClone(m)));
+      store.upsertMessages("acc_1", "Junk", structuredClone(junk));
+      store.saveSyncState("acc_1", "INBOX", { uidValidity: 3, lastUid: 2, syncedSince: "2026-10-01T00:00:00.000Z" });
+      store.saveSyncState("acc_1", "Junk", { uidValidity: 4, lastUid: 1, syncedSince: "2026-10-01T00:00:00.000Z" });
+    },
+    server: (gateway) => {
+      composeServer(gateway);
+      gateway.mailbox = { uidValidity: 3, uidNext: 3, messages: structuredClone(inbox) };
+      gateway.addFolder({ path: "Junk", specialUse: "junk" }, { uidValidity: 4, uidNext: 2, messages: structuredClone(junk) });
+    },
+  });
+}
+
+type UnsubView = {
+  methods: { oneClick: { host: string } | null; mailto: { address: string; subject: string; foreignDomain: boolean } | null };
+  trust: string;
+  listName: string | null;
+  already: { state: string; at: string } | null;
+  hidden: boolean;
+};
+
+describe("inbox triage: unsubscribe (slice 3e)", () => {
+  it("unsubscribe_info answers from the store, never with the list key", async () => {
+    const host = await loadUnsubscribe();
+    const info = (await call(host, "unsubscribe_info", { messageId: messageIdAt(host, "INBOX", 1) })) as UnsubView;
+    expect(info).toEqual({
+      methods: {
+        oneClick: { host: "unsub.example.com" },
+        mailto: { address: "leave@example.com", subject: "unsubscribe", foreignDomain: false },
+      },
+      trust: "covered",
+      listName: "Invented Weekly",
+      already: null,
+      hidden: false,
+    });
+    expect(JSON.stringify(info)).not.toContain("weekly.example.com");
+    expect(host.gateway.sessions).toEqual([]);
+  });
+
+  it("unsubscribe_info fetches the header fields of an older bulk row once, read-only and inside the account queue", async () => {
+    const queue = createAccountQueue();
+    const host = await loadUnsubscribe({ queue });
+    const id = messageIdAt(host, "INBOX", 2);
+    let release!: () => void;
+    const held = queue.run("acc_1", () => new Promise<void>((resolve) => (release = resolve)));
+    const pending = call(host, "unsubscribe_info", { messageId: id }) as Promise<UnsubView>;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(host.gateway.sessions).toEqual([]);
+    release();
+    await held;
+    const info = await pending;
+    expect(info.methods).toEqual({ oneClick: null, mailto: { address: "leave@example.com", subject: "stop", foreignDomain: false } });
+    expect(info.trust).toBe("untrusted_provider");
+    const [session] = host.gateway.sessions;
+    expect(session).toMatchObject({ path: "INBOX", readOnly: true, closed: true });
+    expect(session!.calls.map((c) => c.method)).toEqual(["status", "fetchHeaderFields"]);
+    expect(sqlStore(host).getUnsubscribeInfo(id)).toMatchObject({ listKey: "weekly.example.com" });
+    // Stored now: a second call opens nothing.
+    await call(host, "unsubscribe_info", { messageId: id });
+    expect(host.gateway.sessions).toHaveLength(1);
+  });
+
+  it("one-click posts once per requestId, stores the outcome and is rate-limited per message", async () => {
+    const poster = new FakePoster();
+    const host = await loadUnsubscribe({ poster });
+    const id = messageIdAt(host, "INBOX", 1);
+    const first = await call(host, "unsubscribe_run", { messageId: id, method: "one_click", requestId: REQ_A });
+    expect(first).toEqual({ outcome: "done", reason: null, outboxId: null });
+    expect(await call(host, "unsubscribe_run", { messageId: id, method: "one_click", requestId: REQ_A })).toEqual(first);
+    expect(poster.urls).toEqual([UNSUB_URL]);
+    expect(((await call(host, "unsubscribe_info", { messageId: id })) as UnsubView).already).toEqual({ state: "done", at: NOW.toISOString() });
+    await expect(call(host, "unsubscribe_run", { messageId: id, method: "one_click", requestId: REQ_B })).rejects.toMatchObject({
+      code: "conflict",
+      message: expect.stringContaining("Too many unsubscribe requests"),
+    });
+    expect(poster.urls).toHaveLength(1);
+    expect(logText(host)).toContain(`unsubscribe ${id}: done`);
+    expectNoLeak(host, UNSUB_SECRETS);
+  });
+
+  it("a redirect and a failure are reported with fixed reasons", async () => {
+    const poster = new FakePoster();
+    const host = await loadUnsubscribe({ poster });
+    poster.outcome = { kind: "redirected" };
+    expect(await call(host, "unsubscribe_run", { messageId: messageIdAt(host, "INBOX", 1), method: "one_click", requestId: REQ_A })).toEqual({
+      outcome: "redirected",
+      reason: null,
+      outboxId: null,
+    });
+    host.clock.set(new Date(NOW.getTime() + 11 * 60_000));
+    poster.outcome = { kind: "failed", reason: "server" };
+    expect(await call(host, "unsubscribe_run", { messageId: messageIdAt(host, "INBOX", 1), method: "one_click", requestId: REQ_B })).toEqual({
+      outcome: "failed",
+      reason: "server",
+      outboxId: null,
+    });
+    expect(logText(host)).toContain(": failed (server)");
+  });
+
+  it("refuses a method not offered now: one-click without a covering signature, or without info", async () => {
+    const poster = new FakePoster();
+    const host = await loadUnsubscribe({ poster, info: { ...UNSUB_INFO, trust: "no_dkim" } });
+    await expect(
+      call(host, "unsubscribe_run", { messageId: messageIdAt(host, "INBOX", 1), method: "one_click", requestId: REQ_A }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await expect(
+      call(host, "unsubscribe_run", { messageId: messageIdAt(host, "INBOX", 2), method: "mailto", requestId: REQ_B }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(poster.urls).toEqual([]);
+  });
+
+  it("hides and refuses unsubscribe for mail in Spam", async () => {
+    const poster = new FakePoster();
+    const host = await loadUnsubscribe({ poster });
+    const id = messageIdAt(host, "Junk", 1);
+    expect(await call(host, "unsubscribe_info", { messageId: id })).toMatchObject({
+      methods: { oneClick: null, mailto: null },
+      hidden: true,
+    });
+    for (const method of ["one_click", "mailto"]) {
+      await expect(call(host, "unsubscribe_run", { messageId: id, method, requestId: REQ_A })).rejects.toThrow(
+        "Use Spam or Block for mail you never signed up for",
+      );
+    }
+    expect(poster.urls).toEqual([]);
+  });
+
+  it("mailto queues a hidden owner draft with Undo, never a Drafts copy, and its request follows the outbox", async () => {
+    const host = await loadUnsubscribe();
+    sqlStore(host).setAccountSignature("acc_1", {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "Invented own signature" }] }],
+    });
+    const service = host.harness.behavior.runService("sync");
+    const id = messageIdAt(host, "INBOX", 1);
+    const result = (await call(host, "unsubscribe_run", { messageId: id, method: "mailto", requestId: REQ_A })) as {
+      outcome: string;
+      outboxId: string;
+    };
+    expect(result).toEqual({ outcome: "queued", reason: null, outboxId: REQ_A });
+    const row = sqlStore(host).getOutbox(REQ_A)!;
+    expect(row).toMatchObject({ origin: "owner", envelopeFrom: "owner@example.org", envelopeTo: ["leave@example.com"], state: "queued" });
+    const draft = sqlStore(host).getDraft(row.draftId!)!;
+    expect(draft).toMatchObject({ purpose: "unsubscribe", proposalId: null, origin: "owner", subject: "unsubscribe" });
+    expect(JSON.stringify(draft.doc)).toContain("Invented removal request");
+    expect(JSON.stringify(draft.doc)).not.toContain("Invented own signature");
+    const { rows } = (await call(host, "outbox_list", { accountId: null })) as { rows: { id: string; purpose: string | null }[] };
+    expect(rows).toEqual([expect.objectContaining({ id: REQ_A, purpose: "unsubscribe" })]);
+    // No compose RPC reaches the hidden draft.
+    await expect(call(host, "compose_open", { draftId: draft.id })).rejects.toMatchObject({ code: "not_found" });
+    await expect(call(host, "compose_discard", { draftId: draft.id })).rejects.toMatchObject({ code: "not_found" });
+    expect(((await call(host, "unsubscribe_info", { messageId: id })) as UnsubView).already).toMatchObject({ state: "queued" });
+
+    host.clock.set(new Date(NOW.getTime() + UNDO_MS));
+    await vi.waitFor(() => expect(outboxStates(host)).toContain("done"));
+    service.controller.abort();
+    await service.done;
+    expect(host.transport.sent).toHaveLength(1);
+    expect(host.gateway.appended.map((a) => a.path)).toEqual(["Sent"]);
+    expect(sqlStore(host).getUnsubscribe("acc_1", "weekly.example.com")).toMatchObject({ state: "sent", outboxId: REQ_A });
+    expect(logText(host)).toContain(`unsubscribe ${id}: queued`);
+    expectNoLeak(host, UNSUB_SECRETS);
+  });
+
+  it("Undo of an unsubscribe email deletes it and its draft; the request is cancelled", async () => {
+    const host = await loadUnsubscribe();
+    const id = messageIdAt(host, "INBOX", 1);
+    await call(host, "unsubscribe_run", { messageId: id, method: "mailto", requestId: REQ_A });
+    const draftId = sqlStore(host).getOutbox(REQ_A)!.draftId!;
+    expect(await call(host, "outbox_cancel", { id: REQ_A })).toEqual({ cancelled: true, draftId: null });
+    expect(sqlStore(host).getDraft(draftId)).toBeNull();
+    expect(sqlStore(host).getUnsubscribe("acc_1", "weekly.example.com")).toMatchObject({ state: "cancelled" });
+    // The undone requestId cannot bring it back.
+    expect(await call(host, "unsubscribe_run", { messageId: id, method: "mailto", requestId: REQ_A })).toMatchObject({ outcome: "queued" });
+    expect(sqlStore(host).getOutbox(REQ_A)).toBeNull();
+    await expect(call(host, "unsubscribe_run", { messageId: id, method: "mailto", requestId: REQ_B })).resolves.toMatchObject({
+      outcome: "queued",
+    });
+  });
+
+  it("both unsubscribe methods refuse plugin callers", async () => {
+    const host = await loadUnsubscribe();
+    const id = messageIdAt(host, "INBOX", 1);
+    await expect(host.harness.behavior.callRpc("unsubscribe_info", { messageId: id }, asPlugin)).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    await expect(
+      host.harness.behavior.callRpc("unsubscribe_run", { messageId: id, method: "one_click", requestId: REQ_A }, asPlugin),
+    ).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
   });
 });

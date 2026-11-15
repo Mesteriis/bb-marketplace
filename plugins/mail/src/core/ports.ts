@@ -772,6 +772,8 @@ export interface MailStore {
   getUnsubscribe(accountId: string, listKey: string): UnsubscribeRecord | null;
   /** Upsert by (account, list key). */
   putUnsubscribe(row: UnsubscribeRecord): void;
+  /** A mailto request follows its outbox row: sets the state of the row with this outbox id; false when none. */
+  setUnsubscribeStateByOutbox(outboxId: string, state: UnsubscribeState): boolean;
   /** Stores a `pending` batch with its items in one transaction. */
   createTriageBatch(batch: NewTriageBatch, items: TriageItemRecord[]): void;
   getTriageBatch(id: string): { batch: TriageBatchRecord; items: TriageItemRecord[] } | null;

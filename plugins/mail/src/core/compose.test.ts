@@ -10,6 +10,7 @@ import {
   outgoingOf,
   planCompose,
   planNew,
+  planUnsubscribe,
   prepareCompose,
   removeComposeAttachment,
   saveCompose,
@@ -755,6 +756,25 @@ describe("identities in compose (slice 3d)", () => {
     h.reader.originals.set(html, { replyTo: [], html: "<p>Own</p>", attachments: [], bcc: [] });
     const htmlPlan = await planCompose(h.deps, { kind: "forward", messageId: html });
     expect(htmlPlan.importHtml).toMatchObject({ stripSignature: false });
+  });
+
+  it("an unsubscribe email starts from the address the list mail came to, plain text, no signature or quote", () => {
+    addAlias();
+    h.store.updateIdentity("acc_1", ALIAS, { signature: SIG("Alias sig") }, "2026-11-15T09:00:00.000Z");
+    const id = stored({ from: addr("news@example.org", "News"), to: [addr("list@example.com")], deliveredTo: [ALIAS], bodyText: "List text" });
+    const plan = planUnsubscribe(h.deps, id, { address: "leave@example.org", subject: "unsubscribe", body: "Please remove\nme" });
+    expect(plan.fromAddress).toBe(ALIAS);
+    expect(plan.to).toEqual([addr("leave@example.org")]);
+    expect(plan.cc).toEqual([]);
+    expect(plan.subject).toBe("unsubscribe");
+    expect(plan.inReplyTo).toBeNull();
+    expect(plan.attachments).toEqual([]);
+    expect(plan.doc.content.map((b) => b.type)).toEqual(["paragraph", "paragraph"]);
+    const docText = JSON.stringify(plan.doc);
+    expect(docText).toContain("Please remove");
+    expect(docText).not.toContain("Alias sig");
+    expect(docText).not.toContain("List text");
+    expect(() => planUnsubscribe(h.deps, "missing", { address: "a@example.org", subject: "s", body: "" })).toThrow(ComposeError);
   });
 
   it("a reply to foreign mail keeps its text and does not strip", async () => {

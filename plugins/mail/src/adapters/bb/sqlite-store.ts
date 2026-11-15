@@ -3693,6 +3693,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
       ).run({ ...row, requestedAt: isoOf(row.requestedAt) });
     },
 
+    setUnsubscribeStateByOutbox(outboxId, state) {
+      return db.prepare("UPDATE unsubscribes SET state = ? WHERE outbox_id = ?").run(state, outboxId).changes > 0;
+    },
+
     createTriageBatch(batch, items) {
       atomic(() => {
         db.prepare(
