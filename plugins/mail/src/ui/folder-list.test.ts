@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Folder } from "../core/index.ts";
-import { folderRows, inboxPath } from "./folder-list.tsx";
+import { folderRows, inboxPath, readCollapsedAccounts, writeCollapsedAccounts } from "./folder-list.tsx";
 
 function folder(path: string, overrides: Partial<Folder> = {}): Folder {
   return {
@@ -55,5 +55,46 @@ describe("folderRows", () => {
     expect(inboxPath([folder("Inbox", { specialUse: "inbox" })])).toBe("Inbox");
     expect(inboxPath([])).toBeNull();
     expect(inboxPath(null)).toBeNull();
+  });
+});
+
+describe("collapsed accounts storage", () => {
+  const store = (value: string | null) => ({ getItem: () => value });
+
+  it("is empty without storage, value, valid JSON or an array", () => {
+    expect(readCollapsedAccounts(null).size).toBe(0);
+    expect(readCollapsedAccounts(store(null)).size).toBe(0);
+    expect(readCollapsedAccounts(store("{not json")).size).toBe(0);
+    expect(readCollapsedAccounts(store('{"a":1}')).size).toBe(0);
+  });
+
+  it("keeps only string ids", () => {
+    expect([...readCollapsedAccounts(store('["a", 1, null, "b"]'))]).toEqual(["a", "b"]);
+  });
+
+  it("survives a storage that throws", () => {
+    const throwing = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+    expect(readCollapsedAccounts(throwing).size).toBe(0);
+    expect(() => writeCollapsedAccounts(throwing, new Set(["a"]))).not.toThrow();
+    expect(() => writeCollapsedAccounts(null, new Set(["a"]))).not.toThrow();
+  });
+
+  it("round-trips", () => {
+    let saved: string | null = null;
+    const memory = {
+      getItem: () => saved,
+      setItem: (_key: string, value: string) => {
+        saved = value;
+      },
+    };
+    writeCollapsedAccounts(memory, new Set(["acc-1", "acc-2"]));
+    expect([...readCollapsedAccounts(memory)].sort()).toEqual(["acc-1", "acc-2"]);
   });
 });

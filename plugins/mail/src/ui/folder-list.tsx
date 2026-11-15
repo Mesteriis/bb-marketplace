@@ -1,6 +1,7 @@
 // The folder rail: system folders first (the store's order), then the owner's
 // folders, with unread counts. Narrow pages get the same choice as a select in
 // the header instead.
+import { useId, useState } from "react";
 import type { Account, Folder, RoleCount, SpecialUse } from "../core/index.ts";
 import { ROLE_NAMES, roleFolders } from "../core/actions.ts";
 import { Icon } from "@/components/ui/icon";
@@ -240,9 +241,122 @@ export interface UnifiedRailProps {
   error: string | null;
 }
 
-/** All accounts: the merged roles, then each account's own folders under its name. */
+/** Where the rail remembers which accounts the owner collapsed. */
+export const COLLAPSED_ACCOUNTS_KEY = "makosh-mail.collapsedAccounts";
+
+/** The collapsed account ids; empty when nothing (valid) is stored. */
+export function readCollapsedAccounts(storage: Pick<Storage, "getItem"> | null): Set<string> {
+  try {
+    const raw = storage?.getItem(COLLAPSED_ACCOUNTS_KEY) ?? null;
+    if (raw === null) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((id): id is string => typeof id === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+/** Stores the collapsed account ids; a storage that refuses is ignored. */
+export function writeCollapsedAccounts(
+  storage: Pick<Storage, "setItem"> | null,
+  collapsed: ReadonlySet<string>,
+): void {
+  try {
+    storage?.setItem(COLLAPSED_ACCOUNTS_KEY, JSON.stringify([...collapsed]));
+  } catch {
+    // Private mode or a full quota: the state lasts until the page closes.
+  }
+}
+
+function pageStorage(): Storage | null {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      aria-hidden
+      className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")}
+    >
+      <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function AccountGroup({
+  account,
+  own,
+  open,
+  onToggle,
+  view,
+  onSelect,
+}: {
+  account: Account;
+  own: readonly Folder[];
+  open: boolean;
+  onToggle: () => void;
+  view: MailView;
+  onSelect: (view: MailView) => void;
+}) {
+  const listId = useId();
+  const label = accountLabel(account);
+  const unread = own.reduce((sum, f) => sum + f.unreadCount, 0);
+  return (
+    <div className="px-1.5 py-1">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={listId}
+        onClick={onToggle}
+        className="flex h-6 w-full items-center gap-1 rounded-md px-1 pt-1 text-left text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        <Chevron open={open} />
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        {!open && unread > 0 ? (
+          <span className="shrink-0 tabular-nums">
+            {unread}
+            <span className="sr-only"> unread</span>
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <ul id={listId} aria-label={label} className="flex flex-col gap-px pt-0.5">
+          <FolderRowsList
+            folders={own}
+            isSelected={(folder) =>
+              view.kind === "folder" && view.accountId === account.id && view.path === folder.path
+            }
+            onSelect={(folder) => onSelect({ kind: "folder", accountId: account.id, path: folder.path })}
+          />
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * All accounts: the merged roles, then each account's own folders under its
+ * name, in a group the owner can collapse (remembered on this device). The
+ * group holding the open folder stays open.
+ */
 export function UnifiedRail({ roles, folders, accounts, view, onSelect, error }: UnifiedRailProps) {
   const shownRoles = roles.filter((r): r is RoleCount & { role: RoleName } => r.role !== "all");
+  const [collapsed, setCollapsed] = useState(() => readCollapsedAccounts(pageStorage()));
+  const toggle = (accountId: string) => {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(accountId)) next.delete(accountId);
+      else next.add(accountId);
+      writeCollapsedAccounts(pageStorage(), next);
+      return next;
+    });
+  };
   return (
     <>
       {error !== null || shownRoles.length === 0 ? <RailHint error={error} /> : null}
@@ -262,35 +376,29 @@ export function UnifiedRail({ roles, folders, accounts, view, onSelect, error }:
       {accounts.map((account) => {
         const own = ownFolders(folders, account.id);
         if (own.length === 0) return null;
+        const holdsView = view.kind === "folder" && view.accountId === account.id;
         return (
-          <ul
+          <AccountGroup
             key={account.id}
-            aria-label={accountLabel(account)}
-            className="flex flex-col gap-px px-1.5 py-1"
-          >
-            <li className="truncate px-2 pb-0.5 pt-2 text-xs font-medium text-muted-foreground">
-              {accountLabel(account)}
-            </li>
-            <FolderRowsList
-              folders={own}
-              isSelected={(folder) =>
-                view.kind === "folder" && view.accountId === account.id && view.path === folder.path
-              }
-              onSelect={(folder) => onSelect({ kind: "folder", accountId: account.id, path: folder.path })}
-            />
-          </ul>
+            account={account}
+            own={own}
+            open={holdsView || !collapsed.has(account.id)}
+            onToggle={() => toggle(account.id)}
+            view={view}
+            onSelect={onSelect}
+          />
         );
       })}
     </>
   );
 }
 
-/** All accounts' rail as a select, for pages too narrow for the rail. */
 /** Where focus goes after a value is picked; passed to the select's content. */
 export interface SelectFocusProps {
   onCloseAutoFocus?: (event: Event) => void;
 }
 
+/** All accounts' rail as a select, for pages too narrow for the rail. */
 export function UnifiedSelect({
   roles,
   folders,
