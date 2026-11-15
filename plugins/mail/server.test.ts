@@ -2723,6 +2723,25 @@ describe("agent proposals", () => {
     expect(sqlStore(host).listOutbox(null)).toEqual([]);
   });
 
+  it("a cancel that lands while describeSubmission checks the submit settles the proposal; the thread is not blocked", async () => {
+    const cards: Card[] = [];
+    const host = await loadPropose({ wrap: scriptedCards(cards) });
+    const result = host.harness.behavior.callAgentTool("mail_propose", PROPOSAL, { threadId: THREAD });
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    const ids = cards[0]!.request.payload as { proposalId: string; contentHash: string };
+    const draftId = hiddenDraftOf(host, ids.proposalId);
+    const token = await viewToken(host, ids);
+    const described = cards[0]!.request.describeSubmission!(submitValue("send", ids, token));
+    cards[0]!.resolve({ outcome: "cancelled", reason: "user" });
+    await described;
+    expect(await result).toBe(AGENT_RESULT.cancelled);
+    expect(sqlStore(host).getProposal(ids.proposalId)).toMatchObject({ state: "cancelled", draftId: null });
+    expect(sqlStore(host).getDraft(draftId)).toBeNull();
+    expect(sqlStore(host).listOutbox(null)).toEqual([]);
+    void host.harness.behavior.callAgentTool("mail_propose", PROPOSAL, { threadId: THREAD });
+    await vi.waitFor(() => expect(cards).toHaveLength(2));
+  });
+
   it("a second proposal in the same thread is refused while the first waits", async () => {
     const cards: Card[] = [];
     const host = await loadPropose({ wrap: scriptedCards(cards) });

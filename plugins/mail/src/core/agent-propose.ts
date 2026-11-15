@@ -48,7 +48,15 @@ export type ProposalEvent = "confirm" | "queue" | "open" | "queue_failed" | "can
 
 const TRANSITIONS: Partial<Record<ProposalState, Partial<Record<ProposalEvent, ProposalState>>>> = {
   pending: { confirm: "confirming", open: "opened", cancel: "cancelled", expire: "expired", refuse: "refused" },
-  confirming: { queue: "queued", open: "opened", queue_failed: "opened", expire: "expired", refuse: "refused", stale: "pending" },
+  confirming: {
+    queue: "queued",
+    open: "opened",
+    queue_failed: "opened",
+    expire: "expired",
+    refuse: "refused",
+    stale: "pending",
+    cancel: "cancelled",
+  },
   queued: { undo: "opened" },
 };
 

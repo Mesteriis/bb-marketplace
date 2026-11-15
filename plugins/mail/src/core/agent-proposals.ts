@@ -526,24 +526,29 @@ export function describeProposalSubmission(
  * After a confirmed "send": the vault, sign-in and SMTP checks again, then
  * queueSend of the hidden draft with requestId = proposalId and origin
  * "agent", and the proposal `queued` with its outbox id. A refusal keeps the
- * message as an owner draft (released, proposal `opened`) and says why.
+ * message as an owner draft (released, proposal `opened`) and says why. A
+ * confirmed proposal whose hidden draft is gone is settled `expired`
+ * (`lost`), so it never stays `confirming`.
  */
 export async function queueConfirmed(
   deps: ProposalDeps,
   proposalId: string,
-): Promise<{ outboxId: string } | { notQueued: NotQueuedReason }> {
+): Promise<{ outboxId: string } | { notQueued: NotQueuedReason } | { lost: true }> {
   const at = () => deps.clock.now().toISOString();
   const proposal = deps.store.getProposal(proposalId);
-  if (proposal === null || proposal.state !== "confirming" || proposal.draftId === null) {
-    return { notQueued: "account" };
-  }
+  if (proposal === null || proposal.state !== "confirming") return { notQueued: "account" };
+  const lost = (): { lost: true } => {
+    cancelProposal(deps, proposalId, "expired");
+    return { lost: true };
+  };
+  if (proposal.draftId === null) return lost();
   const draftId = proposal.draftId;
   const release = (reason: NotQueuedReason) => {
     deps.store.releaseProposalDraft(proposalId, draftId, at());
     return { notQueued: reason };
   };
   const draft = deps.store.getDraft(draftId);
-  if (draft === null) return { notQueued: "account" };
+  if (draft === null || draft.proposalId !== proposalId) return lost();
   const account = deps.store.getAccount(draft.accountId);
   if (!deps.vaultReady() || account === null || account.authFailed || account.smtp === null) {
     return release("account");
@@ -566,8 +571,10 @@ export async function queueConfirmed(
 
 /**
  * The card was cancelled (by the owner) or ran out (timeout, restart,
- * plugin disposed): the proposal is `cancelled` or `expired` and its hidden
- * draft deleted. False when the proposal had already settled.
+ * plugin disposed), or a confirmed one cannot go on: the proposal is
+ * `cancelled` or `expired` from `pending` or `confirming` (a confirmed card
+ * nobody queues must not block the caps), and its hidden draft deleted.
+ * False when the proposal had already settled.
  */
 export function cancelProposal(
   deps: Pick<ProposalDeps, "store" | "clock">,
@@ -575,10 +582,12 @@ export function cancelProposal(
   reason: "user" | "expired",
 ): boolean {
   const at = deps.clock.now().toISOString();
-  const moved =
-    reason === "user"
-      ? deps.store.transitionProposal(proposalId, ["pending"], "cancelled", at)
-      : deps.store.transitionProposal(proposalId, ["pending", "confirming"], "expired", at);
+  const moved = deps.store.transitionProposal(
+    proposalId,
+    ["pending", "confirming"],
+    reason === "user" ? "cancelled" : "expired",
+    at,
+  );
   if (moved) deps.store.dropProposalDraft(proposalId);
   return moved;
 }
