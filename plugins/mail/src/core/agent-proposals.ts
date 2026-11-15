@@ -439,7 +439,12 @@ function blockText(block: ComposeBlock | ComposeListItem): string {
 // Submit
 // ---------------------------------------------------------------------------
 
-export type SubmitCheck = { action: "send" | "open" } | { refused: "changed" };
+/**
+ * `retry`: the submit carried an older view's token (another view rotated
+ * it); the proposal is back to `pending` with its draft, and the card can be
+ * opened again.
+ */
+export type SubmitCheck = { action: "send" | "open" } | { refused: "changed" } | { retry: "opened_elsewhere" };
 
 /**
  * The card's submit check (spec resolution 8), run once: the strict parse,
@@ -447,9 +452,11 @@ export type SubmitCheck = { action: "send" | "open" } | { refused: "changed" };
  * CAS pending → confirming (a second submit loses), the submitted hash equal
  * to the stored one and to the hash of the current hidden draft, the latest
  * view's token, and expiry. "open" releases the draft (an owner draft, the
- * proposal `opened`) within the same call. Any failure after the parse
- * refuses the proposal and drops its hidden draft, except a lost race,
- * which leaves the winner alone.
+ * proposal `opened`) within the same call. A content failure after the parse
+ * refuses the proposal and drops its hidden draft; a lost race leaves the
+ * winner alone; a token that is not the latest view's (spec resolution 21)
+ * is no content change: the proposal goes back to `pending` with its draft,
+ * which does not count toward the cool-down.
  */
 export async function checkSubmit(
   deps: Pick<ProposalDeps, "store" | "clock">,
@@ -471,12 +478,16 @@ export async function checkSubmit(
   const draft = deps.store.getDraft(proposal.draftId);
   if (draft === null || draft.proposalId !== proposalId) return fail(["confirming"]);
   if ((await draftHash(deps.store, draft)) !== proposal.contentSha256) return fail(["confirming"]);
-  const tokenHash = await sha256Hex(new TextEncoder().encode(submitted.viewToken));
-  if (proposal.viewTokenSha256 === null || tokenHash !== proposal.viewTokenSha256) return fail(["confirming"]);
   if (deps.clock.now().getTime() >= Date.parse(proposal.expiresAt)) {
     deps.store.transitionProposal(proposalId, ["confirming"], "expired", at());
     deps.store.dropProposalDraft(proposalId);
     return { refused: "changed" };
+  }
+  const tokenHash = await sha256Hex(new TextEncoder().encode(submitted.viewToken));
+  if (proposal.viewTokenSha256 === null || tokenHash !== proposal.viewTokenSha256) {
+    // Nothing changed but the view: back to pending, the draft kept.
+    deps.store.transitionProposal(proposalId, ["confirming"], "pending", at());
+    return { retry: "opened_elsewhere" };
   }
 
   if (submitted.action === "open") {
@@ -499,7 +510,9 @@ export function describeProposalSubmission(
   const title =
     "refused" in result
       ? "Not sent: the proposal changed"
-      : result.action === "open"
+      : "retry" in result
+        ? "Not sent: this card was opened elsewhere; reopen it"
+        : result.action === "open"
         ? "Opened in Mail"
         : "Email confirmed";
   return { title, payload: { proposalId } };

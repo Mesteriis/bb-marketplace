@@ -1392,48 +1392,61 @@ function registerProposeTool(bb: BbPluginApi, deps: AgentSurfaceDeps): void {
       const { proposalId, contentHash } = created;
       bb.log.info(`proposal ${proposalId} pending`);
 
-      // The submit check runs once: the host calls describeSubmission first,
-      // and the continuation below awaits the same promise.
-      let check: Promise<SubmitCheck> | null = null;
-      const decide = (value: unknown) => (check ??= checkSubmit(proposalDeps, proposalId, value));
-      let result: PluginInteractionResult;
-      try {
-        result = await bb.ui.requestInput(
-          {
-            threadId: ctx.threadId,
-            rendererId: AGENT_SEND_RENDERER,
-            title: "Review an email before it is sent",
-            payload: { proposalId, contentHash },
-            timeoutMs: PROPOSAL_TTL_MS,
-            presentation: {
-              label: { pending: "Waiting for you to review an email", completed: "Email reviewed" },
-              icon: { glyph: "Mail" },
-            },
-            describeSubmission: async (value) => describeProposalSubmission(proposalId, await decide(value)),
-          },
-          { signal: ctx.signal },
-        );
-      } catch (error) {
-        cancelProposal(proposalDeps, proposalId, "expired");
-        bb.log.warn(`proposal ${proposalId} card failed (${errorKind(error)})`);
-        return AGENT_RESULT.expired;
-      }
-
-      if (result.outcome === "cancelled") {
-        const expired = EXPIRED_REASONS.has(result.reason);
-        cancelProposal(proposalDeps, proposalId, expired ? "expired" : "user");
-        bb.log.info(`proposal ${proposalId} ${expired ? "expired" : "cancelled"} (${result.reason})`);
-        return expired ? AGENT_RESULT.expired : AGENT_RESULT.cancelled;
-      }
-
+      // Each card's submit check runs once: the host calls describeSubmission
+      // first, and the continuation below awaits the same promise. A submit
+      // with an older view's token leaves the proposal pending, so the card
+      // is opened again until the proposal expires (spec resolution 21).
       let decided: SubmitCheck;
-      try {
-        decided = await decide(result.value);
-      } catch (error) {
-        // The check itself failed (a store error): nothing was confirmed.
-        cancelProposal(proposalDeps, proposalId, "expired");
-        bb.log.warn(`proposal ${proposalId} check failed (${errorKind(error)})`);
-        return AGENT_RESULT.changed;
+      for (;;) {
+        const expiresAt = proposalDeps.store.getProposal(proposalId)?.expiresAt;
+        const remaining = expiresAt === undefined ? 0 : Date.parse(expiresAt) - proposalDeps.clock.now().getTime();
+        if (remaining <= 0) {
+          cancelProposal(proposalDeps, proposalId, "expired");
+          bb.log.info(`proposal ${proposalId} expired`);
+          return AGENT_RESULT.expired;
+        }
+        let check: Promise<SubmitCheck> | null = null;
+        const decide = (value: unknown) => (check ??= checkSubmit(proposalDeps, proposalId, value));
+        let result: PluginInteractionResult;
+        try {
+          result = await bb.ui.requestInput(
+            {
+              threadId: ctx.threadId,
+              rendererId: AGENT_SEND_RENDERER,
+              title: "Review an email before it is sent",
+              payload: { proposalId, contentHash },
+              timeoutMs: Math.min(PROPOSAL_TTL_MS, remaining),
+              presentation: {
+                label: { pending: "Waiting for you to review an email", completed: "Email reviewed" },
+                icon: { glyph: "Mail" },
+              },
+              describeSubmission: async (value) => describeProposalSubmission(proposalId, await decide(value)),
+            },
+            { signal: ctx.signal },
+          );
+        } catch (error) {
+          cancelProposal(proposalDeps, proposalId, "expired");
+          bb.log.warn(`proposal ${proposalId} card failed (${errorKind(error)})`);
+          return AGENT_RESULT.expired;
+        }
+
+        if (result.outcome === "cancelled") {
+          const expired = EXPIRED_REASONS.has(result.reason);
+          cancelProposal(proposalDeps, proposalId, expired ? "expired" : "user");
+          bb.log.info(`proposal ${proposalId} ${expired ? "expired" : "cancelled"} (${result.reason})`);
+          return expired ? AGENT_RESULT.expired : AGENT_RESULT.cancelled;
+        }
+
+        try {
+          decided = await decide(result.value);
+        } catch (error) {
+          // The check itself failed (a store error): nothing was confirmed.
+          cancelProposal(proposalDeps, proposalId, "expired");
+          bb.log.warn(`proposal ${proposalId} check failed (${errorKind(error)})`);
+          return AGENT_RESULT.changed;
+        }
+        if (!("retry" in decided)) break;
+        bb.log.info(`proposal ${proposalId} opened elsewhere; card reopened`);
       }
       if ("refused" in decided) {
         bb.log.info(`proposal ${proposalId} refused`);

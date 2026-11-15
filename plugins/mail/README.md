@@ -230,8 +230,9 @@ of the BB server can read the card (`bb thread interactions show`), call the
 plugin's RPC methods and answer the card itself (`bb thread interactions
 respond`), so it could press Send for you. It can also start and read
 translations (spending your Makosh AI quota, within 30 an hour) and open the
-card's view again, which only breaks your copy of the card ("This card was
-opened elsewhere; reopen it") and sends nothing. Inside the plugin nothing
+card's view again, which only stops your copy of the card from sending
+("Not sent: this card was opened elsewhere; reopen it"): the proposal stays
+as it was and the card opens again in the thread. Inside the plugin nothing
 else confirms a proposal, and those commands show up in the thread's command
 log. What limits a forged Send: `agentPropose` is off until you turn it on,
 every agent send waits 10 seconds with an "Agent message · Sending in N s ·
