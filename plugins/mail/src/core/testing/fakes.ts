@@ -1786,6 +1786,14 @@ export function composeHarness(options: { now?: string } = {}) {
   store.saveFolders("acc_1", gateway.folders);
   let ids = 0;
   const clock = new FixedClock(new Date(options.now ?? "2026-11-15T10:00:00.000Z"));
+  /** Every backoff the outbox asked for, in ms; each one moves the clock instead of waiting. */
+  const sleeps: number[] = [];
+  const harness = { onSleep: null as (() => void) | null };
+  const sleep = async (ms: number) => {
+    sleeps.push(ms);
+    clock.set(new Date(clock.now().getTime() + ms));
+    harness.onSleep?.();
+  };
   const deps = {
     store,
     gateway,
@@ -1797,8 +1805,9 @@ export function composeHarness(options: { now?: string } = {}) {
     queue: new SerialQueue(),
     notifier: new RecordingOutboxNotifier(),
     transport: new FakeTransport(),
+    sleep,
   };
   /** Moves the clock forward. */
   const advance = (ms: number) => clock.set(new Date(clock.now().getTime() + ms));
-  return { ...deps, deps, drafts, sent, advance };
+  return Object.assign(harness, { ...deps, deps, drafts, sent, advance, sleeps });
 }
