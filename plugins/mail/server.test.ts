@@ -515,6 +515,7 @@ describe("makosh-mail server", () => {
       "mail_propose",
       "mail_read",
       "mail_search",
+      "mail_templates",
     ]);
   });
 
@@ -1193,7 +1194,13 @@ describe("makosh-mail server", () => {
     );
     // No RPC method is published to agents as discoverable.
     expect(registrations.experimental_publishedRpcMethods).toEqual([]);
-    expect(registrations.agentTools.map((t) => t.name).sort()).toEqual(["mail_contacts", "mail_propose", "mail_read", "mail_search"]);
+    expect(registrations.agentTools.map((t) => t.name).sort()).toEqual([
+      "mail_contacts",
+      "mail_propose",
+      "mail_read",
+      "mail_search",
+      "mail_templates",
+    ]);
     const resolved = await host.harness.behavior.resolveAgentConfiguration(
       makePluginAgentConfigurationContext(),
     );
@@ -2533,14 +2540,14 @@ describe("agent proposals", () => {
 
     const on = await loadPropose();
     const onResolved = await on.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext());
-    expect(onResolved.tools.map((t) => t.name).sort()).toEqual(["mail_contacts", "mail_propose"]);
+    expect(onResolved.tools.map((t) => t.name).sort()).toEqual(["mail_contacts", "mail_propose", "mail_templates"]);
     expect(onResolved.skills).toEqual(["mail"]);
     expect(onResolved.tools.find((t) => t.name === "mail_propose")!.instructions).toContain("It never sends");
     expect(((await call(on, "status_get", null)) as { agentPropose: boolean }).agentPropose).toBe(true);
 
     const both = await loadPropose({ settings: { agentTools: true } });
     const bothResolved = await both.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext());
-    expect(bothResolved.tools.map((t) => t.name).sort()).toEqual(["mail_contacts", "mail_propose", "mail_read", "mail_search"]);
+    expect(bothResolved.tools.map((t) => t.name).sort()).toEqual(["mail_contacts", "mail_propose", "mail_read", "mail_search", "mail_templates"]);
     // The "proposing is off" note appears only while it is off.
     expect(offResolved.instructions).toContain(PROPOSE_OFF_INSTRUCTIONS);
     expect(onResolved.instructions ?? "").not.toContain(PROPOSE_OFF_INSTRUCTIONS);
@@ -2549,6 +2556,7 @@ describe("agent proposals", () => {
     // A running session keeps its tools: execute re-checks the setting.
     await on.harness.behavior.setSettings({ agentPropose: false });
     expect(await on.harness.behavior.callAgentTool("mail_propose", PROPOSAL, { threadId: THREAD })).toMatchObject({ isError: true });
+    expect(await on.harness.behavior.callAgentTool("mail_templates", {}, { threadId: THREAD })).toMatchObject({ isError: true });
     expect(on.harness.inspection.pendingInteractions).toEqual([]);
   });
 
@@ -3131,5 +3139,322 @@ describe("translation", () => {
       models: null,
       current: { providerId: "", model: "", language: "ru" },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sending polish (slice 3d): identities, templates, pre-send check, agent tools
+// ---------------------------------------------------------------------------
+
+const ALIAS = "alias@example.org";
+const SIGNATURE_TEXT = "Invented signature line";
+const TEMPLATE_TEXT = "Invented template paragraph about the gate";
+const TEMPLATE_NAME = "Invented thanks";
+const para = (text: string) => ({ type: "paragraph", content: [{ type: "text", text }] });
+const SIGNATURE_DOC = { type: "doc", content: [para(SIGNATURE_TEXT)] };
+const TEMPLATE_DOC = { type: "doc", content: [para(TEMPLATE_TEXT)] };
+const POLISH_SECRETS = [ALIAS, SIGNATURE_TEXT, TEMPLATE_TEXT, TEMPLATE_NAME, "ana@example.com", SUBJECT, BODY_TEXT];
+const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+
+/** acc_1 as seedCompose, plus acc_2 (second@example.com) on another server. */
+function seedTwoComposeAccounts(bb: BbPluginApi): void {
+  seedCompose(bb);
+  createSqliteStore(bb.storage.database()).saveAccount(
+    makeStoredAccount({ id: "acc_2", email: "second@example.com", username: "second@example.com", createdAt: "2026-02-01T00:00:00.000Z" }),
+  );
+}
+
+function expectNoLeak(host: Host, secrets: string[]): void {
+  const logs = logText(host);
+  const signals = JSON.stringify(host.harness.inspection.realtimeSignals);
+  for (const secret of secrets) {
+    expect(logs).not.toContain(secret);
+    expect(signals).not.toContain(secret);
+  }
+}
+
+describe("sending polish: identities", () => {
+  it("identity RPCs round-trip: add, list, update name and signature, own signature, remove", async () => {
+    const host = await loadCompose();
+    expect(await call(host, "identities_list", { accountId: "acc_1" })).toEqual({
+      identities: [
+        { accountId: "acc_1", address: "owner@example.org", displayName: null, primary: true, signature: null, sendCheck: "confirmed" },
+      ],
+    });
+    expect(await call(host, "identity_add", { accountId: "acc_1", address: " Alias@Example.org ", displayName: "Invented Alias" })).toEqual({
+      accountId: "acc_1",
+      address: ALIAS,
+      displayName: "Invented Alias",
+      primary: false,
+      signature: null,
+      sendCheck: "unknown",
+    });
+    expect(await call(host, "identity_update", { accountId: "acc_1", address: ALIAS, signature: SIGNATURE_DOC })).toMatchObject({
+      address: ALIAS,
+      displayName: "Invented Alias",
+      signature: SIGNATURE_DOC,
+    });
+    expect(await call(host, "identity_update", { accountId: "acc_1", address: ALIAS, displayName: null })).toMatchObject({
+      displayName: null,
+      signature: SIGNATURE_DOC,
+    });
+    // The own address takes a signature only.
+    expect(await call(host, "identity_update", { accountId: "acc_1", address: "owner@example.org", signature: SIGNATURE_DOC })).toMatchObject({
+      primary: true,
+      signature: SIGNATURE_DOC,
+    });
+    await expect(
+      call(host, "identity_update", { accountId: "acc_1", address: "owner@example.org", displayName: "Renamed" }),
+    ).rejects.toThrow(/signature only/);
+    expect(sqlStore(host).getAccount("acc_1")!.signature).toEqual(SIGNATURE_DOC);
+    const all = (await call(host, "identities_list", { accountId: null })) as { identities: { address: string }[] };
+    expect(all.identities.map((i) => i.address)).toEqual(["owner@example.org", ALIAS]);
+    await expect(call(host, "identity_remove", { accountId: "acc_1", address: "owner@example.org" })).rejects.toThrow();
+    expect(await call(host, "identity_remove", { accountId: "acc_1", address: ALIAS })).toEqual({ ok: true });
+    await expect(call(host, "identity_remove", { accountId: "acc_1", address: ALIAS })).rejects.toThrow("Unknown address");
+    await expect(call(host, "identities_list", { accountId: "acc_nope" })).rejects.toThrow("Unknown account");
+    expectNoLeak(host, [ALIAS, SIGNATURE_TEXT]);
+  });
+
+  it("identity_add refuses an address of another account, with the account named for the page only", async () => {
+    const host = await load({ settings: { vaultKey: COMPOSE_KEY }, seed: seedTwoComposeAccounts, server: composeServer });
+    await expect(call(host, "identity_add", { accountId: "acc_1", address: "second@example.com" })).rejects.toThrow(
+      "This address belongs to second@example.com",
+    );
+    await call(host, "identity_add", { accountId: "acc_2", address: ALIAS });
+    await expect(call(host, "identity_add", { accountId: "acc_1", address: ALIAS })).rejects.toThrow(
+      "This address belongs to second@example.com",
+    );
+    await expect(call(host, "identity_add", { accountId: "acc_1", address: "not an address" })).rejects.toThrow();
+    expect(sqlStore(host).listIdentities("acc_1")).toEqual([]);
+    expectNoLeak(host, [ALIAS, "second@example.com"]);
+  });
+
+  it("suggestions never add anything; Not mine hides one", async () => {
+    const host = await loadCompose({ preset: "icloud" });
+    const store = sqlStore(host);
+    store.upsertMessages("acc_1", "INBOX", [
+      makeFetchedMessage(1, { to: [{ name: null, address: "list@example.net" }], deliveredTo: ["hidden@icloud.com"] }),
+      makeFetchedMessage(2, { to: [{ name: null, address: "list@example.net" }], deliveredTo: ["hidden@icloud.com"], date: "2026-11-11T09:00:00.000Z" }),
+    ]);
+    expect(await call(host, "identity_suggestions", { accountId: "acc_1" })).toEqual({
+      suggestions: [{ address: "hidden@icloud.com", count: 2, lastDate: "2026-11-11T09:00:00.000Z" }],
+    });
+    expect(store.listIdentities("acc_1")).toEqual([]);
+    expect(await call(host, "identity_dismiss", { accountId: "acc_1", address: "hidden@icloud.com" })).toEqual({ ok: true });
+    expect(await call(host, "identity_suggestions", { accountId: "acc_1" })).toEqual({ suggestions: [] });
+    const listed = (await call(host, "identities_list", { accountId: "acc_1" })) as { identities: unknown[] };
+    expect(listed.identities).toHaveLength(1);
+  });
+
+  it("every 3d method refuses plugin callers and none is discoverable", async () => {
+    const host = await loadCompose();
+    const inputs: [string, unknown][] = [
+      ["identities_list", { accountId: null }],
+      ["identity_add", { accountId: "acc_1", address: ALIAS }],
+      ["identity_update", { accountId: "acc_1", address: ALIAS, displayName: "X" }],
+      ["identity_remove", { accountId: "acc_1", address: ALIAS }],
+      ["identity_suggestions", { accountId: "acc_1" }],
+      ["identity_dismiss", { accountId: "acc_1", address: ALIAS }],
+      ["templates_list", {}],
+      ["template_save", { name: TEMPLATE_NAME, doc: TEMPLATE_DOC }],
+      ["template_delete", { id: "t" }],
+      ["compose_check", { draftId: "d", baseRevision: 1 }],
+      ["action_undo", { undoId: REQUEST_ID }],
+    ];
+    for (const [method, input] of inputs) {
+      await expect(host.harness.behavior.callRpc(method, input, asPlugin)).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    }
+    expect(sqlStore(host).listIdentities(null)).toEqual([]);
+    expect(sqlStore(host).listTemplates()).toEqual([]);
+    expect(host.harness.inspection.registrations.experimental_publishedRpcMethods).toEqual([]);
+  });
+});
+
+describe("sending polish: compose by identity", () => {
+  it("compose_save takes an alias as From and refuses a foreign one; the send goes from the alias", async () => {
+    const host = await loadCompose();
+    await call(host, "identity_add", { accountId: "acc_1", address: ALIAS, displayName: "Invented Alias" });
+    const service = host.harness.behavior.runService("sync");
+    const { draftId } = (await call(host, "compose_new", { accountId: "acc_1" })) as { draftId: string };
+    const fields = { draftId, accountId: "acc_1", to: [TO], cc: [], bcc: [], subject: SUBJECT, doc: DOC };
+    await expect(call(host, "compose_save", { ...fields, baseRevision: 1, fromAddress: "stranger@example.org" })).rejects.toThrow(
+      "The message is not ready to send",
+    );
+    const saved = (await call(host, "compose_save", { ...fields, baseRevision: 1, fromAddress: ALIAS })) as { revision: number };
+    const opened = (await call(host, "compose_open", { draftId })) as { draft: { fromAddress: string | null } };
+    expect(opened.draft.fromAddress).toBe(ALIAS);
+    await call(host, "compose_send", { draftId, baseRevision: saved.revision, requestId: REQUEST_ID });
+    host.clock.set(new Date(NOW.getTime() + UNDO_MS));
+    await vi.waitFor(() => expect(outboxStates(host)).toContain("done"));
+    service.controller.abort();
+    await service.done;
+    expect(host.transport.sent[0]!.envelopeFrom).toBe(ALIAS);
+    expect(new TextDecoder().decode(host.transport.sent[0]!.raw)).toMatch(/^From: Invented Alias <alias@example\.org>\r$/m);
+    expect(sqlStore(host).listIdentities("acc_1")[0]!.sendCheck).toBe("accepted");
+    expectNoLeak(host, POLISH_SECRETS);
+  });
+
+  it("a removed alias refuses the send with from_unknown text", async () => {
+    const host = await loadCompose();
+    await call(host, "identity_add", { accountId: "acc_1", address: ALIAS });
+    const { draftId } = (await call(host, "compose_new", { accountId: "acc_1" })) as { draftId: string };
+    const saved = (await call(host, "compose_save", {
+      draftId, baseRevision: 1, accountId: "acc_1", to: [TO], cc: [], bcc: [], subject: SUBJECT, doc: DOC, fromAddress: ALIAS,
+    })) as { revision: number };
+    await call(host, "identity_remove", { accountId: "acc_1", address: ALIAS });
+    await expect(call(host, "compose_send", { draftId, baseRevision: saved.revision, requestId: REQUEST_ID })).rejects.toThrow(
+      "This sending address is no longer set up for the account; choose another From",
+    );
+    expectNoLeak(host, POLISH_SECRETS);
+  });
+
+  it("sender_refused: the Outbox row says why with the address for the page only, and the check is refused", async () => {
+    const host = await loadCompose({ preset: "icloud" });
+    await call(host, "identity_add", { accountId: "acc_1", address: ALIAS });
+    host.transport.answer(new SendError("rejected_message", false, "MAIL FROM"));
+    const service = host.harness.behavior.runService("sync");
+    const { draftId } = (await call(host, "compose_new", { accountId: "acc_1" })) as { draftId: string };
+    const saved = (await call(host, "compose_save", {
+      draftId, baseRevision: 1, accountId: "acc_1", to: [TO], cc: [], bcc: [], subject: SUBJECT, doc: DOC, fromAddress: ALIAS,
+    })) as { revision: number };
+    await call(host, "compose_send", { draftId, baseRevision: saved.revision, requestId: REQUEST_ID });
+    host.clock.set(new Date(NOW.getTime() + UNDO_MS));
+    await vi.waitFor(() => expect(outboxStates(host)).toContain("failed"));
+    service.controller.abort();
+    await service.done;
+    const { rows } = (await call(host, "outbox_list", { accountId: null })) as { rows: { errorKind: string; errorText: string | null }[] };
+    expect(rows[0]!.errorKind).toBe("sender_refused");
+    expect(rows[0]!.errorText).toBe(
+      `The server refused to send from ${ALIAS}. Check that it is an alias of this account at iCloud; then Edit and pick another From, or Retry.`,
+    );
+    expect(sqlStore(host).listIdentities("acc_1")[0]!.sendCheck).toBe("refused");
+    expectNoLeak(host, POLISH_SECRETS);
+  });
+});
+
+describe("sending polish: templates", () => {
+  it("template RPCs save, rename, refuse a duplicate name, list and delete", async () => {
+    const host = await loadCompose();
+    const { id } = (await call(host, "template_save", { name: ` ${TEMPLATE_NAME} `, doc: TEMPLATE_DOC })) as { id: string };
+    await expect(call(host, "template_save", { name: TEMPLATE_NAME.toUpperCase(), doc: TEMPLATE_DOC })).rejects.toThrow(
+      "A template with this name exists",
+    );
+    expect(await call(host, "template_save", { id, name: "Invented renamed", doc: TEMPLATE_DOC })).toEqual({ id });
+    await expect(
+      call(host, "template_save", { name: "Quoted", doc: { type: "doc", content: [{ type: "blockquote", content: [para("q")] }] } }),
+    ).rejects.toThrow("Templates cannot hold quotes");
+    const listed = (await call(host, "templates_list", {})) as { templates: { id: string; name: string; doc: unknown; updatedAt: string }[] };
+    expect(listed.templates).toEqual([{ id, name: "Invented renamed", doc: TEMPLATE_DOC, updatedAt: NOW.toISOString() }]);
+    expect(await call(host, "template_delete", { id })).toEqual({ ok: true });
+    await expect(call(host, "template_delete", { id })).rejects.toThrow("Unknown template");
+    expectNoLeak(host, [TEMPLATE_TEXT, TEMPLATE_NAME, "Invented renamed"]);
+  });
+});
+
+describe("sending polish: compose_check", () => {
+  it("lists the issues of the saved draft, refuses a stale revision, and hides proposal drafts", async () => {
+    const host = await loadCompose();
+    const { draftId } = (await call(host, "compose_new", { accountId: "acc_1" })) as { draftId: string };
+    const saved = (await call(host, "compose_save", {
+      draftId, baseRevision: 1, accountId: "acc_1", to: [TO], cc: [], bcc: [], subject: "",
+      doc: { type: "doc", content: [para("The file is attached")] },
+    })) as { revision: number };
+    expect(await call(host, "compose_check", { draftId, baseRevision: saved.revision })).toEqual({
+      issues: [
+        { kind: "attachment_mentioned", phrase: "attached" },
+        { kind: "empty_subject" },
+        { kind: "new_recipients", addresses: ["ana@example.com"] },
+      ],
+    });
+    await expect(call(host, "compose_check", { draftId, baseRevision: saved.revision - 1 })).rejects.toThrow(
+      "This draft changed in another window",
+    );
+    await expect(call(host, "compose_check", { draftId: "d_nope", baseRevision: 1 })).rejects.toThrow("Not found");
+    expectNoLeak(host, ["ana@example.com", "attached"]);
+  });
+
+  it("a reply is checked against its conversation only", async () => {
+    const host = await loadCompose();
+    sqlStore(host).upsertMessages("acc_1", "INBOX", [
+      makeFetchedMessage(5, { from: { name: null, address: "ana@example.com" }, subject: "Invented question" }),
+    ]);
+    const sourceMessageId = messageIdAt(host, "INBOX", 5);
+    const { draftId } = (await call(host, "compose_prepare", { kind: "reply", messageId: sourceMessageId })) as { draftId: string };
+    const prepared = (await call(host, "compose_open", { draftId })) as { draft: { revision: number; doc: unknown } };
+    const saved = (await call(host, "compose_save", {
+      draftId, baseRevision: prepared.draft.revision, accountId: "acc_1", to: [TO, "newcomer@example.net"], cc: [], bcc: [],
+      subject: "Re: Invented question", doc: prepared.draft.doc,
+    })) as { revision: number };
+    expect(await call(host, "compose_check", { draftId, baseRevision: saved.revision })).toEqual({
+      issues: [{ kind: "outside_conversation", addresses: ["newcomer@example.net"] }],
+    });
+  });
+});
+
+describe("sending polish: agent tools", () => {
+  it("mail_templates is offered only with agentPropose and refused by execute when off", async () => {
+    const off = await load({ settings: { vaultKey: COMPOSE_KEY, agentTools: true }, seed: (bb) => seedCompose(bb), server: composeServer });
+    const resolvedOff = await off.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext());
+    expect(resolvedOff.tools.map((t) => t.name)).not.toContain("mail_templates");
+    expect(await off.harness.behavior.callAgentTool("mail_templates", {}, { threadId: THREAD })).toEqual({
+      content: [{ type: "text", text: "Email proposals are turned off in Mail settings." }],
+      isError: true,
+    });
+
+    const on = await loadPropose();
+    const resolvedOn = await on.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext());
+    expect(resolvedOn.tools.map((t) => t.name).sort()).toEqual(["mail_contacts", "mail_propose", "mail_templates"]);
+    expect(resolvedOn.tools.find((t) => t.name === "mail_propose")!.instructions).toContain("call mail_templates and pass its name as `template`");
+    await call(on, "template_save", { name: TEMPLATE_NAME, doc: TEMPLATE_DOC });
+    await call(on, "template_save", { name: "Invented long", doc: { type: "doc", content: [para("x".repeat(3_000))] } });
+    const listed = (await on.harness.behavior.callAgentTool("mail_templates", {}, { threadId: THREAD })) as string;
+    const parsed = JSON.parse(listed) as { templates: { name: string; text: string }[] };
+    // By name key.
+    expect(parsed.templates.map((t) => t.name)).toEqual(["Invented long", TEMPLATE_NAME]);
+    expect(parsed.templates[1]!.text).toBe(TEMPLATE_TEXT);
+    expect([...parsed.templates[0]!.text]).toHaveLength(2_000);
+    expect(on.harness.inspection.registrations.agentTools.map((t) => t.name).sort()).toEqual([
+      "mail_contacts",
+      "mail_propose",
+      "mail_read",
+      "mail_search",
+      "mail_templates",
+    ]);
+    expect(on.harness.inspection.registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "read", "remove", "search", "sync"]);
+  });
+
+  it("mail_propose with a template and an alias: the card shows them, and nothing leaks to logs or realtime", async () => {
+    const host = await loadPropose();
+    await call(host, "identity_add", { accountId: "acc_1", address: ALIAS });
+    await call(host, "identity_update", { accountId: "acc_1", address: ALIAS, signature: SIGNATURE_DOC });
+    await call(host, "template_save", { name: TEMPLATE_NAME, doc: TEMPLATE_DOC });
+    const unknown = (await host.harness.behavior.callAgentTool(
+      "mail_propose",
+      { ...PROPOSAL, accountId: ALIAS, template: "No such template" },
+      { threadId: THREAD },
+    )) as { content: { text: string }[]; isError: boolean };
+    expect(unknown).toEqual({ content: [{ type: "text", text: "No template has that name; call mail_templates for the names." }], isError: true });
+
+    const proposed = await proposeCard(host, { ...PROPOSAL, accountId: ALIAS, template: TEMPLATE_NAME.toLowerCase() });
+    const answer = (await call(host, "proposal_view", { proposalId: proposed.proposalId, contentHash: proposed.contentHash })) as {
+      state: string;
+      view: {
+        account: { address: string };
+        fromAlias: boolean;
+        templateName: string | null;
+        signatureText: string | null;
+        bodyText: string;
+      };
+    };
+    expect(answer.state).toBe("ready");
+    const { view } = answer;
+    expect(view.account.address).toBe(ALIAS);
+    expect(view.fromAlias).toBe(true);
+    expect(view.templateName).toBe(TEMPLATE_NAME);
+    expect(view.signatureText).toContain(SIGNATURE_TEXT);
+    expect(view.bodyText).toContain(TEMPLATE_TEXT);
+    expectNoLeak(host, [...POLISH_SECRETS, "Mallory"]);
+    host.harness.behavior.cancelInteraction?.(proposed.card.id);
   });
 });

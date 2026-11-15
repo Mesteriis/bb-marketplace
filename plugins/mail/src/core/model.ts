@@ -442,6 +442,12 @@ export const outboxRowSchema = z.object({
   attempts: z.number().int(),
   /** "agent": a send the owner confirmed in an agent's card (the toast and the "Agent message" label). */
   origin: draftOriginSchema,
+  /**
+   * The Outbox text for a send from an alias (slice 3d: `sender_refused`, or
+   * the hint on `rejected_message`); it names the alias, for the page only.
+   * Absent or null when the kind's own text is enough.
+   */
+  errorText: z.string().nullable().optional(),
 });
 export type OutboxRow = z.infer<typeof outboxRowSchema>;
 
