@@ -1269,15 +1269,7 @@ describe("slice-3a migration (SQLite)", () => {
     expect(row()).toEqual({ seen_pending: 0, seen_desired: null, flag_desired: 1 });
   });
 
-  it("listThreadsAll pages in thread-date order using the (last_date, id) index", () => {
-    const plan = (
-      db
-        .prepare("EXPLAIN QUERY PLAN SELECT * FROM threads ORDER BY last_date DESC, id DESC LIMIT 51")
-        .all() as { detail: string }[]
-    ).map((r) => r.detail);
-    expect(plan.join("\n")).toMatch(/threads_last_date/);
-    expect(plan.join("\n")).not.toMatch(/TEMP B-TREE/);
-
+  it("listThreadsAll scans the (last_date, id) index without a temp B-tree, first page and after a cursor", () => {
     store.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org" }));
     for (const accountId of ["acc_1", "acc_2"]) {
       store.upsertMessages(
@@ -1292,6 +1284,14 @@ describe("slice-3a migration (SQLite)", () => {
       );
       store.assignThreads(accountId, new Map());
     }
+    // Capture the store's own statements.
+    const statements: string[] = [];
+    const prepare = db.prepare.bind(db);
+    db.prepare = ((sql: string) => {
+      statements.push(sql);
+      return prepare(sql);
+    }) as typeof db.prepare;
+
     const started = performance.now();
     let cursor: string | null = null;
     let listed = 0;
@@ -1302,6 +1302,54 @@ describe("slice-3a migration (SQLite)", () => {
     } while (cursor !== null && listed < 200);
     expect(performance.now() - started).toBeLessThan(500);
     expect(listed).toBe(200);
+    db.prepare = prepare;
+
+    const listing = [...new Set(statements.filter((sql) => /FROM threads/.test(sql)))];
+    const first = listing.find((sql) => !sql.includes("@afterId"));
+    const after = listing.find((sql) => sql.includes("@afterDate"));
+    expect(first).toBeDefined();
+    expect(after).toBeDefined();
+    const params = { role: "inbox", limit: 51, afterDate: "2026-10-02T00:00:00.000Z", afterId: "t_x" };
+    for (const sql of [first!, after!]) {
+      const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(params) as { detail: string }[])
+        .map((r) => r.detail)
+        .join("\n");
+      expect(plan).toMatch(/SCAN threads USING INDEX threads_last_date/);
+      expect(plan).not.toMatch(/TEMP B-TREE/);
+    }
+  });
+
+  it("listThreadsAll keyset pages through equal dates across accounts without gaps or repeats", () => {
+    store.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org" }));
+    const same = "2026-11-10T09:00:00.000Z";
+    for (const accountId of ["acc_1", "acc_2"]) {
+      store.upsertMessages(
+        accountId,
+        INBOX,
+        [1, 2, 3].map((uid) => makeFetchedMessage(uid, { messageId: `tie-${accountId}-${uid}@example.org`, date: same })),
+      );
+      store.assignThreads(accountId, new Map());
+    }
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(4, { messageId: "newer@example.org", date: "2026-11-11T09:00:00.000Z" }),
+      makeFetchedMessage(5, { messageId: "older@example.org", date: "2026-11-09T09:00:00.000Z" }),
+    ]);
+    store.assignThreads("acc_1", new Map());
+    const ids: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const page = store.listThreadsAll("inbox", cursor, 2);
+      ids.push(...page.threads.map((t) => t.id));
+      cursor = page.nextCursor;
+      pages++;
+    } while (cursor !== null && pages < 10);
+    const expected = (
+      db.prepare("SELECT id FROM threads ORDER BY last_date DESC, id DESC").all() as { id: string }[]
+    ).map((r) => r.id);
+    expect(expected).toHaveLength(8);
+    expect(ids).toEqual(expected);
+    expect(pages).toBe(4);
   });
 });
 
@@ -1440,6 +1488,45 @@ describe.each(storeKinds)("slice-3a store semantics (%s)", (_kind, make) => {
     expect(s.getMessage(moving)).toMatchObject({ folder: "Archive", isRead: true, isFlagged: true });
     expect(s.pendingFlagIntents("acc_1", "Archive")).toEqual([{ uid: 77, seen: true, flagged: true }]);
     expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([]);
+  });
+
+  it("a detached row named in setDesired keeps its intent and is pushed after reattach", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { seen: true })]);
+    const id = idIn(s, INBOX, 1);
+    s.beginFolderReset("acc_1", INBOX);
+    expect(s.setDesired([id], { seen: false, flagged: true })).toEqual([{ accountId: "acc_1" }]);
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([]);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(9, { messageId: "msg-1@example.org", seen: true })]);
+    expect(idIn(s, INBOX, 9)).toBe(id);
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([{ uid: 9, seen: false, flagged: true }]);
+    expect(s.applyFlags("acc_1", INBOX, [{ uid: 9, seen: true, flagged: false }])).toBe(0);
+    expect(flags(id)).toEqual([false, true]);
+  });
+
+  it("a detached opened row keeps its read intent and is pushed after reattach", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    const id = idIn(s, INBOX, 1);
+    s.beginFolderReset("acc_1", INBOX);
+    s.markOpened(id);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(9, { messageId: "msg-1@example.org" })]);
+    expect(idIn(s, INBOX, 9)).toBe(id);
+    expect(s.pendingFlagIntents("acc_1", INBOX)).toEqual([{ uid: 9, seen: true, flagged: null }]);
+    expect(s.applyFlags("acc_1", INBOX, [{ uid: 9, seen: false, flagged: false }])).toBe(0);
+    expect(flags(id)).toEqual([true, false]);
+  });
+
+  it("another detached copy keeps a same-value intent and drops a differing one", () => {
+    gmail();
+    const [inboxCopy, oldCopy] = [idIn(s, INBOX, 1), idIn(s, "Old", 7)];
+    s.setDesired([inboxCopy], { seen: true, flagged: true });
+    s.beginFolderReset("acc_1", "Old");
+    s.setDesired([inboxCopy], { seen: true, flagged: false });
+    s.upsertMessages("acc_1", "Old", [
+      makeFetchedMessage(8, { messageId: "g@example.org", gmMsgId: "100", gmThreadId: "900" }),
+    ]);
+    expect(idIn(s, "Old", 8)).toBe(oldCopy);
+    expect(s.pendingFlagIntents("acc_1", "Old")).toEqual([{ uid: 8, seen: true, flagged: null }]);
+    expect(flags(oldCopy)).toEqual([true, false]);
   });
 
   it("markOpened reads every copy and records a read intent on attached unread copies only", () => {

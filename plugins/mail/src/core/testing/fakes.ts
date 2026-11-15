@@ -7,7 +7,7 @@
 //     reattaches a detached row with the same non-null Message-ID, and
 //     finishFolderReset deletes the rows still detached;
 //   - markOpened marks every unread copy (same dedup key) read with a read
-//     to push; a detached copy (no uid to push) is only marked read;
+//     to push; a detached copy other than the opened row is only marked read;
 //   - localFolderIndex treats a message without a date as inside the window;
 //   - thread, folder, badge and search counts count distinct dedup keys, and
 //     rows waiting to move out are hidden from their folder, the badge and
@@ -395,14 +395,18 @@ export class InMemoryMailStore implements MailStore {
       if (!accounts.includes(row.accountId)) accounts.push(row.accountId);
       for (const copy of this.state.rows) {
         if (copy.accountId !== row.accountId || copy.dedupKey !== row.dedupKey) continue;
-        const attached = copy.uid !== null;
+        // The named row keeps its intent even when detached (pushed after
+        // reattach); another detached copy drops a differing stale intent.
+        const pushes = copy.uid !== null || copy === row;
         if (change.seen !== undefined) {
           copy.isRead = change.seen;
-          copy.seenDesired = attached ? change.seen : null;
+          if (pushes) copy.seenDesired = change.seen;
+          else if (copy.seenDesired !== null && copy.seenDesired !== change.seen) copy.seenDesired = null;
         }
         if (change.flagged !== undefined) {
           copy.isFlagged = change.flagged;
-          copy.flagDesired = attached ? change.flagged : null;
+          if (pushes) copy.flagDesired = change.flagged;
+          else if (copy.flagDesired !== null && copy.flagDesired !== change.flagged) copy.flagDesired = null;
         }
       }
     }
@@ -431,7 +435,7 @@ export class InMemoryMailStore implements MailStore {
     for (const copy of this.state.rows) {
       if (copy.accountId !== row.accountId || copy.dedupKey !== row.dedupKey || copy.isRead) continue;
       copy.isRead = true;
-      copy.seenDesired = copy.uid !== null ? true : null;
+      copy.seenDesired = copy.uid !== null || copy === row ? true : null;
     }
     return { accountId: row.accountId };
   }
