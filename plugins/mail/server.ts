@@ -610,7 +610,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         }
         const { ref, account, raw } = fetched;
         return {
-          ...renderSource(raw),
+          ...renderSource(raw, (line) => bb.log.warn(line)),
           size: raw.byteLength,
           uid: ref.uid,
           folder: ref.folder,
@@ -658,21 +658,30 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
 
 /**
  * Headers and MIME structure of a raw message. Either rendering may fail on
- * hostile input; the panel then gets what did render (an unrendered part is
- * empty, its place marked) instead of an internal error.
+ * hostile input; the panel then gets what did render, with a marker line in
+ * place of the rest, and the log gets the error kind only (never content).
  */
-function renderSource(raw: Uint8Array): { headers: [string, string][]; structure: string[] } {
+export function renderSource(
+  raw: Uint8Array,
+  log: (line: string) => void,
+  render: {
+    readHeaders: (raw: Uint8Array) => [string, string][];
+    describeStructure: (raw: Uint8Array) => string[];
+  } = { readHeaders, describeStructure },
+): { headers: [string, string][]; structure: string[] } {
   let headers: [string, string][];
   let structure: string[];
   try {
-    headers = readHeaders(raw);
-  } catch {
-    headers = [["…", "headers could not be read"]];
+    headers = render.readHeaders(raw);
+  } catch (error) {
+    log(`message source: headers could not be rendered (${errorKind(error)})`);
+    headers = [["…", "headers unavailable"]];
   }
   try {
-    structure = describeStructure(raw);
-  } catch {
-    structure = [];
+    structure = render.describeStructure(raw);
+  } catch (error) {
+    log(`message source: structure could not be rendered (${errorKind(error)})`);
+    structure = ["structure unavailable"];
   }
   return { headers, structure };
 }

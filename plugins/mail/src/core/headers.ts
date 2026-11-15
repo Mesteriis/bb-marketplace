@@ -34,17 +34,28 @@ function binaryString(raw: Uint8Array, start = 0, end = raw.byteLength): string 
   return text;
 }
 
-/** Index where the header block of `bin` from `start` ends, and where the body starts. */
+/** Furthest a header block is looked for from the start of a part. */
+const HEADER_SCAN_MAX = 1024 * 1024;
+
+/**
+ * Index where the header block of `bin` from `start` ends, and where the
+ * body starts. The search stays inside [start, end) and its first megabyte,
+ * so a part without a blank line never makes the walk rescan the rest of the
+ * message; such a part is all header (at most 1 MB of it) and has no body.
+ */
 function headerEnd(bin: string, start: number, end: number): { headerEnd: number; bodyStart: number } {
   // An empty header block: the body starts right away.
-  if (bin.startsWith("\r\n", start)) return { headerEnd: start, bodyStart: start + 2 };
-  if (bin.startsWith("\n", start)) return { headerEnd: start, bodyStart: start + 1 };
-  const crlf = bin.indexOf("\r\n\r\n", start);
-  const lf = bin.indexOf("\n\n", start);
+  if (bin.startsWith("\r\n", start) && start + 2 <= end) return { headerEnd: start, bodyStart: start + 2 };
+  if (bin.startsWith("\n", start) && start + 1 <= end) return { headerEnd: start, bodyStart: start + 1 };
+  const windowEnd = Math.min(end, start + HEADER_SCAN_MAX);
+  // A slice of a flat string is a view in V8, not a copy.
+  const window = bin.slice(start, windowEnd);
+  const crlf = window.indexOf("\r\n\r\n");
+  const lf = window.indexOf("\n\n");
   const candidates: { headerEnd: number; bodyStart: number }[] = [];
-  if (crlf >= 0 && crlf < end) candidates.push({ headerEnd: crlf, bodyStart: crlf + 4 });
-  if (lf >= 0 && lf < end) candidates.push({ headerEnd: lf, bodyStart: lf + 2 });
-  if (candidates.length === 0) return { headerEnd: end, bodyStart: end };
+  if (crlf >= 0) candidates.push({ headerEnd: start + crlf, bodyStart: start + crlf + 4 });
+  if (lf >= 0) candidates.push({ headerEnd: start + lf, bodyStart: start + lf + 2 });
+  if (candidates.length === 0) return { headerEnd: windowEnd, bodyStart: end };
   return candidates.reduce((a, b) => (a.headerEnd <= b.headerEnd ? a : b));
 }
 
@@ -356,30 +367,36 @@ function multipartRanges(
   limit: number,
 ): [number, number][] {
   const delimiter = `--${boundary}`;
+  // Every search runs on the multipart's own body (a view, not a copy), so a
+  // boundary that never comes back cannot send indexOf to the message's end.
+  const body = bin.slice(start, end);
+  const length = body.length;
   const ranges: [number, number][] = [];
   let partStart: number | null = null;
-  let from = start;
-  while (from < end && ranges.length < limit) {
-    const at = bin.indexOf(delimiter, from);
-    if (at < 0 || at >= end) break;
+  let from = 0;
+  while (from < length && ranges.length < limit) {
+    const at = body.indexOf(delimiter, from);
+    if (at < 0) break;
     from = at + delimiter.length;
-    const atLineStart = at === start || bin[at - 1] === "\n";
+    const atLineStart = at === 0 || body[at - 1] === "\n";
     if (!atLineStart) continue;
     if (partStart !== null) {
       let partEnd = at;
-      if (bin[partEnd - 1] === "\n") partEnd--;
-      if (bin[partEnd - 1] === "\r") partEnd--;
-      ranges.push([partStart, Math.max(partStart, partEnd)]);
+      if (body[partEnd - 1] === "\n") partEnd--;
+      if (body[partEnd - 1] === "\r") partEnd--;
+      ranges.push([start + partStart, start + Math.max(partStart, partEnd)]);
       partStart = null;
     }
-    if (bin.startsWith("--", from)) break;
-    const lineEnd = bin.indexOf("\n", from);
-    if (lineEnd < 0 || lineEnd >= end) break;
+    if (body.startsWith("--", from)) break;
+    const lineEnd = body.indexOf("\n", from);
+    if (lineEnd < 0) break;
     partStart = lineEnd + 1;
     from = partStart;
   }
   // A body without its closing delimiter: the last part runs to the end.
-  if (partStart !== null && partStart < end && ranges.length < limit) ranges.push([partStart, end]);
+  if (partStart !== null && partStart < length && ranges.length < limit) {
+    ranges.push([start + partStart, end]);
+  }
   return ranges;
 }
 
