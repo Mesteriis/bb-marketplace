@@ -95,7 +95,8 @@ after a 10-second Undo window. Agents cannot send, draft or reply.
   draft and send it. This is an accepted limit, not a guarantee. What
   limits it: every queued send shows the "Sending in N s · Undo" toast on
   any open Mail page, the Outbox in Sent always lists sends that are not
-  done, and each account sends at most 10 messages a minute.
+  done, and each account sends at most 10 messages a minute (Retry, Send
+  again and Send now count too).
 - An `@` mention provider (**Mail**) and a **Hand to agent** button that give
   an agent one message you picked.
 - CLI: `bb makosh-mail accounts|search|read|sync|remove`. `remove <accountId>`

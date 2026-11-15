@@ -72,7 +72,8 @@ All notable changes to Makosh Mail are recorded here. The format follows
   local. A draft from another client opens with **Edit draft**.
 - Sending over SMTP with TLS through an outbox: a 10-second **Undo** toast,
   then a background send and a Sent copy (APPEND with the Bcc line; Gmail
-  keeps its own copy, without Bcc). At most 10 sends a minute per account.
+  keeps its own copy, without Bcc). At most 10 sends a minute per account,
+  Retry, Send again and Send now included.
   The **Outbox** at the top of Sent shows sends not done with only the safe
   actions per state (Undo, Send now, Edit, Retry, Discard, Send again,
   Retry copy, Dismiss); nothing resends on its own. A failed send can be

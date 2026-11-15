@@ -112,7 +112,8 @@ export type OutboxDeps = ComposeDeps & { notifier: OutboxNotifier; transport: Ma
  * returns the row already queued (a double click or a retried RPC cannot
  * send twice). Validates at least one recipient, every chip, the
  * recipient count, the size cap, SMTP and the rate cap; builds the MIME
- * once (no Bcc) and stores the Bcc line for the Sent copy.
+ * once (no Bcc) and stores the Bcc line for the Sent copy. The cap is
+ * shared with Retry, Send again and Send now.
  */
 export async function queueSend(
   deps: QueueDeps,
@@ -175,13 +176,16 @@ export function cancelSend(
   return { cancelled: true, draftId: row.draftId };
 }
 
-/** Held → queued with a fresh Undo window. */
-export function sendNow(deps: Pick<QueueDeps, "store" | "notifier" | "clock">, id: string): { ok: true } {
+/** Held → queued with a fresh Undo window. Counts against the send cap. */
+export function sendNow(deps: Pick<QueueDeps, "store" | "notifier" | "clock" | "rate">, id: string): { ok: true } {
   return requeue(deps, id, "send_now");
 }
 
-/** Failed → queued (fresh Undo window); sent_no_copy → sent (the copy step runs again). Never unknown. */
-export function retrySend(deps: Pick<QueueDeps, "store" | "notifier" | "clock">, id: string): { ok: true } {
+/**
+ * Failed → queued (fresh Undo window, counts against the send cap);
+ * sent_no_copy → sent (the copy step runs again, sends nothing). Never unknown.
+ */
+export function retrySend(deps: Pick<QueueDeps, "store" | "notifier" | "clock" | "rate">, id: string): { ok: true } {
   const row = deps.store.getOutbox(id);
   if (row === null) throw new ComposeError("not_found");
   if (row.state === "sent_no_copy") {
@@ -196,8 +200,8 @@ export function retrySend(deps: Pick<QueueDeps, "store" | "notifier" | "clock">,
   return requeue(deps, id, "retry");
 }
 
-/** Unknown → queued: the owner accepts that a second copy may arrive. */
-export function resendUnknown(deps: Pick<QueueDeps, "store" | "notifier" | "clock">, id: string): { ok: true } {
+/** Unknown → queued: the owner accepts that a second copy may arrive. Counts against the send cap. */
+export function resendUnknown(deps: Pick<QueueDeps, "store" | "notifier" | "clock" | "rate">, id: string): { ok: true } {
   return requeue(deps, id, "resend");
 }
 
@@ -453,12 +457,15 @@ function settle(
 }
 
 function requeue(
-  deps: Pick<QueueDeps, "store" | "notifier" | "clock">,
+  deps: Pick<QueueDeps, "store" | "notifier" | "clock" | "rate">,
   id: string,
   event: "send_now" | "retry" | "resend",
 ): { ok: true } {
   const row = deps.store.getOutbox(id);
   if (row === null) throw new ComposeError("not_found");
+  if (!canTransition(row.state, event)) throw new ComposeError("conflict");
+  // Every path that leads to SMTP shares the one per-account cap (resolution 1).
+  if (!deps.rate.take(row.accountId)) throw new ComposeError("rate_limited");
   const now = deps.clock.now();
   const moved = deps.store.transitionOutbox(id, fromStates(event), "queued", {
     errorKind: null,
