@@ -346,12 +346,14 @@ type StubOptions = {
   usable?: boolean;
   removed?: boolean;
   download?: unknown;
+  appended?: unknown;
+  deleted?: boolean;
 };
 
 function stubClient(options: StubOptions = {}) {
   const calls: { method: string; args: unknown[] }[] = [];
   const client = {
-    mailbox: "mailbox" in options ? options.mailbox : { uidValidity: 7n, uidNext: 50, exists: 3 },
+    mailbox: "mailbox" in options ? options.mailbox : { path: "Drafts", uidValidity: 7n, uidNext: 50, exists: 3 },
     capabilities: new Map(
       (options.capabilities ?? ["IMAP4rev1", "MOVE", "UIDPLUS"]).map((name) => [name, true]),
     ),
@@ -381,6 +383,14 @@ function stubClient(options: StubOptions = {}) {
     messageMove: async (...args: unknown[]) => {
       calls.push({ method: "messageMove", args });
       return options.moved;
+    },
+    append: async (...args: unknown[]) => {
+      calls.push({ method: "append", args });
+      return "appended" in options ? options.appended : { destination: "Drafts", uidValidity: 7n, uid: 51 };
+    },
+    messageDelete: async (...args: unknown[]) => {
+      calls.push({ method: "messageDelete", args });
+      return "deleted" in options ? options.deleted : true;
     },
     logout: async () => {},
     close: () => {},
@@ -899,5 +909,137 @@ describe("toInlineParts", () => {
     expect(toInlineParts(odd).map((p) => [p.contentId, p.mimeType])).toEqual([
       ["upper@example.org", "image/png"],
     ]);
+  });
+});
+
+describe("slice 3b writes", () => {
+  const guardFetch = (overrides: Partial<FetchMessageObject> = {}) =>
+    imapMessage({
+      uid: 12,
+      size: 300,
+      envelope: { messageId: "<draft-1@example.org>" },
+      source: undefined,
+      ...overrides,
+    });
+
+  it("reports UIDPLUS and Gmail from the advertised capabilities", () => {
+    expect(createSession(stubClient().client, false).capabilities()).toEqual({ uidplus: true, gmail: false });
+    expect(
+      createSession(stubClient({ capabilities: ["IMAP4rev1", "X-GM-EXT-1"] }).client, false).capabilities(),
+    ).toEqual({ uidplus: false, gmail: true });
+  });
+
+  it("appends to the session's own folder and maps APPENDUID", async () => {
+    const { client, calls } = stubClient();
+    const raw = new TextEncoder().encode("Subject: Invented\r\n\r\nbody");
+    await expect(createSession(client, false).appendMessage(raw, ["\\Draft", "\\Seen"])).resolves.toEqual({
+      uidValidity: 7,
+      uid: 51,
+    });
+    expect(calls).toHaveLength(1);
+    const [path, content, flags] = calls[0]!.args as [string, Buffer, string[]];
+    expect(path).toBe("Drafts");
+    expect(Buffer.from(content).equals(Buffer.from(raw))).toBe(true);
+    expect(flags).toEqual(["\\Draft", "\\Seen"]);
+  });
+
+  it("an append without APPENDUID has no uid; a refused one throws AppendFailed", async () => {
+    const raw = new Uint8Array([65]);
+    await expect(
+      createSession(stubClient({ appended: { destination: "Drafts", seq: 4, uid: 99 } }).client, false).appendMessage(
+        raw,
+        [],
+      ),
+    ).resolves.toEqual({ uidValidity: null, uid: null });
+    await expect(createSession(stubClient({ appended: false }).client, false).appendMessage(raw, [])).rejects.toMatchObject({
+      code: "AppendFailed",
+    });
+  });
+
+  it("read-only sessions refuse every write before any command", async () => {
+    const { client, calls } = stubClient();
+    const session = createSession(client, true);
+    await expect(session.appendMessage(new Uint8Array([1]), [])).rejects.toMatchObject({ code: "ReadOnly" });
+    await expect(session.expungeOwn(12, { messageId: "<draft-1@example.org>", size: 300 })).rejects.toMatchObject({
+      code: "ReadOnly",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("finds by Message-ID with an exact match after the substring SEARCH", async () => {
+    const { client, calls } = stubClient({
+      search: [12, 13],
+      fetched: [
+        guardFetch({ uid: 13, envelope: { messageId: "<x-draft-1@example.org>" } }),
+        guardFetch({ uid: 12, envelope: { messageId: "<draft-1@example.org>" } }),
+      ],
+    });
+    await expect(createSession(client, true).findByMessageId("draft-1@example.org")).resolves.toEqual([12]);
+    expect(calls[0]).toEqual({
+      method: "search",
+      args: [{ header: { "message-id": "draft-1@example.org" } }, { uid: true }],
+    });
+    expect(calls[1]!.args[1]).toEqual({ uid: true, envelope: true, size: true });
+  });
+
+  it("finds bracketed and bare ids alike, and nothing for an empty id", async () => {
+    const { client } = stubClient({ search: [12], fetched: [guardFetch()] });
+    await expect(createSession(client, true).findByMessageId("<draft-1@example.org>")).resolves.toEqual([12]);
+    const empty = stubClient({ search: [12] });
+    await expect(createSession(empty.client, true).findByMessageId("<>")).resolves.toEqual([]);
+    expect(empty.calls).toEqual([]);
+  });
+
+  it("without UIDPLUS expungeOwn throws before any command", async () => {
+    const { client, calls } = stubClient({ capabilities: ["IMAP4rev1", "MOVE"], fetched: [guardFetch()] });
+    await expect(
+      createSession(client, false).expungeOwn(12, { messageId: "<draft-1@example.org>", size: 300 }),
+    ).rejects.toMatchObject({ code: "ExpungeUnsupported" });
+    expect(calls).toEqual([]);
+  });
+
+  it("IMAP4rev2 without an advertised UIDPLUS is refused too", async () => {
+    const { client, calls } = stubClient({ capabilities: ["IMAP4rev2"], enabled: ["IMAP4REV2"] });
+    await expect(
+      createSession(client, false).expungeOwn(12, { messageId: "<draft-1@example.org>", size: 300 }),
+    ).rejects.toMatchObject({ code: "ExpungeUnsupported" });
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ["another Message-ID", { envelope: { messageId: "<other@example.org>" } }],
+    ["another size", { size: 301 }],
+    ["no Message-ID", { envelope: {} }],
+  ])("refuses on a guard mismatch (%s) and deletes nothing", async (_label, overrides) => {
+    const { client, calls } = stubClient({ fetched: [guardFetch(overrides as Partial<FetchMessageObject>)] });
+    await expect(
+      createSession(client, false).expungeOwn(12, { messageId: "<draft-1@example.org>", size: 300 }),
+    ).rejects.toMatchObject({ code: "GuardMismatch" });
+    expect(calls.map((c) => c.method)).toEqual(["fetch"]);
+  });
+
+  it("refuses a vanished uid", async () => {
+    const { client, calls } = stubClient({ fetched: [] });
+    await expect(
+      createSession(client, false).expungeOwn(12, { messageId: "<draft-1@example.org>", size: 300 }),
+    ).rejects.toMatchObject({ code: "GuardMismatch" });
+    expect(calls.map((c) => c.method)).toEqual(["fetch"]);
+  });
+
+  it("with UIDPLUS and a matching guard deletes exactly that uid by UID", async () => {
+    const { client, calls } = stubClient({ fetched: [guardFetch()] });
+    await createSession(client, false).expungeOwn(12, { messageId: "draft-1@example.org", size: 300 });
+    expect(calls.map((c) => c.method)).toEqual(["fetch", "messageDelete"]);
+    expect(calls[0]!.args.slice(0, 3)).toEqual(["12", { uid: true, envelope: true, size: true }, { uid: true }]);
+    expect(calls[1]!.args).toEqual(["12", { uid: true }]);
+    expect(calls.some((c) => c.method === "messageFlagsAdd")).toBe(false);
+  });
+
+  it("a refused expunge clears our \\Deleted again and throws ExpungeFailed", async () => {
+    const { client, calls } = stubClient({ fetched: [guardFetch()], deleted: false });
+    await expect(
+      createSession(client, false).expungeOwn(12, { messageId: "<draft-1@example.org>", size: 300 }),
+    ).rejects.toMatchObject({ code: "ExpungeFailed" });
+    expect(calls.at(-1)).toEqual({ method: "messageFlagsRemove", args: ["12", ["\\Deleted"], { uid: true }] });
   });
 });
