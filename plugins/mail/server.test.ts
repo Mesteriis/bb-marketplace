@@ -2279,7 +2279,8 @@ describe("compose and send", () => {
   });
 
   it("tests and saves SMTP with the stored password and never echoes it", async () => {
-    const host = await loadCompose({ smtp: null });
+    // The stored SMTP host is trusted with the stored password; the port and security may change.
+    const host = await loadCompose({ smtp: { host: "smtp.example.org", port: 465, security: "tls", username: null } });
     const input = { accountId: "acc_1", host: "smtp.example.org", port: 587, security: "starttls" };
     host.transport.verifyError = new SendError("auth", false);
     const refused = await call(host, "accounts_smtp_test", input);
