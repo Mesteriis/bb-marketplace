@@ -23,6 +23,23 @@ function count(db: Database.Database, table: string): number {
   return (db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n;
 }
 
+/** Attached uids of the folder with a pending desired \Seen = true. */
+function pendingSeen(store: MailStore, accountId: string, folder: string): number[] {
+  return store
+    .pendingFlagIntents(accountId, folder)
+    .filter((intent) => intent.seen === true)
+    .map((intent) => intent.uid);
+}
+
+/** Clears a pushed \Seen = true on the uids (as sync does after a STORE). */
+function clearSeen(store: MailStore, accountId: string, folder: string, uids: number[]): void {
+  store.clearFlagIntents(
+    accountId,
+    folder,
+    uids.map((uid) => ({ uid, seen: true, flagged: null })),
+  );
+}
+
 function idOf(store: MailStore, uid: number, accountId = "acc_1"): string {
   const entry = store.localFolderIndex(accountId, INBOX, EPOCH).find((e) => e.uid === uid);
   if (!entry) throw new Error(`uid ${uid} not stored`);
@@ -319,7 +336,7 @@ describe("createSqliteStore", () => {
     expect(store.finishFolderReset("acc_1", INBOX)).toBe(0);
     store.beginFolderReset("acc_1", INBOX);
     store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(202, { messageId: "msg-2@example.org" })]);
-    expect(store.pendingSeenUids("acc_1", INBOX)).toEqual([]);
+    expect(pendingSeen(store, "acc_1", INBOX)).toEqual([]);
     expect(store.finishFolderReset("acc_1", INBOX)).toBe(1);
     expect(store.getMessage(gone)).toBeNull();
     expect(count(db, "attachments")).toBe(0);
@@ -330,7 +347,7 @@ describe("createSqliteStore", () => {
     store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
     const id = idOf(store, 1);
     expect(store.markOpened(id)).toEqual({ accountId: "acc_1" });
-    expect(store.pendingSeenUids("acc_1", INBOX)).toEqual([1]);
+    expect(pendingSeen(store, "acc_1", INBOX)).toEqual([1]);
 
     expect(store.applyFlags("acc_1", INBOX, [{ uid: 1, seen: false, flagged: true }])).toBe(1);
     expect(store.getMessage(id)).toMatchObject({ isRead: true, isFlagged: true });
@@ -338,8 +355,8 @@ describe("createSqliteStore", () => {
     store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { seen: false })]);
     expect(store.getMessage(id)?.isRead).toBe(true);
 
-    store.clearSeenPending("acc_1", INBOX, [1]);
-    expect(store.pendingSeenUids("acc_1", INBOX)).toEqual([]);
+    clearSeen(store, "acc_1", INBOX, [1]);
+    expect(pendingSeen(store, "acc_1", INBOX)).toEqual([]);
     expect(store.applyFlags("acc_1", INBOX, [{ uid: 1, seen: false, flagged: true }])).toBe(1);
     expect(store.getMessage(id)?.isRead).toBe(false);
   });
@@ -348,7 +365,7 @@ describe("createSqliteStore", () => {
     expect(store.markOpened("m_0000000000000000")).toBeNull();
     store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { seen: true })]);
     expect(store.markOpened(idOf(store, 1))).toEqual({ accountId: "acc_1" });
-    expect(store.pendingSeenUids("acc_1", INBOX)).toEqual([]);
+    expect(pendingSeen(store, "acc_1", INBOX)).toEqual([]);
   });
 
   it("markOpened keeps the thread's unread count current", () => {
@@ -553,7 +570,7 @@ describe("createSqliteStore", () => {
     const outputs: unknown[] = [
       store.getSyncState("acc_1", INBOX),
       store.localFolderIndex("acc_1", INBOX, EPOCH),
-      store.pendingSeenUids("acc_1", INBOX),
+      pendingSeen(store, "acc_1", INBOX),
       store.markOpened(id),
       store.threadingInputs("acc_1"),
       store.listThreads("acc_1", "INBOX", null, 10),
@@ -847,8 +864,8 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
     expect(s.markOpened(inboxCopy)).toEqual({ accountId: "acc_1" });
     expect(s.getMessage(idIn(s, ALL_MAIL, 50))?.isRead).toBe(true);
     expect(s.getMessage(idIn(s, ALL_MAIL, 51))?.isRead).toBe(false);
-    expect(s.pendingSeenUids("acc_1", INBOX)).toEqual([1]);
-    expect(s.pendingSeenUids("acc_1", ALL_MAIL)).toEqual([50]);
+    expect(pendingSeen(s, "acc_1", INBOX)).toEqual([1]);
+    expect(pendingSeen(s, "acc_1", ALL_MAIL)).toEqual([50]);
     expect(s.unreadCount(null)).toBe(0);
     expect(s.listFolders("acc_1").map((f) => f.unreadCount)).toEqual([0, 1]);
     expect(s.listThreads("acc_1", INBOX, null, 10).threads[0]?.unreadCount).toBe(0);
@@ -862,8 +879,8 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
       makeFetchedMessage(500, { messageId: "g@example.org", gmMsgId: "100", gmThreadId: "900" }),
     ]);
     expect(s.getMessage(idIn(s, ALL_MAIL, 500))?.isRead).toBe(false);
-    expect(s.pendingSeenUids("acc_1", ALL_MAIL)).toEqual([]);
-    expect(s.pendingSeenUids("acc_1", INBOX)).toEqual([1]);
+    expect(pendingSeen(s, "acc_1", ALL_MAIL)).toEqual([]);
+    expect(pendingSeen(s, "acc_1", INBOX)).toEqual([1]);
   });
 
   it("listThreads filters by folder", () => {
@@ -988,7 +1005,7 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
     expect(s.getMessage(id1)).toMatchObject({ folder: "Archive", isRead: true });
     expect(s.getMessage(early)).toBeNull();
     expect(s.localFolderIndex("acc_1", "Archive", EPOCH)).toEqual([{ uid: 77, id: id1 }]);
-    expect(s.pendingSeenUids("acc_1", "Archive")).toEqual([77]);
+    expect(pendingSeen(s, "acc_1", "Archive")).toEqual([77]);
     expect(s.inlineParts(id1).map((p) => p.contentId)).toEqual(["logo"]);
     // Uid 2 vanished from the source: done, left for reconcile.
     expect(s.pendingMoves("acc_1", INBOX)).toEqual([]);
@@ -1147,12 +1164,12 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
     s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(40, { messageId: "a@example.org" })]);
     const [moving, copy] = [idIn(s, INBOX, 1), idIn(s, "Archive", 40)];
     s.markOpened(copy);
-    s.clearSeenPending("acc_1", INBOX, [1]);
+    clearSeen(s, "acc_1", INBOX, [1]);
     s.queueMove([moving], "Archive");
     s.completeMove("acc_1", INBOX, "Archive", null, [1]);
     expect(s.getMessage(copy)).toBeNull();
     expect(s.localFolderIndex("acc_1", "Archive", EPOCH)).toEqual([{ uid: 40, id: moving }]);
-    expect(s.pendingSeenUids("acc_1", "Archive")).toEqual([40]);
+    expect(pendingSeen(s, "acc_1", "Archive")).toEqual([40]);
   });
 
   it("getThread prefers a copy that is not waiting to move", () => {
@@ -1252,7 +1269,6 @@ describe("slice-3a migration (SQLite)", () => {
     const migrated = createSqliteStore(old);
     // Only the attached row is pushed; the backfilled read still wins over the server.
     expect(migrated.pendingFlagIntents("acc_1", INBOX)).toEqual([{ uid: 1, seen: true, flagged: null }]);
-    expect(migrated.pendingSeenUids("acc_1", INBOX)).toEqual([1]);
     migrated.applyFlags("acc_1", INBOX, [{ uid: 1, seen: false, flagged: false }]);
     expect(migrated.getMessage("m_a")?.isRead).toBe(true);
   });
@@ -1265,7 +1281,7 @@ describe("slice-3a migration (SQLite)", () => {
     const row = () =>
       db.prepare("SELECT seen_pending, seen_desired, flag_desired FROM messages WHERE id = ?").get(id);
     expect(row()).toEqual({ seen_pending: 0, seen_desired: 1, flag_desired: 1 });
-    store.clearSeenPending("acc_1", INBOX, [1]);
+    clearSeen(store, "acc_1", INBOX, [1]);
     expect(row()).toEqual({ seen_pending: 0, seen_desired: null, flag_desired: 1 });
   });
 

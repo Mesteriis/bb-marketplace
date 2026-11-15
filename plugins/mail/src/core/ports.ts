@@ -50,7 +50,10 @@ export interface FolderSession {
   fetchFlags(
     uids: number[],
   ): Promise<{ uid: number; seen: boolean; flagged: boolean; gmMsgId: string | null }[]>;
-  /** Throws on a read-only session. */
+  /**
+   * Throws on a read-only session.
+   * @deprecated Sync pushes \Seen with setFlags; kept until the gateway drops it.
+   */
   markSeen(uids: number[]): Promise<void>;
   /**
    * Adds (true) or removes (false) \Seen / \Flagged on the uids; an absent
@@ -131,13 +134,6 @@ export interface MailStore {
     flags: { uid: number; seen: boolean; flagged: boolean; gmMsgId?: string | null }[],
   ): number;
   deleteByUids(accountId: string, folder: string, uids: number[]): number;
-  /**
-   * Slice-2 view over the desired state until sync uses pendingFlagIntents:
-   * attached uids of the folder whose desired \Seen is set (true).
-   */
-  pendingSeenUids(accountId: string, folder: string): number[];
-  /** Slice-2 view: clearFlagIntents with `{ uid, seen: true, flagged: null }` per uid. */
-  clearSeenPending(accountId: string, folder: string, uids: number[]): void;
   /**
    * Records an owner-asked \Seen / \Flagged change; a field absent from
    * `change` is left alone. Unknown ids are skipped. The change reaches every

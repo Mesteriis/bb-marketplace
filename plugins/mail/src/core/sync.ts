@@ -3,10 +3,11 @@
 // One sync round for one account, every selectable folder, over the core ports:
 //   1. list the server's folders (one session-less call) and save them; folders
 //      gone from the server are dropped locally with their rows;
-//   2. per selectable folder, in store order: when it has pending reads or
-//      moves, push them on a writable session after the UIDVALIDITY check:
-//      \Seen first (the owner's reads), then the owner's moves grouped by
-//      destination (the only server writes);
+//   2. per selectable folder, in store order: when it has pending flag
+//      changes or moves, push them on a writable session after the
+//      UIDVALIDITY check: the owner's \Seen / \Flagged intents first (one
+//      STORE per set: seen+, seen-, flag+, flag-), then the owner's moves
+//      grouped by destination (the only server writes);
 //   3. then the read-only folder sync: initial (window search, newest first) or
 //      incremental (uids after lastUid) fetch in batches, each persisted with
 //      the folder's sync state in one transaction; reconcile the window: fetch
@@ -22,7 +23,7 @@
 // the next). One failing folder is recorded and the round goes on; a rejected
 // login stops the account. Never throws; error text is built from error
 // classes and codes, so it never carries the password.
-import type { FetchedMessage, Folder, RemoteFolder } from "./model.ts";
+import type { FetchedMessage, FlagChange, FlagIntent, Folder, RemoteFolder } from "./model.ts";
 import {
   ImapAuthError,
   type ChangeNotifier,
@@ -43,6 +44,8 @@ const EPOCH_ISO = new Date(0).toISOString();
 /** Gateway error codes for moves (see FolderSession.moveMessages). */
 const MOVE_REFUSED = "MoveFailed";
 const MOVE_UNSUPPORTED = "MoveUnsupported";
+/** Gateway error code for a refused STORE (see FolderSession.setFlags). */
+const STORE_REFUSED = "StoreFailed";
 
 export interface SyncDeps {
   store: MailStore;
@@ -63,7 +66,10 @@ export type SyncOutcome =
       fetched: number;
       removed: number;
       flagsChanged: number;
+      /** Messages marked read on the server (\Seen added). */
       pushedSeen: number;
+      /** Other flag changes pushed: \Seen removed, \Flagged added or removed. */
+      pushedFlags: number;
       /** Selectable folders synced successfully this round. */
       folders: number;
       /** Ids of messages whose move was cancelled this round (they stay put). */
@@ -82,6 +88,7 @@ type FolderCounts = { fetched: number; removed: number; flagsChanged: number };
 /** What a round has done so far, kept across folders and failures. */
 type RoundProgress = {
   pushedSeen: number;
+  pushedFlags: number;
   movesCancelled: string[];
   /** Local rows changed (moves completed or cancelled, folders synced). */
   changed: boolean;
@@ -137,6 +144,7 @@ export async function syncAccount(
   let password: string | null = null;
   const progress: RoundProgress = {
     pushedSeen: 0,
+    pushedFlags: 0,
     movesCancelled: [],
     changed: false,
     problems: [],
@@ -193,6 +201,7 @@ export async function syncAccount(
       status: "ok",
       ...totals,
       pushedSeen: progress.pushedSeen,
+      pushedFlags: progress.pushedFlags,
       folders: synced,
       movesCancelled: progress.movesCancelled,
     };
@@ -293,14 +302,16 @@ async function syncOneFolder(
 }
 
 /**
- * Pushes what the owner did in BB with a writable session: reads, then moves.
- * The push is skipped while the stored UIDVALIDITY does not match the
- * server's: the pending uids would name other messages. Pending reads and
- * moves stay on their rows and are pushed with the new uids once the folder
- * is resynced. A gateway failure keeps them pending, is recorded as a problem
- * of the folder and lets the folder sync run; a store failure fails the folder
- * (the server may already hold the change); an ImapAuthError is rethrown so
- * the round stops without another login.
+ * Pushes what the owner did in BB with a writable session: flag changes, then
+ * moves. The push is skipped while the stored UIDVALIDITY does not match the
+ * server's: the pending uids would name other messages. Pending flag changes
+ * and moves stay on their rows and are pushed with the new uids once the
+ * folder is resynced. A refused STORE keeps its changes pending and the push
+ * goes on (see pushFlags); any other gateway failure ends the push with
+ * what is not yet pushed left pending, is recorded as a problem of the folder
+ * and lets the folder sync run; a store failure fails the folder (the server may
+ * already hold the change); an ImapAuthError is rethrown so the round stops
+ * without another login.
  */
 async function pushPending(
   deps: SyncDeps,
@@ -311,9 +322,9 @@ async function pushPending(
 ): Promise<void> {
   const { store } = deps;
   const path = folder.path;
-  const seen = store.pendingSeenUids(accountId, path);
+  const intents = store.pendingFlagIntents(accountId, path);
   const moves = store.pendingMoves(accountId, path);
-  if (seen.length === 0 && moves.length === 0) return;
+  if (intents.length === 0 && moves.length === 0) return;
   const stored = store.getSyncState(accountId, path);
   if (stored === null) return;
   const gatewayFailed = (error: unknown) => {
@@ -325,25 +336,73 @@ async function pushPending(
     session = await openWritable();
     const status = await session.status();
     if (status.uidValidity !== stored.uidValidity) return;
-    if (seen.length > 0) {
-      let pushed = false;
-      try {
-        await session.markSeen(seen);
-        pushed = true;
-      } catch (error) {
-        // The reads stay pending; a moved row carries them to its destination.
-        gatewayFailed(error);
-      }
-      if (pushed) {
-        local(() => store.clearSeenPending(accountId, path, seen));
-        progress.pushedSeen += seen.length;
-      }
-    }
+    if (intents.length > 0) await pushFlags(store, session, accountId, folder, intents, progress);
     if (moves.length > 0) await pushMoves(store, session, accountId, folder, moves, progress);
   } catch (error) {
     gatewayFailed(error);
   } finally {
     if (session) await closeQuietly(session);
+  }
+}
+
+/** The four STORE sets, in push order, and how each reads an intent. */
+const FLAG_SETS: {
+  change: FlagChange;
+  wants: (intent: FlagIntent) => boolean;
+  pushed: (uid: number) => FlagIntent;
+}[] = [
+  {
+    change: { seen: true },
+    wants: (i) => i.seen === true,
+    pushed: (uid) => ({ uid, seen: true, flagged: null }),
+  },
+  {
+    change: { seen: false },
+    wants: (i) => i.seen === false,
+    pushed: (uid) => ({ uid, seen: false, flagged: null }),
+  },
+  {
+    change: { flagged: true },
+    wants: (i) => i.flagged === true,
+    pushed: (uid) => ({ uid, seen: null, flagged: true }),
+  },
+  {
+    change: { flagged: false },
+    wants: (i) => i.flagged === false,
+    pushed: (uid) => ({ uid, seen: null, flagged: false }),
+  },
+];
+
+/**
+ * Pushes the owner's flag changes, one STORE per non-empty set. After each
+ * STORE the store clears exactly what it pushed, compare-and-clear: a click
+ * made while the STORE was in flight stays pending for the next round. A
+ * refused STORE keeps its changes pending (a moved row carries them to its
+ * destination), adds a problem line and lets the other sets and the moves
+ * run; retrying is harmless, so nothing is counted. Any other gateway error
+ * is thrown and ends the push.
+ */
+async function pushFlags(
+  store: MailStore,
+  session: FolderSession,
+  accountId: string,
+  folder: Folder,
+  intents: FlagIntent[],
+  progress: RoundProgress,
+): Promise<void> {
+  for (const set of FLAG_SETS) {
+    const uids = intents.filter(set.wants).map((intent) => intent.uid);
+    if (uids.length === 0) continue;
+    try {
+      await session.setFlags(uids, set.change);
+    } catch (error) {
+      if (errorCode(error) !== STORE_REFUSED) throw error;
+      progress.problems.push(`${folder.name}: could not update flags on the server`);
+      continue;
+    }
+    local(() => store.clearFlagIntents(accountId, folder.path, uids.map(set.pushed)));
+    if (set.change.seen === true) progress.pushedSeen += uids.length;
+    else progress.pushedFlags += uids.length;
   }
 }
 

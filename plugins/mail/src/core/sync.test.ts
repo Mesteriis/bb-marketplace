@@ -56,6 +56,14 @@ function uidOf(store: InMemoryMailStore, id: string): number | undefined {
     .find((entry) => entry.id === id)?.uid;
 }
 
+/** Attached uids of the folder with a pending desired \Seen = true. */
+function pendingSeen(store: InMemoryMailStore, folder: string): number[] {
+  return store
+    .pendingFlagIntents(ACCOUNT_ID, folder)
+    .filter((intent) => intent.seen === true)
+    .map((intent) => intent.uid);
+}
+
 describe("syncAccount", () => {
   it("initial sync of 120 messages fetches 3 batches newest first and saves state after each", async () => {
     const { store, gateway, deps } = setup(mailbox(120));
@@ -74,6 +82,7 @@ describe("syncAccount", () => {
       removed: 0,
       flagsChanged: 0,
       pushedSeen: 0,
+      pushedFlags: 0,
       folders: 1,
       movesCancelled: [],
     });
@@ -251,7 +260,7 @@ describe("syncAccount", () => {
 
     // The owner opens message 3 in BB, but the push of pending reads fails.
     store.markOpened(idOf(3));
-    gateway.failNext("markSeen", new Error("connection reset"));
+    gateway.failNext("setFlags", new Error("connection reset"));
     // Meanwhile on the server: message 1 read, message 2 flagged.
     gateway.mailbox.messages[0]!.seen = true;
     gateway.mailbox.messages[1]!.flagged = true;
@@ -262,7 +271,7 @@ describe("syncAccount", () => {
     expect(store.getMessage(idOf(1))).toMatchObject({ isRead: true, isFlagged: false });
     expect(store.getMessage(idOf(2))).toMatchObject({ isRead: false, isFlagged: true });
     expect(store.getMessage(idOf(3))).toMatchObject({ isRead: true });
-    expect(store.pendingSeenUids(ACCOUNT_ID, INBOX)).toEqual([3]);
+    expect(pendingSeen(store, INBOX)).toEqual([3]);
   });
 
   it("pushes pending seen with a writable session before syncing", async () => {
@@ -276,27 +285,27 @@ describe("syncAccount", () => {
     expect(outcome).toMatchObject({ status: "ok", pushedSeen: 1 });
     const [, push, main] = gateway.sessions;
     expect(push!.readOnly).toBe(false);
-    expect(push!.calls).toEqual([{ method: "status" }, { method: "markSeen", uids: [2] }]);
+    expect(push!.calls).toEqual([{ method: "status" }, { method: "setFlags", uids: [2], change: { seen: true } }]);
     expect(push!.closed).toBe(true);
     expect(main!.readOnly).toBe(true);
-    expect(main!.calls.some((c) => c.method === "markSeen")).toBe(false);
+    expect(main!.calls.some((c) => c.method === "setFlags")).toBe(false);
     expect(gateway.mailbox.messages[1]!.seen).toBe(true);
-    expect(store.pendingSeenUids(ACCOUNT_ID, INBOX)).toEqual([]);
+    expect(pendingSeen(store, INBOX)).toEqual([]);
     expect(gateway.sessions).toHaveLength(3);
   });
 
-  it("failed markSeen keeps the pending flag", async () => {
+  it("a failed seen push keeps the pending flag", async () => {
     const { store, gateway, deps } = setup(mailbox(2));
     await syncAccount(deps, ACCOUNT_ID, OPTIONS);
     const ids = store.localFolderIndex(ACCOUNT_ID, INBOX, "1970-01-01T00:00:00.000Z");
     store.markOpened(ids.find((e) => e.uid === 1)!.id);
-    gateway.failNext("markSeen", new Error("connection reset"));
+    gateway.failNext("setFlags", new Error("connection reset"));
 
     const failedPush = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
     expect(failedPush).toMatchObject({ status: "ok", pushedSeen: 0 });
     expect(gateway.sessions[1]!.closed).toBe(true);
-    expect(store.pendingSeenUids(ACCOUNT_ID, INBOX)).toEqual([1]);
+    expect(pendingSeen(store, INBOX)).toEqual([1]);
     // The failed push shows, while the folder itself synced.
     expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe("INBOX: Sync failed");
 
@@ -304,7 +313,7 @@ describe("syncAccount", () => {
 
     expect(retried).toMatchObject({ status: "ok", pushedSeen: 1 });
     expect(store.getAccount(ACCOUNT_ID)?.lastError).toBeNull();
-    expect(store.pendingSeenUids(ACCOUNT_ID, INBOX)).toEqual([]);
+    expect(pendingSeen(store, INBOX)).toEqual([]);
     expect(gateway.mailbox.messages[0]!.seen).toBe(true);
   });
 
@@ -516,19 +525,19 @@ describe("syncAccount", () => {
     expect(gateway.sessions[1]!.readOnly).toBe(false);
     expect(gateway.sessions[1]!.calls).toEqual([{ method: "status" }]);
     expect(gateway.mailbox.messages.every((m) => !m.seen)).toBe(true);
-    expect(store.pendingSeenUids(ACCOUNT_ID, INBOX)).toEqual([3]);
+    expect(pendingSeen(store, INBOX)).toEqual([3]);
     expect(store.getMessage(openedId)).toMatchObject({ isRead: true });
 
     const next = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
     expect(next).toMatchObject({ status: "ok", pushedSeen: 1 });
-    expect(gateway.sessions[3]!.calls).toContainEqual({ method: "markSeen", uids: [3] });
+    expect(gateway.sessions[3]!.calls).toContainEqual({ method: "setFlags", uids: [3], change: { seen: true } });
     expect(gateway.mailbox.messages.map((m) => [m.uid, m.seen])).toEqual([
       [1, false],
       [2, false],
       [3, true],
     ]);
-    expect(store.pendingSeenUids(ACCOUNT_ID, INBOX)).toEqual([]);
+    expect(pendingSeen(store, INBOX)).toEqual([]);
   });
 
   it("an interrupted folder reset is finished by the next successful round", async () => {
@@ -597,7 +606,7 @@ describe("syncAccount", () => {
     expect(openFolder).toHaveBeenCalledTimes(1);
     expect(openFolder.mock.calls[0]!.slice(1)).toEqual([INBOX, { readOnly: false }]);
     expect(store.getAccount(ACCOUNT_ID)).toMatchObject({ authFailed: true });
-    expect(store.pendingSeenUids(ACCOUNT_ID, INBOX)).toEqual([1]);
+    expect(pendingSeen(store, INBOX)).toEqual([1]);
   });
 });
 
@@ -649,6 +658,7 @@ describe("syncAccount over folders", () => {
       removed: 0,
       flagsChanged: 0,
       pushedSeen: 0,
+      pushedFlags: 0,
       folders: 2,
       movesCancelled: [],
     });
@@ -755,7 +765,7 @@ describe("syncAccount moves", () => {
     const [push] = sessionsFor(gateway, INBOX, false);
     expect(push!.calls).toEqual([
       { method: "status" },
-      { method: "markSeen", uids: [1] },
+      { method: "setFlags", uids: [1], change: { seen: true } },
       { method: "moveMessages", uids: [2], destination: "Archive" },
     ]);
     expect(push!.closed).toBe(true);
@@ -894,17 +904,17 @@ describe("syncAccount moves", () => {
     const movedId = idByUid(store, INBOX, 1);
     store.markOpened(movedId);
     store.queueMove([movedId], "Archive");
-    gateway.failNext("markSeen", new Error("connection reset"), INBOX);
+    gateway.failNext("setFlags", imapError("StoreFailed"), INBOX);
 
     const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
     expect(outcome).toMatchObject({ status: "ok", pushedSeen: 1 });
     expect(store.getMessage(movedId)).toMatchObject({ folder: "Archive", isRead: true });
     const [archivePush] = sessionsFor(gateway, "Archive", false);
-    expect(archivePush!.calls).toEqual([{ method: "status" }, { method: "markSeen", uids: [1] }]);
+    expect(archivePush!.calls).toEqual([{ method: "status" }, { method: "setFlags", uids: [1], change: { seen: true } }]);
     const archived = gateway.mailboxes.get("Archive")!.messages;
     expect(archived.map((m) => [m.messageId, m.seen])).toEqual([["msg-1@example.org", true]]);
-    expect(store.pendingSeenUids(ACCOUNT_ID, "Archive")).toEqual([]);
+    expect(pendingSeen(store, "Archive")).toEqual([]);
   });
 
   it("a uidvalidity change skips the move push", async () => {
@@ -1107,5 +1117,207 @@ describe("syncAccount fix round 1", () => {
     expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe(
       "Folder list from the server is missing INBOX",
     );
+  });
+});
+
+describe("syncAccount flag push", () => {
+  function intents(store: InMemoryMailStore, folder: string) {
+    return store.pendingFlagIntents(ACCOUNT_ID, folder);
+  }
+
+  it("pushes the four flag sets with one STORE each, then clears them", async () => {
+    const box = mailbox(4);
+    box.messages[1]!.seen = true;
+    box.messages[3]!.flagged = true;
+    const { store, gateway, deps } = setup(box);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    store.setDesired([idByUid(store, INBOX, 1)], { seen: true, flagged: true });
+    store.setDesired([idByUid(store, INBOX, 2)], { seen: false });
+    store.setDesired([idByUid(store, INBOX, 3)], { flagged: true });
+    store.setDesired([idByUid(store, INBOX, 4)], { flagged: false });
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toMatchObject({ status: "ok", pushedSeen: 1, pushedFlags: 4 });
+    const [push] = sessionsFor(gateway, INBOX, false);
+    expect(push!.calls).toEqual([
+      { method: "status" },
+      { method: "setFlags", uids: [1], change: { seen: true } },
+      { method: "setFlags", uids: [2], change: { seen: false } },
+      { method: "setFlags", uids: [1, 3], change: { flagged: true } },
+      { method: "setFlags", uids: [4], change: { flagged: false } },
+    ]);
+    expect(push!.closed).toBe(true);
+    expect(gateway.mailbox.messages.map((m) => [m.uid, m.seen, m.flagged])).toEqual([
+      [1, true, true],
+      [2, false, false],
+      [3, false, true],
+      [4, false, false],
+    ]);
+    expect(intents(store, INBOX)).toEqual([]);
+    expect(store.getAccount(ACCOUNT_ID)?.lastError).toBeNull();
+  });
+
+  it("a click during the push stays pending and wins in the next round", async () => {
+    const { store, gateway, deps } = setup(mailbox(1));
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const id = idByUid(store, INBOX, 1);
+    store.setDesired([id], { seen: true });
+    const gate = gateway.gateStore();
+
+    const round = syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    await gate.entered;
+    // The owner marks it unread again while the STORE \Seen is in flight.
+    store.setDesired([id], { seen: false });
+    gate.release();
+    const first = await round;
+
+    expect(first).toMatchObject({ status: "ok", pushedSeen: 1, pushedFlags: 0 });
+    expect(gateway.mailbox.messages[0]!.seen).toBe(true);
+    expect(intents(store, INBOX)).toEqual([{ uid: 1, seen: false, flagged: null }]);
+    // The server's \Seen does not override the pending local value.
+    expect(store.getMessage(id)).toMatchObject({ isRead: false });
+
+    const second = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(second).toMatchObject({ status: "ok", pushedSeen: 0, pushedFlags: 1 });
+    expect(sessionsFor(gateway, INBOX, false)[1]!.calls).toContainEqual({
+      method: "setFlags",
+      uids: [1],
+      change: { seen: false },
+    });
+    expect(gateway.mailbox.messages[0]!.seen).toBe(false);
+    expect(intents(store, INBOX)).toEqual([]);
+    expect(store.getMessage(id)).toMatchObject({ isRead: false });
+  });
+
+  it("a refused STORE keeps its intents while the other sets and the moves still run", async () => {
+    const { store, gateway, deps } = setupWithArchive(3);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    store.setDesired([idByUid(store, INBOX, 1)], { seen: true });
+    store.setDesired([idByUid(store, INBOX, 2)], { flagged: true });
+    const movedId = idByUid(store, INBOX, 3);
+    store.queueMove([movedId], "Archive");
+    gateway.failNext("setFlags", imapError("StoreFailed"), INBOX);
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toMatchObject({ status: "ok", pushedSeen: 0, pushedFlags: 1 });
+    expect(sessionsFor(gateway, INBOX, false)[0]!.calls).toEqual([
+      { method: "status" },
+      { method: "setFlags", uids: [1], change: { seen: true } },
+      { method: "setFlags", uids: [2], change: { flagged: true } },
+      { method: "moveMessages", uids: [3], destination: "Archive" },
+    ]);
+    expect(intents(store, INBOX)).toEqual([{ uid: 1, seen: true, flagged: null }]);
+    expect(store.getMessage(movedId)).toMatchObject({ folder: "Archive" });
+    expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe(
+      "INBOX: could not update flags on the server",
+    );
+
+    const retried = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(retried).toMatchObject({ status: "ok", pushedSeen: 1, pushedFlags: 0 });
+    expect(intents(store, INBOX)).toEqual([]);
+    expect(gateway.mailbox.messages.find((m) => m.uid === 1)!.seen).toBe(true);
+    expect(store.getAccount(ACCOUNT_ID)?.lastError).toBeNull();
+  });
+
+  it("a dropped connection during a STORE leaves every flag change and move pending", async () => {
+    const { store, gateway, deps } = setupWithArchive(3);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    store.setDesired([idByUid(store, INBOX, 1)], { seen: true });
+    store.setDesired([idByUid(store, INBOX, 2)], { flagged: true });
+    const movedId = idByUid(store, INBOX, 3);
+    store.queueMove([movedId], "Archive");
+    gateway.failNext("setFlags", new Error("connection reset"), INBOX);
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toMatchObject({ status: "ok", pushedSeen: 0, pushedFlags: 0 });
+    expect(sessionsFor(gateway, INBOX, false)[0]!.calls).toEqual([
+      { method: "status" },
+      { method: "setFlags", uids: [1], change: { seen: true } },
+    ]);
+    expect(intents(store, INBOX)).toEqual([
+      { uid: 1, seen: true, flagged: null },
+      { uid: 2, seen: null, flagged: true },
+    ]);
+    expect(store.pendingMoves(ACCOUNT_ID, INBOX)).toEqual([
+      { uid: 3, id: movedId, destination: "Archive" },
+    ]);
+    expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe("INBOX: Sync failed");
+  });
+
+  it("does not push flags when uidvalidity changed", async () => {
+    const { store, gateway, deps } = setup(mailbox(2));
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const starredId = idByUid(store, INBOX, 2);
+    store.setDesired([starredId], { flagged: true });
+    // The server renumbers: old uid 2 now names message 1.
+    const [m1, m2] = gateway.mailbox.messages;
+    gateway.mailbox = {
+      uidValidity: 8,
+      uidNext: 3,
+      messages: [
+        { ...m2!, uid: 1 },
+        { ...m1!, uid: 2 },
+      ],
+    };
+
+    const reset = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(reset).toMatchObject({ status: "ok", pushedFlags: 0 });
+    expect(sessionsFor(gateway, INBOX, false)[0]!.calls).toEqual([{ method: "status" }]);
+    expect(gateway.mailbox.messages.every((m) => !m.flagged)).toBe(true);
+    // Still pending, now under the message's new uid.
+    expect(intents(store, INBOX)).toEqual([{ uid: 1, seen: null, flagged: true }]);
+    expect(store.getMessage(starredId)).toMatchObject({ isFlagged: true });
+
+    const next = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(next).toMatchObject({ status: "ok", pushedFlags: 1 });
+    expect(gateway.mailbox.messages.map((m) => [m.uid, m.flagged])).toEqual([
+      [1, true],
+      [2, false],
+    ]);
+    expect(intents(store, INBOX)).toEqual([]);
+  });
+
+  it("a row waiting to move gets its flags pushed before the move", async () => {
+    const { store, gateway, deps } = setupWithArchive(2);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const movedId = idByUid(store, INBOX, 2);
+    store.setDesired([movedId], { flagged: true });
+    store.queueMove([movedId], "Archive");
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toMatchObject({ status: "ok", pushedFlags: 1, movesCancelled: [] });
+    expect(sessionsFor(gateway, INBOX, false)[0]!.calls).toEqual([
+      { method: "status" },
+      { method: "setFlags", uids: [2], change: { flagged: true } },
+      { method: "moveMessages", uids: [2], destination: "Archive" },
+    ]);
+    const archived = gateway.mailboxes.get("Archive")!.messages;
+    expect(archived.map((m) => [m.messageId, m.flagged])).toEqual([["msg-2@example.org", true]]);
+    expect(store.getMessage(movedId)).toMatchObject({ folder: "Archive", isFlagged: true });
+    expect(intents(store, "Archive")).toEqual([]);
+    expect(sessionsFor(gateway, "Archive", false)).toEqual([]);
+  });
+
+  it("a store failure while clearing pushed flags fails the folder", async () => {
+    const { store, gateway, deps } = setup(mailbox(1));
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    store.setDesired([idByUid(store, INBOX, 1)], { flagged: true });
+    vi.spyOn(store, "clearFlagIntents").mockImplementation(() => {
+      throw new Error("disk full");
+    });
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toMatchObject({ status: "error", authFailed: false });
+    expect(sessionsFor(gateway, INBOX, true)).toHaveLength(1);
+    expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe("INBOX: Sync failed");
   });
 });
