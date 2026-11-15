@@ -70,8 +70,9 @@ out only when you press **Send** on its card in that agent's thread.
   `t` or `a` for Inbox, Sent, Drafts, Trash or All accounts. Letters follow
   the physical key, so they work on other keyboard layouts. Keys do nothing
   while you type in a field. `c` compose, `r` reply, `a` reply all, `f`
-  forward, `t` translate (again: show the original); in the composer
-  Cmd/Ctrl+Enter sends and Escape closes.
+  forward, `t` translate (again: show the original), `z` undo the last
+  action; in the composer Cmd/Ctrl+Enter sends, Cmd/Ctrl+Alt+T opens the
+  templates and Escape closes.
 - When a sender's images are always shown, the message says so and offers
   **Stop showing**.
 - What the plugin writes on the server: `\Seen` when you open a message or
@@ -85,6 +86,9 @@ out only when you press **Send** on its card in that agent's thread.
   stays on the server beside your copy) — by UID, on servers with UIDPLUS.
   It never marks anything else `\Deleted`. Details, the .eml and attachment
   downloads and every other fetch use `BODY.PEEK` and never mark mail read.
+  Undo of Archive on Gmail adds the message back to the folder it came from
+  with UID COPY; nothing else uses COPY. Every other undo is an ordinary move
+  back.
 - Agent tools `mail_search` and `mail_read` and the `mail` skill, off by
   default behind the `agentTools` setting, which also gates
   `bb makosh-mail accounts`, `search` and `read` inside agent threads. They
@@ -118,8 +122,8 @@ Account passwords are sealed with AES-256-GCM under the `vaultKey` secret
 setting, generated on first load. Mail and credentials stay on the machine
 that runs the BB server.
 
-Not yet: creating or renaming folders, Gmail API or OAuth, signatures,
-aliases and scheduled send.
+Not yet: creating or renaming folders, Gmail API or OAuth and scheduled
+send.
 
 ## Writing and sending
 
@@ -177,6 +181,80 @@ itself; for any other server (even smtp.<same domain>) the dialog asks for the
 account password, which the IMAP server must accept first, and which is
 stored only when both servers accept it.
 
+## Sending addresses, signatures and templates
+
+**Mail settings** (the gear at the bottom of the mail rail) lists each
+account's **Sending addresses**: the account's own address first, then the
+aliases you added.
+
+- **Add address** takes an address and an optional name. **Suggestions**
+  lists addresses that look like yours, from mail that reached you with none
+  of your known addresses in To or Cc (its `Delivered-To` or
+  `X-Original-To`, else a To or Cc address on your account's or provider's
+  domain), seen at least twice, with "N messages · last <date>". **Add**
+  only fills the form; **Not mine** hides a suggestion for good. Nothing is
+  added by sync, an agent or a suggestion on its own. Up to 50 per account.
+- The plugin cannot check that your provider lets the account send from an
+  alias. Gmail sends from an address it does not know as the account's own
+  address ("Send mail as" decides): after the Sent copy syncs, the address
+  shows "went out from the account's own address". iCloud refuses an
+  address that is not one of its aliases; the send shows the refusal and the
+  address is marked. Both warnings also show in the composer's From list.
+- Removing an alias is local. A send already queued keeps the From it was
+  built with; a draft that used it asks you to choose another From.
+- Each address has an optional **Signature** (bold, italic, underline,
+  links). A new message starts with an empty line and the signature at the
+  end, under a `-- ` line. A reply or forward has it above the quote, with no
+  `-- `, so mail clients that fold everything after `-- ` never fold the
+  quote. Reply and Reply all to your own mail leave your old signature out
+  of the quote; Forward keeps it. Changing From swaps an unedited signature
+  for the new address's; an edited one stays, with **Use <address>'s**.
+  A signature pasted from elsewhere becomes ordinary text.
+- From lists every sending address of every account with SMTP. A reply
+  starts from the address the original came to (Delivered-To,
+  X-Original-To, To, Cc), within the same account only.
+- **Templates** are named blocks of text (lists and links, no quotes), up
+  to 200. In the composer **Templates** or Cmd/Ctrl+Alt+T opens a filtered
+  list; Enter inserts the template at the cursor. Alt+T and Alt+Shift+T stay
+  BB's model picker.
+
+## Before you send
+
+Send saves the draft and runs four checks; none of them blocks a send:
+
+- an attachment mentioned ("attached", "see the file", "во вложении", "прикрепляю"…) with nothing attached;
+- an empty subject;
+- on a reply, a recipient who is not in the conversation;
+- on a new message or forward, an address you have never sent to.
+
+When one applies, **Before you send** lists them. **Fix** takes you to it
+(the attachment picker, the subject, the recipient row with the chips
+marked), **Send anyway** sends, **Back to editing** (the default, Enter or
+Escape) closes it. Cmd/Ctrl+Enter does nothing there. If the check itself
+fails, the mail is sent as before. "Never sent to" uses only what is stored
+here: your Sent folders and a local list of every address a send went to,
+Bcc included, kept until the account is removed.
+
+## Undo the last action
+
+After Archive, Delete, Spam, Not spam or Move to…, a toast "Archived 3
+conversations · Undo" stays 10 seconds; a flag or read change on two or more
+conversations gets one too. **Undo**, or `z` on the Mail page within 10
+minutes and until your next undoable action, takes it back. `z` undoes only
+what this page did, never another window's action. The toast says
+"Moving back…", then "Undone" or "Undone for 5 of 7 messages" with the
+reason (moved elsewhere since, folder gone, not synced yet, server not
+reached: try Undo again).
+
+- A move not pushed yet is cancelled; a pushed one is moved back from where
+  it went, only for messages still there. Nothing is deleted.
+- On Gmail, an archived message is added back to its folder with UID COPY.
+  Undoing Delete or Spam moves the message back to the folder it came from
+  only: other Gmail labels it had are not restored.
+- Undo is kept in memory: a BB restart or plugin reload forgets it. While a
+  long sync holds the account, it says "Undo will finish after the current
+  sync".
+
 ## Emails an agent proposes
 
 Off by default. Turn on `agentPropose` ("Let agents propose mail for you to
@@ -204,10 +282,18 @@ A new message with no account named goes from the account that corresponds
 with its To recipients (the one that last received mail from them, ties to
 the one that last sent to them); with no history the agent must name one.
 
+With `template` the agent names one of your templates (it lists them with
+`mail_templates`, offered under `agentPropose`; that sends the templates'
+text to the agent's model provider). The template's text goes into the
+message as it is when proposed; a later edit does not change the card. The
+sending address's signature is added by the plugin. For a new message the
+agent may name one of your aliases; a reply goes from the address the
+original came to.
+
 The tool never sends. It freezes the message and shows a card in that
 thread with all of it:
 
-- From, and To, Cc and Bcc rows that are always there ("none" when empty),
+- From (with an "alias" badge for an alias), and To, Cc and Bcc rows that are always there ("none" when empty),
   each address in full. A display name the agent made up is dropped; names
   computed from your stored mail stay as secondary text.
 - Flags on each address: **New address** (you never sent to it; it needs an
@@ -224,10 +310,13 @@ thread with all of it:
   Hangul fillers in the agent's subject or text refuse the proposal. An
   internationalized domain shows as `xn--` punycode.
 - The subject, the body as plain text, the quote of the original (folded),
-  every link in the agent's text by host (also ones without `https://`,
+  "Includes the template «name»", the signature (under `-- ` only on a new
+  message), every link in the agent's text, template and signature by host (also ones without `https://`,
   any `scheme://`, and `mailto:`, `tel:`, `javascript:`, `data:` and the
   like by scheme), and the attachments with their full names and their
   extension shown apart.
+- **Before sending**: the attachment, subject and outside-the-conversation
+  checks, as warnings that never disable Send.
 - **Send** stays disabled for 1.5 seconds, until every new address is
   acknowledged, and, when the body is taller than the card, until you have
   scrolled to its end.

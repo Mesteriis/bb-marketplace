@@ -696,7 +696,7 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 7).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 8).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
       "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
@@ -706,6 +706,8 @@ describe("slice-2 migrations (SQLite)", () => {
       "4f2e79c7b40711c0a250c3b9ff33cf72bddaa9d70add62c0f55987f31a30159a",
       // Element 6 (contacts for agents: the bulk mark).
       "9a3600bb2258106be36ee09df0c166b054fd998f4bc790be89966fc2877fac4c",
+      // Element 7 (slice 3d: identities, templates, sent recipients, Delivered-To).
+      "b068f80717cecc2be2da1c37047e165dc457f94ce76a60dd90177b6544b76bfa",
     ]);
   });
 
