@@ -170,6 +170,8 @@ export interface MailPageProps {
   identities?: readonly IdentityView[];
   templates?: readonly TemplateView[];
   onManageTemplates?: () => void;
+  /** `z`: undo the page's last action (slice 3d). */
+  onUndo?: () => void;
   /** New message (c, the rail's New message). */
   onCompose: () => void;
   /** Reply, Reply all or Forward (toolbar, r, a, f). */
@@ -637,6 +639,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         return openMove(targets());
       case "search":
         searchRef.current?.focus();
+        return;
+      case "undo":
+        props.onUndo?.();
         return;
       case "sheet":
         rememberOpener();

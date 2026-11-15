@@ -42,6 +42,8 @@ import type {
   ThreadDetail,
 } from "./src/core/index.ts";
 import { isRoleMoveAction, roleFolders } from "./src/core/actions.ts";
+// undo.ts imports only actions.ts: no zod reaches the bundle (checked on build).
+import { UNDO_TOAST_MS, undoResultText, undoToastText } from "./src/core/undo.ts";
 import type { ComposerPorts, ComposeWarningKind } from "./src/ui/composer.tsx";
 import type { SmtpSettingsInput } from "./src/ui/smtp-dialog.tsx";
 import type { DetailsState } from "./src/ui/details-panel.tsx";
@@ -103,6 +105,10 @@ const SEARCH_LIMIT = 50;
 const SYNC_INDICATOR_MS = 60_000;
 /** message_action takes at most this many ids per call; larger batches go in sequence. */
 const ACTION_CHUNK = 200;
+/** One toast for the undo of the last action, replaced by the next. */
+const UNDO_TOAST_ID = "mail-undo";
+/** "Moving back…" gives way to the result at the next mail-changed, or after this long. */
+const MOVING_BACK_MAX_MS = 10_000;
 /** thread_get calls in flight at once while a selection's messages are collected. */
 const COLLECT_CONCURRENCY = 6;
 /**
@@ -456,6 +462,13 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const wantedLink = useRef<ThreadLink | null>(null);
   const requests = useRef({ list: 0, search: 0, thread: 0, folders: 0, details: 0 });
   const pendingRef = useRef(false);
+  /**
+   * The page's own last undoable action (spec resolution 4): `z` undoes
+   * this id only, so another window's action is never undone from here.
+   */
+  const lastUndo = useRef<{ id: string; moving: boolean } | null>(null);
+  /** The undo result waiting for the reverse moves to show in the lists. */
+  const movingBack = useRef<{ text: string; timer: ReturnType<typeof setTimeout> } | null>(null);
   /** Stars being changed by the owner: a list refresh meanwhile keeps these values. */
   const flagIntents = useRef(new Map<string, boolean>());
   const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -783,6 +796,12 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
 
   useDebouncedRealtime(MAIL_CHANGED_CHANNEL, (payloads) => {
     void loadStatus();
+    const waiting = movingBack.current;
+    if (waiting !== null) {
+      movingBack.current = null;
+      clearTimeout(waiting.timer);
+      toast(waiting.text, { id: UNDO_TOAST_ID });
+    }
     const { scopeKey: key, unified: all, reading: currentReading } = latest.current;
     if (key === null) return;
     const touched = payloads.some((payload) => {
@@ -866,10 +885,18 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
    * `shortfall` counts ids the server neither queued nor refused.
    */
   const sendAction = useCallback(
-    async (items: readonly ActionItem[], action: MessageAction, ctx: ViewContext, destination?: string) => {
+    async (
+      items: readonly ActionItem[],
+      action: MessageAction,
+      ctx: ViewContext,
+      destination?: string,
+      /** One id for every chunk of the batch: the server keeps it as the undoable action. */
+      undoId?: string,
+    ) => {
       const failed = new Map<string, string>();
       const destinations = new Set<string>();
       let shortfall = 0;
+      let undoable = false;
       const source = sourceOf(ctx.view);
       const fail = (item: ActionItem, error: string) => {
         if (!failed.has(item.threadId)) failed.set(item.threadId, error);
@@ -877,12 +904,15 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       for (let start = 0; start < items.length; start += ACTION_CHUNK) {
         const chunk = items.slice(start, start + ACTION_CHUNK);
         try {
-          const { groups } = await rpc.call("message_action", {
+          const result = await rpc.call("message_action", {
             messageIds: chunk.map((item) => item.id),
             action,
             ...source,
             ...(destination !== undefined ? { destination } : {}),
+            ...(undoId !== undefined ? { undoId } : {}),
           });
+          const { groups } = result;
+          if (result.undoable === true) undoable = true;
           if (groups.length === 0) {
             for (const item of chunk) fail(item, "Nothing was changed");
             continue;
@@ -905,9 +935,68 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           for (const item of chunk) fail(item, messageOf(error));
         }
       }
-      return { failed, destinations, shortfall };
+      return { failed, destinations, shortfall, undoable };
     },
     [rpc],
+  );
+
+  /**
+   * Undoes the action recorded under `undoId` (the toast's own, or `z`'s
+   * page-local last one). "Moving back…" stays until the next mail-changed
+   * shows the reverse moves; then the result.
+   */
+  const undo = useCallback(
+    async (undoId: string | null, moving: boolean) => {
+      if (undoId === null) {
+        toast("Nothing to undo", { id: UNDO_TOAST_ID });
+        return;
+      }
+      try {
+        const result = await rpc.call("action_undo", { undoId });
+        // Failed copy groups stay undoable under the same id; anything else is spent.
+        if (lastUndo.current?.id === undoId && result.failed === 0) lastUndo.current = null;
+        const text = undoResultText(result);
+        if (result.outcome === "done" && moving && result.restored > 0) {
+          if (movingBack.current !== null) clearTimeout(movingBack.current.timer);
+          toast("Moving back…", { id: UNDO_TOAST_ID, duration: Number.POSITIVE_INFINITY });
+          movingBack.current = {
+            text,
+            timer: setTimeout(() => {
+              if (movingBack.current?.text !== text) return;
+              movingBack.current = null;
+              toast(text, { id: UNDO_TOAST_ID });
+            }, MOVING_BACK_MAX_MS),
+          };
+        } else {
+          toast(text, { id: UNDO_TOAST_ID });
+        }
+        if (result.outcome !== "nothing") refreshAfterChange();
+      } catch (error) {
+        toast.error(messageOf(error), { id: UNDO_TOAST_ID });
+      }
+    },
+    [refreshAfterChange, rpc],
+  );
+  useEffect(
+    () => () => {
+      if (movingBack.current !== null) clearTimeout(movingBack.current.timer);
+    },
+    [],
+  );
+
+  /** After an undoable action: the page's last id, and the toast with Undo when one is due. */
+  const recordUndo = useCallback(
+    (undoId: string, action: MessageAction, count: number, destinationName: string | null, toastIt: boolean) => {
+      const moving = isRoleMoveAction(action) || action === "move";
+      lastUndo.current = { id: undoId, moving };
+      if (!toastIt) return;
+      toast(undoToastText(action, count, destinationName), {
+        id: UNDO_TOAST_ID,
+        duration: UNDO_TOAST_MS,
+        action: { label: "Undo", onClick: () => void undo(undoId, moving) },
+      });
+    },
+    [undo],
   );
 
   /**
@@ -931,7 +1020,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       try {
         const collected = await collect(threadIds, snapshot, ctx);
         const items = flagChoice(collected.items, collected.details, action, ctx);
-        const { failed, destinations, shortfall } = await sendAction(items, action, ctx, destination);
+        const undoId = crypto.randomUUID();
+        const { failed, destinations, shortfall, undoable } = await sendAction(items, action, ctx, destination, undoId);
         for (const [threadId, error] of collected.failures) failed.set(threadId, error);
         for (const error of new Set(failed.values())) toast.error(error);
         // Nothing of these in the view (or nothing to flag): not done, so they stay selected.
@@ -941,7 +1031,11 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         }
         if (shortfall > 0) toast.error(`${plural(shortfall, "message", "messages")} had nothing to change here`);
         const done = new Set(threadIds.filter((id) => !failed.has(id) && !empty.includes(id)));
-        if (moving && done.size > 0 && destinations.size > 0) {
+        if (undoable && done.size > 0) {
+          // A move always toasts; a flag or read change only for two or more conversations.
+          const names = [...destinations].join(", ");
+          recordUndo(undoId, action, done.size, names === "" ? null : names, moving || done.size >= 2);
+        } else if (moving && done.size > 0 && destinations.size > 0) {
           toast.success(`Moved to ${[...destinations].join(", ")}`);
         }
         if (action === "mark_unread") {
@@ -991,7 +1085,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         setActionPending(false);
       }
     },
-    [closeThread, collect, refreshAfterChange, sendAction],
+    [closeThread, collect, recordUndo, refreshAfterChange, sendAction],
   );
 
   /** Sets a list row's star, and the open conversation's messages to match. */
@@ -1029,9 +1123,12 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           return;
         }
         const chosenIds = new Set(targets.map((item) => item.id));
-        const { failed } = await sendAction(targets, action, ctx);
+        const undoId = crypto.randomUUID();
+        const { failed, undoable } = await sendAction(targets, action, ctx, undefined, undoId);
         const error = failed.get(threadId);
         if (error !== undefined) throw new Error(error);
+        // A single star shows no toast; `z` still undoes it.
+        if (undoable) recordUndo(undoId, action, 1, null, false);
         setReading((prev) =>
           prev.detail === null || prev.detail.thread.id !== threadId
             ? prev
@@ -1052,7 +1149,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         flagIntents.current.delete(threadId);
       }
     },
-    [collect, sendAction, setThreadFlagged],
+    [collect, recordUndo, sendAction, setThreadFlagged],
   );
 
   /** The star of one message in the reading pane: that message only, wherever its copy is. */
@@ -1073,19 +1170,23 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         );
       setFlag(next);
       try {
-        const { groups } = await rpc.call("message_action", {
+        const undoId = crypto.randomUUID();
+        const action = next ? "flag" : "unflag";
+        const { groups, undoable } = await rpc.call("message_action", {
           messageIds: [message.id],
-          action: next ? "flag" : "unflag",
+          action,
           folder: message.folder,
+          undoId,
         });
         const refused = groups.find((g) => g.error !== null);
         if (refused !== undefined) throw new Error(refused.error!);
+        if (undoable === true) recordUndo(undoId, action, 1, null, false);
       } catch (error) {
         setFlag(!next);
         toast.error(messageOf(error));
       }
     },
-    [rpc],
+    [recordUndo, rpc],
   );
 
   /** "Show images" for one message: page state only, gone when the conversation closes. */
@@ -1941,6 +2042,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       identities={identities}
       templates={templates}
       onManageTemplates={() => openSettings("templates")}
+      onUndo={() => void undo(lastUndo.current?.id ?? null, lastUndo.current?.moving ?? false)}
     />
     <TranslationSettings
       open={translateSettingsOpen}

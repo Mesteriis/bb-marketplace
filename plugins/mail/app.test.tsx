@@ -707,6 +707,7 @@ describe("Message actions", () => {
       messageIds: ["m-old", "m-new"],
       folder: "INBOX",
       action: "spam",
+      undoId: expect.any(String),
     });
     await waitFor(() => expect(toasts.success).toEqual(["Moved to Spam"]));
     await waitFor(() => expect(slot.queryByRole("button", { name: /Quarterly plan/ })).toBeNull());
@@ -731,6 +732,7 @@ describe("Message actions", () => {
         messageIds: ["m-old", "m-new"],
         folder: "[Gmail]/Spam",
         action: "not_spam",
+        undoId: expect.any(String),
       }),
     );
     await waitFor(() => expect(toasts.success).toEqual(["Moved to Inbox"]));
@@ -1286,6 +1288,7 @@ describe("All accounts", () => {
         messageIds: ["w-1", "w-2"],
         action: "not_spam",
         role: "junk",
+        undoId: expect.any(String),
       }),
     );
   });
@@ -1377,6 +1380,7 @@ describe("Selection", () => {
       messageIds: ["a-1", "a-2", "w-1"],
       action: "archive",
       role: "inbox",
+      undoId: expect.any(String),
     });
     expect(toasts.success).toEqual(["Moved to Archive"]);
     await waitFor(() => expect(slot.queryByRole("button", { name: /Quarterly plan/ })).toBeNull());
@@ -1437,6 +1441,7 @@ describe("Flags and read state", () => {
         messageIds: ["m-new"],
         action: "flag",
         folder: "INBOX",
+        undoId: expect.any(String),
       }),
     );
     expect(star.getAttribute("aria-pressed")).toBe("true");
@@ -1484,6 +1489,7 @@ describe("Flags and read state", () => {
         messageIds: ["f-1", "f-4"],
         action: "unflag",
         folder: "INBOX",
+        undoId: expect.any(String),
       }),
     );
   });
@@ -1500,6 +1506,7 @@ describe("Flags and read state", () => {
         messageIds: ["m-old", "m-new"],
         action: "mark_unread",
         folder: "INBOX",
+        undoId: expect.any(String),
       }),
     );
     expect(slot.queryByRole("heading", { name: "Quarterly plan" })).toBeNull();
@@ -1524,6 +1531,7 @@ describe("Flags and read state", () => {
         messageIds: ["m-sent"],
         action: "flag",
         folder: "[Gmail]/Sent Mail",
+        undoId: expect.any(String),
       }),
     );
     expect(reply.getByRole("button", { name: "Flag message" }).getAttribute("aria-pressed")).toBe("true");
@@ -1555,6 +1563,7 @@ describe("Move to…", () => {
         action: "move",
         folder: "INBOX",
         destination: "Projects/Alpha",
+        undoId: expect.any(String),
       }),
     );
     await waitFor(() => expect(toasts.success).toEqual(["Moved to Alpha"]));
@@ -1769,6 +1778,7 @@ describe("Hotkeys", () => {
         messageIds: ["m-old", "m-new"],
         action: "delete",
         folder: "INBOX",
+        undoId: expect.any(String),
       }),
     );
     press(root, { key: ".", code: "Slash" });
@@ -1896,8 +1906,12 @@ function key(init: { key: string; code: string; shiftKey?: boolean; repeat?: boo
 const J = { key: "j", code: "KeyJ" };
 const HASH = { key: "#", code: "Digit3", shiftKey: true };
 const rowButton = (slot: ReturnType<typeof render>, subject: RegExp) => slot.getByRole("button", { name: subject });
+/** message_action inputs without the batch's undoId (the undo tests check it). */
 const actionInputs = (slot: ReturnType<typeof render>) =>
-  callsTo(slot, "message_action").map((call) => call.input as { messageIds: string[]; action: string });
+  callsTo(slot, "message_action").map((call) => {
+    const { undoId: _undoId, ...rest } = call.input as { messageIds: string[]; action: string; undoId?: string };
+    return rest;
+  });
 
 describe("Hotkeys keep working", () => {
   it("after the ? sheet closes with Escape", async () => {
@@ -2248,6 +2262,7 @@ describe("Batch edge cases", () => {
       messageIds: ["a-1", "a-2"],
       action: "mark_read",
       folder: "INBOX",
+      undoId: expect.any(String),
     });
   });
 });
@@ -3144,6 +3159,10 @@ describe("Agent proposals", () => {
     attachments: [],
     leftOut: 0,
     expiresAt: "2026-11-16T10:00:00.000Z",
+    fromAlias: false,
+    signatureText: null,
+    templateName: null,
+    checks: [],
   };
 
   it("registers the card and the settled row", () => {
@@ -3379,7 +3398,8 @@ describe("Translation", () => {
     fireEvent.click(toolbar(slot).getByRole("button", { name: "Translate" }));
     const dialog = await slot.findByRole("dialog", { name: "Translation settings" });
     expect(callsTo(slot, "translate_start")).toHaveLength(0);
-    const trigger = within(dialog).getByRole("combobox", { name: "Provider" });
+    // The settings load after the dialog opens.
+    const trigger = await within(dialog).findByRole("combobox", { name: "Provider" });
     trigger.focus();
     fireEvent.keyDown(trigger, { key: "Enter", code: "Enter" });
     fireEvent.keyDown(await slot.findByRole("option", { name: "Provider X" }), { key: "Enter", code: "Enter" });
@@ -3456,5 +3476,165 @@ describe("Sending with the pre-send check (slice 3d)", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Send anyway" }));
     await waitFor(() => expect(callsTo(slot, "compose_send")).toHaveLength(1));
     await waitFor(() => expect(slot.queryByRole("region", { name: "New message" })).toBeNull());
+  });
+});
+
+describe("Undo the last action (slice 3d)", () => {
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  /** rowsRpc whose message_action records the batch (something queued). */
+  function undoRpc(overrides: Record<string, (input: never) => unknown> = {}) {
+    let threads = [threadA, threadB, threadC];
+    const ids: Record<string, string[]> = { "th-a": ["a-1", "a-2"], "th-b": ["b-1"], "th-c": ["c-1"] };
+    return rowsRpc({
+      threads_list: () => ({ threads, nextCursor: null }),
+      message_action: ({ messageIds, action }: { messageIds: string[]; action: string }) => {
+        if (!action.startsWith("mark") && !action.endsWith("flag")) {
+          threads = threads.filter((t) => !(ids[t.id] ?? []).some((id) => messageIds.includes(id)));
+        }
+        const destination = action === "delete" ? "Trash" : action === "archive" ? "All Mail" : null;
+        return {
+          groups: [{ accountId: "acc-1", folder: "INBOX", queued: messageIds.length, destination, error: null }],
+          undoable: true,
+        };
+      },
+      action_undo: () => ({ outcome: "done", restored: 2, skipped: [], failed: 0, groups: [] }),
+      ...overrides,
+    });
+  }
+  const undoToasts = () => toasts.log.filter((t) => t.options?.id === "mail-undo");
+  const lastUndoToast = () => undoToasts().at(-1);
+  const bar = (slot: ReturnType<typeof render>) =>
+    within(slot.getByRole("toolbar", { name: "Selected conversations" }));
+
+  it("one undoId for every chunk of a batch", async () => {
+    const big = Array.from({ length: 250 }, (_, i) => `big-${i}`);
+    const slot = render(
+      unifiedRpc({
+        thread_get: () => detailOf(threadA, "INBOX", big),
+        message_action: ({ messageIds }: { messageIds: string[] }) => ({
+          groups: [{ accountId: "acc-1", folder: "INBOX", queued: messageIds.length, destination: null, error: null }],
+          undoable: true,
+        }),
+      }),
+    );
+    await slot.findByText("Invoice");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.click(bar(slot).getByRole("button", { name: "Mark read" }));
+    await waitFor(() => expect(callsTo(slot, "message_action")).toHaveLength(2));
+    const [first, second] = callsTo(slot, "message_action").map((c) => (c.input as { undoId: string }).undoId);
+    expect(first).toMatch(UUID);
+    expect(second).toBe(first);
+  });
+
+  it("archive toasts with Undo for 10 s; Undo sends that id, shows Moving back…, then Undone after mail-changed", async () => {
+    const slot = render(undoRpc());
+    await slot.findByText("Tickets");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.click(bar(slot).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(lastUndoToast()?.text).toBe("Moved 1 conversation to Trash"));
+    const shown = lastUndoToast()!;
+    expect(shown.options?.duration).toBe(10_000);
+    expect(shown.options?.action?.label).toBe("Undo");
+    expect(toasts.success).toEqual([]);
+    const undoId = (callsTo(slot, "message_action")[0]!.input as { undoId: string }).undoId;
+    await act(async () => {
+      shown.options!.action!.onClick();
+    });
+    await waitFor(() => expect(callsTo(slot, "action_undo")).toHaveLength(1));
+    expect(callsTo(slot, "action_undo")[0]!.input).toEqual({ undoId });
+    await waitFor(() => expect(lastUndoToast()?.text).toBe("Moving back…"));
+    await slot.behavior.emitRealtime(MAIL_CHANGED_CHANNEL, { accountId: "acc-1" });
+    await waitFor(() => expect(lastUndoToast()?.text).toBe("Undone"));
+  });
+
+  it("a flag or read change toasts only for two or more conversations", async () => {
+    const slot = render(undoRpc());
+    await slot.findByText("Tickets");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Lunch" }));
+    fireEvent.click(bar(slot).getByRole("button", { name: "Mark read" }));
+    await waitFor(() => expect(lastUndoToast()?.text).toBe("Marked 2 conversations read"));
+    expect(lastUndoToast()?.options?.action?.label).toBe("Undo");
+  });
+
+  it("a single star toggle shows no toast, and z still undoes it with the page's own id", async () => {
+    const slot = render(undoRpc({ action_undo: () => ({ outcome: "done", restored: 1, skipped: [], failed: 0, groups: [] }) }));
+    await slot.findByText("Tickets");
+    fireEvent.click(slot.getAllByRole("button", { name: /^Flag/ })[0]!);
+    await waitFor(() => expect(callsTo(slot, "message_action")).toHaveLength(1));
+    expect(undoToasts()).toEqual([]);
+    const undoId = (callsTo(slot, "message_action")[0]!.input as { undoId: string }).undoId;
+    pageRoot(slot).focus();
+    press(pageRoot(slot), { key: "я", code: "KeyZ" });
+    await waitFor(() => expect(callsTo(slot, "action_undo")).toHaveLength(1));
+    expect(callsTo(slot, "action_undo")[0]!.input).toEqual({ undoId });
+    // A flag change goes back at once: no "Moving back…".
+    await waitFor(() => expect(lastUndoToast()?.text).toBe("Undone"));
+    // Spent: the next z has nothing to undo and makes no call.
+    press(pageRoot(slot), { key: "z", code: "KeyZ" });
+    await waitFor(() => expect(lastUndoToast()?.text).toBe("Nothing to undo"));
+    expect(callsTo(slot, "action_undo")).toHaveLength(1);
+  });
+
+  it("z with no action on the page says Nothing to undo without a call; ignored while typing", async () => {
+    const slot = render(undoRpc());
+    await slot.findByText("Tickets");
+    const search = slot.getByRole("searchbox");
+    fireEvent.keyDown(search, { key: "z", code: "KeyZ" });
+    expect(undoToasts()).toEqual([]);
+    pageRoot(slot).focus();
+    press(pageRoot(slot), { key: "z", code: "KeyZ" });
+    await waitFor(() => expect(lastUndoToast()?.text).toBe("Nothing to undo"));
+    expect(callsTo(slot, "action_undo")).toHaveLength(0);
+  });
+
+  for (const [name, result, text] of [
+    [
+      "partial with reasons",
+      { outcome: "done", restored: 5, skipped: [{ reason: "moved_elsewhere", count: 2 }], failed: 0, groups: [] },
+      "Undone for 5 of 7 messages · moved elsewhere",
+    ],
+    [
+      "failed copies",
+      { outcome: "done", restored: 1, skipped: [], failed: 2, groups: [] },
+      "Undone for 1 of 3 messages · could not reach the server; try Undo again",
+    ],
+    ["pending", { outcome: "pending", restored: 0, skipped: [], failed: 0, groups: [] }, "Undo will finish after the current sync"],
+    ["nothing", { outcome: "nothing", restored: 0, skipped: [], failed: 0, groups: [] }, "Nothing to undo"],
+  ] as const) {
+    it(`the result toast: ${name}`, async () => {
+      const slot = render(undoRpc({ action_undo: () => result }));
+      await slot.findByText("Tickets");
+      fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+      fireEvent.click(bar(slot).getByRole("button", { name: "Delete" }));
+      await waitFor(() => expect(lastUndoToast()?.text).toBe("Moved 1 conversation to Trash"));
+      pageRoot(slot).focus();
+      press(pageRoot(slot), { key: "z", code: "KeyZ" });
+      await waitFor(() => expect(callsTo(slot, "action_undo")).toHaveLength(1));
+      if (result.outcome === "done") {
+        await waitFor(() => expect(lastUndoToast()?.text).toBe("Moving back…"));
+        await slot.behavior.emitRealtime(MAIL_CHANGED_CHANNEL, { accountId: "acc-1" });
+      }
+      await waitFor(() => expect(lastUndoToast()?.text).toBe(text));
+    });
+  }
+
+  it("a refused undo toasts the server's text and keeps the id for another z", async () => {
+    const slot = render(
+      undoRpc({
+        action_undo: () => {
+          throw new Error("Unlock mail first");
+        },
+      }),
+    );
+    await slot.findByText("Tickets");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.click(bar(slot).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(lastUndoToast()?.text).toBe("Moved 1 conversation to Trash"));
+    pageRoot(slot).focus();
+    press(pageRoot(slot), { key: "z", code: "KeyZ" });
+    await waitFor(() => expect(toasts.error.at(-1)).toContain("Unlock mail first"));
+    press(pageRoot(slot), { key: "z", code: "KeyZ" });
+    await waitFor(() => expect(callsTo(slot, "action_undo")).toHaveLength(2));
   });
 });

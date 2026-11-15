@@ -104,6 +104,21 @@ describe("matchShortcut", () => {
     editor.remove();
   });
 
+  it("z undoes by the physical key (Cyrillic layout too); Mod+Z and Shift+Z are not ours; never while typing", () => {
+    expect(matchShortcut(key({ key: "z", code: "KeyZ" }), false)).toEqual({ kind: "undo" });
+    expect(matchShortcut(key({ key: "я", code: "KeyZ" }), false)).toEqual({ kind: "undo" });
+    expect(matchShortcut(key({ key: "z", code: "KeyZ", metaKey: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "z", code: "KeyZ", ctrlKey: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "Z", code: "KeyZ", shiftKey: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "z", code: "KeyZ", repeat: true }), false)).toBeNull();
+    const input = document.createElement("input");
+    document.body.append(input);
+    expect(matchShortcut(key({ key: "z", code: "KeyZ", target: input }), false)).toBeNull();
+    input.remove();
+    const entries = SHORTCUT_SHEET.flatMap((section) => section.entries);
+    expect(entries.find((entry) => entry.keys.join(" ") === "z")?.label).toBe("Undo the last action");
+  });
+
   it("the sheet lists t", () => {
     const entries = SHORTCUT_SHEET.flatMap((section) => section.entries);
     expect(entries.find((entry) => entry.keys.join(" ") === "t")?.label).toBe("Translate, or show the original");

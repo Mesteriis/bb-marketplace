@@ -350,3 +350,52 @@ describe("AgentSendCard", () => {
     expect(cancel).toHaveBeenCalled();
   });
 });
+
+describe("AgentSendCard: identity, template, signature and checks (slice 3d)", () => {
+  it("marks an alias From with a badge and names the template", async () => {
+    await mountReady(view({ fromAlias: true, account: { id: "acc-1", name: "Owner", address: "team@example.org" }, templateName: "Follow-up" }));
+    expect(screen.getByText("<team@example.org>")).toBeTruthy();
+    expect(screen.getByText("alias")).toBeTruthy();
+    expect(screen.getByText(/Includes the template/).textContent).toBe("Includes the template «Follow-up»");
+    cleanup();
+    await mountReady(view());
+    expect(screen.queryByText("alias")).toBeNull();
+    expect(screen.queryByText(/Includes the template/)).toBeNull();
+  });
+
+  it("shows the signature under -- only when it is last; above a quote it has no delimiter", async () => {
+    await mountReady(view({ kind: "new", source: null, quoteText: null, signatureText: "Made-up Name\nExample Ltd" }));
+    expect(screen.getByTestId("agent-send-signature").textContent).toBe("-- Made-up Name\nExample Ltd");
+    cleanup();
+    await mountReady(view({ signatureText: "Made-up Name" }));
+    expect(screen.getByTestId("agent-send-signature").textContent).toBe("Made-up Name");
+    // Above the quote.
+    const body = screen.getByTestId("agent-send-body");
+    const text = body.textContent ?? "";
+    expect(text.indexOf("Made-up Name")).toBeLessThan(text.indexOf("Quoted message"));
+  });
+
+  it("lists the checks under Before sending as warnings; Send still works", async () => {
+    const { submit } = await mountReady(
+      view({
+        checks: [
+          { kind: "attachment_mentioned", phrase: "attached" },
+          { kind: "empty_subject" },
+          { kind: "outside_conversation", addresses: ["bo@example.org"] },
+        ],
+      }),
+    );
+    const list = screen.getByRole("region", { name: "Before sending" });
+    expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "You wrote “attached”, but nothing is attached.",
+      "The subject is empty.",
+      "Not in this conversation: bo@example.org",
+    ]);
+    await passDwell();
+    expect(sendButton().disabled).toBe(false);
+    await act(async () => {
+      fireEvent.click(sendButton());
+    });
+    expect(submit).toHaveBeenCalledWith("send", TOKEN);
+  });
+});

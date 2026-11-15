@@ -27,6 +27,7 @@ export type ShortcutCommand =
   | { kind: "reply_all" }
   | { kind: "forward" }
   | { kind: "translate" }
+  | { kind: "undo" }
   | { kind: "go"; target: GoTarget };
 
 /** How long `g` waits for its second key. */
@@ -155,6 +156,9 @@ function matchKey(event: KeyLike, afterG: boolean): KeyMatch {
       return { kind: "forward" };
     case "KeyT":
       return { kind: "translate" };
+    // z alone: undo the last action (Mod+Z stays the editor's).
+    case "KeyZ":
+      return { kind: "undo" };
     case "KeyG":
       return { kind: "g" };
     default:
@@ -248,6 +252,7 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
       { keys: ["Shift", "i"], label: "Mark read" },
       { keys: ["v"], label: "Move to…" },
       { keys: ["t"], label: "Translate, or show the original" },
+      { keys: ["z"], label: "Undo the last action" },
     ],
   },
   {

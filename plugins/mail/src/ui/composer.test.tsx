@@ -428,6 +428,11 @@ describe("Composer: identities, signatures, checks and templates (slice 3d)", ()
   proto.scrollIntoView ??= () => {};
   proto.hasPointerCapture ??= () => false;
   proto.releasePointerCapture ??= () => {};
+  // ProseMirror scrolls the selection into view after focus(); jsdom has no layout.
+  const range = Range.prototype as unknown as Record<string, unknown>;
+  range.getClientRects ??= () => [];
+  range.getBoundingClientRect ??= () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 });
+  proto.getClientRects ??= () => [];
 
   const p = (text: string) => ({ type: "paragraph", content: [{ type: "text", text }] });
   const sigDoc = (text: string) => ({ type: "doc", content: [p(text)] });
