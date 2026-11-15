@@ -1280,14 +1280,14 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     }
   }, [rpc]);
 
-  /** Undo: the send is removed and its draft comes back into the composer. */
+  /** Undo (or Edit): the send is removed and its draft comes back into the composer. */
   const undoSend = useCallback(
-    async (outboxId: string) => {
+    async (outboxId: string, tooLate = "Too late to undo") => {
       const toastId = sendToastId(outboxId);
       try {
         const { cancelled, draftId } = await rpc.call("outbox_cancel", { id: outboxId });
         if (!cancelled) {
-          toast.error("Too late to undo", { id: toastId });
+          toast.error(tooLate, { id: toastId });
           return;
         }
         toast.dismiss(toastId);
@@ -1374,8 +1374,12 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   /** An Outbox row's button (and the failed toast's Retry). */
   const outboxAction = useCallback(
     async (id: string, action: OutboxAction) => {
-      if (action === "undo" || action === "edit") {
+      if (action === "undo") {
         await undoSend(id);
+        return;
+      }
+      if (action === "edit") {
+        await undoSend(id, "This send can no longer be edited");
         return;
       }
       setOutboxPending((prev) => new Set(prev).add(id));
