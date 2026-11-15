@@ -87,8 +87,8 @@ out only when you press **Send** on its card in that agent's thread.
   It never marks anything else `\Deleted`. Details, the .eml and attachment
   downloads and every other fetch use `BODY.PEEK` and never mark mail read.
   Undo of Archive on Gmail adds the message back to the folder it came from
-  with UID COPY; nothing else uses COPY. Every other undo is an ordinary move
-  back.
+  with UID COPY, never into Trash or Spam (those get a move back); nothing
+  else uses COPY. Every other undo is an ordinary move back.
 - Agent tools `mail_search` and `mail_read` and the `mail` skill, off by
   default behind the `agentTools` setting, which also gates
   `bb makosh-mail accounts`, `search` and `read` inside agent threads. They
