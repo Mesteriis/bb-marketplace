@@ -58,10 +58,11 @@ All notable changes to Makosh Mail are recorded here. The format follows
   `d`, `t` or `a`. Letters follow the physical key. `c`, `r`, `a` and `f`
   compose, reply, reply all and forward; Cmd/Ctrl+Enter sends.
 - **Stop showing** on a message from a sender whose images are always shown.
-- An experimental **Mail** thread list for the BB sidebar (Settings →
-  Appearance → thread list): the merged Inbox of every account in place of
-  the chat list. A row opens its conversation on the Mail page, which also
-  opens a conversation from a `t/<accountId>/<threadId>` deep link.
+- While the Mail page is open, BB's sidebar shows the mail rail in place of
+  the chat list: New message, the account chooser, folders with unread
+  counts and the Outbox. The viewed folder is the page's route
+  (`v/all/<role>`, `v/<accountId>/<folder path>`), so back and forward follow
+  it; `t/<accountId>/<threadId>` opens a conversation.
 - **Compose**, **Reply**, **Reply all** and **Forward**, by the owner only:
   address chips with suggestions from stored mail, a rich-text body (TipTap)
   and attachments by picker, drag and drop or paste, up to 25 MB and 100

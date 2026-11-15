@@ -17,7 +17,8 @@ click or a key, write and send mail, and give one message to an agent.
 - Remote images stay hidden until **Show images** or **Always show from**.
 - **Hand to agent** and an `@` mention under **Mail** give an agent a
   message you picked.
-- Optionally, your Inbox in place of the sidebar's chats.
+- While the Mail page is open, BB's sidebar shows your accounts and folders
+  instead of chats.
 
 ## Writing and sending
 

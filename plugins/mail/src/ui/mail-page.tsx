@@ -1,6 +1,7 @@
-// The Mail page: header (account, search, sync), the folder rail, the
-// conversation list and the reading pane. Data and actions arrive through props; nothing here knows the
-// host, so the same page renders in BB and in any other shell.
+// The Mail page: header (search, sync), the conversation list and the reading
+// pane. The folder rail lives in the host's sidebar (mail-sidebar.tsx). Data
+// and actions arrive through props; nothing here knows the host, so the same
+// page renders in BB and in any other shell.
 import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import type {
   Account,
@@ -12,7 +13,6 @@ import type {
   MessageSummary,
   NewAccountInput,
   OutboxRow,
-  RoleCount,
   SpecialUse,
   StatusView,
   ThreadDetail,
@@ -22,13 +22,6 @@ import { archiveAllowedFrom, ROLE_NAMES, roleFolders } from "../core/actions.ts"
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { AccountForm, type AccountFormInitial, type AccountFormProps } from "./account-form.tsx";
 import { Composer, type ComposerPorts, type ComposeWarningKind } from "./composer.tsx";
@@ -43,16 +36,13 @@ import {
 } from "./empty-states.tsx";
 import {
   accountLabel,
-  FolderList,
-  FolderSelect,
-  UnifiedRail,
-  UnifiedSelect,
+  ALL_ACCOUNTS,
   viewPaths,
   type MailView,
   type RoleName,
 } from "./folder-list.tsx";
 import { MoveDialog } from "./move-dialog.tsx";
-import { outboxAttention, OutboxSection, type OutboxAction } from "./outbox.tsx";
+import { OutboxSection, type OutboxAction } from "./outbox.tsx";
 import { messageToHand, ReadingPane, type BodyState } from "./reading-pane.tsx";
 import {
   SelectionBar,
@@ -67,8 +57,7 @@ import { SmtpDialog, type SmtpResult, type SmtpSettingsInput } from "./smtp-dial
 import { useShortcuts, type GoTarget, type ShortcutCommand } from "./shortcuts.ts";
 import { formatListDate, SearchResultList, ThreadList } from "./thread-list.tsx";
 
-/** The account select's value for All accounts. */
-export const ALL_ACCOUNTS = "__all_accounts__";
+export { ALL_ACCOUNTS };
 
 export interface ThreadListState {
   threads: ThreadSummary[];
@@ -126,10 +115,6 @@ export interface MailPageProps {
   onSelectAccount: (choice: string) => void;
   /** The account's folders (every account's in All accounts); null while they load. */
   folders: Folder[] | null;
-  /** The merged roles with summed counts; filled in All accounts only. */
-  roles: RoleCount[];
-  /** Why the folders could not be loaded; null when they could. */
-  foldersError: string | null;
   /** What the list shows. */
   view: MailView;
   onSelectView: (view: MailView) => void;
@@ -194,6 +179,8 @@ export interface MailPageProps {
   onCloseSmtp: () => void;
   onTestSmtp: (input: SmtpSettingsInput) => Promise<SmtpResult>;
   onSaveSmtp: (input: SmtpSettingsInput) => Promise<SmtpResult>;
+  /** Changes when focus should come to the page (a pick in the host's sidebar). */
+  focusRequest?: number;
 }
 
 function PageFrame({ children }: { children: ReactNode }) {
@@ -446,27 +433,15 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     if (selectionEmpty || !props.actionPending) refocusIfLost();
   }, [selectionEmpty, props.actionPending]);
 
-  /**
-   * A value picked in the account or folder select: focus returns to the
-   * page instead of the select, so the hotkeys work without a click.
-   */
-  const picked = useRef(false);
-  const notePick = () => {
-    picked.current = true;
-    // The drawer layout (compact viewport) has no close-focus event.
-    setTimeout(() => {
-      if (!picked.current) return;
-      picked.current = false;
-      if (focusedId === null || !focusRowElement(focusedId)) focusRoot();
-    }, 150);
-  };
-  const selectCloseFocus = (event: Event) => {
-    if (!picked.current) return;
-    picked.current = false;
-    event.preventDefault();
+  // A folder or account picked in the sidebar: focus comes to the page, so
+  // the hotkeys work without a click.
+  const focusRequest = props.focusRequest ?? 0;
+  const handledFocusRequest = useRef(focusRequest);
+  useEffect(() => {
+    if (focusRequest === handledFocusRequest.current) return;
+    handledFocusRequest.current = focusRequest;
     if (focusedId === null || !focusRowElement(focusedId)) focusRoot();
-  };
-  const pickFocus: PickFocus = { notePick, onCloseAutoFocus: selectCloseFocus };
+  }, [focusRequest]);
 
   // Back to the list (u, Back, Mark unread, an action): focus returns to the cursor row.
   const wasOpen = useRef(threadOpen);
@@ -690,7 +665,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         <div className="flex min-h-0 flex-1 flex-col">{composerView}</div>
       ) : (
       <>
-      <MailHeader {...props} pickFocus={pickFocus} searchRef={searchRef} onShowShortcuts={() => {
+      <MailHeader {...props} searchRef={searchRef} onShowShortcuts={() => {
           rememberOpener();
           setSheetOpen(true);
         }}
@@ -726,39 +701,6 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         </div>
       ))}
       <div className="flex min-h-0 flex-1">
-        <nav
-          aria-label="Folders"
-          className="hidden min-h-0 w-48 shrink-0 flex-col overflow-hidden border-r border-border @4xl:flex @6xl:w-56"
-        >
-          <div className="flex shrink-0 flex-col gap-1.5 border-b border-border bg-background px-1.5 pb-1.5 pt-2">
-            <Button variant="outline" size="sm" className="w-full justify-start" onClick={props.onCompose}>
-              <Icon name="Pencil" fallback="Plus" aria-hidden />
-              New message
-            </Button>
-            <AccountChooser {...props} pickFocus={pickFocus} className="w-full max-w-none" />
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
-          {props.unified ? (
-            <UnifiedRail
-              roles={props.roles}
-              folders={props.folders ?? []}
-              accounts={status.accounts}
-              view={props.view}
-              onSelect={props.onSelectView}
-              error={props.foldersError}
-              sentAttention={outboxAttention(outboxShown)}
-            />
-          ) : props.account !== null ? (
-            <FolderList
-              folders={props.folders ?? []}
-              selectedPath={props.view.kind === "folder" ? props.view.path : ""}
-              onSelect={(path) => props.onSelectView({ kind: "folder", accountId: props.account!.id, path })}
-              error={props.foldersError}
-              sentAttention={outboxAttention(outboxShown)}
-            />
-          ) : null}
-          </div>
-        </nav>
         <section
           aria-label={model.title}
           className={cn(
@@ -971,50 +913,6 @@ function ListMessage({ text, role = "status" }: { text: string; role?: "status" 
   );
 }
 
-/** Returns focus to the page after a pick in the account or folder select. */
-interface PickFocus {
-  notePick: () => void;
-  onCloseAutoFocus: (event: Event) => void;
-}
-
-/** The account select (several accounts, with All accounts) or the account's name. */
-function AccountChooser(
-  props: MailPageProps & { status: StatusView; pickFocus: PickFocus; className?: string },
-) {
-  const { account, status, pickFocus } = props;
-  if (status.accounts.length > 1) {
-    return (
-      <Select
-        value={props.unified ? ALL_ACCOUNTS : (account?.id ?? ALL_ACCOUNTS)}
-        onValueChange={(value) => {
-          pickFocus.notePick();
-          props.onSelectAccount(value);
-        }}
-      >
-        <SelectTrigger aria-label="Account" className={cn("h-8 w-auto max-w-56", props.className)}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent onCloseAutoFocus={pickFocus.onCloseAutoFocus}>
-          <SelectItem value={ALL_ACCOUNTS}>All accounts</SelectItem>
-          {status.accounts.map((item) => (
-            <SelectItem key={item.id} value={item.id}>
-              {accountLabel(item)}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    );
-  }
-  const only = status.accounts[0];
-  return (
-    <span
-      className={cn("block max-w-56 truncate px-2 text-sm font-medium text-foreground", props.className)}
-    >
-      {only !== undefined ? accountLabel(only) : ""}
-    </span>
-  );
-}
-
 /** "Synced …" for the account, or the stalest of all accounts. */
 function syncLabel(accounts: readonly Account[], syncing: boolean): string {
   if (syncing) return "Syncing…";
@@ -1028,7 +926,6 @@ function MailHeader(
     status: StatusView;
     searchRef: RefObject<HTMLInputElement | null>;
     onShowShortcuts: () => void;
-    pickFocus: PickFocus;
   },
 ) {
   const [draft, setDraft] = useState(props.search.query);
@@ -1051,33 +948,6 @@ function MailHeader(
   const shown = props.unified ? props.status.accounts : props.account !== null ? [props.account] : [];
   return (
     <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
-      <div className="flex items-center gap-2 @4xl:hidden">
-        <AccountChooser {...props} />
-        {props.unified ? (
-          <UnifiedSelect
-            roles={props.roles}
-            folders={props.folders ?? []}
-            accounts={props.status.accounts}
-            view={props.view}
-            onSelect={(view) => {
-              props.pickFocus.notePick();
-              props.onSelectView(view);
-            }}
-            onCloseAutoFocus={props.pickFocus.onCloseAutoFocus}
-          />
-        ) : props.account !== null ? (
-          <FolderSelect
-            folders={props.folders ?? []}
-            selectedPath={props.view.kind === "folder" ? props.view.path : ""}
-            onSelect={(path) => {
-              props.pickFocus.notePick();
-              props.onSelectView({ kind: "folder", accountId: props.account!.id, path });
-            }}
-            onCloseAutoFocus={props.pickFocus.onCloseAutoFocus}
-          />
-        ) : null}
-      </div>
-
       <form role="search" onSubmit={submit} className="flex min-w-40 flex-1 items-center gap-1">
         <Input
           ref={props.searchRef}

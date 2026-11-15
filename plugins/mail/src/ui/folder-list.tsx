@@ -1,20 +1,13 @@
-// The folder rail: system folders first (the store's order), then the owner's
-// folders, with unread counts. Narrow pages get the same choice as a select in
-// the header instead.
+// The folder rail, drawn in BB's sidebar on the Mail page: system folders
+// first (the store's order), then the owner's folders, with unread counts.
 import { useId, useState } from "react";
 import type { Account, Folder, RoleCount, SpecialUse } from "../core/index.ts";
 import { ROLE_NAMES, roleFolders } from "../core/actions.ts";
 import { Icon } from "@/components/ui/icon";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+
+/** The account chooser's value for All accounts. */
+export const ALL_ACCOUNTS = "__all_accounts__";
 
 /** The path the thread list opens on when nothing else is chosen. */
 export const DEFAULT_FOLDER_PATH = "INBOX";
@@ -409,92 +402,5 @@ export function UnifiedRail({ roles, folders, accounts, view, onSelect, error, s
         );
       })}
     </>
-  );
-}
-
-/** Where focus goes after a value is picked; passed to the select's content. */
-export interface SelectFocusProps {
-  onCloseAutoFocus?: (event: Event) => void;
-}
-
-/** All accounts' rail as a select, for pages too narrow for the rail. */
-export function UnifiedSelect({
-  roles,
-  folders,
-  accounts,
-  view,
-  onSelect,
-  onCloseAutoFocus,
-}: Omit<UnifiedRailProps, "error"> & SelectFocusProps) {
-  const shownRoles = roles.filter((r): r is RoleCount & { role: RoleName } => r.role !== "all");
-  const views = new Map<string, MailView>();
-  for (const { role } of shownRoles) views.set(viewKey({ kind: "role", role }), { kind: "role", role });
-  const groups = accounts.map((account) => ({
-    account,
-    folders: ownFolders(folders, account.id).filter((f) => f.selectable),
-  }));
-  for (const { account, folders: own } of groups) {
-    for (const f of own) {
-      const item: MailView = { kind: "folder", accountId: account.id, path: f.path };
-      views.set(viewKey(item), item);
-    }
-  }
-  const label = (count: number, name: string) => (count > 0 ? `${name} (${count})` : name);
-  return (
-    <Select
-      value={viewKey(view)}
-      onValueChange={(value) => {
-        const next = views.get(value);
-        if (next !== undefined) onSelect(next);
-      }}
-    >
-      <SelectTrigger aria-label="Folder" className="h-8 w-auto max-w-48">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent onCloseAutoFocus={onCloseAutoFocus}>
-        {shownRoles.map(({ role, unreadCount }) => (
-          <SelectItem key={role} value={viewKey({ kind: "role", role })}>
-            {label(unreadCount, ROLE_NAMES[role])}
-          </SelectItem>
-        ))}
-        {groups.map(({ account, folders: own }) =>
-          own.length === 0 ? null : (
-            <SelectGroup key={account.id}>
-              <SelectLabel>{accountLabel(account)}</SelectLabel>
-              {own.map((f) => (
-                <SelectItem key={f.path} value={viewKey({ kind: "folder", accountId: account.id, path: f.path })}>
-                  {label(f.unreadCount, f.name)}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          ),
-        )}
-      </SelectContent>
-    </Select>
-  );
-}
-
-/** The same choice as a select, for pages too narrow for the rail. */
-export function FolderSelect({
-  folders,
-  selectedPath,
-  onSelect,
-  onCloseAutoFocus,
-}: FolderListProps & SelectFocusProps) {
-  const selectable = folders.filter((f) => f.selectable);
-  if (selectable.length === 0) return null;
-  return (
-    <Select value={selectedPath} onValueChange={onSelect}>
-      <SelectTrigger aria-label="Folder" className="h-8 w-auto max-w-48">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent onCloseAutoFocus={onCloseAutoFocus}>
-        {selectable.map((folder) => (
-          <SelectItem key={folder.path} value={folder.path}>
-            {folder.unreadCount > 0 ? `${folder.name} (${folder.unreadCount})` : folder.name}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
   );
 }

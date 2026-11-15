@@ -16,8 +16,9 @@ after a 10-second Undo window. Agents cannot send, draft or reply.
   (default 30): system folders (Inbox, Sent, Drafts, Spam, Trash, Archive)
   and your own folders. Gmail labels appear as folders; Gmail All Mail is
   synced, its Important and Starred folders are skipped.
-- A **Mail** page in the sidebar: a folder list with unread counts, thread
-  list, search, unread badge (Inbox mail of all accounts) and a reading pane
+- A **Mail** page in the sidebar: a folder list with unread counts (in BB's
+  sidebar while the page is open), thread list, search, unread badge (Inbox
+  mail of all accounts) and a reading pane
   that sanitizes HTML. A message Gmail keeps in several folders is counted
   and listed once.
 - **All accounts**, the default view when you have more than one account: a
@@ -172,17 +173,20 @@ stored only when both servers accept it.
 
 ## Mail in the sidebar
 
-The plugin also offers an experimental thread list for BB's sidebar (the
-`experimental_threadList` slot). To use it, open Settings → Appearance and
-choose **Mail** as the thread list. The sidebar then shows the merged Inbox of
-every account (newest first, 50 at a time, with **Load more**) instead of chat
-threads; BB's New thread button, search, navigation rows and footer stay.
-Clicking a conversation opens it on the Mail page and highlights it in the
-list; **Open Mail** opens the page itself. Choose BB's own list again to get
-chats back.
+While the Mail page is open, BB's sidebar shows the mail rail instead of the
+chat list (the panel's experimental `experimental_sidebar`): **New message**,
+the account chooser, the folders with unread counts (in All accounts the
+merged roles, then each account's folders in a group you can fold) and the
+**Outbox** while sends are pending. BB's navigation rail stays; other pages
+keep the chat list. There is nothing to turn on. The page itself shows the
+search bar, the conversation list and the reading pane or composer; on a
+phone-sized window the folders are in BB's sidebar drawer.
 
-The Mail page takes a deep link to a conversation as its route remainder:
-`t/<accountId>/<threadId>`, each id percent-encoded.
+The folder you view is the page's route remainder, so BB's back and forward
+walk it: `v/all/<role>` for a merged role (`inbox`, `sent`, `drafts`, `junk`,
+`trash`, `archive`) and `v/<accountId>/<folder path>` for one account's
+folder. `t/<accountId>/<threadId>` opens a conversation. Ids and paths are
+percent-encoded.
 
 ## Run it
 
