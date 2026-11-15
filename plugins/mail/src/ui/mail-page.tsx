@@ -5,11 +5,13 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefOb
 import type {
   Account,
   AttachmentMeta,
+  DraftView,
   Folder,
   MessageAction,
   MessageHeader,
   MessageSummary,
   NewAccountInput,
+  OutboxRow,
   RoleCount,
   SpecialUse,
   StatusView,
@@ -29,6 +31,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { AccountForm, type AccountFormInitial, type AccountFormProps } from "./account-form.tsx";
+import { Composer, type ComposerPorts, type ComposeWarningKind } from "./composer.tsx";
 import { DetailsPanel, type DetailsState } from "./details-panel.tsx";
 import {
   EmptyFolder,
@@ -49,7 +52,8 @@ import {
   type RoleName,
 } from "./folder-list.tsx";
 import { MoveDialog } from "./move-dialog.tsx";
-import { ReadingPane, type BodyState } from "./reading-pane.tsx";
+import { outboxAttention, OutboxSection, type OutboxAction } from "./outbox.tsx";
+import { messageToHand, ReadingPane, type BodyState } from "./reading-pane.tsx";
 import {
   SelectionBar,
   SelectionPanel,
@@ -59,6 +63,7 @@ import {
   type SelectionGroup,
 } from "./selection-bar.tsx";
 import { ShortcutSheet } from "./shortcut-sheet.tsx";
+import { SmtpDialog, type SmtpResult, type SmtpSettingsInput } from "./smtp-dialog.tsx";
 import { useShortcuts, type GoTarget, type ShortcutCommand } from "./shortcuts.ts";
 import { formatListDate, SearchResultList, ThreadList } from "./thread-list.tsx";
 
@@ -96,6 +101,18 @@ export interface ReadingState {
 
 /** null: the form is closed; otherwise what it opens with. */
 export type AccountFormRequest = { initial?: AccountFormInitial } | null;
+
+/** The open composer. */
+export interface ComposerState {
+  draft: DraftView;
+  warning: ComposeWarningKind;
+  /** Addresses compose_prepare left out of the recipients. */
+  dropped: string[];
+  /** The conversation a reply or forward came from: it docks under it in two columns. */
+  dockThreadId: string | null;
+}
+
+export type ComposeKind = "reply" | "reply_all" | "forward";
 
 export interface MailPageProps {
   /** null while the first load is in flight. */
@@ -153,6 +170,30 @@ export interface MailPageProps {
   onTestAccount: (input: NewAccountInput) => Promise<{ ok: boolean; reason: string | null }>;
   onSaveAccount: (input: NewAccountInput) => Promise<void>;
   ExternalLink: AccountFormProps["ExternalLink"];
+  /** The open composer, or null. */
+  composer: ComposerState | null;
+  composerPorts: ComposerPorts;
+  /** New message (c, the rail's New message). */
+  onCompose: () => void;
+  /** Reply, Reply all or Forward (toolbar, r, a, f). */
+  onReply: (kind: ComposeKind, message: MessageHeader) => void;
+  /** Continue a draft message in the composer. */
+  onEditDraft: (message: MessageHeader) => void;
+  /** Enter or o on a row of a Drafts folder: its newest draft opens in the composer. */
+  onEditDraftThread: (threadId: string, accountId: string) => void;
+  onCloseComposer: () => void;
+  onSent: (outbox: { outboxId: string; sendAfter: string }) => void;
+  /** Sends not done yet (every account). */
+  outbox: readonly OutboxRow[];
+  /** Outbox rows with an action in flight. */
+  outboxPending: ReadonlySet<string>;
+  onOutboxAction: (row: OutboxRow, action: OutboxAction) => void;
+  /** The account whose SMTP dialog is open, or null. */
+  smtpAccountId: string | null;
+  onOpenSmtp: (accountId: string) => void;
+  onCloseSmtp: () => void;
+  onTestSmtp: (input: SmtpSettingsInput) => Promise<SmtpResult>;
+  onSaveSmtp: (input: SmtpSettingsInput) => Promise<SmtpResult>;
 }
 
 function PageFrame({ children }: { children: ReactNode }) {
@@ -311,11 +352,21 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [moveTargets, setMoveTargets] = useState<string[] | null>(null);
+  const [composerFocused, setComposerFocused] = useState(false);
+  // A composer that closed while focused leaves no focus behind.
+  const composerId = props.composer?.draft.id ?? null;
+  useEffect(() => {
+    if (composerId === null) setComposerFocused(false);
+  }, [composerId]);
   const searching = search.query !== "";
   const selecting = selection.size > 0;
   const wide = useWideLayout(rootRef);
   const markers = accountMarkers(status.accounts);
   const marker = (accountId: string) => (props.unified ? (markers.get(accountId) ?? null) : null);
+  /** Ours (a server copy of a compose draft), or any message in a Drafts folder. */
+  const isDraft = (message: MessageHeader) =>
+    message.draftId !== null ||
+    model.foldersOf(message.accountId).find((f) => f.path === message.folder)?.specialUse === "drafts";
 
   /** The hotkeys listen on the page root: focus that fell out of it (to body) silences them. */
   const focusLost = () => {
@@ -535,8 +586,23 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       case "previous":
         return step(-1, repeat);
       case "open":
-        if (focusedId !== null && rowIds.includes(focusedId)) activateRow(focusedId);
+        if (focusedId === null || !rowIds.includes(focusedId)) return;
+        if (model.use === "drafts" && !searching && !selecting) {
+          const thread = list.threads.find((t) => t.id === focusedId);
+          if (thread !== undefined) return props.onEditDraftThread(thread.id, thread.accountId);
+        }
+        activateRow(focusedId);
         return;
+      case "compose":
+        return props.onCompose();
+      case "reply":
+      case "reply_all":
+      case "forward": {
+        if (!threadOpen || selecting || reading.detail === null) return;
+        const message = messageToHand(reading.detail.messages, reading.expandedIds);
+        if (message !== null && !isDraft(message)) props.onReply(command.kind, message);
+        return;
+      }
       case "back":
         if (threadOpen) props.onCloseThread();
         return;
@@ -582,6 +648,28 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     else props.onThreadsAction([...selection], action);
   };
 
+  const outboxShown = props.outbox.filter(
+    (row) => props.unified || row.accountId === props.account?.id,
+  );
+  const composer = props.composer;
+  const composerView =
+    composer !== null ? (
+      <Composer
+        key={composer.draft.id}
+        draft={composer.draft}
+        accounts={status.accounts}
+        ports={props.composerPorts}
+        warning={composer.warning}
+        dropped={composer.dropped}
+        layout={wide ? "panel" : "page"}
+        onClose={props.onCloseComposer}
+        onSent={props.onSent}
+        onOpenSmtpSettings={props.onOpenSmtp}
+        onFocusWithin={setComposerFocused}
+      />
+    ) : null;
+  const docked = composer !== null && composer.dockThreadId !== null && composer.dockThreadId === reading.threadId;
+
   const moveAccounts = new Set(
     (moveTargets ?? []).map(accountOfThread).filter((id): id is string => id !== null),
   );
@@ -598,6 +686,10 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       onKeyDown={onKeyDown}
       className="@container flex h-full min-h-0 flex-1 flex-col outline-none"
     >
+      {composerView !== null && !wide ? (
+        <div className="flex min-h-0 flex-1 flex-col">{composerView}</div>
+      ) : (
+      <>
       <MailHeader {...props} pickFocus={pickFocus} searchRef={searchRef} onShowShortcuts={() => {
           rememberOpener();
           setSheetOpen(true);
@@ -638,7 +730,11 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           aria-label="Folders"
           className="hidden min-h-0 w-48 shrink-0 flex-col overflow-hidden border-r border-border @4xl:flex @6xl:w-56"
         >
-          <div className="shrink-0 border-b border-border bg-background px-1.5 pb-1.5 pt-2">
+          <div className="flex shrink-0 flex-col gap-1.5 border-b border-border bg-background px-1.5 pb-1.5 pt-2">
+            <Button variant="outline" size="sm" className="w-full justify-start" onClick={props.onCompose}>
+              <Icon name="Pencil" fallback="Plus" aria-hidden />
+              New message
+            </Button>
             <AccountChooser {...props} pickFocus={pickFocus} className="w-full max-w-none" />
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
@@ -650,6 +746,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               view={props.view}
               onSelect={props.onSelectView}
               error={props.foldersError}
+              sentAttention={outboxAttention(outboxShown)}
             />
           ) : props.account !== null ? (
             <FolderList
@@ -657,6 +754,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               selectedPath={props.view.kind === "folder" ? props.view.path : ""}
               onSelect={(path) => props.onSelectView({ kind: "folder", accountId: props.account!.id, path })}
               error={props.foldersError}
+              sentAttention={outboxAttention(outboxShown)}
             />
           ) : null}
           </div>
@@ -679,6 +777,14 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               }
             />
           ) : null}
+          {model.use === "sent" && !searching ? (
+            <OutboxSection
+              rows={outboxShown}
+              onAction={props.onOutboxAction}
+              pending={props.outboxPending}
+              marker={marker}
+            />
+          ) : null}
           <ListColumn
             {...props}
             focusedId={focusedId}
@@ -698,7 +804,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
             threadOpen && !selecting ? "flex" : "hidden",
           )}
         >
-          {selecting && wide ? (
+          {composerView !== null && !docked ? (
+            <div className="flex min-h-[28rem] flex-1 flex-col p-3">{composerView}</div>
+          ) : selecting && wide && composerView === null ? (
             <SelectionPanel
               count={selection.size}
               perAccount={perAccount}
@@ -707,6 +815,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               pending={props.actionPending}
             />
           ) : threadOpen ? (
+            <>
             <ReadingPane
               detail={reading.detail}
               loading={reading.loading}
@@ -741,12 +850,20 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               onShowImages={props.onShowImages}
               onAlwaysShowImages={props.onAlwaysShowImages}
               onStopImages={props.onStopImages}
+              onCompose={props.onReply}
+              isDraft={isDraft}
+              onEditDraft={props.onEditDraft}
+              hideToolbar={docked && composerFocused}
             />
+            {docked ? <div className="flex min-h-[24rem] flex-col px-4 pb-6">{composerView}</div> : null}
+            </>
           ) : (
             <NothingSelected />
           )}
         </section>
       </div>
+      </>
+      )}
       <MoveDialog
         open={moveTargets !== null}
         onOpenChange={(open) => {
@@ -769,6 +886,12 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         onCopy={props.onCopy}
         onCloseAutoFocus={restoreFocus}
         onAfterCloseAutoFocus={afterClose}
+      />
+      <SmtpDialog
+        account={status.accounts.find((a) => a.id === props.smtpAccountId) ?? null}
+        onClose={props.onCloseSmtp}
+        onTest={props.onTestSmtp}
+        onSave={props.onSaveSmtp}
       />
       <ShortcutSheet open={sheetOpen} onOpenChange={setSheetOpen} onCloseAutoFocus={restoreFocus}
         onAfterCloseAutoFocus={afterClose} />
@@ -990,6 +1113,15 @@ function MailHeader(
         onClick={props.onShowShortcuts}
       >
         <Icon name="Keyboard" fallback="Info" aria-hidden />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label="New message"
+        className="@4xl:hidden"
+        onClick={props.onCompose}
+      >
+        <Icon name="Pencil" fallback="Plus" aria-hidden />
       </Button>
       <Button
         variant="ghost"

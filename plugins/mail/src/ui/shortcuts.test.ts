@@ -44,9 +44,37 @@ describe("matchShortcut", () => {
     expect(matchShortcut(key({ key: "п", code: "KeyG" }), false)).toEqual({ kind: "g" });
     expect(matchShortcut(key({ key: "ш", code: "KeyI" }), true)).toEqual({ kind: "go", target: "inbox" });
     expect(matchShortcut(key({ key: "a", code: "KeyA" }), true)).toEqual({ kind: "go", target: "all" });
-    // Without a g first, `a` is reserved for Reply all and does nothing yet.
-    expect(matchShortcut(key({ key: "a", code: "KeyA" }), false)).toBeNull();
-    expect(matchShortcut(key({ key: "r", code: "KeyR" }), false)).toBeNull();
+    // Without a g first, `a` is Reply all.
+    expect(matchShortcut(key({ key: "a", code: "KeyA" }), false)).toEqual({ kind: "reply_all" });
+  });
+
+  it("matches c, r, a and f by the physical key on a Cyrillic layout", () => {
+    expect(matchShortcut(key({ key: "с", code: "KeyC" }), false)).toEqual({ kind: "compose" });
+    expect(matchShortcut(key({ key: "к", code: "KeyR" }), false)).toEqual({ kind: "reply" });
+    expect(matchShortcut(key({ key: "ф", code: "KeyA" }), false)).toEqual({ kind: "reply_all" });
+    expect(matchShortcut(key({ key: "а", code: "KeyF" }), false)).toEqual({ kind: "forward" });
+    // A layout that types a Latin letter on another key does not move the binding.
+    expect(matchShortcut(key({ key: "c", code: "KeyX" }), false)).toEqual({ kind: "select" });
+  });
+
+  it("ignores c, r, a and f while typing, in the editor and in the composer", () => {
+    const input = document.createElement("input");
+    const editor = document.createElement("div");
+    editor.setAttribute("contenteditable", "true");
+    const paragraph = document.createElement("p");
+    editor.append(paragraph);
+    const composer = document.createElement("section");
+    composer.setAttribute("data-mail-composer", "");
+    const toolButton = document.createElement("button");
+    composer.append(toolButton);
+    document.body.append(editor, composer);
+    for (const target of [input, paragraph, toolButton]) {
+      for (const code of ["KeyC", "KeyR", "KeyA", "KeyF", "KeyE"]) {
+        expect(matchShortcut(key({ key: "x", code, target }), false)).toBeNull();
+      }
+    }
+    editor.remove();
+    composer.remove();
   });
 
   it("ignores Ctrl, Alt and Meta, and IME composition", () => {

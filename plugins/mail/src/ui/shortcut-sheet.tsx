@@ -1,4 +1,4 @@
-// The `?` sheet: every Mail hotkey, the ones for writing mail marked "soon".
+// The `?` sheet: every Mail hotkey; an entry reserved for later is marked "soon".
 import {
   Dialog,
   DialogContent,

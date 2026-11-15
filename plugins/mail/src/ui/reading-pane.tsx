@@ -61,6 +61,13 @@ export interface ReadingPaneProps {
   onShowImages: (messageId: string) => void;
   onAlwaysShowImages: (message: MessageHeader) => void;
   onStopImages: (message: MessageHeader) => void;
+  /** Reply, Reply all or Forward to a message. */
+  onCompose: (kind: "reply" | "reply_all" | "forward", message: MessageHeader) => void;
+  /** Whether a message is a draft (ours, or in a Drafts folder): it gets Edit draft. */
+  isDraft: (message: MessageHeader) => boolean;
+  onEditDraft: (message: MessageHeader) => void;
+  /** The composer under the conversation has focus: its toolbar is the one shown. */
+  hideToolbar?: boolean;
 }
 
 interface ToolbarAction {
@@ -192,6 +199,7 @@ function MessageItem({
   onDetails,
   onDownloadEml,
   onDownloadAttachment,
+  onEditDraft,
 }: {
   message: MessageHeader;
   expanded: boolean;
@@ -205,6 +213,8 @@ function MessageItem({
   onDetails: () => void;
   onDownloadEml: () => void;
   onDownloadAttachment: (attachment: AttachmentMeta) => void;
+  /** Set for a draft: continue it in the composer. */
+  onEditDraft: (() => void) | null;
 }) {
   const sender = addressLabel(message.from);
   const senderAddress = message.from.address.trim() !== "" ? message.from.address : null;
@@ -302,6 +312,12 @@ function MessageItem({
             </details>
           ) : null}
           <div className="flex flex-wrap items-center gap-1">
+            {onEditDraft !== null ? (
+              <Button variant="outline" size="sm" className="h-7 px-2" onClick={onEditDraft}>
+                <Icon name="Pencil" fallback="Mail" aria-hidden />
+                Edit draft
+              </Button>
+            ) : null}
             <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onDetails}>
               <Icon name="Info" fallback="Folder" aria-hidden />
               Details
@@ -317,8 +333,8 @@ function MessageItem({
   );
 }
 
-/** The message Hand to agent gives: the newest one open, else the newest. */
-function messageToHand(messages: MessageHeader[], expandedIds: ReadonlySet<string>) {
+/** The message Hand to agent (and Reply, r, a, f) takes: the newest one open, else the newest. */
+export function messageToHand(messages: MessageHeader[], expandedIds: ReadonlySet<string>) {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (expandedIds.has(messages[i]!.id)) return messages[i]!;
   }
@@ -354,14 +370,38 @@ export function ReadingPane(props: ReadingPaneProps) {
   const { thread, messages } = detail;
   const inFolder = messages.some(props.inView);
   const handed = messageToHand(messages, expandedIds);
+  const handedDraft = handed !== null && props.isDraft(handed);
   return (
     <div className="box-border flex w-full min-w-0 flex-col gap-3 px-4 pb-6 pt-2">
+      {props.hideToolbar !== true ? (
       <div
         role="toolbar"
         aria-label="Conversation actions"
         className="flex flex-wrap items-center gap-1 border-b border-border pb-2"
       >
         {back}
+        {handed !== null && handedDraft ? (
+          <Button variant="ghost" size="sm" onClick={() => props.onEditDraft(handed)}>
+            <Icon name="Pencil" fallback="Mail" aria-hidden />
+            Edit draft
+          </Button>
+        ) : null}
+        {handed !== null && !handedDraft ? (
+          <>
+            <Button variant="ghost" size="sm" onClick={() => props.onCompose("reply", handed)}>
+              <Icon name="Reply" fallback="ArrowLeft" aria-hidden />
+              Reply
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => props.onCompose("reply_all", handed)}>
+              <Icon name="ReplyAll" fallback="ArrowLeft" aria-hidden />
+              Reply all
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => props.onCompose("forward", handed)}>
+              <Icon name="Forward" fallback="Send" aria-hidden />
+              Forward
+            </Button>
+          </>
+        ) : null}
         {inFolder
           ? actionsFor(folderUse, archiveAllowed).map(({ action, label, icon }) => (
               <Button
@@ -396,6 +436,7 @@ export function ReadingPane(props: ReadingPaneProps) {
           </Button>
         ) : null}
       </div>
+      ) : null}
       <div className="flex flex-col gap-1">
         <h2 className="text-lg font-semibold text-foreground">
           {subjectOrPlaceholder(thread.subject)}
@@ -426,6 +467,7 @@ export function ReadingPane(props: ReadingPaneProps) {
             onDetails={() => props.onDetails(message)}
             onDownloadEml={() => props.onDownloadEml(message)}
             onDownloadAttachment={(attachment) => props.onDownloadAttachment(message, attachment)}
+            onEditDraft={props.isDraft(message) ? () => props.onEditDraft(message) : null}
           />
         );
       })}

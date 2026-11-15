@@ -22,6 +22,10 @@ export type ShortcutCommand =
   | { kind: "move" }
   | { kind: "search" }
   | { kind: "sheet" }
+  | { kind: "compose" }
+  | { kind: "reply" }
+  | { kind: "reply_all" }
+  | { kind: "forward" }
   | { kind: "go"; target: GoTarget };
 
 /** How long `g` waits for its second key. */
@@ -47,7 +51,10 @@ type ElementLike = {
   closest?: (selector: string) => unknown;
 };
 
-/** Typing in a field, or inside a dialog or a select's list, is never a hotkey. */
+/**
+ * Typing in a field, or anything inside the composer, a dialog or a select's
+ * list, is never a hotkey.
+ */
 export function isTypingTarget(target: EventTarget | null): boolean {
   const element = target as ElementLike | null;
   if (element === null || typeof element.closest !== "function") return false;
@@ -56,7 +63,7 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   if (element.isContentEditable === true) return true;
   return (
     element.closest(
-      '[contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="alertdialog"], [role="listbox"], [role="option"], [role="combobox"], [role="menu"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="textbox"]',
+      '[contenteditable]:not([contenteditable="false"]), [data-mail-composer], [role="dialog"], [role="alertdialog"], [role="listbox"], [role="option"], [role="combobox"], [role="menu"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="textbox"]',
     ) != null
   );
 }
@@ -137,6 +144,14 @@ function matchKey(event: KeyLike, afterG: boolean): KeyMatch {
       return { kind: "flag" };
     case "KeyV":
       return { kind: "move" };
+    case "KeyC":
+      return { kind: "compose" };
+    case "KeyR":
+      return { kind: "reply" };
+    case "KeyA":
+      return { kind: "reply_all" };
+    case "KeyF":
+      return { kind: "forward" };
     case "KeyG":
       return { kind: "g" };
     default:
@@ -185,10 +200,12 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
   {
     title: "Writing",
     entries: [
-      { keys: ["c"], label: "Compose", soon: true },
-      { keys: ["r"], label: "Reply", soon: true },
-      { keys: ["a"], label: "Reply all", soon: true },
-      { keys: ["f"], label: "Forward", soon: true },
+      { keys: ["c"], label: "Compose" },
+      { keys: ["r"], label: "Reply" },
+      { keys: ["a"], label: "Reply all" },
+      { keys: ["f"], label: "Forward" },
+      { keys: ["Cmd/Ctrl", "Enter"], label: "Send (in the composer)" },
+      { keys: ["Esc"], label: "Close the composer" },
     ],
   },
 ];
