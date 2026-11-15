@@ -17,8 +17,15 @@
 //
 // With a write queue, each account's sync runs through it, so a round never
 // overlaps that account's APPEND, expunge or SMTP send (resolution 7).
+//
+// After an ok round the same queue task backfills bulk marks of mail synced
+// before the mark existed (backfillBulk, at most BACKFILL_BUDGET rows per
+// account and round), so it never overlaps sync or SMTP either and finishes
+// over a few rounds. It logs counts only.
 import {
+  backfillBulk,
   syncAccount,
+  type BackfillCursors,
   type AccountWriteQueue,
   type ChangeNotifier,
   type MailStore,
@@ -120,6 +127,8 @@ export function createSyncLoop(
 
   async function start(signal: AbortSignal): Promise<void> {
     const guarded = guardAfterAbort(deps, signal);
+    /** Where each folder's backfill goes on below; for the life of this loop. */
+    const cursors: BackfillCursors = new Map();
     const aborted = new Promise<void>((resolve) => {
       if (signal.aborted) resolve();
       else signal.addEventListener("abort", () => resolve(), { once: true });
@@ -155,6 +164,15 @@ export function createSyncLoop(
             ? `sync ${accountId}: ok, fetched ${outcome.fetched}, removed ${outcome.removed}, marked read ${outcome.pushedSeen}, flags ${outcome.pushedFlags}`
             : `sync ${accountId}: ${outcome.authFailed ? "authentication failed" : "error"}`,
         );
+        if (outcome.status !== "ok" || signal.aborted) return;
+        const filled = await backfillBulk(guarded, accountId, { cursors, signal });
+        if (!signal.aborted && (filled.folders > 0 || filled.failed > 0 || filled.skipped > 0)) {
+          log(
+            `backfill ${accountId}: marked ${filled.marked}, not on the server ${filled.unanswered}` +
+              (filled.skipped > 0 ? `, folders renumbered ${filled.skipped}` : "") +
+              (filled.failed > 0 ? `, failed ${filled.failed}` : ""),
+          );
+        }
       } catch {
         if (!signal.aborted) log(`sync ${accountId}: failed unexpectedly`);
       }

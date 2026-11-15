@@ -66,6 +66,12 @@ export interface FolderSession {
   searchSince(date: Date): Promise<number[]>;
   uidsAfter(uid: number): Promise<number[]>;
   fetchMessages(uids: number[]): Promise<FetchedMessage[]>;
+  /**
+   * The raw HEADER.FIELDS block of LIST_HEADER_FIELDS for each uid the server
+   * answers for (BODY.PEEK, by UID: never \Seen, no body); a uid gone from
+   * the folder is simply missing.
+   */
+  fetchListHeaders(uids: number[]): Promise<{ uid: number; block: Uint8Array }[]>;
   fetchFlags(
     uids: number[],
   ): Promise<{ uid: number; seen: boolean; flagged: boolean; gmMsgId: string | null }[]>;
@@ -233,6 +239,22 @@ export interface MailStore {
     flags: { uid: number; seen: boolean; flagged: boolean; gmMsgId?: string | null }[],
   ): number;
   deleteByUids(accountId: string, folder: string, uids: number[]): number;
+  /**
+   * Attached rows of the folder whose bulk mark is unknown (NULL), highest
+   * uid first, only uids below `belowUid` when given, at most `limit`.
+   */
+  bulkUnknown(
+    accountId: string,
+    folder: string,
+    belowUid: number | null,
+    limit: number,
+  ): { uid: number; fromAddress: string }[];
+  /**
+   * Writes bulk marks by uid, only where the mark is still NULL and only while
+   * the folder's stored UIDVALIDITY equals `uidValidity`; returns how many
+   * rows changed. A mark sync set is never overwritten.
+   */
+  fillBulk(accountId: string, folder: string, uidValidity: number, marks: { uid: number; bulk: boolean }[]): number;
   /**
    * Records an owner-asked \Seen / \Flagged change; a field absent from
    * `change` is left alone. Unknown ids are skipped. The change reaches every

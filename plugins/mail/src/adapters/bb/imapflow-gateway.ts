@@ -1,7 +1,8 @@
 // ImapGateway on imapflow. TLS only (secure: true whatever the port, never
 // STARTTLS or plaintext), one folder per session, every body fetch is
-// BODY.PEEK (imapflow fetches `source` with PEEK, and `download` of the whole
-// message fetches `source` in chunks), and the only writes are \Seen on
+// BODY.PEEK (imapflow fetches `source` with PEEK, `headers` with
+// BODY.PEEK[HEADER.FIELDS (...)], and `download` of the whole message fetches
+// `source` in chunks), and the only writes are \Seen on
 // owner-opened mail (markSeen), owner-clicked or hotkeyed \Seen / \Flagged
 // add/remove (setFlags), owner-clicked moves (moveMessages), and for slice 3b
 // APPEND of the owner's drafts and Sent copies (appendMessage) and the UID
@@ -21,6 +22,7 @@ import { normalizeMessageId } from "../../core/headers.ts";
 import type { Address, Attachment, Email, RawEmail } from "postal-mime";
 import {
   ImapAuthError,
+  LIST_HEADER_FIELDS,
   capInlineParts,
   type AttachmentMeta,
   type BulkHeaders,
@@ -54,6 +56,13 @@ const MESSAGE_QUERY: FetchQueryObject = {
 };
 
 const FLAGS_QUERY: FetchQueryObject = { uid: true, flags: true, emailId: true };
+
+/**
+ * The bulk backfill: imapflow 2.11 sends `headers: [...]` as
+ * BODY.PEEK[HEADER.FIELDS (...)] (never \Seen, no body) and returns the
+ * section as `headers`, a Buffer.
+ */
+export const LIST_HEADERS_QUERY: FetchQueryObject = { uid: true, headers: [...LIST_HEADER_FIELDS] };
 
 /** What the expunge guard and the Message-ID search compare: no body, never \Seen. */
 const GUARD_QUERY: FetchQueryObject = { uid: true, envelope: true, size: true };
@@ -208,6 +217,16 @@ export function createSession(
         messages.push(toFetchedMessage(message, parsed));
       }
       return messages;
+    }),
+
+    fetchListHeaders: guarded(async (uids: number[]) => {
+      if (uids.length === 0) return [];
+      const found: { uid: number; block: Uint8Array }[] = [];
+      for await (const message of client.fetch(uids, LIST_HEADERS_QUERY, { uid: true })) {
+        if (!message.headers) continue;
+        found.push({ uid: message.uid, block: new Uint8Array(message.headers) });
+      }
+      return found;
     }),
 
     fetchFlags: guarded(async (uids: number[]) => {

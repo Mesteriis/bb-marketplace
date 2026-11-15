@@ -1353,6 +1353,33 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
+    bulkUnknown(accountId, folder, belowUid, limit) {
+      if (limit <= 0) return [];
+      return db
+        .prepare<[string, string, number | null, number | null, number], { uid: number; fromAddress: string }>(
+          `SELECT uid, from_address AS fromAddress FROM messages
+           WHERE account_id = ? AND folder = ? AND uid IS NOT NULL AND bulk IS NULL AND (? IS NULL OR uid < ?)
+           ORDER BY uid DESC LIMIT ?`,
+        )
+        .all(accountId, folder, belowUid, belowUid, limit);
+    },
+
+    fillBulk(accountId, folder, uidValidity, marks) {
+      if (marks.length === 0) return 0;
+      return atomic(() => {
+        const update = db.prepare<[number, string, string, number, string, string, number]>(
+          `UPDATE messages SET bulk = ?
+           WHERE account_id = ? AND folder = ? AND uid = ? AND bulk IS NULL
+             AND EXISTS (SELECT 1 FROM sync_state WHERE account_id = ? AND folder = ? AND uid_validity = ?)`,
+        );
+        let changed = 0;
+        for (const mark of marks) {
+          changed += update.run(mark.bulk ? 1 : 0, accountId, folder, mark.uid, accountId, folder, uidValidity).changes;
+        }
+        return changed;
+      });
+    },
+
     setDesired(messageIds, change) {
       return atomic(() => {
         const find = db.prepare<[string], { account_id: string; dedup_key: string }>(

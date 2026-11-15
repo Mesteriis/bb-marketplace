@@ -2765,3 +2765,71 @@ describe("bulk mark (SQLite)", () => {
     expect(createSqliteStore(old).contacts("accounting", 5).map((c) => c.address)).toEqual(["anna@example.net"]);
   });
 });
+
+describe.each(storeKinds)("bulk backfill store methods (%s)", (_kind, make) => {
+  let s: MailStore;
+  const STATE = { uidValidity: 7, lastUid: 9, syncedSince: EPOCH };
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Archive", "archive")]);
+    s.saveSyncState("acc_1", INBOX, STATE);
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1),
+      makeFetchedMessage(2, { bulkHeaders: PERSONAL_HEADERS }),
+      makeFetchedMessage(3, { from: { name: null, address: "no-reply@example.net" } }),
+      makeFetchedMessage(4),
+      makeFetchedMessage(5, { bulkHeaders: LIST_HEADERS }),
+    ]);
+    s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(1)]);
+  });
+
+  it("bulkUnknown lists attached NULL rows of one folder, highest uid first, below the cursor, at most limit", () => {
+    expect(s.bulkUnknown("acc_1", INBOX, null, 10)).toEqual([
+      { uid: 4, fromAddress: "sender@example.org" },
+      { uid: 3, fromAddress: "no-reply@example.net" },
+      { uid: 1, fromAddress: "sender@example.org" },
+    ]);
+    expect(s.bulkUnknown("acc_1", INBOX, null, 2).map((r) => r.uid)).toEqual([4, 3]);
+    expect(s.bulkUnknown("acc_1", INBOX, 3, 10).map((r) => r.uid)).toEqual([1]);
+    expect(s.bulkUnknown("acc_1", INBOX, null, 0)).toEqual([]);
+    expect(s.bulkUnknown("acc_2", INBOX, null, 10)).toEqual([]);
+    s.beginFolderReset("acc_1", INBOX);
+    expect(s.bulkUnknown("acc_1", INBOX, null, 10)).toEqual([]);
+  });
+
+  it("fillBulk writes only NULL marks, only while the folder's UIDVALIDITY matches", () => {
+    expect(
+      s.fillBulk("acc_1", INBOX, 7, [
+        { uid: 4, bulk: true },
+        { uid: 2, bulk: true },
+        { uid: 5, bulk: false },
+        { uid: 99, bulk: true },
+      ]),
+    ).toBe(1);
+    expect(s.bulkUnknown("acc_1", INBOX, null, 10).map((r) => r.uid)).toEqual([3, 1]);
+    expect(s.fillBulk("acc_1", INBOX, 8, [{ uid: 3, bulk: true }])).toBe(0);
+    expect(s.fillBulk("acc_1", "Archive", 7, [{ uid: 1, bulk: true }])).toBe(0);
+    expect(s.fillBulk("acc_1", INBOX, 7, [])).toBe(0);
+    expect(s.bulkUnknown("acc_1", INBOX, null, 10).map((r) => r.uid)).toEqual([3, 1]);
+    s.fillBulk("acc_1", INBOX, 7, [{ uid: 3, bulk: false }, { uid: 1, bulk: true }]);
+    expect(s.bulkUnknown("acc_1", INBOX, null, 10)).toEqual([]);
+  });
+});
+
+describe("bulk backfill (SQLite)", () => {
+  it("fillBulk stores 1 and 0 and leaves sync's marks alone", () => {
+    store.saveSyncState("acc_1", INBOX, { uidValidity: 7, lastUid: 3, syncedSince: EPOCH });
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1),
+      makeFetchedMessage(2),
+      makeFetchedMessage(3, { bulkHeaders: LIST_HEADERS }),
+    ]);
+    expect(store.fillBulk("acc_1", INBOX, 7, [{ uid: 1, bulk: true }, { uid: 2, bulk: false }, { uid: 3, bulk: false }])).toBe(2);
+    expect(db.prepare("SELECT uid, bulk FROM messages ORDER BY uid").all()).toEqual([
+      { uid: 1, bulk: 1 },
+      { uid: 2, bulk: 0 },
+      { uid: 3, bulk: 1 },
+    ]);
+  });
+});
