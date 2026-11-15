@@ -87,6 +87,7 @@ function Row({
     <li
       className={cn(
         "group flex items-start border-b border-border transition-colors hover:bg-state-hover",
+        focused && "bg-state-hover",
         (selected || check?.checked) && "bg-state-active hover:bg-state-active",
       )}
     >
@@ -109,9 +110,8 @@ function Row({
         onClick={onSelect}
         aria-current={selected ? "true" : undefined}
         className={cn(
-          "flex min-w-0 flex-1 flex-col gap-0.5 py-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+          "flex min-w-0 flex-1 flex-col gap-0.5 py-2 pr-1 text-left outline-none",
           check === undefined ? "pl-3" : "pl-2",
-          focused && "ring-1 ring-inset ring-ring",
         )}
       >
         <span className="flex min-w-0 items-baseline gap-2">
