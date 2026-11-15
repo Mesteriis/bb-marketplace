@@ -362,12 +362,11 @@ type RpcDeps = {
   tickets: TicketBook<DownloadRequest>;
 };
 
-/** What a download ticket stands for; resolved again from the store when used. */
+/** What a download ticket stands for; the name and bytes are resolved again when it is used. */
 type DownloadRequest = {
   kind: "attachment" | "eml";
   messageId: string;
   partId: string | null;
-  fileName: string;
 };
 
 /** The route's mount point as the page requests it (bb-plugin-sdk.d.ts:20466-20479). */
@@ -600,7 +599,9 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return runMessageAction(deps, input);
       },
       // Details panel: read-only session, BODY.PEEK, never \Seen; nothing is logged.
-      message_source: async ({ messageId }) => {
+      // Owner only: it logs in to the server and shows headers no other RPC gives.
+      message_source: async ({ messageId }, context) => {
+        refusePluginCaller(context);
         let fetched: Awaited<ReturnType<typeof fetchRawGuarded>>;
         try {
           fetched = await fetchRawGuarded(deps.rawDeps, messageId);
@@ -609,8 +610,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         }
         const { ref, account, raw } = fetched;
         return {
-          headers: readHeaders(raw),
-          structure: describeStructure(raw),
+          ...renderSource(raw),
           size: raw.byteLength,
           uid: ref.uid,
           folder: ref.folder,
@@ -634,7 +634,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         } else {
           fileName = emlFileName(header.date, header.subject);
         }
-        const ticket = deps.tickets.mint({ kind, messageId, partId: partId ?? null, fileName });
+        const ticket = deps.tickets.mint({ kind, messageId, partId: partId ?? null });
         return { url: `${downloadUrl(bb.pluginId)}?t=${ticket}`, fileName };
       },
       images_allow_sender: ({ messageId }, context) => {
@@ -654,6 +654,27 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     },
     { experimental_discoverable: false },
   );
+}
+
+/**
+ * Headers and MIME structure of a raw message. Either rendering may fail on
+ * hostile input; the panel then gets what did render (an unrendered part is
+ * empty, its place marked) instead of an internal error.
+ */
+function renderSource(raw: Uint8Array): { headers: [string, string][]; structure: string[] } {
+  let headers: [string, string][];
+  let structure: string[];
+  try {
+    headers = readHeaders(raw);
+  } catch {
+    headers = [["…", "headers could not be read"]];
+  }
+  try {
+    structure = describeStructure(raw);
+  } catch {
+    structure = [];
+  }
+  return { headers, structure };
 }
 
 function textResponse(status: number, text: string): Response {
@@ -691,15 +712,16 @@ function registerDownloadRoute(
       if (request === null) return new Response(null, { status: 404, headers: BASE_HEADERS });
       try {
         const { raw } = await fetchRawGuarded(rawDeps, request.messageId);
+        const header = store.getMessage(request.messageId);
+        if (header === null) throw new RawRefusal("conflict", STALE_MESSAGE);
         if (request.kind === "eml") {
+          const fileName = emlFileName(header.date, header.subject);
           return new Response(new Uint8Array(raw), {
             status: 200,
-            headers: downloadHeaders(request.fileName, "message/rfc822", raw.byteLength),
+            headers: downloadHeaders(fileName, "message/rfc822", raw.byteLength, "message"),
           });
         }
-        const stored = store
-          .getMessage(request.messageId)
-          ?.attachments.find((a) => a.partId === request.partId);
+        const stored = header.attachments.find((a) => a.partId === request.partId);
         if (stored === undefined) throw new RawRefusal("conflict", STALE_MESSAGE);
         const parsed = await parseMail(raw);
         const part = parsed.attachments[Number(request.partId) - 1];
@@ -715,7 +737,11 @@ function registerDownloadRoute(
         }
         return new Response(new Uint8Array(bytes), {
           status: 200,
-          headers: downloadHeaders(request.fileName, safeContentType(stored.mimeType), bytes.byteLength),
+          headers: downloadHeaders(
+            sanitizeFileName(stored.filename, "attachment"),
+            safeContentType(stored.mimeType),
+            bytes.byteLength,
+          ),
         });
       } catch (error) {
         if (error instanceof RawRefusal) return textResponse(409, error.message);

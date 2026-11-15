@@ -71,7 +71,7 @@ describe("sanitizeFileName", () => {
   });
 
   it("removes control and bidi characters and collapses whitespace", () => {
-    expect(sanitizeFileName("a\r\nContent-Type: text.txt", "attachment")).toBe("a Content-Type: text.txt");
+    expect(sanitizeFileName("a\r\nContent-Type: text.txt", "attachment")).toBe("a Content-Type text.txt");
     expect(sanitizeFileName("invoice‮fdp.exe", "attachment")).toBe("invoicefdp.exe");
     expect(sanitizeFileName("  a \t  b  .txt  ", "attachment")).toBe("a b .txt");
     expect(sanitizeFileName("\u0000\u0007", "attachment")).toBe("attachment");
@@ -159,5 +159,68 @@ describe("downloadHeaders", () => {
       "Cache-Control": "no-store",
       "Content-Security-Policy": "default-src 'none'",
     });
+  });
+});
+
+function timed(fn: () => unknown): number {
+  const start = performance.now();
+  fn();
+  return performance.now() - start;
+}
+
+describe("fix round 1", () => {
+  it("sanitizes long runs of dots and spaces quickly", () => {
+    for (const hostile of [
+      `a${".".repeat(200_000)}b`,
+      `a${" .".repeat(100_000)}b`,
+      `${".".repeat(200_000)}`,
+      `a${"\t".repeat(200_000)}b`,
+    ]) {
+      expect(timed(() => sanitizeFileName(hostile, "attachment"))).toBeLessThan(50);
+      expect(timed(() => emlFileName("2026-11-13T08:30:00.000Z", hostile))).toBeLessThan(50);
+    }
+    expect(sanitizeFileName("report. . .", "attachment")).toBe("report");
+  });
+
+  it("strips Windows-reserved characters", () => {
+    expect(sanitizeFileName('a:b*c?d<e>f|g"h.txt', "attachment")).toBe("abcdefgh.txt");
+    expect(emlFileName("2026-11-13T08:30:00.000Z", "Re: plan?")).toBe("2026-11-13 Re plan.eml");
+    expect(sanitizeFileName('"?*', "attachment")).toBe("attachment");
+  });
+
+  it("falls back when the ASCII form of the name is empty or only dots", () => {
+    expect(contentDisposition('""', "attachment")).toBe(
+      `attachment; filename="attachment"; filename*=UTF-8''%22%22`,
+    );
+    expect(contentDisposition("..", "message")).toBe(`attachment; filename="message"; filename*=UTF-8''..`);
+  });
+
+  it("passes through only an allow-list of inert types", () => {
+    for (const type of [
+      "image/png",
+      "image/jpeg",
+      "image/gif",
+      "image/webp",
+      "application/pdf",
+      "text/plain",
+      "audio/mpeg",
+      "video/mp4",
+      "application/zip",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ]) {
+      expect(safeContentType(type), type).toBe(type);
+    }
+    for (const type of [
+      "application/x-msdownload",
+      "application/x-sh",
+      "application/java-archive",
+      "application/json",
+      "text/markdown",
+      "image/x-icon",
+      "video/x-unknown+xml",
+      "application/octet-stream",
+    ]) {
+      expect(safeContentType(type), type).toBe("application/octet-stream");
+    }
   });
 });

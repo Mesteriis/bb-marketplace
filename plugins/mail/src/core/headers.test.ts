@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  HEADERS_MAX_PAIRS,
   HEADERS_TRUNCATED,
   STRUCTURE_MAX_LINES,
   decodeEncodedWords,
@@ -178,5 +179,49 @@ describe("describeStructure", () => {
       ].join("\r\n"),
     );
     expect(describeStructure(raw).slice(1)).toEqual(["  message/rfc822 · 20 B", "    text/plain · 2 B"]);
+  });
+});
+
+/** Milliseconds `fn` takes. */
+function timed(fn: () => unknown): number {
+  const start = performance.now();
+  fn();
+  return performance.now() - start;
+}
+
+describe("adversarial input (fix round 1)", () => {
+  it("normalizes a Message-ID with a long run of inner spaces quickly", () => {
+    const hostile = `<a${" ".repeat(200_000)}b`;
+    expect(timed(() => normalizeMessageId(hostile))).toBeLessThan(50);
+    expect(normalizeMessageId("<  a@example.org  >")).toBe("a@example.org");
+  });
+
+  it("decodes two adjacent encoded words of about 300 KB each without a RangeError", () => {
+    const word = `=?UTF-8?B?${btoa("a".repeat(225_000))}?=`;
+    const raw = bytes(`Subject: ${word} ${word}\r\n\r\n`);
+    const pairs = readHeaders(raw);
+    expect(pairs[0]![0]).toBe("Subject");
+    expect(pairs.at(-1)).toEqual(HEADERS_TRUNCATED);
+  });
+
+  it("reads a filename* of 200k escapes without a RangeError", () => {
+    const { params } = parseStructuredHeader(`attachment; filename*=UTF-8''${"%41".repeat(200_000)}`);
+    expect(params.get("filename")!.startsWith("AAAA")).toBe(true);
+  });
+
+  it("stops walking boundary lines once the structure is full", () => {
+    const body = "--b\n\nx\n".repeat(100_000);
+    const raw = bytes(`Content-Type: multipart/mixed; boundary=b\n\n${body}--b--\n`);
+    let lines: string[] = [];
+    const ms = timed(() => (lines = describeStructure(raw)));
+    expect(lines).toHaveLength(STRUCTURE_MAX_LINES + 1);
+    expect(ms).toBeLessThan(500);
+  });
+
+  it("caps the number of header pairs", () => {
+    const raw = bytes(`${"X: y\r\n".repeat(3000)}\r\n`);
+    const pairs = readHeaders(raw);
+    expect(pairs).toHaveLength(HEADERS_MAX_PAIRS + 1);
+    expect(pairs.at(-1)).toEqual(HEADERS_TRUNCATED);
   });
 });

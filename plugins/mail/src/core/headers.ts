@@ -6,7 +6,11 @@ import { removeControls, removeInvisible } from "./html-entities.ts";
 
 /** Most characters of header names and values returned for one message. */
 export const HEADERS_MAX_CHARS = 256 * 1024;
-/** The pair that ends a header list cut at HEADERS_MAX_CHARS. */
+/** Most header pairs returned for one message. */
+export const HEADERS_MAX_PAIRS = 2000;
+/** Longest Message-ID compared (RFC 5322 line limit). */
+const MESSAGE_ID_MAX = 998;
+/** The pair that ends a header list cut at HEADERS_MAX_CHARS or HEADERS_MAX_PAIRS. */
 export const HEADERS_TRUNCATED: [string, string] = ["…", "truncated"];
 /** Most lines of a MIME structure; one more line says the rest was left out. */
 export const STRUCTURE_MAX_LINES = 200;
@@ -128,11 +132,12 @@ export function decodeEncodedWords(text: string): string {
       flush();
       out += match[0];
     } else if (pending !== null && pending.charset.toLowerCase() === charset.toLowerCase()) {
-      pending.bytes.push(...bytes);
+      // A loop, not push(...bytes): a long word would overflow the argument limit.
+      for (const byte of bytes) pending.bytes.push(byte);
       pending.source += match[0];
     } else {
       flush();
-      pending = { charset, bytes: [...bytes], source: match[0] };
+      pending = { charset, bytes: Array.from(bytes), source: match[0] };
     }
     last = index + match[0].length;
   }
@@ -167,6 +172,10 @@ export function readHeaders(raw: Uint8Array, maxChars = HEADERS_MAX_CHARS): [str
     const name = plain(rawName);
     const value = plain(decodeEncodedWords(rawValue));
     const room = maxChars - used;
+    if (pairs.length >= HEADERS_MAX_PAIRS) {
+      pairs.push(HEADERS_TRUNCATED);
+      return pairs;
+    }
     if (name.length + value.length > room) {
       if (room > name.length) pairs.push([name, value.slice(0, room - name.length)]);
       pairs.push(HEADERS_TRUNCATED);
@@ -188,9 +197,13 @@ export function headerValue(raw: Uint8Array, name: string): string | null {
   return field ? field[1].replace(/\s+/g, " ").trim() : null;
 }
 
-/** A Message-ID as compared: trimmed, without its angle brackets. */
+/** A Message-ID as compared: at most 998 characters, trimmed, without its angle brackets. */
 export function normalizeMessageId(value: string): string {
-  return value.trim().replace(/^<\s*/, "").replace(/\s*>$/, "");
+  // No regex with a repeated class before `$`: index scans stay linear.
+  let id = value.slice(0, MESSAGE_ID_MAX).trim();
+  if (id.startsWith("<")) id = id.slice(1).trimStart();
+  if (id.endsWith(">")) id = id.slice(0, -1).trimEnd();
+  return id;
 }
 
 /** Splits a header value at `;` outside quoted strings. */
@@ -274,7 +287,7 @@ export function parseStructuredHeader(value: string): { token: string; params: M
           text = text.slice(quote[0].length);
         }
       }
-      if (segment.encoded) bytes.push(...percentBytes(text));
+      if (segment.encoded) for (const byte of percentBytes(text)) bytes.push(byte);
       else for (let c = 0; c < text.length; c++) bytes.push(text.charCodeAt(c) & 0xff);
     });
     const decoded = decodeCharset(Uint8Array.from(bytes), charset) ?? utf8.decode(Uint8Array.from(bytes));
@@ -324,7 +337,9 @@ function walkPart(walk: Walk, start: number, end: number, depth: number): void {
   if (depth + 1 >= STRUCTURE_MAX_DEPTH) return;
   const boundary = contentType.params.get("boundary");
   if (type.startsWith("multipart/") && boundary) {
-    for (const [partStart, partEnd] of multipartRanges(walk.bin, bodyStart, end, boundary)) {
+    // One range past what the line cap can show is enough to mark the cut.
+    const limit = STRUCTURE_MAX_LINES + 1 - walk.lines.length;
+    for (const [partStart, partEnd] of multipartRanges(walk.bin, bodyStart, end, boundary, limit)) {
       walkPart(walk, partStart, partEnd, depth + 1);
     }
   } else if (type === "message/rfc822" && bodyStart < end) {
@@ -333,12 +348,18 @@ function walkPart(walk: Walk, start: number, end: number, depth: number): void {
 }
 
 /** Byte ranges of a multipart body's parts, without the line break before each delimiter. */
-function multipartRanges(bin: string, start: number, end: number, boundary: string): [number, number][] {
+function multipartRanges(
+  bin: string,
+  start: number,
+  end: number,
+  boundary: string,
+  limit: number,
+): [number, number][] {
   const delimiter = `--${boundary}`;
   const ranges: [number, number][] = [];
   let partStart: number | null = null;
   let from = start;
-  while (from < end) {
+  while (from < end && ranges.length < limit) {
     const at = bin.indexOf(delimiter, from);
     if (at < 0 || at >= end) break;
     from = at + delimiter.length;
@@ -358,7 +379,7 @@ function multipartRanges(bin: string, start: number, end: number, boundary: stri
     from = partStart;
   }
   // A body without its closing delimiter: the last part runs to the end.
-  if (partStart !== null && partStart < end) ranges.push([partStart, end]);
+  if (partStart !== null && partStart < end && ranges.length < limit) ranges.push([partStart, end]);
   return ranges;
 }
 
