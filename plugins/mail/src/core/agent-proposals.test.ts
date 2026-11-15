@@ -504,6 +504,16 @@ describe("queueConfirmed", () => {
     expect(h.store.listOutbox(null)).toEqual([]);
   });
 
+  it("a confirmed proposal whose hidden draft is gone is settled as expired, not left confirming", async () => {
+    const p = await confirmed();
+    h.store.deleteDraft(h.store.getProposal(p.proposalId)!.draftId!);
+    expect(await queueConfirmed(d, p.proposalId)).toEqual({ lost: true });
+    expect(h.store.getProposal(p.proposalId)).toMatchObject({ state: "expired", draftId: null });
+    expect(h.store.listOutbox(null)).toEqual([]);
+    // It no longer blocks the thread.
+    await expect(propose()).resolves.toMatchObject({ proposalId: expect.any(String) });
+  });
+
   it("the send cap after the click keeps the message as an owner draft", async () => {
     const p = await confirmed();
     for (let i = 0; i < SEND_RATE_PER_MINUTE; i++) d.rate.take("acc_1");
@@ -579,6 +589,17 @@ describe("cancelProposal", () => {
     const b = await propose({}, "thread_2");
     expect(cancelProposal(d, b.proposalId, "expired")).toBe(true);
     expect(h.store.getProposal(b.proposalId)!.state).toBe("expired");
+  });
+
+  it("settles a confirming proposal too: cancelled or expired, its hidden draft deleted", async () => {
+    for (const [reason, state, thread] of [["user", "cancelled", "thread_c1"], ["expired", "expired", "thread_c2"]] as const) {
+      const p = await viewed({}, thread);
+      expect(await checkSubmit(d, p.proposalId, submit("send", p))).toEqual({ action: "send" });
+      const draftId = h.store.getProposal(p.proposalId)!.draftId!;
+      expect(cancelProposal(d, p.proposalId, reason)).toBe(true);
+      expect(h.store.getProposal(p.proposalId)).toMatchObject({ state, draftId: null });
+      expect(h.store.getDraft(draftId)).toBeNull();
+    }
   });
 
   it("never deletes a draft the owner opened in Mail", async () => {

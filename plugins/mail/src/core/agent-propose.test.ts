@@ -467,6 +467,7 @@ describe("nextProposalState", () => {
     ["confirming", "expire", "expired"],
     ["confirming", "refuse", "refused"],
     ["confirming", "stale", "pending"],
+    ["confirming", "cancel", "cancelled"],
   ];
   const states: ProposalState[] = ["pending", "confirming", "queued", "opened", "cancelled", "expired", "refused"];
   const events: ProposalEvent[] = ["confirm", "queue", "open", "queue_failed", "cancel", "expire", "refuse", "undo", "stale"];

@@ -1359,6 +1359,17 @@ function proposalReason(
   return null;
 }
 
+/** The action of a submit check describeSubmission started, once it settles; null for none, a refusal or a failure. */
+async function settledCheck(check: Promise<SubmitCheck> | null): Promise<"send" | "open" | null> {
+  if (check === null) return null;
+  try {
+    const decided = await check;
+    return "action" in decided ? decided.action : null;
+  } catch {
+    return null;
+  }
+}
+
 function toolError(text: string): PluginAgentToolResult {
   return { content: [{ type: "text", text }], isError: true };
 }
@@ -1425,6 +1436,9 @@ function registerProposeTool(bb: BbPluginApi, deps: AgentSurfaceDeps): void {
             { signal: ctx.signal },
           );
         } catch (error) {
+          // A check describeSubmission started finishes first, so its
+          // outcome (an opened draft above all) is settled, not overwritten.
+          if ((await settledCheck(check)) === "open") return AGENT_RESULT.opened;
           cancelProposal(proposalDeps, proposalId, "expired");
           bb.log.warn(`proposal ${proposalId} card failed (${errorKind(error)})`);
           return AGENT_RESULT.expired;
@@ -1432,6 +1446,9 @@ function registerProposeTool(bb: BbPluginApi, deps: AgentSurfaceDeps): void {
 
         if (result.outcome === "cancelled") {
           const expired = EXPIRED_REASONS.has(result.reason);
+          // A cancel that lands while describeSubmission is checking: wait for
+          // the check, then settle. A confirmed send nobody queues is cancelled.
+          if ((await settledCheck(check)) === "open") return AGENT_RESULT.opened;
           cancelProposal(proposalDeps, proposalId, expired ? "expired" : "user");
           bb.log.info(`proposal ${proposalId} ${expired ? "expired" : "cancelled"} (${result.reason})`);
           return expired ? AGENT_RESULT.expired : AGENT_RESULT.cancelled;
@@ -1460,11 +1477,22 @@ function registerProposeTool(bb: BbPluginApi, deps: AgentSurfaceDeps): void {
       try {
         queued = await queueConfirmed(proposalDeps, proposalId);
       } catch (error) {
-        // Confirmed but not queued: the message stays as an owner draft.
+        // Confirmed but not queued: the message stays as an owner draft, or,
+        // when there is none to release, the proposal is settled.
         const draftId = proposalDeps.store.getProposal(proposalId)?.draftId ?? null;
-        if (draftId !== null) proposalDeps.store.releaseProposalDraft(proposalId, draftId, proposalDeps.clock.now().toISOString());
+        const released =
+          draftId !== null &&
+          proposalDeps.store.releaseProposalDraft(proposalId, draftId, proposalDeps.clock.now().toISOString());
         bb.log.warn(`proposal ${proposalId} queue failed (${errorKind(error)})`);
+        if (!released) {
+          cancelProposal(proposalDeps, proposalId, "expired");
+          return AGENT_RESULT.changed;
+        }
         queued = { notQueued: "account" };
+      }
+      if ("lost" in queued) {
+        bb.log.info(`proposal ${proposalId} lost its draft`);
+        return AGENT_RESULT.changed;
       }
       if ("notQueued" in queued) {
         deps.notQueued.set(proposalId, queued.notQueued);
