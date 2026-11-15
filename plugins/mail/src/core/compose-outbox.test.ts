@@ -503,6 +503,25 @@ describe("restart", () => {
     expect(() => sendNow(deps, id)).toThrow(ComposeError);
   });
 
+  it("a reload overlap: the old worker's accepted send is recorded sent even after recovery marked it unknown", async () => {
+    const { id, draftId } = await queued();
+    h.advance(UNDO_MS);
+    const gate = h.transport.gateSend();
+    const running = runOutboxOnce(h.deps, signal);
+    await gate.entered;
+    // The new worker starts while the old one is still in SMTP.
+    expect(h.store.recoverOutboxOnStart(h.clock.now().toISOString())).toEqual({ unknown: 1, held: 0 });
+    expect(h.store.getOutbox(id)!.state).toBe("unknown");
+    gate.release();
+    await running;
+    await drain();
+    expect(h.transport.sent).toHaveLength(1);
+    expect(h.gateway.appended).toHaveLength(1);
+    expect(h.store.getOutbox(id)).toBeNull();
+    expect(h.store.getDraft(draftId)).toBeNull();
+    expect(states().slice(-3)).toEqual(["sent", "appending", "done"]);
+  });
+
   it("a send accepted before the restart resumes at the copy step without sending again", async () => {
     const { id } = await queued();
     h.advance(UNDO_MS);
@@ -622,5 +641,9 @@ describe("state table", () => {
     expect(nextOutboxState("failed", "dismiss")).toBe("deleted");
     expect(canTransition("sending", "dismiss")).toBe(false);
     expect(canTransition("queued", "dismiss")).toBe(false);
+    // SMTP accepted it: sent, also when a restart's recovery already called it unknown.
+    expect(nextOutboxState("sending", "accepted")).toBe("sent");
+    expect(nextOutboxState("unknown", "accepted")).toBe("sent");
+    expect(canTransition("queued", "accepted")).toBe(false);
   });
 });
