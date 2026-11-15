@@ -66,6 +66,15 @@ describe("planUndo: moves", () => {
     ]);
   });
 
+  it("never copies into Trash or Spam: an All Mail row that came from there moves back", () => {
+    for (const source of ["[Gmail]/Trash", "[Gmail]/Spam"]) {
+      const record = moveRecord(source, "[Gmail]/All Mail", "all", ["m1"]);
+      expect(planUndo(record, rowsOf(row("m1", "[Gmail]/All Mail")), foldersOf(GMAIL)).steps, source).toEqual([
+        { kind: "move_back", accountId: "a1", from: "[Gmail]/All Mail", to: source, ids: ["m1"], copyIfGmail: false },
+      ]);
+    }
+  });
+
   it("moves back out of a label, Trash and Spam (no copy)", () => {
     for (const [destination, use] of [
       ["Work", null],

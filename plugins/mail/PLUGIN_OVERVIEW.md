@@ -60,8 +60,8 @@ to Trash; moves need `MOVE` or `UIDPLUS`. Details and downloads never mark
 mail read. It appends your drafts to Drafts and sent copies to Sent (Gmail
 keeps its own). It expunges only its own superseded drafts, by UID, on
 servers with UIDPLUS; nothing else is permanently deleted. Undo of Archive
-on Gmail adds the message back to the folder it came from with UID COPY;
-nothing else uses COPY.
+on Gmail adds the message back to the folder it came from with UID COPY,
+never into Trash or Spam (those get a move back); nothing else uses COPY.
 
 ## What it costs
 

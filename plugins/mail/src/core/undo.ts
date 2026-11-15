@@ -55,7 +55,8 @@ export type UndoRow = {
  * One step of an undo. `move_back` is queued as a move unless `copyIfGmail`
  * is true and the session on `from` reports Gmail: then the row is copied
  * to `to` (spec resolutions 1 and 7, narrowed by the owner to archive undo:
- * `copyIfGmail` is true only when `from` is All Mail).
+ * `copyIfGmail` is true only when `from` is All Mail and `to` is not Trash
+ * or Spam).
  */
 export type UndoStep =
   | { kind: "cancel_pending"; accountId: string; folder: string; destination: string; ids: string[] }
@@ -109,6 +110,8 @@ export function planUndo(
     const source = accountFolders.find((f) => f.path === group.source);
     const sourceUsable = source !== undefined && source.selectable;
     const nowUse = accountFolders.find((f) => f.path === destination)?.specialUse ?? group.destinationUse;
+    // A COPY into Trash or Spam would put a copy there, not undo anything: those move back.
+    const copyable = nowUse === "all" && source?.specialUse !== "trash" && source?.specialUse !== "junk";
     for (const id of group.ids) {
       const row = rows.get(id);
       if (row === undefined || row.accountId !== group.accountId) {
@@ -134,7 +137,7 @@ export function planUndo(
             from: destination,
             to: group.source,
             ids: [],
-            copyIfGmail: nowUse === "all",
+            copyIfGmail: copyable,
           }),
           id,
         );
