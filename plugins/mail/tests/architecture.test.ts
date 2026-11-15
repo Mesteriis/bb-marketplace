@@ -65,7 +65,17 @@ const core: Layer = {
 
 const ui: Layer = {
   directory: "src/ui",
-  packages: ["react", "dompurify", "@/components", "@/lib", "@/hooks"],
+  packages: [
+    "react",
+    "dompurify",
+    "@tiptap/react",
+    "@tiptap/core",
+    "@tiptap/pm",
+    "@tiptap/starter-kit",
+    "@/components",
+    "@/lib",
+    "@/hooks",
+  ],
   reachable: ["src/ui", "src/core"],
 };
 
@@ -102,5 +112,15 @@ describe("host-agnostic layers", () => {
 
   it("src/ui imports only React, the core, and the vendored design system", () => {
     expect(violations(ui)).toEqual([]);
+  });
+
+  it("allows exactly the four TipTap packages, never the whole scope", () => {
+    expect(ui.packages.filter((name) => name.startsWith("@tiptap"))).toEqual([
+      "@tiptap/react",
+      "@tiptap/core",
+      "@tiptap/pm",
+      "@tiptap/starter-kit",
+    ]);
+    expect(ui.packages).not.toContain("@tiptap");
   });
 });
