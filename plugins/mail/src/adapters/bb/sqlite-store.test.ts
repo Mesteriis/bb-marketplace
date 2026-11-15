@@ -2410,6 +2410,20 @@ describe.each(storeKinds)("slice-3c store semantics (%s)", (_kind, make) => {
     expect(s.getProposal("nope")).toBeNull();
   });
 
+  it("createProposal runs its admission check in the same transaction, over the cap rows including earlier proposals", () => {
+    s.createProposal(newProposal({ id: "p_1", threadId: "th_1" }));
+    const seen: unknown[] = [];
+    expect(() =>
+      s.createProposal(newProposal({ id: "p_2", threadId: "th_1", draftId: "d_2" }), (rows) => {
+        seen.push(rows);
+        throw new Error("cap");
+      }),
+    ).toThrow("cap");
+    expect(seen).toEqual([[{ threadId: "th_1", state: "pending", createdAt: T0, updatedAt: T0 }]]);
+    expect(s.getProposal("p_2")).toBeNull();
+    expect(s.createProposal(newProposal({ id: "p_3", threadId: "th_2", draftId: "d_3" }), () => undefined).state).toBe("pending");
+  });
+
   it("transitionProposal is a compare-and-swap recording updatedAt and the patch", () => {
     s.createProposal(newProposal());
     expect(s.transitionProposal("p_1", ["confirming"], "queued", later(1))).toBe(false);

@@ -976,18 +976,21 @@ export class InMemoryMailStore implements MailStore {
 
   // ---- Agent proposals and translation (slice 3c) ----
 
-  createProposal(input: NewProposal): ProposalRecord {
-    if (this.state.proposals.has(input.id)) throw new Error("Proposal exists");
-    const record: ProposalRecord = {
-      ...structuredClone(input),
-      state: "pending",
-      viewTokenSha256: null,
-      viewedAt: null,
-      outboxId: null,
-      updatedAt: input.createdAt,
-    };
-    this.state.proposals.set(record.id, record);
-    return structuredClone(record);
+  createProposal(input: NewProposal, admit?: (rows: ProposalCapRow[]) => void): ProposalRecord {
+    return this.transaction(() => {
+      admit?.(this.proposalCapRows(input.createdAt));
+      if (this.state.proposals.has(input.id)) throw new Error("Proposal exists");
+      const record: ProposalRecord = {
+        ...structuredClone(input),
+        state: "pending",
+        viewTokenSha256: null,
+        viewedAt: null,
+        outboxId: null,
+        updatedAt: input.createdAt,
+      };
+      this.state.proposals.set(record.id, record);
+      return structuredClone(record);
+    });
   }
 
   getProposal(id: string): ProposalRecord | null {

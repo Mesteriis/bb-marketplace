@@ -476,7 +476,12 @@ export interface MailStore {
 
   // ---- Agent proposals and translation (slice 3c) ----
 
-  createProposal(input: NewProposal): ProposalRecord;
+  /**
+   * Stores a `pending` proposal. `admit`, when given, runs in the same
+   * transaction as the insert over `proposalCapRows(input.createdAt)`; a throw
+   * from it refuses the proposal and nothing is stored (the caps are atomic).
+   */
+  createProposal(input: NewProposal, admit?: (rows: ProposalCapRow[]) => void): ProposalRecord;
   getProposal(id: string): ProposalRecord | null;
   /** Proposals created in the 24 hours before `nowIso`, plus every unsettled one (pending, confirming). */
   proposalCapRows(nowIso: string): ProposalCapRow[];
