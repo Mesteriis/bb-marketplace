@@ -48,6 +48,17 @@ const smtpSettingsInput = z.object({
   port: z.number().int().min(1).max(65535),
   security: smtpSecuritySchema,
   username: z.string().min(1).max(320).refine(noLineBreaks, NO_LINE_BREAKS).optional(),
+  /**
+   * The account password, typed for this call: required for a host outside
+   * the account's domain and stored SMTP host (resolution 21). Never echoed.
+   */
+  password: z.string().min(1).max(1024).optional(),
+});
+const smtpTestOutput = z.object({
+  ok: z.boolean(),
+  reason: z.string().nullable(),
+  /** This host needs the account password in the call. */
+  signInRequired: z.literal(true).optional(),
 });
 
 /** One account's folder, or a role merged across every account. */
@@ -330,12 +341,12 @@ export const rpcSchemas = {
   /** Tests SMTP with the account's stored password; the password is never sent back. */
   accounts_smtp_test: {
     input: smtpSettingsInput,
-    output: z.object({ ok: z.boolean(), reason: z.string().nullable() }),
+    output: smtpTestOutput,
   },
   /** Tests, then saves the account's SMTP settings. */
   accounts_smtp_set: {
     input: smtpSettingsInput,
-    output: z.object({ ok: z.boolean(), reason: z.string().nullable() }),
+    output: smtpTestOutput,
   },
 } as const;
 
