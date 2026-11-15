@@ -367,9 +367,10 @@ describe("server copy", () => {
 });
 
 describe("continuing a foreign draft", () => {
-  function foreign(): string {
+  function foreign(from?: MailAddress): string {
     h.drafts.messages.push(
       makeFetchedMessage(41, {
+        ...(from === undefined ? {} : { from }),
         messageId: "foreign@example.org",
         size: 321,
         subject: "Half written",
@@ -394,6 +395,22 @@ describe("continuing a foreign draft", () => {
     expect(record.serverCopy).toEqual({ folder: "Drafts", uidValidity: 7, uid: 41, revision: 1, size: 321 });
     // Opening it again continues the same draft.
     expect((await openDraft(h.deps, { draftMessageId: id })).draft.id).toBe(draft.id);
+  });
+
+  it("keeps its From when it is an active alias of the account", async () => {
+    h.store.upsertIdentity({ accountId: "acc_1", address: "alias@example.net", displayName: null }, "2026-11-15T09:00:00.000Z");
+    const alias = foreign(addr("Alias@Example.net", "Alias"));
+    expect((await openDraft(h.deps, { draftMessageId: alias })).draft.fromAddress).toBe("alias@example.net");
+  });
+
+  it("a continued draft From the own address starts from it (null)", async () => {
+    const own = foreign(addr("owner@example.org"));
+    expect((await openDraft(h.deps, { draftMessageId: own })).draft.fromAddress).toBeNull();
+  });
+
+  it("a continued draft From an address that is no identity starts from the own address", async () => {
+    const stranger = foreign(addr("someone@example.com"));
+    expect((await openDraft(h.deps, { draftMessageId: stranger })).draft.fromAddress).toBeNull();
   });
 
   it("our first server copy replaces it under the guard", async () => {
