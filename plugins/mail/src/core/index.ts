@@ -35,4 +35,6 @@ export * from "./unsubscribe.ts";
 export * from "./blocking.ts";
 export * from "./notify.ts";
 export * from "./idle-policy.ts";
+export * from "./snooze.ts";
+export * from "./triage.ts";
 export { removeControls, removeInvisible } from "./html-entities.ts";
