@@ -3,7 +3,8 @@ import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildThreads } from "../../core/threading.ts";
 import type { NewDraft, NewOutboxRow, RemoteFolder } from "../../core/model.ts";
-import type { MailStore } from "../../core/ports.ts";
+import type { MailStore, NewProposal, TranslationRecord } from "../../core/ports.ts";
+import { TRANSLATION_CACHE_ROWS } from "../../core/translate.ts";
 import {
   InMemoryMailStore,
   makeFetchedMessage,
@@ -2270,5 +2271,321 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       expect(s.recipientSuggestions("zz", 10)).toEqual([]);
       expect(s.recipientSuggestions("%", 10)).toEqual([]);
     });
+  });
+});
+
+// ---- Slice 3c: agent proposals and translations ----
+
+function newProposal(overrides: Partial<NewProposal> = {}): NewProposal {
+  return {
+    id: "p_1",
+    threadId: "th_1",
+    draftId: "d_1",
+    accountId: "acc_1",
+    kind: "new",
+    sourceMessageId: null,
+    added: [],
+    contentSha256: "c".repeat(64),
+    leftOut: 0,
+    expiresAt: later(24 * 60 * 60 * 1000),
+    createdAt: T0,
+    ...overrides,
+  };
+}
+
+/** A hidden draft d_1 with one attachment and its pending proposal p_1. */
+function hiddenProposal(s: MailStore, overrides: Partial<NewProposal> = {}): void {
+  const id = overrides.id ?? "p_1";
+  const draftId = overrides.draftId ?? "d_1";
+  s.createDraft(newDraft({ id: draftId, origin: "agent", proposalId: id }));
+  s.addAttachment(draftId, file([1, 2]));
+  s.createProposal(newProposal({ id, draftId, ...overrides }));
+}
+
+function translation(messageId: string, overrides: Partial<TranslationRecord> = {}): TranslationRecord {
+  return {
+    messageId,
+    targetLanguage: "de",
+    providerId: "provider-a",
+    model: "model-a",
+    text: "Erfundener Text",
+    truncated: false,
+    sourceSha256: "s".repeat(64),
+    createdAt: T0,
+    ...overrides,
+  };
+}
+
+describe("slice-3c migration (SQLite)", () => {
+  it("element 5 on a 3b database: drafts get proposal_id NULL and stay ordinary; new tables carry no REFERENCES", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 5).forEach((s) => old.exec(s)))();
+    old.prepare(
+      `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+       VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner@example.org', 'sealed', 'other', ?)`,
+    ).run(EPOCH);
+    old.prepare(
+      `INSERT INTO compose_drafts (id, account_id, kind, message_id, refs_json, to_json, cc_json, bcc_json,
+         subject, doc_json, revision, created_at, updated_at)
+       VALUES ('d_old', 'acc_1', 'new', '<old@example.org>', '[]', '[]', '[]', '[]', 'Invented', '{"type":"doc","content":[]}', 3, ?, ?)`,
+    ).run(T0, T0);
+
+    old.transaction(() => MIGRATIONS.slice(5).forEach((s) => old.exec(s)))();
+
+    const migrated = createSqliteStore(old);
+    expect(migrated.getDraft("d_old")).toMatchObject({ proposalId: null, origin: "owner", revision: 3 });
+    expect(migrated.listDrafts("acc_1").map((d) => d.id)).toEqual(["d_old"]);
+    const objects = old
+      .prepare("SELECT name, sql FROM sqlite_master WHERE name IN ('agent_proposals', 'translations', 'agent_proposals_thread', 'translations_created')")
+      .all() as { name: string; sql: string }[];
+    expect(objects.map((o) => o.name).sort()).toEqual([
+      "agent_proposals",
+      "agent_proposals_thread",
+      "translations",
+      "translations_created",
+    ]);
+    for (const object of objects) expect(object.sql).not.toMatch(/REFERENCES/i);
+  });
+
+  it("releaseProposalDraft is atomic: a failed draft update leaves the proposal pending", () => {
+    hiddenProposal(store);
+    db.exec(`CREATE TRIGGER fail_draft BEFORE UPDATE ON compose_drafts BEGIN SELECT RAISE(ABORT, 'forced'); END`);
+    expect(() => store.releaseProposalDraft("p_1", "d_1", later(1))).toThrow(/forced/);
+    expect(store.getProposal("p_1")!.state).toBe("pending");
+    expect(store.getDraft("d_1")!.proposalId).toBe("p_1");
+  });
+
+  it("undoAgentSend is atomic: a failed proposal update keeps the outbox row and the hidden draft", () => {
+    hiddenProposal(store);
+    store.queueOutbox(newOutbox({ id: "p_1", origin: "agent" }), 1);
+    store.transitionProposal("p_1", ["pending"], "queued", later(1), { outboxId: "p_1" });
+    db.exec(`CREATE TRIGGER fail_proposal BEFORE UPDATE ON agent_proposals BEGIN SELECT RAISE(ABORT, 'forced'); END`);
+    expect(() => store.undoAgentSend("p_1", ["queued"], later(2))).toThrow(/forced/);
+    expect(store.getOutbox("p_1")).not.toBeNull();
+    expect(store.getDraft("d_1")!.proposalId).toBe("p_1");
+    expect(store.getProposal("p_1")!.state).toBe("queued");
+  });
+
+  it("account removal deletes its proposals and translations; message removal its translations", () => {
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox")]);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)]);
+    store.putTranslation(translation(idOf(store, 1)));
+    store.putTranslation(translation(idOf(store, 2)));
+    hiddenProposal(store);
+    store.deleteByUids("acc_1", INBOX, [1]);
+    expect(count(db, "translations")).toBe(1);
+    store.deleteAccount("acc_1");
+    for (const table of ["translations", "agent_proposals", "compose_drafts", "compose_attachments"]) {
+      expect(count(db, table)).toBe(0);
+    }
+  });
+});
+
+describe.each(storeKinds)("slice-3c store semantics (%s)", (_kind, make) => {
+  let s: MailStore;
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+  });
+
+  it("createDraft round-trips origin and proposalId; getDraft and listDrafts return hidden drafts raw", () => {
+    const created = s.createDraft(newDraft({ origin: "agent", proposalId: "p_1" }));
+    expect(created).toMatchObject({ origin: "agent", proposalId: "p_1" });
+    expect(s.getDraft("d_1")).toEqual(created);
+    expect(s.listDrafts("acc_1").map((d) => d.proposalId)).toEqual(["p_1"]);
+  });
+
+  it("createProposal starts pending with nothing viewed", () => {
+    expect(s.createProposal(newProposal({ added: ["extra@example.net"], leftOut: 2 }))).toEqual({
+      ...newProposal({ added: ["extra@example.net"], leftOut: 2 }),
+      state: "pending",
+      viewTokenSha256: null,
+      viewedAt: null,
+      outboxId: null,
+      updatedAt: T0,
+    });
+    expect(s.getProposal("p_1")!.added).toEqual(["extra@example.net"]);
+    expect(s.getProposal("nope")).toBeNull();
+  });
+
+  it("transitionProposal is a compare-and-swap recording updatedAt and the patch", () => {
+    s.createProposal(newProposal());
+    expect(s.transitionProposal("p_1", ["confirming"], "queued", later(1))).toBe(false);
+    expect(s.transitionProposal("p_1", ["pending"], "confirming", later(2))).toBe(true);
+    expect(s.transitionProposal("p_1", ["pending"], "confirming", later(3))).toBe(false);
+    expect(s.transitionProposal("p_1", ["pending", "confirming"], "queued", later(4), { outboxId: "p_1" })).toBe(true);
+    expect(s.getProposal("p_1")).toMatchObject({ state: "queued", outboxId: "p_1", updatedAt: later(4) });
+    expect(s.transitionProposal("nope", ["pending"], "cancelled", later(5))).toBe(false);
+  });
+
+  it("setViewToken replaces the token only while pending", () => {
+    s.createProposal(newProposal());
+    expect(s.setViewToken("p_1", "a".repeat(64), later(1))).toBe(true);
+    expect(s.setViewToken("p_1", "b".repeat(64), later(2))).toBe(true);
+    expect(s.getProposal("p_1")).toMatchObject({ viewTokenSha256: "b".repeat(64), viewedAt: later(2), updatedAt: T0 });
+    s.transitionProposal("p_1", ["pending"], "confirming", later(3));
+    expect(s.setViewToken("p_1", "c".repeat(64), later(4))).toBe(false);
+    expect(s.getProposal("p_1")!.viewTokenSha256).toBe("b".repeat(64));
+  });
+
+  it("releaseProposalDraft makes the draft an owner draft and the proposal opened, only for its own hidden draft", () => {
+    hiddenProposal(s);
+    expect(s.releaseProposalDraft("p_1", "d_other", later(1))).toBe(false);
+    expect(s.releaseProposalDraft("p_1", "d_1", later(1))).toBe(true);
+    expect(s.getDraft("d_1")).toMatchObject({ proposalId: null, origin: "agent" });
+    expect(s.getProposal("p_1")).toMatchObject({ state: "opened", draftId: "d_1", updatedAt: later(1) });
+    expect(s.releaseProposalDraft("p_1", "d_1", later(2))).toBe(false);
+  });
+
+  it("undoAgentSend deletes the row, releases the draft and opens the proposal; not from another state", () => {
+    hiddenProposal(s);
+    s.queueOutbox(newOutbox({ id: "p_1", origin: "agent" }), 1);
+    s.transitionProposal("p_1", ["pending"], "queued", later(1), { outboxId: "p_1" });
+    expect(s.undoAgentSend("p_1", ["held"], later(2))).toEqual({ cancelled: false, draftId: "d_1" });
+    expect(s.getOutbox("p_1")).not.toBeNull();
+    expect(s.undoAgentSend("p_1", ["queued"], later(3))).toEqual({ cancelled: true, draftId: "d_1" });
+    expect(s.getOutbox("p_1")).toBeNull();
+    expect(s.getDraft("d_1")!.proposalId).toBeNull();
+    expect(s.getProposal("p_1")).toMatchObject({ state: "opened", updatedAt: later(3) });
+    expect(s.undoAgentSend("p_1", ["queued"], later(4))).toEqual({ cancelled: false, draftId: null });
+  });
+
+  it("dropProposalDraft deletes only a still hidden draft and clears the draft id", () => {
+    hiddenProposal(s);
+    s.dropProposalDraft("p_1");
+    expect(s.getDraft("d_1")).toBeNull();
+    expect(s.listAttachments("d_1")).toEqual([]);
+    expect(s.getProposal("p_1")!.draftId).toBeNull();
+
+    hiddenProposal(s, { id: "p_2", draftId: "d_2" });
+    s.releaseProposalDraft("p_2", "d_2", later(1));
+    s.dropProposalDraft("p_2");
+    expect(s.getDraft("d_2")).not.toBeNull();
+  });
+
+  it("recoverProposalsOnStart: pending expires with its draft; confirming is queued with its row, else expires", () => {
+    hiddenProposal(s, { id: "p_pending", draftId: "d_pending" });
+    hiddenProposal(s, { id: "p_row", draftId: "d_row" });
+    hiddenProposal(s, { id: "p_lost", draftId: "d_lost" });
+    s.transitionProposal("p_row", ["pending"], "confirming", later(1));
+    s.transitionProposal("p_lost", ["pending"], "confirming", later(1));
+    s.queueOutbox(newOutbox({ id: "p_row", draftId: "d_row", origin: "agent" }), 1);
+    s.createProposal(newProposal({ id: "p_done", draftId: null as never }));
+    s.transitionProposal("p_done", ["pending"], "cancelled", later(1));
+
+    expect(s.recoverProposalsOnStart(later(5))).toEqual({ expired: 2, queued: 1 });
+    expect(s.getProposal("p_pending")).toMatchObject({ state: "expired", draftId: null });
+    expect(s.getDraft("d_pending")).toBeNull();
+    expect(s.getProposal("p_row")).toMatchObject({ state: "queued", outboxId: "p_row", draftId: "d_row" });
+    expect(s.getDraft("d_row")).not.toBeNull();
+    expect(s.getProposal("p_lost")).toMatchObject({ state: "expired", draftId: null });
+    expect(s.getProposal("p_done")!.state).toBe("cancelled");
+  });
+
+  it("purgeProposals deletes settled rows last updated before the cut, never unsettled ones", () => {
+    s.createProposal(newProposal({ id: "p_old" }));
+    s.transitionProposal("p_old", ["pending"], "cancelled", later(1));
+    s.createProposal(newProposal({ id: "p_new" }));
+    s.transitionProposal("p_new", ["pending"], "cancelled", later(10_000));
+    s.createProposal(newProposal({ id: "p_wait" }));
+    expect(s.purgeProposals(later(5_000))).toBe(1);
+    expect(s.getProposal("p_old")).toBeNull();
+    expect(s.getProposal("p_new")).not.toBeNull();
+    expect(s.getProposal("p_wait")).not.toBeNull();
+  });
+
+  it("proposalCapRows: the last 24 hours plus every unsettled proposal", () => {
+    const day = 24 * 60 * 60 * 1000;
+    s.createProposal(newProposal({ id: "p_old_settled", createdAt: later(0) }));
+    s.transitionProposal("p_old_settled", ["pending"], "refused", later(1));
+    s.createProposal(newProposal({ id: "p_old_pending", threadId: "th_2", createdAt: later(1) }));
+    s.createProposal(newProposal({ id: "p_recent", threadId: "th_3", createdAt: later(day) }));
+    s.transitionProposal("p_recent", ["pending"], "cancelled", later(day + 1));
+    expect(s.proposalCapRows(later(day + 10))).toEqual([
+      { threadId: "th_2", state: "pending", createdAt: later(1), updatedAt: later(1) },
+      { threadId: "th_3", state: "cancelled", createdAt: later(day), updatedAt: later(day + 1) },
+    ]);
+  });
+
+  it("addressesSentTo counts To and Cc of Sent mail only, lowercased", () => {
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Sent", "sent")]);
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { from: { name: null, address: "inbound@example.com" }, to: [{ name: null, address: "owner@example.org" }] }),
+    ]);
+    s.upsertMessages("acc_1", "Sent", [
+      makeFetchedMessage(1, {
+        from: { name: null, address: "owner@example.org" },
+        to: [{ name: "Bob", address: "Bob@Example.com" }],
+        cc: [{ name: null, address: "carol@example.net" }],
+      }),
+    ]);
+    expect([...s.addressesSentTo(["bob@example.com", "CAROL@example.net", "inbound@example.com", "owner@example.org"])].sort()).toEqual([
+      "bob@example.com",
+      "carol@example.net",
+    ]);
+    expect(s.addressesSentTo([]).size).toBe(0);
+  });
+
+  describe("translations", () => {
+    beforeEach(() => {
+      s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Old")]);
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2), makeFetchedMessage(3)]);
+      s.upsertMessages("acc_1", "Old", [makeFetchedMessage(1)]);
+    });
+    const id = (uid: number, folder = INBOX) => s.localFolderIndex("acc_1", folder, EPOCH).find((e) => e.uid === uid)!.id;
+
+    it("put, get and upsert by message and language", () => {
+      s.putTranslation(translation(id(1)));
+      s.putTranslation(translation(id(1), { targetLanguage: "fr", truncated: true }));
+      s.putTranslation(translation(id(1), { text: "Neuer Text", createdAt: later(1) }));
+      expect(s.getTranslation(id(1), "de")).toEqual(translation(id(1), { text: "Neuer Text", createdAt: later(1) }));
+      expect(s.getTranslation(id(1), "fr")!.truncated).toBe(true);
+      expect(s.getTranslation(id(1), "es")).toBeNull();
+      expect(s.clearTranslations()).toBe(2);
+      expect(s.getTranslation(id(1), "de")).toBeNull();
+    });
+
+    it("go with deleteByUids, a vanished message after a reset, a removed folder and the account", () => {
+      for (const uid of [1, 2, 3]) s.putTranslation(translation(id(uid)));
+      s.putTranslation(translation(id(1, "Old")));
+      const [m1, m2, m3, old] = [id(1), id(2), id(3), id(1, "Old")];
+      s.deleteByUids("acc_1", INBOX, [1]);
+      expect(s.getTranslation(m1, "de")).toBeNull();
+      expect(s.getTranslation(m2, "de")).not.toBeNull();
+
+      s.beginFolderReset("acc_1", INBOX);
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(30, { messageId: "msg-3@example.org" })]);
+      s.finishFolderReset("acc_1", INBOX);
+      expect(s.getTranslation(m2, "de")).toBeNull();
+      expect(s.getTranslation(m3, "de")).not.toBeNull();
+
+      s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox")]);
+      expect(s.getTranslation(old, "de")).toBeNull();
+      expect(s.getTranslation(m3, "de")).not.toBeNull();
+
+      s.deleteAccount("acc_1");
+      expect(s.getTranslation(m3, "de")).toBeNull();
+    });
+
+    it("evicts the oldest beyond the cache cap", () => {
+      s.transaction(() => {
+        for (let i = 0; i < TRANSLATION_CACHE_ROWS + 1; i++) {
+          s.putTranslation(translation(`m_${String(i).padStart(5, "0")}`, { createdAt: later(i) }));
+        }
+      });
+      expect(s.getTranslation("m_00000", "de")).toBeNull();
+      expect(s.getTranslation("m_00001", "de")).not.toBeNull();
+      expect(s.getTranslation(`m_${String(TRANSLATION_CACHE_ROWS).padStart(5, "0")}`, "de")).not.toBeNull();
+      expect(s.clearTranslations()).toBe(TRANSLATION_CACHE_ROWS);
+    });
+  });
+
+  it("deleteAccount deletes the account's proposals only", () => {
+    s.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.com" }));
+    s.createProposal(newProposal());
+    s.createProposal(newProposal({ id: "p_2", accountId: "acc_2", draftId: null as never }));
+    s.deleteAccount("acc_1");
+    expect(s.getProposal("p_1")).toBeNull();
+    expect(s.getProposal("p_2")).not.toBeNull();
   });
 });
