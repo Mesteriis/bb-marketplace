@@ -59,6 +59,16 @@ import type { MailStore, ProposalRecord, TranslationRecord } from "../../core/po
 import type { ProposalCapRow, ProposalState } from "../../core/agent-propose.ts";
 import { TRANSLATION_CACHE_ROWS } from "../../core/translate.ts";
 import {
+  CONTACT_BODY_CHARS,
+  CONTACT_SCAN,
+  classifyBulk,
+  correspondenceOf,
+  messageTextMask,
+  queryWords,
+  rankContacts,
+  type ContactMessage,
+} from "../../core/contacts.ts";
+import {
   capInlineParts,
   compareFolders,
   dedupKeyOf,
@@ -355,6 +365,12 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX translations_created ON translations(created_at);
   `,
+  // 6: contacts for agents. The bulk mark of a message (mailing list,
+  // newsletter, automated mail): 1 bulk, 0 personal, NULL not known (rows
+  // synced before this element; they are judged by their sender only).
+  `
+  ALTER TABLE messages ADD COLUMN bulk INTEGER;
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -536,6 +552,41 @@ const IN_ALL_MAIL = `(m.folder IN (
  */
 const ROW_ROLE = `CASE WHEN f.special_use IS NOT NULL THEN f.special_use
   WHEN upper(m.folder) = 'INBOX' THEN 'inbox' END`;
+
+/** What a contact lookup reads of a message (alias m, folder alias f). */
+const CONTACT_COLUMNS = `m.account_id, m.dedup_key, m.date, m.from_name, m.from_address, m.to_json, m.cc_json,
+  m.bulk, ${ROW_ROLE} AS role`;
+
+/** Messages a contact lookup counts: not moving, not marked bulk, not in junk or trash. */
+const CONTACT_ROWS = `m.move_pending IS NULL AND m.bulk IS NOT 1
+  AND COALESCE(${ROW_ROLE}, '') NOT IN ('junk', 'trash')`;
+
+type ContactRow = {
+  account_id: string;
+  dedup_key: string;
+  date: string | null;
+  from_name: string | null;
+  from_address: string;
+  to_json: string;
+  cc_json: string;
+  bulk: number | null;
+  role: string | null;
+  mask: number;
+};
+
+function toContactMessage(row: ContactRow): ContactMessage {
+  return {
+    accountId: row.account_id,
+    dedupKey: row.dedup_key,
+    date: row.date,
+    from: { name: row.from_name, address: row.from_address },
+    to: JSON.parse(row.to_json) as MailAddress[],
+    cc: JSON.parse(row.cc_json) as MailAddress[],
+    inSent: row.role === "sent",
+    bulk: row.bulk === null ? null : row.bulk === 1,
+    textMask: row.mask,
+  };
+}
 
 /** Messages (alias m) with their folder row (alias f). */
 const MESSAGES_WITH_FOLDER = `messages m LEFT JOIN folders f
@@ -768,6 +819,16 @@ export function createSqliteStore(db: Database.Database): MailStore {
   db.function("mail_lower", { deterministic: true }, (value: unknown) =>
     value === null || value === undefined ? null : String(value).toLowerCase(),
   );
+  // The query words arrive as JSON; the parse is kept for the rows of one statement.
+  let maskWords: { json: string; words: string[] } = { json: "[]", words: [] };
+  db.function("mail_contact_mask", { deterministic: true }, (subject: unknown, snippet: unknown, body: unknown, json: unknown) => {
+    if (json !== maskWords.json) maskWords = { json: String(json), words: JSON.parse(String(json)) as string[] };
+    const text = (value: unknown) => (typeof value === "string" ? value : null);
+    return messageTextMask(text(subject), text(snippet), text(body), maskWords.words);
+  });
+  /** The owner's accounts as a contact lookup needs them, in listAccounts order. */
+  const ownerAccounts = () =>
+    db.prepare<[], { id: string; email: string }>("SELECT id, email FROM accounts ORDER BY created_at, id").all();
   const accountById = db.prepare<[string], AccountRow>("SELECT * FROM accounts WHERE id = ?");
 
   const findAttached = db.prepare<[string, string, number], { id: string }>(
@@ -787,11 +848,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
     `INSERT INTO messages (id, account_id, folder, uid, message_id, in_reply_to, refs, thread_id,
        from_name, from_address, to_json, cc_json, subject, date, snippet, body_text, body_html,
        html_truncated, is_read, is_flagged, has_attachments, size, gm_thrid, gm_msgid, dedup_key,
-       reply_to_json)
+       reply_to_json, bulk)
      VALUES (@id, @accountId, @folder, @uid, @messageId, @inReplyTo, @refs, @threadId,
        @fromName, @fromAddress, @toJson, @ccJson, @subject, @date, @snippet, @bodyText, @bodyHtml,
        @htmlTruncated, @seen, @flagged, @hasAttachments, @size, @gmThreadId, @gmMsgId, @dedupKey,
-       @replyToJson)`,
+       @replyToJson, @bulk)`,
   );
   const updateMessage = db.prepare(
     `UPDATE messages SET uid = @uid, message_id = @messageId, in_reply_to = @inReplyTo,
@@ -799,7 +860,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
        cc_json = @ccJson, reply_to_json = @replyToJson, subject = @subject, date = @date, snippet = @snippet,
        body_text = @bodyText, body_html = @bodyHtml, html_truncated = @htmlTruncated,
        is_read = COALESCE(seen_desired, @seen), is_flagged = COALESCE(flag_desired, @flagged),
-       has_attachments = @hasAttachments, size = @size, gm_thrid = @gmThreadId,
+       has_attachments = @hasAttachments, size = @size, gm_thrid = @gmThreadId, bulk = @bulk,
        gm_msgid = COALESCE(@gmMsgId, gm_msgid),
        dedup_key = CASE
          WHEN COALESCE(@gmMsgId, gm_msgid) IS NOT NULL THEN 'gm:' || COALESCE(@gmMsgId, gm_msgid)
@@ -1184,6 +1245,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
             size: message.size,
             gmThreadId: message.gmThreadId,
             gmMsgId: message.gmMsgId,
+            // NULL: not known (the fetch read no headers).
+            bulk: message.bulkHeaders === undefined ? null : classifyBulk(message.bulkHeaders, message.from.address) ? 1 : 0,
           };
           // A detached row (folder reset, or a move without a uid map) is
           // reattached by Gmail id first, then by Message-ID.
@@ -2557,6 +2620,47 @@ export function createSqliteStore(db: Database.Database): MailStore {
           "DELETE FROM agent_proposals WHERE state NOT IN ('pending', 'confirming') AND updated_at < ?",
         )
         .run(beforeIso).changes;
+    },
+
+    contacts(query, limit) {
+      const words = queryWords(query);
+      if (words.length === 0 || limit <= 0) return [];
+      const rows = db
+        .prepare<[{ words: string; scan: number }], ContactRow>(
+          `SELECT ${CONTACT_COLUMNS},
+             mail_contact_mask(m.subject, m.snippet, substr(m.body_text, 1, ${CONTACT_BODY_CHARS}), @words) AS mask
+           FROM ${MESSAGES_WITH_FOLDER}
+           WHERE ${CONTACT_ROWS}
+           ORDER BY m.date IS NULL, m.date DESC, m.seq DESC LIMIT @scan`,
+        )
+        .all({ words: JSON.stringify(words), scan: CONTACT_SCAN });
+      const bulkSenders = new Set(
+        db
+          .prepare<[], { address: string }>(
+            "SELECT DISTINCT mail_lower(trim(from_address)) AS address FROM messages WHERE bulk = 1",
+          )
+          .all()
+          .map((row) => row.address),
+      );
+      return rankContacts(rows.map(toContactMessage), words, ownerAccounts(), bulkSenders, limit);
+    },
+
+    correspondence(addresses) {
+      const wanted = [...new Set(addresses.map((a) => a.trim().toLowerCase()))].filter((a) => a !== "");
+      if (wanted.length === 0) return [];
+      const inWanted = (column: string) =>
+        `EXISTS (SELECT 1 FROM json_each(${column}) j
+           WHERE mail_lower(trim(json_extract(j.value, '$.address'))) IN (SELECT value FROM json_each(@wanted)))`;
+      const rows = db
+        .prepare<[{ wanted: string }], ContactRow>(
+          `SELECT ${CONTACT_COLUMNS}, 0 AS mask
+           FROM ${MESSAGES_WITH_FOLDER}
+           WHERE ${CONTACT_ROWS}
+             AND (mail_lower(trim(m.from_address)) IN (SELECT value FROM json_each(@wanted))
+               OR ${inWanted("m.to_json")} OR ${inWanted("m.cc_json")})`,
+        )
+        .all({ wanted: JSON.stringify(wanted) });
+      return correspondenceOf(rows.map(toContactMessage), wanted, ownerAccounts());
     },
 
     addressesSentTo(addresses) {

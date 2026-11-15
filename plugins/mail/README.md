@@ -180,10 +180,25 @@ stored only when both servers accept it.
 ## Emails an agent proposes
 
 Off by default. Turn on `agentPropose` ("Let agents propose mail for you to
-send"); it is separate from `agentTools`. Then agents in a thread get one
-tool, `mail_propose`: a new message, a reply, a reply to all or a forward of
+send"); it is separate from `agentTools`. Then agents in a thread get
+`mail_propose`: a new message, a reply, a reply to all or a forward of
 a message they found with `mail_search`, `mail_read` or a mention. The body
 is plain text; a forward can carry only the original's own attachments.
+
+When you say "write to accounting", the agent looks the address up with
+`mail_contacts` (offered while `agentTools` or `agentPropose` is on). It
+returns people, not messages: addresses from the From, To and Cc headers of
+your stored mail only, never ones written inside a message, matched by word
+prefix against the name, the address and domain, and the mail you exchanged
+with them. Spam, Trash and bulk mail are left out: a message with
+`List-Id`, `List-Unsubscribe`, `Precedence: bulk/list/junk` or an
+`Auto-Submitted` other than `no`, or from a no-reply, notifications,
+newsletter, mailer-daemon or postmaster address. People you wrote to come
+first, then two-way correspondence, then the most recent. Mail synced before
+this release has no bulk mark and is judged by its sender address only.
+A new message with no account named goes from the account that corresponds
+with its To recipients (the one that last received mail from them, ties to
+the one that last sent to them); with no history the agent must name one.
 
 The tool never sends. It freezes the message and shows a card in that
 thread with all of it:

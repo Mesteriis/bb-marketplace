@@ -23,6 +23,7 @@ import {
   ImapAuthError,
   capInlineParts,
   type AttachmentMeta,
+  type BulkHeaders,
   type FetchedMessage,
   type FlagChange,
   type ImapConfig,
@@ -540,6 +541,23 @@ export function toFetchedMessage(message: FetchMessageObject, parsed: Email): Fe
       }),
     ),
     inlineParts: toInlineParts(parsed.attachments),
+    bulkHeaders: toBulkHeaders(parsed),
+  };
+}
+
+/**
+ * The bulk headers, from the source MESSAGE_QUERY already fetches with
+ * BODY.PEEK[] (no extra fetch item, never \Seen). A source that did not parse
+ * has no headers: the mark stays unknown.
+ */
+function toBulkHeaders(parsed: Email): BulkHeaders | undefined {
+  if (parsed.headers.length === 0) return undefined;
+  const first = (key: string) => parsed.headers.find((header) => header.key === key)?.value ?? null;
+  return {
+    listId: first("list-id"),
+    listUnsubscribe: first("list-unsubscribe"),
+    precedence: first("precedence"),
+    autoSubmitted: first("auto-submitted"),
   };
 }
 

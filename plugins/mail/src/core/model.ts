@@ -248,6 +248,14 @@ export type StoredAccount = Omit<Account, "smtpConfigured"> & {
 /** An inline (cid-referenced) image part of a message. */
 export type InlinePart = { contentId: string; mimeType: string; data: Uint8Array };
 
+/** The headers that mark a message as bulk (mailing lists, newsletters, automated mail); null when absent. */
+export type BulkHeaders = {
+  listId: string | null;
+  listUnsubscribe: string | null;
+  precedence: string | null;
+  autoSubmitted: string | null;
+};
+
 /** One message of a folder as the IMAP gateway returns it. */
 export type FetchedMessage = {
   uid: number;
@@ -270,6 +278,8 @@ export type FetchedMessage = {
   bodyHtml: string | null;
   attachments: AttachmentMeta[];
   inlineParts: InlinePart[];
+  /** Absent when the fetch did not read headers: the store keeps the bulk mark unknown. */
+  bulkHeaders?: BulkHeaders;
 };
 
 /** A folder as the server lists it. */

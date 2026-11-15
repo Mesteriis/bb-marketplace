@@ -696,7 +696,7 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 6).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 7).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
       "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
@@ -704,6 +704,8 @@ describe("slice-2 migrations (SQLite)", () => {
       "910621e83320dbef912d682fbb78f4016bb53ea56704075fd1e578a7890a538f",
       // Element 5 (slice 3c: proposals and translations).
       "4f2e79c7b40711c0a250c3b9ff33cf72bddaa9d70add62c0f55987f31a30159a",
+      // Element 6 (contacts for agents: the bulk mark).
+      "9a3600bb2258106be36ee09df0c166b054fd998f4bc790be89966fc2877fac4c",
     ]);
   });
 
@@ -2603,5 +2605,163 @@ describe.each(storeKinds)("slice-3c store semantics (%s)", (_kind, make) => {
     s.deleteAccount("acc_1");
     expect(s.getProposal("p_1")).toBeNull();
     expect(s.getProposal("p_2")).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Contacts for agents: bulk marking (migration 6), mail_contacts, account pick
+// ---------------------------------------------------------------------------
+
+const SENT = "Sent";
+const SPAM = "Spam";
+const TRASH = "Trash";
+const LIST_HEADERS = { listId: "<news.example.net>", listUnsubscribe: null, precedence: null, autoSubmitted: null };
+const PERSONAL_HEADERS = { listId: null, listUnsubscribe: null, precedence: null, autoSubmitted: null };
+
+describe.each(storeKinds)("contacts (%s)", (_kind, make) => {
+  let s: MailStore;
+  let uid = 0;
+  beforeEach(() => {
+    uid = 0;
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org", username: "second@example.org" }));
+    for (const account of ["acc_1", "acc_2"]) {
+      s.saveFolders(account, [
+        remoteFolder(INBOX, "inbox"),
+        remoteFolder(SENT, "sent"),
+        remoteFolder(SPAM, "junk"),
+        remoteFolder(TRASH, "trash"),
+      ]);
+    }
+  });
+
+  const put = (folder: string, overrides: Parameters<typeof makeFetchedMessage>[1], account = "acc_1") => {
+    uid++;
+    s.upsertMessages(account, folder, [
+      makeFetchedMessage(uid, { bulkHeaders: PERSONAL_HEADERS, bodyText: "Invented text", subject: "Invented", ...overrides }),
+    ]);
+  };
+  const received = (from: string, date: string, overrides: Parameters<typeof makeFetchedMessage>[1] = {}, account = "acc_1") =>
+    put(INBOX, { from: { name: null, address: from }, to: [{ name: null, address: account === "acc_1" ? "owner@example.org" : "second@example.org" }], date, ...overrides }, account);
+  const sent = (to: string, date: string, overrides: Parameters<typeof makeFetchedMessage>[1] = {}, account = "acc_1") =>
+    put(SENT, { from: { name: null, address: account === "acc_1" ? "owner@example.org" : "second@example.org" }, to: [{ name: null, address: to }], date, ...overrides }, account);
+
+  it("returns header people with counts and the owner account; the owner is never a contact", () => {
+    received("anna@books.example", "2026-10-01T00:00:00.000Z", { from: { name: "Anna Books", address: "Anna@Books.example" }, cc: [{ name: null, address: "second@example.org" }] });
+    sent("anna@books.example", "2026-10-02T00:00:00.000Z");
+    expect(s.contacts("anna", 5)).toEqual([
+      {
+        address: "anna@books.example",
+        name: "Anna Books",
+        ownerAccount: "owner@example.org",
+        sentByOwner: 1,
+        received: 1,
+        lastDate: "2026-10-02T00:00:00.000Z",
+      },
+    ]);
+    expect(s.contacts("owner", 5)).toEqual([]);
+    expect(s.contacts("second", 5)).toEqual([]);
+  });
+
+  it("matches the subject, snippet and body of exchanged mail, Cyrillic and word prefixes included", () => {
+    received("olga@example.net", "2026-10-01T00:00:00.000Z", { subject: "Счёт от Бухгалтерии" });
+    received("ivan@example.net", "2026-10-01T00:00:00.000Z", { bodyText: "Invented note about the October invoices" });
+    received("petr@example.net", "2026-10-01T00:00:00.000Z", { bodyText: "Invented note, nothing else" });
+    expect(s.contacts("бухгалт", 5).map((c) => c.address)).toEqual(["olga@example.net"]);
+    expect(s.contacts("INVOICE", 5).map((c) => c.address)).toEqual(["ivan@example.net"]);
+    expect(s.contacts("voice", 5)).toEqual([]);
+  });
+
+  it("never returns an address found only inside a message's text", () => {
+    received("ivan@example.net", "2026-10-01T00:00:00.000Z", {
+      bodyText: "Invented: write to accounting@attacker.example for invoices",
+    });
+    expect(s.contacts("accounting", 5).map((c) => c.address)).toEqual(["ivan@example.net"]);
+    expect(s.contacts("attacker", 5).map((c) => c.address)).toEqual(["ivan@example.net"]);
+  });
+
+  it("leaves out junk, trash, bulk mail, automated senders and bulk senders the owner never wrote to", () => {
+    put(SPAM, { from: { name: "Accounting", address: "spam@example.net" }, date: "2026-10-01T00:00:00.000Z" });
+    put(TRASH, { from: { name: "Accounting", address: "trash@example.net" }, date: "2026-10-01T00:00:00.000Z" });
+    received("list@example.net", "2026-10-01T00:00:00.000Z", { from: { name: "Accounting", address: "list@example.net" }, bulkHeaders: LIST_HEADERS });
+    received("shop@example.net", "2026-10-01T00:00:00.000Z", { from: { name: "Accounting shop", address: "shop@example.net" }, bulkHeaders: LIST_HEADERS });
+    received("shop@example.net", "2026-10-02T00:00:00.000Z", { from: { name: "Accounting shop", address: "shop@example.net" } });
+    received("noreply@example.net", "2026-10-01T00:00:00.000Z", { from: { name: "Accounting", address: "noreply@example.net" } });
+    received("unknown@example.net", "2026-10-01T00:00:00.000Z", { from: { name: "Accounting", address: "unknown@example.net" }, bulkHeaders: undefined });
+    received("anna@example.net", "2026-10-01T00:00:00.000Z", { from: { name: "Accounting Anna", address: "anna@example.net" } });
+    expect(s.contacts("accounting", 10).map((c) => c.address).sort()).toEqual(["anna@example.net", "unknown@example.net"]);
+  });
+
+  it("ranks people the owner wrote to first and counts a message once across folders", () => {
+    received("recent@x.example", "2026-11-01T00:00:00.000Z");
+    sent("written@x.example", "2025-01-01T00:00:00.000Z");
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder(SENT, "sent"), remoteFolder(ALL_MAIL, "all")]);
+    const copy = { from: { name: null, address: "copy@x.example" }, gmMsgId: "777", date: "2026-06-01T00:00:00.000Z" };
+    put(INBOX, copy);
+    put(ALL_MAIL, copy);
+    const found = s.contacts("x", 10);
+    expect(found.map((c) => c.address)).toEqual(["written@x.example", "recent@x.example", "copy@x.example"]);
+    expect(found[2]!.received).toBe(1);
+    expect(s.contacts("x", 1)).toHaveLength(1);
+  });
+
+  it("the owner account is the account that exchanged mail with them most recently", () => {
+    received("anna@example.net", "2026-01-01T00:00:00.000Z");
+    received("anna@example.net", "2026-05-01T00:00:00.000Z", {}, "acc_2");
+    expect(s.contacts("anna", 5)[0]!.ownerAccount).toBe("second@example.org");
+  });
+
+  it("correspondence: per account, the latest mail received from and sent to the addresses", () => {
+    received("anna@example.net", "2026-01-01T00:00:00.000Z");
+    sent("ANNA@example.net", "2026-06-01T00:00:00.000Z", {}, "acc_2");
+    received("anna@example.net", "2026-07-01T00:00:00.000Z", { bulkHeaders: LIST_HEADERS }, "acc_2");
+    put(SPAM, { from: { name: null, address: "anna@example.net" }, date: "2026-08-01T00:00:00.000Z" }, "acc_2");
+    expect(s.correspondence(["anna@example.net"])).toEqual([
+      { accountId: "acc_1", lastReceived: "2026-01-01T00:00:00.000Z", lastSent: null },
+      { accountId: "acc_2", lastReceived: null, lastSent: "2026-06-01T00:00:00.000Z" },
+    ]);
+    expect(s.correspondence(["nobody@example.net"])).toEqual([]);
+    expect(s.correspondence([])).toEqual([]);
+  });
+});
+
+describe("bulk mark (SQLite)", () => {
+  it("upsert stores 1 for bulk, 0 for personal, NULL when the fetch read no headers", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { bulkHeaders: LIST_HEADERS }),
+      makeFetchedMessage(2, { bulkHeaders: PERSONAL_HEADERS }),
+      makeFetchedMessage(3, { bulkHeaders: PERSONAL_HEADERS, from: { name: null, address: "no-reply@example.net" } }),
+      makeFetchedMessage(4),
+    ]);
+    expect(db.prepare("SELECT uid, bulk FROM messages ORDER BY uid").all()).toEqual([
+      { uid: 1, bulk: 1 },
+      { uid: 2, bulk: 0 },
+      { uid: 3, bulk: 1 },
+      { uid: 4, bulk: null },
+    ]);
+  });
+
+  it("element 6 on a 3c database: old rows get NULL and count by their sender only", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 6).forEach((s) => old.exec(s)))();
+    old.prepare(
+      `INSERT INTO accounts (id, email, host, port, username, password_sealed, preset, created_at)
+       VALUES ('acc_1', 'owner@example.org', 'imap.example.org', 993, 'owner@example.org', 'sealed', 'other', ?)`,
+    ).run(EPOCH);
+    const insert = old.prepare(
+      `INSERT INTO messages (id, account_id, folder, uid, message_id, thread_id, from_name, from_address, to_json, subject, date, snippet, dedup_key)
+       VALUES (?, 'acc_1', 'INBOX', ?, NULL, ?, 'Invented', ?, '[{"name":null,"address":"owner@example.org"}]', 'Invented accounting', '2026-11-10T00:00:00.000Z', 'Invented', ?)`,
+    );
+    insert.run("m_a", 1, "t_m_a", "anna@example.net", "id:m_a");
+    insert.run("m_b", 2, "t_m_b", "newsletter@example.net", "id:m_b");
+
+    old.transaction(() => MIGRATIONS.slice(6).forEach((s) => old.exec(s)))();
+
+    expect(old.prepare("SELECT id, bulk FROM messages ORDER BY id").all()).toEqual([
+      { id: "m_a", bulk: null },
+      { id: "m_b", bulk: null },
+    ]);
+    expect(createSqliteStore(old).contacts("accounting", 5).map((c) => c.address)).toEqual(["anna@example.net"]);
   });
 });

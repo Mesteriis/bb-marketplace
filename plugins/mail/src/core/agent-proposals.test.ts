@@ -17,7 +17,7 @@ import {
 import { ATTACHMENT_CAP_BYTES, outgoingOf } from "./compose.ts";
 import { SEND_RATE_PER_MINUTE, UNDO_MS, cancelSend, retrySend, runOutboxOnce, sendNow } from "./compose-outbox.ts";
 import { SendError } from "./ports.ts";
-import { FakeBuilder, composeHarness, makeFetchedMessage } from "./testing/fakes.ts";
+import { FakeBuilder, composeHarness, makeFetchedMessage, makeStoredAccount } from "./testing/fakes.ts";
 
 let h: ReturnType<typeof composeHarness>;
 let d: ReturnType<typeof composeHarness>["proposalDeps"];
@@ -682,5 +682,74 @@ describe("resolveSendingAccount", () => {
 
   it("no accounts at all is the plain account refusal", () => {
     expect(() => resolveSendingAccount([], undefined)).toThrow(/cannot send right now/);
+  });
+
+  it.each<[string, { accountId: string; lastReceived: string | null; lastSent: string | null }[], string | null]>([
+    ["the account that received mail from the recipients", [{ accountId: "acc-2", lastReceived: "2026-06-01T00:00:00.000Z", lastSent: null }], "acc-2"],
+    ["the most recent receipt wins over a later send", [
+      { accountId: "acc-1", lastReceived: null, lastSent: "2026-09-01T00:00:00.000Z" },
+      { accountId: "acc-2", lastReceived: "2026-01-01T00:00:00.000Z", lastSent: null },
+    ], "acc-2"],
+    ["a tie in receipts goes to the latest send", [
+      { accountId: "acc-1", lastReceived: "2026-01-01T00:00:00.000Z", lastSent: "2026-05-01T00:00:00.000Z" },
+      { accountId: "acc-2", lastReceived: "2026-01-01T00:00:00.000Z", lastSent: "2026-02-01T00:00:00.000Z" },
+    ], "acc-1"],
+    ["sent only", [{ accountId: "acc-1", lastReceived: null, lastSent: "2026-01-01T00:00:00.000Z" }], "acc-1"],
+    ["no history: the agent must choose", [], null],
+  ])("several accounts, none named: %s", (_name, history, picked) => {
+    const resolve = () => resolveSendingAccount([ICLOUD, GMAIL], undefined, () => history);
+    if (picked === null) expect(resolve).toThrow(/several mail accounts.*Accounts: owner@example\.com, Owner\.Two@example\.org\./);
+    else expect(resolve()).toBe(picked);
+  });
+
+  it("a named account wins over history, and history is not read for one account", () => {
+    let reads = 0;
+    const history = () => {
+      reads++;
+      return [{ accountId: "acc-2", lastReceived: "2026-06-01T00:00:00.000Z", lastSent: null }];
+    };
+    expect(resolveSendingAccount([ICLOUD, GMAIL], "acc-1", history)).toBe("acc-1");
+    expect(resolveSendingAccount([ICLOUD], undefined, history)).toBe("acc-1");
+    expect(reads).toBe(0);
+  });
+});
+
+describe("proposeMail picks the sending account from the recipients' history", () => {
+  beforeEach(() => {
+    h.store.saveAccount(
+      makeStoredAccount({
+        id: "acc_2",
+        email: "second@example.org",
+        username: "second@example.org",
+        createdAt: "2026-02-01T00:00:00.000Z",
+        passwordSealed: "invented-password",
+        smtp: { host: "smtp.example.org", port: 465, security: "tls", username: null },
+        sentCopy: "append",
+      }),
+    );
+  });
+
+  it("a new message without accountId goes from the account that received mail from the To recipient", async () => {
+    h.store.upsertMessages("acc_2", "INBOX", [
+      makeFetchedMessage(1, {
+        from: { name: "Bob", address: "Bob@example.com" },
+        to: [{ name: null, address: "second@example.org" }],
+        bulkHeaders: { listId: null, listUnsubscribe: null, precedence: null, autoSubmitted: null },
+      }),
+    ]);
+    const { proposalId } = await propose({ accountId: undefined });
+    expect(h.store.getProposal(proposalId)!.accountId).toBe("acc_2");
+  });
+
+  it("refuses with the owner's addresses when no To recipient has history, and ignores bulk mail", async () => {
+    h.store.upsertMessages("acc_2", "INBOX", [
+      makeFetchedMessage(1, {
+        from: { name: "Bob", address: "bob@example.com" },
+        bulkHeaders: { listId: "<list.example.com>", listUnsubscribe: null, precedence: null, autoSubmitted: null },
+      }),
+    ]);
+    const error = await refusal(propose({ accountId: undefined }));
+    expect(error.kind).toBe("account_required");
+    expect(error.message).toMatch(/owner@example\.org, second@example\.org/);
   });
 });
