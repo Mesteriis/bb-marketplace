@@ -29,6 +29,7 @@ import type {
   AttachmentMeta,
   DraftView,
   Folder,
+  IdentityView,
   MAIL_CHANGED_CHANNEL as MailChangedChannel,
   MessageAction,
   MessageHeader,
@@ -83,6 +84,7 @@ import {
   type TranslationState,
 } from "./src/ui/translation-block.tsx";
 import { TranslationSettings } from "./src/ui/translation-settings.tsx";
+import { MailSettings, type SettingsSection, type TemplateView } from "./src/ui/mail-settings.tsx";
 import type { LanguageTag } from "./src/core/translate.ts";
 import { subjectOrPlaceholder } from "./src/ui/thread-list.tsx";
 
@@ -303,7 +305,8 @@ function useDebouncedRealtime(channel: string, run: (payloads: unknown[]) => voi
 type PageCommand =
   | { kind: "compose" }
   | { kind: "account"; choice: string }
-  | { kind: "view"; view: MailView };
+  | { kind: "view"; view: MailView }
+  | { kind: "settings" };
 
 /**
  * What the Mail page and its sidebar share while both are mounted (they are
@@ -1734,6 +1737,79 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     }
   }, [runTranslation]);
 
+  // ---- Mail settings: sending addresses, signatures, templates (slice 3d) ----
+
+  const [settings, setSettings] = useState<{ open: boolean; section: SettingsSection }>({
+    open: false,
+    section: "addresses",
+  });
+  const [identities, setIdentities] = useState<IdentityView[]>([]);
+  const [templates, setTemplates] = useState<TemplateView[]>([]);
+  const loadIdentities = useCallback(async () => {
+    try {
+      setIdentities((await rpc.call("identities_list", { accountId: null })).identities);
+    } catch {
+      // The composer falls back to the accounts' own addresses.
+    }
+  }, [rpc]);
+  const loadTemplates = useCallback(async () => {
+    try {
+      setTemplates((await rpc.call("templates_list", {})).templates as TemplateView[]);
+    } catch {
+      // Settings and the picker show what was loaded last.
+    }
+  }, [rpc]);
+  const accountIds = accounts.map((a) => a.id).join(",");
+  useEffect(() => {
+    if (status?.vaultReady === true && accountIds !== "") void loadIdentities();
+  }, [accountIds, loadIdentities, status?.vaultReady]);
+  const openSettings = useCallback(
+    (section: SettingsSection) => {
+      setSettings({ open: true, section });
+      void loadIdentities();
+      void loadTemplates();
+    },
+    [loadIdentities, loadTemplates],
+  );
+  const settingsDialog = (
+    <MailSettings
+      open={settings.open}
+      section={settings.section}
+      onOpenChange={(open) => setSettings((prev) => ({ ...prev, open }))}
+      accounts={accounts}
+      identities={identities}
+      templates={templates}
+      suggestions={async (accountId) => (await rpc.call("identity_suggestions", { accountId })).suggestions}
+      onAdd={async (input) => {
+        await rpc.call("identity_add", input);
+        await loadIdentities();
+      }}
+      onUpdate={async (input) => {
+        await rpc.call("identity_update", input as never);
+        await loadIdentities();
+      }}
+      onRemove={async (input) => {
+        await rpc.call("identity_remove", input);
+        await loadIdentities();
+      }}
+      onDismiss={async (input) => {
+        await rpc.call("identity_dismiss", input);
+      }}
+      onSaveTemplate={async (input) => {
+        await rpc.call("template_save", input as never);
+        await loadTemplates();
+      }}
+      onDeleteTemplate={async (id) => {
+        await rpc.call("template_delete", { id });
+        await loadTemplates();
+      }}
+      onOpenSmtp={(accountId) => {
+        setSettings((prev) => ({ ...prev, open: false }));
+        setSmtpAccountId(accountId);
+      }}
+    />
+  );
+
   // ---- The sidebar's rail ----
 
   const outboxInScope = useMemo(
@@ -1773,6 +1849,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       case "view":
         selectView(command.view);
         setFocusRequest((n) => n + 1);
+        return;
+      case "settings":
+        openSettings("addresses");
         return;
     }
   };
@@ -1865,6 +1944,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       clear={clearTranslations}
       onSaved={translateSettingsSaved}
     />
+    {settingsDialog}
     </>
   );
 }
@@ -1906,6 +1986,9 @@ function MailFolderSidebar(_props: PluginNavPanelProps) {
         if (!mailPageLink.send({ kind: "view", view })) {
           navigate.toPluginPanel("mail", { subPath: viewSubPath(view) });
         }
+      }}
+      onOpenSettings={() => {
+        if (!mailPageLink.send({ kind: "settings" })) navigate.toPluginPanel("mail");
       }}
     />
   );

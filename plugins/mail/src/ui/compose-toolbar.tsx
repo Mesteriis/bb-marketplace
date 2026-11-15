@@ -13,7 +13,7 @@ export function modKeyLabel(platform: string = typeof navigator === "undefined" 
   return /mac|iphone|ipad|ipod/i.test(platform) ? "⌘" : "Ctrl+";
 }
 
-type ToolId = "bold" | "italic" | "underline" | "bulletList" | "orderedList" | "link" | "blockquote" | "clear";
+export type ToolId = "bold" | "italic" | "underline" | "bulletList" | "orderedList" | "link" | "blockquote" | "clear";
 
 interface Tool {
   id: ToolId;
@@ -24,7 +24,7 @@ interface Tool {
   key?: string;
 }
 
-const TOOLS: Tool[] = [
+const ALL_TOOLS: Tool[] = [
   { id: "bold", label: "Bold", icon: "Bold", fallback: "Type", key: "B" },
   { id: "italic", label: "Italic", icon: "Italic", fallback: "Type", key: "I" },
   { id: "underline", label: "Underline", icon: "Underline", fallback: "Type", key: "U" },
@@ -62,11 +62,14 @@ export interface ComposeToolbarProps {
   /** The link field is open (the toolbar's Link button or Cmd/Ctrl+K). */
   linkOpen: boolean;
   onLinkOpenChange: (open: boolean) => void;
+  /** The tools shown, in the toolbar's order; all of them by default. */
+  tools?: readonly ToolId[];
   className?: string;
 }
 
-export function ComposeToolbar({ editor, linkOpen, onLinkOpenChange, className }: ComposeToolbarProps) {
+export function ComposeToolbar({ editor, linkOpen, onLinkOpenChange, tools: shown, className }: ComposeToolbarProps) {
   const mod = modKeyLabel();
+  const TOOLS = shown === undefined ? ALL_TOOLS : ALL_TOOLS.filter((tool) => shown.includes(tool.id));
   const [focusIndex, setFocusIndex] = useState(0);
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
   const active = useEditorState({

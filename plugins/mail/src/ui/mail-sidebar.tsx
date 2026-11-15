@@ -53,6 +53,8 @@ export interface MailSidebarProps {
   /** An account id, or ALL_ACCOUNTS. */
   onSelectAccount: (choice: string) => void;
   onSelectView: (view: MailView) => void;
+  /** The gear in the rail footer: Mail settings (sending addresses, signatures, templates). */
+  onOpenSettings?: () => void;
 }
 
 function Notice({ children }: { children: string }) {
@@ -154,7 +156,7 @@ function OutboxRowButton({
   );
 }
 
-export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView }: MailSidebarProps) {
+export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, onOpenSettings }: MailSidebarProps) {
   const body = (() => {
     if (state === null) return <Notice>Loading mail…</Notice>;
     if (!state.vaultReady) return <Notice>Mail is not set up yet.</Notice>;
@@ -194,6 +196,19 @@ export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView }:
             <OutboxRowButton rows={state.outbox} target={toOutbox} onSelect={onSelectView} />
           ) : null}
         </div>
+        {onOpenSettings !== undefined ? (
+          <div className="flex shrink-0 items-center border-t border-border px-1.5 py-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-full justify-start px-2 text-muted-foreground"
+              onClick={onOpenSettings}
+            >
+              <Icon name="Settings" fallback="Info" aria-hidden />
+              Mail settings
+            </Button>
+          </div>
+        ) : null}
       </>
     );
   })();

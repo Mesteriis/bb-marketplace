@@ -3391,3 +3391,47 @@ describe("Translation", () => {
     await waitFor(() => expect(callsTo(slot, "translate_start")).toHaveLength(1));
   });
 });
+
+describe("Mail settings (slice 3d)", () => {
+  const ownIdentity = {
+    accountId: "acc-1",
+    address: "owner@example.org",
+    displayName: null,
+    primary: true,
+    signature: null,
+    sendCheck: "unknown" as const,
+  };
+  const settingsRpc = (overrides: Record<string, (input: never) => unknown> = {}) =>
+    mailRpc({
+      identities_list: () => ({ identities: [ownIdentity] }),
+      identity_suggestions: () => ({ suggestions: [] }),
+      identity_add: () => ({ ...ownIdentity, address: "team@example.org", primary: false }),
+      templates_list: () => ({ templates: [] }),
+      ...overrides,
+    });
+
+  it("the gear in the rail opens the dialog; Add address calls identity_add and reloads the list", async () => {
+    const slot = render(settingsRpc());
+    fireEvent.click(await folderRail(slot).findByRole("button", { name: "Mail settings" }));
+    const dialog = await slot.findByRole("dialog", { name: "Mail settings" });
+    expect(await within(dialog).findByText("Own address")).toBeTruthy();
+    expect(callsTo(slot, "identities_list").at(-1)?.input).toEqual({ accountId: null });
+    await waitFor(() => expect(callsTo(slot, "identity_suggestions")[0]?.input).toEqual({ accountId: "acc-1" }));
+    const before = callsTo(slot, "identities_list").length;
+    fireEvent.change(within(dialog).getByLabelText("Address"), { target: { value: "team@example.org" } });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Add address" }));
+    });
+    expect(callsTo(slot, "identity_add")[0]?.input).toEqual({ accountId: "acc-1", address: "team@example.org" });
+    await waitFor(() => expect(callsTo(slot, "identities_list").length).toBeGreaterThan(before));
+  });
+
+  it("SMTP settings… closes it and opens the account's SMTP dialog", async () => {
+    const slot = render(settingsRpc());
+    fireEvent.click(await folderRail(slot).findByRole("button", { name: "Mail settings" }));
+    const dialog = await slot.findByRole("dialog", { name: "Mail settings" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "SMTP settings…" }));
+    await waitFor(() => expect(slot.queryByRole("dialog", { name: "Mail settings" })).toBeNull());
+    expect(await slot.findByRole("dialog", { name: /SMTP/ })).toBeTruthy();
+  });
+});
