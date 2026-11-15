@@ -7,7 +7,7 @@
 // This file is the BB adapter: it owns RPC, realtime refreshes, navigation and
 // the composer, and hands plain data and callbacks to the host-agnostic page
 // in src/ui.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   definePluginApp,
   experimental_copyToClipboard,
@@ -18,6 +18,8 @@ import {
   useRealtime,
   useRpc,
   type ExperimentalBadge,
+  type PluginNavPanelProps,
+  type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server.ts";
@@ -31,6 +33,7 @@ import type {
   RoleCount,
   StatusView,
   ThreadDetail,
+  ThreadSummary,
 } from "./src/core/index.ts";
 import { isRoleMoveAction, roleFolders } from "./src/core/actions.ts";
 import type { DetailsState } from "./src/ui/details-panel.tsx";
@@ -43,6 +46,7 @@ import {
   type RoleName,
 } from "./src/ui/folder-list.tsx";
 import {
+  accountMarkers,
   ALL_ACCOUNTS,
   MailPage,
   type AccountFormRequest,
@@ -51,6 +55,8 @@ import {
   type ThreadListState,
 } from "./src/ui/mail-page.tsx";
 import type { BodyState } from "./src/ui/reading-pane.tsx";
+import { parseThreadSubPath, threadSubPath, type ThreadLink } from "./src/ui/routes.ts";
+import { SidebarMailList } from "./src/ui/sidebar-mail-list.tsx";
 import { subjectOrPlaceholder } from "./src/ui/thread-list.tsx";
 
 // The channel name is checked against the core constant without importing it
@@ -233,9 +239,40 @@ function useDebouncedRealtime(channel: string, run: (payloads: unknown[]) => voi
   });
 }
 
+/**
+ * What the Mail page and the sidebar list share while both are mounted: the
+ * conversation the page shows (the sidebar highlights it), and the sidebar's
+ * requests to open one. A request reaches a page that is already showing; a
+ * page that mounts later opens the conversation from its subPath instead.
+ */
+const mailPageLink = (() => {
+  let active: string | null = null;
+  const activeListeners = new Set<() => void>();
+  const openListeners = new Set<(link: ThreadLink) => void>();
+  return {
+    activeThreadId: () => active,
+    setActiveThreadId(threadId: string | null) {
+      if (threadId === active) return;
+      active = threadId;
+      for (const listener of activeListeners) listener();
+    },
+    subscribeActive(listener: () => void) {
+      activeListeners.add(listener);
+      return () => void activeListeners.delete(listener);
+    },
+    requestOpen(link: ThreadLink) {
+      for (const listener of openListeners) listener(link);
+    },
+    onOpenRequest(listener: (link: ThreadLink) => void) {
+      openListeners.add(listener);
+      return () => void openListeners.delete(listener);
+    },
+  };
+})();
+
 type FolderState = { key: string; folders: Folder[]; roles: RoleCount[]; error: string | null };
 
-function MailPanel() {
+function MailPanel({ subPath }: PluginNavPanelProps) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const composer = useComposer();
@@ -284,6 +321,14 @@ function MailPanel() {
   const opened = useRef(new Set<string>());
   /** The account of the conversation open in the reading pane. */
   const openAccount = useRef<string | null>(null);
+  /** The conversation open in the reading pane (or opening), at once rather than after a render. */
+  const openThreadId = useRef<string | null>(null);
+  /**
+   * A conversation the sidebar asked for. It stays wanted while the page settles
+   * (status, then folders, may reset the view) and is dropped once the owner
+   * picks something on the page.
+   */
+  const wantedLink = useRef<ThreadLink | null>(null);
   const requests = useRef({ list: 0, search: 0, thread: 0, folders: 0, details: 0 });
   const pendingRef = useRef(false);
   /** Stars being changed by the owner: a list refresh meanwhile keeps these values. */
@@ -506,7 +551,10 @@ function MailPanel() {
         if (open === null) {
           // A refresh keeps what is on screen, unless the conversation is gone
           // (its messages were deleted on the server).
-          if ((error as { code?: unknown } | null)?.code === "not_found") setReading(NO_READING);
+          if ((error as { code?: unknown } | null)?.code === "not_found") {
+            openThreadId.current = null;
+            setReading(NO_READING);
+          }
           return;
         }
         setReading((prev) => ({ ...prev, loading: false, error: messageOf(error) }));
@@ -514,6 +562,47 @@ function MailPanel() {
     },
     [expandMessage, markOpened, rpc],
   );
+
+  const selectThread = useCallback(
+    (threadId: string, messageId: string | null, accountId: string) => {
+      openAccount.current = accountId;
+      openThreadId.current = threadId;
+      setReading({ ...NO_READING, threadId, loading: true });
+      void loadThread(threadId, { focusId: messageId });
+    },
+    [loadThread],
+  );
+
+  const closeThread = useCallback(() => {
+    requests.current.thread++;
+    openThreadId.current = null;
+    wantedLink.current = null;
+    setReading(NO_READING);
+  }, []);
+
+  /** Opens the conversation the sidebar names, unless it is already open. */
+  const openLinked = useCallback(
+    (link: ThreadLink) => {
+      wantedLink.current = link;
+      if (latest.current.scopeKey === null) return; // the view reset below opens it
+      if (openThreadId.current === link.threadId && openAccount.current === link.accountId) return;
+      selectThread(link.threadId, null, link.accountId);
+    },
+    [selectThread],
+  );
+
+  useEffect(() => {
+    const link = parseThreadSubPath(subPath);
+    if (link !== null) openLinked(link);
+  }, [subPath, openLinked]);
+
+  useEffect(() => mailPageLink.onOpenRequest(openLinked), [openLinked]);
+
+  useEffect(() => {
+    mailPageLink.setActiveThreadId(reading.threadId);
+  }, [reading.threadId]);
+
+  useEffect(() => () => mailPageLink.setActiveThreadId(null), []);
 
   useEffect(() => {
     void loadStatus();
@@ -528,8 +617,10 @@ function MailPanel() {
   }, [scopeKey, loadFolders, runSearch]);
 
   // A new view starts from its first page with nothing open or selected.
+  // A conversation the sidebar asked for opens again over the reset.
   useEffect(() => {
     requests.current.thread++;
+    openThreadId.current = null;
     setReading(NO_READING);
     setSelection(NO_SELECTION);
     if (scopeKey === null) {
@@ -537,7 +628,9 @@ function MailPanel() {
       return;
     }
     void loadList(latest.current.view, "reset");
-  }, [scopeKey, currentViewKey, loadList]);
+    const link = wantedLink.current;
+    if (link !== null) selectThread(link.threadId, null, link.accountId);
+  }, [scopeKey, currentViewKey, loadList, selectThread]);
 
   useEffect(
     () => () => {
@@ -579,25 +672,13 @@ function MailPanel() {
     }
   });
 
-  const selectThread = useCallback(
-    (threadId: string, messageId: string | null, accountId: string) => {
-      openAccount.current = accountId;
-      setReading({ ...NO_READING, threadId, loading: true });
-      void loadThread(threadId, { focusId: messageId });
-    },
-    [loadThread],
-  );
-
-  const closeThread = useCallback(() => {
-    requests.current.thread++;
-    setReading(NO_READING);
-  }, []);
 
   /** A view change resets the list (the effect above) and ends any search. */
   const selectView = useCallback(
     (next: MailView) => {
       const { scopeKey: key, search: currentSearch, searchAccount: forAccount } = latest.current;
       if (key === null) return;
+      wantedLink.current = null;
       setChosenView({ key, view: next });
       if (currentSearch.query !== "") void runSearch("", forAccount);
     },
@@ -1061,7 +1142,10 @@ function MailPanel() {
       statusError={statusError}
       account={account}
       unified={unified}
-      onSelectAccount={setChosen}
+      onSelectAccount={(choice) => {
+        wantedLink.current = null;
+        setChosen(choice);
+      }}
       folders={folders}
       roles={scoped?.roles ?? []}
       foldersError={scoped?.error ?? null}
@@ -1076,7 +1160,10 @@ function MailPanel() {
       syncing={syncing}
       onSync={() => void sync()}
       reading={reading}
-      onSelectThread={selectThread}
+      onSelectThread={(threadId, messageId, accountId) => {
+        wantedLink.current = null;
+        selectThread(threadId, messageId, accountId);
+      }}
       onCloseThread={closeThread}
       onToggleMessage={toggleMessage}
       onOpenLink={openLink}
@@ -1121,6 +1208,115 @@ function useUnreadBadge(): ExperimentalBadge | null {
   return count > 0 ? { count, label: "Unread mail" } : null;
 }
 
+type SidebarListState = {
+  threads: ThreadSummary[];
+  nextCursor: string | null;
+  loading: boolean;
+  loadingMore: boolean;
+  error: string | null;
+};
+
+const SIDEBAR_SCOPE = { kind: "all", role: "inbox" } as const;
+
+/**
+ * The sidebar's thread list (Settings → Appearance → thread list "Mail"): the
+ * merged Inbox of every account. A row opens the conversation on the Mail page.
+ */
+function MailThreadList({ onNavigate }: PluginThreadListProps) {
+  const rpc = useRpc<typeof rpcContract>();
+  const navigate = useBbNavigate();
+  const activeThreadId = useSyncExternalStore(
+    mailPageLink.subscribeActive,
+    mailPageLink.activeThreadId,
+    mailPageLink.activeThreadId,
+  );
+  const [status, setStatus] = useState<StatusView | null>(null);
+  const [list, setList] = useState<SidebarListState>({ ...EMPTY_LIST, loading: true });
+  const latestList = useRef(list);
+  latestList.current = list;
+  const token = useRef(0);
+
+  /** "reset" loads the first page; "refresh" as many as are shown; "more" the next page. */
+  const load = useCallback(
+    async (mode: "reset" | "refresh" | "more") => {
+      const request = ++token.current;
+      let current: StatusView;
+      try {
+        current = await rpc.call("status_get", null);
+      } catch (error) {
+        if (request !== token.current) return;
+        setList((prev) => ({ ...prev, loading: false, loadingMore: false, error: messageOf(error) }));
+        return;
+      }
+      if (request !== token.current) return;
+      setStatus(current);
+      if (!current.vaultReady || current.accounts.length === 0) {
+        setList(EMPTY_LIST);
+        return;
+      }
+      const shown = latestList.current;
+      const wanted = mode === "refresh" ? Math.max(shown.threads.length, PAGE_SIZE) : PAGE_SIZE;
+      if (mode === "more") setList((prev) => ({ ...prev, loadingMore: true }));
+      try {
+        const threads: ThreadSummary[] = [];
+        let cursor = mode === "more" ? shown.nextCursor : null;
+        do {
+          const limit = Math.min(wanted - threads.length, MAX_PAGE);
+          const page = await rpc.call("threads_list", { scope: SIDEBAR_SCOPE, cursor, limit });
+          if (request !== token.current) return;
+          threads.push(...page.threads);
+          cursor = page.nextCursor;
+        } while (cursor !== null && threads.length < wanted);
+        setList((prev) => ({
+          threads: mode === "more" ? [...prev.threads, ...threads] : threads,
+          nextCursor: cursor,
+          loading: false,
+          loadingMore: false,
+          error: null,
+        }));
+      } catch (error) {
+        if (request !== token.current) return;
+        setList((prev) => ({ ...prev, loading: false, loadingMore: false, error: messageOf(error) }));
+      }
+    },
+    [rpc],
+  );
+
+  useEffect(() => {
+    void load("reset");
+  }, [load]);
+  useDebouncedRealtime(MAIL_CHANGED_CHANNEL, () => void load("refresh"));
+
+  const accounts = status?.accounts ?? [];
+  const markers = accountMarkers(accounts);
+  const openMail = () => {
+    navigate.toPluginPanel("mail");
+    onNavigate();
+  };
+
+  return (
+    <SidebarMailList
+      threads={list.threads}
+      loading={list.loading}
+      error={list.error}
+      noAccounts={status !== null && (!status.vaultReady || accounts.length === 0)}
+      activeThreadId={activeThreadId}
+      ownAddress={(accountId) => accounts.find((a) => a.id === accountId)?.email ?? null}
+      marker={(accountId) => (accounts.length > 1 ? (markers.get(accountId) ?? null) : null)}
+      onOpen={(thread) => {
+        navigate.toPluginPanel("mail", { subPath: threadSubPath(thread.accountId, thread.id) });
+        mailPageLink.requestOpen({ accountId: thread.accountId, threadId: thread.id });
+        onNavigate();
+      }}
+      hasMore={list.nextCursor !== null}
+      loadingMore={list.loadingMore}
+      onLoadMore={() => void load("more")}
+      onOpenMail={openMail}
+      onAddAccount={openMail}
+    />
+  );
+}
+
 // The default export must be definePluginApp(...); BB interprets it after
 // loading the bundle. navPanel adds a page to the left sidebar, routed at
 // /plugins/makosh-mail/mail.
@@ -1132,5 +1328,11 @@ export default definePluginApp((app) => {
     path: "mail",
     component: MailPanel,
     experimental_useBadge: useUnreadBadge,
+  });
+  app.slots.experimental_threadList({
+    id: "mail",
+    title: "Mail",
+    description: "Inbox conversations from all mail accounts instead of chats.",
+    component: MailThreadList,
   });
 });

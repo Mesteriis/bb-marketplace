@@ -40,7 +40,8 @@ export function formatFullDate(iso: string | null): string {
   return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-function participantsLabel(participants: MailAddress[], ownAddress: string | null): string {
+/** Who a conversation is with: everyone but the account itself, by name where known. */
+export function participantsLabel(participants: MailAddress[], ownAddress: string | null): string {
   const own = ownAddress?.toLowerCase() ?? null;
   const others = participants.filter((p) => p.address.toLowerCase() !== own);
   const shown = others.length > 0 ? others : participants;
