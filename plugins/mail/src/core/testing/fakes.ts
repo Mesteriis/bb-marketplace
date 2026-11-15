@@ -64,7 +64,8 @@ import {
 } from "../contacts.ts";
 import type { ComposeDoc } from "../compose-doc.ts";
 import type { SignatureDoc } from "../compose-signature.ts";
-import type { AliasRow, InboundRow, SendCheck } from "../identities.ts";
+import { IDENTITIES_MAX_PER_ACCOUNT, resolveSendCheck, type AliasRow, type InboundRow, type SendCheck } from "../identities.ts";
+import { ComposeError } from "../compose.ts";
 import type { UndoRow } from "../undo.ts";
 import { ImapAuthError, type NewProposal, type ProposalRecord, type TemplateRecord, type TranslationRecord, type AccountWriteQueue, type MailTransport, type MessageBuilder, type OriginalReader, type OutboxNotifier, type SendResult, type SmtpConfig } from "../ports.ts";
 import type { OutboxChangedPayload } from "../contract.ts";
@@ -235,6 +236,10 @@ type StoreState = {
   proposals: Map<string, ProposalRecord>;
   /** By `${messageId}\u0000${targetLanguage}`. */
   translations: Map<string, TranslationRecord>;
+  /** Alias rows (slice 3d), in insertion order. */
+  identities: AliasRow[];
+  /** `${accountId}\u0000${lowercased address}` → last sent (slice 3d `sent_recipients`). */
+  sentRecipients: Map<string, string>;
 };
 
 type StoredComposeAttachment = ComposeAttachment & {
@@ -293,6 +298,8 @@ export class InMemoryMailStore implements MailStore {
     outbox: new Map(),
     proposals: new Map(),
     translations: new Map(),
+    identities: [],
+    sentRecipients: new Map(),
   };
 
   /** Runs fn; on a throw restores the state from before the call, like a rollback. */
@@ -355,6 +362,10 @@ export class InMemoryMailStore implements MailStore {
     }
     for (const [key, proposal] of [...this.state.proposals]) {
       if (proposal.accountId === id) this.state.proposals.delete(key);
+    }
+    this.state.identities = this.state.identities.filter((row) => row.accountId !== id);
+    for (const key of [...this.state.sentRecipients.keys()]) {
+      if (key.startsWith(`${id}\u0000`)) this.state.sentRecipients.delete(key);
     }
     this.dropOrphanTranslations();
   }
@@ -935,6 +946,14 @@ export class InMemoryMailStore implements MailStore {
     const entry = this.state.outbox.get(id);
     if (!entry || !from.includes(entry.record.state)) return false;
     const record = entry.record;
+    if (to === "sent") {
+      // sent_recipients: every accepted envelope recipient (slice 3d).
+      const refused = new Set((patch.rejected ?? record.rejected).map((a) => a.trim().toLowerCase()));
+      for (const address of record.envelopeTo) {
+        const key = address.trim().toLowerCase();
+        if (!refused.has(key)) this.state.sentRecipients.set(`${record.accountId}\u0000${key}`, patch.updatedAt ?? record.updatedAt);
+      }
+    }
     record.state = to;
     if (patch.errorKind !== undefined) record.errorKind = patch.errorKind;
     if (patch.rejected !== undefined) record.rejected = [...patch.rejected];
@@ -1243,6 +1262,10 @@ export class InMemoryMailStore implements MailStore {
   addressesSentTo(addresses: string[]): Set<string> {
     const wanted = new Set(addresses.map((a) => a.trim().toLowerCase()));
     const found = new Set<string>();
+    for (const key of this.state.sentRecipients.keys()) {
+      const address = key.slice(key.indexOf("\u0000") + 1);
+      if (wanted.has(address)) found.add(address);
+    }
     for (const row of this.state.rows) {
       if (this.roleOf(row.accountId, row.folder) !== "sent") continue;
       for (const a of [...row.message.to, ...row.message.cc]) {
@@ -1278,53 +1301,157 @@ export class InMemoryMailStore implements MailStore {
   // ---- Sending polish (slice 3d) ----
   // Reads answer empty and writes throw until the tasks that implement them.
 
-  listIdentities(_accountId: string | null): AliasRow[] {
-    return [];
+  listIdentities(accountId: string | null): AliasRow[] {
+    return this.state.identities
+      .filter((row) => accountId === null || row.accountId === accountId)
+      .map((row) => structuredClone(row));
   }
 
-  upsertIdentity(_input: { accountId: string; address: string; displayName: string | null }, _nowIso: string): AliasRow {
-    throw new Error("Not available yet");
+  upsertIdentity(input: { accountId: string; address: string; displayName: string | null }, nowIso: string): AliasRow {
+    return this.transaction(() => {
+      const address = input.address.trim().toLowerCase();
+      if (!this.state.accounts.has(input.accountId)) throw new ComposeError("not_found");
+      for (const account of this.state.accounts.values()) {
+        const own = [account.email, account.username].map((a) => a.trim().toLowerCase());
+        if (own.includes(address)) throw new ComposeError("conflict");
+      }
+      const taken = this.state.identities.some(
+        (row) => row.accountId !== input.accountId && row.address === address && row.state === "active",
+      );
+      if (taken) throw new ComposeError("conflict");
+      const existing = this.state.identities.find((row) => row.accountId === input.accountId && row.address === address);
+      const active = this.state.identities.filter((row) => row.accountId === input.accountId && row.state === "active");
+      if (existing?.state !== "active" && active.length >= IDENTITIES_MAX_PER_ACCOUNT) throw new ComposeError("conflict");
+      if (existing !== undefined) {
+        existing.state = "active";
+        existing.displayName = input.displayName;
+        existing.updatedAt = nowIso;
+        return structuredClone(existing);
+      }
+      const row: AliasRow = {
+        id: `ident_${this.state.nextId++}`,
+        accountId: input.accountId,
+        address,
+        displayName: input.displayName,
+        signature: null,
+        state: "active",
+        sendCheck: "unknown",
+        checkMessageId: null,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      this.state.identities.push(row);
+      return structuredClone(row);
+    });
+  }
+
+  private activeAlias(accountId: string, address: string): AliasRow | undefined {
+    const wanted = address.trim().toLowerCase();
+    return this.state.identities.find((row) => row.accountId === accountId && row.address === wanted && row.state === "active");
   }
 
   updateIdentity(
-    _accountId: string,
-    _address: string,
-    _patch: { displayName?: string | null; signature?: SignatureDoc | null },
-    _nowIso: string,
+    accountId: string,
+    address: string,
+    patch: { displayName?: string | null; signature?: SignatureDoc | null },
+    nowIso: string,
   ): AliasRow | null {
-    throw new Error("Not available yet");
+    const row = this.activeAlias(accountId, address);
+    if (row === undefined) return null;
+    if (patch.displayName !== undefined) row.displayName = patch.displayName;
+    if (patch.signature !== undefined) row.signature = structuredClone(patch.signature);
+    row.updatedAt = nowIso;
+    return structuredClone(row);
   }
 
-  setAccountSignature(_accountId: string, _signature: SignatureDoc | null): boolean {
-    throw new Error("Not available yet");
+  setAccountSignature(accountId: string, signature: SignatureDoc | null): boolean {
+    const account = this.state.accounts.get(accountId);
+    if (account === undefined) return false;
+    account.signature = structuredClone(signature);
+    return true;
   }
 
-  removeIdentity(_accountId: string, _address: string): boolean {
-    throw new Error("Not available yet");
+  removeIdentity(accountId: string, address: string): boolean {
+    const row = this.activeAlias(accountId, address);
+    if (row === undefined) return false;
+    this.state.identities = this.state.identities.filter((r) => r !== row);
+    return true;
   }
 
-  dismissIdentity(_accountId: string, _address: string, _nowIso: string): void {
-    throw new Error("Not available yet");
+  dismissIdentity(accountId: string, address: string, nowIso: string): void {
+    const wanted = address.trim().toLowerCase();
+    if (this.state.identities.some((row) => row.accountId === accountId && row.address === wanted)) return;
+    this.state.identities.push({
+      id: `ident_${this.state.nextId++}`,
+      accountId,
+      address: wanted,
+      displayName: null,
+      signature: null,
+      state: "dismissed",
+      sendCheck: "unknown",
+      checkMessageId: null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
   }
 
-  setSendCheck(_accountId: string, _address: string, _check: SendCheck, _checkMessageId: string | null, _nowIso: string): void {
-    throw new Error("Not available yet");
+  setSendCheck(accountId: string, address: string, check: SendCheck, checkMessageId: string | null, nowIso: string): void {
+    const row = this.activeAlias(accountId, address);
+    if (row === undefined) return;
+    row.sendCheck = check;
+    row.checkMessageId = checkMessageId;
+    row.updatedAt = nowIso;
   }
 
-  resolveSendChecks(_accountId: string, _nowIso: string): number {
-    return 0;
+  resolveSendChecks(accountId: string, nowIso: string): number {
+    let changed = 0;
+    for (const alias of this.state.identities) {
+      if (alias.accountId !== accountId || alias.state !== "active" || alias.sendCheck !== "pending") continue;
+      if (alias.checkMessageId === null) continue;
+      const wanted = normalizeMessageId(alias.checkMessageId);
+      const sent = this.state.rows.find(
+        (row) =>
+          row.accountId === accountId &&
+          this.roleOf(row.accountId, row.folder) === "sent" &&
+          row.message.messageId !== null &&
+          normalizeMessageId(row.message.messageId) === wanted,
+      );
+      const resolved = resolveSendCheck(alias.address, sent?.message.from.address ?? null);
+      if (resolved === null) continue;
+      alias.sendCheck = resolved;
+      alias.updatedAt = nowIso;
+      changed++;
+    }
+    return changed;
   }
 
-  inboundAddressRows(_accountId: string): InboundRow[] {
-    return [];
+  inboundAddressRows(accountId: string): InboundRow[] {
+    const skipped = new Set<SpecialUse | null>(["sent", "drafts", "junk", "trash"]);
+    return this.state.rows
+      .filter((row) => row.accountId === accountId && !skipped.has(this.roleOf(row.accountId, row.folder)) && row.bulk !== true)
+      .map((row) => ({
+        to: row.message.to.map((a) => a.address),
+        cc: row.message.cc.map((a) => a.address),
+        deliveredTo: row.message.deliveredTo === undefined ? null : [...row.message.deliveredTo],
+        date: row.message.date ?? "",
+      }));
   }
 
-  conversationAddresses(_messageId: string): Set<string> | null {
-    return null;
+  conversationAddresses(messageId: string): Set<string> | null {
+    const source = this.state.rows.find((row) => row.id === messageId);
+    if (source === undefined) return null;
+    const out = new Set<string>();
+    for (const row of this.state.rows) {
+      if (row.accountId !== source.accountId || row.threadId !== source.threadId) continue;
+      const m = row.message;
+      for (const a of [m.from, ...m.to, ...m.cc, ...(m.replyTo ?? [])]) out.add(a.address.trim().toLowerCase());
+    }
+    return out;
   }
 
-  deliveredToOf(_messageId: string): string[] {
-    return [];
+  deliveredToOf(messageId: string): string[] {
+    const row = this.state.rows.find((r) => r.id === messageId);
+    return row?.message.deliveredTo === undefined ? [] : [...row.message.deliveredTo];
   }
 
   undoRows(_ids: string[]): UndoRow[] {
