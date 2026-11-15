@@ -159,6 +159,55 @@ function matchKey(event: KeyLike, afterG: boolean): KeyMatch {
   }
 }
 
+/** How long destructive keys stay quiet after one ran. */
+export const DESTRUCTIVE_GUARD_MS = 400;
+
+const DESTRUCTIVE: ReadonlySet<ShortcutCommand["kind"]> = new Set(["archive", "delete", "spam", "move"]);
+
+/** Archive, delete, spam and move take messages out of the list. */
+export function isDestructive(command: ShortcutCommand): boolean {
+  return DESTRUCTIVE.has(command.kind);
+}
+
+export interface DestructiveGuard {
+  /**
+   * Whether `command` may run now. A destructive key inside the quiet window
+   * is refused and keeps the window open, so a burst of taps stays quiet
+   * until it stops. Any other key passes and ends the window: j, o or x
+   * between two actions is a deliberate choice of the next target.
+   */
+  admit(command: ShortcutCommand): boolean;
+  /** A destructive action ran: the quiet window starts now. */
+  ran(): void;
+}
+
+/**
+ * After an action empties a selection, a quick second tap of the same key
+ * would fall through to the cursor row, a message nobody chose. For
+ * DESTRUCTIVE_GUARD_MS after a destructive action, destructive keys do nothing
+ * until another key is pressed.
+ */
+export function createDestructiveGuard(now: () => number = Date.now): DestructiveGuard {
+  let quietUntil = Number.NEGATIVE_INFINITY;
+  return {
+    admit(command) {
+      if (!isDestructive(command)) {
+        quietUntil = Number.NEGATIVE_INFINITY;
+        return true;
+      }
+      const at = now();
+      if (at < quietUntil) {
+        quietUntil = at + DESTRUCTIVE_GUARD_MS;
+        return false;
+      }
+      return true;
+    },
+    ran() {
+      quietUntil = now() + DESTRUCTIVE_GUARD_MS;
+    },
+  };
+}
+
 export interface ShortcutEntry {
   keys: string[];
   label: string;

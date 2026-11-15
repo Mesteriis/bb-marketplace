@@ -54,7 +54,13 @@ import {
 } from "./selection-bar.tsx";
 import { ShortcutSheet } from "./shortcut-sheet.tsx";
 import { SmtpDialog, type SmtpResult, type SmtpSettingsInput } from "./smtp-dialog.tsx";
-import { useShortcuts, type GoTarget, type ShortcutCommand } from "./shortcuts.ts";
+import {
+  createDestructiveGuard,
+  useShortcuts,
+  type DestructiveGuard,
+  type GoTarget,
+  type ShortcutCommand,
+} from "./shortcuts.ts";
 import { formatListDate, SearchResultList, ThreadList } from "./thread-list.tsx";
 
 export { ALL_ACCOUNTS };
@@ -245,6 +251,9 @@ export function MailPage(props: MailPageProps) {
 }
 
 
+/** Actions that take a conversation out of the list it is in. */
+const REMOVING_ACTIONS: ReadonlySet<MessageAction> = new Set(["archive", "delete", "spam", "not_spam", "move"]);
+
 /** The page's own @3xl breakpoint (48rem): below it, one column. */
 const WIDE_MIN_PX = 768;
 
@@ -336,6 +345,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const anchor = useRef<string | null>(null);
+  const guardRef = useRef<DestructiveGuard | null>(null);
+  guardRef.current ??= createDestructiveGuard();
+  const destructiveGuard = guardRef.current;
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [moveTargets, setMoveTargets] = useState<string[] | null>(null);
@@ -493,7 +505,13 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     const all = { anyUnread: true, anyRead: true, anyFlagged: true, anyUnflagged: true };
     const offered = selectionActions(model.use, groupsOf(ids), all).find((a) => a.action === action);
     if (offered === undefined || offered.disabledReason !== null || props.actionPending) return;
-    props.onThreadsAction(ids, action);
+    runAction(ids, action);
+  };
+  /** An action that takes mail out of the list quiets the destructive keys for a moment. */
+  const runAction = (ids: string[], action: MessageAction, destination?: string) => {
+    if (REMOVING_ACTIONS.has(action)) destructiveGuard.ran();
+    if (destination === undefined) props.onThreadsAction(ids, action);
+    else props.onThreadsAction(ids, action, destination);
   };
 
   const openRow = (id: string) => {
@@ -550,11 +568,14 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   };
   const openMove = (ids: string[]) => {
     if (ids.length === 0) return;
+    destructiveGuard.ran();
     rememberOpener();
     setMoveTargets(ids);
   };
 
   const onKeyDown = useShortcuts((command: ShortcutCommand, repeat: boolean) => {
+    // A quick second tap after an action must not reach the cursor row.
+    if (!destructiveGuard.admit(command)) return;
     switch (command.kind) {
       case "next":
         return step(1, repeat);
@@ -620,7 +641,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
 
   const onBarAction = (action: BarAction["action"]) => {
     if (action === "move_to") openMove([...selection]);
-    else props.onThreadsAction([...selection], action);
+    else runAction([...selection], action);
   };
 
   const outboxShown = props.outbox.filter(
@@ -773,7 +794,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               archiveAllowed={openAccount !== null && model.archiveAllowed(openAccount)}
               folderName={(message) => model.folderName(message.accountId, message.folder)}
               onAction={(action) => {
-                if (reading.threadId !== null) props.onThreadsAction([reading.threadId], action);
+                if (reading.threadId !== null) runAction([reading.threadId], action);
               }}
               onMarkUnread={() => {
                 if (reading.threadId !== null) props.onThreadsAction([reading.threadId], "mark_unread");
@@ -817,7 +838,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         onMove={(destination) => {
           const ids = moveTargets ?? [];
           setMoveTargets(null);
-          props.onThreadsAction(ids, "move", destination);
+          runAction(ids, "move", destination);
         }}
         onCloseAutoFocus={restoreFocus}
         onAfterCloseAutoFocus={afterClose}
