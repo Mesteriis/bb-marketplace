@@ -158,6 +158,14 @@ describe("Composer", () => {
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
   });
 
+  it("marks a draft an agent started, and only that one", () => {
+    mount({ draft: draft({ origin: "agent" }) });
+    expect(screen.getByText("Started by an agent")).toBeTruthy();
+    cleanup();
+    mount();
+    expect(screen.queryByText("Started by an agent")).toBeNull();
+  });
+
   it("disables Send without recipients", () => {
     mount();
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);

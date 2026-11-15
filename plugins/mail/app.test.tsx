@@ -3121,3 +3121,136 @@ describe("Sending", () => {
     await waitFor(() => expect(within(composer).queryByText("SMTP is not set for this account.")).toBeNull());
   });
 });
+
+describe("Agent proposals", () => {
+  const HASH = "a".repeat(64);
+  const TOKEN = "B".repeat(43);
+  const proposalView = {
+    proposalId: "prop-1",
+    draftId: "d-agent",
+    kind: "new" as const,
+    account: { id: "acc-1", name: "owner@example.org", address: "owner@example.org" },
+    fromName: null,
+    source: null,
+    to: [{ address: "ada@example.org", name: null, flags: [] }],
+    cc: [],
+    bcc: [],
+    subject: "Made-up subject",
+    hiddenChars: 0,
+    bodyText: "Made-up text",
+    quoteText: null,
+    links: [],
+    attachments: [],
+    leftOut: 0,
+    expiresAt: "2026-11-16T10:00:00.000Z",
+  };
+
+  it("registers the card and the settled row", () => {
+    expect(app.pendingInteractions.map((r) => r.id)).toEqual(["agent-send"]);
+    expect(app.timelineRenderers.map((r) => r.kind)).toEqual(["makosh-mail/agent-send"]);
+  });
+
+  function renderCard(rpc: Record<string, unknown>, payload: unknown = { proposalId: "prop-1", contentHash: HASH }) {
+    const submit = vi.fn(async () => undefined);
+    const cancel = vi.fn(async () => undefined);
+    const slot = renderSlot(
+      app.pendingInteractions[0]!,
+      {
+        interaction: { id: "int-1", threadId: "thr-1", title: "Review", payload, createdAt: 0, expiresAt: null },
+        submit,
+        cancel,
+      } as never,
+      { rpc: rpc as never },
+    );
+    return { slot, submit, cancel };
+  }
+
+  it("the card views the proposal, then submits its id, hash and the view's token", async () => {
+    const { slot, submit } = renderCard({
+      proposal_view: () => ({ state: "ready", view: proposalView, viewToken: TOKEN }),
+    });
+    expect(await slot.findByText("Made-up text")).toBeTruthy();
+    expect(callsTo(slot, "proposal_view")[0]?.input).toEqual({ proposalId: "prop-1", contentHash: HASH });
+    const send = slot.getByRole("button", { name: /Send/ }) as HTMLButtonElement;
+    await waitFor(() => expect(send.disabled).toBe(false), { timeout: 3_000 });
+    await act(async () => {
+      fireEvent.click(send);
+    });
+    expect(submit).toHaveBeenCalledWith({ action: "send", proposalId: "prop-1", contentHash: HASH, viewToken: TOKEN });
+  });
+
+  it("Open in Mail submits and goes to the draft's route", async () => {
+    const { slot, submit } = renderCard({
+      proposal_view: () => ({ state: "ready", view: proposalView, viewToken: TOKEN }),
+    });
+    await slot.findByText("Made-up text");
+    await act(async () => {
+      fireEvent.click(slot.getByRole("button", { name: "Open in Mail" }));
+    });
+    expect(submit).toHaveBeenCalledWith({ action: "open", proposalId: "prop-1", contentHash: HASH, viewToken: TOKEN });
+    expect(slot.inspection.navigateCalls.at(-1)).toEqual({
+      method: "toPluginPanel",
+      path: "mail",
+      options: { subPath: "d/d-agent" },
+    });
+  });
+
+  it("a payload that is not the server's shape views nothing and offers Cancel", async () => {
+    const { slot } = renderCard({ proposal_view: () => ({ state: "gone" }) }, { something: "else" });
+    expect((await slot.findByRole("alert")).textContent).toContain("no longer available");
+    expect(callsTo(slot, "proposal_view")).toHaveLength(0);
+  });
+
+  it("the settled row reads the proposal and its outbox row, and Undo cancels it", async () => {
+    const slot = renderSlot(
+      app.timelineRenderers[0]!,
+      { payload: { proposalId: "prop-1" } } as never,
+      {
+        rpc: {
+          proposal_status: () => ({ state: "queued", outboxId: "prop-1", draftId: "d-agent", reason: null }),
+          outbox_list: () => ({
+            rows: [
+              outboxRow({ id: "prop-1", state: "queued", origin: "agent", sendAfter: new Date(Date.now() + 8_000).toISOString() }),
+            ],
+          }),
+          outbox_cancel: () => ({ cancelled: true, draftId: "d-agent" }),
+        } as never,
+      },
+    );
+    expect(await slot.findByText(/Sending in \d s/)).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(slot.getByRole("button", { name: "Undo" }));
+    });
+    expect(callsTo(slot, "outbox_cancel")[0]?.input).toEqual({ id: "prop-1" });
+  });
+
+  it("a d/<id> route opens that draft in the composer, with the agent badge", async () => {
+    const slot = render(
+      composeRpc({
+        compose_open: (input: { draftId?: string }) => ({
+          draft: draftView({ id: input.draftId ?? "x", origin: "agent", subject: "Made-up subject" }),
+          warning: null,
+        }),
+      }),
+      "d/d-agent",
+    );
+    const composer = await composerRegion(slot, "New message");
+    expect(callsTo(slot, "compose_open")[0]?.input).toEqual({ draftId: "d-agent" });
+    expect(within(composer).getByText("Started by an agent")).toBeTruthy();
+  });
+
+  it("labels the Undo toast of an agent send", async () => {
+    const slot = render(
+      composeRpc({
+        outbox_list: () => ({
+          rows: [
+            outboxRow({ id: "prop-1", state: "queued", origin: "agent", sendAfter: new Date(Date.now() + 10_000).toISOString() }),
+          ],
+        }),
+      }),
+    );
+    await slot.findByText("Lunch");
+    await slot.behavior.emitRealtime(OUTBOX_CHANGED_CHANNEL, { accountId: "acc-1", id: "prop-1", state: "queued" });
+    await waitFor(() => expect(toasts.plain.some((t) => /^Agent message · Sending in \d+ s$/.test(t))).toBe(true));
+  });
+});

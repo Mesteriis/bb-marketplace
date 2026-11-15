@@ -527,6 +527,12 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           </Button>
         ) : null}
         <h2 className="min-w-0 flex-1 truncate px-1 text-sm font-semibold text-foreground">{TITLES[draft.kind]}</h2>
+        {draft.origin === "agent" ? (
+          <span className="flex shrink-0 items-center gap-1 rounded-sm bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground">
+            <Icon name="Bot" fallback="Mail" className="size-3.5" aria-hidden />
+            Started by an agent
+          </span>
+        ) : null}
         {!page ? (
           <Button
             variant="ghost"

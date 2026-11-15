@@ -143,6 +143,11 @@ export function OutboxSection({ rows, onAction, pending, marker }: OutboxSection
                 <span className="min-w-0 flex-1 truncate text-sm text-foreground">
                   {subjectOrPlaceholder(row.subject)}
                 </span>
+                {row.origin === "agent" ? (
+                  <span className="shrink-0 rounded-sm bg-secondary px-1 text-xs text-secondary-foreground">
+                    Agent message
+                  </span>
+                ) : null}
                 {label !== null ? (
                   <span className="shrink-0 rounded-sm border border-border px-1 text-xs text-muted-foreground">
                     {label}
