@@ -382,7 +382,8 @@ export async function openDraft(
     bcc: (original?.bcc ?? []).map(chip),
     subject: source.subject,
     doc: html !== null || text === "" ? EMPTY_DOC : docFromLines(splitLines(text)),
-    fromAddress: null,
+    // Its From, when that is one of the account's identities (own address or active alias).
+    fromAddress: continuedFrom(deps.store, account, source.from.address),
     serverCopy,
     importHtml: html === null ? null : { html, into: "body" },
     origin: "owner",
@@ -758,6 +759,12 @@ export function identityOfDraft(store: MailStore, draft: Pick<DraftRecord, "acco
 
 function isOwnAddress(store: MailStore, address: string): boolean {
   return ownAddresses(store).includes(address.trim().toLowerCase());
+}
+
+/** A continued Drafts message's From as the draft stores it: an identity's address, else null (the own address). */
+function continuedFrom(store: MailStore, account: StoredAccount, address: string): string | null {
+  const identity = address.trim() === "" ? null : identityOf(accountIdentities(store, account), address);
+  return identity === null ? null : fromAddressOf(identity);
 }
 
 /** What a draft stores for an identity: null for the own address. */
