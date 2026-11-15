@@ -1,10 +1,51 @@
 // Where an owner-clicked message action moves mail, from the account's
 // folders by special use. Pure: the server queues the move it returns.
-import type { AccountPreset, Folder, MessageAction, RoleMoveAction, SpecialUse } from "./model.ts";
+import type {
+  AccountPreset,
+  FlagChange,
+  Folder,
+  MessageAction,
+  RoleMoveAction,
+  SpecialUse,
+} from "./model.ts";
 
 /** Whether the action moves mail to a folder chosen by its role. */
 export function isRoleMoveAction(action: MessageAction): action is RoleMoveAction {
   return action === "spam" || action === "not_spam" || action === "archive" || action === "delete";
+}
+
+/** The \Seen / \Flagged change of a flag action, or null for a move. */
+export function flagChangeOf(action: MessageAction): FlagChange | null {
+  switch (action) {
+    case "mark_read":
+      return { seen: true };
+    case "mark_unread":
+      return { seen: false };
+    case "flag":
+      return { flagged: true };
+    case "unflag":
+      return { flagged: false };
+    default:
+      return null;
+  }
+}
+
+/** The roles merged in All accounts, with the names the owner sees. */
+export const ROLE_NAMES: Record<Exclude<SpecialUse, "all">, string> = {
+  inbox: "Inbox",
+  sent: "Sent",
+  drafts: "Drafts",
+  junk: "Spam",
+  archive: "Archive",
+  trash: "Trash",
+};
+
+/**
+ * An account's folders of a role, by their effective special use; Archive
+ * means `archive` folders only, never Gmail All Mail (that is role "all").
+ */
+export function roleFolders(role: SpecialUse, folders: Folder[]): Folder[] {
+  return folders.filter((f) => f.specialUse === role);
 }
 
 export type ActionDestination = { destination: Folder } | { refusal: string };
@@ -89,5 +130,22 @@ export function resolveActionDestination(
   if (destination === undefined) return { refusal: `This account has no ${missing} folder` };
   if (!destination.selectable) return { refusal: `${destination.name} cannot hold messages` };
   if (destination.path === source.path) return { refusal: `Already in ${destination.name}` };
+  return { destination };
+}
+
+/**
+ * The destination of "Move to…": a folder of the same account (`folders`)
+ * that can hold messages and is not the source.
+ */
+export function resolveMoveDestination(
+  destinationPath: string,
+  sourcePath: string,
+  folders: Folder[],
+): ActionDestination {
+  if (!folders.some((f) => f.path === sourcePath)) return { refusal: "Unknown folder" };
+  const destination = folders.find((f) => f.path === destinationPath);
+  if (destination === undefined) return { refusal: `This account has no folder ${destinationPath}` };
+  if (!destination.selectable) return { refusal: `${destination.name} cannot hold messages` };
+  if (destination.path === sourcePath) return { refusal: `Already in ${destination.name}` };
   return { destination };
 }

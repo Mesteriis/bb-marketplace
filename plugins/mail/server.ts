@@ -20,14 +20,31 @@ import {
   type PluginCliContext,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { createImapflowGateway } from "./src/adapters/bb/imapflow-gateway.ts";
+import {
+  BASE_HEADERS,
+  FETCH_FAILED_MESSAGE,
+  RawRefusal,
+  STALE_MESSAGE,
+  TicketBook,
+  checkRawRef,
+  downloadHeaders,
+  emlFileName,
+  fetchRawGuarded,
+  safeContentType,
+  sanitizeFileName,
+  type RawDeps,
+} from "./src/adapters/bb/downloads.ts";
+import { createImapflowGateway, parseMail } from "./src/adapters/bb/imapflow-gateway.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
 import { createSyncLoop, type SyncLoop } from "./src/adapters/bb/sync-service.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
+import { describeStructure, readHeaders } from "./src/core/headers.ts";
 import {
   MAIL_CHANGED_CHANNEL,
+  ROLE_NAMES,
   UNTRUSTED_NOTICE,
   addAccount,
+  flagChangeOf,
   inlineCidImages,
   isRoleMoveAction,
   parseQuery,
@@ -37,18 +54,23 @@ import {
   renderMessageForAgent,
   renderSearchHits,
   resolveActionDestination,
+  resolveMoveDestination,
+  roleFolders,
   rpcSchemas,
   testAccount,
   toPublicAccount,
   type Account,
   type AccountDeps,
   type Clock,
+  type Folder,
   type ImapGateway,
   type MailAddress,
   type MailChangedPayload,
   type MailStore,
+  type MessageAction,
   type MessageSummary,
   type SecretVault,
+  type SpecialUse,
   type SyncDeps,
 } from "./src/core/index.ts";
 
@@ -136,6 +158,8 @@ function refuse(
 
 export const PLUGIN_CALLER_MESSAGE = "Only the owner's Mail page can change mail or accounts.";
 export const PASSWORD_NEEDED_MESSAGE = "This account needs its password re-entered";
+/** Role "all" (Gmail All Mail) stays under its account; All accounts does not merge it. */
+export const ALL_ROLE_MESSAGE = "All Mail is not a merged folder";
 
 /**
  * Writes refuse other plugins calling through bb.sdk.plugins.callRpc (the
@@ -297,6 +321,14 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       if (next.syncIntervalMinutes !== prev.syncIntervalMinutes) loop.reschedule();
     });
 
+    const rawDeps: RawDeps = {
+      store,
+      gateway,
+      vault: sealer,
+      vaultReady: () => vault !== null,
+      messages: { needsKey: NEEDS_KEY_MESSAGE, passwordNeeded: PASSWORD_NEEDED_MESSAGE },
+    };
+    const tickets = new TicketBook<DownloadRequest>(clock);
     registerRpc(bb, {
       store,
       accountDeps,
@@ -304,7 +336,10 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       loop,
       vaultReady: () => vault !== null,
       agentTools: () => current.agentTools,
+      rawDeps,
+      tickets,
     });
+    registerDownloadRoute(bb, store, rawDeps, tickets);
     registerAgentSurfaces(bb, store, () => current.agentTools);
     registerCli(bb, store, {
       loop,
@@ -323,7 +358,151 @@ type RpcDeps = {
   loop: SyncLoop;
   vaultReady: () => boolean;
   agentTools: () => boolean;
+  rawDeps: RawDeps;
+  tickets: TicketBook<DownloadRequest>;
 };
+
+/** What a download ticket stands for; resolved again from the store when used. */
+type DownloadRequest = {
+  kind: "attachment" | "eml";
+  messageId: string;
+  partId: string | null;
+  fileName: string;
+};
+
+/** The route's mount point as the page requests it (bb-plugin-sdk.d.ts:20466-20479). */
+function downloadUrl(pluginId: string): string {
+  return `/api/v1/plugins/${pluginId}/http/download`;
+}
+
+function rawRefusal(error: unknown): Error {
+  return error instanceof RawRefusal ? refuse(error.code, error.message) : (error as Error);
+}
+
+type ActionGroup = {
+  accountId: string;
+  folder: string;
+  queued: number;
+  destination: string | null;
+  error: string | null;
+};
+
+type ActionInput = {
+  messageIds: string[];
+  action: MessageAction;
+  folder?: string;
+  role?: SpecialUse;
+  destination?: string;
+};
+
+/**
+ * message_action over a batch that may span accounts and folders: ids are
+ * grouped by account and source folder (the viewed `folder`, or in All
+ * accounts the folder of `role` each id's row is in), and each group follows
+ * the slice-2 rules. A batch that is one group throws its refusal, as
+ * before; otherwise each group reports its own. Ids no longer stored are
+ * skipped. Everything is checked before anything is queued.
+ */
+function runMessageAction(deps: RpcDeps, input: ActionInput): { groups: ActionGroup[] } {
+  const { store } = deps;
+  const { action, folder, role } = input;
+  const foldersOf = new Map<string, Folder[]>();
+  const accountFolders = (accountId: string) => {
+    let folders = foldersOf.get(accountId);
+    if (folders === undefined) {
+      folders = store.listFolders(accountId);
+      foldersOf.set(accountId, folders);
+    }
+    return folders;
+  };
+  const folderName = (accountId: string, path: string) =>
+    accountFolders(accountId).find((f) => f.path === path)?.name ?? path;
+  const notAllIn = (accountId: string, path: string) =>
+    `These messages are not all in ${folderName(accountId, path)}`;
+
+  type Group = { accountId: string; folder: string; ids: string[]; error: string | null };
+  const groups = new Map<string, Group>();
+  const strays: { accountId: string }[] = [];
+  for (const id of new Set(input.messageIds)) {
+    const message = store.getMessage(id);
+    if (message === null) continue;
+    let error: string | null = null;
+    if (folder !== undefined) {
+      if (message.folder !== folder) {
+        strays.push({ accountId: message.accountId });
+        continue;
+      }
+    } else if (role !== undefined && role !== "all") {
+      const inRole = roleFolders(role, accountFolders(message.accountId)).some(
+        (f) => f.path === message.folder,
+      );
+      if (!inRole) error = `These messages are no longer in ${ROLE_NAMES[role]}`;
+    }
+    const key = `${message.accountId}\u0000${message.folder}`;
+    const group = groups.get(key) ?? { accountId: message.accountId, folder: message.folder, ids: [], error };
+    group.ids.push(id);
+    groups.set(key, group);
+  }
+  if (groups.size === 0) {
+    if (strays.length > 0 && folder !== undefined) {
+      throw refuse("conflict", notAllIn(strays[0]!.accountId, folder));
+    }
+    throw refuse("not_found", "Unknown message");
+  }
+
+  const change = flagChangeOf(action);
+  type Planned = Group & { destination: Folder | null };
+  const plan = (group: Group): Planned => {
+    if (group.error !== null) return { ...group, destination: null };
+    const refused = (error: string): Planned => ({ ...group, error, destination: null });
+    if (!deps.vaultReady()) return refused(NEEDS_KEY_MESSAGE);
+    const account = store.getAccount(group.accountId);
+    if (account === null) return refused("Unknown message");
+    if (account.authFailed) return refused(PASSWORD_NEEDED_MESSAGE);
+    if (change !== null) return { ...group, destination: null };
+    const folders = accountFolders(account.id);
+    const resolved = isRoleMoveAction(action)
+      ? resolveActionDestination(action, group.folder, folders, account.preset)
+      : resolveMoveDestination(input.destination ?? "", group.folder, folders);
+    return "refusal" in resolved ? refused(resolved.refusal) : { ...group, destination: resolved.destination };
+  };
+  const planned = [...groups.values()].map(plan);
+  if (planned.length === 1 && planned[0]!.error !== null) {
+    const error = planned[0]!.error;
+    throw refuse(error === "Unknown message" ? "not_found" : "conflict", error);
+  }
+  if (strays.length > 0 && folder !== undefined) {
+    throw refuse("conflict", notAllIn(strays[0]!.accountId, folder));
+  }
+
+  const changed: string[] = [];
+  const touch = (accountId: string) => {
+    if (!changed.includes(accountId)) changed.push(accountId);
+  };
+  const results = planned.map((group): ActionGroup => {
+    const result = { accountId: group.accountId, folder: group.folder };
+    if (group.error !== null) return { ...result, queued: 0, destination: null, error: group.error };
+    if (change !== null) {
+      for (const touched of store.setDesired(group.ids, change)) touch(touched.accountId);
+      return { ...result, queued: group.ids.length, destination: null, error: null };
+    }
+    const destination = group.destination!;
+    // Null when any id is already moving or left the folder since (nothing queued then).
+    const queued = store.queueMove(group.ids, destination.path);
+    if (queued === null || queued.folder !== group.folder) {
+      const error = notAllIn(group.accountId, group.folder);
+      if (planned.length === 1) throw refuse("conflict", error);
+      return { ...result, queued: 0, destination: null, error };
+    }
+    touch(queued.accountId);
+    return { ...result, queued: group.ids.length, destination: destination.name, error: null };
+  });
+  for (const accountId of changed) {
+    deps.publishChanged(accountId);
+    deps.loop.wake(accountId);
+  }
+  return { groups: results };
+}
 
 function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const { store, accountDeps, publishChanged } = deps;
@@ -372,10 +551,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         deps.loop.wake(accountId);
         return { started: true };
       },
-      threads_list: ({ scope, cursor, limit }) =>
-        scope.kind === "account"
-          ? store.listThreads(scope.accountId, scope.folder, cursor, limit)
-          : store.listThreadsAll(scope.role, cursor, limit),
+      threads_list: ({ scope, cursor, limit }) => {
+        if (scope.kind === "account") return store.listThreads(scope.accountId, scope.folder, cursor, limit);
+        if (scope.role === "all") throw refuse("invalid", ALL_ROLE_MESSAGE);
+        return store.listThreadsAll(scope.role, cursor, limit);
+      },
       thread_get: ({ threadId, folder }) => {
         const thread = store.getThread(threadId, folder);
         if (thread === null) throw refuse("not_found", "Unknown thread");
@@ -413,49 +593,49 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
               roles: store.listRoles(),
             }
           : { folders: store.listFolders(accountId), roles: [] },
-      // Owner-clicked moves; the sync loop pushes them to the server.
-      message_action: ({ messageIds, folder, role, action }, context) => {
+      // Owner-clicked or hotkeyed moves and flag changes; the sync loop pushes them.
+      message_action: (input, context) => {
         refusePluginCaller(context);
-        if (role !== undefined || folder === undefined) {
-          throw new Error("not implemented: message_action role");
+        if (input.role === "all") throw refuse("invalid", ALL_ROLE_MESSAGE);
+        return runMessageAction(deps, input);
+      },
+      // Details panel: read-only session, BODY.PEEK, never \Seen; nothing is logged.
+      message_source: async ({ messageId }) => {
+        let fetched: Awaited<ReturnType<typeof fetchRawGuarded>>;
+        try {
+          fetched = await fetchRawGuarded(deps.rawDeps, messageId);
+        } catch (error) {
+          throw rawRefusal(error);
         }
-        if (!isRoleMoveAction(action)) throw new Error(`not implemented: message_action ${action}`);
-        if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
-        const first = store.getMessage(messageIds[0]!);
-        if (first === null) throw refuse("not_found", "Unknown message");
-        const account = store.getAccount(first.accountId);
-        if (account === null) throw refuse("not_found", "Unknown message");
-        if (account.authFailed) throw refuse("conflict", PASSWORD_NEEDED_MESSAGE);
-        const folders = store.listFolders(account.id);
-        const sourceName = folders.find((f) => f.path === folder)?.name ?? folder;
-        const notAllIn = () => refuse("conflict", `These messages are not all in ${sourceName}`);
-        if (first.folder !== folder) throw notAllIn();
-        const resolved = resolveActionDestination(action, folder, folders, account.preset);
-        if ("refusal" in resolved) throw refuse("conflict", resolved.refusal);
-        const { destination } = resolved;
-        // Null when any id is unknown, already moving, or elsewhere (nothing queued then).
-        const queued = store.queueMove(messageIds, destination.path);
-        if (queued === null || queued.folder !== folder) throw notAllIn();
-        publishChanged(queued.accountId);
-        deps.loop.wake(queued.accountId);
+        const { ref, account, raw } = fetched;
         return {
-          groups: [
-            {
-              accountId: queued.accountId,
-              folder,
-              queued: new Set(messageIds).size,
-              destination: destination.name,
-              error: null,
-            },
-          ],
+          headers: readHeaders(raw),
+          structure: describeStructure(raw),
+          size: raw.byteLength,
+          uid: ref.uid,
+          folder: ref.folder,
+          accountEmail: account.email,
         };
       },
-      message_source: () => {
-        throw new Error("not implemented: message_source");
-      },
-      download_ticket: (_input, context) => {
+      download_ticket: ({ kind, messageId, partId }, context) => {
         refusePluginCaller(context);
-        throw new Error("not implemented: download_ticket");
+        try {
+          checkRawRef(deps.rawDeps, messageId);
+        } catch (error) {
+          throw rawRefusal(error);
+        }
+        const header = store.getMessage(messageId);
+        if (header === null) throw refuse("not_found", "Unknown message");
+        let fileName: string;
+        if (kind === "attachment") {
+          const attachment = header.attachments.find((a) => a.partId === partId);
+          if (attachment === undefined) throw refuse("not_found", "Unknown attachment");
+          fileName = sanitizeFileName(attachment.filename, "attachment");
+        } else {
+          fileName = emlFileName(header.date, header.subject);
+        }
+        const ticket = deps.tickets.mint({ kind, messageId, partId: partId ?? null, fileName });
+        return { url: `${downloadUrl(bb.pluginId)}?t=${ticket}`, fileName };
       },
       images_allow_sender: ({ messageId }, context) => {
         refusePluginCaller(context);
@@ -473,6 +653,77 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       },
     },
     { experimental_discoverable: false },
+  );
+}
+
+function textResponse(status: number, text: string): Response {
+  return new Response(text, {
+    status,
+    headers: { ...BASE_HEADERS, "Content-Type": "text/plain; charset=utf-8" },
+  });
+}
+
+function partBytes(content: ArrayBuffer | Uint8Array | string): Uint8Array | null {
+  if (content instanceof Uint8Array) return content;
+  if (content instanceof ArrayBuffer) return new Uint8Array(content);
+  return null;
+}
+
+/**
+ * GET /download?t=<ticket>: the one way bytes leave the plugin. The ticket
+ * is resolved once; an unknown, used or expired one is a bare 404. The raw
+ * fetch is the guarded one (read-only, never \Seen); an attachment is the
+ * part at its stored index, served only when its file name, MIME type and
+ * size still match the stored metadata. Tickets, names and bytes are never
+ * logged.
+ */
+function registerDownloadRoute(
+  bb: BbPluginApi,
+  store: MailStore,
+  rawDeps: RawDeps,
+  tickets: TicketBook<DownloadRequest>,
+): void {
+  bb.http.route(
+    "GET",
+    "/download",
+    async (c) => {
+      const request = tickets.take(c.req.query("t") ?? "");
+      if (request === null) return new Response(null, { status: 404, headers: BASE_HEADERS });
+      try {
+        const { raw } = await fetchRawGuarded(rawDeps, request.messageId);
+        if (request.kind === "eml") {
+          return new Response(new Uint8Array(raw), {
+            status: 200,
+            headers: downloadHeaders(request.fileName, "message/rfc822", raw.byteLength),
+          });
+        }
+        const stored = store
+          .getMessage(request.messageId)
+          ?.attachments.find((a) => a.partId === request.partId);
+        if (stored === undefined) throw new RawRefusal("conflict", STALE_MESSAGE);
+        const parsed = await parseMail(raw);
+        const part = parsed.attachments[Number(request.partId) - 1];
+        const bytes = part === undefined ? null : partBytes(part.content);
+        if (
+          part === undefined ||
+          bytes === null ||
+          (part.filename ?? null) !== stored.filename ||
+          part.mimeType !== stored.mimeType ||
+          bytes.byteLength !== stored.size
+        ) {
+          throw new RawRefusal("conflict", STALE_MESSAGE);
+        }
+        return new Response(new Uint8Array(bytes), {
+          status: 200,
+          headers: downloadHeaders(request.fileName, safeContentType(stored.mimeType), bytes.byteLength),
+        });
+      } catch (error) {
+        if (error instanceof RawRefusal) return textResponse(409, error.message);
+        bb.log.warn(`download failed (${errorKind(error)})`);
+        return textResponse(502, FETCH_FAILED_MESSAGE);
+      }
+    },
+    { auth: "local" },
   );
 }
 
