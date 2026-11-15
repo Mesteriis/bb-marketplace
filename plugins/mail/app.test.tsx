@@ -1180,12 +1180,28 @@ describe("All accounts", () => {
   });
 
   it("opens a conversation in its account's folder of the role and acts by role", async () => {
-    const slot = render(unifiedRpc({ message_action: () => ({ groups: [] }) }));
+    const slot = render(
+      unifiedRpc({
+        thread_get: () => detailOf(threadW, "[Gmail]/Spam", ["w-1", "w-2"]),
+        message_action: () => ({
+          groups: [{ accountId: "acc-2", folder: "[Gmail]/Spam", queued: 2, destination: "Inbox", error: null }],
+        }),
+      }),
+    );
 
     await openFolder(slot, /^Spam/);
     fireEvent.click(await slot.findByRole("button", { name: /Invoice/ }));
     await waitFor(() =>
       expect(callsTo(slot, "thread_get").at(-1)?.input).toEqual({ threadId: "th-w", folder: "[Gmail]/Spam" }),
+    );
+    await slot.findByRole("heading", { name: "Invoice" });
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "Not spam" }));
+    await waitFor(() =>
+      expect(callsTo(slot, "message_action")[0]?.input).toEqual({
+        messageIds: ["w-1", "w-2"],
+        action: "not_spam",
+        role: "junk",
+      }),
     );
   });
 });
@@ -1550,7 +1566,7 @@ describe("Details and downloads", () => {
     fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
     fireEvent.click(await slot.findByRole("button", { name: "Download .eml" }));
     await waitFor(() => expect(saves.calls).toHaveLength(1));
-    fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf, 2 KB" }));
+    fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf, PDF, 2 KB" }));
     await waitFor(() => expect(saves.calls).toHaveLength(2));
 
     expect(callsTo(slot, "download_ticket").map((call) => call.input)).toEqual([
@@ -1574,6 +1590,8 @@ describe("Details and downloads", () => {
       fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
       fireEvent.click(await slot.findByRole("button", { name: "Download .eml" }));
       await waitFor(() => expect(clicks).toHaveLength(1));
+      // saveFile threw: the link gets a fresh ticket too.
+      expect(callsTo(slot, "download_ticket")).toHaveLength(2);
       expect(clicks[0]).toEqual({
         href: "/api/v1/plugins/makosh-mail/http/download?t=ticket-eml",
         download: "2026-11-14 Quarterly plan.eml",
@@ -1581,9 +1599,9 @@ describe("Details and downloads", () => {
 
       // "failed": the ticket may be spent, so a fresh one goes to the link.
       saves.outcome = "failed";
-      fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf, 2 KB" }));
+      fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf, PDF, 2 KB" }));
       await waitFor(() => expect(clicks).toHaveLength(2));
-      expect(callsTo(slot, "download_ticket")).toHaveLength(3);
+      expect(callsTo(slot, "download_ticket")).toHaveLength(4);
       expect(document.querySelector("a[download]")).toBeNull();
     } finally {
       spy.mockRestore();
@@ -1717,8 +1735,21 @@ describe("Hotkeys", () => {
     expect(within(sheet).getByText("Reply").textContent).toBe("Replysoon");
     expect(within(sheet).getByText("Move to…")).toBeTruthy();
 
-    press(sheet, { key: "j", code: "KeyJ" });
-    expect(document.activeElement).not.toBe(slot.queryByRole("button", { name: /Quarterly plan/ }));
+    const callsBefore = slot.inspection.rpcCalls.length;
+    for (const [key, code, shiftKey] of [
+      ["j", "KeyJ", false],
+      ["x", "KeyX", false],
+      ["#", "Digit3", true],
+      ["e", "KeyE", false],
+      ["v", "KeyV", false],
+    ] as const) {
+      press(within(sheet).getByText("Move to…"), { key, code, shiftKey });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(slot.inspection.rpcCalls.length).toBe(callsBefore);
+    expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull();
+    expect(slot.getAllByRole("dialog")).toHaveLength(1);
+    expect(slot.queryByRole("dialog", { name: "Move to…" })).toBeNull();
 
     // Escape closes the sheet and goes no further (BB's own Escape stays out of it).
     const outer = vi.fn();
@@ -1730,5 +1761,449 @@ describe("Hotkeys", () => {
     } finally {
       window.removeEventListener("keydown", outer);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review round 1: focus after dialogs and actions, auto-repeat, the open
+// conversation first, captured view, nothing-to-change, star races, bulk flag.
+
+const threadC: ThreadSummary = {
+  ...threadB,
+  id: "th-c",
+  subject: "Tickets",
+  participants: [{ name: "Di Example", address: "di@example.org" }],
+  snippet: "Row C",
+};
+
+/**
+ * Three conversations of one account in INBOX (one message each, `<thread>-1`,
+ * newest last when several); moves and deletes take them off the list the
+ * way the server would.
+ */
+function rowsRpc(overrides: Record<string, (input: never) => unknown> = {}) {
+  let threads = [threadA, threadB, threadC];
+  const ids: Record<string, string[]> = { "th-a": ["a-1", "a-2"], "th-b": ["b-1"], "th-c": ["c-1"] };
+  return folderRpc({
+    threads_list: () => ({ threads, nextCursor: null }),
+    thread_get: ({ threadId }: { threadId: string }) =>
+      detailOf(threads.find((t) => t.id === threadId) ?? threadA, "INBOX", ids[threadId] ?? []),
+    message_action: ({ messageIds, action }: { messageIds: string[]; action: string }) => {
+      if (!action.startsWith("mark") && !action.endsWith("flag")) {
+        threads = threads.filter((t) => !(ids[t.id] ?? []).some((id) => messageIds.includes(id)));
+      }
+      return {
+        groups: [{ accountId: "acc-1", folder: "INBOX", queued: messageIds.length, destination: "Trash", error: null }],
+      };
+    },
+    ...overrides,
+  });
+}
+
+/** A key on whatever has focus, as a real keyboard would deliver it. */
+function key(init: { key: string; code: string; shiftKey?: boolean; repeat?: boolean }) {
+  fireEvent.keyDown(document.activeElement ?? document.body, { shiftKey: false, repeat: false, ...init });
+}
+
+const J = { key: "j", code: "KeyJ" };
+const HASH = { key: "#", code: "Digit3", shiftKey: true };
+const rowButton = (slot: ReturnType<typeof render>, subject: RegExp) => slot.getByRole("button", { name: subject });
+const actionInputs = (slot: ReturnType<typeof render>) =>
+  callsTo(slot, "message_action").map((call) => call.input as { messageIds: string[]; action: string });
+
+describe("Hotkeys keep working", () => {
+  it("after the ? sheet closes with Escape", async () => {
+    const slot = render(rowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key({ key: "?", code: "Slash", shiftKey: true });
+    const sheet = await slot.findByRole("dialog", { name: "Keyboard shortcuts" });
+    fireEvent.keyDown(sheet, { key: "Escape", code: "Escape" });
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+
+    key(J);
+    expect(document.activeElement).toBe(rowButton(slot, /Quarterly plan/));
+  });
+
+  it("after Details closes with Escape", async () => {
+    const slot = render(
+      rowsRpc({
+        message_source: () => ({
+          headers: [["From", "a@example.org"]],
+          structure: [],
+          size: 1,
+          uid: 1,
+          folder: "INBOX",
+          accountEmail: "owner@example.org",
+        }),
+      }),
+    );
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+    key(J);
+    key({ key: "o", code: "KeyO" });
+    const details = await slot.findAllByRole("button", { name: "Details" });
+    details.at(-1)!.focus();
+    fireEvent.click(details.at(-1)!);
+    const dialog = await slot.findByRole("dialog", { name: "Message details" });
+    fireEvent.keyDown(dialog, { key: "Escape", code: "Escape" });
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+
+    key(J);
+    await waitFor(() => expect(callsTo(slot, "thread_get").at(-1)?.input).toMatchObject({ threadId: "th-b" }));
+  });
+
+  it("after # removes the cursor row: the next row takes the cursor", async () => {
+    const slot = render(rowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key(HASH);
+    await waitFor(() => expect(slot.queryByText("Quarterly plan")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(rowButton(slot, /Lunch/)));
+    key(J);
+    key(HASH);
+    await waitFor(() => expect(actionInputs(slot)).toHaveLength(2));
+    expect(actionInputs(slot).map((input) => [input.action, input.messageIds])).toEqual([
+      ["delete", ["a-1", "a-2"]],
+      ["delete", ["c-1"]],
+    ]);
+  });
+
+  it("after Back (u): j moves on from the row that was open", async () => {
+    const slot = render(rowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key({ key: "o", code: "KeyO" });
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    toolbar(slot).getByRole("button", { name: "Mark unread" }).focus();
+    key({ key: "u", code: "KeyU" });
+    await waitFor(() => expect(slot.queryByRole("heading", { name: "Quarterly plan" })).toBeNull());
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+
+    key(J);
+    expect(document.activeElement).toBe(rowButton(slot, /Lunch/));
+  });
+
+  it("j e j e archives two rows end to end", async () => {
+    const slot = render(
+      rowsRpc({
+        status_get: () => status({ accounts: [{ ...account, preset: "icloud" }] }),
+        folders_list: () => ({
+          folders: [
+            folder({ path: "INBOX", name: "Inbox", specialUse: "inbox" }),
+            folder({ path: "Archive", name: "Archive", specialUse: "archive" }),
+          ],
+          roles: [],
+        }),
+      }),
+    );
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key({ key: "e", code: "KeyE" });
+    await waitFor(() => expect(slot.queryByText("Quarterly plan")).toBeNull());
+    key(J);
+    key({ key: "e", code: "KeyE" });
+    await waitFor(() => expect(actionInputs(slot)).toHaveLength(2));
+    expect(actionInputs(slot).map((input) => [input.action, input.messageIds])).toEqual([
+      ["archive", ["a-1", "a-2"]],
+      ["archive", ["c-1"]],
+    ]);
+  });
+});
+
+describe("Hotkey auto-repeat and targets", () => {
+  it("a held # deletes once, for the selection only", async () => {
+    const slot = render(rowsRpc());
+    await slot.findByText("Tickets");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    pageRoot(slot).focus();
+    key(J);
+    key(J);
+    expect(document.activeElement).toBe(rowButton(slot, /Lunch/));
+
+    key(HASH);
+    await waitFor(() => expect(slot.queryByText("Quarterly plan")).toBeNull());
+    for (let i = 0; i < 3; i++) key({ ...HASH, repeat: true });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(actionInputs(slot).map((input) => input.messageIds)).toEqual([["a-1", "a-2"]]);
+  });
+
+  it("a held s flags once", async () => {
+    const slot = render(rowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+    key(J);
+    key(J);
+
+    key({ key: "s", code: "KeyS" });
+    for (let i = 0; i < 3; i++) key({ key: "s", code: "KeyS", repeat: true });
+    await waitFor(() => expect(actionInputs(slot)).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(actionInputs(slot)).toEqual([{ messageIds: ["b-1"], action: "flag", folder: "INBOX" }]);
+  });
+
+  it("with a conversation open, # acts on it, not on the selection", async () => {
+    const slot = render(rowsRpc());
+    await slot.findByText("Tickets");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Lunch" }));
+    fireEvent.click(rowButton(slot, /Quarterly plan/));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    pageRoot(slot).focus();
+
+    key(HASH);
+    await waitFor(() => expect(actionInputs(slot)).toHaveLength(1));
+    expect(actionInputs(slot)[0]).toEqual({ messageIds: ["a-1", "a-2"], action: "delete", folder: "INBOX" });
+    await waitFor(() => expect(slot.queryByText("Quarterly plan")).toBeNull());
+    expect(slot.getByRole("checkbox", { name: "Select Lunch" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("e, !, u and Shift+I work end to end", async () => {
+    const slot = render(rowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key({ key: "!", code: "Digit1", shiftKey: true });
+    await waitFor(() => expect(actionInputs(slot)).toHaveLength(1));
+    await waitFor(() => expect(slot.queryByText("Quarterly plan")).toBeNull());
+    key({ key: "o", code: "KeyO" });
+    await slot.findByRole("heading", { name: "Lunch" });
+    key({ key: "I", code: "KeyI", shiftKey: true });
+    await waitFor(() => expect(actionInputs(slot)).toHaveLength(2));
+    key({ key: "u", code: "KeyU" });
+    await waitFor(() => expect(slot.queryByRole("heading", { name: "Lunch" })).toBeNull());
+    key({ key: "e", code: "KeyE" });
+    await waitFor(() => expect(actionInputs(slot)).toHaveLength(3));
+    expect(actionInputs(slot).map((input) => [input.action, input.messageIds])).toEqual([
+      ["spam", ["a-1", "a-2"]],
+      ["mark_read", ["b-1"]],
+      ["archive", ["b-1"]],
+    ]);
+  });
+});
+
+describe("Batch edge cases", () => {
+  it("a conversation that fails to load stays selected; the others proceed", async () => {
+    const slot = render(
+      rowsRpc({
+        thread_get: ({ threadId }: { threadId: string }) => {
+          if (threadId === "th-b") throw new Error("Invented load failure");
+          return detailOf(threadA, "INBOX", ["a-1", "a-2"]);
+        },
+      }),
+    );
+    await slot.findByText("Tickets");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Lunch" }));
+    fireEvent.click(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByRole("button", { name: "Mark read" }));
+
+    await waitFor(() => expect(toasts.error).toEqual(["Invented load failure"]));
+    expect(actionInputs(slot).map((input) => input.messageIds)).toEqual([["a-1", "a-2"]]);
+    expect(slot.getByRole("checkbox", { name: "Select Lunch" }).getAttribute("aria-checked")).toBe("true");
+    expect(slot.getByRole("checkbox", { name: "Select Quarterly plan" }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("a conversation with nothing in the view stays selected and is reported once", async () => {
+    const slot = render(
+      rowsRpc({
+        thread_get: ({ threadId }: { threadId: string }) =>
+          threadId === "th-a" ? detailOf(threadA, "INBOX", ["a-1"]) : detailOf(threadB, "Elsewhere", ["b-1"]),
+      }),
+    );
+    await slot.findByText("Tickets");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Lunch" }));
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Tickets" }));
+    fireEvent.click(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByRole("button", { name: "Mark read" }));
+
+    await waitFor(() => expect(toasts.error).toEqual(["2 conversations had nothing to change here"]));
+    expect(slot.getByRole("checkbox", { name: "Select Lunch" }).getAttribute("aria-checked")).toBe("true");
+    expect(slot.getByRole("checkbox", { name: "Select Tickets" }).getAttribute("aria-checked")).toBe("true");
+    expect(slot.getByRole("checkbox", { name: "Select Quarterly plan" }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("reports messages the server did not queue", async () => {
+    const slot = render(
+      rowsRpc({
+        message_action: () => ({
+          groups: [{ accountId: "acc-1", folder: "INBOX", queued: 1, destination: null, error: null }],
+        }),
+      }),
+    );
+    await slot.findByText("Tickets");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.click(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByRole("button", { name: "Mark read" }));
+
+    await waitFor(() => expect(toasts.error).toEqual(["1 message had nothing to change here"]));
+  });
+
+  it("a batch over 200 across two accounts goes in sequential calls by role", async () => {
+    const many = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}-${i}`);
+    const slot = render(
+      unifiedRpc({
+        thread_get: ({ threadId }: { threadId: string }) =>
+          threadId === "th-w" ? detailOf(threadW, "INBOX", many("w", 100)) : detailOf(threadA, "INBOX", many("a", 150)),
+        message_action: ({ messageIds }: { messageIds: string[] }) => ({
+          groups: [
+            {
+              accountId: "acc-1",
+              folder: "INBOX",
+              queued: messageIds.filter((id) => id.startsWith("a-")).length,
+              destination: null,
+              error: null,
+            },
+            {
+              accountId: "acc-2",
+              folder: "INBOX",
+              queued: messageIds.filter((id) => id.startsWith("w-")).length,
+              destination: null,
+              error: null,
+            },
+          ].filter((g) => g.queued > 0),
+        }),
+      }),
+    );
+    await slot.findByText("Invoice");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Invoice" }));
+    fireEvent.click(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByRole("button", { name: "Mark read" }));
+
+    await waitFor(() => expect(actionInputs(slot)).toHaveLength(2));
+    const inputs = callsTo(slot, "message_action").map((call) => call.input as { messageIds: string[]; role: string });
+    expect(inputs.map((input) => input.messageIds.length)).toEqual([200, 50]);
+    expect(inputs.every((input) => input.role === "inbox")).toBe(true);
+    expect(inputs[1]!.messageIds).toEqual(many("w", 100).slice(50));
+    await waitFor(() => expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull());
+    expect(toasts.error).toEqual([]);
+  });
+
+  it("a search clears the selection", async () => {
+    const slot = render(rowsRpc({ search: () => ({ hits: [] }) }));
+    await slot.findByText("Tickets");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.change(slot.getByLabelText("Search mail"), { target: { value: "plan" } });
+    fireEvent.submit(slot.getByRole("search"));
+    await waitFor(() => expect(callsTo(slot, "search")).toHaveLength(1));
+    fireEvent.click(await slot.findByRole("button", { name: "Clear" }));
+
+    await slot.findByText("Tickets");
+    expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull();
+    expect(slot.getByRole("checkbox", { name: "Select Quarterly plan" }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("a folder switch during the fan-out does not retarget the action", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const slot = render(
+      rowsRpc({
+        thread_get: async () => {
+          await gate;
+          return detailOf(threadA, "INBOX", ["a-1", "a-2"]);
+        },
+      }),
+    );
+    await slot.findByText("Tickets");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.click(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByRole("button", { name: "Mark read" }));
+    await waitFor(() => expect(callsTo(slot, "thread_get")).toHaveLength(1));
+    await openFolder(slot, /Spam/);
+    release();
+
+    await waitFor(() => expect(actionInputs(slot)).toHaveLength(1));
+    expect(callsTo(slot, "message_action")[0]?.input).toEqual({
+      messageIds: ["a-1", "a-2"],
+      action: "mark_read",
+      folder: "INBOX",
+    });
+  });
+});
+
+describe("Stars and bulk flags", () => {
+  it("rolls the star back when there is nothing to flag in the view", async () => {
+    const slot = render(rowsRpc({ thread_get: () => detailOf(threadB, "Elsewhere", ["b-1"]) }));
+    const star = within((await slot.findByRole("button", { name: /Lunch/ })).closest("li")!).getByRole("button", {
+      name: "Flag conversation",
+    });
+    fireEvent.click(star);
+    await waitFor(() => expect(callsTo(slot, "thread_get")).toHaveLength(1));
+    await waitFor(() => expect(star.getAttribute("aria-pressed")).toBe("false"));
+    expect(actionInputs(slot)).toHaveLength(0);
+  });
+
+  it("a refresh during a flag does not flip the star back", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let flaggedOnServer = false;
+    const slot = render(
+      rowsRpc({
+        threads_list: () => ({ threads: [threadA, { ...threadB, flagged: flaggedOnServer }, threadC], nextCursor: null }),
+        message_action: async () => {
+          await gate;
+          flaggedOnServer = true;
+          return { groups: [{ accountId: "acc-1", folder: "INBOX", queued: 1, destination: null, error: null }] };
+        },
+      }),
+    );
+    const row = (await slot.findByRole("button", { name: /Lunch/ })).closest("li")!;
+    const star = () => within(row).getByRole("button", { name: "Flag conversation" });
+    fireEvent.click(star());
+    await waitFor(() => expect(actionInputs(slot)).toHaveLength(1));
+    const listsBefore = callsTo(slot, "threads_list").length;
+
+    await slot.behavior.emitRealtime(MAIL_CHANGED_CHANNEL, { accountId: "acc-1" });
+    await waitFor(() => expect(callsTo(slot, "threads_list").length).toBeGreaterThan(listsBefore));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(star().getAttribute("aria-pressed")).toBe("true");
+    release();
+    await waitFor(() => expect(flaggedOnServer).toBe(true));
+    await slot.behavior.emitRealtime(MAIL_CHANGED_CHANNEL, { accountId: "acc-1" });
+    await waitFor(() => expect(callsTo(slot, "threads_list").length).toBeGreaterThan(listsBefore + 1));
+    expect(star().getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("Flag on a selection flags the newest message of each; Unflag clears every flagged one", async () => {
+    const flaggedA = { ...threadA, flagged: true };
+    const slot = render(
+      rowsRpc({
+        threads_list: () => ({ threads: [flaggedA, threadB, threadC], nextCursor: null }),
+        thread_get: ({ threadId }: { threadId: string }) =>
+          threadId === "th-a"
+            ? {
+                thread: flaggedA,
+                messages: [
+                  message({ id: "a-1", isFlagged: true }),
+                  message({ id: "a-2", isFlagged: false }),
+                  message({ id: "a-3", isFlagged: true }),
+                ],
+              }
+            : detailOf(threadB, "INBOX", ["b-1", "b-2"]),
+      }),
+    );
+    await slot.findByText("Tickets");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Lunch" }));
+    const bar = () => within(slot.getByRole("toolbar", { name: "Selected conversations" }));
+    fireEvent.click(bar().getByRole("button", { name: "Flag" }));
+    await waitFor(() => expect(actionInputs(slot)).toHaveLength(1));
+    expect(actionInputs(slot)[0]).toEqual({ messageIds: ["a-3", "b-2"], action: "flag", folder: "INBOX" });
+
+    await waitFor(() => expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull());
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.click(bar().getByRole("button", { name: "Unflag" }));
+    await waitFor(() => expect(actionInputs(slot)).toHaveLength(2));
+    expect(actionInputs(slot)[1]).toEqual({ messageIds: ["a-1", "a-3"], action: "unflag", folder: "INBOX" });
   });
 });

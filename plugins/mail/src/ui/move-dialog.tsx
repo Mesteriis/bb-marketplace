@@ -34,9 +34,22 @@ export interface MoveDialogProps {
   /** Paths the messages are in; never offered. */
   sources: readonly string[];
   onMove: (destinationPath: string) => void;
+  /** Where focus goes when the dialog closes (it has no trigger to return to). */
+  onCloseAutoFocus?: (event: Event) => void;
+  /** The compact (drawer) layout's close hook. */
+  onAfterCloseAutoFocus?: () => void;
 }
 
-export function MoveDialog({ open, onOpenChange, folders, accountId, sources, onMove }: MoveDialogProps) {
+export function MoveDialog({
+  open,
+  onOpenChange,
+  folders,
+  accountId,
+  sources,
+  onMove,
+  onCloseAutoFocus,
+  onAfterCloseAutoFocus,
+}: MoveDialogProps) {
   const destinations = accountId === null ? [] : moveDestinations(folders, accountId, sources);
   // Group labels for non-selectable parents keep the tree readable.
   const rows = folderRows(
@@ -45,7 +58,8 @@ export function MoveDialog({ open, onOpenChange, folders, accountId, sources, on
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-sm" onEscapeKeyDown={stopEscape}>
+      <DialogContent className="max-w-sm" onEscapeKeyDown={stopEscape} onCloseAutoFocus={onCloseAutoFocus}
+        onAfterCloseAutoFocus={onAfterCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>Move to…</DialogTitle>
           <DialogDescription>

@@ -56,6 +56,20 @@ describe("matchShortcut", () => {
     expect(matchShortcut(key({ key: "j", code: "KeyJ", isComposing: true }), false)).toBeNull();
   });
 
+  it("repeats only j and k while a key is held", () => {
+    expect(matchShortcut(key({ key: "j", code: "KeyJ", repeat: true }), false)).toEqual({ kind: "next" });
+    expect(matchShortcut(key({ key: "k", code: "KeyK", repeat: true }), false)).toEqual({ kind: "previous" });
+    expect(matchShortcut(key({ key: "#", code: "Digit3", shiftKey: true, repeat: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "s", code: "KeyS", repeat: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "g", code: "KeyG", repeat: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "i", code: "KeyI", repeat: true }), true)).toBeNull();
+  });
+
+  it("leaves Enter on a summary to the summary", () => {
+    const summary = document.createElement("summary");
+    expect(matchShortcut(key({ key: "Enter", code: "Enter", target: summary }), false)).toBeNull();
+  });
+
   it("leaves Enter on a button to the button", () => {
     const button = document.createElement("button");
     expect(matchShortcut(key({ key: "Enter", code: "Enter", target: button }), false)).toBeNull();
@@ -76,9 +90,15 @@ describe("isTypingTarget", () => {
     dialog.setAttribute("role", "dialog");
     const dialogButton = document.createElement("button");
     dialog.append(dialogButton);
+    const combobox = document.createElement("button");
+    combobox.setAttribute("role", "combobox");
+    const option = document.createElement("div");
+    option.setAttribute("role", "option");
+    const menuItem = document.createElement("div");
+    menuItem.setAttribute("role", "menuitem");
     document.body.append(editable, dialog);
 
-    for (const target of [input, textarea, select, inner, dialogButton]) {
+    for (const target of [input, textarea, select, inner, dialogButton, combobox, option, menuItem]) {
       expect(isTypingTarget(target)).toBe(true);
     }
     expect(isTypingTarget(document.createElement("button"))).toBe(false);
