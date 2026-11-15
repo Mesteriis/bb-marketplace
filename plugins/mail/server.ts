@@ -49,9 +49,10 @@ import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts
 import { createSyncLoop, type SyncLoop } from "./src/adapters/bb/sync-service.ts";
 import { createIdleSupervisor, type IdleSupervisor } from "./src/adapters/bb/idle-service.ts";
 import { NewMailBook } from "./src/adapters/bb/new-mail-book.ts";
-import { createSnoozeClock } from "./src/adapters/bb/snooze-clock.ts";
+import { createSnoozeClock, type SnoozeClock } from "./src/adapters/bb/snooze-clock.ts";
+import { ONE_CLICK_TOTAL_MS, UnsubscribeRate, createOneClickPoster } from "./src/adapters/bb/one-click.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
-import { describeStructure, readHeaders } from "./src/core/headers.ts";
+import { describeStructure, headerLines, readHeaders } from "./src/core/headers.ts";
 import {
   IdentityRefusal,
   addIdentity,
@@ -153,6 +154,7 @@ import {
   type OutboxNotifier,
   type OutboxRecord,
   type OutboxRow,
+  type OutboxState,
   type QueueDeps,
   type MessageSummary,
   type SecretVault,
@@ -169,6 +171,16 @@ import {
   parseQuietHours,
   NEW_MAIL_TOAST_ITEMS,
   toastName,
+  UNSUBSCRIBE_HEADER_FIELDS,
+  createComposeDraft,
+  effectiveSpecialUse,
+  offeredMethods,
+  planUnsubscribe,
+  unsubscribeInfoOf,
+  type UnsubscribeInfo,
+  type UnsubscribeInfoView,
+  type UnsubscribePoster,
+  type UnsubscribeState,
 } from "./src/core/index.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
@@ -257,6 +269,8 @@ export interface MailPluginOverrides {
   queue?: AccountWriteQueue;
   /** How long action_undo waits for the account tasks before answering `pending`. */
   undoWaitMs?: number;
+  /** The one-click unsubscribe POST (slice 3e); tests pass a fake. */
+  poster?: UnsubscribePoster;
 }
 
 /** action_undo waits this long for the account tasks, then answers `pending` (spec "Execution"). */
@@ -571,9 +585,10 @@ function aliasErrorText(store: MailStore, row: OutboxRecord): string | null {
   return outboxErrorText(row.errorKind, from, alias?.sendCheck ?? "unknown", PROVIDER_NAMES[account.preset]);
 }
 
-function toOutboxRow(row: OutboxRecord, errorText: string | null = null): OutboxRow {
+function toOutboxRow(row: OutboxRecord, errorText: string | null = null, purpose: "unsubscribe" | null = null): OutboxRow {
   return {
     errorText,
+    purpose,
     id: row.id,
     accountId: row.accountId,
     subject: row.subject,
@@ -894,6 +909,15 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     const outboxNotifier: OutboxNotifier = {
       outboxChanged: ({ accountId, id, state }) => {
         bb.realtime.publish(OUTBOX_CHANGED_CHANNEL, { accountId, id, state } satisfies OutboxChangedPayload);
+        // An unsubscribe email's request follows its outbox row (slice 3e).
+        const followed = UNSUBSCRIBE_FOLLOWS[state];
+        if (followed !== undefined) {
+          try {
+            store.setUnsubscribeStateByOutbox(id, followed);
+          } catch (error) {
+            bb.log.warn(`unsubscribe ${id}: state not saved (${errorKind(error)})`);
+          }
+        }
         if (state === "done" || state === "cancelled") {
           publishChanged(accountId);
           loop.wake(accountId);
@@ -998,6 +1022,10 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
 
     const tickets = new TicketBook<DownloadRequest>(clock);
     registerRpc(bb, {
+      poster: overrides.poster ?? createOneClickPoster({ clock }),
+      unsubscribeRate: new UnsubscribeRate(clock),
+      unsubscribeRuns: new Map(),
+      snoozeClock,
       store,
       accountDeps,
       composeDeps,
@@ -1079,6 +1107,13 @@ type RpcDeps = {
   idle: IdleSupervisor;
   /** New-mail toast tokens (slice 3e). */
   newMail: NewMailBook;
+  /** The one-click POST and its rate limit (slice 3e). */
+  poster: UnsubscribePoster;
+  unsubscribeRate: UnsubscribeRate;
+  /** unsubscribe_run by requestId (idempotency), in memory. */
+  unsubscribeRuns: Map<string, Promise<UnsubscribeOutcome>>;
+  /** The snooze clock: Return now ticks it (slice 3e). */
+  snoozeClock: SnoozeClock;
 };
 
 /** What a download ticket stands for; the name and bytes are resolved again when it is used. */
@@ -1450,6 +1485,181 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Unsubscribe (slice 3e)
+// ---------------------------------------------------------------------------
+
+/** An unsubscribe email's request state, following its outbox row's state. */
+const UNSUBSCRIBE_FOLLOWS: Partial<Record<OutboxState | "cancelled", UnsubscribeState>> = {
+  queued: "queued",
+  sent: "sent",
+  appending: "sent",
+  sent_no_copy: "sent",
+  done: "sent",
+  failed: "failed",
+  cancelled: "cancelled",
+};
+
+export const UNSUBSCRIBE_HIDDEN_MESSAGE = "Use Spam or Block for mail you never signed up for";
+export const UNSUBSCRIBE_NOT_OFFERED_MESSAGE = "This way to unsubscribe is not offered for this message";
+export const UNSUBSCRIBE_RATE_MESSAGE = "Too many unsubscribe requests; try again later";
+/** unsubscribe_run results kept for their requestId. */
+const UNSUBSCRIBE_RUNS_KEPT = 500;
+
+type UnsubscribeOutcome = {
+  outcome: "done" | "redirected" | "failed" | "queued";
+  reason: string | null;
+  outboxId: string | null;
+};
+
+/** The effective special use of the folder a message sits in. */
+function roleOfFolder(store: MailStore, accountId: string, path: string): SpecialUse | null {
+  const folder = store.listFolders(accountId).find((f) => f.path === path);
+  return effectiveSpecialUse(path, folder?.specialUse ?? null);
+}
+
+/**
+ * Unsubscribe info for a bulk row synced before slice 3e: one PEEK fetch of
+ * the header fields through the account's queue (never \Seen), stored only
+ * where still NULL and while the folder's UIDVALIDITY holds. Null when it
+ * cannot be read; the log gets the error kind only.
+ */
+async function fetchUnsubscribeInfo(deps: RpcDeps, messageId: string, log: (line: string) => void): Promise<UnsubscribeInfo | null> {
+  const { store, composeDeps } = deps;
+  const [row] = store.notifyRows([messageId], composeDeps.clock.now().toISOString());
+  if (row === undefined || row.uid === null || row.bulk !== true || !deps.vaultReady()) return null;
+  const account = store.getAccount(row.accountId);
+  if (account === null || account.authFailed) return null;
+  try {
+    return await composeDeps.queue.run(account.id, async () => {
+      const message = store.getMessage(messageId);
+      const [now] = store.notifyRows([messageId], composeDeps.clock.now().toISOString());
+      if (message === null || now === undefined || now.uid === null || now.movePending !== null) return null;
+      const session = await composeDeps.gateway.openFolder(imapConfigOf(account, composeDeps.vault), message.folder, { readOnly: true });
+      try {
+        const { uidValidity } = await session.status();
+        const [found] = await session.fetchHeaderFields([now.uid], UNSUBSCRIBE_HEADER_FIELDS);
+        if (found === undefined) return null;
+        const info = unsubscribeInfoOf(headerLines(found.block), account.preset, message.from);
+        if (info === null) return null;
+        store.fillUnsubscribe(account.id, message.folder, uidValidity, [{ uid: now.uid, info }]);
+        return store.getUnsubscribeInfo(messageId);
+      } finally {
+        await session.close().catch(() => undefined);
+      }
+    });
+  } catch (error) {
+    log(`unsubscribe ${messageId}: fetch failed (${errorKind(error)})`);
+    return null;
+  }
+}
+
+/** unsubscribe_info: what the reading pane may offer (never the list key). */
+async function unsubscribeView(deps: RpcDeps, messageId: string, log: (line: string) => void): Promise<UnsubscribeInfoView> {
+  const { store } = deps;
+  const message = store.getMessage(messageId);
+  if (message === null) throw refuse("not_found", "Unknown message");
+  const role = roleOfFolder(store, message.accountId, message.folder);
+  const hidden = role === "junk" || role === "trash";
+  let info = store.getUnsubscribeInfo(messageId);
+  if (info === null && !hidden) info = await fetchUnsubscribeInfo(deps, messageId, log);
+  const methods = info === null || hidden ? { oneClick: null, mailto: null } : offeredMethods(info, message.from.address);
+  const earlier = info === null ? null : store.getUnsubscribe(message.accountId, info.listKey);
+  return {
+    methods,
+    trust: info?.trust ?? "untrusted_provider",
+    listName: info?.listName ?? null,
+    already: earlier === null ? null : { state: earlier.state, at: earlier.requestedAt },
+    hidden,
+  };
+}
+
+/**
+ * unsubscribe_run (spec "Unsubscribe"): idempotent per requestId. One-click:
+ * the POST to the stored https URL, rate-limited, its outcome stored. Mailto:
+ * a hidden purpose draft (From by the reply rule, no signature or quote)
+ * queued at once with origin owner (spec resolution 19), so it keeps the
+ * Outbox Undo; its request follows the outbox row. Logs ids and fixed codes.
+ */
+function runUnsubscribe(
+  deps: RpcDeps,
+  input: { messageId: string; method: "one_click" | "mailto"; requestId: string },
+  log: (line: string) => void,
+): Promise<UnsubscribeOutcome> {
+  const repeated = deps.unsubscribeRuns.get(input.requestId);
+  if (repeated !== undefined) return repeated;
+  const running = unsubscribeOnce(deps, input, log);
+  deps.unsubscribeRuns.set(input.requestId, running);
+  running.catch(() => deps.unsubscribeRuns.delete(input.requestId));
+  while (deps.unsubscribeRuns.size > UNSUBSCRIBE_RUNS_KEPT) {
+    deps.unsubscribeRuns.delete(deps.unsubscribeRuns.keys().next().value!);
+  }
+  return running;
+}
+
+async function unsubscribeOnce(
+  deps: RpcDeps,
+  input: { messageId: string; method: "one_click" | "mailto"; requestId: string },
+  log: (line: string) => void,
+): Promise<UnsubscribeOutcome> {
+  const { store, composeDeps } = deps;
+  const message = store.getMessage(input.messageId);
+  if (message === null) throw refuse("not_found", "Unknown message");
+  const role = roleOfFolder(store, message.accountId, message.folder);
+  if (role === "junk" || role === "trash") throw refuse("conflict", UNSUBSCRIBE_HIDDEN_MESSAGE);
+  const info = store.getUnsubscribeInfo(input.messageId);
+  const offered = info === null ? null : offeredMethods(info, message.from.address);
+  const requestedAt = composeDeps.clock.now().toISOString();
+  if (input.method === "one_click") {
+    if (info === null || info.https === null || offered?.oneClick == null) throw refuse("conflict", UNSUBSCRIBE_NOT_OFFERED_MESSAGE);
+    if (!deps.unsubscribeRate.take(input.messageId)) throw refuse("conflict", UNSUBSCRIBE_RATE_MESSAGE);
+    const posted = await deps.poster.post(info.https, AbortSignal.timeout(ONE_CLICK_TOTAL_MS * 2));
+    const reason = posted.kind === "failed" ? posted.reason : null;
+    store.putUnsubscribe({
+      accountId: message.accountId,
+      listKey: info.listKey,
+      method: "one_click",
+      state: posted.kind,
+      outboxId: null,
+      requestedAt,
+    });
+    log(`unsubscribe ${input.messageId}: ${posted.kind}${reason === null ? "" : ` (${reason})`}`);
+    return { outcome: posted.kind, reason, outboxId: null };
+  }
+  if (info === null || info.mailto === null || offered?.mailto == null) throw refuse("conflict", UNSUBSCRIBE_NOT_OFFERED_MESSAGE);
+  if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
+  const account = store.getAccount(message.accountId);
+  if (account === null) throw refuse("not_found", "Unknown message");
+  if (account.authFailed) throw refuse("conflict", PASSWORD_NEEDED_MESSAGE);
+  if (deps.queueDeps.undone.has(input.requestId)) throw new ComposeError("undone");
+  const plan = planUnsubscribe(composeDeps, input.messageId, info.mailto);
+  const { draftId } = await createComposeDraft(composeDeps, plan, { origin: "owner", proposalId: null, purpose: "unsubscribe" });
+  let queued: { outboxId: string };
+  try {
+    queued = await queueSend(deps.queueDeps, {
+      draftId,
+      baseRevision: store.getDraft(draftId)!.revision,
+      requestId: input.requestId,
+      origin: "owner",
+    });
+  } catch (error) {
+    // Nothing was queued: the hidden draft goes with the refusal.
+    store.deleteDraft(draftId);
+    throw error;
+  }
+  store.putUnsubscribe({
+    accountId: message.accountId,
+    listKey: info.listKey,
+    method: "mailto",
+    state: "queued",
+    outboxId: queued.outboxId,
+    requestedAt,
+  });
+  deps.worker.wake(message.accountId);
+  log(`unsubscribe ${input.messageId}: queued`);
+  return { outcome: "queued", reason: null, outboxId: queued.outboxId };
+}
+
 function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const { store, accountDeps, composeDeps, publishChanged } = deps;
   const log = (line: string) => bb.log.warn(line);
@@ -1719,7 +1929,9 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return queued;
       }),
       outbox_list: owner("outbox_list", ({ accountId }) => ({
-        rows: store.listOutbox(accountId).map((row) => toOutboxRow(row, aliasErrorText(store, row))),
+        rows: store.listOutbox(accountId).map((row) =>
+          toOutboxRow(row, aliasErrorText(store, row), row.draftId === null ? null : (store.getDraft(row.draftId)?.purpose ?? null)),
+        ),
       })),
       outbox_cancel: owner("outbox_cancel", ({ id }) => cancelSend(deps.queueDeps, id)),
       outbox_send_now: owner("outbox_send_now", ({ id }) => {
@@ -1849,8 +2061,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         }));
         return { items, more: rows.length - items.length };
       },
-      unsubscribe_info: notYetAvailable,
-      unsubscribe_run: notYetAvailable,
+      unsubscribe_info: async ({ messageId }, context) => {
+        refusePluginCaller(context);
+        return unsubscribeView(deps, messageId, (line) => bb.log.info(line));
+      },
+      unsubscribe_run: owner("unsubscribe_run", (input) => runUnsubscribe(deps, input, (line) => bb.log.info(line))),
       message_snooze: notYetAvailable,
       message_unsnooze: notYetAvailable,
       snooze_folder_create: notYetAvailable,

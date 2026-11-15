@@ -1812,6 +1812,17 @@ export class InMemoryMailStore implements MailStore {
     this.state.unsubscribes.set(stateKey(row.accountId, row.listKey), { ...row });
   }
 
+  setUnsubscribeStateByOutbox(outboxId: string, state: UnsubscribeRecord["state"]): boolean {
+    let changed = false;
+    for (const row of this.state.unsubscribes.values()) {
+      if (row.outboxId === outboxId) {
+        row.state = state;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   createTriageBatch(batch: NewTriageBatch, items: TriageItemRecord[]): void {
     if (this.state.triageBatches.has(batch.id)) throw new Error("Duplicate triage batch");
     this.state.triageBatches.set(batch.id, {

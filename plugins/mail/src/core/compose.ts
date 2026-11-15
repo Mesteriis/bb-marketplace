@@ -172,6 +172,33 @@ export function planNew(
 }
 
 /**
+ * The unsubscribe email for a stored list message (slice 3e), not yet
+ * written: From the identity the list mail came to (the reply-from rule),
+ * To the list's mailto address, its subject and body as plain text, no
+ * signature, no quote, no threading, no attachments. Writes nothing.
+ */
+export function planUnsubscribe(
+  deps: Pick<ComposeDeps, "store" | "newId">,
+  messageId: string,
+  mailto: { address: string; subject: string; body: string },
+): ComposePlan {
+  const source = deps.store.replySource(messageId);
+  if (source === null) throw new ComposeError("not_found");
+  const account = requireAccount(deps.store, source.accountId);
+  const identity = replyIdentity(
+    { ...source, replyTo: source.replyToKnown ? source.replyTo : [], deliveredTo: deps.store.deliveredToOf(messageId) },
+    accountIdentities(deps.store, account),
+  );
+  const plan = planNew(deps, account.id, fromAddressOf(identity));
+  return {
+    ...plan,
+    to: [{ name: null, address: mailto.address }],
+    subject: mailto.subject,
+    doc: docFromLines(mailto.body === "" ? [] : splitLines(mailto.body)),
+  };
+}
+
+/**
  * A reply, reply-all or forward of a stored message, not yet written:
  * recipients, subject and threading from the store (Reply-To from the server
  * when the row predates its column), the quote header lines, the original's

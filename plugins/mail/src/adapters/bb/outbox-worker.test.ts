@@ -3,7 +3,9 @@ import {
   SendRateLimit,
   UndoneSends,
   UNDO_MS,
+  createComposeDraft,
   newCompose,
+  planNew,
   queueSend,
   saveCompose,
   type SmtpConfig,
@@ -221,6 +223,31 @@ describe("createOutboxWorker", () => {
     controller.abort();
     await running;
     expect(listed.flat()).toContain(hidden);
+    expect(read).not.toContain(hidden);
+    expect(h.drafts.messages).toHaveLength(1);
+    expect(getDraft(hidden)!.serverCopy).toBeNull();
+  });
+
+  it("never copies an unsubscribe purpose draft to Drafts on its tick", async () => {
+    const plan = planNew(h.deps, "acc_1");
+    const { draftId: hidden } = await createComposeDraft(
+      h.deps,
+      { ...plan, to: [{ name: null, address: "leave@example.com" }], subject: "unsubscribe" },
+      { origin: "owner", proposalId: null, purpose: "unsubscribe" },
+    );
+    const { draftId } = await readyDraft();
+    h.advance(SERVER_COPY_IDLE_MS);
+    const read: string[] = [];
+    const getDraft = h.store.getDraft.bind(h.store);
+    h.store.getDraft = (id) => {
+      read.push(id);
+      return getDraft(id);
+    };
+    const controller = new AbortController();
+    const running = worker().worker.start(controller.signal);
+    await vi.waitFor(() => expect(h.store.getDraft(draftId)!.serverState).toBe("saved"));
+    controller.abort();
+    await running;
     expect(read).not.toContain(hidden);
     expect(h.drafts.messages).toHaveLength(1);
     expect(getDraft(hidden)!.serverCopy).toBeNull();
