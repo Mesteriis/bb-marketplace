@@ -11,6 +11,7 @@ import {
   PASSWORD_NEEDED_MESSAGE,
   PLUGIN_CALLER_MESSAGE,
   REMOVE_IN_THREAD_MESSAGE,
+  renderSource,
 } from "./server.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
@@ -1842,5 +1843,33 @@ describe("makosh-mail server: fix round 1", () => {
       action: "flag",
     })) as { groups: { queued: number }[] };
     expect(flagged.groups[0]!.queued).toBe(1);
+  });
+});
+
+describe("makosh-mail server: fix round 2", () => {
+  it("renderSource marks a part that failed to render and logs the error kind only", () => {
+    const lines: string[] = [];
+    const raw = new TextEncoder().encode("Subject: Invented secret subject\r\n\r\nInvented body");
+    const hostile = () => {
+      throw new TypeError("Invented secret subject");
+    };
+
+    const both = renderSource(raw, (line) => lines.push(line), {
+      readHeaders: hostile,
+      describeStructure: hostile,
+    });
+
+    expect(both).toEqual({
+      headers: [["…", "headers unavailable"]],
+      structure: ["structure unavailable"],
+    });
+    expect(lines).toEqual([
+      "message source: headers could not be rendered (TypeError)",
+      "message source: structure could not be rendered (TypeError)",
+    ]);
+    expect(lines.join("\n")).not.toContain("Invented");
+    expect(renderSource(raw, (line) => lines.push(line)).headers).toEqual([
+      ["Subject", "Invented secret subject"],
+    ]);
   });
 });

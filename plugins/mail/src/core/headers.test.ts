@@ -209,13 +209,40 @@ describe("adversarial input (fix round 1)", () => {
     expect(params.get("filename")!.startsWith("AAAA")).toBe(true);
   });
 
-  it("stops walking boundary lines once the structure is full", () => {
-    const body = "--b\n\nx\n".repeat(100_000);
-    const raw = bytes(`Content-Type: multipart/mixed; boundary=b\n\n${body}--b--\n`);
+  // 12 MB inputs: big enough that a whole-message rescan per part takes seconds,
+  // small enough to keep CI fast once each scan is bounded to its part.
+  const TAIL_BYTES = 12 * 1024 * 1024;
+
+  /** `head`, then `unit` repeated until the message is about TAIL_BYTES long. */
+  function repeated(head: string, unit: string): Uint8Array {
+    const headBytes = bytes(head);
+    const unitBytes = bytes(unit);
+    const count = Math.ceil(TAIL_BYTES / unitBytes.length);
+    const raw = new Uint8Array(headBytes.length + count * unitBytes.length);
+    raw.set(headBytes);
+    for (let i = 0; i < count; i++) raw.set(unitBytes, headBytes.length + i * unitBytes.length);
+    return raw;
+  }
+
+  it("walks a body of bare boundary lines in time bounded by the parts shown", () => {
+    const raw = repeated("Content-Type: multipart/mixed; boundary=a\n\n", "--a\n");
     let lines: string[] = [];
     const ms = timed(() => (lines = describeStructure(raw)));
     expect(lines).toHaveLength(STRUCTURE_MAX_LINES + 1);
-    expect(ms).toBeLessThan(500);
+    expect(lines.at(-1)).toBe("…");
+    expect(ms).toBeLessThan(1000);
+  });
+
+  it("does not rescan a long tail of folded lines for every part without a blank line", () => {
+    const parts = "--a\nX-Part: y\n".repeat(190);
+    const raw = repeated(
+      `Content-Type: multipart/mixed; boundary=a\n\n${parts}--a\nX-Tail: y\n`,
+      " folded\n",
+    );
+    let lines: string[] = [];
+    const ms = timed(() => (lines = describeStructure(raw)));
+    expect(lines).toHaveLength(192);
+    expect(ms).toBeLessThan(1000);
   });
 
   it("caps the number of header pairs", () => {
