@@ -56,7 +56,7 @@ import type {
 import type { ComposeDoc } from "../../core/compose-doc.ts";
 import { cleanSnippet, needsSnippetRepair, snippetOf } from "../../core/snippet.ts";
 import type { MailStore, ProposalRecord, TranslationRecord } from "../../core/ports.ts";
-import type { ProposalState } from "../../core/agent-propose.ts";
+import type { ProposalCapRow, ProposalState } from "../../core/agent-propose.ts";
 import { TRANSLATION_CACHE_ROWS } from "../../core/translate.ts";
 import {
   capInlineParts,
@@ -753,6 +753,17 @@ function toAttachment(row: AttachmentRow): AttachmentMeta {
 export function createSqliteStore(db: Database.Database): MailStore {
   /** Runs fn atomically; nests as a savepoint inside a caller's transaction. */
   const atomic = <T>(fn: () => T): T => db.transaction(fn)();
+  const proposalCapRows = (nowIso: string): ProposalCapRow[] => {
+    const since = new Date(Date.parse(nowIso) - 24 * 60 * 60 * 1000).toISOString();
+    return db
+      .prepare<[string], { thread_id: string; state: ProposalState; created_at: string; updated_at: string }>(
+        `SELECT thread_id, state, created_at, updated_at FROM agent_proposals
+         WHERE state IN ('pending', 'confirming') OR created_at > ?
+         ORDER BY created_at, id`,
+      )
+      .all(since)
+      .map((row) => ({ threadId: row.thread_id, state: row.state, createdAt: row.created_at, updatedAt: row.updated_at }));
+  };
   // SQLite's LIKE folds ASCII case only; this folds Cyrillic and the rest.
   db.function("mail_lower", { deterministic: true }, (value: unknown) =>
     value === null || value === undefined ? null : String(value).toLowerCase(),
@@ -2412,27 +2423,30 @@ export function createSqliteStore(db: Database.Database): MailStore {
 
     // Agent proposals and translation (slice 3c) ------------------------------
 
-    createProposal(input) {
-      db.prepare(
-        `INSERT INTO agent_proposals (id, thread_id, draft_id, account_id, kind, source_message_id,
-           added_json, content_sha256, left_out, view_token_sha256, viewed_at, state, outbox_id,
-           expires_at, created_at, updated_at)
-         VALUES (@id, @threadId, @draftId, @accountId, @kind, @sourceMessageId, @added, @contentSha256,
-           @leftOut, NULL, NULL, 'pending', NULL, @expiresAt, @createdAt, @createdAt)`,
-      ).run({
-        id: input.id,
-        threadId: input.threadId,
-        draftId: input.draftId,
-        accountId: input.accountId,
-        kind: input.kind,
-        sourceMessageId: input.sourceMessageId,
-        added: JSON.stringify(input.added),
-        contentSha256: input.contentSha256,
-        leftOut: input.leftOut,
-        expiresAt: input.expiresAt,
-        createdAt: input.createdAt,
+    createProposal(input, admit) {
+      return atomic(() => {
+        admit?.(proposalCapRows(input.createdAt));
+        db.prepare(
+          `INSERT INTO agent_proposals (id, thread_id, draft_id, account_id, kind, source_message_id,
+             added_json, content_sha256, left_out, view_token_sha256, viewed_at, state, outbox_id,
+             expires_at, created_at, updated_at)
+           VALUES (@id, @threadId, @draftId, @accountId, @kind, @sourceMessageId, @added, @contentSha256,
+             @leftOut, NULL, NULL, 'pending', NULL, @expiresAt, @createdAt, @createdAt)`,
+        ).run({
+          id: input.id,
+          threadId: input.threadId,
+          draftId: input.draftId,
+          accountId: input.accountId,
+          kind: input.kind,
+          sourceMessageId: input.sourceMessageId,
+          added: JSON.stringify(input.added),
+          contentSha256: input.contentSha256,
+          leftOut: input.leftOut,
+          expiresAt: input.expiresAt,
+          createdAt: input.createdAt,
+        });
+        return toProposal(proposalById.get(input.id)!);
       });
-      return toProposal(proposalById.get(input.id)!);
     },
 
     getProposal(id) {
@@ -2441,15 +2455,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
     },
 
     proposalCapRows(nowIso) {
-      const since = new Date(Date.parse(nowIso) - 24 * 60 * 60 * 1000).toISOString();
-      return db
-        .prepare<[string], { thread_id: string; state: ProposalState; created_at: string; updated_at: string }>(
-          `SELECT thread_id, state, created_at, updated_at FROM agent_proposals
-           WHERE state IN ('pending', 'confirming') OR created_at > ?
-           ORDER BY created_at, id`,
-        )
-        .all(since)
-        .map((row) => ({ threadId: row.thread_id, state: row.state, createdAt: row.created_at, updatedAt: row.updated_at }));
+      return proposalCapRows(nowIso);
     },
 
     transitionProposal(id, from, to, updatedAt, patch = {}) {

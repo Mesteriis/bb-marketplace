@@ -267,6 +267,12 @@ export async function proposeMail(
     const draft = deps.store.getDraft(created.draftId);
     const hash = draft === null ? null : await draftHash(deps.store, draft);
     if (hash === null) throw new ProposalError("account");
+    // The caps again, atomically with the insert: the awaits above let
+    // concurrent calls past the first check.
+    const admit = (rows: Parameters<typeof checkProposalCaps>[0]) => {
+      const hit = checkProposalCaps(rows, ctx.threadId, now);
+      if (hit !== null) throw new ProposalError(`caps:${hit}`);
+    };
     deps.store.createProposal({
       id: proposalId,
       threadId: ctx.threadId,
@@ -279,7 +285,7 @@ export async function proposeMail(
       leftOut: created.leftOut,
       expiresAt: new Date(now.getTime() + PROPOSAL_TTL_MS).toISOString(),
       createdAt: now.toISOString(),
-    });
+    }, admit);
     return { proposalId, contentHash: hash };
   } catch (error) {
     deps.store.deleteDraft(created.draftId);

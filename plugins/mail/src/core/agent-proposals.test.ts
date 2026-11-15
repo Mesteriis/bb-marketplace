@@ -337,6 +337,28 @@ describe("viewProposal", () => {
   });
 });
 
+describe("proposeMail caps under concurrency", () => {
+  it("8 concurrent proposals in one thread: exactly one is stored, the rest hit the cap and leave no draft", async () => {
+    const results = await Promise.allSettled(Array.from({ length: 8 }, () => propose()));
+    const ok = results.filter((r) => r.status === "fulfilled");
+    expect(ok).toHaveLength(1);
+    for (const r of results) {
+      if (r.status === "rejected") {
+        expect(r.reason).toBeInstanceOf(ProposalError);
+        expect((r.reason as ProposalError).kind).toBe("caps:pending_thread");
+      }
+    }
+    expect(h.store.proposalCapRows(h.clock.now().toISOString())).toHaveLength(1);
+    expect(h.store.listDrafts("acc_1")).toHaveLength(1);
+  });
+
+  it("concurrent proposals in different threads stop at the total pending cap", async () => {
+    const results = await Promise.allSettled(Array.from({ length: 6 }, (_, i) => propose({}, `thread_${i}`)));
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(3);
+    expect(h.store.listDrafts("acc_1")).toHaveLength(3);
+  });
+});
+
 describe("viewProposal hidden text", () => {
   it("reveals soft hyphens, invisible operators, variation selectors and line separators, and counts them", async () => {
     const proposed = await propose({ body: "Pay\u00AD now\u2062\uFE0F\u2028done" });
