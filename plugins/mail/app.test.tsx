@@ -1217,14 +1217,14 @@ describe("Selection", () => {
 
     fireEvent.click(checkbox(slot, "Quarterly plan"));
     fireEvent.click(checkbox(slot, "Invoice"), { shiftKey: true });
-    const bar = within(slot.getByRole("toolbar", { name: "Selected conversations" }));
-    expect(bar.getByText("3 selected")).toBeTruthy();
+    expect(slot.getByRole("toolbar", { name: "Selected conversations" })).toBeTruthy();
+    expect(slot.getByText("3 selected")).toBeTruthy();
     expect(checkbox(slot, "Lunch").getAttribute("aria-checked")).toBe("true");
 
     fireEvent.click(slot.getByRole("checkbox", { name: "Select all on page" }));
     expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull();
     fireEvent.click(slot.getByRole("checkbox", { name: "Select all on page" }));
-    expect(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByText("3 selected")).toBeTruthy();
+    expect(slot.getByText("3 selected")).toBeTruthy();
 
     // A folder change clears the selection.
     await openFolder(slot, /^Spam/);
@@ -1296,7 +1296,7 @@ describe("Selection", () => {
     expect(toasts.success).toEqual(["Moved to Archive"]);
     await waitFor(() => expect(slot.queryByRole("button", { name: /Quarterly plan/ })).toBeNull());
     expect(checkbox(slot, "Invoice").getAttribute("aria-checked")).toBe("true");
-    expect(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByText("1 selected")).toBeTruthy();
+    expect(slot.getByText("1 selected")).toBeTruthy();
   });
 
   it("a thrown refusal toasts once and keeps every conversation selected", async () => {
@@ -1314,7 +1314,7 @@ describe("Selection", () => {
 
     await waitFor(() => expect(toasts.error).toEqual(["Invented single-group refusal"]));
     expect(toasts.success).toEqual([]);
-    expect(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByText("2 selected")).toBeTruthy();
+    expect(slot.getByText("2 selected")).toBeTruthy();
     expect(slot.getByRole("button", { name: /Quarterly plan/ })).toBeTruthy();
   });
 
@@ -1676,7 +1676,7 @@ describe("Hotkeys", () => {
 
     press(root, { key: "j", code: "KeyJ" });
     press(document.activeElement!, { key: "x", code: "KeyX" });
-    expect(within(slot.getByRole("toolbar", { name: "Selected conversations" })).getByText("1 selected")).toBeTruthy();
+    expect(slot.getByText("1 selected")).toBeTruthy();
     press(document.activeElement!, { key: "№", code: "Digit3", shiftKey: true });
 
     await waitFor(() =>
@@ -1951,19 +1951,20 @@ describe("Hotkey auto-repeat and targets", () => {
     expect(actionInputs(slot)).toEqual([{ messageIds: ["b-1"], action: "flag", folder: "INBOX" }]);
   });
 
-  it("with a conversation open, # acts on it, not on the selection", async () => {
+  it("with a selection and a conversation open, # deletes the selection only", async () => {
     const slot = render(rowsRpc());
     await slot.findByText("Tickets");
-    fireEvent.click(slot.getByRole("checkbox", { name: "Select Lunch" }));
     fireEvent.click(rowButton(slot, /Quarterly plan/));
     await slot.findByRole("heading", { name: "Quarterly plan" });
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Lunch" }));
     pageRoot(slot).focus();
 
     key(HASH);
     await waitFor(() => expect(actionInputs(slot)).toHaveLength(1));
-    expect(actionInputs(slot)[0]).toEqual({ messageIds: ["a-1", "a-2"], action: "delete", folder: "INBOX" });
-    await waitFor(() => expect(slot.queryByText("Quarterly plan")).toBeNull());
-    expect(slot.getByRole("checkbox", { name: "Select Lunch" }).getAttribute("aria-checked")).toBe("true");
+    expect(actionInputs(slot)[0]).toEqual({ messageIds: ["b-1"], action: "delete", folder: "INBOX" });
+    await waitFor(() => expect(slot.queryByText("Lunch")).toBeNull());
+    // The selection is gone, so the open conversation comes back.
+    expect(await slot.findByRole("heading", { name: "Quarterly plan" })).toBeTruthy();
   });
 
   it("e, !, u and Shift+I work end to end", async () => {
@@ -2298,7 +2299,7 @@ describe("Final fix wave", () => {
     await waitFor(() => expect(document.activeElement).toBe(pageRoot(slot)));
   });
 
-  it("x does nothing while a conversation is open", async () => {
+  it("x selects while a conversation is open on the wide layout", async () => {
     const slot = render(rowsRpc());
     await slot.findByText("Tickets");
     pageRoot(slot).focus();
@@ -2307,7 +2308,124 @@ describe("Final fix wave", () => {
     await slot.findByRole("heading", { name: "Quarterly plan" });
 
     key({ key: "x", code: "KeyX" });
+    expect(slot.getByRole("checkbox", { name: "Select Quarterly plan" }).getAttribute("aria-checked")).toBe("true");
+    expect(slot.getByRole("toolbar", { name: "Selected conversations" })).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 3: one action toolbar at a time.
+
+/** Makes the page report `width` px, as BB's pane would. */
+function stubWidth(width: number) {
+  const original = globalThis.ResizeObserver;
+  class Fixed {
+    constructor(private readonly callback: ResizeObserverCallback) {}
+    observe(target: Element) {
+      this.callback([{ target, contentRect: { width } } as unknown as ResizeObserverEntry], this as never);
+    }
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = Fixed as unknown as typeof ResizeObserver;
+  return () => {
+    globalThis.ResizeObserver = original;
+  };
+}
+
+describe("One action toolbar", () => {
+  it("the list header has no action buttons on the wide layout", async () => {
+    const slot = render(rowsRpc());
+    await slot.findByText("Tickets");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Lunch" }));
+
+    const header = within(slot.getByRole("group", { name: "Selection" }));
+    expect(header.getByText("1 selected")).toBeTruthy();
+    expect(header.getByRole("checkbox", { name: "Select all on page" })).toBeTruthy();
+    expect(header.getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["Clear selection"]);
+    expect(slot.queryByRole("toolbar", { name: "Selection actions" })).toBeNull();
+    const panel = within(slot.getByRole("toolbar", { name: "Selected conversations" }));
+    expect(panel.getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "Mark unread",
+      "Flag",
+      "Archive",
+      "Spam",
+      "Delete",
+      "Move to…",
+    ]);
+    expect(slot.getByText("1 conversation selected")).toBeTruthy();
+  });
+
+  it("the selection panel replaces the open conversation and gives it back on clear", async () => {
+    const slot = render(rowsRpc());
+    await slot.findByText("Tickets");
+    fireEvent.click(rowButton(slot, /Quarterly plan/));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    await waitFor(() => expect(callsTo(slot, "thread_get")).toHaveLength(1));
+    const opens = callsTo(slot, "message_open").length;
+
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Lunch" }));
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Tickets" }));
+    expect(slot.queryByRole("heading", { name: "Quarterly plan" })).toBeNull();
+    expect(slot.queryByRole("toolbar", { name: "Conversation actions" })).toBeNull();
+    expect(slot.getByText("2 conversations selected")).toBeTruthy();
+
+    fireEvent.click(slot.getByRole("button", { name: "Clear selection" }));
+    expect(await slot.findByRole("heading", { name: "Quarterly plan" })).toBeTruthy();
     expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull();
-    expect(slot.getByRole("checkbox", { name: "Select Quarterly plan" }).getAttribute("aria-checked")).toBe("false");
+    expect(callsTo(slot, "message_open")).toHaveLength(opens);
+    expect(callsTo(slot, "thread_get")).toHaveLength(1);
+  });
+
+  it("counts a selection across accounts per account", async () => {
+    const slot = render(unifiedRpc());
+    await slot.findByText("Invoice");
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Lunch" }));
+    fireEvent.click(slot.getByRole("checkbox", { name: "Select Invoice" }));
+
+    expect(slot.getByText("3 conversations selected")).toBeTruthy();
+    expect(slot.getByText("owner@example.org: 2")).toBeTruthy();
+    expect(slot.getByText("me@work.example.org: 1")).toBeTruthy();
+  });
+
+  it("narrow: one row of icon actions under the header, and a row click toggles while selecting", async () => {
+    const restore = stubWidth(400);
+    try {
+      const slot = render(rowsRpc());
+      await slot.findByText("Tickets");
+      fireEvent.click(slot.getByRole("checkbox", { name: "Select Lunch" }));
+
+      expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull();
+      const bar = slot.getByRole("toolbar", { name: "Selection actions" });
+      expect(bar.className).toContain("flex-nowrap");
+      expect(bar.className).toContain("overflow-x-auto");
+      expect(bar.className).toContain("shrink-0");
+      expect(bar.className).not.toContain("flex-wrap ");
+      expect(within(bar).getByRole("button", { name: "Delete" }).textContent).toBe("");
+
+      fireEvent.click(rowButton(slot, /Tickets/));
+      expect(slot.getByRole("checkbox", { name: "Select Tickets" }).getAttribute("aria-checked")).toBe("true");
+      expect(callsTo(slot, "thread_get")).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("narrow: x does nothing while a conversation is open", async () => {
+    const restore = stubWidth(400);
+    try {
+      const slot = render(rowsRpc());
+      await slot.findByText("Tickets");
+      pageRoot(slot).focus();
+      key(J);
+      key({ key: "o", code: "KeyO" });
+      await slot.findByRole("heading", { name: "Quarterly plan" });
+
+      key({ key: "x", code: "KeyX" });
+      expect(slot.getByRole("checkbox", { name: "Select Quarterly plan" }).getAttribute("aria-checked")).toBe("false");
+    } finally {
+      restore();
+    }
   });
 });

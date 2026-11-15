@@ -80,6 +80,64 @@ export function selectionActions(
   return actions;
 }
 
+/**
+ * The bulk actions as buttons: labelled (the selection panel, in the same
+ * place and style as the reading-pane toolbar) or icon-only (the narrow bar).
+ * A disabled action keeps its reason as a tooltip and as its description.
+ */
+function ActionButtons({
+  actions,
+  onAction,
+  pending,
+  iconOnly,
+}: {
+  actions: readonly BarAction[];
+  onAction: (action: BarAction["action"]) => void;
+  pending: boolean;
+  iconOnly: boolean;
+}) {
+  const reasonId = useId();
+  return (
+    <>
+      {actions.map(({ action, label, icon, disabledReason }) => {
+        const button = (
+          <Button
+            variant="ghost"
+            size={iconOnly ? "icon" : "sm"}
+            className={iconOnly ? "size-7 shrink-0" : undefined}
+            aria-label={iconOnly ? label : undefined}
+            disabled={pending || disabledReason !== null}
+            aria-describedby={disabledReason !== null ? `${reasonId}-${action}` : undefined}
+            onClick={() => onAction(action)}
+          >
+            <Icon name={icon} fallback="Folder" aria-hidden />
+            {iconOnly ? null : label}
+          </Button>
+        );
+        if (disabledReason === null) {
+          return iconOnly ? (
+            <span key={action} title={label} className="inline-flex shrink-0">
+              {button}
+            </span>
+          ) : (
+            <span key={action} className="inline-flex">
+              {button}
+            </span>
+          );
+        }
+        return (
+          <span key={action} title={disabledReason} className="inline-flex shrink-0">
+            {button}
+            <span id={`${reasonId}-${action}`} className="sr-only">
+              {disabledReason}
+            </span>
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
 export interface SelectionBarProps {
   /** The folder or role name, shown while nothing is selected. */
   title: string;
@@ -87,86 +145,102 @@ export interface SelectionBarProps {
   pageIds: readonly string[];
   selection: ReadonlySet<string>;
   onSelectionChange: (next: ReadonlySet<string>) => void;
-  actions: readonly BarAction[];
-  onAction: (action: BarAction["action"]) => void;
-  pending: boolean;
+  /**
+   * The narrow (one-column) layout only: the actions as one row of icons
+   * under the header. Elsewhere the selection panel holds them; null here.
+   */
+  compactActions: { actions: readonly BarAction[]; onAction: (action: BarAction["action"]) => void; pending: boolean } | null;
 }
 
-export function SelectionBar({
-  title,
-  pageIds,
-  selection,
-  onSelectionChange,
-  actions,
-  onAction,
-  pending,
-}: SelectionBarProps) {
-  const reasonId = useId();
+/** The list header: "select page" and the folder name, or the selection count and Clear. */
+export function SelectionBar({ title, pageIds, selection, onSelectionChange, compactActions }: SelectionBarProps) {
   const count = selection.size;
   const onPage = pageIds.filter((id) => selection.has(id)).length;
   const all = pageIds.length > 0 && onPage === pageIds.length;
   const checked = all ? true : count > 0 ? "indeterminate" : false;
 
   return (
-    <div
-      role={count > 0 ? "toolbar" : undefined}
-      aria-label={count > 0 ? "Selected conversations" : undefined}
-      className="sticky top-0 z-10 flex min-h-9 shrink-0 flex-wrap items-center gap-0.5 border-b border-border bg-background px-3 py-1"
-    >
-      <Checkbox
-        aria-label="Select all on page"
-        checked={checked}
-        disabled={pageIds.length === 0}
-        onClick={() => onSelectionChange(all || count > 0 ? new Set() : new Set(pageIds))}
-        className="mr-1"
-      />
-      {count === 0 ? (
-        <span className="min-w-0 flex-1 truncate text-xs font-medium text-muted-foreground">{title}</span>
-      ) : (
-        <>
-          <span className="mr-1 shrink-0 text-xs text-muted-foreground" aria-live="polite">
-            {count} selected
-          </span>
-          {actions.map(({ action, label, icon, disabledReason }) => {
-            const button = (
-              <Button
-                key={action}
-                variant="ghost"
-                size="icon"
-                className="size-7"
-                aria-label={label}
-                disabled={pending || disabledReason !== null}
-                aria-describedby={disabledReason !== null ? `${reasonId}-${action}` : undefined}
-                onClick={() => onAction(action)}
-              >
-                <Icon name={icon} fallback="Folder" aria-hidden />
-              </Button>
-            );
-            return disabledReason === null ? (
-              <span key={action} title={label} className="inline-flex">
-                {button}
-              </span>
-            ) : (
-              <span key={action} title={disabledReason}>
-                {button}
-                <span id={`${reasonId}-${action}`} className="sr-only">
-                  {disabledReason}
-                </span>
-              </span>
-            );
-          })}
-          <span className="flex-1" />
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7"
-            aria-label="Clear selection"
-            onClick={() => onSelectionChange(new Set())}
-          >
-            <Icon name="X" aria-hidden />
-          </Button>
-        </>
-      )}
+    <div className="sticky top-0 z-10 flex shrink-0 flex-col border-b border-border bg-background">
+      <div
+        role={count > 0 ? "group" : undefined}
+        aria-label={count > 0 ? "Selection" : undefined}
+        className="flex min-h-9 shrink-0 items-center gap-1 px-3 py-1"
+      >
+        <Checkbox
+          aria-label="Select all on page"
+          checked={checked}
+          disabled={pageIds.length === 0}
+          onClick={() => onSelectionChange(all || count > 0 ? new Set() : new Set(pageIds))}
+          className="mr-1"
+        />
+        {count === 0 ? (
+          <span className="min-w-0 flex-1 truncate text-xs font-medium text-muted-foreground">{title}</span>
+        ) : (
+          <>
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" aria-live="polite">
+              {count} selected
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0"
+              aria-label="Clear selection"
+              onClick={() => onSelectionChange(new Set())}
+            >
+              <Icon name="X" aria-hidden />
+            </Button>
+          </>
+        )}
+      </div>
+      {count > 0 && compactActions !== null ? (
+        <div
+          role="toolbar"
+          aria-label="Selection actions"
+          className="flex shrink-0 flex-nowrap items-center gap-0.5 overflow-x-auto px-2 pb-1"
+        >
+          <ActionButtons {...compactActions} iconOnly />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export interface SelectionPanelProps {
+  count: number;
+  /** Per-account counts, shown when the selection spans several accounts. */
+  perAccount: readonly { label: string; count: number }[];
+  actions: readonly BarAction[];
+  onAction: (action: BarAction["action"]) => void;
+  pending: boolean;
+}
+
+/**
+ * The right pane while a selection exists: the bulk actions where the reading
+ * pane's toolbar is, and a short summary. The open conversation waits behind it.
+ */
+export function SelectionPanel({ count, perAccount, actions, onAction, pending }: SelectionPanelProps) {
+  return (
+    <div className="box-border flex w-full min-w-0 flex-1 flex-col gap-3 px-4 pb-6 pt-2">
+      <div
+        role="toolbar"
+        aria-label="Selected conversations"
+        className="flex flex-wrap items-center gap-1 border-b border-border pb-2"
+      >
+        <ActionButtons actions={actions} onAction={onAction} pending={pending} iconOnly={false} />
+      </div>
+      <div role="status" className="flex flex-1 flex-col items-center justify-center gap-1 py-10 text-center">
+        <Icon name="Mail" className="size-6 text-muted-foreground" aria-hidden />
+        <p className="text-sm font-medium text-foreground">
+          {count === 1 ? "1 conversation selected" : `${count} conversations selected`}
+        </p>
+        {perAccount.length > 1
+          ? perAccount.map(({ label, count: n }) => (
+              <p key={label} className="text-xs text-muted-foreground">
+                {label}: {n}
+              </p>
+            ))
+          : null}
+      </div>
     </div>
   );
 }
