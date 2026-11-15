@@ -73,7 +73,7 @@ way for you to draft or send mail.
 - `mail_propose({ kind, sourceMessageId?, accountId?, to?, cc?, bcc?, subject?, body, forwardAttachments? })`
   — `kind` is `new`, `reply`, `reply_all` or `forward`. A reply or forward
   takes the message id from `mail_search`, `mail_read` or a mention
-  ("Message id: …"); a new message needs `accountId` and `subject`. The body
+  ("Message id: …"); a new message needs a `subject`, and `accountId` — the sending account's id or its email address — when the owner has more than one account (a refusal lists the addresses). The body
   is plain text. Attachments exist only on a forward, and only the source
   message's own.
 
