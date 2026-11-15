@@ -8,7 +8,10 @@
 // APPEND of the owner's drafts and Sent copies (appendMessage) and the UID
 // EXPUNGE of exactly one superseded draft copy (expungeOwn, UIDPLUS only),
 // and for slice 3d the UID COPY of undo of an archive on Gmail
-// (copyMessages; it adds, never removes).
+// (copyMessages; it adds, never removes). Slice 3e adds the IDLE watch
+// (watchFolder: its own read-only EXAMINE connection, no session, no
+// command beyond IDLE and imapflow's keepalive NOOP) and the CREATE of one
+// snooze folder after the owner's confirmation (createFolder).
 // Errors leaving this file are rebuilt from codes: imapflow errors can carry
 // server responses and the sent command, so their text is never passed on.
 import { ImapFlow } from "imapflow";
@@ -23,13 +26,19 @@ import PostalMime from "postal-mime";
 import { normalizeMessageId } from "../../core/headers.ts";
 import type { Address, Attachment, Email, RawEmail } from "postal-mime";
 import {
+  IDLE_REFUSED_CODE,
+  IDLE_RESTART_MS,
+  IDLE_SOCKET_TIMEOUT_MS,
   ImapAuthError,
   LIST_HEADER_FIELDS,
+  PROVIDER_TRACE_HEADERS,
+  UNSUBSCRIBE_HEADER_FIELDS,
   capInlineParts,
   type AttachmentMeta,
   type BulkHeaders,
   type FetchedMessage,
   type FlagChange,
+  type HeaderLine,
   type ImapConfig,
   type ImapGateway,
   type FolderSession,
@@ -37,6 +46,7 @@ import {
   type MailAddress,
   type RemoteFolder,
   type SpecialUse,
+  type WatchEnd,
 } from "../../core/index.ts";
 
 export interface ImapflowGatewayOptions {
@@ -163,15 +173,198 @@ export function createImapflowGateway(options: ImapflowGatewayOptions = {}): Ima
       return createSession(client, readOnly);
     },
 
-    // Slice 3e stubs until the gateway task: no watch, no CREATE.
-    async watchFolder() {
-      return { kind: "unsupported" };
+    async watchFolder(config, path, onChange, signal) {
+      const client = new ImapFlow({
+        ...toImapflowOptions(config),
+        // A quiet socket while idling sends a recovery NOOP after this; one
+        // that has not settled by the next timeout closes the connection, so
+        // a dead peer is found in about 150 s (spec resolution 15).
+        socketTimeout: IDLE_SOCKET_TIMEOUT_MS,
+        // imapflow restarts IDLE inside its command at this bound.
+        maxIdleTime: IDLE_RESTART_MS,
+      });
+      return runWatch(client, path, onChange, signal, log);
     },
 
-    async createFolder() {
-      throw new SafeImapError("CreateFailed");
+    async createFolder(config, name) {
+      const client = await connect(config);
+      try {
+        return await createFolderWith(client, name);
+      } finally {
+        await logoutQuietly(client);
+      }
     },
   };
+}
+
+/** What a watch needs from an imapflow client; tests pass a stub. Nothing here writes. */
+export type WatchClient = Pick<
+  ImapFlow,
+  "connect" | "capabilities" | "enabled" | "mailbox" | "usable" | "mailboxOpen" | "idle" | "logout" | "close" | "on"
+>;
+
+/** Longest wait for LOGOUT when a watch is aborted; then the socket is closed. */
+export const WATCH_LOGOUT_CAP_MS = 2_000;
+
+/** Login refusals that are the server's passing reason, not the credentials (describeImapError). */
+const THROTTLED_CODES = new Set(["LoginThrottled", "UNAVAILABLE", "INUSE", "LIMIT", "SERVERBUG", "ALERT"]);
+
+const dropped = (error: unknown): WatchEnd => {
+  const mapped = describeImapError(error);
+  return { kind: "dropped", code: mapped instanceof SafeImapError ? mapped.code : "Unknown" };
+};
+
+/**
+ * One IDLE watch on `client` (spec "IMAP IDLE" with resolutions 15 and 25):
+ * connect, EXAMINE `path`, IDLE until the signal aborts or the connection
+ * ends. Calls only connect, mailboxOpen (read-only), idle, logout and close;
+ * event payloads are read for counts only. Never rejects.
+ */
+export async function runWatch(
+  client: WatchClient,
+  path: string,
+  onChange: (change: "exists" | "expunge" | "flags") => void,
+  signal: AbortSignal,
+  log: (line: string) => void = () => {},
+): Promise<WatchEnd> {
+  let settled: WatchEnd | null = null;
+  let resolveEnd!: (end: WatchEnd) => void;
+  const ended = new Promise<WatchEnd>((resolve) => {
+    resolveEnd = resolve;
+  });
+  /** Set once the abort began: only "aborted" settles the watch from then on. */
+  let stopping = false;
+  const finish = (end: WatchEnd) => {
+    if (settled !== null || (stopping && end.kind !== "aborted")) return;
+    settled = end;
+    resolveEnd(end);
+  };
+  const notify = (change: "exists" | "expunge" | "flags") => {
+    if (settled !== null || stopping) return;
+    try {
+      onChange(change);
+    } catch {
+      // A broken listener must not end the watch.
+    }
+  };
+
+  let lastErrorCode: string | null = null;
+  // An unhandled 'error' event would crash the host process.
+  client.on("error", (error: unknown) => {
+    const end = dropped(error);
+    lastErrorCode = end.kind === "dropped" ? end.code : null;
+    log(`imap watch error: ${lastErrorCode ?? "Unknown"}`);
+    finish(end);
+  });
+  client.on("close", () => finish({ kind: "dropped", code: lastErrorCode ?? "ConnectionClosed" }));
+  client.on("exists", (data: unknown) => {
+    const { count, prevCount } = (data ?? {}) as { count?: unknown; prevCount?: unknown };
+    if (typeof count === "number" && typeof prevCount === "number" && count > prevCount) notify("exists");
+  });
+  client.on("expunge", () => notify("expunge"));
+  client.on("flags", () => notify("flags"));
+
+  let closed = false;
+  const shutDown = async () => {
+    if (closed) return;
+    closed = true;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, WATCH_LOGOUT_CAP_MS);
+      timer.unref?.();
+      const done = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      if (client.usable) client.logout().then(done, done);
+      else done();
+    });
+    try {
+      client.close();
+    } catch {
+      // Already closed.
+    }
+  };
+
+  const onAbort = () => {
+    if (settled !== null) return;
+    stopping = true;
+    void shutDown().then(() => finish({ kind: "aborted" }));
+  };
+
+  /** null once stopping: onAbort settles the watch itself, after the logout. */
+  async function run(): Promise<WatchEnd | null> {
+    if (stopping) return null;
+    try {
+      await client.connect();
+    } catch (error) {
+      const mapped = describeImapError(error);
+      if (mapped instanceof ImapAuthError) return { kind: "auth" };
+      if (mapped instanceof SafeImapError && THROTTLED_CODES.has(mapped.code)) return { kind: "throttled" };
+      return dropped(mapped);
+    }
+    if (stopping) return null;
+    if (!supportsIdle(client)) return { kind: "unsupported" };
+    try {
+      await client.mailboxOpen(path, { readOnly: true });
+    } catch (error) {
+      return dropped(error);
+    }
+    while (!stopping && client.usable) {
+      const answer = await client.idle();
+      if (stopping || settled !== null) return null;
+      // imapflow resolves false when the server answers IDLE with NO or BAD
+      // (and when the connection failed under it): end, never spin.
+      if (answer === false) {
+        return client.usable ? { kind: "dropped", code: IDLE_REFUSED_CODE } : { kind: "dropped", code: lastErrorCode ?? "ConnectionClosed" };
+      }
+      // idle() returns at once when no mailbox is selected: end rather than spin.
+      if (!client.mailbox) return { kind: "dropped", code: "NoMailboxSelected" };
+    }
+    return { kind: "dropped", code: lastErrorCode ?? "ConnectionClosed" };
+  }
+
+  if (signal.aborted) onAbort();
+  else signal.addEventListener("abort", onAbort, { once: true });
+  run().then(
+    (end) => {
+      if (end !== null) finish(end);
+    },
+    (error: unknown) => finish(dropped(error)),
+  );
+  const end = await ended;
+  signal.removeEventListener("abort", onAbort);
+  if (end.kind !== "aborted") await shutDown();
+  return end;
+}
+
+/** IDLE advertised, or IMAP4rev2 active (IDLE is folded into it). */
+function supportsIdle(client: Pick<WatchClient, "capabilities" | "enabled">): boolean {
+  const capabilities = client.capabilities;
+  if (capabilities?.has("IDLE")) return true;
+  return (
+    client.enabled?.has("IMAP4REV2") === true ||
+    (capabilities?.has("IMAP4rev2") === true && !capabilities.has("IMAP4rev1"))
+  );
+}
+
+/**
+ * CREATE `name` (imapflow also SUBSCRIBEs it). imapflow answers an
+ * ALREADYEXISTS refusal with `created: false`; any other refusal, or no
+ * answer at all, is SafeImapError "CreateFailed" (never the server's text).
+ */
+export async function createFolderWith(
+  client: Pick<ImapFlow, "mailboxCreate">,
+  name: string,
+): Promise<{ path: string; created: boolean }> {
+  let result: Awaited<ReturnType<ImapFlow["mailboxCreate"]>> | undefined;
+  try {
+    result = await client.mailboxCreate(name);
+  } catch (error) {
+    const mapped = describeImapError(error);
+    throw mapped instanceof ImapAuthError ? mapped : new SafeImapError("CreateFailed");
+  }
+  if (!result || typeof result.path !== "string") throw new SafeImapError("CreateFailed");
+  return { path: result.path, created: result.created !== false };
 }
 
 /**
@@ -194,6 +387,17 @@ export function createSession(
         throw describeImapError(error);
       }
     };
+
+  /** imapflow 2.11 sends `headers: [...]` as BODY.PEEK[HEADER.FIELDS (...)] by UID. */
+  async function fetchHeaderBlocks(uids: number[], fields: readonly string[]) {
+    if (uids.length === 0) return [];
+    const found: { uid: number; block: Uint8Array }[] = [];
+    for await (const message of client.fetch(uids, { uid: true, headers: [...fields] }, { uid: true })) {
+      if (!message.headers) continue;
+      found.push({ uid: message.uid, block: new Uint8Array(message.headers) });
+    }
+    return found;
+  }
 
   return {
     status: guarded(async () => {
@@ -231,25 +435,9 @@ export function createSession(
       return messages;
     }),
 
-    fetchListHeaders: guarded(async (uids: number[]) => {
-      if (uids.length === 0) return [];
-      const found: { uid: number; block: Uint8Array }[] = [];
-      for await (const message of client.fetch(uids, LIST_HEADERS_QUERY, { uid: true })) {
-        if (!message.headers) continue;
-        found.push({ uid: message.uid, block: new Uint8Array(message.headers) });
-      }
-      return found;
-    }),
+    fetchListHeaders: guarded((uids: number[]) => fetchHeaderBlocks(uids, LIST_HEADER_FIELDS)),
 
-    fetchHeaderFields: guarded(async (uids: number[], fields: readonly string[]) => {
-      if (uids.length === 0) return [];
-      const found: { uid: number; block: Uint8Array }[] = [];
-      for await (const message of client.fetch(uids, { uid: true, headers: [...fields] }, { uid: true })) {
-        if (!message.headers) continue;
-        found.push({ uid: message.uid, block: new Uint8Array(message.headers) });
-      }
-      return found;
-    }),
+    fetchHeaderFields: guarded((uids: number[], fields: readonly string[]) => fetchHeaderBlocks(uids, fields)),
 
     fetchFlags: guarded(async (uids: number[]) => {
       if (uids.length === 0) return [];
@@ -600,7 +788,39 @@ export function toFetchedMessage(message: FetchMessageObject, parsed: Email): Fe
     inlineParts: toInlineParts(parsed.attachments),
     bulkHeaders: toBulkHeaders(parsed),
     deliveredTo: toDeliveredTo(parsed),
+    unsubscribeHeaders: toUnsubscribeHeaders(parsed),
   };
+}
+
+/** Header lines kept for unsubscribe parsing, as headerLines caps them. */
+const UNSUBSCRIBE_HEADER_LINES_MAX = 64;
+const UNSUBSCRIBE_NAMES = new Set(UNSUBSCRIBE_HEADER_FIELDS.map((name) => name.toLowerCase()));
+const TRACE_PREFIXES = [
+  ...new Set(
+    Object.values(PROVIDER_TRACE_HEADERS)
+      .flat()
+      .filter((name) => name.endsWith("*"))
+      .map((name) => name.slice(0, -1).toLowerCase()),
+  ),
+];
+
+/**
+ * The header lines unsubscribe parsing reads (slice 3e): the
+ * UNSUBSCRIBE_HEADER_FIELDS names and the providers' trace names (prefix
+ * ones included), in message order, values as postal-mime unfolded them, at
+ * most 64; absent when the source had no headers, so the stored info stays.
+ */
+function toUnsubscribeHeaders(parsed: Email): HeaderLine[] | undefined {
+  if (parsed.headers.length === 0) return undefined;
+  const out: HeaderLine[] = [];
+  for (const header of parsed.headers) {
+    // postal-mime keeps whitespace in a key (" From" is not From): never trim it.
+    const key = header.key.toLowerCase();
+    if (!UNSUBSCRIBE_NAMES.has(key) && !TRACE_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
+    out.push({ key, value: header.value });
+    if (out.length >= UNSUBSCRIBE_HEADER_LINES_MAX) break;
+  }
+  return out;
 }
 
 /** Delivered-To / X-Original-To addresses kept per message (slice 3d). */
