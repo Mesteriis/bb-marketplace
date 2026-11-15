@@ -187,3 +187,63 @@ manually.
 - 50 MB cap for raw fetches.
 - Details/.eml never mark a message read.
 - Hotkeys follow Gmail where possible; 3b keys reserved.
+
+## Resolutions after the builder check (binding; override the sections above)
+
+1. **Hotkeys on any layout.** Letters match the physical key (`event.code`:
+   `KeyJ`, `KeyK`, `KeyO`, `KeyU`, `KeyX`, `KeyE`, `KeyS`, `KeyV`, `KeyG`,
+   `KeyI`, `KeyD`, `KeyT`, `KeyA`), so they work on the Russian layout.
+   Symbols match the character or, as a fallback, the code: `#` = `Shift+Digit3`,
+   `!` = `Shift+Digit1`, `/` = `Slash`, `?` = `Shift+Slash`. `Escape` only
+   closes the plugin's own dialogs (check live that BB's `app.back` doesn't
+   also fire; stop propagation when a plugin dialog is open).
+2. **Unified Archive excludes Gmail All Mail.** The All accounts "Archive"
+   role merges `archive` folders only; Gmail's All Mail stays under the Gmail
+   account's own section. The unified Inbox/Sent/Drafts/Spam/Trash roles merge
+   by special use as designed.
+3. **Downloads use one-time tickets.** RPC `download_ticket({ kind:
+   "attachment" | "eml", messageId, partId? }) → { url, fileName }` (refuses
+   plugin callers like other write RPCs) mints a random 32-byte ticket bound to
+   the request, valid for 60 s and one use, kept in memory. The HTTP route
+   accepts only `?t=<ticket>`; message ids in the URL are not accepted. The UI
+   saves with `experimental_saveFile({ fileName, url })` (fallback `<a
+   download>` on web only). This narrows but cannot close access by anything
+   that can call local plugin RPC as a client — same documented limit as for
+   moves.
+4. **Thread star.** A thread row is starred when any message of the thread in
+   the viewed folder/role is flagged. `s` (and the row star) on a thread:
+   if any such message is flagged, unflag all of them; otherwise flag the
+   newest one (Gmail behavior). In the reading pane, the per-message star
+   toggles that message only.
+5. **Stale-uid guard for raw fetches.** `.eml`, Details and attachment
+   downloads refuse rows that are detached (`uid IS NULL`) or pending a move,
+   check the folder's stored UIDVALIDITY against the session's, and after the
+   fetch compare the stored size (and Message-ID when present) with the
+   fetched message; on any mismatch refuse "The message changed on the server;
+   sync and try again". Attachment downloads additionally compare filename,
+   MIME type and size of the part.
+6. **Desired-state migration covers every reader.** Element 3 (appended):
+   `ALTER TABLE messages ADD COLUMN seen_desired INTEGER`, same for
+   `flag_desired`, backfill `seen_desired = 1 WHERE seen_pending = 1`, index
+   `(last_date, id)` on `threads`. After it, `seen_pending` is no longer read
+   or written by code (left in place, frozen). Every reader/writer changes
+   together in store, fake, ports and sync: `updateMessage`/`upsertMessages`
+   and `applyFlags` never overwrite a field whose desired value is not NULL;
+   move re-home carries both desired values (non-NULL wins); clearing after a
+   push is compare-and-clear (clear only if the desired value still equals
+   what was pushed); push queries select attached rows only; `markOpened`
+   sets `seen_desired = 1` on attached unread copies and `is_read = 1` on all
+   copies (slice-2 semantics).
+7. **postal-mime determinism.** Export the gateway's parse function and reuse
+   it (same options) for downloads; pin `postal-mime` to an exact version in
+   package.json; part match by index plus filename + MIME + size.
+8. **Raw fetch.** Gateway `fetchRaw(uid, maxBytes)` refuses before fetching
+   when the stored size exceeds 50 MB and enforces the cap while reading;
+   verify imapflow 2.11's `download`/`fetchOne(source)` API in
+   node_modules (types may be missing — read dist). Add `messageFlagsRemove`
+   to `SessionClient` after verifying its name/signature in dist.
+9. **All-accounts actions.** The server accepts a batch spanning accounts and
+   folders for `message_action` (new loop: group ids by account and source
+   folder, apply each group with the slice-2 rules, return per-group results);
+   moves and `move` still target one account per group. The UI may send one
+   call.
