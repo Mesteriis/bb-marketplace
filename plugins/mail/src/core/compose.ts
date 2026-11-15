@@ -16,6 +16,8 @@ import {
   type ComposeDoc,
 } from "./compose-doc.ts";
 import { serverCopyDue, type ServerCopyReason } from "./compose-drafts.ts";
+import { stripOwnSignature, withSignature } from "./compose-signature.ts";
+import { identitiesOf, identityOf, ownIdentityAddresses, replyIdentity, type Identity } from "./identities.ts";
 import {
   quoteHeaderText,
   replyRecipients,
@@ -74,7 +76,8 @@ export type ComposeErrorKind =
   | "too_large"
   | "smtp_missing"
   | "rate_limited"
-  | "undone";
+  | "undone"
+  | "from_unknown";
 
 const COMPOSE_ERROR_TEXT: Record<ComposeErrorKind, string> = {
   not_found: "Not found",
@@ -85,6 +88,7 @@ const COMPOSE_ERROR_TEXT: Record<ComposeErrorKind, string> = {
   smtp_missing: "SMTP is not set for this account",
   rate_limited: "Too many messages sent in the last minute",
   undone: "This send was undone",
+  from_unknown: "This sending address is no longer set up for the account; choose another From",
 };
 
 /**
@@ -130,22 +134,33 @@ export type ComposePlan = Omit<NewDraft, "id" | "origin" | "proposalId" | "creat
   original: { source: ReplySource; text: string | null; html: string | null } | null;
 };
 
-/** An empty draft from the account, not yet written. */
-export function planNew(deps: Pick<ComposeDeps, "store" | "newId">, accountId: string): ComposePlan {
+/**
+ * An empty draft from the account, not yet written, from `fromAddress` (one
+ * of the account's identities; null or absent = its own address): the
+ * identity's signature block at the end and a Message-ID at its domain.
+ * An address that is not an active identity of the account is `invalid`.
+ */
+export function planNew(
+  deps: Pick<ComposeDeps, "store" | "newId">,
+  accountId: string,
+  fromAddress: string | null = null,
+): ComposePlan {
   const account = requireAccount(deps.store, accountId);
+  const identity = identityOf(accountIdentities(deps.store, account), fromAddress);
+  if (identity === null) throw new ComposeError("invalid");
   return {
     kind: "new",
     accountId: account.id,
     sourceMessageId: null,
-    messageId: newMessageIdFor(deps, account),
+    messageId: newMessageIdFor(deps, identity.primary ? account.email : identity.address),
     inReplyTo: null,
     references: [],
     to: [],
     cc: [],
     bcc: [],
     subject: "",
-    doc: EMPTY_DOC,
-    fromAddress: null,
+    doc: withSignature(EMPTY_DOC, identity.signature, "new"),
+    fromAddress: fromAddressOf(identity),
     serverCopy: null,
     importHtml: null,
     attachments: [],
@@ -201,6 +216,13 @@ export async function planCompose(
     threading = threadingHeaders(replySource);
   }
 
+  // From: the identity the original came to (only this account's), and its signature.
+  const identity = replyIdentity(
+    { ...replySource, deliveredTo: deps.store.deliveredToOf(input.messageId) },
+    accountIdentities(deps.store, account),
+  );
+  // Replies to the owner's own mail leave its signature out of the quote; a forward keeps it.
+  const stripSignature = input.kind !== "forward" && isOwnAddress(deps.store, source.from.address);
   const header = quoteHeaderText(replySource, input.kind);
   const body = deps.store.getBody(input.messageId);
   const html = original?.html ?? body?.html ?? null;
@@ -209,14 +231,16 @@ export async function planCompose(
   if (html !== null) {
     doc = docFromLines(["", ...header]);
   } else {
-    doc = docFromLines(["", ...header], text === null || text === "" ? undefined : splitLines(text));
+    const lines = text === null || text === "" ? undefined : splitLines(text);
+    doc = docFromLines(["", ...header], lines === undefined || !stripSignature ? lines : stripOwnSignature(lines));
   }
+  doc = withSignature(doc, identity.signature, input.kind);
 
   return {
     kind: input.kind,
     accountId: account.id,
     sourceMessageId: input.messageId,
-    messageId: newMessageIdFor(deps, account),
+    messageId: newMessageIdFor(deps, identity.primary ? account.email : identity.address),
     inReplyTo: threading.inReplyTo,
     references: threading.references,
     to,
@@ -224,9 +248,9 @@ export async function planCompose(
     bcc: [],
     subject,
     doc,
-    fromAddress: null,
+    fromAddress: fromAddressOf(identity),
     serverCopy: null,
-    importHtml: html === null ? null : { html, into: "quote" },
+    importHtml: html === null ? null : { html, into: "quote", stripSignature },
     attachments: input.kind === "forward" && original !== null ? original.attachments : [],
     warning,
     dropped,
@@ -262,9 +286,9 @@ export async function createComposeDraft(
   };
 }
 
-/** An empty draft from the account. */
-export function newCompose(deps: ComposeDeps, accountId: string): { draftId: string } {
-  const plan = planNew(deps, accountId);
+/** An empty draft from the account (from `fromAddress`, one of its identities; null = its own address). */
+export function newCompose(deps: ComposeDeps, accountId: string, fromAddress: string | null = null): { draftId: string } {
+  const plan = planNew(deps, accountId, fromAddress);
   const { attachments: _a, warning: _w, dropped: _d, original: _o, ...fields } = plan;
   const draft = deps.store.createDraft({
     ...fields,
@@ -350,7 +374,7 @@ export async function openDraft(
     sourceMessageId: input.draftMessageId,
     // Only the draft that replaces the original carries its Message-ID; one
     // saved beside it gets its own, so Drafts never holds two sharing one.
-    messageId: serverCopy !== null ? `<${ownId}>` : newMessageIdFor(deps, account),
+    messageId: serverCopy !== null ? `<${ownId}>` : newMessageIdFor(deps, account.email),
     inReplyTo: source.inReplyTo,
     references: source.references,
     to: source.to.map(chip),
@@ -378,6 +402,8 @@ export type SaveComposeInput = {
   draftId: string;
   baseRevision: number;
   accountId: string;
+  /** The identity to send from: null = the account's own address; absent = unchanged. */
+  fromAddress?: string | null;
   /** As typed: "a@example.com" or "Name <a@example.com>". Invalid chips are kept as typed. */
   to: string[];
   cc: string[];
@@ -407,7 +433,7 @@ export type SaveComposeResult =
 export async function saveCompose(deps: ComposeDeps, input: SaveComposeInput): Promise<SaveComposeResult> {
   const before = deps.store.getDraft(input.draftId);
   if (before === null) throw new ComposeError("not_found");
-  requireAccount(deps.store, input.accountId);
+  const account = requireAccount(deps.store, input.accountId);
   if (input.imported === true) {
     const result = deps.store.saveImport(input.draftId, input.baseRevision, normalizeDoc(input.doc));
     if ("conflict" in result) return result;
@@ -417,7 +443,7 @@ export async function saveCompose(deps: ComposeDeps, input: SaveComposeInput): P
       // lives beside it, so it stops sharing its Message-ID.
       const original = before.sourceMessageId === null ? null : deps.store.rawRef(before.sourceMessageId);
       if (original !== null && original.folder === before.serverCopy.folder && original.uid === before.serverCopy.uid) {
-        deps.store.renewMessageId(input.draftId, newMessageIdFor(deps, requireAccount(deps.store, before.accountId)));
+        deps.store.renewMessageId(input.draftId, newMessageIdFor(deps, requireAccount(deps.store, before.accountId).email));
       }
       return { revision: result.revision, originalKept: true };
     }
@@ -433,7 +459,7 @@ export async function saveCompose(deps: ComposeDeps, input: SaveComposeInput): P
       bcc: input.bcc.map(chipOf),
       subject: input.subject.replace(/[\r\n\u0000]+/g, " "),
       doc: normalizeDoc(input.doc),
-      fromAddress: before.fromAddress,
+      fromAddress: savedFromAddress(deps.store, before, account, input.fromAddress),
     },
     deps.clock.now().toISOString(),
   );
@@ -445,6 +471,31 @@ export async function saveCompose(deps: ComposeDeps, input: SaveComposeInput): P
   }
   if (input.saveToServer === true) await writeServerCopy(deps, input.draftId, "save");
   return result;
+}
+
+/**
+ * The draft's From after a save (spec resolution 10): on an account switch,
+ * the requested (or current) address only when it is an alias of the new
+ * account, else null; on the same account, an explicit address must be one
+ * of its active identities (`invalid` otherwise), and an absent one keeps
+ * the current value. The own address is stored as null.
+ */
+function savedFromAddress(
+  store: MailStore,
+  before: DraftRecord,
+  account: StoredAccount,
+  requested: string | null | undefined,
+): string | null {
+  const identities = accountIdentities(store, account);
+  if (before.accountId !== account.id) {
+    const wanted = requested === undefined ? before.fromAddress : requested;
+    const identity = wanted === null ? null : identityOf(identities, wanted);
+    return identity === null ? null : fromAddressOf(identity);
+  }
+  if (requested === undefined) return before.fromAddress;
+  const identity = identityOf(identities, requested);
+  if (identity === null) throw new ComposeError("invalid");
+  return fromAddressOf(identity);
 }
 
 export type ServerCopyOutcome = DraftServerCopyState | "skipped";
@@ -680,15 +731,38 @@ export function draftView(store: MailStore, draft: DraftRecord): DraftView {
   };
 }
 
-/** Every connected account's address: never a reply-all recipient. */
+/** Every address of the owner (account emails, usernames with `@`, active aliases): never a reply-all recipient. */
 export function ownAddresses(store: MailStore): string[] {
-  return store.listAccounts().flatMap((a) => (a.username.includes("@") ? [a.email, a.username] : [a.email]));
+  return ownIdentityAddresses(store.listAccounts(), store.listIdentities(null));
+}
+
+/** The account's identities: its own address, then its active aliases. */
+export function accountIdentities(store: MailStore, account: StoredAccount): Identity[] {
+  return identitiesOf(account, store.listIdentities(account.id));
+}
+
+/** The draft's identity, or null when its fromAddress is no longer an active identity of its account. */
+export function identityOfDraft(store: MailStore, draft: Pick<DraftRecord, "accountId" | "fromAddress">): Identity | null {
+  const account = store.getAccount(draft.accountId);
+  if (account === null) return null;
+  return identityOf(accountIdentities(store, account), draft.fromAddress);
+}
+
+function isOwnAddress(store: MailStore, address: string): boolean {
+  return ownAddresses(store).includes(address.trim().toLowerCase());
+}
+
+/** What a draft stores for an identity: null for the own address. */
+function fromAddressOf(identity: Identity): string | null {
+  return identity.primary ? null : identity.address;
 }
 
 /**
- * The message the builder gets for a draft. `strict` (a send): every chip
- * must be a valid address, else `invalid`. Otherwise (a Drafts copy)
- * invalid chips are left out of the copy; the local row keeps them.
+ * The message the builder gets for a draft, From its identity. `strict` (a
+ * send): every chip must be a valid address, else `invalid`, and a From
+ * that is no longer an identity of the account is `from_unknown`.
+ * Otherwise (a Drafts copy) invalid chips are left out of the copy (the
+ * local row keeps them) and a removed alias falls back to the own address.
  */
 export function outgoingOf(
   deps: Pick<ComposeDeps, "store" | "clock">,
@@ -696,7 +770,12 @@ export function outgoingOf(
   draft: DraftRecord,
   strict: boolean,
 ): OutgoingMessage {
-  const from = parseAddress(account.email);
+  let identity = identityOf(accountIdentities(deps.store, account), draft.fromAddress);
+  if (identity === null) {
+    if (strict) throw new ComposeError("from_unknown");
+    identity = accountIdentities(deps.store, account)[0]!;
+  }
+  const from = parseAddress(identity.primary ? account.email : identity.address);
   if (!from.ok) throw new ComposeError("invalid");
   const list = (entries: MailAddress[]): OutgoingAddress[] =>
     entries.flatMap((entry) => {
@@ -716,7 +795,7 @@ export function outgoingOf(
   }));
   const { html, text } = renderDoc(draft.doc);
   return {
-    from: { name: account.displayName?.trim() || null, address: from.value.address },
+    from: { name: identity.displayName?.trim() || null, address: from.value.address },
     to: list(draft.to),
     cc: list(draft.cc),
     bcc: list(draft.bcc),
@@ -779,9 +858,9 @@ async function addWithinCap(store: MailStore, draftId: string, files: OutgoingAt
   return leftOut;
 }
 
-/** `<random@account-domain>`. */
-function newMessageIdFor(deps: Pick<ComposeDeps, "newId">, account: StoredAccount): string {
-  const parsed = parseAddress(account.email);
+/** `<random@domain>` of the sending address. */
+function newMessageIdFor(deps: Pick<ComposeDeps, "newId">, address: string): string {
+  const parsed = parseAddress(address);
   const domain = parsed.ok ? parsed.value.address.slice(parsed.value.address.lastIndexOf("@") + 1) : "localhost";
   const local = deps.newId().replace(/[^A-Za-z0-9.-]/g, "");
   return `<${local === "" ? "draft" : local}@${domain}>`;

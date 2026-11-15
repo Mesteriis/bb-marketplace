@@ -327,6 +327,7 @@ export const COMPOSE_FAILED_MESSAGE = "The request failed; try again";
 
 /** ComposeError kinds as SDK refusal codes; the message is the error's fixed text. */
 const COMPOSE_REFUSAL: Record<ComposeErrorKind, "conflict" | "invalid" | "not_found"> = {
+  from_unknown: "conflict",
   not_found: "not_found",
   conflict: "conflict",
   invalid: "invalid",

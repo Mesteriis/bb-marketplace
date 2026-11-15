@@ -13,6 +13,7 @@ import {
   classifySendError,
   dismissOutbox,
   nextOutboxState,
+  outboxErrorText,
   queueSend,
   resendUnknown,
   retrySend,
@@ -660,5 +661,136 @@ describe("state table", () => {
     expect(nextOutboxState("sending", "accepted")).toBe("sent");
     expect(nextOutboxState("unknown", "accepted")).toBe("sent");
     expect(canTransition("queued", "accepted")).toBe(false);
+  });
+});
+
+// ---- Slice 3d: sending from an alias ----
+
+describe("sending from an alias (slice 3d)", () => {
+  const ALIAS = "alias@example.net";
+  const T = "2026-11-15T09:00:00.000Z";
+
+  async function aliasDraft(): Promise<{ draftId: string; baseRevision: number }> {
+    h.store.upsertIdentity({ accountId: "acc_1", address: ALIAS, displayName: "Alias" }, T);
+    const { draftId } = newCompose(h.deps, "acc_1", ALIAS);
+    const saved = await saveCompose(h.deps, {
+      draftId,
+      baseRevision: 1,
+      accountId: "acc_1",
+      to: ["Bob <bob@example.com>"],
+      cc: [],
+      bcc: [],
+      subject: "Invented plan",
+      doc: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Hello" }] }] },
+    });
+    if ("conflict" in saved) throw new Error("conflict");
+    return { draftId, baseRevision: saved.revision };
+  }
+
+  const alias = () => h.store.listIdentities("acc_1").find((row) => row.address === ALIAS)!;
+
+  it("sends with the alias as header From and envelope sender, and marks the check accepted", async () => {
+    const draft = await aliasDraft();
+    const id = requestId();
+    await queueSend(deps, { ...draft, requestId: id, origin: "owner" });
+    expect(h.store.getOutbox(id)!.envelopeFrom).toBe(ALIAS);
+    h.advance(UNDO_MS);
+    await drain();
+    expect(h.transport.sent[0]!.envelopeFrom).toBe(ALIAS);
+    expect(text(h.transport.sent[0]!.raw)).toContain(`From: ${ALIAS}`);
+    expect(alias()).toMatchObject({ sendCheck: "accepted" });
+  });
+
+  it("marks the check pending with the Message-ID when the server keeps the Sent copy", async () => {
+    h.store.saveAccount({ ...h.store.getAccount("acc_1")!, sentCopy: "server" });
+    const draft = await aliasDraft();
+    const id = requestId();
+    await queueSend(deps, { ...draft, requestId: id, origin: "owner" });
+    const messageId = h.store.getDraft(draft.draftId)!.messageId;
+    h.advance(UNDO_MS);
+    await drain();
+    expect(alias()).toMatchObject({ sendCheck: "pending", checkMessageId: messageId });
+  });
+
+  it("leaves no check for a send from the own address", async () => {
+    h.store.upsertIdentity({ accountId: "acc_1", address: ALIAS, displayName: null }, T);
+    const { id } = await queued();
+    h.advance(UNDO_MS);
+    await drain();
+    expect(h.store.getOutbox(id)).toBeNull();
+    expect(alias()).toMatchObject({ sendCheck: "unknown" });
+  });
+
+  it("refuses a removed alias with from_unknown; a queued row keeps the alias", async () => {
+    const draft = await aliasDraft();
+    const id = requestId();
+    await queueSend(deps, { ...draft, requestId: id, origin: "owner" });
+    h.store.removeIdentity("acc_1", ALIAS);
+    h.advance(UNDO_MS);
+    await drain();
+    expect(h.transport.sent[0]!.envelopeFrom).toBe(ALIAS);
+
+    h.store.upsertIdentity({ accountId: "acc_1", address: ALIAS, displayName: null }, T);
+    const second = await aliasDraft();
+    h.store.removeIdentity("acc_1", ALIAS);
+    const refusal = await queueSend(deps, { ...second, requestId: requestId(), origin: "owner" }).catch((e: unknown) => e);
+    expect(refusal).toBeInstanceOf(ComposeError);
+    expect((refusal as ComposeError).kind).toBe("from_unknown");
+  });
+
+  it("a refusal at MAIL FROM from an alias is sender_refused and marks the check refused", async () => {
+    h.transport.answer(new SendError("rejected_message", false, "MAIL FROM"));
+    const draft = await aliasDraft();
+    const id = requestId();
+    await queueSend(deps, { ...draft, requestId: id, origin: "owner" });
+    h.advance(UNDO_MS);
+    await drain();
+    expect(h.store.getOutbox(id)).toMatchObject({ state: "failed", errorKind: "sender_refused" });
+    expect(alias()).toMatchObject({ sendCheck: "refused" });
+  });
+
+  it("decides sender_refused only for an alias From at MAIL FROM", () => {
+    const account = { email: "Owner@example.org", username: "owner@example.org" };
+    const fromAlias = { envelopeFrom: ALIAS };
+    const fromOwn = { envelopeFrom: "owner@example.org" };
+    const mailFrom = new SendError("rejected_message", false, "MAIL FROM");
+    expect(classifySendError(mailFrom, fromAlias, account)).toEqual({ state: "failed", kind: "sender_refused" });
+    expect(classifySendError(mailFrom, fromOwn, account)).toEqual({ state: "failed", kind: "rejected_message" });
+    expect(classifySendError(mailFrom)).toEqual({ state: "failed", kind: "rejected_message" });
+    // nodemailer's size refusal at MAIL FROM stays too_large.
+    expect(classifySendError(new SendError("too_large", false, "MAIL FROM"), fromAlias, account)).toEqual({
+      state: "failed",
+      kind: "too_large",
+    });
+    expect(classifySendError(new SendError("rejected_message", false, "RCPT TO"), fromAlias, account)).toEqual({
+      state: "failed",
+      kind: "rejected_message",
+    });
+    expect(classifySendError(new SendError("rejected_message", true, "DATA"), fromAlias, account)).toEqual({
+      state: "failed",
+      kind: "rejected_message",
+    });
+  });
+
+  it("records accepted envelope recipients so they count as sent to", async () => {
+    h.transport.answer({ accepted: ["bob@example.com"], rejected: ["hidden@example.net"] });
+    await queued();
+    h.advance(UNDO_MS);
+    await drain();
+    expect([...h.store.addressesSentTo(["BOB@example.com", "hidden@example.net"])]).toEqual(["bob@example.com"]);
+  });
+
+  it("gives the Outbox texts for a refused alias and an unconfirmed one", () => {
+    expect(outboxErrorText("sender_refused", ALIAS, "refused")).toBe(
+      `The server refused to send from ${ALIAS}. Check that it is an alias of this account; then Edit and pick another From, or Retry.`,
+    );
+    expect(outboxErrorText("sender_refused", ALIAS, "refused", "iCloud")).toContain("alias of this account at iCloud;");
+    expect(outboxErrorText("rejected_message", ALIAS, "unknown")).toBe(
+      `If ${ALIAS} is not an alias of this account, the server may refuse it.`,
+    );
+    expect(outboxErrorText("rejected_message", ALIAS, "confirmed")).toBeNull();
+    expect(outboxErrorText("rejected_message", ALIAS, "accepted")).toBeNull();
+    expect(outboxErrorText("rejected_message", null, null)).toBeNull();
+    expect(outboxErrorText("auth", ALIAS, "unknown")).toBeNull();
   });
 });

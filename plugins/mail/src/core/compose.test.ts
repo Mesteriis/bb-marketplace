@@ -155,7 +155,7 @@ describe("prepareCompose", () => {
     expect(result.warning).toBeNull();
     const draft = h.store.getDraft(result.draftId)!;
     expect(draft).toMatchObject({ to: [], cc: [], subject: "Fwd: Report", inReplyTo: null, references: [] });
-    expect(draft.importHtml).toEqual({ html: "<p>Body</p>", into: "quote" });
+    expect(draft.importHtml).toEqual({ html: "<p>Body</p>", into: "quote", stripSignature: false });
     expect(JSON.stringify(draft.doc)).toContain("Forwarded message");
     const data = h.store.attachmentData(result.draftId);
     expect(data.map((a) => [a.fileName, a.size, a.contentId])).toEqual([
@@ -637,5 +637,158 @@ describe("plan and create (slice 3c)", () => {
     expect(await writeServerCopy(h.deps, draftId, "save")).toBe("skipped");
     expect(await writeServerCopy(h.deps, draftId, "tick")).toBe("skipped");
     expect(h.gateway.sessions).toHaveLength(0);
+  });
+});
+
+// ---- Slice 3d: sending identities and signatures ----
+
+const SIG = (line: string) => ({ type: "doc" as const, content: [{ type: "paragraph" as const, content: [{ type: "text" as const, text: line }] }] });
+const ALIAS = "alias@example.net";
+
+function addAlias(address = ALIAS, displayName: string | null = "Alias Name") {
+  return h.store.upsertIdentity({ accountId: "acc_1", address, displayName }, "2026-11-15T09:00:00.000Z");
+}
+
+describe("identities in compose (slice 3d)", () => {
+  it("a new draft from the own address gets an empty signature block at the end", () => {
+    const plan = planNew(h.deps, "acc_1");
+    expect(plan.fromAddress).toBeNull();
+    expect(plan.doc).toEqual({ type: "doc", content: [{ type: "paragraph" }, { type: "signature", content: [] }] });
+  });
+
+  it("a new draft from an alias takes its From, Message-ID domain and signature", () => {
+    addAlias();
+    h.store.updateIdentity("acc_1", ALIAS, { signature: SIG("Alias sig") }, "2026-11-15T09:00:00.000Z");
+    const plan = planNew(h.deps, "acc_1", ALIAS);
+    expect(plan.fromAddress).toBe(ALIAS);
+    expect(plan.messageId).toMatch(/@example\.net>$/);
+    expect(plan.doc.content.at(-1)).toEqual({ type: "signature", content: SIG("Alias sig").content });
+  });
+
+  it("a new draft from an unknown address is refused", () => {
+    expect(() => planNew(h.deps, "acc_1", "stranger@example.com")).toThrow(ComposeError);
+  });
+
+  it("the own address's signature goes into a new draft", () => {
+    h.store.setAccountSignature("acc_1", SIG("Own sig"));
+    const plan = planNew(h.deps, "acc_1");
+    expect(plan.doc.content.at(-1)).toEqual({ type: "signature", content: SIG("Own sig").content });
+  });
+
+  const cases: [string, Parameters<typeof makeFetchedMessage>[1]][] = [
+    ["To", { to: [addr(ALIAS)] }],
+    ["Cc", { to: [addr("someone@example.com")], cc: [addr(ALIAS)] }],
+    ["Delivered-To", { to: [addr("list@example.com")], deliveredTo: [ALIAS] }],
+  ];
+  for (const [field, overrides] of cases) {
+    it(`a reply to mail that came to an alias in ${field} starts from the alias`, async () => {
+      addAlias();
+      const id = stored({ from: addr("anna@example.org", "Anna"), ...overrides });
+      const plan = await planCompose(h.deps, { kind: "reply", messageId: id });
+      expect(plan.fromAddress).toBe(ALIAS);
+      expect(plan.messageId).toMatch(/@example\.net>$/);
+    });
+  }
+
+  it("places the signature above the attribution and the quote of a reply", async () => {
+    h.store.setAccountSignature("acc_1", SIG("Own sig"));
+    const id = stored({ from: addr("anna@example.org", "Anna"), bodyText: "Original line" });
+    const plan = await planCompose(h.deps, { kind: "reply", messageId: id });
+    expect(plan.doc.content.map((b) => b.type)).toEqual(["paragraph", "signature", "paragraph", "blockquote"]);
+    expect(plan.importHtml).toBeNull();
+  });
+
+  it("reply all never includes an alias", async () => {
+    addAlias();
+    const id = stored({
+      from: addr("anna@example.org", "Anna"),
+      to: [addr(ALIAS), addr("carl@example.com")],
+      cc: [addr("owner@example.org")],
+    });
+    const plan = await planCompose(h.deps, { kind: "reply_all", messageId: id });
+    const recipients = [...plan.to, ...plan.cc].map((a) => a.address);
+    expect(recipients).toContain("carl@example.com");
+    expect(recipients).not.toContain(ALIAS);
+    expect(recipients).not.toContain("owner@example.org");
+  });
+
+  it("a reply to own mail strips the own signature from the text quote and sets stripSignature", async () => {
+    const id = stored({
+      from: addr("owner@example.org", "Owner"),
+      to: [addr("anna@example.org")],
+      bodyText: "Own text\n\n-- \nOwner Sig\nPhone 1",
+    });
+    const plan = await planCompose(h.deps, { kind: "reply", messageId: id });
+    const docText = JSON.stringify(plan.doc);
+    expect(docText).toContain("Own text");
+    expect(docText).not.toContain("Owner Sig");
+    const html = stored({ from: addr("owner@example.org"), bodyHtml: "<p>Own</p>" }, "INBOX", 2);
+    const htmlPlan = await planCompose(h.deps, { kind: "reply_all", messageId: html });
+    expect(htmlPlan.importHtml).toEqual({ html: "<p>Own</p>", into: "quote", stripSignature: true });
+  });
+
+  it("a forward of own mail keeps the own signature", async () => {
+    const id = stored({ from: addr("owner@example.org"), bodyText: "Own text\n-- \nOwner Sig" });
+    const plan = await planCompose(h.deps, { kind: "forward", messageId: id });
+    expect(JSON.stringify(plan.doc)).toContain("Owner Sig");
+    const html = stored({ from: addr("owner@example.org"), bodyHtml: "<p>Own</p>" }, "INBOX", 2);
+    h.reader.originals.set(html, { replyTo: [], html: "<p>Own</p>", attachments: [], bcc: [] });
+    const htmlPlan = await planCompose(h.deps, { kind: "forward", messageId: html });
+    expect(htmlPlan.importHtml).toMatchObject({ stripSignature: false });
+  });
+
+  it("a reply to foreign mail keeps its text and does not strip", async () => {
+    const id = stored({ from: addr("anna@example.org"), bodyHtml: "<p>Foreign</p>" });
+    const plan = await planCompose(h.deps, { kind: "reply", messageId: id });
+    expect(plan.importHtml).toMatchObject({ stripSignature: false });
+  });
+
+  it("saves an alias as From, refuses a foreign one, and keeps it when the field is absent", async () => {
+    addAlias();
+    const { draftId } = newCompose(h.deps, "acc_1");
+    await save(draftId, { fromAddress: ALIAS });
+    expect(h.store.getDraft(draftId)!.fromAddress).toBe(ALIAS);
+    await save(draftId);
+    expect(h.store.getDraft(draftId)!.fromAddress).toBe(ALIAS);
+    await expect(save(draftId, { fromAddress: "stranger@example.com" })).rejects.toThrow(ComposeError);
+    await save(draftId, { fromAddress: "OWNER@example.org" });
+    expect(h.store.getDraft(draftId)!.fromAddress).toBeNull();
+    expect((await openDraft(h.deps, { draftId })).draft.fromAddress).toBeNull();
+  });
+
+  it("an account switch keeps fromAddress only when it is an identity of the new account", async () => {
+    addAlias();
+    h.store.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.com", username: "second@example.com" }));
+    h.store.upsertIdentity({ accountId: "acc_2", address: "second-alias@example.com", displayName: null }, "2026-11-15T09:00:00.000Z");
+    const { draftId } = newCompose(h.deps, "acc_1");
+    await save(draftId, { fromAddress: ALIAS });
+    await save(draftId, { accountId: "acc_2", fromAddress: ALIAS });
+    expect(h.store.getDraft(draftId)!.fromAddress).toBeNull();
+    await save(draftId, { accountId: "acc_1" });
+    await save(draftId, { fromAddress: ALIAS });
+    await save(draftId, { accountId: "acc_2" });
+    expect(h.store.getDraft(draftId)!.fromAddress).toBeNull();
+    await save(draftId, { accountId: "acc_1" });
+    await save(draftId, { accountId: "acc_2", fromAddress: "second-alias@example.com" });
+    expect(h.store.getDraft(draftId)!.fromAddress).toBe("second-alias@example.com");
+  });
+
+  it("a removed alias: the Drafts copy falls back to the own address", async () => {
+    addAlias();
+    const { draftId } = newCompose(h.deps, "acc_1");
+    await save(draftId, { fromAddress: ALIAS, saveToServer: true });
+    expect(h.builder.built.at(-1)!.from.address).toBe(ALIAS);
+    h.store.removeIdentity("acc_1", ALIAS);
+    h.advance(SERVER_COPY_IDLE_MS);
+    await save(draftId, { subject: "Changed", saveToServer: true });
+    expect(h.builder.built.at(-1)!.from).toEqual({ name: null, address: "owner@example.org" });
+  });
+
+  it("From carries the alias's display name, else the account's", async () => {
+    h.store.saveAccount({ ...h.store.getAccount("acc_1")!, displayName: "Owner Name" });
+    addAlias(ALIAS, null);
+    const { draftId } = newCompose(h.deps, "acc_1");
+    await save(draftId, { fromAddress: ALIAS, saveToServer: true });
+    expect(h.builder.built.at(-1)!.from).toEqual({ name: "Owner Name", address: ALIAS });
   });
 });

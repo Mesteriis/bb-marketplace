@@ -19,6 +19,7 @@ import {
   roleFolder,
   type ComposeDeps,
 } from "./compose.ts";
+import { sendCheckOnAccepted, type SendCheck } from "./identities.ts";
 import type { DraftOrigin, OutboxRecord, OutboxState, SendErrorKind, StoredAccount } from "./model.ts";
 import {
   SendError,
@@ -364,7 +365,7 @@ export async function runOutboxOnce(
           ? { state: "failed", row: claimed, kind: "rejected_all" }
           : { state: "sent", row: claimed, rejected: result.rejected };
       } catch (error) {
-        return { row: claimed, ...classifySendError(error) };
+        return { row: claimed, ...classifySendError(error, claimed, account) };
       } finally {
         config.password = "";
       }
@@ -381,13 +382,33 @@ export async function runOutboxOnce(
     const accepted = { rejected: outcome.rejected, errorKind: null, updatedAt };
     if (deps.store.transitionOutbox(claimed.id, fromStates("accepted"), "sent", accepted)) {
       publish(deps, claimed, "sent");
+      const account = deps.store.getAccount(claimed.accountId);
+      if (account !== null && isAliasFrom(account, claimed.envelopeFrom)) {
+        recordSendCheck(deps, claimed, sendCheckOnAccepted(account.sentCopy), claimed.messageId);
+      }
       const row = deps.store.getOutbox(claimed.id);
       if (row !== null) await copyStep(deps, row, stop);
     }
   } else {
     settle(deps, claimed, outcome.state, outcome.kind);
+    if (outcome.kind === "sender_refused") recordSendCheck(deps, claimed, "refused", null);
   }
   return true;
+}
+
+/** The send check is advisory: a store failure never disturbs the send. */
+function recordSendCheck(deps: OutboxDeps, row: OutboxRecord, check: SendCheck, messageId: string | null): void {
+  try {
+    deps.store.setSendCheck(row.accountId, row.envelopeFrom, check, messageId, deps.clock.now().toISOString());
+  } catch {
+    // Left as it was.
+  }
+}
+
+/** The envelope sender is one of the account's aliases, not its own address or username. */
+function isAliasFrom(account: Pick<StoredAccount, "email" | "username">, envelopeFrom: string): boolean {
+  const from = envelopeFrom.trim().toLowerCase();
+  return from !== account.email.trim().toLowerCase() && from !== account.username.trim().toLowerCase();
 }
 
 /**
@@ -431,15 +452,55 @@ export async function settleGmailUnknown(deps: OutboxDeps): Promise<number> {
 /**
  * A transport failure as a state: no reply after DATA (or anything the
  * transport could not classify) is `unknown`, never a retryable failure;
- * a 5xx after DATA, a 4xx, or anything before DATA is `failed`.
+ * a 5xx after DATA, a 4xx, or anything before DATA is `failed`. A
+ * `rejected_message` before DATA answering MAIL FROM, on a row sent from
+ * an alias of the account, is `sender_refused` (spec resolution 13); from
+ * the own address it stays `rejected_message`.
  */
-export function classifySendError(error: unknown): { state: "failed" | "unknown"; kind: SendErrorKind } {
+export function classifySendError(
+  error: unknown,
+  row?: Pick<OutboxRecord, "envelopeFrom">,
+  account?: Pick<StoredAccount, "email" | "username"> | null,
+): { state: "failed" | "unknown"; kind: SendErrorKind } {
   if (!(error instanceof SendError)) return { state: "unknown", kind: "unknown_after_data" };
   if (error.kind === "unknown_after_data") return { state: "unknown", kind: "unknown_after_data" };
   if (error.afterData && !AFTER_DATA_FAILURES.has(error.kind)) {
     return { state: "unknown", kind: "unknown_after_data" };
   }
+  if (
+    error.kind === "rejected_message" &&
+    !error.afterData &&
+    error.command === "MAIL FROM" &&
+    row !== undefined &&
+    account != null &&
+    isAliasFrom(account, row.envelopeFrom)
+  ) {
+    return { state: "failed", kind: "sender_refused" };
+  }
   return { state: "failed", kind: error.kind };
+}
+
+/**
+ * The Outbox row's added text for a send from an alias (page only, never
+ * logged): `sender_refused`, and `rejected_message` while the alias's send
+ * check is neither confirmed nor accepted. Null when the kind's own text
+ * is enough. `provider` names the server, when the page knows it.
+ */
+export function outboxErrorText(
+  kind: SendErrorKind,
+  address: string | null,
+  check: SendCheck | null,
+  provider?: string,
+): string | null {
+  if (address === null) return null;
+  if (kind === "sender_refused") {
+    const where = provider === undefined ? "" : ` at ${provider}`;
+    return `The server refused to send from ${address}. Check that it is an alias of this account${where}; then Edit and pick another From, or Retry.`;
+  }
+  if (kind === "rejected_message" && check !== null && check !== "confirmed" && check !== "accepted") {
+    return `If ${address} is not an alias of this account, the server may refuse it.`;
+  }
+  return null;
 }
 
 /** Server replies after DATA that prove the message was not accepted. */
