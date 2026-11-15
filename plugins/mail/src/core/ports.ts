@@ -33,8 +33,16 @@ import type {
   ThreadDetail,
   ThreadingInput,
   ThreadSummary,
+  ThreadFilter,
   MailAddress,
+  UnsubscribeState,
 } from "./model.ts";
+import type { BlockRule } from "./blocking.ts";
+import type { WatchEnd } from "./idle-policy.ts";
+import type { NotifyRow } from "./notify.ts";
+import type { SnoozeRow, SnoozeState, SnoozeView } from "./snooze.ts";
+import type { TriageAction, TriageBatchState, TriageHistoryRow, TriageItemOutcome } from "./triage.ts";
+import type { UnsubscribeInfo } from "./unsubscribe.ts";
 import type { OutboxChangedPayload } from "./contract.ts";
 import type { ProposalCapRow, ProposalState } from "./agent-propose.ts";
 import type { AccountCorrespondence, Contact } from "./contacts.ts";
@@ -62,6 +70,24 @@ export interface ImapGateway {
     path: string,
     options: { readOnly: boolean },
   ): Promise<FolderSession>;
+  /**
+   * Watches one folder with IDLE on its own read-only connection (EXAMINE)
+   * until `signal` aborts or the connection ends (slice 3e). Issues no write
+   * and exposes no session. `onChange` is called for new mail ("exists",
+   * only when the count grew), an expunge, or a flag change.
+   */
+  watchFolder(
+    config: ImapConfig,
+    path: string,
+    onChange: (change: "exists" | "expunge" | "flags") => void,
+    signal: AbortSignal,
+  ): Promise<WatchEnd>;
+  /**
+   * CREATE of one folder (slice 3e: the snooze folder, after the owner's
+   * confirmation). `created: false` when it already existed. Throws
+   * SafeImapError "CreateFailed" when the server refuses.
+   */
+  createFolder(config: ImapConfig, name: string): Promise<{ path: string; created: boolean }>;
 }
 
 /** An open folder. Every fetch uses BODY.PEEK, so reading never marks mail read. */
@@ -76,6 +102,12 @@ export interface FolderSession {
    * the folder is simply missing.
    */
   fetchListHeaders(uids: number[]): Promise<{ uid: number; block: Uint8Array }[]>;
+  /**
+   * The raw HEADER.FIELDS block of exactly `fields` for each uid the server
+   * answers for (BODY.PEEK, by UID; slice 3e). fetchListHeaders is this with
+   * LIST_HEADER_FIELDS.
+   */
+  fetchHeaderFields(uids: number[], fields: readonly string[]): Promise<{ uid: number; block: Uint8Array }[]>;
   fetchFlags(
     uids: number[],
   ): Promise<{ uid: number; seen: boolean; flagged: boolean; gmMsgId: string | null }[]>;
@@ -224,6 +256,16 @@ export interface SecretVault {
   open(sealed: string): string;
 }
 
+/** How a one-click unsubscribe POST ended: the status class or a fixed reason, never the response. */
+export type PostOutcome =
+  | { kind: "done" | "redirected" }
+  | { kind: "failed"; reason: "client" | "server" | "network" | "tls" | "address" | "timeout" };
+
+/** The RFC 8058 one-click POST (slice 3e); only the server's unsubscribe path calls it. */
+export interface UnsubscribePoster {
+  post(url: string, signal: AbortSignal): Promise<PostOutcome>;
+}
+
 export interface ChangeNotifier {
   mailChanged(accountId: string): void;
 }
@@ -251,7 +293,18 @@ export interface MailStore {
   beginFolderReset(accountId: string, folder: string): void;
   /** Deletes rows still detached; returns how many. */
   finishFolderReset(accountId: string, folder: string): number;
-  upsertMessages(accountId: string, folder: string, messages: FetchedMessage[]): void;
+  /**
+   * `inserted`: ids of rows created (not reattached by Message-ID, not
+   * re-homed by a move). `returning`: the inserted ids whose (account, dedup
+   * key) already had another row before the insert (slice 3e). Writes
+   * `unsubscribe_json` when a message carries headers, and `spam_seen` for
+   * rows landing in a junk-role folder.
+   */
+  upsertMessages(
+    accountId: string,
+    folder: string,
+    messages: FetchedMessage[],
+  ): { inserted: string[]; returning: string[] };
   localFolderIndex(
     accountId: string,
     folder: string,
@@ -321,12 +374,13 @@ export interface MailStore {
   threadingInputs(accountId: string): ThreadingInput[];
   /** Assigns messages to threads, then recomputes the thread rows. */
   assignThreads(accountId: string, threadOf: Map<string, string>): void;
-  /** Threads with at least one message in `folder`. */
+  /** Threads with at least one message in `folder` (matching `filter` on one row, slice 3e). */
   listThreads(
     accountId: string,
     folder: string,
     cursor: string | null,
     limit: number,
+    filter?: ThreadFilter,
   ): { threads: ThreadSummary[]; nextCursor: string | null };
   /**
    * Threads of every account having a member not waiting to move in a folder
@@ -340,6 +394,7 @@ export interface MailStore {
     role: SpecialUse,
     cursor: string | null,
     limit: number,
+    filter?: ThreadFilter,
   ): { threads: ThreadSummary[]; nextCursor: string | null };
   /**
    * Exactly inbox, sent, drafts, junk, archive, trash in that order, zeros
@@ -645,7 +700,140 @@ export interface MailStore {
   ): { id: string } | { conflict: true };
   deleteTemplate(id: string): boolean;
   getTemplateByKey(nameKey: string): TemplateRecord | null;
+
+  // ---- Inbox triage (slice 3e) ----
+
+  /** Sets (or with null clears) the account's snooze folder. */
+  setSnoozeFolder(accountId: string, path: string | null): void;
+  /**
+   * Inserts snoozes (replacing one for the same message). `full` when the
+   * account would hold more than SNOOZES_MAX_PER_ACCOUNT live snoozes;
+   * nothing is stored then.
+   */
+  createSnoozes(rows: SnoozeRow[], nowIso: string): { created: number } | { full: true };
+  /** The account's snoozes by due time; `dueBefore` keeps those due at or before it. */
+  listSnoozes(accountId: string, opts: { dueBefore?: string; limit: number }): SnoozeRow[];
+  updateSnooze(
+    messageId: string,
+    patch: { state?: SnoozeState; dueAt?: string; returnTo?: string },
+    nowIso: string,
+  ): boolean;
+  deleteSnoozes(messageIds: string[]): number;
+  /**
+   * The account's snoozes with their message rows as stored now, for the
+   * snooze clock: in-flight rows (moving, returning) first, then snoozed ones
+   * by due time, at most `limit`.
+   */
+  snoozeViews(accountId: string, limit: number): SnoozeView[];
+  /** Every block rule (global), oldest first. */
+  listBlockRules(): BlockRule[];
+  /** Inserts the rule, or returns the existing one for (kind, value) with `created: false`. */
+  addBlockRule(kind: BlockRule["kind"], value: string, id: string, nowIso: string): { rule: BlockRule; created: boolean };
+  removeBlockRule(id: string): boolean;
+  /**
+   * Stored rows of every account matching the rule's From that sit in an
+   * Inbox-role folder, attached and not moving; rows from the owner's own
+   * addresses and rows whose dedup key is in `spam_seen` or in a current
+   * junk-role row are left out (spec resolutions 13, 17).
+   */
+  blockMatches(rule: BlockRule): { id: string; accountId: string; folder: string }[];
+  /** Of these dedup keys, those in the account's `spam_seen` or held by a junk-role row now. */
+  spamSeen(accountId: string, dedupKeys: string[]): Set<string>;
+  /** Deletes `spam_seen` rows seen before `olderThanIso`; returns how many. */
+  pruneSpamSeen(olderThanIso: string): number;
+  /** Stored rows as notify and block judge them; unknown ids are left out. */
+  notifyRows(ids: string[]): (NotifyRow & { dedupKey: string })[];
+  /**
+   * Writes unsubscribe info by uid, only where it is still NULL and only
+   * while the folder's stored UIDVALIDITY equals `uidValidity`; a null info
+   * writes nothing. Returns how many rows changed.
+   */
+  fillUnsubscribe(
+    accountId: string,
+    folder: string,
+    uidValidity: number,
+    values: { uid: number; info: UnsubscribeInfo | null }[],
+  ): number;
+  /**
+   * Attached bulk rows of the folder whose unsubscribe info is unknown (NULL),
+   * highest uid first, only uids below `belowUid` when given, at most `limit`.
+   */
+  unsubscribeUnknown(accountId: string, folder: string, belowUid: number | null, limit: number): number[];
+  getUnsubscribeInfo(messageId: string): UnsubscribeInfo | null;
+  getUnsubscribe(accountId: string, listKey: string): UnsubscribeRecord | null;
+  /** Upsert by (account, list key). */
+  putUnsubscribe(row: UnsubscribeRecord): void;
+  /** Stores a `pending` batch with its items in one transaction. */
+  createTriageBatch(batch: NewTriageBatch, items: TriageItemRecord[]): void;
+  getTriageBatch(id: string): { batch: TriageBatchRecord; items: TriageItemRecord[] } | null;
+  /** Compare-and-swap on the state; false when the batch is not in a `from` state. */
+  transitionTriageBatch(
+    id: string,
+    from: TriageBatchState[],
+    to: TriageBatchState,
+    patch: { viewTokenHash?: string | null; approved?: number[]; createSnoozeFolder?: string[] },
+    nowIso: string,
+  ): boolean;
+  setTriageOutcomes(id: string, outcomes: { position: number; outcome: TriageItemOutcome }[]): void;
+  /** Batches created at or after `sinceIso`, plus every unsettled one (pending, confirming), for checkTriageCaps. */
+  triageHistory(sinceIso: string): TriageHistoryRow[];
+  /** On start: `applying` becomes `interrupted`; `pending` and `confirming` become `expired`. */
+  settleTriageAtStart(nowIso: string): { interrupted: number; expired: number };
+  /**
+   * Undo of a purpose draft's send (an unsubscribe email), one transaction:
+   * deletes the outbox row (only from a `states` state) and its draft.
+   */
+  cancelSendPurpose(outboxId: string, states: OutboxState[]): { cancelled: boolean };
 }
+
+/** An unsubscribes row (slice 3e): the latest request per list and account. */
+export type UnsubscribeRecord = {
+  accountId: string;
+  /** Never shown or returned to the page. */
+  listKey: string;
+  method: "one_click" | "mailto";
+  state: UnsubscribeState;
+  /** mailto: the outbox row. */
+  outboxId: string | null;
+  /** ISO 8601. */
+  requestedAt: string;
+};
+
+/** What creating a triage batch stores. */
+export type NewTriageBatch = {
+  /** The card's request id and the undo id. */
+  id: string;
+  threadId: string;
+  contentHash: string;
+  /** The agent's summary (agent text), or null. */
+  summary: string | null;
+  /** ISO 8601. */
+  createdAt: string;
+  /** ISO 8601. */
+  expiresAt: string;
+};
+
+export type TriageBatchRecord = NewTriageBatch & {
+  state: TriageBatchState;
+  viewTokenHash: string | null;
+  /** Positions the owner approved; null until submitted. */
+  approved: number[] | null;
+  /** Account ids the owner ticked "create Snoozed folder" for; null until submitted. */
+  createSnoozeFolder: string[] | null;
+  /** ISO 8601. */
+  updatedAt: string;
+};
+
+export type TriageItemRecord = {
+  batchId: string;
+  position: number;
+  messageId: string;
+  accountId: string;
+  action: TriageAction;
+  snoozeUntil: string | null;
+  note: string | null;
+  outcome: TriageItemOutcome | null;
+};
 
 /** A stored template (slice 3d). Global, not per account. */
 export type TemplateRecord = {

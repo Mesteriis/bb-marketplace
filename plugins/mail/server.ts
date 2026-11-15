@@ -345,6 +345,12 @@ function refusePluginCaller(context: ExperimentalPluginRpcHandlerContext): void 
   if (context.experimental_caller.kind === "plugin") throw refuse("forbidden", PLUGIN_CALLER_MESSAGE);
 }
 
+/** A slice-3e method whose server task has not landed yet: refused for every caller. */
+function notYetAvailable(_input: unknown, context: ExperimentalPluginRpcHandlerContext): never {
+  refusePluginCaller(context);
+  throw refuse("conflict", "Not available yet");
+}
+
 export const ACCOUNT_BUSY_MESSAGE = "A message is being sent";
 /** Fixed texts of translation refusals. */
 export const UNKNOWN_TRANSLATION_MESSAGE = "Unknown translation";
@@ -1589,6 +1595,20 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         issues: checkDraft(store, ownerDraft(draftId), baseRevision),
       })),
       action_undo: owner("action_undo", ({ undoId }) => runUndo(deps, undoId, (line) => bb.log.info(line))),
+      // Slice 3e: wired in the server tasks; until then every call refuses.
+      new_mail_get: notYetAvailable,
+      unsubscribe_info: notYetAvailable,
+      unsubscribe_run: notYetAvailable,
+      message_snooze: notYetAvailable,
+      message_unsnooze: notYetAvailable,
+      snooze_folder_create: notYetAvailable,
+      snooze_folder_use: notYetAvailable,
+      block_add: notYetAvailable,
+      block_list: notYetAvailable,
+      block_remove: notYetAvailable,
+      block_check: notYetAvailable,
+      triage_view: notYetAvailable,
+      triage_status: notYetAvailable,
     },
     { experimental_discoverable: false },
   );

@@ -58,6 +58,13 @@ export interface SyncDeps {
 export interface SyncOptions {
   windowDays: number;
   batchSize: number;
+  /**
+   * "inbox": an Inbox-only round (slice 3e, woken by IDLE): no listing, only
+   * the stored Inbox-role folder is pushed and synced, `lastSyncAt` is kept
+   * and the full round's `lastError` is kept with this round's problems
+   * appended. Absent: a full round.
+   */
+  only?: "inbox";
 }
 
 export type SyncOutcome =
@@ -74,6 +81,14 @@ export type SyncOutcome =
       folders: number;
       /** Ids of messages whose move was cancelled this round (they stay put). */
       movesCancelled: string[];
+      /**
+       * Rows inserted into an Inbox-role folder by this round's incremental
+       * fetch (not an initial sync, a reset or a reconcile backfill), not
+       * reattached or re-homed (slice 3e).
+       */
+      newInbox: string[];
+      /** The `newInbox` rows whose dedup key already had another row in the account. */
+      returning: string[];
     }
   | {
       status: "error";
@@ -204,6 +219,8 @@ export async function syncAccount(
       pushedFlags: progress.pushedFlags,
       folders: synced,
       movesCancelled: progress.movesCancelled,
+      newInbox: [],
+      returning: [],
     };
   } catch (error) {
     const authFailed = error instanceof ImapAuthError;
