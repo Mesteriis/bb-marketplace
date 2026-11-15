@@ -1137,6 +1137,12 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
         return;
       }
       for (const id of attached) restoredIds.add(id);
+    } catch (error) {
+      // capabilities() or a per-row move back threw: nothing is lost, the
+      // rows not restored yet go back into the slot for another try.
+      log(`undo ${step.accountId}: failed (${errorKind(error)})`);
+      const left = step.ids.filter((id) => !restoredIds.has(id));
+      if (left.length > 0) putBack(step, left, "all");
     } finally {
       await session.close().catch(() => undefined);
     }
