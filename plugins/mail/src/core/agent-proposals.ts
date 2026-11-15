@@ -22,7 +22,14 @@ import {
   type ProposalCapHit,
 } from "./agent-propose.ts";
 import { parseAddress, type AddressProblem, type OutgoingAddress } from "./compose-address.ts";
-import { DOC_MAX_BYTES, docFromLines, type ComposeBlock, type ComposeDoc, type ComposeListItem } from "./compose-doc.ts";
+import {
+  DOC_MAX_BYTES,
+  docFromLines,
+  type ComposeBlock,
+  type ComposeDoc,
+  type ComposeListItem,
+  type ComposeSignature,
+} from "./compose-doc.ts";
 import {
   ComposeError,
   MAX_RECIPIENTS,
@@ -471,7 +478,8 @@ function docParts(doc: ComposeDoc): { body: string; quote: string | null } {
   return { body: body.join("\n"), quote: quote === null ? null : quote.join("\n") };
 }
 
-function blockText(block: ComposeBlock | ComposeListItem): string {
+// A signature block (slice 3d) counts as body text here until docParts gives it its own part.
+function blockText(block: ComposeBlock | ComposeListItem | ComposeSignature): string {
   if (block.type === "paragraph") {
     return (block.content ?? []).map((inline) => (inline.type === "text" ? inline.text : "\n")).join("");
   }

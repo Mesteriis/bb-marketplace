@@ -319,3 +319,111 @@ describe("docLosesContent", () => {
     expect(docLosesContent({ type: "doc", content: [{ type: "image", attrs: { src: "cid:x" } }] })).toBe(true);
   });
 });
+
+describe("signature block", () => {
+  const sig = (...content: unknown[]) => ({ type: "signature", content });
+
+  it("keeps one top-level signature and flattens a second one into paragraphs", () => {
+    const result = norm(doc(p(text("Hi")), sig(p(text("Anna"))), sig(p(text("Second")))));
+    expect(result.content).toEqual([
+      { type: "paragraph", content: [{ type: "text", text: "Hi" }] },
+      { type: "signature", content: [{ type: "paragraph", content: [{ type: "text", text: "Anna" }] }] },
+      { type: "paragraph", content: [{ type: "text", text: "Second" }] },
+    ]);
+  });
+
+  it("flattens a signature nested in a quote or a list, keeping its text", () => {
+    const result = norm(
+      doc(
+        { type: "blockquote", content: [sig(p(text("Quoted sig")))] },
+        { type: "bulletList", content: [{ type: "listItem", content: [sig(p(text("Listed sig")))] }] },
+      ),
+    );
+    expect(JSON.stringify(result)).not.toContain('"signature"');
+    expect(renderDoc(result).text).toContain("> Quoted sig");
+    expect(renderDoc(result).text).toContain("- Listed sig");
+  });
+
+  it("keeps only paragraphs inside a signature", () => {
+    const result = norm(
+      doc(
+        sig(
+          p(text("Anna")),
+          { type: "bulletList", content: [{ type: "listItem", content: [p(text("Item"))] }] },
+          { type: "blockquote", content: [p(text("Quote"))] },
+        ),
+      ),
+    );
+    expect(result.content).toEqual([
+      {
+        type: "signature",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "Anna" }] },
+          { type: "paragraph", content: [{ type: "text", text: "Item" }] },
+          { type: "paragraph", content: [{ type: "text", text: "Quote" }] },
+        ],
+      },
+    ]);
+  });
+
+  it("keeps an empty signature as the placeholder", () => {
+    expect(norm(doc(p(), sig())).content).toEqual([{ type: "paragraph" }, { type: "signature", content: [] }]);
+    expect(norm(doc(p(), sig(p()))).content).toEqual([
+      { type: "paragraph" },
+      { type: "signature", content: [{ type: "paragraph" }] },
+    ]);
+  });
+
+  it("renders an empty signature as nothing", () => {
+    const rendered = renderDoc(norm(doc(p(text("Hello")), sig(p()))));
+    expect(rendered.html).not.toContain("makosh-signature");
+    expect(rendered.text).toBe("Hello");
+  });
+
+  it("writes the -- delimiter when the signature is the last block", () => {
+    const rendered = renderDoc(norm(doc(p(text("Hello")), sig(p(text("Anna")), p(text("Example Ltd"))))));
+    expect(rendered.html).toContain(
+      '<div class="makosh-signature"><p>-- </p><p>Anna</p><p>Example Ltd</p></div>',
+    );
+    expect(rendered.text).toBe("Hello\n\n-- \nAnna\nExample Ltd");
+  });
+
+  it("leaves no blank lines inside the signature text", () => {
+    const rendered = renderDoc(norm(doc(p(text("Hello")), sig(p(text("Anna")), p(), p(text("Ltd"))))));
+    expect(rendered.text).toBe("Hello\n\n-- \nAnna\nLtd");
+  });
+
+  it("writes no -- delimiter when anything follows the signature", () => {
+    const rendered = renderDoc(
+      norm(
+        doc(
+          p(text("Thanks")),
+          sig(p(text("Anna"))),
+          p(text("On Mon, Bob wrote:")),
+          { type: "blockquote", content: [p(text("Question"))] },
+        ),
+      ),
+    );
+    expect(rendered.html).toContain('<div class="makosh-signature"><p>Anna</p></div>');
+    expect(rendered.html).not.toContain("<p>-- </p>");
+    expect(rendered.text).toBe("Thanks\n\nAnna\n\nOn Mon, Bob wrote:\n\n> Question");
+    expect(rendered.text).not.toContain("-- ");
+  });
+
+  it("never takes the class from the page", () => {
+    const rendered = renderDoc(
+      norm(doc(sig({ type: "paragraph", attrs: { class: "x\" onclick=\"y" }, content: [text("A")] }))),
+    );
+    expect(rendered.html).toContain('<div class="makosh-signature"><p>-- </p><p>A</p></div>');
+    expect(rendered.html).not.toContain("onclick");
+  });
+
+  it("isDocEmpty ignores the signature", () => {
+    expect(isDocEmpty(norm(doc(p(), sig(p(text("Anna"))))))).toBe(true);
+    expect(isDocEmpty(norm(doc(p(text("x")), sig(p(text("Anna"))))))).toBe(false);
+  });
+
+  it("docLosesContent keeps a signature", () => {
+    expect(docLosesContent(doc(p(text("x")), sig(p(text("Anna")))) as never)).toBe(false);
+  });
+});
