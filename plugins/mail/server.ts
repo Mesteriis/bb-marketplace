@@ -574,8 +574,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         if (text === null) throw refuse("not_found", "Unknown message");
         return { text };
       },
-      // The only path that marks mail read: the owner opened it in the Mail page.
-      message_open: ({ messageId }) => {
+      // The only path that marks mail read: the owner opened it in the Mail page
+      // (other plugins are refused, like on every write).
+      message_open: ({ messageId }, context) => {
+        refusePluginCaller(context);
         const opened = store.markOpened(messageId);
         if (opened === null) throw refuse("not_found", "Unknown message");
         publishChanged(opened.accountId);
