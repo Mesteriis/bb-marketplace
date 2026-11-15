@@ -1,0 +1,3 @@
+// @vitest-environment jsdom
+import React from 'react';import {it,expect,vi} from 'vitest';import {render,screen,fireEvent} from '@testing-library/react';import {ErrorNotice} from './error-notice';
+it('reveals the error text on click and retries only when explicitly requested',()=>{const retry=vi.fn();render(<ErrorNotice message="Не удалось загрузить раскладку" onRetry={retry}/>);fireEvent.click(screen.getByRole('button',{name:'Ошибка навигации'}));expect(screen.getByRole('alert').textContent).toContain('Не удалось загрузить раскладку');expect(retry).not.toHaveBeenCalled();fireEvent.click(screen.getByText('Повторить загрузку'));expect(retry).toHaveBeenCalledTimes(1);});
