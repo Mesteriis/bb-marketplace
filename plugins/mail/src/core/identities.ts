@@ -48,10 +48,8 @@ export type Identity = {
   sendCheck: SendCheck;
 };
 
-/** What the identity rules read of an account; `signature` is the own address's. */
-export type IdentityAccount = Pick<StoredAccount, "id" | "email" | "displayName" | "username"> & {
-  signature?: SignatureDoc | null;
-};
+/** What the identity rules read of an account (a StoredAccount fits); `signature` is the own address's. */
+export type IdentityAccount = Pick<StoredAccount, "id" | "email" | "displayName" | "username" | "signature">;
 
 /** An inbound message's recipients, for alias suggestions. `deliveredTo` null: not known (synced before 3d). */
 export type InboundRow = { to: string[]; cc: string[]; deliveredTo: string[] | null; date: string };
@@ -80,7 +78,7 @@ export function identitiesOf(account: IdentityAccount, aliases: AliasRow[]): Ide
     address: lower(account.email),
     displayName: account.displayName,
     primary: true,
-    signature: account.signature ?? null,
+    signature: account.signature,
     sendCheck: "confirmed",
   };
   return [

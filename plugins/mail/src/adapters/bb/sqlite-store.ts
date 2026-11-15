@@ -656,6 +656,8 @@ function toAccount(row: AccountRow): StoredAccount {
           }
         : null,
     sentCopy: row.sent_copy ?? "append",
+    // Stored from migration element 7 (slice 3d task 8).
+    signature: null,
   };
 }
 
@@ -691,11 +693,18 @@ function toDraft(row: DraftRow): DraftRecord {
         : null,
     origin: row.origin,
     proposalId: row.proposal_id,
+    // Stored from migration element 7 (slice 3d task 8).
+    fromAddress: null,
     createdAt: row.created_at,
     revision: row.revision,
     serverState: row.server_state,
     updatedAt: row.updated_at,
   };
+}
+
+/** A slice-3d store write before its migration element exists. */
+function notYet(): never {
+  throw new Error("Not available yet");
 }
 
 function toProposal(row: ProposalRow): ProposalRecord {
@@ -709,6 +718,8 @@ function toProposal(row: ProposalRow): ProposalRecord {
     added: JSON.parse(row.added_json) as string[],
     contentSha256: row.content_sha256,
     leftOut: row.left_out,
+    // Stored from migration element 7 (slice 3d task 8).
+    templateName: null,
     expiresAt: row.expires_at,
     createdAt: row.created_at,
     state: row.state,
@@ -2742,6 +2753,27 @@ export function createSqliteStore(db: Database.Database): MailStore {
     clearTranslations() {
       return db.prepare("DELETE FROM translations").run().changes;
     },
+
+    // ---- Sending polish (slice 3d): the tables come with migration
+    // element 7 (task 8). Until then reads answer empty and writes throw. ----
+
+    listIdentities: () => [],
+    upsertIdentity: () => notYet(),
+    updateIdentity: () => notYet(),
+    setAccountSignature: () => notYet(),
+    removeIdentity: () => notYet(),
+    dismissIdentity: () => notYet(),
+    setSendCheck: () => notYet(),
+    resolveSendChecks: () => 0,
+    inboundAddressRows: () => [],
+    conversationAddresses: () => null,
+    deliveredToOf: () => [],
+    undoRows: () => [],
+    cancelMove: () => notYet(),
+    listTemplates: () => [],
+    saveTemplate: () => notYet(),
+    deleteTemplate: () => notYet(),
+    getTemplateByKey: () => null,
   };
   return store;
 }

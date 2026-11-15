@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { OutgoingAddress } from "./compose-address.ts";
 import { composeDocInputSchema, type ComposeDoc } from "./compose-doc.ts";
+import type { SignatureDoc } from "./compose-signature.ts";
 
 /** Which server preset an account was set up with. */
 export const accountPresetSchema = z.enum(["icloud", "gmail", "other"]);
@@ -243,6 +244,8 @@ export type StoredAccount = Omit<Account, "smtpConfigured"> & {
   passwordSealed: string;
   smtp: StoredSmtp | null;
   sentCopy: SentCopyPolicy;
+  /** The own address's signature (slice 3d); null = none. */
+  signature: SignatureDoc | null;
 };
 
 /** An inline (cid-referenced) image part of a message. */
@@ -280,6 +283,11 @@ export type FetchedMessage = {
   inlineParts: InlinePart[];
   /** Absent when the fetch did not read headers: the store keeps the bulk mark unknown. */
   bulkHeaders?: BulkHeaders;
+  /**
+   * Delivered-To and X-Original-To addresses, lower case, at most 10 (slice
+   * 3d). Absent when the fetch did not read headers.
+   */
+  deliveredTo?: string[];
 };
 
 /** A folder as the server lists it. */
@@ -370,6 +378,8 @@ export const sendErrorKindSchema = z.enum([
   "unknown_after_data",
   "no_sent_folder",
   "append_failed",
+  /** A 5xx reply to MAIL FROM (other than 552) for an alias From; the core decides it (slice 3d). */
+  "sender_refused",
 ]);
 export type SendErrorKind = z.infer<typeof sendErrorKindSchema>;
 
@@ -402,12 +412,19 @@ export const draftViewSchema = z.object({
   queued: z.boolean(),
   /** It continues a foreign Drafts message: closed untouched without a server copy, it is dropped. */
   continues: z.boolean(),
-  /** Sanitized HTML the page loads into the editor once (quote of the original, or a foreign draft's body). */
+  /**
+   * Sanitized HTML the page loads into the editor once (quote of the original,
+   * or a foreign draft's body). `stripSignature`: a reply to the owner's own
+   * mail, so the page drops `div.makosh-signature`; otherwise it drops only
+   * that class (slice 3d resolution 3).
+   */
   import: z
-    .object({ html: z.string(), into: z.enum(["quote", "body"]) })
+    .object({ html: z.string(), into: z.enum(["quote", "body"]), stripSignature: z.boolean() })
     .nullable(),
   /** "agent": started by an agent proposal the owner opened in Mail (the composer's badge). */
   origin: draftOriginSchema,
+  /** The identity the draft sends from; null = the account's own address. */
+  fromAddress: z.string().nullable(),
 });
 export type DraftView = z.infer<typeof draftViewSchema>;
 
@@ -471,6 +488,8 @@ export type DraftFields = {
   bcc: MailAddress[];
   subject: string;
   doc: ComposeDoc;
+  /** The sending identity's address (slice 3d); null = the account's own address. */
+  fromAddress: string | null;
 };
 
 /** Where the draft's latest copy lives in the account's Drafts folder. */
@@ -504,7 +523,7 @@ export type NewDraft = DraftFields & {
    * editor once: the original's body as a quote, or a continued foreign
    * draft's body. Cleared by the first save.
    */
-  importHtml: { html: string; into: "quote" | "body" } | null;
+  importHtml: { html: string; into: "quote" | "body"; stripSignature?: boolean } | null;
   /** "agent" for a draft an agent proposal created; it stays as the composer's badge. */
   origin: DraftOrigin;
   /**
@@ -580,6 +599,32 @@ const proposalRecipientSchema = z.object({
   flags: z.array(recipientFlagSchema),
 });
 
+// ---- Sending polish (slice 3d) ----
+
+export const sendCheckSchema = z.enum(["unknown", "accepted", "pending", "confirmed", "rewritten", "refused"]);
+
+/** One address the owner can send from, as the page sees it. */
+export const identityViewSchema = z.object({
+  accountId: z.string(),
+  /** Lower case. */
+  address: z.string(),
+  /** Effective: the alias's name, else the account's. */
+  displayName: z.string().nullable(),
+  primary: z.boolean(),
+  /** A signature document (paragraphs only), or null. */
+  signature: composeDocInputSchema.nullable(),
+  sendCheck: sendCheckSchema,
+});
+export type IdentityView = z.infer<typeof identityViewSchema>;
+
+/** One advisory pre-send issue (core presend.ts PresendIssue). */
+export const presendIssueSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("attachment_mentioned"), phrase: z.string() }),
+  z.object({ kind: z.literal("empty_subject") }),
+  z.object({ kind: z.literal("outside_conversation"), addresses: z.array(z.string()) }),
+  z.object({ kind: z.literal("new_recipients"), addresses: z.array(z.string()) }),
+]);
+
 /** What the confirmation card shows: the whole message, server-built. */
 export const proposalViewSchema = z.object({
   proposalId: z.string(),
@@ -604,6 +649,14 @@ export const proposalViewSchema = z.object({
   leftOut: z.number().int(),
   /** ISO 8601. */
   expiresAt: z.string(),
+  /** It is sent from an alias, not the account's own address. */
+  fromAlias: z.boolean(),
+  /** The identity's signature as text, or null. */
+  signatureText: z.string().nullable(),
+  /** The template the agent named, for the card's label. */
+  templateName: z.string().nullable(),
+  /** Pre-send issues without new_recipients (the recipient flags cover it). */
+  checks: z.array(presendIssueSchema),
 });
 export type ProposalView = z.infer<typeof proposalViewSchema>;
 

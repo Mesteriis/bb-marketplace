@@ -7,6 +7,8 @@ import {
   composeAttachmentSchema,
   draftViewSchema,
   hostInputSchema,
+  identityViewSchema,
+  presendIssueSchema,
   mailAddressSchema,
   noLineBreaks,
   outboxRowSchema,
@@ -82,6 +84,14 @@ const threadScope = z.discriminatedUnion("kind", [
   }),
   z.object({ kind: z.literal("all"), role: specialUseSchema }),
 ]);
+
+/** A display name: one line, at most 200 characters. */
+const displayNameInput = z.string().max(200).refine(noLineBreaks, NO_LINE_BREAKS);
+/** A template name: one line, 1–80 characters (templates.ts TEMPLATE_NAME_MAX). */
+const templateNameInput = z.string().min(1).max(80).refine(noLineBreaks, NO_LINE_BREAKS);
+const identityKeyInput = z.object({ accountId: idInput, address: headerAddressInput });
+/** Why an undo left messages where they are (core undo.ts). */
+const undoSkipReasonSchema = z.enum(["moved_elsewhere", "gone", "folder_gone", "not_synced"]);
 
 /** The result of one (account, source folder) group of a message_action batch. */
 const actionGroupSchema = z.object({
@@ -179,6 +189,11 @@ export const rpcSchemas = {
         folder: idInput.optional(),
         role: specialUseSchema.optional(),
         destination: idInput.optional(),
+        /**
+         * The page's id for one batch (its chunks share it): the server keeps
+         * what the call queued as the one undoable action (slice 3d).
+         */
+        undoId: z.uuid().optional(),
       })
       .refine((input) => (input.folder === undefined) !== (input.role === undefined), {
         message: "Give exactly one of folder and role",
@@ -186,7 +201,11 @@ export const rpcSchemas = {
       .refine((input) => (input.action === "move") === (input.destination !== undefined), {
         message: "A destination goes with move, and only with move",
       }),
-    output: z.object({ groups: z.array(actionGroupSchema) }),
+    output: z.object({
+      groups: z.array(actionGroupSchema),
+      /** The call was recorded under its undoId (something was queued). */
+      undoable: z.boolean(),
+    }),
   },
   /** Raw headers and MIME structure of one message; never marks it read. */
   message_source: {
@@ -266,6 +285,11 @@ export const rpcSchemas = {
       saveToServer: z.boolean().optional(),
       /** The editor's one-time load of `import`: not an edit (no revision bump, no server copy due). */
       imported: z.boolean().optional(),
+      /**
+       * The identity to send from (slice 3d): null = the account's own
+       * address; absent = unchanged (reset when the account changes).
+       */
+      fromAddress: headerAddressInput.nullable().optional(),
     }),
     output: z.union([
       /** originalKept: the import lost content, so the continued foreign draft stays on the server. */
@@ -427,6 +451,79 @@ export const rpcSchemas = {
   translate_clear: {
     input: z.object({}),
     output: z.object({ removed: z.number().int().min(0) }),
+  },
+
+  // ---- Sending polish (slice 3d). Owner only, like 3b and 3c: every
+  // handler refuses plugin callers, none is discoverable, none is a tool,
+  // CLI or mention. ----
+
+  /** Every identity of the account, or of every account when null. */
+  identities_list: {
+    input: z.object({ accountId: idInput.nullable() }),
+    output: z.object({ identities: z.array(identityViewSchema) }),
+  },
+  /** Adds an alias by hand (or from a suggestion); a dismissed one becomes active. */
+  identity_add: {
+    input: identityKeyInput.extend({ displayName: displayNameInput.optional() }),
+    output: identityViewSchema,
+  },
+  /** An alias's name or signature; the own address takes `signature` only. */
+  identity_update: {
+    input: identityKeyInput.extend({
+      displayName: displayNameInput.nullable().optional(),
+      signature: composeDocInputSchema.nullable().optional(),
+    }),
+    output: identityViewSchema,
+  },
+  /** Aliases only; local configuration. */
+  identity_remove: {
+    input: identityKeyInput,
+    output: okOutput,
+  },
+  /** Addresses that look like the owner's, from inbound mail; nothing is added. */
+  identity_suggestions: {
+    input: z.object({ accountId: idInput }),
+    output: z.object({
+      suggestions: z.array(z.object({ address: z.string(), count: z.number().int(), lastDate: z.string() })),
+    }),
+  },
+  /** "Not mine": stores a dismissed suggestion. */
+  identity_dismiss: {
+    input: identityKeyInput,
+    output: okOutput,
+  },
+  templates_list: {
+    input: z.object({}),
+    output: z.object({
+      templates: z.array(
+        z.object({ id: z.string(), name: z.string(), doc: composeDocInputSchema, updatedAt: z.string() }),
+      ),
+    }),
+  },
+  /** Insert (no id) or update; `conflict` on a duplicate name. */
+  template_save: {
+    input: z.object({ id: idInput.optional(), name: templateNameInput, doc: composeDocInputSchema }),
+    output: z.object({ id: z.string() }),
+  },
+  template_delete: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+  /** The advisory pre-send issues of the saved draft; `conflict` when the revision moved on. */
+  compose_check: {
+    input: z.object({ draftId: idInput, baseRevision: z.number().int().min(0) }),
+    output: z.object({ issues: z.array(presendIssueSchema) }),
+  },
+  /** Undoes the action recorded under `undoId`, if it is still the slot (spec resolution 4). */
+  action_undo: {
+    input: z.object({ undoId: z.uuid() }),
+    output: z.object({
+      outcome: z.enum(["done", "pending", "nothing"]),
+      restored: z.number().int().min(0),
+      skipped: z.array(z.object({ reason: undoSkipReasonSchema, count: z.number().int().min(0) })),
+      failed: z.number().int().min(0),
+      groups: z.array(actionGroupSchema),
+    }),
   },
 } as const;
 

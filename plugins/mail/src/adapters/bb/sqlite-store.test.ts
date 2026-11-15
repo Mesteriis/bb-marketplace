@@ -1729,6 +1729,7 @@ function newDraft(overrides: Partial<NewDraft> = {}): NewDraft {
     doc: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Hello" }] }] },
     serverCopy: null,
     importHtml: null,
+    fromAddress: null,
     origin: "owner",
     proposalId: null,
     createdAt: T0,
@@ -1761,6 +1762,7 @@ const FIELDS = {
   bcc: [],
   subject: "Changed",
   doc: { type: "doc" as const, content: [{ type: "paragraph" as const }] },
+  fromAddress: null,
 };
 
 const file = (data: number[], overrides: { contentId?: string | null; fileName?: string } = {}) => ({
@@ -2291,6 +2293,7 @@ function newProposal(overrides: Partial<NewProposal> = {}): NewProposal {
     added: [],
     contentSha256: "c".repeat(64),
     leftOut: 0,
+    templateName: null,
     expiresAt: later(24 * 60 * 60 * 1000),
     createdAt: T0,
     ...overrides,

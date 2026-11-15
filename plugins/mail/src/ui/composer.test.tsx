@@ -50,6 +50,7 @@ function draft(overrides: Partial<DraftView> = {}): DraftView {
     continues: false,
     import: null,
     origin: "owner",
+    fromAddress: null,
     ...overrides,
   };
 }
@@ -300,7 +301,7 @@ describe("Composer", () => {
           kind: "reply",
           to: [{ name: "Ada Example", address: "ada@example.org" }],
           subject: "Re: Plan",
-          import: { html: '<p>Original <img src="https://tracker.example.com/p.gif"></p>', into: "quote" },
+          import: { html: '<p>Original <img src="https://tracker.example.com/p.gif"></p>', into: "quote", stripSignature: false },
         }),
       },
       ports,
@@ -316,7 +317,7 @@ describe("Composer", () => {
   it("saves a continued draft's import as a load, not an edit: closing untouched writes no server copy", async () => {
     const ports = fakePorts();
     const { onClose } = mount(
-      { draft: draft({ subject: "Half written", serverCopy: "saved", import: { html: "<p>Draft body</p>", into: "body" } }) },
+      { draft: draft({ subject: "Half written", serverCopy: "saved", import: { html: "<p>Draft body</p>", into: "body", stripSignature: false } }) },
       ports,
     );
     await waitFor(() => expect(ports.save).toHaveBeenCalledTimes(1));
@@ -343,7 +344,7 @@ describe("Composer", () => {
     const ports = fakePorts();
     ports.save.mockResolvedValueOnce({ revision: 1, originalKept: true });
     const { onClose } = mount(
-      { draft: draft({ subject: "Half written", serverCopy: "saved", continues: true, import: { html: "<h1>Body</h1>", into: "body" } }) },
+      { draft: draft({ subject: "Half written", serverCopy: "saved", continues: true, import: { html: "<h1>Body</h1>", into: "body", stripSignature: false } }) },
       ports,
     );
     await screen.findByText(/The original draft stays on the server/);
@@ -378,7 +379,7 @@ describe("Composer", () => {
   it("says the original draft stays on the server", async () => {
     const ports = fakePorts();
     ports.save.mockResolvedValueOnce({ revision: 1, originalKept: true });
-    mount({ draft: draft({ import: { html: "<p>Draft body</p>", into: "body" } }) }, ports);
+    mount({ draft: draft({ import: { html: "<p>Draft body</p>", into: "body", stripSignature: false } }) }, ports);
     expect(await screen.findByText(/The original draft stays on the server/)).toBeTruthy();
     cleanup();
     mount({ warning: "original_kept" });

@@ -267,7 +267,7 @@ function action(host: Host, messageIds: string[], folder: string, kind: string) 
 
 /** A message_action result: one (account, source folder) group, queued with no error. */
 function movedGroup(accountId: string, folder: string, queued: number, destination: string) {
-  return { groups: [{ accountId, folder, queued, destination, error: null }] };
+  return { groups: [{ accountId, folder, queued, destination, error: null }], undoable: false };
 }
 
 async function listThreads(host: Host, folder: string, accountId = "acc_1"): Promise<ThreadSummary[]> {
@@ -1372,6 +1372,7 @@ describe("makosh-mail server: bulk actions", () => {
     });
 
     expect(result).toEqual({
+      undoable: false,
       groups: [
         { accountId: "acc_1", folder: "INBOX", queued: 2, destination: null, error: null },
         { accountId: "acc_2", folder: "INBOX", queued: 1, destination: null, error: null },
@@ -1418,6 +1419,7 @@ describe("makosh-mail server: bulk actions", () => {
     await expect(
       host.harness.behavior.callRpc("message_action", { messageIds: [a1, b1], role: "inbox", action: "spam" }),
     ).resolves.toEqual({
+      undoable: false,
       groups: [
         { accountId: "acc_1", folder: "INBOX", queued: 1, destination: "Junk", error: null },
         {
@@ -1491,6 +1493,7 @@ describe("makosh-mail server: bulk actions", () => {
     await expect(move([a2!], "INBOX")).rejects.toThrow("Already in INBOX");
     // One destination path for two accounts: each group checks its own account.
     await expect(move([a2!, b1!], "Deleted Messages")).resolves.toEqual({
+      undoable: false,
       groups: [
         { accountId: "acc_1", folder: "INBOX", queued: 1, destination: "Trash", error: null },
         {
@@ -1537,6 +1540,7 @@ describe("makosh-mail server: bulk actions", () => {
         action: "flag",
       }),
     ).resolves.toEqual({
+      undoable: false,
       groups: [{ accountId, folder: "INBOX", queued: 1, destination: null, error: null }],
     });
     const service = host.harness.behavior.runService("sync");

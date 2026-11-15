@@ -385,7 +385,7 @@ describe("continuing a foreign draft", () => {
     const { draft, warning } = await openDraft(h.deps, { draftMessageId: id });
     expect(warning).toBeNull();
     expect(draft).toMatchObject({ kind: "new", to: [addr("bob@example.com")], subject: "Half written", revision: 1 });
-    expect(draft.import).toEqual({ html: "<p>Draft text</p>", into: "body" });
+    expect(draft.import).toEqual({ html: "<p>Draft text</p>", into: "body", stripSignature: false });
     const record = h.store.getDraft(draft.id)!;
     expect(record.messageId).toBe("<foreign@example.org>");
     expect(record.serverCopy).toEqual({ folder: "Drafts", uidValidity: 7, uid: 41, revision: 1, size: 321 });

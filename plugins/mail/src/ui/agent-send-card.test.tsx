@@ -33,6 +33,10 @@ function view(overrides: Partial<ProposalView> = {}): ProposalView {
     attachments: [],
     leftOut: 0,
     expiresAt: "2026-11-16T10:00:00.000Z",
+    fromAlias: false,
+    signatureText: null,
+    templateName: null,
+    checks: [],
     ...overrides,
   };
 }

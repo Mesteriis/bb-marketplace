@@ -4,9 +4,12 @@ import { MAIL_CHANGED_CHANNEL, OUTBOX_CHANGED_CHANNEL, headerAddressInput, rpcSc
 import {
   accountSchema,
   draftViewSchema,
+  identityViewSchema,
   newAccountInputSchema,
   outboxRowSchema,
   outboxStateSchema,
+  presendIssueSchema,
+  proposalViewSchema,
   sendErrorKindSchema,
   smtpSecuritySchema,
   folderSchema,
@@ -55,6 +58,21 @@ const SLICE_3C_METHODS = [
   "translate_clear",
 ] as const;
 
+/** The 11 owner-only methods slice 3d adds. */
+const SLICE_3D_METHODS = [
+  "identities_list",
+  "identity_add",
+  "identity_update",
+  "identity_remove",
+  "identity_suggestions",
+  "identity_dismiss",
+  "templates_list",
+  "template_save",
+  "template_delete",
+  "compose_check",
+  "action_undo",
+] as const;
+
 /** Header-injection payloads every header field must refuse. */
 const LINE_BREAKS = ["x\r\nBcc: eve@example.net", "x\nBcc: eve@example.net", "x\rX", "x\u0000y"];
 
@@ -75,11 +93,12 @@ function keysOf(schema: z.ZodType): string[] {
 }
 
 describe("rpcSchemas", () => {
-  it("declares exactly the slice-1 methods plus the slice-2, 3a, 3b and 3c additions", () => {
+  it("declares exactly the slice-1 methods plus the slice-2, 3a, 3b, 3c and 3d additions", () => {
     expect(Object.keys(rpcSchemas).sort()).toEqual(
       [
         ...COMPOSE_METHODS,
         ...SLICE_3C_METHODS,
+        ...SLICE_3D_METHODS,
         "status_get",
         "accounts_test",
         "accounts_add",
@@ -214,10 +233,10 @@ describe("rpcSchemas", () => {
       error: null,
     };
     const parse = (output: unknown) => rpcSchemas.message_action.output.safeParse(output).success;
-    expect(parse({ groups: [group] })).toBe(true);
-    expect(parse({ groups: [{ ...group, destination: null, error: "Refused" }] })).toBe(true);
-    expect(parse({ groups: [{ ...group, queued: -1 }] })).toBe(false);
-    expect(parse({ groups: [{ ...group, error: undefined }] })).toBe(false);
+    expect(parse({ groups: [group], undoable: false })).toBe(true);
+    expect(parse({ groups: [{ ...group, destination: null, error: "Refused" }], undoable: true })).toBe(true);
+    expect(parse({ groups: [{ ...group, queued: -1 }], undoable: false })).toBe(false);
+    expect(parse({ groups: [{ ...group, error: undefined }], undoable: false })).toBe(false);
     expect(parse({ queued: 2, destination: "Trash" })).toBe(false);
   });
 
@@ -391,7 +410,8 @@ describe("slice-3b contract", () => {
 
   it("adds exactly 19 methods to the 17 before it", () => {
     expect(COMPOSE_METHODS).toHaveLength(19);
-    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3C_METHODS as readonly string[]).includes(m))).toHaveLength(36);
+    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS];
+    expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(36);
   });
 
   it("refuses empty and overlong ids in every new method", () => {
@@ -579,6 +599,7 @@ describe("slice-3b contract", () => {
       "unknown_after_data",
       "no_sent_folder",
       "append_failed",
+      "sender_refused",
     ]);
   });
 
@@ -615,8 +636,9 @@ describe("slice-3b contract", () => {
       serverCopy: "none",
       queued: false,
       continues: false,
-      import: { html: "<p>quoted</p>", into: "quote" },
+      import: { html: "<p>quoted</p>", into: "quote", stripSignature: false },
       origin: "owner",
+      fromAddress: null,
     };
     expect(draftViewSchema.safeParse(draft).success).toBe(true);
     expect(draftViewSchema.safeParse({ ...draft, import: null }).success).toBe(true);
@@ -697,7 +719,7 @@ describe("slice-3c contract", () => {
 
   it("adds exactly 8 methods to the 36 before it", () => {
     expect(SLICE_3C_METHODS).toHaveLength(8);
-    expect(Object.keys(rpcSchemas)).toHaveLength(44);
+    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3D_METHODS as readonly string[]).includes(m))).toHaveLength(44);
     expect(COMPOSE_METHODS).toHaveLength(19);
   });
 
@@ -793,6 +815,10 @@ describe("slice-3c contract", () => {
       attachments: [{ fileName: "plan.txt", mimeType: "text/plain", size: 10 }],
       leftOut: 0,
       expiresAt: "2026-11-16T10:00:00.000Z",
+      fromAlias: false,
+      signatureText: null,
+      templateName: null,
+      checks: [],
     };
     const ready = { state: "ready", view, viewToken: "A".repeat(43) };
     expect(rpcSchemas.proposal_view.output.safeParse(ready).success).toBe(true);
@@ -898,5 +924,190 @@ describe("slice-3c contract", () => {
       }).success,
     ).toBe(true);
     expect(keysOf(rpcSchemas.status_get.output)).toEqual(expect.arrayContaining(["agentPropose", "translate", "gateway"]));
+  });
+});
+
+describe("slice-3d contract", () => {
+  const parses = (method: keyof typeof rpcSchemas, input: unknown) =>
+    rpcSchemas[method].input.safeParse(input).success;
+  const outputs = (method: keyof typeof rpcSchemas, output: unknown) =>
+    rpcSchemas[method].output.safeParse(output).success;
+  const UUID = "6f1c2a52-3b5e-4f0a-9c1d-2e7b8a9c0d1e";
+  const DOC = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Invented" }] }] };
+  const identity = {
+    accountId: "acc_1",
+    address: "alias@example.org",
+    displayName: "Owner",
+    primary: false,
+    signature: null,
+    sendCheck: "pending",
+  };
+
+  it("adds exactly 11 methods to the 44 before it", () => {
+    expect(SLICE_3D_METHODS).toHaveLength(11);
+    expect(Object.keys(rpcSchemas)).toHaveLength(55);
+    expect(COMPOSE_METHODS).toHaveLength(19);
+    expect(SLICE_3C_METHODS).toHaveLength(8);
+  });
+
+  it("refuses empty and overlong ids in every new method", () => {
+    const address = "alias@example.org";
+    const idInputs: [keyof typeof rpcSchemas, Record<string, unknown>, string][] = [
+      ["identities_list", {}, "accountId"],
+      ["identity_add", { address }, "accountId"],
+      ["identity_update", { address }, "accountId"],
+      ["identity_remove", { address }, "accountId"],
+      ["identity_suggestions", {}, "accountId"],
+      ["identity_dismiss", { address }, "accountId"],
+      ["template_save", { name: "Thanks", doc: DOC }, "id"],
+      ["template_delete", {}, "id"],
+      ["compose_check", { baseRevision: 1 }, "draftId"],
+    ];
+    for (const [method, rest, key] of idInputs) {
+      expect(parses(method, { ...rest, [key]: "x" }), `${method} ${key}`).toBe(true);
+      expect(parses(method, { ...rest, [key]: "" }), `${method} ${key}`).toBe(false);
+      expect(parses(method, { ...rest, [key]: "x".repeat(257) }), `${method} ${key}`).toBe(false);
+    }
+    expect(parses("identities_list", { accountId: null })).toBe(true);
+    expect(parses("template_save", { name: "Thanks", doc: DOC })).toBe(true);
+    expect(parses("templates_list", {})).toBe(true);
+  });
+
+  it("takes a required uuid undoId on action_undo and an optional one on message_action", () => {
+    expect(parses("action_undo", { undoId: UUID })).toBe(true);
+    expect(parses("action_undo", {})).toBe(false);
+    expect(parses("action_undo", { undoId: "not-a-uuid" })).toBe(false);
+    const action = { messageIds: ["m"], folder: "INBOX", action: "archive" };
+    expect(parses("message_action", action)).toBe(true);
+    expect(parses("message_action", { ...action, undoId: UUID })).toBe(true);
+    expect(parses("message_action", { ...action, undoId: "x" })).toBe(false);
+    expect(outputs("message_action", { groups: [], undoable: true })).toBe(true);
+    expect(outputs("message_action", { groups: [] })).toBe(false);
+  });
+
+  it("refuses CR, LF and NUL in every new address and in compose_save's fromAddress", () => {
+    const save = {
+      draftId: "d_1",
+      baseRevision: 3,
+      accountId: "acc_1",
+      to: [],
+      cc: [],
+      bcc: [],
+      subject: "Invented",
+      doc: DOC,
+    };
+    expect(parses("compose_save", save)).toBe(true);
+    expect(parses("compose_save", { ...save, fromAddress: null })).toBe(true);
+    expect(parses("compose_save", { ...save, fromAddress: "alias@example.org" })).toBe(true);
+    for (const method of ["identity_add", "identity_update", "identity_remove", "identity_dismiss"] as const) {
+      expect(parses(method, { accountId: "a", address: "alias@example.org" }), method).toBe(true);
+      expect(parses(method, { accountId: "a", address: "a@" }), method).toBe(false);
+    }
+    for (const bad of LINE_BREAKS) {
+      expect(parses("compose_save", { ...save, fromAddress: `${bad}@example.org` })).toBe(false);
+      for (const method of ["identity_add", "identity_update", "identity_remove", "identity_dismiss"] as const) {
+        expect(parses(method, { accountId: "a", address: `${bad}@example.org` }), method).toBe(false);
+      }
+    }
+  });
+
+  it("bounds display names to one line of 200 characters and template names to one line of 80", () => {
+    const add = (displayName: unknown) => parses("identity_add", { accountId: "a", address: "x@example.org", displayName });
+    expect(add("Owner")).toBe(true);
+    expect(add("n".repeat(200))).toBe(true);
+    expect(add("n".repeat(201))).toBe(false);
+    const update = (patch: Record<string, unknown>) =>
+      parses("identity_update", { accountId: "a", address: "x@example.org", ...patch });
+    expect(update({ displayName: null })).toBe(true);
+    expect(update({ displayName: "n".repeat(201) })).toBe(false);
+    expect(update({ signature: DOC })).toBe(true);
+    expect(update({ signature: null })).toBe(true);
+    const name = (value: string) => parses("template_save", { name: value, doc: DOC });
+    expect(name("t".repeat(80))).toBe(true);
+    expect(name("t".repeat(81))).toBe(false);
+    expect(name("")).toBe(false);
+    for (const bad of LINE_BREAKS) {
+      expect(add(bad)).toBe(false);
+      expect(update({ displayName: bad })).toBe(false);
+      expect(name(bad)).toBe(false);
+    }
+  });
+
+  it("shapes the identity, template, check and undo outputs", () => {
+    expect(outputs("identities_list", { identities: [identity] })).toBe(true);
+    expect(outputs("identity_add", { ...identity, signature: DOC })).toBe(true);
+    expect(outputs("identity_add", { ...identity, sendCheck: "maybe" })).toBe(false);
+    expect(outputs("identity_remove", { ok: true })).toBe(true);
+    expect(
+      outputs("identity_suggestions", {
+        suggestions: [{ address: "other@example.org", count: 3, lastDate: "2026-11-15T10:00:00.000Z" }],
+      }),
+    ).toBe(true);
+    expect(
+      outputs("templates_list", {
+        templates: [{ id: "t_1", name: "Thanks", doc: DOC, updatedAt: "2026-11-15T10:00:00.000Z" }],
+      }),
+    ).toBe(true);
+    expect(outputs("template_save", { id: "t_1" })).toBe(true);
+    expect(outputs("compose_check", { issues: [{ kind: "empty_subject" }] })).toBe(true);
+    const undo = {
+      outcome: "done",
+      restored: 2,
+      skipped: [{ reason: "moved_elsewhere", count: 1 }],
+      failed: 0,
+      groups: [{ accountId: "acc_1", folder: "INBOX", queued: 2, destination: null, error: null }],
+    };
+    expect(outputs("action_undo", undo)).toBe(true);
+    expect(outputs("action_undo", { ...undo, outcome: "maybe" })).toBe(false);
+    expect(outputs("action_undo", { ...undo, skipped: [{ reason: "lost", count: 1 }] })).toBe(false);
+    for (const reason of ["moved_elsewhere", "gone", "folder_gone", "not_synced"]) {
+      expect(outputs("action_undo", { ...undo, skipped: [{ reason, count: 1 }] })).toBe(true);
+    }
+  });
+
+  it("round-trips each pre-send issue kind", () => {
+    const issues = [
+      { kind: "attachment_mentioned", phrase: "attached" },
+      { kind: "empty_subject" },
+      { kind: "outside_conversation", addresses: ["x@example.org"] },
+      { kind: "new_recipients", addresses: ["y@example.org"] },
+    ];
+    for (const issue of issues) expect(presendIssueSchema.parse(issue)).toEqual(issue);
+    expect(presendIssueSchema.safeParse({ kind: "attachment_mentioned" }).success).toBe(false);
+    expect(presendIssueSchema.safeParse({ kind: "other" }).success).toBe(false);
+  });
+
+  it("parses sender_refused in an outbox row", () => {
+    const row = {
+      id: UUID,
+      accountId: "acc_1",
+      subject: "Invented",
+      state: "failed",
+      errorKind: "sender_refused",
+      rejected: [],
+      sendAfter: "2026-11-15T10:00:10.000Z",
+      attempts: 1,
+      origin: "owner",
+    };
+    expect(outboxRowSchema.safeParse(row).success).toBe(true);
+  });
+
+  it("adds fromAddress and stripSignature to the draft view, and the card's 3d fields", () => {
+    expect(Object.keys(draftViewSchema.shape)).toContain("fromAddress");
+    expect(keysOf(draftViewSchema)).toContain("stripSignature");
+    expect(keysOf(identityViewSchema)).toEqual(
+      expect.arrayContaining(["accountId", "address", "displayName", "primary", "signature", "sendCheck"]),
+    );
+    expect(Object.keys(proposalViewSchema.shape)).toEqual(
+      expect.arrayContaining(["fromAlias", "signatureText", "templateName", "checks"]),
+    );
+  });
+
+  it("puts no credential-like key in any new output", () => {
+    for (const method of SLICE_3D_METHODS) {
+      const keys = keysOf(rpcSchemas[method].output);
+      expect(keys.length, method).toBeGreaterThan(0);
+      expect(keys.filter((key) => SECRET_KEY.test(key)), method).toEqual([]);
+    }
   });
 });

@@ -38,6 +38,10 @@ import type {
 import type { OutboxChangedPayload } from "./contract.ts";
 import type { ProposalCapRow, ProposalState } from "./agent-propose.ts";
 import type { AccountCorrespondence, Contact } from "./contacts.ts";
+import type { ComposeDoc } from "./compose-doc.ts";
+import type { SignatureDoc } from "./compose-signature.ts";
+import type { AliasRow, InboundRow, SendCheck } from "./identities.ts";
+import type { UndoRow } from "./undo.ts";
 
 export interface ImapConfig {
   host: string;
@@ -103,6 +107,18 @@ export interface FolderSession {
     uids: number[],
     destination: string,
   ): Promise<{ moved: Map<number, number> | null }>;
+  /**
+   * UID COPY of the uids to `destination` (slice 3d: only undo of an
+   * archive on Gmail uses it; it adds and removes nothing). `copied` maps
+   * source uid to destination uid (COPYUID), or is null when the server
+   * returned none. Throws like moveMessages: "CopyFailed" when the server
+   * refuses, "ConnectionLost" when the connection dropped, "ReadOnly" on a
+   * read-only session.
+   */
+  copyMessages(
+    uids: number[],
+    destination: string,
+  ): Promise<{ copied: Map<number, number> | null }>;
   /** What the server advertised: UIDPLUS, and X-GM-EXT-1 (Gmail). */
   capabilities(): { uidplus: boolean; gmail: boolean };
   /**
@@ -151,15 +167,24 @@ export interface SendResult {
   rejected: string[];
 }
 
-/** Transports throw this; `afterData` says whether DATA may have been accepted. */
+/** The SMTP command a refusal answered (fixed strings only, never the reply text). */
+export type SmtpCommand = "MAIL FROM" | "RCPT TO" | "DATA";
+
+/**
+ * Transports throw this; `afterData` says whether DATA may have been
+ * accepted; `command` is the SMTP command the server refused, when known
+ * (slice 3d: the core decides `sender_refused` from it).
+ */
 export class SendError extends Error {
   readonly kind: SendErrorKind;
   readonly afterData: boolean;
-  constructor(kind: SendErrorKind, afterData: boolean) {
+  readonly command: SmtpCommand | null;
+  constructor(kind: SendErrorKind, afterData: boolean, command: SmtpCommand | null = null) {
     super(`Send failed: ${kind}`);
     this.name = "SendError";
     this.kind = kind;
     this.afterData = afterData;
+    this.command = command;
   }
 }
 
@@ -544,7 +569,11 @@ export interface MailStore {
   recoverProposalsOnStart(nowIso: string): { expired: number; queued: number };
   /** Deletes settled proposals last updated before `beforeIso`; returns how many. */
   purgeProposals(beforeIso: string): number;
-  /** Of these addresses, the ones (lowercased) in To or Cc of a stored message in a Sent-role folder. */
+  /**
+   * Of these addresses, the ones (lowercased) the owner sent to: in To or Cc
+   * of a stored message in a Sent-role folder, or in `sent_recipients`
+   * (every accepted envelope recipient, slice 3d).
+   */
   addressesSentTo(addresses: string[]): Set<string>;
   /**
    * People the owner corresponds with whose name, address or exchanged mail
@@ -559,7 +588,76 @@ export interface MailStore {
   putTranslation(row: TranslationRecord): void;
   /** Deletes every cached translation; returns how many. */
   clearTranslations(): number;
+
+  // ---- Sending polish (slice 3d) ----
+
+  /** Alias rows (active and dismissed) of the account, or of every account when null, in creation order. */
+  listIdentities(accountId: string | null): AliasRow[];
+  /**
+   * Adds or updates an alias by (account, address), one transaction: a
+   * dismissed row becomes active, an active one takes the display name.
+   * Throws ComposeError "conflict" when the address is another account's
+   * own address, username or active alias, the account's own address or
+   * username, or when the account already has IDENTITIES_MAX_PER_ACCOUNT
+   * active aliases.
+   */
+  upsertIdentity(input: { accountId: string; address: string; displayName: string | null }, nowIso: string): AliasRow;
+  /** An active alias's name or signature (an absent field is left alone); null when there is no such alias. */
+  updateIdentity(
+    accountId: string,
+    address: string,
+    patch: { displayName?: string | null; signature?: SignatureDoc | null },
+    nowIso: string,
+  ): AliasRow | null;
+  /** The own address's signature; false when the account is unknown. */
+  setAccountSignature(accountId: string, signature: SignatureDoc | null): boolean;
+  /** Deletes an active alias row; false when there is none. */
+  removeIdentity(accountId: string, address: string): boolean;
+  /** Stores a dismissed suggestion (an existing active row is left alone). */
+  dismissIdentity(accountId: string, address: string, nowIso: string): void;
+  /** Sets an alias's send check; `checkMessageId` is the send whose Sent copy decides `pending`. */
+  setSendCheck(accountId: string, address: string, check: SendCheck, checkMessageId: string | null, nowIso: string): void;
+  /** Resolves `pending` checks of the account from synced Sent-role rows (resolveSendCheck); returns how many changed. */
+  resolveSendChecks(accountId: string, nowIso: string): number;
+  /** Recipients of the account's inbound rows outside Sent, Drafts, Spam and Trash, `bulk IS NOT 1`. */
+  inboundAddressRows(accountId: string): InboundRow[];
+  /**
+   * From, To, Cc and Reply-To (lower case) of every stored message of the
+   * message's thread; null when the message is not stored.
+   */
+  conversationAddresses(messageId: string): Set<string> | null;
+  /** The message's Delivered-To / X-Original-To addresses; empty when unknown. */
+  deliveredToOf(messageId: string): string[];
+  /** Where each stored id is now; unknown ids are left out. */
+  undoRows(ids: string[]): UndoRow[];
+  /**
+   * Compare-and-swap: clears `move_pending` only on rows still in `folder`
+   * whose pending destination is still `destination`; returns the ids cleared.
+   */
+  cancelMove(ids: string[], folder: string, destination: string): string[];
+  /** Every template, by name key. */
+  listTemplates(): TemplateRecord[];
+  /** Insert (id null) or update by id; `conflict` when another template has the name key. */
+  saveTemplate(
+    input: { id: string | null; name: string; nameKey: string; doc: ComposeDoc },
+    newId: string,
+    nowIso: string,
+  ): { id: string } | { conflict: true };
+  deleteTemplate(id: string): boolean;
+  getTemplateByKey(nameKey: string): TemplateRecord | null;
 }
+
+/** A stored template (slice 3d). Global, not per account. */
+export type TemplateRecord = {
+  id: string;
+  name: string;
+  nameKey: string;
+  doc: ComposeDoc;
+  /** ISO 8601. */
+  createdAt: string;
+  /** ISO 8601. */
+  updatedAt: string;
+};
 
 /** What creating an agent proposal stores. Never the content itself: that is the hidden draft. */
 export type NewProposal = {
@@ -575,6 +673,8 @@ export type NewProposal = {
   contentSha256: string;
   /** Forwarded attachments left out over the size cap (the card lists them). */
   leftOut: number;
+  /** The template the agent named (slice 3d), for the card's label only. */
+  templateName: string | null;
   /** ISO 8601. */
   expiresAt: string;
   /** ISO 8601. */
