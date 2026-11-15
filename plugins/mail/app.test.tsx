@@ -2023,6 +2023,40 @@ describe("Hotkey auto-repeat and targets", () => {
     expect(actionInputs(slot).map((input) => input.messageIds)).toEqual([["a-1", "a-2"]]);
   });
 
+  it("a quick second # after the selection went does not delete the cursor row", async () => {
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const slot = render(rowsRpc());
+      await slot.findByText("Tickets");
+      fireEvent.click(slot.getByRole("checkbox", { name: "Select Quarterly plan" }));
+      pageRoot(slot).focus();
+      key(J);
+      key(J);
+      expect(document.activeElement).toBe(rowButton(slot, /Lunch/));
+
+      key(HASH);
+      await waitFor(() => expect(slot.queryByText("Quarterly plan")).toBeNull());
+      now += 150;
+      // A Cyrillic layout types № on Shift+3; e is у.
+      key({ key: "№", code: "Digit3", shiftKey: true });
+      key({ key: "у", code: "KeyE" });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(actionInputs(slot).map((input) => input.messageIds)).toEqual([["a-1", "a-2"]]);
+
+      // Once the taps stop for the whole window, # acts on the cursor row.
+      now += 400;
+      key(HASH);
+      await waitFor(() => expect(actionInputs(slot)).toHaveLength(2));
+      expect(actionInputs(slot).map((input) => [input.action, input.messageIds])).toEqual([
+        ["delete", ["a-1", "a-2"]],
+        ["delete", ["b-1"]],
+      ]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("a held s flags once", async () => {
     const slot = render(rowsRpc());
     await slot.findByText("Tickets");

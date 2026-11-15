@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { isTypingTarget, matchShortcut, type KeyLike } from "./shortcuts.ts";
+import {
+  createDestructiveGuard,
+  DESTRUCTIVE_GUARD_MS,
+  isTypingTarget,
+  matchShortcut,
+  type KeyLike,
+  type ShortcutCommand,
+} from "./shortcuts.ts";
 
 function key(overrides: Partial<KeyLike>): KeyLike {
   return {
@@ -133,5 +140,101 @@ describe("isTypingTarget", () => {
     expect(isTypingTarget(null)).toBe(false);
     editable.remove();
     dialog.remove();
+  });
+});
+
+describe("createDestructiveGuard", () => {
+  function clock() {
+    let t = 1_000;
+    return { now: () => t, advance: (ms: number) => (t += ms) };
+  }
+  /** A keydown on a Cyrillic layout, matched by its physical key. */
+  function press(code: string, keyChar: string, shiftKey = false): ShortcutCommand {
+    const match = matchShortcut(key({ key: keyChar, code, shiftKey }), false);
+    if (match === null || match.kind === "g") throw new Error(`no command for ${code}`);
+    return match;
+  }
+
+  it("lets a second tap of e, #, ! or v within the window do nothing", () => {
+    expect(DESTRUCTIVE_GUARD_MS).toBe(400);
+    for (const [code, char, shift] of [
+      ["KeyE", "у", false],
+      ["Digit3", "№", true],
+      ["Digit1", "!", true],
+      ["KeyV", "м", false],
+    ] as const) {
+      const c = clock();
+      const guard = createDestructiveGuard(c.now);
+      const command = press(code, char, shift);
+      expect(guard.admit(command)).toBe(true);
+      guard.ran();
+      c.advance(150);
+      expect(guard.admit(command)).toBe(false);
+    }
+  });
+
+  it("blocks any destructive key after another one ran, not only the same key", () => {
+    const c = clock();
+    const guard = createDestructiveGuard(c.now);
+    expect(guard.admit(press("KeyE", "у"))).toBe(true);
+    guard.ran();
+    c.advance(100);
+    expect(guard.admit(press("Digit3", "№", true))).toBe(false);
+  });
+
+  it("acts again once the window has passed", () => {
+    const c = clock();
+    const guard = createDestructiveGuard(c.now);
+    guard.ran();
+    c.advance(DESTRUCTIVE_GUARD_MS);
+    expect(guard.admit(press("Digit3", "№", true))).toBe(true);
+  });
+
+  it("keeps a run of quick taps quiet until the taps stop", () => {
+    const c = clock();
+    const guard = createDestructiveGuard(c.now);
+    guard.ran();
+    c.advance(300);
+    expect(guard.admit(press("KeyE", "у"))).toBe(false);
+    c.advance(300);
+    expect(guard.admit(press("KeyE", "у"))).toBe(false);
+    c.advance(DESTRUCTIVE_GUARD_MS);
+    expect(guard.admit(press("KeyE", "у"))).toBe(true);
+  });
+
+  it("never holds back j, k, r, a, f, c, x, s or ?", () => {
+    const c = clock();
+    const guard = createDestructiveGuard(c.now);
+    guard.ran();
+    c.advance(10);
+    for (const [code, char, shift] of [
+      ["KeyJ", "о", false],
+      ["KeyK", "л", false],
+      ["KeyR", "к", false],
+      ["KeyA", "ф", false],
+      ["KeyF", "а", false],
+      ["KeyC", "с", false],
+      ["KeyX", "ч", false],
+      ["KeyS", "ы", false],
+      ["Slash", ",", true],
+    ] as const) {
+      expect(guard.admit(press(code, char, shift))).toBe(true);
+    }
+  });
+
+  it("ends the window on a non-destructive key: j then e is a choice", () => {
+    const c = clock();
+    const guard = createDestructiveGuard(c.now);
+    guard.ran();
+    c.advance(50);
+    expect(guard.admit(press("KeyJ", "о"))).toBe(true);
+    c.advance(50);
+    expect(guard.admit(press("KeyE", "у"))).toBe(true);
+  });
+
+  it("does not block the first destructive key when nothing ran yet", () => {
+    const guard = createDestructiveGuard(clock().now);
+    expect(guard.admit({ kind: "delete" })).toBe(true);
+    expect(guard.admit({ kind: "delete" })).toBe(true);
   });
 });
