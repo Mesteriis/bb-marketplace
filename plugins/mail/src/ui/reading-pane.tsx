@@ -144,6 +144,15 @@ function MessageBodyView({
   );
 }
 
+/** A short type for an attachment chip: the file's extension, else the MIME subtype. */
+export function attachmentType(attachment: Pick<AttachmentMeta, "filename" | "mimeType">): string {
+  const extension = attachment.filename?.match(/\.([A-Za-z0-9]{1,6})$/)?.[1];
+  if (extension !== undefined) return extension.toUpperCase();
+  const subtype = attachment.mimeType.split(";")[0]?.split("/")[1]?.trim() ?? "";
+  const short = subtype.replace(/^(x-|vnd\.)/i, "").split(/[.+]/)[0] ?? "";
+  return (short || "file").slice(0, 10).toUpperCase();
+}
+
 function AttachmentButton({
   attachment,
   onDownload,
@@ -152,16 +161,18 @@ function AttachmentButton({
   onDownload: () => void;
 }) {
   const name = attachment.filename ?? "Unnamed attachment";
+  const type = attachmentType(attachment);
   return (
     <li>
       <button
         type="button"
         onClick={onDownload}
-        aria-label={`Download ${name}, ${formatSize(attachment.size)}`}
+        aria-label={`Download ${name}, ${type}, ${formatSize(attachment.size)}`}
         className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         <Icon name="Paperclip" className="size-3.5" aria-hidden />
         <span className="max-w-48 truncate text-foreground">{name}</span>
+        <span>{type}</span>
         <span>{formatSize(attachment.size)}</span>
         <Icon name="Download" fallback="Paperclip" className="size-3.5" aria-hidden />
       </button>

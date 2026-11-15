@@ -46,9 +46,13 @@ export interface DetailsPanelProps {
   onClose: () => void;
   /** Resolves true once the clipboard holds the text. */
   onCopy: (text: string) => Promise<boolean>;
+  /** Where focus goes when the panel closes (it has no trigger to return to). */
+  onCloseAutoFocus?: (event: Event) => void;
+  /** The compact (drawer) layout's close hook. */
+  onAfterCloseAutoFocus?: () => void;
 }
 
-export function DetailsPanel({ details, onClose, onCopy }: DetailsPanelProps) {
+export function DetailsPanel({ details, onClose, onCopy, onCloseAutoFocus, onAfterCloseAutoFocus }: DetailsPanelProps) {
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
   const source = details?.status === "ready" ? details.source : null;
 
@@ -67,7 +71,10 @@ export function DetailsPanel({ details, onClose, onCopy }: DetailsPanelProps) {
         }
       }}
     >
-      <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto" onEscapeKeyDown={stopEscape}>
+      <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto" onEscapeKeyDown={stopEscape}
+        onCloseAutoFocus={onCloseAutoFocus}
+        onAfterCloseAutoFocus={onAfterCloseAutoFocus}
+      >
         <DialogHeader>
           <DialogTitle>Message details</DialogTitle>
           <DialogDescription>

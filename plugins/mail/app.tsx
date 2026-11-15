@@ -132,16 +132,57 @@ async function inPool<T>(items: readonly T[], limit: number, work: (item: T) => 
 /** A message the action touches, with where it is. */
 type ActionItem = { id: string; accountId: string; folder: string; threadId: string };
 
+/** The view an action was started in, kept for the whole action. */
+type ViewContext = { view: MailView; folders: Folder[] | null };
+
+/** The folder thread_get prefers for a conversation of `accountId` in a view. */
+function folderIn({ view, folders }: ViewContext, accountId: string | null): string {
+  if (view.kind === "folder") return view.path;
+  const matching = roleFolders(view.role, (folders ?? []).filter((f) => f.accountId === accountId));
+  return (matching.find((f) => f.selectable) ?? matching[0])?.path ?? DEFAULT_FOLDER_PATH;
+}
+
+/** Whether a message's copy sits in the folder (or role) of a view. */
+function inViewOf({ view, folders }: ViewContext, message: MessageHeader): boolean {
+  return viewPaths(view, folders ?? [], message.accountId).includes(message.folder);
+}
+
 /**
- * Saves a ticket's file through BB's own download path; a plain
- * `<a download>` click when this BB has no saveFile.
+ * Resolution 4 for a batch: Flag flags the newest message of each
+ * conversation in the view; Unflag unflags every flagged one. Other actions
+ * take every message in the view.
  */
+function flagChoice(
+  items: readonly ActionItem[],
+  details: ReadonlyMap<string, ThreadDetail>,
+  action: MessageAction,
+  ctx: ViewContext,
+): ActionItem[] {
+  if (action !== "flag" && action !== "unflag") return [...items];
+  const chosen = new Set<string>();
+  for (const detail of details.values()) {
+    const shown = detail.messages.filter((m) => inViewOf(ctx, m));
+    if (action === "flag") {
+      const newest = shown.at(-1);
+      if (newest !== undefined) chosen.add(newest.id);
+    } else {
+      for (const m of shown) if (m.isFlagged) chosen.add(m.id);
+    }
+  }
+  return items.filter((item) => chosen.has(item.id));
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/** Saves a ticket's file through BB's own download path; "failed" when it could not start. */
 async function saveTicket(ticket: { url: string; fileName: string }): Promise<"started" | "failed"> {
   try {
     return await experimental_saveFile({ fileName: ticket.fileName, url: ticket.url });
   } catch {
-    anchorDownload(ticket);
-    return "started";
+    // This BB has no saveFile.
+    return "failed";
   }
 }
 
@@ -245,6 +286,8 @@ function MailPanel() {
   const openAccount = useRef<string | null>(null);
   const requests = useRef({ list: 0, search: 0, thread: 0, folders: 0, details: 0 });
   const pendingRef = useRef(false);
+  /** Stars being changed by the owner: a list refresh meanwhile keeps these values. */
+  const flagIntents = useRef(new Map<string, boolean>());
   const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusLoaded = useRef(false);
 
@@ -286,8 +329,12 @@ function MailPanel() {
           threads.push(...page.threads);
           cursor = page.nextCursor;
         } while (cursor !== null && threads.length < wanted);
+        const shown = threads.map((t) => {
+          const intent = flagIntents.current.get(t.id);
+          return intent === undefined ? t : { ...t, flagged: intent };
+        });
         setList((prev) => ({
-          threads: mode === "more" ? [...prev.threads, ...threads] : threads,
+          threads: mode === "more" ? [...prev.threads, ...shown] : shown,
           nextCursor: cursor,
           loading: false,
           loadingMore: false,
@@ -429,21 +476,6 @@ function MailPanel() {
     [expandMessage, markOpened],
   );
 
-  /** The folder thread_get prefers for a conversation of `accountId` in the current view. */
-  const folderFor = useCallback((accountId: string | null): string => {
-    const { view: current, folders: known } = latest.current;
-    if (current.kind === "folder") return current.path;
-    const own = (known ?? []).filter((f) => f.accountId === accountId);
-    const matching = roleFolders(current.role, own);
-    return (matching.find((f) => f.selectable) ?? matching[0])?.path ?? DEFAULT_FOLDER_PATH;
-  }, []);
-
-  /** Whether a message's copy sits in the folder (or role) being viewed. */
-  const inView = useCallback((message: MessageHeader): boolean => {
-    const { view: current, folders: known } = latest.current;
-    return viewPaths(current, known ?? [], message.accountId).includes(message.folder);
-  }, []);
-
   /**
    * Loads a conversation; on first open, expands `focusId` or the newest message
    * and marks every unread message of it read (a mail client shows a conversation
@@ -453,7 +485,7 @@ function MailPanel() {
     async (threadId: string, open: { focusId: string | null } | null) => {
       const token = ++requests.current.thread;
       try {
-        const detail = await rpc.call("thread_get", { threadId, folder: folderFor(openAccount.current) });
+        const detail = await rpc.call("thread_get", { threadId, folder: folderIn(latest.current, openAccount.current) });
         if (token !== requests.current.thread) return;
         setReading((prev) => ({ ...prev, detail, loading: false, error: null }));
         if (open !== null) {
@@ -480,7 +512,7 @@ function MailPanel() {
         setReading((prev) => ({ ...prev, loading: false, error: messageOf(error) }));
       }
     },
-    [expandMessage, folderFor, markOpened, rpc],
+    [expandMessage, markOpened, rpc],
   );
 
   useEffect(() => {
@@ -574,7 +606,7 @@ function MailPanel() {
 
   /** The messages of each conversation in the view (the open one's from the pane). */
   const collect = useCallback(
-    async (threadIds: readonly string[], snapshot: ReadingState) => {
+    async (threadIds: readonly string[], snapshot: ReadingState, ctx: ViewContext) => {
       const items: ActionItem[] = [];
       const failures = new Map<string, string>();
       const details = new Map<string, ThreadDetail>();
@@ -586,7 +618,7 @@ function MailPanel() {
           const detail =
             snapshot.detail !== null && snapshot.detail.thread.id === threadId
               ? snapshot.detail
-              : await rpc.call("thread_get", { threadId, folder: folderFor(accountOf(threadId)) });
+              : await rpc.call("thread_get", { threadId, folder: folderIn(ctx, accountOf(threadId)) });
           details.set(threadId, detail);
         } catch (error) {
           failures.set(threadId, messageOf(error));
@@ -595,26 +627,31 @@ function MailPanel() {
       // In the order the owner sees, so chunks and calls are predictable.
       for (const threadId of threadIds) {
         for (const message of details.get(threadId)?.messages ?? []) {
-          if (inView(message)) {
+          if (inViewOf(ctx, message)) {
             items.push({ id: message.id, accountId: message.accountId, folder: message.folder, threadId });
           }
         }
       }
       return { items, failures, details };
     },
-    [folderFor, inView, rpc],
+    [rpc],
   );
 
   /**
    * Sends `items` in calls of at most ACTION_CHUNK ids, one after another. A
    * refusal of the whole call (thrown) fails every conversation in it; a
    * group's error fails the conversations with messages in that group.
+   * `shortfall` counts ids the server neither queued nor refused.
    */
   const sendAction = useCallback(
-    async (items: readonly ActionItem[], action: MessageAction, destination?: string) => {
+    async (items: readonly ActionItem[], action: MessageAction, ctx: ViewContext, destination?: string) => {
       const failed = new Map<string, string>();
       const destinations = new Set<string>();
-      const source = sourceOf(latest.current.view);
+      let shortfall = 0;
+      const source = sourceOf(ctx.view);
+      const fail = (item: ActionItem, error: string) => {
+        if (!failed.has(item.threadId)) failed.set(item.threadId, error);
+      };
       for (let start = 0; start < items.length; start += ACTION_CHUNK) {
         const chunk = items.slice(start, start + ACTION_CHUNK);
         try {
@@ -624,25 +661,29 @@ function MailPanel() {
             ...source,
             ...(destination !== undefined ? { destination } : {}),
           });
+          if (groups.length === 0) {
+            for (const item of chunk) fail(item, "Nothing was changed");
+            continue;
+          }
+          let accounted = 0;
           for (const group of groups) {
+            const members = chunk.filter(
+              (item) => item.accountId === group.accountId && item.folder === group.folder,
+            );
             if (group.error === null) {
+              accounted += group.queued;
               if (group.destination !== null) destinations.add(group.destination);
               continue;
             }
-            for (const item of chunk) {
-              if (item.accountId === group.accountId && item.folder === group.folder) {
-                if (!failed.has(item.threadId)) failed.set(item.threadId, group.error);
-              }
-            }
+            accounted += members.length;
+            for (const item of members) fail(item, group.error);
           }
-          if (groups.length === 0) {
-            for (const item of chunk) if (!failed.has(item.threadId)) failed.set(item.threadId, "Nothing was changed");
-          }
+          shortfall += Math.max(0, chunk.length - accounted);
         } catch (error) {
-          for (const item of chunk) if (!failed.has(item.threadId)) failed.set(item.threadId, messageOf(error));
+          for (const item of chunk) fail(item, messageOf(error));
         }
       }
-      return { failed, destinations };
+      return { failed, destinations, shortfall };
     },
     [rpc],
   );
@@ -658,17 +699,26 @@ function MailPanel() {
       pendingRef.current = true;
       setActionPending(true);
       const snapshot = latest.current.reading;
+      // The view at the start: a folder switch meanwhile must not retarget the action.
+      const ctx: ViewContext = { view: latest.current.view, folders: latest.current.folders };
       const moving = isRoleMoveAction(action) || action === "move";
       // Mark unread goes back to the list first, so nothing marks the messages read again.
       if (action === "mark_unread" && snapshot.threadId !== null && threadIds.includes(snapshot.threadId)) {
         closeThread();
       }
       try {
-        const { items, failures } = await collect(threadIds, snapshot);
-        const { failed, destinations } = await sendAction(items, action, destination);
-        for (const [threadId, error] of failures) failed.set(threadId, error);
-        const done = new Set(threadIds.filter((id) => !failed.has(id)));
+        const collected = await collect(threadIds, snapshot, ctx);
+        const items = flagChoice(collected.items, collected.details, action, ctx);
+        const { failed, destinations, shortfall } = await sendAction(items, action, ctx, destination);
+        for (const [threadId, error] of collected.failures) failed.set(threadId, error);
         for (const error of new Set(failed.values())) toast.error(error);
+        // Nothing of these in the view (or nothing to flag): not done, so they stay selected.
+        const empty = threadIds.filter((id) => !failed.has(id) && !items.some((item) => item.threadId === id));
+        if (empty.length > 0) {
+          toast.error(`${plural(empty.length, "conversation", "conversations")} had nothing to change here`);
+        }
+        if (shortfall > 0) toast.error(`${plural(shortfall, "message", "messages")} had nothing to change here`);
+        const done = new Set(threadIds.filter((id) => !failed.has(id) && !empty.includes(id)));
         if (moving && done.size > 0 && destinations.size > 0) {
           toast.success(`Moved to ${[...destinations].join(", ")}`);
         }
@@ -741,19 +791,23 @@ function MailPanel() {
       const flaggedBefore =
         currentList.threads.find((t) => t.id === threadId)?.flagged ??
         (snapshot.detail?.thread.id === threadId ? snapshot.detail.thread.flagged : null);
-      if (flaggedBefore === null) return;
+      if (flaggedBefore === null || flagIntents.current.has(threadId)) return;
+      const ctx: ViewContext = { view: latest.current.view, folders: latest.current.folders };
+      // While this runs, a list refresh keeps showing the new star.
+      flagIntents.current.set(threadId, !flaggedBefore);
       setThreadFlagged(threadId, !flaggedBefore);
       try {
-        const { items, failures, details } = await collect([threadId], snapshot);
+        const { items, failures, details } = await collect([threadId], snapshot, ctx);
         const failure = failures.get(threadId);
         if (failure !== undefined) throw new Error(failure);
-        const messages = details.get(threadId)?.messages.filter(inView) ?? [];
-        const chosenIds = new Set(
-          flaggedBefore ? messages.filter((m) => m.isFlagged).map((m) => m.id) : [messages.at(-1)?.id],
-        );
-        const targets = items.filter((item) => chosenIds.has(item.id));
-        if (targets.length === 0) return;
-        const { failed } = await sendAction(targets, flaggedBefore ? "unflag" : "flag");
+        const action = flaggedBefore ? "unflag" : "flag";
+        const targets = flagChoice(items, details, action, ctx);
+        if (targets.length === 0) {
+          setThreadFlagged(threadId, flaggedBefore);
+          return;
+        }
+        const chosenIds = new Set(targets.map((item) => item.id));
+        const { failed } = await sendAction(targets, action, ctx);
         const error = failed.get(threadId);
         if (error !== undefined) throw new Error(error);
         setReading((prev) =>
@@ -772,9 +826,11 @@ function MailPanel() {
       } catch (error) {
         setThreadFlagged(threadId, flaggedBefore);
         toast.error(messageOf(error));
+      } finally {
+        flagIntents.current.delete(threadId);
       }
     },
-    [collect, inView, sendAction, setThreadFlagged],
+    [collect, sendAction, setThreadFlagged],
   );
 
   /** The star of one message in the reading pane: that message only, wherever its copy is. */

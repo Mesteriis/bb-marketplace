@@ -292,13 +292,80 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const markers = accountMarkers(status.accounts);
   const marker = (accountId: string) => (props.unified ? (markers.get(accountId) ?? null) : null);
 
+  /** The hotkeys listen on the page root: focus that fell out of it (to body) silences them. */
+  const focusLost = () => {
+    const active = document.activeElement;
+    return active === null || active === document.body || !active.isConnected;
+  };
+  const focusRowElement = (id: string): boolean => {
+    const rows = rootRef.current?.querySelectorAll<HTMLElement>("[data-row-key]");
+    for (const element of rows === undefined ? [] : Array.from(rows)) {
+      if (element.dataset.rowKey === id) {
+        element.focus({ preventScroll: true });
+        element.scrollIntoView?.({ block: "nearest" });
+        return true;
+      }
+    }
+    return false;
+  };
+  const focusRoot = () => rootRef.current?.focus({ preventScroll: true });
+
   // The page takes focus when it opens with nothing else focused, so the hotkeys work at once.
   useEffect(() => {
-    const active = document.activeElement;
-    if (active === null || active === document.body) rootRef.current?.focus({ preventScroll: true });
+    if (focusLost()) focusRoot();
   }, []);
 
+  /** Where focus goes back to when a plugin dialog closes: what opened it, else the page. */
+  const opener = useRef<HTMLElement | null>(null);
+  const rememberOpener = () => {
+    const active = document.activeElement;
+    opener.current =
+      active instanceof HTMLElement && rootRef.current?.contains(active) ? active : null;
+  };
+  const restoreFocus = (event: Event) => {
+    event.preventDefault();
+    const element = opener.current;
+    opener.current = null;
+    if (element !== null && element.isConnected) element.focus({ preventScroll: true });
+    else focusRoot();
+  };
+  /** The drawer layout has no close-focus event; anything left unfocused goes to the page. */
+  const afterClose = () => {
+    if (focusLost()) restoreFocus(new Event("close"));
+  };
+
   const rowIds = searching ? search.hits.map((h) => h.id) : list.threads.map((t) => t.id);
+  const rowKey = rowIds.join("\n");
+
+  // An action took the cursor row off the list: the next row (else the previous) takes the cursor.
+  const shownRows = useRef<string[]>(rowIds);
+  useEffect(() => {
+    const before = shownRows.current;
+    shownRows.current = rowIds;
+    if (focusedId === null || rowIds.includes(focusedId)) return;
+    const at = before.indexOf(focusedId);
+    const next =
+      at < 0
+        ? null
+        : (before.slice(at + 1).find((id) => rowIds.includes(id)) ??
+          before
+            .slice(0, at)
+            .reverse()
+            .find((id) => rowIds.includes(id)) ??
+          null);
+    setFocusedId(next);
+    if (focusLost() && (next === null || !focusRowElement(next))) focusRoot();
+    // rowKey stands for rowIds.
+  }, [rowKey]);
+
+  // Back to the list (u, Back, Mark unread, an action): focus returns to the cursor row.
+  const wasOpen = useRef(threadOpen);
+  useEffect(() => {
+    const closed = wasOpen.current && !threadOpen;
+    wasOpen.current = threadOpen;
+    if (!closed || !focusLost()) return;
+    if (focusedId === null || !focusRowElement(focusedId)) focusRoot();
+  }, [threadOpen]);
   const accountOfThread = (threadId: string): string | null =>
     list.threads.find((t) => t.id === threadId)?.accountId ??
     (reading.detail?.thread.id === threadId ? reading.detail.thread.accountId : null);
@@ -318,13 +385,16 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     anyUnflagged: selected.some((t) => !t.flagged),
   });
 
-  /** What an action key acts on: the selection, else the open conversation, else the cursor row. */
+  /**
+   * What an action key acts on: the open conversation (never the selection
+   * while one is open), else the selection, else the cursor row.
+   */
   const targets = (): string[] => {
-    if (selection.size > 0) return [...selection];
     if (reading.threadId !== null) {
       const messages = reading.detail?.messages ?? [];
       return messages.some(model.inView) ? [reading.threadId] : [];
     }
+    if (selection.size > 0) return [...selection];
     if (!searching && focusedId !== null && rowIds.includes(focusedId)) return [focusedId];
     return [];
   };
@@ -348,13 +418,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   };
   const focusRow = (id: string) => {
     setFocusedId(id);
-    const rows = rootRef.current?.querySelectorAll<HTMLElement>("[data-row-key]");
-    for (const element of rows === undefined ? [] : Array.from(rows)) {
-      if (element.dataset.rowKey === id) {
-        element.focus({ preventScroll: true });
-        element.scrollIntoView?.({ block: "nearest" });
-      }
-    }
+    focusRowElement(id);
   };
   const step = (delta: 1 | -1) => {
     if (rowIds.length === 0) return;
@@ -371,7 +435,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const flagTargets = () => {
     const ids = targets();
     if (ids.length === 0) return;
-    if (selection.size === 0 && ids.length === 1) {
+    if (reading.threadId !== null || selection.size === 0) {
       props.onToggleThreadFlag(ids[0]!);
       return;
     }
@@ -379,7 +443,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     props.onThreadsAction(ids, allFlagged ? "unflag" : "flag");
   };
   const openMove = (ids: string[]) => {
-    if (ids.length > 0) setMoveTargets(ids);
+    if (ids.length === 0) return;
+    rememberOpener();
+    setMoveTargets(ids);
   };
 
   const onKeyDown = useShortcuts((command: ShortcutCommand) => {
@@ -415,6 +481,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         searchRef.current?.focus();
         return;
       case "sheet":
+        rememberOpener();
         setSheetOpen(true);
         return;
       case "go": {
@@ -450,7 +517,11 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       onKeyDown={onKeyDown}
       className="@container flex h-full min-h-0 flex-1 flex-col outline-none"
     >
-      <MailHeader {...props} searchRef={searchRef} onShowShortcuts={() => setSheetOpen(true)} />
+      <MailHeader {...props} searchRef={searchRef} onShowShortcuts={() => {
+          rememberOpener();
+          setSheetOpen(true);
+        }}
+      />
       {errors.map((account) => (
         <div
           key={account.id}
@@ -568,7 +639,10 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               onMoveTo={() => openMove(reading.threadId !== null ? [reading.threadId] : [])}
               actionPending={props.actionPending}
               onToggleMessageFlag={props.onToggleMessageFlag}
-              onDetails={props.onOpenDetails}
+              onDetails={(message) => {
+                rememberOpener();
+                props.onOpenDetails(message);
+              }}
               onDownloadEml={props.onDownloadEml}
               onDownloadAttachment={props.onDownloadAttachment}
               remoteImageIds={reading.remoteImageIds}
@@ -595,9 +669,18 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           setMoveTargets(null);
           props.onThreadsAction(ids, "move", destination);
         }}
+        onCloseAutoFocus={restoreFocus}
+        onAfterCloseAutoFocus={afterClose}
       />
-      <DetailsPanel details={props.details} onClose={props.onCloseDetails} onCopy={props.onCopy} />
-      <ShortcutSheet open={sheetOpen} onOpenChange={setSheetOpen} />
+      <DetailsPanel
+        details={props.details}
+        onClose={props.onCloseDetails}
+        onCopy={props.onCopy}
+        onCloseAutoFocus={restoreFocus}
+        onAfterCloseAutoFocus={afterClose}
+      />
+      <ShortcutSheet open={sheetOpen} onOpenChange={setSheetOpen} onCloseAutoFocus={restoreFocus}
+        onAfterCloseAutoFocus={afterClose} />
     </div>
   );
 }

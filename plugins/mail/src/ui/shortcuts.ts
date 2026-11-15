@@ -37,6 +37,8 @@ export interface KeyLike {
   metaKey: boolean;
   target: EventTarget | null;
   isComposing?: boolean;
+  /** The key is held down (auto-repeat). */
+  repeat?: boolean;
 }
 
 type ElementLike = {
@@ -54,7 +56,7 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   if (element.isContentEditable === true) return true;
   return (
     element.closest(
-      '[contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="alertdialog"], [role="listbox"], [role="menu"], [role="textbox"]',
+      '[contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="alertdialog"], [role="listbox"], [role="option"], [role="combobox"], [role="menu"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="textbox"]',
     ) != null
   );
 }
@@ -63,7 +65,7 @@ export function isTypingTarget(target: EventTarget | null): boolean {
 function isActivatable(target: EventTarget | null): boolean {
   const element = target as ElementLike | null;
   if (element === null || typeof element.closest !== "function") return false;
-  return element.closest('button, a[href], [role="button"], [role="checkbox"]') != null;
+  return element.closest('button, a[href], summary, [role="button"], [role="checkbox"]') != null;
 }
 
 const GO_KEYS: Record<string, GoTarget> = {
@@ -86,6 +88,15 @@ export type KeyMatch = ShortcutCommand | { kind: "g" } | null;
  * `{ kind: "g" }` for the start of a sequence and null for anything else.
  */
 export function matchShortcut(event: KeyLike, afterG: boolean): KeyMatch {
+  const match = matchKey(event, afterG);
+  // A held key repeats only the moves through the list; one press is one action.
+  if (event.repeat === true && match !== null && match.kind !== "next" && match.kind !== "previous") {
+    return null;
+  }
+  return match;
+}
+
+function matchKey(event: KeyLike, afterG: boolean): KeyMatch {
   if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing === true) return null;
   if (isTypingTarget(event.target)) return null;
 

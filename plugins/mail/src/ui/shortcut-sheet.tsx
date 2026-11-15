@@ -8,10 +8,25 @@ import {
 } from "@/components/ui/dialog";
 import { SHORTCUT_SHEET, stopEscape } from "./shortcuts.ts";
 
-export function ShortcutSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+export function ShortcutSheet({
+  open,
+  onOpenChange,
+  onCloseAutoFocus,
+  onAfterCloseAutoFocus,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** Where focus goes when the sheet closes (it has no trigger to return to). */
+  onCloseAutoFocus?: (event: Event) => void;
+  /** The compact (drawer) layout's close hook. */
+  onAfterCloseAutoFocus?: () => void;
+}) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-md overflow-y-auto" onEscapeKeyDown={stopEscape}>
+      <DialogContent className="max-h-[85vh] max-w-md overflow-y-auto" onEscapeKeyDown={stopEscape}
+        onCloseAutoFocus={onCloseAutoFocus}
+        onAfterCloseAutoFocus={onAfterCloseAutoFocus}
+      >
         <DialogHeader>
           <DialogTitle>Keyboard shortcuts</DialogTitle>
           <DialogDescription>
