@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FixedClock } from "../../core/testing/fakes.ts";
 import { UNDO_TTL_MS, type UndoGroup } from "../../core/undo.ts";
-import { UndoBook } from "./undo-book.ts";
+import { RoundWakes, UndoBook } from "./undo-book.ts";
 
 const T0 = new Date("2026-11-15T10:00:00.000Z");
 const ID_A = "6f1d2c3b-4a5e-4f60-8a7b-1c2d3e4f5a6b";
@@ -87,5 +87,20 @@ describe("UndoBook", () => {
     clock.set(new Date(T0.getTime() + UNDO_TTL_MS));
     expect(undo.putBack(again)).toBe(false);
     expect(undo.has(ID_A)).toBe(false);
+  });
+});
+
+describe("RoundWakes", () => {
+  it("wakes an account once after its next round ends, and only accounts that asked", () => {
+    const woken: string[] = [];
+    const wakes = new RoundWakes((accountId) => woken.push(accountId));
+    wakes.roundEnded("acc_1");
+    expect(woken).toEqual([]);
+    wakes.after("acc_1");
+    wakes.after("acc_1");
+    wakes.roundEnded("acc_2");
+    wakes.roundEnded("acc_1");
+    wakes.roundEnded("acc_1");
+    expect(woken).toEqual(["acc_1"]);
   });
 });

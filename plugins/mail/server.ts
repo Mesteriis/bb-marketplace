@@ -63,6 +63,8 @@ import {
   updateIdentity,
 } from "./src/core/sending-settings.ts";
 import { templatesForAgent } from "./src/core/templates.ts";
+import { planUndo, recordGroups, type RecordableGroup, type UndoGroup, type UndoRow, type UndoStep } from "./src/core/undo.ts";
+import { RoundWakes, UndoBook } from "./src/adapters/bb/undo-book.ts";
 import { outboxErrorText } from "./src/core/compose-outbox.ts";
 import {
   AGENT_RESULT,
@@ -130,8 +132,10 @@ import {
   rpcSchemas,
   testAccount,
   toPublicAccount,
+  imapConfigOf,
   type Account,
   type AccountDeps,
+  type AccountWriteQueue,
   type Clock,
   type ComposeDeps,
   type ComposeErrorKind,
@@ -235,7 +239,14 @@ export interface MailPluginOverrides {
   transport?: MailTransport;
   /** The outbox worker's tick; tests shorten it. */
   outboxIntervalMs?: number;
+  /** The per-account write queue; tests hold it to race an undo with a round. */
+  queue?: AccountWriteQueue;
+  /** How long action_undo waits for the account tasks before answering `pending`. */
+  undoWaitMs?: number;
 }
+
+/** action_undo waits this long for the account tasks, then answers `pending` (spec "Execution"). */
+const UNDO_WAIT_MS = 5_000;
 
 function isVaultKey(value: string): boolean {
   try {
@@ -319,12 +330,6 @@ function refuse(
   message: string,
 ): Error {
   return new experimental_PluginRpcRefusal({ code, message });
-}
-
-/** A slice-3d method before its server task: plugin callers refused, then `conflict`. */
-function notYet3d(_input: unknown, context: ExperimentalPluginRpcHandlerContext): never {
-  refusePluginCaller(context);
-  throw refuse("conflict", "Not available yet");
 }
 
 export const PLUGIN_CALLER_MESSAGE = "Only the owner's Mail page can change mail or accounts.";
@@ -616,7 +621,9 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     };
     // One promise chain per account: sync rounds, APPENDs, expunges and SMTP
     // sends of an account never overlap (resolution 7).
-    const queue = createAccountQueue();
+    const queue = overrides.queue ?? createAccountQueue();
+    // Undo's second wake: the account's next round end wakes it once more.
+    const roundWakes = new RoundWakes((accountId) => loop.wake(accountId));
 
     // Always registered; without a key no password can be sealed or opened, so
     // rounds do nothing until one is saved.
@@ -627,7 +634,12 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         batchSize: FETCH_BATCH_SIZE,
         intervalMinutes: clampInterval(current.syncIntervalMinutes),
       }),
-      { log: (line) => bb.log.info(line), isReady: () => vault !== null, queue },
+      {
+        log: (line) => bb.log.info(line),
+        isReady: () => vault !== null,
+        queue,
+        onRoundEnd: (accountId) => roundWakes.roundEnded(accountId),
+      },
     );
 
     const rawDeps: RawDeps = {
@@ -777,6 +789,9 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       },
       rawDeps,
       tickets,
+      undo: new UndoBook(clock),
+      roundWakes,
+      undoWaitMs: overrides.undoWaitMs ?? UNDO_WAIT_MS,
     });
     registerDownloadRoute(bb, store, rawDeps, tickets);
     registerAgentSurfaces(bb, store, {
@@ -820,6 +835,10 @@ type RpcDeps = {
   }) => Promise<void>;
   rawDeps: RawDeps;
   tickets: TicketBook<DownloadRequest>;
+  /** The one undo slot (slice 3d). */
+  undo: UndoBook;
+  roundWakes: RoundWakes;
+  undoWaitMs: number;
 };
 
 /** What a download ticket stands for; the name and bytes are resolved again when it is used. */
@@ -862,7 +881,7 @@ type ActionInput = {
  * before; otherwise each group reports its own. Ids no longer stored are
  * skipped. Everything is checked before anything is queued.
  */
-function runMessageAction(deps: RpcDeps, input: ActionInput): { groups: ActionGroup[] } {
+function runMessageAction(deps: RpcDeps, input: ActionInput): { groups: ActionGroup[]; undo: UndoGroup[] } {
   const { store } = deps;
   const { action, folder, role } = input;
   const foldersOf = new Map<string, Folder[]>();
@@ -938,11 +957,25 @@ function runMessageAction(deps: RpcDeps, input: ActionInput): { groups: ActionGr
   const touch = (accountId: string) => {
     if (!changed.includes(accountId)) changed.push(accountId);
   };
+  // Undo (slice 3d): what each group queued, and the flags before a flag change.
+  const recordable: RecordableGroup[] = [];
+  const priors = new Map<string, { seen: boolean; flagged: boolean }>();
+  const recorded = (group: Planned, queued: number, destination: Folder | null) =>
+    recordable.push({
+      accountId: group.accountId,
+      folder: group.folder,
+      ids: group.ids,
+      queued,
+      destinationPath: destination?.path ?? null,
+      destinationUse: destination?.specialUse ?? null,
+    });
   const results = planned.map((group): ActionGroup => {
     const result = { accountId: group.accountId, folder: group.folder };
     if (group.error !== null) return { ...result, queued: 0, destination: null, error: group.error };
     if (change !== null) {
+      for (const row of store.undoRows(group.ids)) priors.set(row.id, { seen: row.isRead, flagged: row.isFlagged });
       for (const touched of store.setDesired(group.ids, change)) touch(touched.accountId);
+      recorded(group, group.ids.length, null);
       return { ...result, queued: group.ids.length, destination: null, error: null };
     }
     const destination = group.destination!;
@@ -954,13 +987,187 @@ function runMessageAction(deps: RpcDeps, input: ActionInput): { groups: ActionGr
       return { ...result, queued: 0, destination: null, error };
     }
     touch(queued.accountId);
+    recorded(group, group.ids.length, destination);
     return { ...result, queued: group.ids.length, destination: destination.name, error: null };
   });
   for (const accountId of changed) {
     deps.publishChanged(accountId);
     deps.loop.wake(accountId);
   }
-  return { groups: results };
+  return { groups: results, undo: recordGroups(action, recordable, priors) };
+}
+
+type UndoSkipped = { reason: "moved_elsewhere" | "gone" | "folder_gone" | "not_synced"; count: number };
+type UndoOutput = {
+  outcome: "done" | "pending" | "nothing";
+  restored: number;
+  skipped: UndoSkipped[];
+  failed: number;
+  groups: ActionGroup[];
+};
+
+/**
+ * action_undo (spec "Undo the last action", resolutions 7, 8, 16 and 19).
+ * Refusals come first, as in message_action: a record whose groups are all
+ * refused stays in the slot. Then the slot is taken (an undo never runs
+ * twice); flag steps run at once, move steps per account inside its queue
+ * with the plan recomputed from fresh rows. A move back is queued through
+ * queueMove; only a row now in All Mail on a session that reports Gmail is
+ * copied back (UID COPY adds, never removes). Failed copies go back into the
+ * slot. Nothing here sets \Deleted or expunges.
+ */
+async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => void): Promise<UndoOutput> {
+  const { store, composeDeps } = deps;
+  const record = deps.undo.peek(undoId);
+  if (record === null) return { outcome: "nothing", restored: 0, skipped: [], failed: 0, groups: [] };
+
+  const refusals = new Map<string, string>();
+  for (const group of record.groups) {
+    if (refusals.has(group.accountId)) continue;
+    if (!deps.vaultReady()) refusals.set(group.accountId, NEEDS_KEY_MESSAGE);
+    else if (store.getAccount(group.accountId)?.authFailed === true) refusals.set(group.accountId, PASSWORD_NEEDED_MESSAGE);
+  }
+  const runnable = record.groups.filter((group) => !refusals.has(group.accountId));
+  if (runnable.length === 0) throw refuse("conflict", refusals.values().next().value ?? NEEDS_KEY_MESSAGE);
+  deps.undo.take(undoId);
+  const refused = record.groups.filter((group) => refusals.has(group.accountId));
+  if (refused.length > 0) deps.undo.putBack({ ...record, groups: refused });
+
+  const restoredIds = new Set<string>();
+  const skipped = new Map<UndoSkipped["reason"], number>();
+  const skip = (reason: UndoSkipped["reason"], count: number) => {
+    if (count > 0) skipped.set(reason, (skipped.get(reason) ?? 0) + count);
+  };
+  let failed = 0;
+  const rowsOf = (groups: UndoGroup[]) => new Map(store.undoRows(groups.flatMap((g) => g.ids)).map((row) => [row.id, row]));
+  const foldersOf = (accountId: string) => store.listFolders(accountId);
+  const changed = (accountId: string) => {
+    deps.publishChanged(accountId);
+    deps.loop.wake(accountId);
+  };
+
+  // Flag steps: at once, pushed by sync like any flag change.
+  const flagGroups = runnable.filter((group) => group.destination === null);
+  if (flagGroups.length > 0) {
+    const plan = planUndo({ ...record, groups: flagGroups }, rowsOf(flagGroups), foldersOf);
+    const touched = new Set<string>();
+    for (const step of plan.steps) {
+      if (step.kind !== "flags") continue;
+      for (const row of store.setDesired(step.ids, step.change)) touched.add(row.accountId);
+      for (const id of step.ids) restoredIds.add(id);
+    }
+    for (const accountId of touched) changed(accountId);
+  }
+
+  const queueBack = (step: Extract<UndoStep, { kind: "move_back" }>) => {
+    if (store.queueMove(step.ids, step.to) === null) skip("moved_elsewhere", step.ids.length);
+    else for (const id of step.ids) restoredIds.add(id);
+  };
+  const putBack = (step: Extract<UndoStep, { kind: "move_back" }>, ids: string[], use: UndoGroup["destinationUse"]) => {
+    failed += ids.length;
+    deps.undo.putBack({
+      ...record,
+      groups: [{ accountId: step.accountId, source: step.to, destination: step.from, destinationUse: use, ids }],
+    });
+  };
+  /** A row now in All Mail: UID COPY back on Gmail, else a queued move back. */
+  const copyBack = async (step: Extract<UndoStep, { kind: "move_back" }>, rows: ReadonlyMap<string, UndoRow>) => {
+    const account = store.getAccount(step.accountId);
+    if (account === null) {
+      skip("gone", step.ids.length);
+      return;
+    }
+    let session: Awaited<ReturnType<typeof composeDeps.gateway.openFolder>>;
+    try {
+      session = await composeDeps.gateway.openFolder(imapConfigOf(account, composeDeps.vault), step.from, { readOnly: false });
+    } catch (error) {
+      log(`undo ${step.accountId}: open failed (${errorKind(error)})`);
+      putBack(step, step.ids, "all");
+      return;
+    }
+    const attached = step.ids.filter((id) => rows.get(id)?.uid != null);
+    try {
+      if (!session.capabilities().gmail) {
+        queueBack(step);
+        return;
+      }
+      const status = await session.status();
+      if (store.getSyncState(step.accountId, step.from)?.uidValidity !== status.uidValidity) {
+        skip("not_synced", step.ids.length);
+        return;
+      }
+      skip("not_synced", step.ids.length - attached.length);
+      if (attached.length === 0) return;
+      await session.copyMessages(attached.map((id) => rows.get(id)!.uid!), step.to);
+      for (const id of attached) restoredIds.add(id);
+    } catch (error) {
+      log(`undo ${step.accountId}: copy failed (${errorKind(error)})`);
+      putBack(step, attached, "all");
+    } finally {
+      await session.close().catch(() => undefined);
+    }
+  };
+
+  const byAccount = new Map<string, UndoGroup[]>();
+  for (const group of runnable) {
+    if (group.destination === null) continue;
+    byAccount.set(group.accountId, [...(byAccount.get(group.accountId) ?? []), group]);
+  }
+  const tasks = [...byAccount].map(([accountId, groups]) =>
+    composeDeps.queue
+      .run(accountId, async () => {
+        // Inside the account's task: a round may have pushed the move meanwhile.
+        const rows = rowsOf(groups);
+        const plan = planUndo({ ...record, groups }, rows, foldersOf);
+        for (const entry of plan.skipped) skip(entry.reason, entry.count);
+        for (const step of plan.steps) {
+          if (step.kind === "cancel_pending") {
+            for (const id of store.cancelMove(step.ids, step.folder, step.destination)) restoredIds.add(id);
+          } else if (step.kind === "move_back") {
+            if (step.copyIfGmail) await copyBack(step, rows);
+            else queueBack(step);
+          }
+        }
+      })
+      .catch((error: unknown) => {
+        log(`undo ${accountId}: failed (${errorKind(error)})`);
+      })
+      .finally(() => {
+        changed(accountId);
+        deps.roundWakes.after(accountId);
+      }),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const finished = await Promise.race([
+    Promise.all(tasks).then(() => true),
+    new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), deps.undoWaitMs))),
+  ]);
+  clearTimeout(timer);
+
+  const names = new Map<string, Folder[]>();
+  const folderName = (accountId: string, path: string) => {
+    if (!names.has(accountId)) names.set(accountId, foldersOf(accountId));
+    return names.get(accountId)!.find((f) => f.path === path)?.name ?? path;
+  };
+  const groups = record.groups.map((group): ActionGroup => {
+    const error = refusals.get(group.accountId) ?? null;
+    return {
+      accountId: group.accountId,
+      folder: group.source,
+      queued: error === null ? group.ids.filter((id) => restoredIds.has(id)).length : 0,
+      destination: group.destination === null || error !== null ? null : folderName(group.accountId, group.source),
+      error,
+    };
+  });
+  const result: UndoOutput = {
+    outcome: finished ? "done" : "pending",
+    restored: restoredIds.size,
+    skipped: [...skipped].map(([reason, count]) => ({ reason, count })),
+    failed,
+    groups,
+  };
+  log(`undo: ${result.outcome}, restored ${result.restored}, skipped ${[...skipped.values()].reduce((a, b) => a + b, 0)}, failed ${failed}`);
+  return result;
 }
 
 function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
@@ -1111,8 +1318,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       message_action: (input, context) => {
         refusePluginCaller(context);
         if (input.role === "all") throw refuse("invalid", ALL_ROLE_MESSAGE);
-        // Undo recording (undoId) is wired in slice 3d task 11.
-        return { ...runMessageAction(deps, input), undoable: false };
+        const { groups, undo } = runMessageAction(deps, input);
+        // The page's undoId: what this call queued becomes (or joins) the one undoable action.
+        const undoable = input.undoId !== undefined && deps.undo.record(input.undoId, input.action, undo);
+        return { groups, undoable };
       },
       // Details panel: read-only session, BODY.PEEK, never \Seen; nothing is logged.
       // Owner only: it logs in to the server and shows headers no other RPC gives.
@@ -1339,7 +1548,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       compose_check: owner("compose_check", ({ draftId, baseRevision }) => ({
         issues: checkDraft(store, ownerDraft(draftId), baseRevision),
       })),
-      action_undo: notYet3d,
+      action_undo: owner("action_undo", ({ undoId }) => runUndo(deps, undoId, (line) => bb.log.info(line))),
     },
     { experimental_discoverable: false },
   );

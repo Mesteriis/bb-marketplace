@@ -24,6 +24,7 @@ import {
   PROPOSE_OFF_INSTRUCTIONS,
 } from "./server.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
+import { createAccountQueue } from "./src/adapters/bb/account-queue.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
 import { parseMail } from "./src/adapters/bb/imapflow-gateway.ts";
 import {
@@ -3456,5 +3457,281 @@ describe("sending polish: agent tools", () => {
     expect(view.bodyText).toContain(TEMPLATE_TEXT);
     expectNoLeak(host, [...POLISH_SECRETS, "Mallory"]);
     host.harness.behavior.cancelInteraction?.(proposed.card.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sending polish (slice 3d): undo the last action
+// ---------------------------------------------------------------------------
+
+const UNDO_A = "1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d";
+const UNDO_B = "2c3d4e5f-6071-4b8c-9d0e-1f2a3b4c5d6e";
+const ALL_MAIL = "[Gmail]/All Mail";
+
+type UndoResult = {
+  outcome: string;
+  restored: number;
+  skipped: { reason: string; count: number }[];
+  failed: number;
+  groups: { accountId: string; folder: string; queued: number; destination: string | null; error: string | null }[];
+};
+
+/** acc_1 on a Gmail or iCloud layout with its password sealed under COMPOSE_KEY, and INBOX uids 1 and 2. */
+function seedUndo(bb: BbPluginApi, preset: "gmail" | "icloud"): void {
+  seedMail(bb, {
+    preset,
+    folders: preset === "gmail" ? [...GMAIL_FOLDERS, { path: "Work" }] : ICLOUD_FOLDERS,
+    messages: [1, 2].map((uid) => ({ folder: "INBOX", message: makeFetchedMessage(uid, { messageId: `<undo-${uid}@example.org>` }) })),
+  });
+  const store = createSqliteStore(bb.storage.database());
+  store.saveAccount({ ...store.getAccount("acc_1")!, passwordSealed: createVault(COMPOSE_KEY).seal(PASSWORD) });
+  store.saveSyncState("acc_1", ALL_MAIL, { uidValidity: 5, lastUid: 200, syncedSince: "2026-01-01T00:00:00.000Z" });
+}
+
+function loadUndo(preset: "gmail" | "icloud", options: { queue?: ReturnType<typeof createAccountQueue>; undoWaitMs?: number; allMailValidity?: number } = {}) {
+  return loadWith({
+    settings: { vaultKey: COMPOSE_KEY },
+    seed: (bb) => seedUndo(bb, preset),
+    server: (gateway) => {
+      gateway.gmail = preset === "gmail";
+      if (preset === "gmail") {
+        gateway.addFolder({ path: ALL_MAIL, specialUse: "all" }, {
+          uidValidity: options.allMailValidity ?? 5,
+          uidNext: 300,
+          messages: [101, 102].map((uid) => makeFetchedMessage(uid, { messageId: `<undo-${uid - 100}@example.org>` })),
+        });
+      }
+    },
+    ...(options.queue === undefined ? {} : { queue: options.queue }),
+    ...(options.undoWaitMs === undefined ? {} : { undoWaitMs: options.undoWaitMs }),
+  });
+}
+
+/** load() with the extra overrides the undo tests need. */
+async function loadWith(options: LoadOptions & { queue?: ReturnType<typeof createAccountQueue>; undoWaitMs?: number }) {
+  const gateway = new RawGateway({ uidValidity: 3, uidNext: 10, messages: [] });
+  options.server?.(gateway);
+  const host = createFakePluginHost({ pluginId: PLUGIN_ID, settings: options.settings ?? { vaultKey: generateVaultKey() }, agentSkillIds: ["mail"] });
+  options.seed?.(host.bb);
+  const clock = new FixedClock(NOW);
+  const transport = new FakeTransport();
+  await createMailPlugin({
+    gateway,
+    clock,
+    transport,
+    ...(options.queue === undefined ? {} : { queue: options.queue }),
+    ...(options.undoWaitMs === undefined ? {} : { undoWaitMs: options.undoWaitMs }),
+  })(host.bb);
+  return { ...host, gateway, clock, transport };
+}
+
+const archive = (host: Host, ids: string[], undoId = UNDO_A, actionKind = "archive", extra: Record<string, unknown> = {}) =>
+  call(host, "message_action", { messageIds: ids, folder: "INBOX", action: actionKind, undoId, ...extra }) as Promise<{
+    groups: unknown[];
+    undoable: boolean;
+  }>;
+const undo = (host: Host, undoId = UNDO_A) => call(host, "action_undo", { undoId }) as Promise<UndoResult>;
+
+/** The row as sync leaves it after pushing the move (COPYUID maps uid → uid + 100). */
+function pushMove(host: Host, from: string, to: string, uids: number[], withMap = true): void {
+  sqlStore(host).completeMove("acc_1", from, to, withMap ? new Map(uids.map((uid) => [uid, uid + 100])) : null, uids);
+}
+
+function rowOf(host: Host, id: string) {
+  return sqlStore(host).undoRows([id])[0]!;
+}
+
+function serverCommands(host: Host): string[] {
+  return host.gateway.sessions.flatMap((s) => s.calls.map((c) => c.method));
+}
+
+describe("sending polish: undo", () => {
+  it("archive then undo before the push cancels the pending move; nothing reaches the server", async () => {
+    const host = await loadUndo("icloud");
+    const [a, b] = idsIn(host, "acc_1", "INBOX");
+    expect((await archive(host, [a!, b!])).undoable).toBe(true);
+    expect(movePending(host, a!)).toBe("Archive");
+    const result = await undo(host);
+    expect(result).toMatchObject({ outcome: "done", restored: 2, skipped: [], failed: 0 });
+    expect(result.groups).toEqual([{ accountId: "acc_1", folder: "INBOX", queued: 2, destination: "INBOX", error: null }]);
+    expect([a, b].map((id) => movePending(host, id!))).toEqual([null, null]);
+    expect(host.gateway.sessions).toEqual([]);
+    // Consumed once.
+    expect((await undo(host)).outcome).toBe("nothing");
+  });
+
+  it("after the push on a non-Gmail server: a move back through the queue, never a COPY", async () => {
+    const host = await loadUndo("icloud");
+    const [a] = idsIn(host, "acc_1", "INBOX");
+    await archive(host, [a!]);
+    pushMove(host, "INBOX", "Archive", [1]);
+    expect(await undo(host)).toMatchObject({ outcome: "done", restored: 1 });
+    expect(rowOf(host, a!)).toMatchObject({ folder: "Archive", movePending: "INBOX" });
+    expect(serverCommands(host)).toEqual([]);
+  });
+
+  it("on Gmail, undo of an archive copies from All Mail back to the Inbox and moves nothing out of All Mail", async () => {
+    const host = await loadUndo("gmail");
+    const [a] = idsIn(host, "acc_1", "INBOX");
+    await archive(host, [a!]);
+    pushMove(host, "INBOX", ALL_MAIL, [1]);
+    expect(await undo(host)).toMatchObject({ outcome: "done", restored: 1, failed: 0 });
+    const session = host.gateway.sessions.find((s) => s.path === ALL_MAIL)!;
+    expect(session.readOnly).toBe(false);
+    expect(session.closed).toBe(true);
+    expect(session.calls.find((c) => c.method === "copyMessages")).toMatchObject({ uids: [101], destination: "INBOX" });
+    expect(serverCommands(host)).not.toContain("moveMessages");
+    expect(serverCommands(host)).not.toContain("expungeOwn");
+    expect(serverCommands(host)).not.toContain("setFlags");
+    expect(rowOf(host, a!)).toMatchObject({ folder: ALL_MAIL, movePending: null });
+  });
+
+  it("on Gmail, undo out of Trash, Spam or a label is a move back, with no session opened", async () => {
+    for (const [kind, extra, to, uid] of [
+      ["delete", {}, "[Gmail]/Trash", 1],
+      ["spam", {}, "[Gmail]/Spam", 1],
+      ["move", { destination: "Work" }, "Work", 1],
+    ] as const) {
+      const host = await loadUndo("gmail");
+      const [a] = idsIn(host, "acc_1", "INBOX");
+      await archive(host, [a!], UNDO_A, kind, extra);
+      pushMove(host, "INBOX", to, [uid]);
+      expect(await undo(host)).toMatchObject({ outcome: "done", restored: 1 });
+      expect(rowOf(host, a!)).toMatchObject({ folder: to, movePending: "INBOX" });
+      expect(host.gateway.sessions).toEqual([]);
+    }
+  });
+
+  it("a detached row (no uid map) gets its move back, pushed once the destination's sync reattaches it", async () => {
+    const host = await loadUndo("icloud");
+    const [a] = idsIn(host, "acc_1", "INBOX");
+    await archive(host, [a!]);
+    pushMove(host, "INBOX", "Archive", [1], false);
+    expect(rowOf(host, a!)).toMatchObject({ folder: "Archive", uid: null });
+    expect(await undo(host)).toMatchObject({ restored: 1 });
+    expect(rowOf(host, a!)).toMatchObject({ movePending: "INBOX", uid: null });
+    expect(sqlStore(host).pendingMoves("acc_1", "Archive")).toEqual([]);
+    sqlStore(host).upsertMessages("acc_1", "Archive", [makeFetchedMessage(77, { messageId: "<undo-1@example.org>" })]);
+    expect(sqlStore(host).pendingMoves("acc_1", "Archive")).toEqual([{ uid: 77, id: a, destination: "INBOX" }]);
+  });
+
+  it("on Gmail, a detached row in All Mail is skipped as not synced yet; a UIDVALIDITY mismatch skips the copy", async () => {
+    const detached = await loadUndo("gmail");
+    const [a] = idsIn(detached, "acc_1", "INBOX");
+    await archive(detached, [a!]);
+    pushMove(detached, "INBOX", ALL_MAIL, [1], false);
+    expect(await undo(detached)).toMatchObject({ restored: 0, skipped: [{ reason: "not_synced", count: 1 }] });
+    expect(serverCommands(detached)).not.toContain("copyMessages");
+
+    const renumbered = await loadUndo("gmail", { allMailValidity: 6 });
+    const [b] = idsIn(renumbered, "acc_1", "INBOX");
+    await archive(renumbered, [b!]);
+    pushMove(renumbered, "INBOX", ALL_MAIL, [1]);
+    expect(await undo(renumbered)).toMatchObject({ restored: 0, skipped: [{ reason: "not_synced", count: 1 }] });
+    expect(serverCommands(renumbered)).not.toContain("copyMessages");
+  });
+
+  it("a connection lost during the copy counts as failed and puts the group back; a second undo copies it", async () => {
+    const host = await loadUndo("gmail");
+    const [a, b] = idsIn(host, "acc_1", "INBOX");
+    await archive(host, [a!, b!]);
+    pushMove(host, "INBOX", ALL_MAIL, [1, 2]);
+    host.gateway.failNext("copyMessages", imapError("ConnectionLost"));
+    expect(await undo(host)).toMatchObject({ outcome: "done", restored: 0, failed: 2 });
+    const second = await undo(host);
+    expect(second).toMatchObject({ outcome: "done", restored: 2, failed: 0 });
+    const copies = host.gateway.sessions.flatMap((s) => s.calls).filter((c) => c.method === "copyMessages");
+    expect(copies.map((c) => c.uids)).toEqual([[101, 102], [101, 102]]);
+    expect((await undo(host)).outcome).toBe("nothing");
+  });
+
+  it("restores flags only where the action's value still holds", async () => {
+    const host = await loadUndo("icloud");
+    const [a, b] = idsIn(host, "acc_1", "INBOX");
+    await archive(host, [a!, b!], UNDO_A, "mark_read");
+    sqlStore(host).setDesired([b!], { seen: false });
+    expect(await undo(host)).toMatchObject({ outcome: "done", restored: 1 });
+    expect([desired(host, a!).read, desired(host, b!).read]).toEqual([0, 0]);
+    expect(desired(host, a!).seen).toBe(0);
+  });
+
+  it("chunked calls with one undoId across accounts undo together; a stale or foreign id does nothing", async () => {
+    const host = await loadWith({
+      settings: { vaultKey: COMPOSE_KEY },
+      seed: (bb) => {
+        seedTwoAccounts(bb);
+        const store = createSqliteStore(bb.storage.database());
+        for (const id of ["acc_1", "acc_2"]) store.saveAccount({ ...store.getAccount(id)!, passwordSealed: createVault(COMPOSE_KEY).seal(PASSWORD) });
+      },
+    });
+    const [a] = idsIn(host, "acc_1", "INBOX");
+    const [b] = idsIn(host, "acc_2", "INBOX");
+    await call(host, "message_action", { messageIds: [a], role: "inbox", action: "delete", undoId: UNDO_A });
+    await call(host, "message_action", { messageIds: [b], role: "inbox", action: "delete", undoId: UNDO_A });
+    expect((await undo(host, UNDO_B)).outcome).toBe("nothing");
+    const result = await undo(host);
+    expect(result).toMatchObject({ outcome: "done", restored: 2 });
+    expect(result.groups.map((g) => g.accountId)).toEqual(["acc_1", "acc_2"]);
+    expect([movePending(host, a!), movePending(host, b!)]).toEqual([null, null]);
+  });
+
+  it("a newer action replaces the slot, and the slot expires after ten minutes", async () => {
+    const host = await loadUndo("icloud");
+    const [a, b] = idsIn(host, "acc_1", "INBOX");
+    await archive(host, [a!], UNDO_A);
+    await archive(host, [b!], UNDO_B);
+    expect((await undo(host, UNDO_A)).outcome).toBe("nothing");
+    host.clock.set(new Date(NOW.getTime() + 10 * 60 * 1000));
+    expect((await undo(host, UNDO_B)).outcome).toBe("nothing");
+    expect(movePending(host, b!)).toBe("Archive");
+  });
+
+  it("without undoId, or when nothing was queued, nothing is recorded", async () => {
+    const host = await loadUndo("icloud");
+    const [a] = idsIn(host, "acc_1", "INBOX");
+    expect((await call(host, "message_action", { messageIds: [a], folder: "INBOX", action: "archive" })) as { undoable: boolean }).toMatchObject({
+      undoable: false,
+    });
+    expect((await undo(host)).outcome).toBe("nothing");
+  });
+
+  it("a locked vault refuses the undo up front and keeps the slot", async () => {
+    const host = await loadUndo("icloud");
+    const [a] = idsIn(host, "acc_1", "INBOX");
+    await archive(host, [a!]);
+    await host.harness.behavior.setSettings({ vaultKey: null });
+    await expect(undo(host)).rejects.toThrow(NEEDS_KEY_MESSAGE);
+    expect(movePending(host, a!)).toBe("Archive");
+    await host.harness.behavior.setSettings({ vaultKey: COMPOSE_KEY });
+    expect(await undo(host)).toMatchObject({ outcome: "done", restored: 1 });
+  });
+
+  it("an undo racing a round waits for the account's queue, then plans from fresh rows; past the wait it answers pending", async () => {
+    const queue = createAccountQueue();
+    const host = await loadUndo("icloud", { queue, undoWaitMs: 20 });
+    const [a] = idsIn(host, "acc_1", "INBOX");
+    await archive(host, [a!]);
+    let release!: () => void;
+    const held = queue.run("acc_1", () => new Promise<void>((resolve) => (release = resolve)));
+    expect((await undo(host)).outcome).toBe("pending");
+    // The round pushes the move while the undo waits.
+    pushMove(host, "INBOX", "Archive", [1]);
+    release();
+    await held;
+    await vi.waitFor(() => expect(rowOf(host, a!)).toMatchObject({ folder: "Archive", movePending: "INBOX" }));
+  });
+
+  it("refuses plugin callers; logs and realtime carry ids and counts only", async () => {
+    const host = await loadUndo("gmail");
+    const [a] = idsIn(host, "acc_1", "INBOX");
+    await archive(host, [a!]);
+    await expect(host.harness.behavior.callRpc("action_undo", { undoId: UNDO_A }, asPlugin)).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    pushMove(host, "INBOX", ALL_MAIL, [1]);
+    await undo(host);
+    expectNoLeak(host, ["owner@example.org", "sender@example.org", "Invented subject", "Invented body"]);
+    expect(host.harness.inspection.realtimeSignals.filter((s) => s.channel === MAIL_CHANGED_CHANNEL).at(-1)).toEqual({
+      channel: MAIL_CHANGED_CHANNEL,
+      payload: { accountId: "acc_1" },
+    });
   });
 });
