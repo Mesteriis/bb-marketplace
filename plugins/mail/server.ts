@@ -47,6 +47,9 @@ import { createSmtpTransport } from "./src/adapters/bb/smtp-transport.ts";
 import { UploadBook, UploadError } from "./src/adapters/bb/uploads.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
 import { createSyncLoop, type SyncLoop } from "./src/adapters/bb/sync-service.ts";
+import { createIdleSupervisor, type IdleSupervisor } from "./src/adapters/bb/idle-service.ts";
+import { NewMailBook } from "./src/adapters/bb/new-mail-book.ts";
+import { createSnoozeClock } from "./src/adapters/bb/snooze-clock.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
 import { describeStructure, readHeaders } from "./src/core/headers.ts";
 import {
@@ -155,7 +158,17 @@ import {
   type SecretVault,
   type SpecialUse,
   type SyncDeps,
+  type SyncOutcome,
+  type NewMailPayload,
+  NEW_MAIL_CHANNEL,
+  inQuietHours,
   isHiddenDraft,
+  matchesBlock,
+  notifiable,
+  ownAddresses,
+  parseQuietHours,
+  NEW_MAIL_TOAST_ITEMS,
+  toastName,
 } from "./src/core/index.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
@@ -323,7 +336,153 @@ function defineSettings(bb: BbPluginApi) {
       experimental_optionLabels: Object.fromEntries(SUPPORTED_LANGUAGES.map((l) => [l.tag, l.english])),
       default: "ru",
     },
+    // Slice 3e.
+    instantMail: {
+      type: "boolean",
+      label: "Instant new mail (IMAP IDLE)",
+      description: "Keeps one connection per account open to the Inbox, so new mail appears in seconds.",
+      default: true,
+    },
+    notifyNewMail: {
+      type: "boolean",
+      label: "Notify about new mail from people you write to",
+      default: true,
+    },
+    quietHours: {
+      type: "string",
+      label: "Quiet hours",
+      description: "HH:MM\u2013HH:MM in this computer's time, e.g. 22:00\u201308:00. Empty: off.",
+      default: "",
+      experimental_schema: z.string().regex(QUIET_HOURS_PATTERN, "Must be HH:MM-HH:MM, or empty"),
+    },
+    agentTriage: {
+      type: "boolean",
+      label: "Let agents propose inbox actions for you to approve",
+      default: false,
+    },
   });
+}
+
+/** The quiet-hours setting: a range that may cross midnight (equal ends mean off), or empty. */
+export const QUIET_HOURS_PATTERN = /^(?:([01]\d|2[0-3]):[0-5]\d[-\u2013]([01]\d|2[0-3]):[0-5]\d)?$/;
+
+/** Spam-seen rows older than this are pruned at start (spec resolution 17). */
+const SPAM_SEEN_KEEP_MS = 180 * 86_400_000;
+
+type NewMailDeps = {
+  store: MailStore;
+  clock: Clock;
+  wake: (accountId: string, options?: { only?: "inbox" }) => void;
+  publishChanged: (accountId: string) => void;
+  book: NewMailBook;
+  publishNew: (token: string) => void;
+  notifyOn: () => boolean;
+  quietHours: () => string;
+  log: (line: string) => void;
+};
+
+const lower = (address: string) => address.trim().toLowerCase();
+
+/**
+ * Block rules after a round (spec resolutions 13, 17, 27): genuinely new
+ * Inbox rows (never returning ones) whose From matches a rule, not from the
+ * owner, not rescued from Spam, are queued to the account's Spam folder.
+ * Returns the ids queued. Logs ids and counts only.
+ */
+function blockNewInbox(deps: NewMailDeps, accountId: string, ids: string[], only: "inbox" | undefined): string[] {
+  if (ids.length === 0) return [];
+  const { store } = deps;
+  const rules = store.listBlockRules();
+  if (rules.length === 0) return [];
+  const rows = store.notifyRows(ids, deps.clock.now().toISOString());
+  const own = new Set(ownAddresses(store).map(lower));
+  const rescued = store.spamSeen(accountId, rows.map((row) => row.dedupKey));
+  const candidates = rows.filter(
+    (row) =>
+      row.accountId === accountId &&
+      row.uid !== null &&
+      row.movePending === null &&
+      row.folderRole === "inbox" &&
+      !own.has(lower(row.fromAddress)) &&
+      !rescued.has(row.dedupKey) &&
+      matchesBlock(row.fromAddress, rules) !== null,
+  );
+  if (candidates.length === 0) return [];
+  const account = store.getAccount(accountId);
+  if (account === null) return [];
+  const folders = store.listFolders(accountId);
+  const where = new Map(store.undoRows(candidates.map((row) => row.id)).map((row) => [row.id, row.folder]));
+  const moved: string[] = [];
+  let noSpam = false;
+  for (const row of candidates) {
+    const folder = where.get(row.id);
+    if (folder === undefined) continue;
+    const resolved = resolveActionDestination("spam", folder, folders, account.preset);
+    if ("refusal" in resolved) {
+      noSpam = true;
+      continue;
+    }
+    if (store.queueMove([row.id], resolved.destination.path) !== null) moved.push(row.id);
+  }
+  if (noSpam) deps.log(`block ${accountId}: no spam folder`);
+  if (moved.length > 0) {
+    deps.log(`block ${accountId}: moved ${moved.length}`);
+    deps.publishChanged(accountId);
+    deps.wake(accountId, only === "inbox" ? { only: "inbox" } : undefined);
+  }
+  return moved;
+}
+
+/**
+ * Toasts rows by the new-mail filter (spec "Which messages"), outside quiet
+ * hours and with notifyNewMail on: the kept ids go into the book and only a
+ * token is published. `returned`: a snooze return, aged from now.
+ */
+function notifyNew(deps: NewMailDeps, accountId: string, ids: string[], returned: boolean): void {
+  if (ids.length === 0 || !deps.notifyOn()) return;
+  const now = deps.clock.now();
+  if (inQuietHours(parseQuietHours(deps.quietHours()), now.getHours() * 60 + now.getMinutes())) return;
+  const { store } = deps;
+  const nowIso = now.toISOString();
+  const rows = store.notifyRows(ids, nowIso);
+  if (rows.length === 0) return;
+  const kept = notifiable(rows, {
+    own: new Set(ownAddresses(store).map(lower)),
+    sentTo: store.addressesSentTo(rows.map((row) => row.fromAddress)),
+    rules: store.listBlockRules(),
+    now,
+    ...(returned ? { ageFrom: () => nowIso } : {}),
+  });
+  if (kept.length === 0) return;
+  deps.publishNew(deps.book.put(kept.map((row) => row.id)));
+  deps.log(`notify ${accountId}: ${kept.length}`);
+}
+
+/** After an ok round: block, then notify (never returning rows). */
+function afterRound(
+  deps: NewMailDeps,
+  accountId: string,
+  outcome: Extract<SyncOutcome, { status: "ok" }>,
+  only: "inbox" | undefined,
+): void {
+  const returning = new Set(outcome.returning);
+  const fresh = outcome.newInbox.filter((id) => !returning.has(id));
+  let moved = new Set<string>();
+  try {
+    moved = new Set(blockNewInbox(deps, accountId, fresh, only));
+  } catch (error) {
+    deps.log(`block ${accountId}: failed (${errorKind(error)})`);
+  }
+  try {
+    notifyNew(
+      deps,
+      accountId,
+      fresh.filter((id) => !moved.has(id)),
+      false,
+    );
+  } catch (error) {
+    deps.log(`notify ${accountId}: failed (${errorKind(error)})`);
+  }
 }
 
 function refuse(
@@ -353,6 +512,8 @@ function notYetAvailable(_input: unknown, context: ExperimentalPluginRpcHandlerC
 }
 
 export const ACCOUNT_BUSY_MESSAGE = "A message is being sent";
+/** new_mail_get for an unknown or expired token. */
+export const NEW_MAIL_GONE_MESSAGE = "This notification has expired";
 /** Fixed texts of translation refusals. */
 export const UNKNOWN_TRANSLATION_MESSAGE = "Unknown translation";
 export const TRANSLATE_FAILED_MESSAGE = "Translation failed; try again";
@@ -631,6 +792,19 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     const queue = overrides.queue ?? createAccountQueue();
     // Undo's second wake: the account's next round end wakes it once more.
     const roundWakes = new RoundWakes((accountId) => loop.wake(accountId));
+    // New-mail toasts (slice 3e): ids in memory under a token; realtime carries the token only.
+    const newMail = new NewMailBook(clock, () => randomBytes(18).toString("base64url"));
+    const newMailDeps: NewMailDeps = {
+      store,
+      clock,
+      wake: (accountId, options) => loop.wake(accountId, options),
+      publishChanged,
+      book: newMail,
+      publishNew: (token) => bb.realtime.publish(NEW_MAIL_CHANNEL, { token } satisfies NewMailPayload),
+      notifyOn: () => current.notifyNewMail,
+      quietHours: () => current.quietHours,
+      log: (line) => bb.log.info(line),
+    };
 
     // Always registered; without a key no password can be sealed or opened, so
     // rounds do nothing until one is saved.
@@ -645,9 +819,58 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         log: (line) => bb.log.info(line),
         isReady: () => vault !== null,
         queue,
-        onRoundEnd: (accountId) => roundWakes.roundEnded(accountId),
+        onRoundOk: (accountId, outcome, only) => {
+          afterRound(newMailDeps, accountId, outcome, only);
+          idle.firstRoundOk(accountId);
+        },
+        onRoundEnd: (accountId) => {
+          roundWakes.roundEnded(accountId);
+          snoozeClock.roundEnded(accountId);
+          // authFailed, a new listing or a removed account changes what is watched.
+          idle.refresh();
+        },
       },
     );
+    // One read-only IDLE watch per account on its Inbox (slice 3e).
+    const idle = createIdleSupervisor({
+      gateway,
+      store,
+      vault: sealer,
+      wake: (accountId, options) => loop.wake(accountId, options),
+      log: (line) => bb.log.info(line),
+      enabled: () => current.instantMail,
+      isReady: () => vault !== null,
+      clock,
+    });
+    const snoozeClock = createSnoozeClock({
+      store,
+      queue,
+      wake: (accountId) => loop.wake(accountId),
+      notify: (accountId, ids) => {
+        try {
+          notifyNew(newMailDeps, accountId, ids, true);
+        } catch (error) {
+          bb.log.info(`notify ${accountId}: failed (${errorKind(error)})`);
+        }
+      },
+      clock,
+      isReady: () => vault !== null,
+      log: (line) => bb.log.info(line),
+    });
+    // A restart never resumes a triage batch; rescued-from-Spam keys are kept 180 days.
+    try {
+      const settled = store.settleTriageAtStart(clock.now().toISOString());
+      if (settled.interrupted > 0 || settled.expired > 0) {
+        bb.log.info(`triage: ${settled.interrupted} interrupted, ${settled.expired} expired`);
+      }
+    } catch (error) {
+      bb.log.warn(`triage settle failed (${errorKind(error)})`);
+    }
+    try {
+      store.pruneSpamSeen(new Date(clock.now().getTime() - SPAM_SEEN_KEEP_MS).toISOString());
+    } catch (error) {
+      bb.log.warn(`spam-seen prune failed (${errorKind(error)})`);
+    }
 
     const rawDeps: RawDeps = {
       store,
@@ -749,7 +972,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         const daily = setInterval(purgeProposals, PURGE_INTERVAL_MS);
         const sweep = setInterval(() => jobs.sweep(), JOB_SWEEP_MS);
         try {
-          await Promise.all([loop.start(signal), worker.start(signal)]);
+          await Promise.all([loop.start(signal), worker.start(signal), idle.start(signal), snoozeClock.start(signal)]);
         } finally {
           clearInterval(daily);
           clearInterval(sweep);
@@ -765,8 +988,12 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       current = next;
       const wasReady = vault !== null;
       vault = openVault(next.vaultKey);
-      if (!wasReady && vault !== null) loop.wake(null);
+      if (!wasReady && vault !== null) {
+        loop.wake(null);
+        void snoozeClock.tick();
+      }
       if (next.syncIntervalMinutes !== prev.syncIntervalMinutes) loop.reschedule();
+      if (next.instantMail !== prev.instantMail || wasReady !== (vault !== null)) idle.refresh();
     });
 
     const tickets = new TicketBook<DownloadRequest>(clock);
@@ -799,6 +1026,8 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       undo: new UndoBook(clock),
       roundWakes,
       undoWaitMs: overrides.undoWaitMs ?? UNDO_WAIT_MS,
+      idle,
+      newMail,
     });
     registerDownloadRoute(bb, store, rawDeps, tickets);
     registerAgentSurfaces(bb, store, {
@@ -846,6 +1075,10 @@ type RpcDeps = {
   undo: UndoBook;
   roundWakes: RoundWakes;
   undoWaitMs: number;
+  /** The IDLE supervisor: refreshed when accounts change (slice 3e). */
+  idle: IdleSupervisor;
+  /** New-mail toast tokens (slice 3e). */
+  newMail: NewMailBook;
 };
 
 /** What a download ticket stands for; the name and bytes are resolved again when it is used. */
@@ -1292,6 +1525,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         }
         publishChanged(account.id);
         deps.loop.wake(account.id);
+        deps.idle.refresh();
         return account;
       },
       accounts_remove: ({ accountId }, context) => {
@@ -1303,7 +1537,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
           if (error instanceof AccountBusyError) throw refuse("conflict", ACCOUNT_BUSY_MESSAGE);
           throw error;
         }
-        if (removed) publishChanged(accountId);
+        if (removed) {
+          publishChanged(accountId);
+          deps.idle.refresh();
+        }
         return { removed };
       },
       sync_now: ({ accountId }) => {
@@ -1597,7 +1834,21 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       })),
       action_undo: owner("action_undo", ({ undoId }) => runUndo(deps, undoId, (line) => bb.log.info(line))),
       // Slice 3e: wired in the server tasks; until then every call refuses.
-      new_mail_get: notYetAvailable,
+      new_mail_get: ({ token }, context) => {
+        refusePluginCaller(context);
+        const ids = deps.newMail.get(token);
+        if (ids === null) throw refuse("not_found", NEW_MAIL_GONE_MESSAGE);
+        const timeOf = (row: { date: string | null; fetchedAt: string }) => Date.parse(row.date ?? row.fetchedAt) || 0;
+        const rows = store.notifyRows(ids, nowIso()).sort((a, b) => timeOf(b) - timeOf(a));
+        const items = rows.slice(0, NEW_MAIL_TOAST_ITEMS).map((row) => ({
+          accountId: row.accountId,
+          threadId: row.threadId,
+          messageId: row.id,
+          name: toastName(row.fromName, row.fromAddress),
+          address: row.fromAddress,
+        }));
+        return { items, more: rows.length - items.length };
+      },
       unsubscribe_info: notYetAvailable,
       unsubscribe_run: notYetAvailable,
       message_snooze: notYetAvailable,
