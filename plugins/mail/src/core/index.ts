@@ -21,4 +21,5 @@ export * from "./compose-bcc.ts";
 export * from "./compose-drafts.ts";
 export * from "./compose.ts";
 export * from "./compose-outbox.ts";
+export * from "./agent-propose.ts";
 export { removeControls, removeInvisible } from "./html-entities.ts";
