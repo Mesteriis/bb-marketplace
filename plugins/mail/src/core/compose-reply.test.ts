@@ -30,6 +30,7 @@ describe("replyRecipients: Reply", () => {
     expect(replyRecipients(source(), "reply", OWN)).toEqual({
       to: [addr("anna@example.org", "Anna Lind")],
       cc: [],
+      dropped: [],
     });
   });
 
@@ -42,6 +43,7 @@ describe("replyRecipients: Reply", () => {
     expect(result).toEqual({
       to: [addr("list@example.net", "Garden list"), addr("b@example.net")],
       cc: [],
+      dropped: [],
     });
   });
 
@@ -54,6 +56,7 @@ describe("replyRecipients: Reply", () => {
     expect(replyRecipients(own, "reply", OWN)).toEqual({
       to: [addr("bob@example.com", "Bob"), addr("carl@example.com")],
       cc: [],
+      dropped: [],
     });
   });
 
@@ -81,6 +84,31 @@ describe("replyRecipients: Reply", () => {
       OWN,
     );
     expect(result.to).toEqual([addr("anna@xn--bcher-kva.example")]);
+    expect(result.dropped).toEqual(["not an address"]);
+  });
+
+  it("falls back to From when every Reply-To address is unusable, and says which were dropped", () => {
+    const result = replyRecipients(
+      source({ replyTo: [addr("broken@"), addr("BROKEN@")] }),
+      "reply",
+      OWN,
+    );
+    expect(result).toEqual({
+      to: [addr("anna@example.org", "Anna Lind")],
+      cc: [],
+      dropped: ["broken@"],
+    });
+  });
+
+  it("lists unusable To and Cc addresses of a Reply all", () => {
+    const result = replyRecipients(
+      source({ to: [addr("bob@example.com"), addr("x@@example.com")], cc: [addr("nobody")] }),
+      "reply_all",
+      OWN,
+    );
+    expect(result.to).toEqual([addr("anna@example.org", "Anna Lind"), addr("bob@example.com")]);
+    expect(result.cc).toEqual([]);
+    expect(result.dropped).toEqual(["x@@example.com", "nobody"]);
   });
 
   it("keeps a display name but never a line break in it", () => {
@@ -106,6 +134,7 @@ describe("replyRecipients: Reply all", () => {
     expect(result).toEqual({
       to: [addr("anna@example.org", "Anna Lind"), addr("bob@example.com", "Bob")],
       cc: [addr("carl@example.com")],
+      dropped: [],
     });
   });
 
@@ -130,6 +159,7 @@ describe("replyRecipients: Reply all", () => {
     expect(result).toEqual({
       to: [addr("anna@example.org", "Anna Lind"), addr("bob@example.com")],
       cc: [addr("carl@example.com")],
+      dropped: [],
     });
   });
 
@@ -145,6 +175,7 @@ describe("replyRecipients: Reply all", () => {
     expect(result).toEqual({
       to: [addr("anna@example.org", "Anna Lind"), addr("bob@example.com")],
       cc: [addr("carl@example.com")],
+      dropped: [],
     });
   });
 
@@ -158,7 +189,7 @@ describe("replyRecipients: Reply all", () => {
       "reply_all",
       OWN,
     );
-    expect(result).toEqual({ to: [addr("carl@example.com")], cc: [] });
+    expect(result).toEqual({ to: [addr("carl@example.com")], cc: [], dropped: [] });
   });
 
   it("replies to all of one's own sent message: its To and Cc, own addresses removed", () => {
@@ -170,12 +201,13 @@ describe("replyRecipients: Reply all", () => {
     expect(replyRecipients(sent, "reply_all", OWN)).toEqual({
       to: [addr("bob@example.com")],
       cc: [addr("carl@example.com")],
+      dropped: [],
     });
   });
 
   it("never carries a Bcc (the source has none to carry)", () => {
     const result = replyRecipients(source(), "reply_all", OWN);
-    expect(Object.keys(result).sort()).toEqual(["cc", "to"]);
+    expect(Object.keys(result).sort()).toEqual(["cc", "dropped", "to"]);
   });
 });
 

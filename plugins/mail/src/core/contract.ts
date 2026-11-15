@@ -215,7 +215,12 @@ export const rpcSchemas = {
   /** A reply, reply-all or forward draft of a stored message. */
   compose_prepare: {
     input: z.object({ kind: z.enum(["reply", "reply_all", "forward"]), messageId: idInput }),
-    output: z.object({ draftId: z.string(), warning: composeWarning }),
+    output: z.object({
+      draftId: z.string(),
+      warning: composeWarning,
+      /** Stored addresses of the original that cannot be sent to, left out of the recipients. */
+      dropped: z.array(z.string()).max(200),
+    }),
   },
   /** One of our drafts, or a synced Drafts message to continue. */
   compose_open: {
@@ -340,5 +345,13 @@ export type MailChangedPayload = { accountId: string | null };
 /** Realtime channel the server publishes on when an outbox row changes. */
 export const OUTBOX_CHANGED_CHANNEL = "outbox-changed";
 
-/** Payload on OUTBOX_CHANGED_CHANNEL: ids and the state only. */
-export type OutboxChangedPayload = { accountId: string; id: string; state: OutboxState };
+/**
+ * Payload on OUTBOX_CHANGED_CHANNEL: ids and the state only. `done` and
+ * `cancelled` appear only here: a done row is deleted (sent), a cancelled
+ * one was removed without sending (Undo, or Discard of an unknown send).
+ */
+export type OutboxChangedPayload = {
+  accountId: string;
+  id: string;
+  state: OutboxState | "cancelled";
+};

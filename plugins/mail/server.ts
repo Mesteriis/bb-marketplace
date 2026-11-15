@@ -57,6 +57,7 @@ import {
   resolveMoveDestination,
   roleFolders,
   rpcSchemas,
+  SendError,
   testAccount,
   toPublicAccount,
   type Account,
@@ -67,6 +68,7 @@ import {
   type MailAddress,
   type MailChangedPayload,
   type MailStore,
+  type MailTransport,
   type MessageAction,
   type MessageSummary,
   type SecretVault,
@@ -105,7 +107,18 @@ const READ_INSTRUCTIONS =
 export interface MailPluginOverrides {
   gateway?: ImapGateway;
   clock?: Clock;
+  transport?: MailTransport;
 }
+
+/** Until the SMTP adapter is wired (slice 3b task 6): every SMTP check fails, nothing is sent. */
+const SMTP_NOT_WIRED: MailTransport = {
+  verify: async () => {
+    throw new SendError("connect", false);
+  },
+  send: async () => {
+    throw new SendError("connect", false);
+  },
+};
 
 function isVaultKey(value: string): boolean {
   try {
@@ -302,7 +315,14 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       clock,
       notifier: { mailChanged: publishChanged },
     };
-    const accountDeps: AccountDeps = { store, gateway, vault: sealer, clock, newId: randomUUID };
+    const accountDeps: AccountDeps = {
+      store,
+      gateway,
+      vault: sealer,
+      clock,
+      newId: randomUUID,
+      transport: overrides.transport ?? SMTP_NOT_WIRED,
+    };
 
     // Always registered; without a key no password can be sealed or opened, so
     // rounds do nothing until one is saved.

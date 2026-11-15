@@ -12,7 +12,20 @@
 //   - thread, folder, badge and search counts count distinct dedup keys, and
 //     rows waiting to move out are hidden from their folder, the badge and
 //     search; moves re-home rows (same id), detaching them without a uid map.
+import type { ReplySource } from "../compose-reply.ts";
 import type {
+  ComposeAttachment,
+  DraftFields,
+  DraftRecord,
+  DraftServerCopy,
+  DraftServerCopyState,
+  NewDraft,
+  NewOutboxRow,
+  OriginalMessage,
+  OutboxRecord,
+  OutboxState,
+  OutgoingMessage,
+  SendErrorKind,
   FetchedMessage,
   FlagChange,
   FlagIntent,
@@ -33,14 +46,18 @@ import type {
   ThreadingInput,
   ThreadSummary,
 } from "../model.ts";
-import { ImapAuthError } from "../ports.ts";
+import { headerValue, normalizeMessageId } from "../headers.ts";
+import { ImapAuthError, type AccountWriteQueue, type MailTransport, type MessageBuilder, type OriginalReader, type OutboxNotifier, type SendResult, type SmtpConfig } from "../ports.ts";
+import type { OutboxChangedPayload } from "../contract.ts";
 import { snippetOf as snippetFromBody } from "../snippet.ts";
 import {
   capInlineParts,
   compareFolders,
   dedupKeyOf,
   effectiveSpecialUse,
+  rankRecipientSuggestions,
   UNIFIED_ROLES,
+  type SuggestionEntry,
 } from "../store-rules.ts";
 import type {
   ChangeNotifier,
@@ -170,7 +187,33 @@ type StoreState = {
   folders: Map<string, RemoteFolder[]>;
   /** `${accountId}\u0000${lowercased address}`. */
   imageSenders: Set<string>;
+  drafts: Map<string, DraftRecord>;
+  composeAttachments: StoredComposeAttachment[];
+  outbox: Map<string, { record: OutboxRecord; mime: Uint8Array; bccHeader: string | null }>;
 };
+
+type StoredComposeAttachment = ComposeAttachment & {
+  draftId: string;
+  sha256: string;
+  data: Uint8Array;
+  contentId: string | null;
+  position: number;
+};
+
+function outboxOrder(a: OutboxRecord, b: OutboxRecord): number {
+  if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+function dueOrder(a: OutboxRecord, b: OutboxRecord): number {
+  const byDue = Date.parse(a.sendAfter) - Date.parse(b.sendAfter);
+  return byDue !== 0 ? byDue : outboxOrder(a, b);
+}
+
+function normalizeIso(date: string): string | null {
+  const time = Date.parse(date);
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
 
 const MOVE_MAX_FAILURES = 3;
 
@@ -188,10 +231,6 @@ function snippetOf(message: FetchedMessage): string {
   return snippetFromBody(message.bodyText, message.bodyHtml);
 }
 
-function notImplemented(method: string): Error {
-  return new Error(`not implemented: ${method}`);
-}
-
 export class InMemoryMailStore implements MailStore {
   private state: StoreState = {
     accounts: new Map(),
@@ -200,6 +239,9 @@ export class InMemoryMailStore implements MailStore {
     nextId: 1,
     folders: new Map(),
     imageSenders: new Set(),
+    drafts: new Map(),
+    composeAttachments: [],
+    outbox: new Map(),
   };
 
   /** Runs fn; on a throw restores the state from before the call, like a rollback. */
@@ -253,6 +295,12 @@ export class InMemoryMailStore implements MailStore {
     this.state.folders.delete(id);
     for (const key of [...this.state.imageSenders]) {
       if (key.startsWith(`${id}\u0000`)) this.state.imageSenders.delete(key);
+    }
+    for (const draft of [...this.state.drafts.values()]) {
+      if (draft.accountId === id) this.deleteDraft(draft.id);
+    }
+    for (const [key, entry] of [...this.state.outbox]) {
+      if (entry.record.accountId === id) this.state.outbox.delete(key);
     }
   }
 
@@ -585,76 +633,302 @@ export class InMemoryMailStore implements MailStore {
     return 0;
   }
 
-  // Compose and send (slice 3b): not implemented yet ---------------------------
+  // Compose and send (slice 3b) ----------------------------------------------
 
-  createDraft(): never {
-    throw notImplemented("createDraft");
+  createDraft(input: NewDraft): DraftRecord {
+    const record: DraftRecord = {
+      ...structuredClone(input),
+      revision: 1,
+      serverState: input.serverCopy === null ? "none" : "saved",
+      updatedAt: input.createdAt,
+    };
+    this.state.drafts.set(record.id, record);
+    return structuredClone(record);
   }
-  getDraft(): never {
-    throw notImplemented("getDraft");
+
+  getDraft(id: string): DraftRecord | null {
+    const draft = this.state.drafts.get(id);
+    return draft ? structuredClone(draft) : null;
   }
-  saveDraft(): never {
-    throw notImplemented("saveDraft");
+
+  saveDraft(
+    id: string,
+    baseRevision: number,
+    fields: DraftFields,
+    updatedAt: string,
+  ): { revision: number } | { conflict: true; revision: number } {
+    const draft = this.state.drafts.get(id);
+    if (!draft) throw new Error("Draft not found");
+    if (draft.revision !== baseRevision || this.draftHeld(id)) {
+      return { conflict: true, revision: draft.revision };
+    }
+    Object.assign(draft, structuredClone(fields), {
+      revision: draft.revision + 1,
+      importHtml: null,
+      updatedAt,
+    });
+    return { revision: draft.revision };
   }
-  deleteDraft(): never {
-    throw notImplemented("deleteDraft");
+
+  deleteDraft(id: string): void {
+    this.state.drafts.delete(id);
+    this.state.composeAttachments = this.state.composeAttachments.filter((a) => a.draftId !== id);
   }
-  listDrafts(): never {
-    throw notImplemented("listDrafts");
+
+  listDrafts(accountId: string): DraftRecord[] {
+    return [...this.state.drafts.values()]
+      .filter((d) => d.accountId === accountId)
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : 1))
+      .map((d) => structuredClone(d));
   }
-  draftForServerCopy(): never {
-    throw notImplemented("draftForServerCopy");
+
+  draftForServerCopy(accountId: string, folder: string, uid: number): string | null {
+    for (const draft of this.state.drafts.values()) {
+      const copy = draft.serverCopy;
+      if (draft.accountId === accountId && copy?.folder === folder && copy.uid === uid) return draft.id;
+    }
+    return null;
   }
-  recordServerCopy(): never {
-    throw notImplemented("recordServerCopy");
+
+  recordServerCopy(id: string, copy: DraftServerCopy | null): void {
+    const draft = this.state.drafts.get(id);
+    if (!draft) return;
+    draft.serverCopy = copy === null ? null : { ...copy };
+    draft.serverState = copy === null ? "none" : "saved";
   }
-  addAttachment(): never {
-    throw notImplemented("addAttachment");
+
+  setServerCopyState(id: string, state: DraftServerCopyState): void {
+    const draft = this.state.drafts.get(id);
+    if (draft) draft.serverState = state;
   }
-  listAttachments(): never {
-    throw notImplemented("listAttachments");
+
+  addAttachment(
+    draftId: string,
+    input: {
+      fileName: string;
+      mimeType: string;
+      size: number;
+      sha256: string;
+      data: Uint8Array;
+      contentId?: string | null;
+    },
+  ): ComposeAttachment {
+    if (!this.state.drafts.has(draftId)) throw new Error("Draft not found");
+    const own = this.state.composeAttachments.filter((a) => a.draftId === draftId);
+    const stored: StoredComposeAttachment = {
+      id: `att_${this.state.nextId++}`,
+      draftId,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      size: input.size,
+      sha256: input.sha256,
+      data: input.data.slice(),
+      contentId: input.contentId ?? null,
+      position: own.reduce((max, a) => Math.max(max, a.position), -1) + 1,
+    };
+    this.state.composeAttachments.push(stored);
+    return { id: stored.id, fileName: stored.fileName, mimeType: stored.mimeType, size: stored.size };
   }
-  attachmentData(): never {
-    throw notImplemented("attachmentData");
+
+  listAttachments(draftId: string): ComposeAttachment[] {
+    return this.draftAttachments(draftId).map((a) => ({
+      id: a.id,
+      fileName: a.fileName,
+      mimeType: a.mimeType,
+      size: a.size,
+    }));
   }
-  removeAttachment(): never {
-    throw notImplemented("removeAttachment");
+
+  attachmentData(
+    draftId: string,
+  ): (ComposeAttachment & { data: Uint8Array; sha256: string; contentId: string | null })[] {
+    return this.draftAttachments(draftId).map((a) => ({
+      id: a.id,
+      fileName: a.fileName,
+      mimeType: a.mimeType,
+      size: a.size,
+      sha256: a.sha256,
+      contentId: a.contentId,
+      data: a.data.slice(),
+    }));
   }
-  queueOutbox(): never {
-    throw notImplemented("queueOutbox");
+
+  removeAttachment(draftId: string, attachmentId: string): boolean {
+    const before = this.state.composeAttachments.length;
+    this.state.composeAttachments = this.state.composeAttachments.filter(
+      (a) => !(a.draftId === draftId && a.id === attachmentId),
+    );
+    return this.state.composeAttachments.length < before;
   }
-  getOutbox(): never {
-    throw notImplemented("getOutbox");
+
+  queueOutbox(
+    input: NewOutboxRow,
+    draftBaseRevision: number,
+  ): { row: OutboxRecord; created: boolean } | { conflict: true } {
+    const existing = this.state.outbox.get(input.id);
+    if (existing) return { row: structuredClone(existing.record), created: false };
+    if (input.draftId !== null) {
+      const draft = this.state.drafts.get(input.draftId);
+      if (!draft || draft.revision !== draftBaseRevision || this.draftHeld(input.draftId)) {
+        return { conflict: true };
+      }
+    }
+    const { mime, bccHeader, ...rest } = input;
+    const record: OutboxRecord = {
+      ...structuredClone(rest),
+      state: "queued",
+      attempts: 0,
+      errorKind: null,
+      rejected: [],
+      updatedAt: input.createdAt,
+    };
+    this.state.outbox.set(input.id, { record, mime: mime.slice(), bccHeader });
+    return { row: structuredClone(record), created: true };
   }
-  listOutbox(): never {
-    throw notImplemented("listOutbox");
+
+  getOutbox(id: string): OutboxRecord | null {
+    const entry = this.state.outbox.get(id);
+    return entry ? structuredClone(entry.record) : null;
   }
-  outboxPayload(): never {
-    throw notImplemented("outboxPayload");
+
+  listOutbox(accountId: string | null): OutboxRecord[] {
+    return [...this.state.outbox.values()]
+      .map((e) => e.record)
+      .filter((r) => accountId === null || r.accountId === accountId)
+      .sort(outboxOrder)
+      .map((r) => structuredClone(r));
   }
-  transitionOutbox(): never {
-    throw notImplemented("transitionOutbox");
+
+  outboxPayload(id: string): { mime: Uint8Array; bccHeader: string | null } | null {
+    const entry = this.state.outbox.get(id);
+    return entry ? { mime: entry.mime.slice(), bccHeader: entry.bccHeader } : null;
   }
-  deleteOutbox(): never {
-    throw notImplemented("deleteOutbox");
+
+  transitionOutbox(
+    id: string,
+    from: OutboxState[],
+    to: OutboxState,
+    patch: {
+      errorKind?: SendErrorKind | null;
+      rejected?: string[];
+      sendAfter?: string;
+      countAttempt?: boolean;
+      updatedAt?: string;
+    } = {},
+  ): boolean {
+    const entry = this.state.outbox.get(id);
+    if (!entry || !from.includes(entry.record.state)) return false;
+    const record = entry.record;
+    record.state = to;
+    if (patch.errorKind !== undefined) record.errorKind = patch.errorKind;
+    if (patch.rejected !== undefined) record.rejected = [...patch.rejected];
+    if (patch.sendAfter !== undefined) record.sendAfter = patch.sendAfter;
+    if (patch.countAttempt) record.attempts++;
+    if (patch.updatedAt !== undefined) record.updatedAt = patch.updatedAt;
+    return true;
   }
-  claimDueOutbox(): never {
-    throw notImplemented("claimDueOutbox");
+
+  deleteOutbox(id: string, from: OutboxState[]): boolean {
+    const entry = this.state.outbox.get(id);
+    if (!entry || !from.includes(entry.record.state)) return false;
+    this.state.outbox.delete(id);
+    return true;
   }
-  recoverOutboxOnStart(): never {
-    throw notImplemented("recoverOutboxOnStart");
+
+  claimDueOutbox(nowIso: string, busyAccounts: string[]): OutboxRecord | null {
+    const now = Date.parse(nowIso);
+    const due = [...this.state.outbox.values()]
+      .map((e) => e.record)
+      .filter(
+        (r) => r.state === "queued" && Date.parse(r.sendAfter) <= now && !busyAccounts.includes(r.accountId),
+      )
+      .sort(dueOrder)[0];
+    if (!due) return null;
+    due.state = "sending";
+    due.attempts++;
+    due.updatedAt = nowIso;
+    return structuredClone(due);
   }
-  completeOutbox(): never {
-    throw notImplemented("completeOutbox");
+
+  recoverOutboxOnStart(nowIso: string): { unknown: number; held: number } {
+    const now = Date.parse(nowIso);
+    let unknown = 0;
+    let held = 0;
+    for (const { record } of this.state.outbox.values()) {
+      if (record.state === "sending") {
+        record.state = "unknown";
+        record.errorKind = "unknown_after_data";
+        record.updatedAt = nowIso;
+        unknown++;
+      } else if (record.state === "queued" && Date.parse(record.sendAfter) <= now) {
+        record.state = "held";
+        record.updatedAt = nowIso;
+        held++;
+      } else if (record.state === "appending") {
+        record.state = "sent";
+        record.updatedAt = nowIso;
+      }
+    }
+    return { unknown, held };
   }
-  hasSendingOutbox(): never {
-    throw notImplemented("hasSendingOutbox");
+
+  completeOutbox(id: string): void {
+    const entry = this.state.outbox.get(id);
+    if (!entry) return;
+    this.state.outbox.delete(id);
+    if (entry.record.draftId !== null) this.deleteDraft(entry.record.draftId);
   }
-  replySource(): never {
-    throw notImplemented("replySource");
+
+  hasSendingOutbox(accountId: string): boolean {
+    return [...this.state.outbox.values()].some(
+      (e) => e.record.accountId === accountId && (e.record.state === "sending" || e.record.state === "appending"),
+    );
   }
-  recipientSuggestions(): never {
-    throw notImplemented("recipientSuggestions");
+
+  replySource(
+    messageId: string,
+  ): (ReplySource & { accountId: string; folder: string; replyToKnown: boolean }) | null {
+    const row = this.state.rows.find((r) => r.id === messageId);
+    if (!row) return null;
+    const m = row.message;
+    return {
+      accountId: row.accountId,
+      folder: row.folder,
+      from: { ...m.from },
+      to: m.to.map((a) => ({ ...a })),
+      cc: m.cc.map((a) => ({ ...a })),
+      replyTo: (m.replyTo ?? []).map((a) => ({ ...a })),
+      replyToKnown: m.replyTo !== undefined,
+      subject: m.subject,
+      date: m.date === null ? null : (normalizeIso(m.date) ?? null),
+      messageId: m.messageId,
+      inReplyTo: m.inReplyTo,
+      references: [...m.references],
+    };
+  }
+
+  recipientSuggestions(prefix: string, limit: number): MailAddress[] {
+    const entries: SuggestionEntry[] = [];
+    for (const row of this.state.rows) {
+      const m = row.message;
+      const sent = this.roleOf(row.accountId, row.folder) === "sent";
+      entries.push({ address: m.from.address, name: m.from.name, date: m.date, ownerSent: false });
+      for (const a of [...m.to, ...m.cc]) {
+        entries.push({ address: a.address, name: a.name, date: m.date, ownerSent: sent });
+      }
+    }
+    return rankRecipientSuggestions(entries, prefix, limit);
+  }
+
+  /** A live outbox row holds the draft (done rows are deleted). */
+  private draftHeld(draftId: string): boolean {
+    return [...this.state.outbox.values()].some((e) => e.record.draftId === draftId);
+  }
+
+  private draftAttachments(draftId: string): StoredComposeAttachment[] {
+    return this.state.composeAttachments
+      .filter((a) => a.draftId === draftId)
+      .sort((a, b) => a.position - b.position);
   }
 
   unreadCount(accountId: string | null): number {
@@ -903,7 +1177,7 @@ export class InMemoryMailStore implements MailStore {
       to: row.message.to.map((a) => ({ ...a })),
       cc: row.message.cc.map((a) => ({ ...a })),
       attachments: row.message.attachments.map((a) => ({ ...a })),
-      draftId: null,
+      draftId: row.uid === null ? null : this.draftForServerCopy(row.accountId, row.folder, row.uid),
     };
   }
 
@@ -994,6 +1268,10 @@ export type SessionCall = {
   uid?: number;
   destination?: string;
   change?: FlagChange;
+  flags?: string[];
+  raw?: Uint8Array;
+  messageId?: string;
+  guard?: { messageId: string; size: number };
 };
 
 export type OpenedSession = {
@@ -1039,6 +1317,16 @@ export class ScriptedImapGateway implements ImapGateway {
   ];
   listFoldersCalls = 0;
   moveUidMap = true;
+  /** The server advertises UIDPLUS (APPENDUID, UID EXPUNGE). */
+  uidplus = true;
+  /** The server is Gmail (X-GM-EXT-1). */
+  gmail = false;
+  /** APPEND answers with APPENDUID. */
+  appendUid = true;
+  /** Every APPEND, in order. */
+  readonly appended: { path: string; uid: number; flags: string[]; raw: Uint8Array }[] = [];
+  /** Every message expungeOwn removed. */
+  readonly expunged: { path: string; uid: number }[] = [];
   private openFailure: Error | null = null;
   private readonly openFolderFailures = new Map<string, Error>();
   private readonly onceFailures = new Map<string, Error>();
@@ -1110,6 +1398,12 @@ export class ScriptedImapGateway implements ImapGateway {
 
   failAlways(method: SessionMethod, error: Error, path?: string): void {
     this.alwaysFailures.set(failureKey(method, path), error);
+  }
+
+  /** Undoes failAlways (and a pending failNext) for the method. */
+  clearFailure(method: SessionMethod, path?: string): void {
+    this.alwaysFailures.delete(failureKey(method, path));
+    this.onceFailures.delete(failureKey(method, path));
   }
 
   /**
@@ -1267,20 +1561,221 @@ export class ScriptedImapGateway implements ImapGateway {
         return { moved: this.moveUidMap ? moved : null };
       },
       capabilities: () => {
-        throw new Error("not implemented: capabilities");
+        record({ method: "capabilities" });
+        return { uidplus: this.uidplus, gmail: this.gmail };
       },
-      appendMessage: async () => {
-        throw new Error("not implemented: appendMessage");
+      appendMessage: async (raw, flags) => {
+        record({ method: "appendMessage", flags: [...flags], raw: raw.slice() });
+        if (options.readOnly) throw imapError("ReadOnly");
+        const target = box();
+        const uid = target.uidNext++;
+        const messageId = headerValue(raw, "message-id");
+        target.messages.push(
+          makeFetchedMessage(uid, {
+            messageId: messageId === null ? null : normalizeMessageId(messageId),
+            subject: headerValue(raw, "subject") ?? "",
+            size: raw.length,
+            seen: flags.includes("\\Seen"),
+          }),
+        );
+        this.appended.push({ path, uid, flags: [...flags], raw: raw.slice() });
+        return this.appendUid ? { uidValidity: target.uidValidity, uid } : { uidValidity: null, uid: null };
       },
-      findByMessageId: async () => {
-        throw new Error("not implemented: findByMessageId");
+      findByMessageId: async (messageId) => {
+        record({ method: "findByMessageId", messageId });
+        const wanted = normalizeMessageId(messageId);
+        return box()
+          .messages.filter((m) => m.messageId !== null && normalizeMessageId(m.messageId) === wanted)
+          .map((m) => m.uid);
       },
-      expungeOwn: async () => {
-        throw new Error("not implemented: expungeOwn");
+      expungeOwn: async (uid, guard) => {
+        record({ method: "expungeOwn", uid, guard: { ...guard } });
+        if (!this.uidplus) throw imapError("ExpungeUnsupported");
+        if (options.readOnly) throw imapError("ReadOnly");
+        const messages = box().messages;
+        const index = messages.findIndex((m) => m.uid === uid);
+        const message = messages[index];
+        if (
+          message === undefined ||
+          message.messageId === null ||
+          normalizeMessageId(message.messageId) !== normalizeMessageId(guard.messageId) ||
+          message.size !== guard.size
+        ) {
+          throw imapError("GuardMismatch");
+        }
+        messages.splice(index, 1);
+        this.expunged.push({ path, uid });
       },
       close: async () => {
         opened.closed = true;
       },
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Compose and send (slice 3b) doubles
+// ---------------------------------------------------------------------------
+
+/**
+ * Records every send and verify. A send answers the next scripted result or
+ * error, else accepts every envelope recipient; `gateSend` holds the next
+ * send after it is recorded, so a test can act while SMTP is in flight.
+ */
+export class FakeTransport implements MailTransport {
+  readonly sent: { config: SmtpConfig; envelopeFrom: string; envelopeTo: string[]; raw: Uint8Array }[] = [];
+  readonly verified: SmtpConfig[] = [];
+  verifyError: Error | null = null;
+  private readonly script: (SendResult | Error)[] = [];
+  private gate: { enter: () => void; released: Promise<void> } | null = null;
+
+  /** The next sends answer these, in order. */
+  answer(...results: (SendResult | Error)[]): void {
+    this.script.push(...results);
+  }
+
+  gateSend(): { entered: Promise<void>; release: () => void } {
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => (enter = resolve));
+    const released = new Promise<void>((resolve) => (release = resolve));
+    this.gate = { enter, released };
+    return { entered, release };
+  }
+
+  async verify(config: SmtpConfig): Promise<void> {
+    this.verified.push({ ...config });
+    if (this.verifyError) throw this.verifyError;
+  }
+
+  async send(
+    config: SmtpConfig,
+    message: { envelopeFrom: string; envelopeTo: string[]; raw: Uint8Array },
+    _signal: AbortSignal,
+  ): Promise<SendResult> {
+    this.sent.push({
+      config: { ...config },
+      envelopeFrom: message.envelopeFrom,
+      envelopeTo: [...message.envelopeTo],
+      raw: message.raw.slice(),
+    });
+    const gate = this.gate;
+    if (gate) {
+      this.gate = null;
+      gate.enter();
+      await gate.released;
+    }
+    const next = this.script.shift();
+    if (next instanceof Error) throw next;
+    return next ?? { accepted: [...message.envelopeTo], rejected: [] };
+  }
+}
+
+/**
+ * Builds plain, readable bytes: the headers a real builder writes (never a
+ * Bcc), an empty line, the text, then one line per attachment. Records
+ * every input.
+ */
+export class FakeBuilder implements MessageBuilder {
+  readonly built: OutgoingMessage[] = [];
+  failNext: Error | null = null;
+
+  async build(input: OutgoingMessage): Promise<Uint8Array> {
+    this.built.push(structuredClone(input));
+    if (this.failNext) {
+      const error = this.failNext;
+      this.failNext = null;
+      throw error;
+    }
+    const list = (addresses: { address: string }[]) => addresses.map((a) => a.address).join(", ");
+    const lines = [
+      `Message-ID: ${input.messageId}`,
+      `Date: ${input.date}`,
+      `From: ${input.from.address}`,
+      `To: ${list(input.to)}`,
+      ...(input.cc.length > 0 ? [`Cc: ${list(input.cc)}`] : []),
+      `Subject: ${input.subject}`,
+      ...(input.inReplyTo === null ? [] : [`In-Reply-To: ${input.inReplyTo}`]),
+      ...(input.references.length === 0 ? [] : [`References: ${input.references.join(" ")}`]),
+      "",
+      input.text,
+      ...input.attachments.map((a) => `[attachment ${a.fileName} ${a.bytes.length}]`),
+    ];
+    return new TextEncoder().encode(lines.join("\r\n"));
+  }
+}
+
+/** Serves originals by message id; an unknown id (or a scripted error) throws. */
+export class FakeOriginalReader implements OriginalReader {
+  readonly reads: string[] = [];
+  readonly originals = new Map<string, OriginalMessage | Error>();
+
+  async read(messageId: string): Promise<OriginalMessage> {
+    this.reads.push(messageId);
+    const original = this.originals.get(messageId);
+    if (original === undefined) throw imapError("NotFound");
+    if (original instanceof Error) throw original;
+    return structuredClone(original);
+  }
+}
+
+/** One promise chain per account (a rejection does not poison it); records each run's account. */
+export class SerialQueue implements AccountWriteQueue {
+  readonly runs: string[] = [];
+  private readonly tails = new Map<string, Promise<unknown>>();
+
+  run<T>(accountId: string, task: () => Promise<T>): Promise<T> {
+    this.runs.push(accountId);
+    const previous = this.tails.get(accountId) ?? Promise.resolve();
+    const result = previous.then(task);
+    this.tails.set(
+      accountId,
+      result.catch(() => undefined),
+    );
+    return result;
+  }
+}
+
+export class RecordingOutboxNotifier implements OutboxNotifier {
+  readonly events: OutboxChangedPayload[] = [];
+  outboxChanged(payload: OutboxChangedPayload): void {
+    this.events.push({ ...payload });
+  }
+}
+
+/**
+ * A compose and outbox setup over the fakes: one account (acc_1,
+ * owner@example.org, sealed password "invented-password", SMTP set, Sent
+ * copy by APPEND) whose server and store both list INBOX, Drafts and Sent.
+ */
+export function composeHarness(options: { now?: string } = {}) {
+  const store = new InMemoryMailStore();
+  const gateway = new ScriptedImapGateway({ uidValidity: 1, uidNext: 1, messages: [] });
+  const drafts = gateway.addFolder({ path: "Drafts", specialUse: "drafts" }, { uidValidity: 7, uidNext: 1, messages: [] })!;
+  const sent = gateway.addFolder({ path: "Sent", specialUse: "sent" }, { uidValidity: 9, uidNext: 1, messages: [] })!;
+  store.saveAccount(
+    makeStoredAccount({
+      passwordSealed: "invented-password",
+      smtp: { host: "smtp.example.org", port: 465, security: "tls", username: null },
+      sentCopy: "append",
+    }),
+  );
+  store.saveFolders("acc_1", gateway.folders);
+  let ids = 0;
+  const clock = new FixedClock(new Date(options.now ?? "2026-11-15T10:00:00.000Z"));
+  const deps = {
+    store,
+    gateway,
+    vault: new IdentityVault(),
+    clock,
+    newId: () => `id${++ids}`,
+    builder: new FakeBuilder(),
+    reader: new FakeOriginalReader(),
+    queue: new SerialQueue(),
+    notifier: new RecordingOutboxNotifier(),
+    transport: new FakeTransport(),
+  };
+  /** Moves the clock forward. */
+  const advance = (ms: number) => clock.set(new Date(clock.now().getTime() + ms));
+  return { ...deps, deps, drafts, sent, advance };
 }

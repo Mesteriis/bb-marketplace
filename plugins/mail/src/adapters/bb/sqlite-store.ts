@@ -1588,6 +1588,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
     recordServerCopy(): never {
       throw notImplemented("recordServerCopy");
     },
+    setServerCopyState(): never {
+      throw notImplemented("setServerCopyState");
+    },
     addAttachment(): never {
       throw notImplemented("addAttachment");
     },
@@ -1627,8 +1630,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
     completeOutbox(): never {
       throw notImplemented("completeOutbox");
     },
-    hasSendingOutbox(): never {
-      throw notImplemented("hasSendingOutbox");
+    hasSendingOutbox() {
+      // No outbox table before migration element 4, so nothing can be sending.
+      return false;
     },
     replySource(): never {
       throw notImplemented("replySource");

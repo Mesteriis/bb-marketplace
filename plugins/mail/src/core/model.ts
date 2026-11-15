@@ -452,15 +452,23 @@ export type NewDraft = DraftFields & {
   references: string[];
   /** A foreign Drafts message the owner continued: our first copy replaces it. */
   serverCopy: DraftServerCopy | null;
+  /**
+   * HTML (unsanitized; the page sanitizes it) the composer loads into the
+   * editor once: the original's body as a quote, or a continued foreign
+   * draft's body. Cleared by the first save.
+   */
+  importHtml: { html: string; into: "quote" | "body" } | null;
   /** The 3c seam; always "owner" in 3b. */
   origin: "owner";
   /** ISO 8601. */
   createdAt: string;
 };
 
-/** A compose_drafts row. */
+/** A compose_drafts row. Starts at revision 1; every save bumps it. */
 export type DraftRecord = NewDraft & {
   revision: number;
+  /** Where the copy in Drafts stands: "saved" with a serverCopy, else none, failed or local_only. */
+  serverState: DraftServerCopyState;
   /** ISO 8601. */
   updatedAt: string;
 };
