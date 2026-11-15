@@ -3645,6 +3645,29 @@ describe("sending polish: undo", () => {
     expect((await undo(host)).outcome).toBe("nothing");
   });
 
+  it("an unexpected error after the folder opened puts the rows back; a second undo copies them", async () => {
+    const host = await loadUndo("gmail");
+    const [a, b] = idsIn(host, "acc_1", "INBOX");
+    await archive(host, [a!, b!]);
+    pushMove(host, "INBOX", ALL_MAIL, [1, 2]);
+    // capabilities() throws once: a bug or a dropped session, not an IMAP refusal.
+    const gateway = host.gateway as unknown as { gmail: boolean };
+    let thrown = false;
+    Object.defineProperty(gateway, "gmail", {
+      configurable: true,
+      get: () => {
+        if (!thrown) {
+          thrown = true;
+          throw new Error("unexpected");
+        }
+        return true;
+      },
+    });
+    expect(await undo(host)).toMatchObject({ outcome: "done", restored: 0, failed: 2 });
+    expect(await undo(host)).toMatchObject({ outcome: "done", restored: 2, failed: 0 });
+    expect((await undo(host)).outcome).toBe("nothing");
+  });
+
   it("not synced yet goes back into the slot: a second undo copies once the row is attached or the folder resynced", async () => {
     const detached = await loadUndo("gmail");
     const [a, b] = idsIn(detached, "acc_1", "INBOX");
