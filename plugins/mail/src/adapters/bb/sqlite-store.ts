@@ -2,7 +2,10 @@
 //
 // MailStore on the plugin's own SQLite database (better-sqlite3). Semantics
 // match the in-memory store in src/core/testing/fakes.ts:
-//   - a pending local read (seen_pending) wins over server flags;
+//   - an owner-asked \Seen / \Flagged change waits in `seen_desired` /
+//     `flag_desired` (NULL = nothing pending) and wins over server flags
+//     until the push clears it; `seen_pending` (slice 1–2) is frozen since
+//     migration 3 and no longer read or written;
 //   - a folder reset detaches uids (uid = NULL) and keeps message ids; a
 //     detached row with the same Message-ID is reattached on upsert;
 //   - an undated message counts as inside the sync window and sorts as the
@@ -30,7 +33,9 @@ import type {
   MessageHeader,
   MessageSummary,
   ParsedQuery,
+  RawRef,
   RemoteFolder,
+  RoleCount,
   SpecialUse,
   StoredAccount,
   SyncState,
@@ -45,6 +50,7 @@ import {
   compareFolders,
   dedupKeyOf,
   effectiveSpecialUse,
+  UNIFIED_ROLES,
 } from "../../core/store-rules.ts";
 
 /**
@@ -203,6 +209,15 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (message_id, content_id)
   );
   `,
+  // 3: slice 3a — desired flag state (NULL = no pending change, 0/1 = the
+  // value to push) replaces seen_pending, which stays in place, frozen; the
+  // thread-date index serves All accounts paging across accounts.
+  `
+  ALTER TABLE messages ADD COLUMN seen_desired INTEGER;
+  ALTER TABLE messages ADD COLUMN flag_desired INTEGER;
+  UPDATE messages SET seen_desired = 1 WHERE seen_pending = 1;
+  CREATE INDEX threads_last_date ON threads(last_date, id);
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -279,6 +294,18 @@ const IN_INBOX = `(upper(m.folder) = 'INBOX' OR m.folder IN (
 /** True for a row (alias m) in the account's All Mail folder. */
 const IN_ALL_MAIL = `(m.folder IN (
   SELECT f.path FROM folders f WHERE f.account_id = m.account_id AND f.special_use = 'all'))`;
+
+/**
+ * The effective special use of a row (alias m) joined with its folder
+ * (alias f, LEFT JOIN): the saved special use, else Inbox for INBOX
+ * (store-rules effectiveSpecialUse).
+ */
+const ROW_ROLE = `CASE WHEN f.special_use IS NOT NULL THEN f.special_use
+  WHEN upper(m.folder) = 'INBOX' THEN 'inbox' END`;
+
+/** Messages (alias m) with their folder row (alias f). */
+const MESSAGES_WITH_FOLDER = `messages m LEFT JOIN folders f
+  ON f.account_id = m.account_id AND f.path = m.folder`;
 
 /** Oldest first; an undated message sorts after every dated one. */
 const OLDEST_FIRST = "date IS NULL, date, id";
@@ -408,7 +435,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
        refs = @refs, from_name = @fromName, from_address = @fromAddress, to_json = @toJson,
        cc_json = @ccJson, subject = @subject, date = @date, snippet = @snippet,
        body_text = @bodyText, body_html = @bodyHtml, html_truncated = @htmlTruncated,
-       is_read = CASE WHEN seen_pending = 1 THEN 1 ELSE @seen END, is_flagged = @flagged,
+       is_read = COALESCE(seen_desired, @seen), is_flagged = COALESCE(flag_desired, @flagged),
        has_attachments = @hasAttachments, size = @size, gm_thrid = @gmThreadId,
        gm_msgid = COALESCE(@gmMsgId, gm_msgid),
        dedup_key = CASE
@@ -523,6 +550,54 @@ export function createSqliteStore(db: Database.Database): MailStore {
       to: JSON.parse(row.to_json) as MailAddress[],
       cc: JSON.parse(row.cc_json) as MailAddress[],
       attachments: attachmentsOf.all(row.id).map(toAttachment),
+    };
+  }
+
+  /**
+   * One page of thread rows matching `where`, newest first by
+   * (last_date DESC, id DESC) with undated threads last; `flagged` is an SQL
+   * boolean over `threads`. The cursor is the last row's (last_date, id).
+   */
+  function pageThreads(query: {
+    where: string;
+    flagged: string;
+    params: Record<string, string>;
+    cursor: string | null;
+    limit: number;
+  }): { threads: ThreadSummary[]; nextCursor: string | null } {
+    const after = query.cursor === null ? null : decodeCursor(query.cursor);
+    const columns = `threads.*, ${query.flagged} AS flagged`;
+    const params = { ...query.params, limit: query.limit + 1 };
+    let rows: ListedThreadRow[];
+    if (after === null) {
+      rows = db
+        .prepare<[Record<string, unknown>], ListedThreadRow>(
+          `SELECT ${columns} FROM threads WHERE ${query.where}
+           ORDER BY last_date DESC, id DESC LIMIT @limit`,
+        )
+        .all(params);
+    } else if (after.lastDate === null) {
+      rows = db
+        .prepare<[Record<string, unknown>], ListedThreadRow>(
+          `SELECT ${columns} FROM threads WHERE last_date IS NULL AND id < @afterId AND ${query.where}
+           ORDER BY id DESC LIMIT @limit`,
+        )
+        .all({ ...params, afterId: after.id });
+    } else {
+      rows = db
+        .prepare<[Record<string, unknown>], ListedThreadRow>(
+          `SELECT ${columns} FROM threads
+           WHERE (last_date < @afterDate OR (last_date = @afterDate AND id < @afterId) OR last_date IS NULL)
+             AND ${query.where}
+           ORDER BY last_date DESC, id DESC LIMIT @limit`,
+        )
+        .all({ ...params, afterDate: after.lastDate, afterId: after.id });
+    }
+    const page = rows.slice(0, query.limit);
+    const last = page[page.length - 1];
+    return {
+      threads: page.map((row) => toThread(row, row.flagged === 1)),
+      nextCursor: rows.length > query.limit && last ? encodeCursor(last.last_date, last.id) : null,
     };
   }
 
@@ -737,9 +812,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
           { thread_id: string }
         >(
           `UPDATE messages
-           SET is_read = CASE WHEN seen_pending = 1 THEN 1 ELSE @seen END, is_flagged = @flagged
+           SET is_read = COALESCE(seen_desired, @seen), is_flagged = COALESCE(flag_desired, @flagged)
            WHERE account_id = @accountId AND folder = @folder AND uid = @uid
-             AND (is_read != CASE WHEN seen_pending = 1 THEN 1 ELSE @seen END OR is_flagged != @flagged)
+             AND (is_read != COALESCE(seen_desired, @seen) OR is_flagged != COALESCE(flag_desired, @flagged))
            RETURNING thread_id`,
         );
         const backfill = db.prepare<
@@ -787,11 +862,12 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
+    // Slice-2 view over seen_desired, until sync switches to pendingFlagIntents.
     pendingSeenUids(accountId, folder) {
       return db
         .prepare<[string, string], { uid: number }>(
           `SELECT uid FROM messages
-           WHERE account_id = ? AND folder = ? AND uid IS NOT NULL AND seen_pending = 1
+           WHERE account_id = ? AND folder = ? AND uid IS NOT NULL AND seen_desired = 1
            ORDER BY uid`,
         )
         .all(accountId, folder)
@@ -799,52 +875,109 @@ export function createSqliteStore(db: Database.Database): MailStore {
     },
 
     clearSeenPending(accountId, folder, uids) {
+      store.clearFlagIntents(
+        accountId,
+        folder,
+        uids.map((uid) => ({ uid, seen: true, flagged: null })),
+      );
+    },
+
+    setDesired(messageIds, change) {
       return atomic(() => {
-        const clear = db.prepare(
-          "UPDATE messages SET seen_pending = 0 WHERE account_id = ? AND folder = ? AND uid = ?",
+        const find = db.prepare<[string], { account_id: string; dedup_key: string }>(
+          "SELECT account_id, dedup_key FROM messages WHERE id = ?",
         );
-        for (const uid of uids) clear.run(accountId, folder, uid);
+        const seen = change.seen === undefined ? null : change.seen ? 1 : 0;
+        const flagged = change.flagged === undefined ? null : change.flagged ? 1 : 0;
+        // Attached copies get the value to push (overwriting an opposite
+        // one); detached copies drop a pending value of a changed field, so a
+        // stale intent cannot win when they are reattached.
+        const update = db.prepare<
+          [{ accountId: string; dedupKey: string; seen: number | null; flagged: number | null }],
+          { thread_id: string }
+        >(
+          `UPDATE messages SET
+             is_read = COALESCE(@seen, is_read),
+             is_flagged = COALESCE(@flagged, is_flagged),
+             seen_desired = CASE WHEN @seen IS NULL THEN seen_desired
+               WHEN uid IS NOT NULL THEN @seen ELSE NULL END,
+             flag_desired = CASE WHEN @flagged IS NULL THEN flag_desired
+               WHEN uid IS NOT NULL THEN @flagged ELSE NULL END
+           WHERE account_id = @accountId AND dedup_key = @dedupKey
+           RETURNING thread_id`,
+        );
+        const accounts: string[] = [];
+        const done = new Set<string>();
+        const touched = new Map<string, Set<string>>();
+        for (const id of messageIds) {
+          const row = find.get(id);
+          if (!row) continue;
+          if (!accounts.includes(row.account_id)) accounts.push(row.account_id);
+          const key = `${row.account_id}\u0000${row.dedup_key}`;
+          if (done.has(key)) continue;
+          done.add(key);
+          const threads = touched.get(row.account_id) ?? new Set<string>();
+          for (const copy of update.all({ accountId: row.account_id, dedupKey: row.dedup_key, seen, flagged })) {
+            threads.add(copy.thread_id);
+          }
+          touched.set(row.account_id, threads);
+        }
+        for (const [accountId, threadIds] of touched) refreshThreads(accountId, threadIds);
+        return accounts.map((accountId) => ({ accountId }));
       });
     },
 
-    setDesired() {
-      throw new Error("not implemented: setDesired");
+    pendingFlagIntents(accountId, folder) {
+      return db
+        .prepare<[string, string], { uid: number; seen_desired: number | null; flag_desired: number | null }>(
+          `SELECT uid, seen_desired, flag_desired FROM messages
+           WHERE account_id = ? AND folder = ? AND uid IS NOT NULL
+             AND (seen_desired IS NOT NULL OR flag_desired IS NOT NULL)
+           ORDER BY uid`,
+        )
+        .all(accountId, folder)
+        .map((r) => ({
+          uid: r.uid,
+          seen: r.seen_desired === null ? null : r.seen_desired === 1,
+          flagged: r.flag_desired === null ? null : r.flag_desired === 1,
+        }));
     },
 
-    pendingFlagIntents() {
-      throw new Error("not implemented: pendingFlagIntents");
-    },
-
-    clearFlagIntents() {
-      throw new Error("not implemented: clearFlagIntents");
+    clearFlagIntents(accountId, folder, pushed) {
+      return atomic(() => {
+        const clear = db.prepare(
+          `UPDATE messages SET
+             seen_desired = CASE WHEN seen_desired = @seen THEN NULL ELSE seen_desired END,
+             flag_desired = CASE WHEN flag_desired = @flagged THEN NULL ELSE flag_desired END
+           WHERE account_id = @accountId AND folder = @folder AND uid = @uid`,
+        );
+        const bit = (value: boolean | null) => (value === null ? null : value ? 1 : 0);
+        // A null in `pushed` compares false in SQL, so that field is left alone.
+        for (const intent of pushed) {
+          clear.run({ accountId, folder, uid: intent.uid, seen: bit(intent.seen), flagged: bit(intent.flagged) });
+        }
+      });
     },
 
     markOpened(messageId) {
       return atomic(() => {
         const row = db
-          .prepare<
-            [string],
-            { account_id: string; thread_id: string; is_read: number; dedup_key: string }
-          >("SELECT account_id, thread_id, is_read, dedup_key FROM messages WHERE id = ?")
+          .prepare<[string], { account_id: string; dedup_key: string }>(
+            "SELECT account_id, dedup_key FROM messages WHERE id = ?",
+          )
           .get(messageId);
         if (!row) return null;
-        const touched = new Set<string>();
-        if (row.is_read === 0) {
-          db.prepare("UPDATE messages SET is_read = 1, seen_pending = 1 WHERE id = ?").run(messageId);
-          touched.add(row.thread_id);
-        }
-        // Unread copies in other folders are read too: attached ones are
-        // pushed like the opened row; detached ones (no uid to push) are read
-        // locally only.
+        // Every unread copy (the opened row included) is read: attached ones
+        // get a read to push; detached ones (no uid to push) are read locally
+        // only and drop a stale pending unread.
         const copies = db
           .prepare<[string, string], { thread_id: string }>(
             `UPDATE messages SET is_read = 1,
-               seen_pending = CASE WHEN uid IS NOT NULL THEN 1 ELSE seen_pending END
+               seen_desired = CASE WHEN uid IS NOT NULL THEN 1 ELSE NULL END
              WHERE account_id = ? AND dedup_key = ? AND is_read = 0 RETURNING thread_id`,
           )
           .all(row.account_id, row.dedup_key);
-        for (const copy of copies) touched.add(copy.thread_id);
-        refreshThreads(row.account_id, touched);
+        refreshThreads(row.account_id, copies.map((c) => c.thread_id));
         return { accountId: row.account_id };
       });
     },
@@ -895,62 +1028,84 @@ export function createSqliteStore(db: Database.Database): MailStore {
     },
 
     listThreads(accountId, folder, cursor, limit) {
-      const after = cursor === null ? null : decodeCursor(cursor);
       // Whole (account-wide) threads with a row in the folder that is not
       // waiting to move out. An uncorrelated IN list is built once from the
       // (account_id, folder, move_pending) index, so the cost stays linear.
-      const inFolder = `threads.id IN (SELECT m.thread_id FROM messages m
-        WHERE m.account_id = @accountId AND m.folder = @folder AND m.move_pending IS NULL)`;
-      const columns = `threads.*, EXISTS (SELECT 1 FROM messages f
-        WHERE f.thread_id = threads.id AND f.account_id = @accountId AND f.folder = @folder
-          AND f.move_pending IS NULL AND f.is_flagged = 1) AS flagged`;
-      let rows: (ListedThreadRow)[];
-      if (after === null) {
-        rows = db
-          .prepare<[{ accountId: string; folder: string; limit: number }], ListedThreadRow>(
-            `SELECT ${columns} FROM threads WHERE account_id = @accountId AND ${inFolder}
-             ORDER BY last_date DESC, id DESC LIMIT @limit`,
-          )
-          .all({ accountId, folder, limit: limit + 1 });
-      } else if (after.lastDate === null) {
-        rows = db
-          .prepare<[{ accountId: string; folder: string; id: string; limit: number }], ListedThreadRow>(
-            `SELECT ${columns} FROM threads WHERE account_id = @accountId AND last_date IS NULL AND id < @id
-               AND ${inFolder}
-             ORDER BY id DESC LIMIT @limit`,
-          )
-          .all({ accountId, folder, id: after.id, limit: limit + 1 });
-      } else {
-        rows = db
-          .prepare<
-            [{ accountId: string; folder: string; lastDate: string; id: string; limit: number }],
-            ListedThreadRow
-          >(
-            `SELECT ${columns} FROM threads WHERE account_id = @accountId
-               AND (last_date < @lastDate OR (last_date = @lastDate AND id < @id) OR last_date IS NULL)
-               AND ${inFolder}
-             ORDER BY last_date DESC, id DESC LIMIT @limit`,
-          )
-          .all({ accountId, folder, lastDate: after.lastDate, id: after.id, limit: limit + 1 });
-      }
-      const page = rows.slice(0, limit);
-      const last = page[page.length - 1];
-      return {
-        threads: page.map((row) => toThread(row, row.flagged === 1)),
-        nextCursor: rows.length > limit && last ? encodeCursor(last.last_date, last.id) : null,
-      };
+      return pageThreads({
+        where: `account_id = @accountId AND threads.id IN (SELECT m.thread_id FROM messages m
+          WHERE m.account_id = @accountId AND m.folder = @folder AND m.move_pending IS NULL)`,
+        flagged: `EXISTS (SELECT 1 FROM messages f
+          WHERE f.thread_id = threads.id AND f.account_id = @accountId AND f.folder = @folder
+            AND f.move_pending IS NULL AND f.is_flagged = 1)`,
+        params: { accountId, folder },
+        cursor,
+        limit,
+      });
     },
 
-    listThreadsAll() {
-      throw new Error("not implemented: listThreadsAll");
+    listThreadsAll(role, cursor, limit) {
+      // Gmail's All Mail is never merged (server refuses the role too).
+      if (role === "all") return { threads: [], nextCursor: null };
+      return pageThreads({
+        where: `threads.id IN (SELECT m.thread_id FROM ${MESSAGES_WITH_FOLDER}
+          WHERE m.move_pending IS NULL AND ${ROW_ROLE} = @role)`,
+        flagged: `EXISTS (SELECT 1 FROM ${MESSAGES_WITH_FOLDER}
+          WHERE m.thread_id = threads.id AND m.move_pending IS NULL AND m.is_flagged = 1
+            AND ${ROW_ROLE} = @role)`,
+        params: { role },
+        cursor,
+        limit,
+      });
     },
 
     listRoles() {
-      throw new Error("not implemented: listRoles");
+      const rows = db
+        .prepare<[], { role: SpecialUse; total: number; unread: number }>(
+          `SELECT role, count(DISTINCT account_id || char(31) || dedup_key) AS total,
+             count(DISTINCT CASE WHEN is_read = 0 THEN account_id || char(31) || dedup_key END) AS unread
+           FROM (SELECT m.account_id, m.dedup_key, m.is_read, ${ROW_ROLE} AS role
+                 FROM ${MESSAGES_WITH_FOLDER} WHERE m.move_pending IS NULL)
+           WHERE role IS NOT NULL GROUP BY role`,
+        )
+        .all();
+      const byRole = new Map(rows.map((r) => [r.role, r]));
+      return UNIFIED_ROLES.map(
+        (role): RoleCount => ({
+          role,
+          unreadCount: byRole.get(role)?.unread ?? 0,
+          totalCount: byRole.get(role)?.total ?? 0,
+        }),
+      );
     },
 
-    rawRef() {
-      throw new Error("not implemented: rawRef");
+    rawRef(messageId): RawRef | null {
+      const row = db
+        .prepare<
+          [string],
+          {
+            account_id: string;
+            folder: string;
+            uid: number | null;
+            size: number;
+            message_id: string | null;
+            move_pending: string | null;
+            uid_validity: number | null;
+          }
+        >(
+          `SELECT m.account_id, m.folder, m.uid, m.size, m.message_id, m.move_pending, s.uid_validity
+           FROM messages m LEFT JOIN sync_state s ON s.account_id = m.account_id AND s.folder = m.folder
+           WHERE m.id = ?`,
+        )
+        .get(messageId);
+      if (!row || row.uid === null || row.move_pending !== null) return null;
+      return {
+        accountId: row.account_id,
+        folder: row.folder,
+        uid: row.uid,
+        size: row.size,
+        messageId: row.message_id,
+        uidValidity: row.uid_validity,
+      };
     },
 
     /**
@@ -1272,26 +1427,34 @@ export function createSqliteStore(db: Database.Database): MailStore {
           id: string;
           thread_id: string;
           uid: number;
-          seen_pending: number;
+          seen_desired: number | null;
+          flag_desired: number | null;
           move_pending: string | null;
         };
         const atUid = db.prepare<[string, string, number], Occupant>(
-          `SELECT id, thread_id, uid, seen_pending, move_pending FROM messages
+          `SELECT id, thread_id, uid, seen_desired, flag_desired, move_pending FROM messages
            WHERE account_id = ? AND folder = ? AND uid = ?`,
         );
         const sameMessage = db.prepare<[string, string, string, string], Occupant>(
-          `SELECT id, thread_id, uid, seen_pending, move_pending FROM messages
+          `SELECT id, thread_id, uid, seen_desired, flag_desired, move_pending FROM messages
            WHERE account_id = ? AND folder = ? AND dedup_key = ? AND uid IS NOT NULL
              AND move_pending IS NULL AND id != ?
            ORDER BY seq LIMIT 1`,
         );
-        const rehome = db.prepare(
+        // Desired values: the moved row's own wins, else the occupant's
+        // (non-NULL wins); local flags follow the resulting desired values.
+        const rehome = db.prepare<
+          [{ destination: string; uid: number | null; carriedSeen: number | null; carriedFlag: number | null; id: string }]
+        >(
           `UPDATE messages SET folder = @destination, uid = @uid, move_pending = NULL,
              move_failures = 0,
-             seen_pending = MAX(seen_pending, @carriedPending),
-             is_read = MAX(is_read, @carriedPending)
+             seen_desired = COALESCE(seen_desired, @carriedSeen),
+             flag_desired = COALESCE(flag_desired, @carriedFlag),
+             is_read = COALESCE(seen_desired, @carriedSeen, is_read),
+             is_flagged = COALESCE(flag_desired, @carriedFlag, is_flagged)
            WHERE id = @id`,
         );
+        const nothing = { carriedSeen: null, carriedFlag: null };
         const settle = db.prepare(
           "UPDATE messages SET move_pending = NULL, move_failures = 0 WHERE id = ?",
         );
@@ -1299,17 +1462,23 @@ export function createSqliteStore(db: Database.Database): MailStore {
         /**
          * The destination already holds this message (synced before the move
          * completed): the moved row keeps its id and takes that copy's uid,
-         * carrying a pending read. An occupant that is itself waiting to move
+         * carrying its pending desired values. An occupant that is itself waiting to move
          * is left alone and the moved row is detached instead.
          */
         const takeOver = (row: { id: string }, occupant: Occupant | undefined, uid: number | null) => {
           if (occupant === undefined || occupant.id === row.id) {
-            rehome.run({ destination, uid, carriedPending: 0, id: row.id });
+            rehome.run({ destination, uid, ...nothing, id: row.id });
           } else if (occupant.move_pending !== null) {
-            rehome.run({ destination, uid: null, carriedPending: 0, id: row.id });
+            rehome.run({ destination, uid: null, ...nothing, id: row.id });
           } else {
             for (const threadId of deleteRows([occupant])) touched.add(threadId);
-            rehome.run({ destination, uid: occupant.uid, carriedPending: occupant.seen_pending, id: row.id });
+            rehome.run({
+              destination,
+              uid: occupant.uid,
+              carriedSeen: occupant.seen_desired,
+              carriedFlag: occupant.flag_desired,
+              id: row.id,
+            });
           }
         };
         for (const uid of uids) {

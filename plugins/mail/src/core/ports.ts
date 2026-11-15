@@ -131,25 +131,45 @@ export interface MailStore {
     flags: { uid: number; seen: boolean; flagged: boolean; gmMsgId?: string | null }[],
   ): number;
   deleteByUids(accountId: string, folder: string, uids: number[]): number;
+  /**
+   * Slice-2 view over the desired state until sync uses pendingFlagIntents:
+   * attached uids of the folder whose desired \Seen is set (true).
+   */
   pendingSeenUids(accountId: string, folder: string): number[];
+  /** Slice-2 view: clearFlagIntents with `{ uid, seen: true, flagged: null }` per uid. */
   clearSeenPending(accountId: string, folder: string, uids: number[]): void;
   /**
-   * Records an owner-asked \Seen / \Flagged change on every copy with the
-   * same dedup key: local is_read / is_flagged change at once on all copies,
-   * and each attached copy (with a uid) gets the desired values to push.
-   * Returns the accounts touched.
+   * Records an owner-asked \Seen / \Flagged change; a field absent from
+   * `change` is left alone. Unknown ids are skipped. The change reaches every
+   * copy with the same dedup key within the id's account (as markOpened).
+   * Local is_read / is_flagged change at once on every copy, attached or not.
+   * Each attached copy (with a uid) gets the desired value to push, rows
+   * waiting to move included. A new request overwrites an opposite pending
+   * desired value. The desired value is set even when nothing is pending and
+   * the local value already equals the request (an idempotent push). A
+   * detached copy gets no desired value and drops a pending one for the
+   * changed field, so a stale intent cannot win when it is reattached.
+   * Returns each touched account once, in order of first appearance.
+   * upsertMessages and applyFlags never overwrite a field whose desired value
+   * is pending, and a move re-home carries both desired values (non-null wins).
    */
   setDesired(messageIds: string[], change: FlagChange): { accountId: string }[];
-  /** Attached rows of the folder with a pending desired value. */
+  /**
+   * Attached rows (uid not null) of the folder with a pending desired value,
+   * rows waiting to move included, by uid. `seen` / `flagged` is null when
+   * that field has no intent.
+   */
   pendingFlagIntents(accountId: string, folder: string): FlagIntent[];
   /**
-   * Compare-and-clear: clears a desired value only where it still equals
-   * what was pushed (a later click stays pending).
+   * Compare-and-clear per field: a desired value is cleared only where it
+   * still equals what was pushed, so a later click stays pending. A null in
+   * `pushed` means that field was not pushed and is left alone.
    */
   clearFlagIntents(accountId: string, folder: string, pushed: FlagIntent[]): void;
   /**
-   * Marks every row with the same dedup key read locally, and `seen_pending`
-   * on each such row that has a uid (attached), so every copy is pushed.
+   * Sets is_read on every copy with the same (account, dedup key). Each
+   * attached unread copy gets a desired \Seen to push (slice-2 semantics).
+   * A detached copy is read locally only and gets no desired value.
    */
   markOpened(messageId: string): { accountId: string } | null;
   threadingInputs(accountId: string): ThreadingInput[];
@@ -163,18 +183,30 @@ export interface MailStore {
     limit: number,
   ): { threads: ThreadSummary[]; nextCursor: string | null };
   /**
-   * Threads from every account with a member (not waiting to move) in a
-   * folder of `role`; keyset paging by (last date, id) across accounts.
-   * Archive merges `archive` folders only, never Gmail All Mail.
+   * Threads of every account having a member not waiting to move in a folder
+   * of `role` (its effective special use, as listFolders). Archive merges
+   * `archive` folders only, never Gmail All Mail. Keyset paging by
+   * (last date DESC, id DESC) across accounts, served by the thread-date
+   * index. A thread's `flagged` covers its rows in that role's folders not
+   * waiting to move. Role "all" returns no threads (the server refuses it).
    */
   listThreadsAll(
     role: SpecialUse,
     cursor: string | null,
     limit: number,
   ): { threads: ThreadSummary[]; nextCursor: string | null };
-  /** Counts per special-use role summed across accounts (as listFolders counts). */
+  /**
+   * Exactly inbox, sent, drafts, junk, archive, trash in that order, zeros
+   * included. Counts are distinct unread / total dedup keys (per account)
+   * across accounts in folders of that special use, leaving out rows waiting
+   * to move. Archive counts `archive` folders only, never `all`.
+   */
   listRoles(): RoleCount[];
-  /** Null when the message is unknown, detached (no uid) or waiting to move. */
+  /**
+   * Null when the message is unknown, detached (uid NULL) or waiting to
+   * move. `uidValidity` comes from the folder's sync state, null when there
+   * is none.
+   */
   rawRef(messageId: string): RawRef | null;
   /**
    * Each message once. Of the copies sharing a dedup key, prefer the one in
