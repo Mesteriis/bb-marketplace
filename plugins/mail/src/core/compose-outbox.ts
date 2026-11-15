@@ -19,7 +19,7 @@ import {
   roleFolder,
   type ComposeDeps,
 } from "./compose.ts";
-import type { OutboxRecord, OutboxState, SendErrorKind, StoredAccount } from "./model.ts";
+import type { DraftOrigin, OutboxRecord, OutboxState, SendErrorKind, StoredAccount } from "./model.ts";
 import {
   SendError,
   type Clock,
@@ -170,7 +170,7 @@ function timerSleep(ms: number, signal: AbortSignal): Promise<void> {
  */
 export async function queueSend(
   deps: QueueDeps,
-  input: { draftId: string; baseRevision: number; requestId: string; origin: "owner" },
+  input: { draftId: string; baseRevision: number; requestId: string; origin: DraftOrigin },
 ): Promise<{ outboxId: string; sendAfter: string }> {
   if (deps.undone.has(input.requestId)) throw new ComposeError("undone");
   const repeated = deps.store.getOutbox(input.requestId);
@@ -217,14 +217,25 @@ export async function queueSend(
 
 /**
  * Undo (queued) or Edit (held, failed): deletes the row; the draft stays,
- * unchanged, and can be saved and sent again.
+ * unchanged, and can be saved and sent again. An agent send whose draft is
+ * still the proposal's hidden draft (slice 3c) is undone through
+ * store.undoAgentSend instead: in one transaction the row goes, the draft
+ * becomes an ordinary owner draft and the proposal moves to `opened`.
  */
 export function cancelSend(
-  deps: Pick<QueueDeps, "store" | "notifier" | "undone">,
+  deps: Pick<QueueDeps, "store" | "notifier" | "undone" | "clock">,
   id: string,
 ): { cancelled: boolean; draftId: string | null } {
   const row = deps.store.getOutbox(id);
   if (row === null) return { cancelled: false, draftId: null };
+  const draft = row.draftId === null ? null : deps.store.getDraft(row.draftId);
+  if (row.origin === "agent" && draft !== null && draft.proposalId !== null) {
+    const undone = deps.store.undoAgentSend(id, fromStates("undo"), deps.clock.now().toISOString());
+    if (!undone.cancelled) return { cancelled: false, draftId: row.draftId };
+    deps.undone.add(id);
+    deps.notifier.outboxChanged({ accountId: row.accountId, id, state: "cancelled" });
+    return { cancelled: true, draftId: undone.draftId ?? row.draftId };
+  }
   if (!deps.store.deleteOutbox(id, fromStates("undo"))) return { cancelled: false, draftId: row.draftId };
   deps.undone.add(id);
   deps.notifier.outboxChanged({ accountId: row.accountId, id, state: "cancelled" });

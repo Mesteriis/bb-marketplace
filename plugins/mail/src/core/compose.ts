@@ -25,11 +25,14 @@ import {
 import { forwardSubject, replySubject } from "./compose-subjects.ts";
 import { normalizeMessageId } from "./headers.ts";
 import type {
+  DraftOrigin,
   DraftRecord,
   DraftServerCopy,
   DraftServerCopyState,
   DraftView,
   MailAddress,
+  NewDraft,
+  OriginalMessage,
   OutgoingAttachment,
   OutgoingMessage,
   SpecialUse,
@@ -108,11 +111,25 @@ const DRAFT_FLAGS = ["\\Draft", "\\Seen"];
 // New, prepare, open
 // ---------------------------------------------------------------------------
 
-/** An empty draft from the account. */
-export function newCompose(deps: ComposeDeps, accountId: string): { draftId: string } {
+/**
+ * A draft about to be written: the NewDraft fields without the row id, the
+ * origin, the proposal id and the time, plus the attachments to copy (a
+ * forward's, within the cap), the warning and the dropped own addresses.
+ * `original`: for a reply or forward, the source as the Reply rules saw it
+ * and its stored text and HTML, so an agent proposal can build its own
+ * plain-text quote (slice 3c); null for a new message.
+ */
+export type ComposePlan = Omit<NewDraft, "id" | "origin" | "proposalId" | "createdAt"> & {
+  attachments: OriginalMessage["attachments"];
+  warning: ComposeWarning;
+  dropped: string[];
+  original: { source: ReplySource; text: string | null; html: string | null } | null;
+};
+
+/** An empty draft from the account, not yet written. */
+export function planNew(deps: Pick<ComposeDeps, "store" | "newId">, accountId: string): ComposePlan {
   const account = requireAccount(deps.store, accountId);
-  const draft = deps.store.createDraft({
-    id: deps.newId(),
+  return {
     kind: "new",
     accountId: account.id,
     sourceMessageId: null,
@@ -126,25 +143,25 @@ export function newCompose(deps: ComposeDeps, accountId: string): { draftId: str
     doc: EMPTY_DOC,
     serverCopy: null,
     importHtml: null,
-    origin: "owner",
-    proposalId: null,
-    createdAt: deps.clock.now().toISOString(),
-  });
-  return { draftId: draft.id };
+    attachments: [],
+    warning: null,
+    dropped: [],
+    original: null,
+  };
 }
 
 /**
- * A reply, reply-all or forward draft of a stored message: recipients,
- * subject and threading from the store (Reply-To from the server when the
- * row predates its column), the quote header lines, the original's HTML to
- * quote (or its stored text as a quote), and for a forward the original's
- * attachments within the cap. When the server cannot be read the stored
- * fields are used with `original_unavailable`.
+ * A reply, reply-all or forward of a stored message, not yet written:
+ * recipients, subject and threading from the store (Reply-To from the server
+ * when the row predates its column), the quote header lines, the original's
+ * HTML to quote (or its stored text as a quote), and for a forward the
+ * original's attachments. When the server cannot be read the stored fields
+ * are used with `original_unavailable`. Writes nothing.
  */
-export async function prepareCompose(
-  deps: ComposeDeps,
+export async function planCompose(
+  deps: Pick<ComposeDeps, "store" | "newId" | "reader">,
   input: { kind: "reply" | "reply_all" | "forward"; messageId: string },
-): Promise<{ draftId: string; warning: ComposeWarning; dropped: string[] }> {
+): Promise<ComposePlan> {
   const source = deps.store.replySource(input.messageId);
   if (source === null) throw new ComposeError("not_found");
   const account = requireAccount(deps.store, source.accountId);
@@ -180,17 +197,17 @@ export async function prepareCompose(
   }
 
   const header = quoteHeaderText(replySource, input.kind);
-  const html = original?.html ?? deps.store.getBody(input.messageId)?.html ?? null;
+  const body = deps.store.getBody(input.messageId);
+  const html = original?.html ?? body?.html ?? null;
+  const text = body?.text ?? null;
   let doc: ComposeDoc;
   if (html !== null) {
     doc = docFromLines(["", ...header]);
   } else {
-    const text = deps.store.getBody(input.messageId)?.text ?? "";
-    doc = docFromLines(["", ...header], text === "" ? undefined : splitLines(text));
+    doc = docFromLines(["", ...header], text === null || text === "" ? undefined : splitLines(text));
   }
 
-  const draft = deps.store.createDraft({
-    id: deps.newId(),
+  return {
     kind: input.kind,
     accountId: account.id,
     sourceMessageId: input.messageId,
@@ -204,16 +221,66 @@ export async function prepareCompose(
     doc,
     serverCopy: null,
     importHtml: html === null ? null : { html, into: "quote" },
+    attachments: input.kind === "forward" && original !== null ? original.attachments : [],
+    warning,
+    dropped,
+    original: { source: replySource, text, html },
+  };
+}
+
+/**
+ * Writes a plan: one createDraft with its origin and proposal id (so a
+ * hidden proposal draft is never visible for a moment), then its
+ * attachments in order while they fit the cap. `leftOut` counts those that
+ * did not; any sets `attachments_left_out` unless a warning is already set.
+ */
+export async function createComposeDraft(
+  deps: Pick<ComposeDeps, "store" | "newId" | "clock">,
+  plan: ComposePlan,
+  options: { origin: DraftOrigin; proposalId: string | null },
+): Promise<{ draftId: string; warning: ComposeWarning; dropped: string[]; leftOut: number }> {
+  const { attachments, warning, dropped, original: _original, ...fields } = plan;
+  const draft = deps.store.createDraft({
+    ...fields,
+    id: deps.newId(),
+    origin: options.origin,
+    proposalId: options.proposalId,
+    createdAt: deps.clock.now().toISOString(),
+  });
+  const leftOut = await addWithinCap(deps.store, draft.id, attachments);
+  return {
+    draftId: draft.id,
+    warning: leftOut > 0 && warning === null ? "attachments_left_out" : warning,
+    dropped,
+    leftOut,
+  };
+}
+
+/** An empty draft from the account. */
+export function newCompose(deps: ComposeDeps, accountId: string): { draftId: string } {
+  const plan = planNew(deps, accountId);
+  const { attachments: _a, warning: _w, dropped: _d, original: _o, ...fields } = plan;
+  const draft = deps.store.createDraft({
+    ...fields,
+    id: deps.newId(),
     origin: "owner",
     proposalId: null,
     createdAt: deps.clock.now().toISOString(),
   });
+  return { draftId: draft.id };
+}
 
-  if (input.kind === "forward" && original !== null) {
-    const leftOut = await addWithinCap(deps.store, draft.id, original.attachments);
-    if (leftOut && warning === null) warning = "attachments_left_out";
-  }
-  return { draftId: draft.id, warning, dropped };
+/**
+ * A reply, reply-all or forward draft of a stored message: planCompose,
+ * then createComposeDraft as an owner draft.
+ */
+export async function prepareCompose(
+  deps: ComposeDeps,
+  input: { kind: "reply" | "reply_all" | "forward"; messageId: string },
+): Promise<{ draftId: string; warning: ComposeWarning; dropped: string[] }> {
+  const plan = await planCompose(deps, input);
+  const { draftId, warning, dropped } = await createComposeDraft(deps, plan, { origin: "owner", proposalId: null });
+  return { draftId, warning, dropped };
 }
 
 /**
@@ -387,7 +454,8 @@ export async function writeServerCopy(
   reason: ServerCopyReason,
 ): Promise<ServerCopyOutcome> {
   const first = deps.store.getDraft(draftId);
-  if (first === null) return "skipped";
+  // A hidden agent proposal draft never gets a server copy (slice 3c).
+  if (first === null || first.proposalId !== null) return "skipped";
   if (reason === "tick" && first.serverState === "local_only") return "skipped";
   const drafts = roleFolder(deps.store, first.accountId, "drafts");
   if (drafts === null) {
@@ -410,7 +478,7 @@ export async function writeServerCopy(
   try {
     return await deps.queue.run(first.accountId, async () => {
       const draft = deps.store.getDraft(draftId);
-      if (draft === null || draft.accountId !== first.accountId) return "skipped";
+      if (draft === null || draft.accountId !== first.accountId || draft.proposalId !== null) return "skipped";
       if (isQueued(deps.store, draft)) return "skipped";
       const account = requireAccount(deps.store, draft.accountId);
       const session = await deps.gateway.openFolder(imapConfigOf(account, deps.vault), drafts, {
@@ -678,13 +746,13 @@ async function expungeQuietly(
   }
 }
 
-/** Copies attachments in order while they fit; true when any was left out. */
-async function addWithinCap(store: MailStore, draftId: string, files: OutgoingAttachment[]): Promise<boolean> {
-  let leftOut = false;
+/** Copies attachments in order while they fit; returns how many were left out. */
+async function addWithinCap(store: MailStore, draftId: string, files: OutgoingAttachment[]): Promise<number> {
+  let leftOut = 0;
   for (const file of files) {
     const size = file.bytes.length;
     if (size > attachmentRoom(store, draftId)) {
-      leftOut = true;
+      leftOut += 1;
       continue;
     }
     store.addAttachment(draftId, {

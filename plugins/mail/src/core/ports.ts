@@ -537,6 +537,8 @@ export type NewProposal = {
   /** Recipients the agent added to a reply beyond the Reply rules. */
   added: string[];
   contentSha256: string;
+  /** Forwarded attachments left out over the size cap (the card lists them). */
+  leftOut: number;
   /** ISO 8601. */
   expiresAt: string;
   /** ISO 8601. */
