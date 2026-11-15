@@ -394,3 +394,56 @@ describe("createSyncLoop bulk backfill", () => {
     await done;
   });
 });
+
+describe("createSyncLoop send checks and round ends (slice 3d)", () => {
+  it("resolves send checks after an ok round, not after a failed one", async () => {
+    const { store, scripted, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    const calls: string[] = [];
+    const resolve = store.resolveSendChecks.bind(store);
+    store.resolveSendChecks = (accountId, nowIso) => {
+      calls.push(`${accountId} ${nowIso}`);
+      return resolve(accountId, nowIso);
+    };
+    scripted.failAlways("fetchMessages", new Error("connection dropped"));
+    const lines: string[] = [];
+    const loop = createSyncLoop(deps, SETTINGS, { log: (line) => lines.push(line) });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.waitFor(() => expect(lines.some((l) => l.startsWith("sync acc_1:"))).toBe(true));
+    expect(calls).toEqual([]);
+
+    scripted.clearFailure("fetchMessages");
+    lines.length = 0;
+    loop.wake("acc_1");
+    await vi.waitFor(() => expect(lines.some((l) => l.startsWith("sync acc_1: ok"))).toBe(true));
+    await vi.waitFor(() => expect(calls).toEqual([`acc_1 ${NOW.toISOString()}`]));
+    controller.abort();
+    await done;
+  });
+
+  it("onRoundEnd fires once per account and round, after that account's queue task", async () => {
+    const { store, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    store.saveAccount(account("acc_2"));
+    const queue = createAccountQueue();
+    const ended: string[] = [];
+    const lines: string[] = [];
+    const loop = createSyncLoop(deps, SETTINGS, {
+      queue,
+      log: (line) => lines.push(line),
+      onRoundEnd: (accountId) => {
+        ended.push(accountId);
+        throw new Error("a broken hook does not stop sync");
+      },
+    });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.waitFor(() => expect(ended).toEqual(["acc_1", "acc_2"]));
+    loop.wake("acc_2");
+    await vi.waitFor(() => expect(ended).toEqual(["acc_1", "acc_2", "acc_2"]));
+    controller.abort();
+    await done;
+    expect(lines.filter((l) => l.startsWith("sync acc_1: ok"))).toHaveLength(1);
+  });
+});

@@ -22,6 +22,10 @@
 // before the mark existed (backfillBulk, at most BACKFILL_BUDGET rows per
 // account and round), so it never overlaps sync or SMTP either and finishes
 // over a few rounds. It logs counts only.
+//
+// After an ok round the same task also resolves the account's pending alias
+// send checks from the synced Sent copies (slice 3d), and once each account's
+// sync of a round is over, onRoundEnd(accountId) runs (undo's second wake).
 import {
   backfillBulk,
   syncAccount,
@@ -50,6 +54,8 @@ export interface SyncLoopOptions {
   isReady?: () => boolean;
   /** Serializes each account's sync with its other server work. */
   queue?: AccountWriteQueue;
+  /** Runs once each account's sync of a round is over (after its queue task); errors are ignored. */
+  onRoundEnd?: (accountId: string) => void;
 }
 
 export interface SyncLoop {
@@ -135,11 +141,20 @@ export function createSyncLoop(
     });
 
     async function syncOne(accountId: string, syncOptions: SyncOptions): Promise<void> {
-      if (options.queue === undefined) return syncOneNow(accountId, syncOptions);
+      if (options.queue === undefined) {
+        await syncOneNow(accountId, syncOptions);
+      } else {
+        try {
+          await options.queue.run(accountId, () => syncOneNow(accountId, syncOptions));
+        } catch {
+          // syncOneNow never rejects.
+        }
+      }
+      if (signal.aborted) return;
       try {
-        await options.queue.run(accountId, () => syncOneNow(accountId, syncOptions));
+        options.onRoundEnd?.(accountId);
       } catch {
-        // syncOneNow never rejects.
+        // A broken hook must not stop sync.
       }
     }
 
@@ -165,6 +180,7 @@ export function createSyncLoop(
             : `sync ${accountId}: ${outcome.authFailed ? "authentication failed" : "error"}`,
         );
         if (outcome.status !== "ok" || signal.aborted) return;
+        guarded.store.resolveSendChecks(accountId, guarded.clock.now().toISOString());
         const filled = await backfillBulk(guarded, accountId, { cursors, signal });
         if (!signal.aborted && (filled.folders > 0 || filled.failed > 0 || filled.skipped > 0)) {
           log(

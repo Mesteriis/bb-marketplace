@@ -5,7 +5,8 @@
 // the adapter knows exactly when the message data started (the server
 // answered DATA and the bytes began to flow): from then on a lost connection,
 // a timeout or an abort is `unknown_after_data`, never a retryable failure.
-// Errors leave as SendError (a kind and afterData only): the server's reply
+// Errors leave as SendError (a kind, afterData and the refused command's
+// fixed name only): the server's reply
 // text is never kept, logged or passed on.
 import { Readable } from "node:stream";
 import SMTPConnection from "nodemailer/lib/smtp-connection";
@@ -15,6 +16,7 @@ import {
   type MailTransport,
   type SendErrorKind,
   type SendResult,
+  type SmtpCommand,
   type SmtpConfig,
 } from "../../core/index.ts";
 
@@ -82,13 +84,17 @@ const TLS_CODE = /TLS|SSL|CERT|ALTNAME|HANDSHAKE/i;
  * 552 → too_large, 4xx → temporary, 5xx → rejected_message, and no reply
  * at all (a lost connection, a timeout, an abort) → unknown_after_data.
  */
+const SMTP_COMMANDS: readonly SmtpCommand[] = ["MAIL FROM", "RCPT TO", "DATA"];
+
 export function mapSendError(error: unknown, dataStarted: boolean): SendError {
   const fields = (error ?? {}) as SmtpErrorFields;
   const code = typeof fields.code === "string" ? fields.code : "";
   const originalCode = typeof fields.originalCode === "string" ? fields.originalCode : "";
   const status = typeof fields.responseCode === "number" ? fields.responseCode : 0;
   const command = typeof fields.command === "string" ? fields.command : "";
-  const kind = (k: SendErrorKind) => new SendError(k, dataStarted);
+  // The refused command as a fixed string (slice 3d: the core decides sender_refused from it).
+  const refused: SmtpCommand | null = SMTP_COMMANDS.find((c) => c === command.toUpperCase()) ?? null;
+  const kind = (k: SendErrorKind) => new SendError(k, dataStarted, refused);
 
   if (dataStarted) {
     if (status === 552) return kind("too_large");

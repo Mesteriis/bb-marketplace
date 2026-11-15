@@ -166,7 +166,8 @@ export function aliasSuggestions(
   const tally = new Map<string, AliasSuggestion>();
   for (const row of rows) {
     if ([...row.to, ...row.cc].some((address) => knownLower.has(lower(address)))) continue;
-    const fromDelivery = row.deliveredTo !== null;
+    // An empty list (headers read, none present) tells nothing: To and Cc then.
+    const fromDelivery = row.deliveredTo !== null && row.deliveredTo.length > 0;
     const candidates = fromDelivery ? (row.deliveredTo as string[]) : [...row.to, ...row.cc];
     const seen = new Set<string>();
     for (const raw of candidates) {

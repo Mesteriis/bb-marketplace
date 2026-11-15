@@ -6,7 +6,9 @@
 // owner-opened mail (markSeen), owner-clicked or hotkeyed \Seen / \Flagged
 // add/remove (setFlags), owner-clicked moves (moveMessages), and for slice 3b
 // APPEND of the owner's drafts and Sent copies (appendMessage) and the UID
-// EXPUNGE of exactly one superseded draft copy (expungeOwn, UIDPLUS only).
+// EXPUNGE of exactly one superseded draft copy (expungeOwn, UIDPLUS only),
+// and for slice 3d the UID COPY of undo of an archive on Gmail
+// (copyMessages; it adds, never removes).
 // Errors leaving this file are rebuilt from codes: imapflow errors can carry
 // server responses and the sent command, so their text is never passed on.
 import { ImapFlow } from "imapflow";
@@ -93,6 +95,7 @@ export type SessionClient = Pick<
   | "messageFlagsRemove"
   | "download"
   | "messageMove"
+  | "messageCopy"
   | "append"
   | "messageDelete"
   | "logout"
@@ -323,10 +326,21 @@ export function createSession(
       return { moved };
     }),
 
-    // UID COPY for undo of a Gmail archive: slice 3d task 9.
-    copyMessages: async () => {
-      throw new SafeImapError("CopyFailed");
-    },
+    // UID COPY, used only by undo of an archive on Gmail (slice 3d): it adds
+    // the message to `destination` and removes nothing.
+    copyMessages: guarded(async (uids: number[], destination: string) => {
+      if (readOnly) throw new SafeImapError("ReadOnly", "IMAP error (mailbox is read-only)");
+      if (uids.length === 0) return { copied: new Map<number, number>() };
+      // imapflow resolves false when the server refuses the COPY (and when the
+      // connection dropped mid-command), undefined when it could not try.
+      const result = await client.messageCopy(uids, destination, { uid: true });
+      if (!result && client.usable === false) throw new SafeImapError("ConnectionLost");
+      if (!result) throw new SafeImapError("CopyFailed");
+      if (!(result.uidMap instanceof Map)) return { copied: null };
+      const copied = new Map<number, number>();
+      for (const [from, to] of result.uidMap) copied.set(Number(from), Number(to));
+      return { copied };
+    }),
 
     capabilities: () => ({
       uidplus: client.capabilities?.has("UIDPLUS") === true,
@@ -566,7 +580,32 @@ export function toFetchedMessage(message: FetchMessageObject, parsed: Email): Fe
     ),
     inlineParts: toInlineParts(parsed.attachments),
     bulkHeaders: toBulkHeaders(parsed),
+    deliveredTo: toDeliveredTo(parsed),
   };
+}
+
+/** Delivered-To / X-Original-To addresses kept per message (slice 3d). */
+const DELIVERED_TO_MAX = 10;
+
+/**
+ * Every Delivered-To and X-Original-To header of the parsed source (the
+ * address only, lower case, at most 10); absent when the source had no
+ * headers, so the store keeps what it knew.
+ */
+function toDeliveredTo(parsed: Email): string[] | undefined {
+  if (parsed.headers.length === 0) return undefined;
+  const out: string[] = [];
+  for (const header of parsed.headers) {
+    if (header.key !== "delivered-to" && header.key !== "x-original-to") continue;
+    const value = header.value.trim();
+    const open = value.lastIndexOf("<");
+    const close = value.lastIndexOf(">");
+    const address = (open >= 0 && close > open ? value.slice(open + 1, close) : value).trim().toLowerCase();
+    if (address === "" || /\s/.test(address) || !address.includes("@")) continue;
+    if (!out.includes(address)) out.push(address);
+    if (out.length >= DELIVERED_TO_MAX) break;
+  }
+  return out;
 }
 
 /**
