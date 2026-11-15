@@ -38,6 +38,8 @@ import {
 } from "./src/adapters/bb/downloads.ts";
 import { createAccountQueue } from "./src/adapters/bb/account-queue.ts";
 import { createImapflowGateway, parseMail } from "./src/adapters/bb/imapflow-gateway.ts";
+import { MAKOSH_AI_PLUGIN_ID, createMakoshAiTranslator } from "./src/adapters/bb/makosh-ai-translator.ts";
+import { TranslateJobRefusal, TranslateJobs } from "./src/adapters/bb/translate-jobs.ts";
 import { createMimeBuilder } from "./src/adapters/bb/mime-builder.ts";
 import { createOriginalReader } from "./src/adapters/bb/original-reader.ts";
 import { createOutboxWorker, type OutboxWorker } from "./src/adapters/bb/outbox-worker.ts";
@@ -49,6 +51,13 @@ import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
 import { describeStructure, readHeaders } from "./src/core/headers.ts";
 import {
   AGENT_RESULT,
+  SUPPORTED_LANGUAGES,
+  TranslateError,
+  languageTagSchema,
+  translateNonce,
+  type LanguageTag,
+  type TranslateErrorKind,
+  type Translator,
   AccountBusyError,
   ComposeError,
   PROPOSAL_PURGE_MS,
@@ -149,6 +158,10 @@ const QUERY_MAX = 500;
 const SYNC_INTERVAL_MAX = 1440;
 /** Settled proposals are purged on load and then once a day. */
 const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** Translation jobs over their caps or unpolled are swept this often. */
+const JOB_SWEEP_MS = 15 * 1000;
+/** How long status_get trusts the last makosh-ai check. */
+export const GATEWAY_CACHE_MS = 60 * 1000;
 const TOOL_NAMES = ["mail_search", "mail_read"] as const;
 const PROPOSE_TOOL = "mail_propose";
 const AGENT_SEND_RENDERER = "agent-send";
@@ -184,6 +197,11 @@ function isVaultKey(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** A setting that is one bounded line (a provider or model id). */
+function settingLine(max: number) {
+  return z.string().max(max).refine((value) => !/[\u0000\r\n]/.test(value), "Must be one line");
 }
 
 function defineSettings(bb: BbPluginApi) {
@@ -223,6 +241,29 @@ function defineSettings(bb: BbPluginApi) {
         "Agents in a thread can draft new messages, replies and forwards. Each one waits for your Send in a card in that thread.",
       default: false,
     },
+    // No provider or model id is written into the code: empty means the
+    // first one Makosh AI offers.
+    translateProvider: {
+      type: "string",
+      label: "Translation provider",
+      description: "A Makosh AI provider id. Empty: the first available one.",
+      default: "",
+      experimental_schema: settingLine(64),
+    },
+    translateModel: {
+      type: "string",
+      label: "Translation model",
+      description: "A model id of that provider. Empty: the first model it lists.",
+      default: "",
+      experimental_schema: settingLine(200),
+    },
+    translateLanguage: {
+      type: "select",
+      label: "Translate into",
+      options: SUPPORTED_LANGUAGES.map((l) => l.tag),
+      experimental_optionLabels: Object.fromEntries(SUPPORTED_LANGUAGES.map((l) => [l.tag, l.english])),
+      default: "ru",
+    },
   });
 }
 
@@ -247,14 +288,9 @@ function refusePluginCaller(context: ExperimentalPluginRpcHandlerContext): void 
 }
 
 export const ACCOUNT_BUSY_MESSAGE = "A message is being sent";
-/** Slice-3c methods registered before their task wires them. */
-export const NOT_AVAILABLE_YET_MESSAGE = "Not available yet";
-
-/** An owner-only slice-3c method that is declared but not wired yet: refuses every caller. */
-function notAvailableYet(_input: unknown, context: ExperimentalPluginRpcHandlerContext): never {
-  refusePluginCaller(context);
-  throw refuse("conflict", NOT_AVAILABLE_YET_MESSAGE);
-}
+/** Fixed texts of translation refusals. */
+export const UNKNOWN_TRANSLATION_MESSAGE = "Unknown translation";
+export const TRANSLATE_FAILED_MESSAGE = "Translation failed; try again";
 export const COMPOSE_FAILED_MESSAGE = "The request failed; try again";
 
 /** ComposeError kinds as SDK refusal codes; the message is the error's fixed text. */
@@ -375,6 +411,47 @@ function clampInterval(minutes: number): number {
 
 function json(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+const SETTINGS_LOOKUP_MS = 10 * 1000;
+
+/** A stored language setting as a supported tag (Russian when it is not one). */
+function languageOf(value: string): LanguageTag {
+  const parsed = languageTagSchema.safeParse(value);
+  return parsed.success ? parsed.data : "ru";
+}
+
+type GatewayValue = "ok" | TranslateErrorKind;
+
+/** Whether makosh-ai can translate, for status_get: checked at most once a minute, or told by a job. */
+type GatewayState = {
+  translator: Translator;
+  get(options?: { fresh?: boolean }): Promise<GatewayValue>;
+  report(value: GatewayValue): void;
+};
+
+function createGatewayState(translator: Translator, clock: Clock): GatewayState {
+  let cached: { value: GatewayValue; at: number } | null = null;
+  const report = (value: GatewayValue) => {
+    cached = { value, at: clock.now().getTime() };
+  };
+  return {
+    translator,
+    report,
+    async get(options = {}) {
+      const now = clock.now().getTime();
+      if (options.fresh !== true && cached !== null && now - cached.at < GATEWAY_CACHE_MS) return cached.value;
+      let value: GatewayValue;
+      try {
+        await translator.providers(AbortSignal.timeout(SETTINGS_LOOKUP_MS));
+        value = "ok";
+      } catch (error) {
+        value = error instanceof TranslateError ? error.kind : "failed";
+      }
+      report(value);
+      return value;
+    },
+  };
 }
 
 export function createMailPlugin(overrides: MailPluginOverrides = {}) {
@@ -524,13 +601,40 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     /** Why a confirmed card could not be queued, by proposal id; kept in memory for its thread row. */
     const notQueued = new Map<string, NotQueuedReason>();
 
+    // Translation through makosh-ai, over RPC only (never its files).
+    const translator = createMakoshAiTranslator({
+      callRpc: (args) => bb.sdk.plugins.callRpc(args),
+      discover: async (signal) =>
+        (await bb.sdk.plugins.experimental_discoverRpc({ pluginId: MAKOSH_AI_PLUGIN_ID, signal })).map((m) => m.method),
+      firstProjectId: async () => {
+        try {
+          return (await bb.sdk.projects.list())[0]?.id ?? null;
+        } catch {
+          return null;
+        }
+      },
+    });
+    const translateGateway = createGatewayState(translator, clock);
+    const jobs = new TranslateJobs({
+      translator,
+      store,
+      clock,
+      newId: randomUUID,
+      nonce: () => translateNonce((size) => new Uint8Array(randomBytes(size))),
+      log: (line) => bb.log.info(line),
+      onGateway: translateGateway.report,
+    });
+    bb.onDispose(() => jobs.dispose());
+
     bb.background.service("sync", {
       start: async (signal) => {
         const daily = setInterval(purgeProposals, PURGE_INTERVAL_MS);
+        const sweep = setInterval(() => jobs.sweep(), JOB_SWEEP_MS);
         try {
           await Promise.all([loop.start(signal), worker.start(signal)]);
         } finally {
           clearInterval(daily);
+          clearInterval(sweep);
         }
       },
     });
@@ -562,6 +666,16 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       agentPropose: () => current.agentPropose,
       proposalDeps,
       notQueued,
+      jobs,
+      gateway: translateGateway,
+      translateSettings: () => ({
+        providerId: current.translateProvider,
+        model: current.translateModel,
+        language: languageOf(current.translateLanguage),
+      }),
+      saveTranslateSettings: async (values) => {
+        await settings.experimental_set(values);
+      },
       rawDeps,
       tickets,
     });
@@ -597,6 +711,14 @@ type RpcDeps = {
   agentPropose: () => boolean;
   proposalDeps: ProposalDeps;
   notQueued: ReadonlyMap<string, NotQueuedReason>;
+  jobs: TranslateJobs;
+  gateway: GatewayState;
+  translateSettings: () => { providerId: string; model: string; language: LanguageTag };
+  saveTranslateSettings: (values: {
+    translateProvider?: string;
+    translateModel?: string;
+    translateLanguage?: LanguageTag;
+  }) => Promise<void>;
   rawDeps: RawDeps;
   tickets: TicketBook<DownloadRequest>;
 };
@@ -756,6 +878,23 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       }
     };
   }
+  /** Owner-only translation handler: plugin callers refused first, failures as fixed-text refusals. */
+  function translating<I, O>(method: string, run: (input: I) => O | Promise<O>) {
+    return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
+      refusePluginCaller(context);
+      try {
+        return await run(input);
+      } catch (error) {
+        if (error instanceof experimental_PluginRpcRefusal) throw error;
+        if (error instanceof TranslateJobRefusal) {
+          throw refuse(error.code === "not_found" ? "not_found" : "conflict", error.message);
+        }
+        if (error instanceof TranslateError) throw refuse("conflict", error.message);
+        log(`${method} failed (${errorKind(error)})`);
+        throw refuse("conflict", TRANSLATE_FAILED_MESSAGE);
+      }
+    };
+  }
   /**
    * The draft behind a compose RPC, refused (not_found) when it is a hidden
    * agent-proposal draft: only the proposal's card reaches one (spec
@@ -778,12 +917,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   bb.rpc.register(
     rpcContract,
     {
-      status_get: () => ({
+      status_get: async () => ({
         vaultReady: deps.vaultReady(),
         agentTools: deps.agentTools(),
         agentPropose: deps.agentPropose(),
-        // Stub until slice 3c task 8 wires the makosh-ai discovery.
-        translate: { gateway: "gateway_missing" as const },
+        translate: { gateway: await deps.gateway.get() },
         accounts: store.listAccounts().map(toPublicAccount),
         unreadCount: store.unreadCount(null),
       }),
@@ -1037,12 +1175,52 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
           reason: proposalReason(proposal.state, deps.notQueued.get(proposalId)),
         };
       }),
-      translate_start: notAvailableYet,
-      translate_poll: notAvailableYet,
-      translate_cancel: notAvailableYet,
-      translate_settings_get: notAvailableYet,
-      translate_settings_set: notAvailableYet,
-      translate_clear: notAvailableYet,
+      // Translation (slice 3c). Started only by the owner's click; the text
+      // travels only in translate_poll answers.
+      translate_start: translating("translate_start", async ({ messageId, targetLanguage, force }) => {
+        const current = deps.translateSettings();
+        if (targetLanguage !== current.language) {
+          // The picker's last choice becomes the default.
+          void deps.saveTranslateSettings({ translateLanguage: targetLanguage }).catch(() => {
+            log("translate language could not be saved");
+          });
+        }
+        return deps.jobs.start(messageId, targetLanguage, current, force === undefined ? {} : { force });
+      }),
+      translate_poll: translating("translate_poll", ({ jobId, from }) => {
+        const poll = deps.jobs.poll(jobId, from);
+        if (poll === null) throw refuse("not_found", UNKNOWN_TRANSLATION_MESSAGE);
+        return poll;
+      }),
+      translate_cancel: translating("translate_cancel", ({ jobId }) => ({ cancelled: deps.jobs.cancel(jobId) })),
+      translate_settings_get: translating("translate_settings_get", async () => {
+        const current = deps.translateSettings();
+        const signal = AbortSignal.timeout(SETTINGS_LOOKUP_MS);
+        const gateway = await deps.gateway.get({ fresh: true });
+        let providers: Awaited<ReturnType<Translator["providers"]>> = [];
+        let models: { model: string; displayName: string }[] | null = null;
+        if (gateway === "ok") {
+          try {
+            providers = await deps.gateway.translator.providers(signal);
+          } catch {
+            providers = [];
+          }
+          const providerId = current.providerId || providers.find((p) => p.available)?.id || "";
+          if (providerId !== "") {
+            try {
+              models = await deps.gateway.translator.models(providerId, signal);
+            } catch {
+              models = null;
+            }
+          }
+        }
+        return { gateway, providers, models, current };
+      }),
+      translate_settings_set: translating("translate_settings_set", async ({ providerId, model, language }) => {
+        await deps.saveTranslateSettings({ translateProvider: providerId, translateModel: model, translateLanguage: language });
+        return { ok: true as const };
+      }),
+      translate_clear: translating("translate_clear", () => ({ removed: store.clearTranslations() })),
     },
     { experimental_discoverable: false },
   );

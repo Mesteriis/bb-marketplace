@@ -1,4 +1,10 @@
-import type { BbPluginApi, JsonValue, PluginInteractionRequest, PluginInteractionResult } from "@get-bb/plugin-sdk";
+import {
+  experimental_PluginRpcCallError,
+  type BbPluginApi,
+  type JsonValue,
+  type PluginInteractionRequest,
+  type PluginInteractionResult,
+} from "@get-bb/plugin-sdk";
 import {
   createFakePluginHost,
   makePluginAgentConfigurationContext,
@@ -10,7 +16,8 @@ import {
   NEEDS_KEY_MESSAGE,
   PASSWORD_NEEDED_MESSAGE,
   ACCOUNT_BUSY_MESSAGE,
-  NOT_AVAILABLE_YET_MESSAGE,
+  GATEWAY_CACHE_MS,
+  UNKNOWN_TRANSLATION_MESSAGE,
   PLUGIN_CALLER_MESSAGE,
   REMOVE_IN_THREAD_MESSAGE,
   renderSource,
@@ -77,6 +84,8 @@ type LoadOptions = {
   /** Adjusts the scripted server before the plugin loads. */
   server?: (gateway: RawGateway) => void;
   outboxIntervalMs?: number;
+  /** bb.sdk stubs (makosh-ai, projects). */
+  sdk?: NonNullable<Parameters<typeof createFakePluginHost>[0]>["sdk"];
 };
 
 /**
@@ -122,6 +131,7 @@ async function load(options: LoadOptions = {}) {
     pluginId: PLUGIN_ID,
     settings: options.settings ?? { vaultKey: generateVaultKey() },
     agentSkillIds: ["mail"],
+    ...(options.sdk === undefined ? {} : { sdk: options.sdk }),
   });
   const bb = options.wrap ? options.wrap(host.bb) : host.bb;
   options.seed?.(host.bb);
@@ -1065,7 +1075,7 @@ describe("makosh-mail server", () => {
     expect(body.remoteImagesAllowed).toBe(false);
   });
 
-  it("the translation methods refuse other plugins first, then refuse until wired", async () => {
+  it("the translation methods refuse other plugins first; without makosh-ai the gateway is missing", async () => {
     const host = await load();
     const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
     const inputs: [string, unknown][] = [
@@ -1078,14 +1088,20 @@ describe("makosh-mail server", () => {
     ];
     for (const [method, input] of inputs) {
       await expect(host.harness.behavior.callRpc(method, input, asPlugin), method).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
-      await expect(host.harness.behavior.callRpc(method, input), method).rejects.toThrow(NOT_AVAILABLE_YET_MESSAGE);
     }
+    await expect(host.harness.behavior.callRpc("translate_poll", { jobId: "j_1", from: 0 })).rejects.toThrow(
+      UNKNOWN_TRANSLATION_MESSAGE,
+    );
+    await expect(host.harness.behavior.callRpc("translate_start", { messageId: "m_1", targetLanguage: "ru" })).rejects.toThrow(
+      "Unknown message",
+    );
     const status = (await host.harness.behavior.callRpc("status_get", null)) as {
       agentPropose: boolean;
       translate: { gateway: string };
     };
     expect(status.agentPropose).toBe(false);
     expect(status.translate).toEqual({ gateway: "gateway_missing" });
+    expect(host.harness.inspection.registrations.experimental_publishedRpcMethods).toEqual([]);
   });
 
   it("message_action refuses while the password needs re-entering", async () => {
@@ -2772,5 +2788,227 @@ describe("agent proposals", () => {
     expect(refused.isError).toBe(true);
     expect(refused.content[0]!.text).toContain("sent from the account that received the message");
     expect(host.harness.inspection.pendingInteractions).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Translation (slice 3c)
+// ---------------------------------------------------------------------------
+
+const TRANSLATED = "Приглашение к садовой ограде";
+const SOURCE_SUBJECT = "Invented fence invitation";
+const SOURCE_BODY = "Invented body: meet at the fence on Tuesday.";
+const SENDER = "neighbour@example.org";
+
+/** makosh-ai as bb.sdk sees it: discovery, a stream per start, models, projects. */
+class MakoshAiStub {
+  methods = ["ai.v1.models", "ai.v1.start", "ai.v1.read", "ai.v1.cancel"];
+  startError: unknown = null;
+  /** SSE text each stream answers; null keeps it pending until cancelled. */
+  answer: string | null = sse(TRANSLATED);
+  readonly starts: { providerId: string; body: Record<string, unknown> }[] = [];
+  readonly cancels: string[] = [];
+  readonly models: { providerId: string; projectId?: string }[] = [];
+  private streams = 0;
+
+  sdk() {
+    return {
+      plugins: {
+        experimental_discoverRpc: async () => this.methods.map((method) => ({ pluginId: "makosh-ai", method })),
+        callRpc: async ({ pluginId, method, input, outputSchema, signal }: {
+          pluginId: string;
+          method: string;
+          input?: unknown;
+          outputSchema: { parse(v: unknown): unknown };
+          signal?: AbortSignal;
+        }) => {
+          expect(pluginId).toBe("makosh-ai");
+          const args = input as Record<string, unknown>;
+          if (method === "ai.v1.start") {
+            if (this.startError !== null) throw this.startError;
+            this.starts.push(args as never);
+            return outputSchema.parse({ streamId: `00000000-0000-4000-8000-00000000000${++this.streams}` });
+          }
+          if (method === "ai.v1.read") {
+            if (this.answer === null) {
+              await new Promise<void>((_, reject) => signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+            }
+            if (args.cursor === 0) {
+              return outputSchema.parse({
+                state: "chunk",
+                cursor: 1,
+                status: 200,
+                contentType: null,
+                data: Buffer.from(this.answer!, "utf8").toString("base64"),
+              });
+            }
+            return outputSchema.parse({ state: "done", status: 200, contentType: null });
+          }
+          if (method === "ai.v1.cancel") {
+            this.cancels.push(args.streamId as string);
+            return outputSchema.parse({ cancelled: true });
+          }
+          if (method === "ai.v1.models") {
+            this.models.push(args as never);
+            return outputSchema.parse({ models: [{ model: "invented-model-a", displayName: "A" }, { model: "invented-model-b", displayName: "B" }] });
+          }
+          throw new Error(`unexpected ${method}`);
+        },
+      },
+      projects: { list: async () => [{ id: "project-1" }] },
+    };
+  }
+}
+
+function sse(text: string): string {
+  return [
+    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text } })}\n\n`,
+    `event: message_stop\ndata: {"type":"message_stop"}\n\n`,
+  ].join("");
+}
+
+async function loadTranslate(ai = new MakoshAiStub(), settings: Record<string, string | number | boolean> = {}) {
+  const host = await load({
+    settings: { vaultKey: COMPOSE_KEY, ...settings },
+    seed: (bb) => {
+      seedCompose(bb);
+      createSqliteStore(bb.storage.database()).upsertMessages("acc_1", "INBOX", [
+        makeFetchedMessage(1, { subject: SOURCE_SUBJECT, bodyText: SOURCE_BODY, from: { name: "Neighbour", address: SENDER } }),
+        makeFetchedMessage(2, { subject: "Invented second", bodyText: "Invented second body" }),
+        makeFetchedMessage(3, { subject: "Invented third", bodyText: "Invented third body" }),
+      ]);
+    },
+    server: composeServer,
+    sdk: ai.sdk() as never,
+  });
+  return { host, ai, messageId: messageIdAt(host, "INBOX", 1) };
+}
+
+type Poll = { state: string; text: string; error?: string; gatewayMessage?: string; provider?: string; model?: string; finish?: string };
+
+async function translateToEnd(host: Host, messageId: string, input: Record<string, unknown> = {}): Promise<Poll & { jobId: string }> {
+  const started = (await call(host, "translate_start", { messageId, targetLanguage: "ru", ...input })) as { jobId: string };
+  expect(started).toHaveProperty("jobId");
+  let text = "";
+  let last: Poll | null = null;
+  await vi.waitFor(async () => {
+    last = (await call(host, "translate_poll", { jobId: started.jobId, from: text.length })) as Poll;
+    text += last.text;
+    expect(last.state).not.toBe("running");
+  });
+  return { ...last!, text, jobId: started.jobId };
+}
+
+describe("translation", () => {
+  it("translates with the first provider and model when the settings are empty, then answers from the cache", async () => {
+    const { host, ai, messageId } = await loadTranslate();
+    const done = await translateToEnd(host, messageId);
+    expect(done).toMatchObject({ state: "done", text: TRANSLATED, finish: "complete", provider: "claude-code", model: "invented-model-a" });
+    expect(ai.models).toEqual([{ providerId: "claude-code", projectId: "project-1" }]);
+    expect(ai.cancels).toHaveLength(1);
+    // Only the framed subject and body reach the model: no sender, no conversation id.
+    const sent = JSON.stringify(ai.starts);
+    expect(sent).toContain(SOURCE_SUBJECT);
+    expect(sent).toContain(SOURCE_BODY);
+    expect(sent).not.toContain(SENDER);
+    expect(sent).not.toContain("conversationId");
+
+    const cached = (await call(host, "translate_start", { messageId, targetLanguage: "ru" })) as { cached: { text: string; cached: boolean } };
+    expect(cached.cached).toMatchObject({ text: TRANSLATED, cached: true, providerId: "claude-code", model: "invented-model-a" });
+    expect(ai.starts).toHaveLength(1);
+    const forced = await translateToEnd(host, messageId, { force: true });
+    expect(forced.state).toBe("done");
+    expect(ai.starts).toHaveLength(2);
+
+    const seen = JSON.stringify([host.harness.inspection.realtimeSignals, host.harness.inspection.logEntries]);
+    for (const secret of [TRANSLATED, SOURCE_SUBJECT, SOURCE_BODY, SENDER]) expect(seen).not.toContain(secret);
+    await expect(call(host, "translate_clear", {})).resolves.toEqual({ removed: 1 });
+    await expect(call(host, "translate_clear", {})).resolves.toEqual({ removed: 0 });
+  });
+
+  it("uses the chosen provider and model, and the picker's language becomes the default", async () => {
+    const { host, ai, messageId } = await loadTranslate(new MakoshAiStub(), { translateProvider: "codex", translateModel: "invented-codex" });
+    const done = await translateToEnd(host, messageId, { targetLanguage: "de" });
+    expect(done).toMatchObject({ provider: "codex", model: "invented-codex" });
+    expect(ai.starts[0]).toMatchObject({ providerId: "codex", body: { model: "invented-codex", store: false } });
+    expect(ai.models).toEqual([]);
+    await vi.waitFor(async () =>
+      expect(((await call(host, "translate_settings_get", {})) as { current: { language: string } }).current.language).toBe("de"),
+    );
+  });
+
+  it("status_get reports the gateway, cached for a minute; a job's pool refusal surfaces in its poll and in status_get", async () => {
+    const { host, ai, messageId } = await loadTranslate();
+    const status = async () => ((await call(host, "status_get", null)) as { translate: { gateway: string } }).translate.gateway;
+    expect(await status()).toBe("ok");
+    ai.methods = [];
+    expect(await status()).toBe("ok");
+    host.clock.set(new Date(NOW.getTime() + GATEWAY_CACHE_MS));
+    expect(await status()).toBe("gateway_missing");
+    await expect(call(host, "translate_start", { messageId, targetLanguage: "ru" })).resolves.toHaveProperty("jobId");
+    ai.methods = ["ai.v1.models", "ai.v1.start", "ai.v1.read", "ai.v1.cancel"];
+
+    host.clock.set(new Date(NOW.getTime() + 3 * GATEWAY_CACHE_MS));
+    expect(await status()).toBe("ok");
+    ai.startError = new experimental_PluginRpcCallError({ code: "conflict", message: "Account Pooler model RPC is unavailable." });
+    const failed = await translateToEnd(host, messageId, { targetLanguage: "en" });
+    expect(failed).toMatchObject({ state: "failed", error: "pool_unavailable", gatewayMessage: "Account Pooler model RPC is unavailable." });
+    expect(await status()).toBe("pool_unavailable");
+  });
+
+  it("a missing makosh-ai fails the job with gateway_missing", async () => {
+    const ai = new MakoshAiStub();
+    ai.methods = [];
+    const { host, messageId } = await loadTranslate(ai);
+    expect(await translateToEnd(host, messageId)).toMatchObject({ state: "failed", error: "gateway_missing" });
+  });
+
+  it("Stop cancels the stream; a third running job is refused", async () => {
+    const ai = new MakoshAiStub();
+    ai.answer = null;
+    const { host, messageId } = await loadTranslate(ai);
+    const first = (await call(host, "translate_start", { messageId, targetLanguage: "ru" })) as { jobId: string };
+    await call(host, "translate_start", { messageId: messageIdAt(host, "INBOX", 2), targetLanguage: "ru" });
+    await expect(
+      call(host, "translate_start", { messageId: messageIdAt(host, "INBOX", 3), targetLanguage: "ru" }),
+    ).rejects.toThrow("Two translations are already running");
+    await vi.waitFor(() => expect(ai.starts).toHaveLength(2));
+    await expect(call(host, "translate_cancel", { jobId: first.jobId })).resolves.toEqual({ cancelled: true });
+    await vi.waitFor(() => expect(ai.cancels).toHaveLength(1));
+    await expect(call(host, "translate_poll", { jobId: first.jobId, from: 0 })).resolves.toMatchObject({ state: "cancelled" });
+  });
+
+  it("translate_settings_get lists providers and models; translate_settings_set saves the choice", async () => {
+    const { host } = await loadTranslate();
+    await expect(call(host, "translate_settings_get", {})).resolves.toEqual({
+      gateway: "ok",
+      providers: [
+        { id: "claude-code", displayName: "Claude Code", available: true },
+        { id: "codex", displayName: "Codex", available: true },
+      ],
+      models: [
+        { model: "invented-model-a", displayName: "A" },
+        { model: "invented-model-b", displayName: "B" },
+      ],
+      current: { providerId: "", model: "", language: "ru" },
+    });
+    await expect(call(host, "translate_settings_set", { providerId: "codex", model: "invented-model-b", language: "ja" })).resolves.toEqual({
+      ok: true,
+    });
+    await expect(call(host, "translate_settings_get", {})).resolves.toMatchObject({
+      current: { providerId: "codex", model: "invented-model-b", language: "ja" },
+    });
+    await expect(call(host, "translate_settings_set", { providerId: "a\nb", model: "", language: "ru" })).rejects.toThrow();
+    await expect(call(host, "translate_settings_set", { providerId: "", model: "", language: "xx" })).rejects.toThrow();
+  });
+
+  it("without makosh-ai the settings show the gateway state and no providers", async () => {
+    const { host } = await loadTranslate(Object.assign(new MakoshAiStub(), { methods: [] }));
+    await expect(call(host, "translate_settings_get", {})).resolves.toEqual({
+      gateway: "gateway_missing",
+      providers: [],
+      models: null,
+      current: { providerId: "", model: "", language: "ru" },
+    });
   });
 });
