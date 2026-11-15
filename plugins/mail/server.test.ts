@@ -3645,6 +3645,64 @@ describe("sending polish: undo", () => {
     expect((await undo(host)).outcome).toBe("nothing");
   });
 
+  it("not synced yet goes back into the slot: a second undo copies once the row is attached or the folder resynced", async () => {
+    const detached = await loadUndo("gmail");
+    const [a, b] = idsIn(detached, "acc_1", "INBOX");
+    await archive(detached, [a!, b!]);
+    pushMove(detached, "INBOX", ALL_MAIL, [1]);
+    pushMove(detached, "INBOX", ALL_MAIL, [2], false);
+    expect(await undo(detached)).toMatchObject({ restored: 1, failed: 0, skipped: [{ reason: "not_synced", count: 1 }] });
+    sqlStore(detached).upsertMessages("acc_1", ALL_MAIL, [makeFetchedMessage(102, { messageId: "<undo-2@example.org>" })]);
+    expect(await undo(detached)).toMatchObject({ outcome: "done", restored: 1, failed: 0, skipped: [] });
+    const copies = detached.gateway.sessions.flatMap((s) => s.calls).filter((c) => c.method === "copyMessages");
+    expect(copies.map((c) => c.uids)).toEqual([[101], [102]]);
+    expect((await undo(detached)).outcome).toBe("nothing");
+
+    const renumbered = await loadUndo("gmail", { allMailValidity: 6 });
+    const [c] = idsIn(renumbered, "acc_1", "INBOX");
+    await archive(renumbered, [c!]);
+    pushMove(renumbered, "INBOX", ALL_MAIL, [1]);
+    expect(await undo(renumbered)).toMatchObject({ restored: 0, skipped: [{ reason: "not_synced", count: 1 }] });
+    sqlStore(renumbered).saveSyncState("acc_1", ALL_MAIL, { uidValidity: 6, lastUid: 200, syncedSince: "2026-01-01T00:00:00.000Z" });
+    expect(await undo(renumbered)).toMatchObject({ restored: 1, skipped: [] });
+
+    // A newer action takes the slot: the put-back is gone with it.
+    const replaced = await loadUndo("gmail");
+    const [d, e] = idsIn(replaced, "acc_1", "INBOX");
+    await archive(replaced, [d!]);
+    pushMove(replaced, "INBOX", ALL_MAIL, [1], false);
+    expect(await undo(replaced)).toMatchObject({ skipped: [{ reason: "not_synced", count: 1 }] });
+    await archive(replaced, [e!], UNDO_B);
+    expect((await undo(replaced, UNDO_A)).outcome).toBe("nothing");
+  });
+
+  it("a move back is per row: a row the owner moved in the gap is skipped, the rest restore", async () => {
+    const host = await loadUndo("gmail");
+    host.gateway.gmail = false; // All Mail, but the session does not report Gmail: a move back
+    const [a, b] = idsIn(host, "acc_1", "INBOX");
+    await archive(host, [a!, b!]);
+    pushMove(host, "INBOX", ALL_MAIL, [1, 2]);
+    const open = host.gateway.openFolder.bind(host.gateway);
+    host.gateway.openFolder = async (...args) => {
+      sqlStore(host).queueMove([b!], "Work");
+      return open(...args);
+    };
+    expect(await undo(host)).toMatchObject({ restored: 1, skipped: [{ reason: "moved_elsewhere", count: 1 }] });
+    expect(rowOf(host, a!)).toMatchObject({ folder: ALL_MAIL, movePending: "INBOX" });
+    expect(rowOf(host, b!)).toMatchObject({ folder: ALL_MAIL, movePending: "Work" });
+  });
+
+  it("a failed STATUS counts every row of the step as failed, detached ones too, and puts them back", async () => {
+    const host = await loadUndo("gmail");
+    const [a, b] = idsIn(host, "acc_1", "INBOX");
+    await archive(host, [a!, b!]);
+    pushMove(host, "INBOX", ALL_MAIL, [1]);
+    pushMove(host, "INBOX", ALL_MAIL, [2], false);
+    host.gateway.failNext("status", imapError("ConnectionLost"));
+    expect(await undo(host)).toMatchObject({ outcome: "done", restored: 0, failed: 2, skipped: [] });
+    expect(await undo(host)).toMatchObject({ restored: 1, failed: 0, skipped: [{ reason: "not_synced", count: 1 }] });
+  });
+
   it("restores flags only where the action's value still holds", async () => {
     const host = await loadUndo("icloud");
     const [a, b] = idsIn(host, "acc_1", "INBOX");
