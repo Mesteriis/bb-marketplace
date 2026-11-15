@@ -636,11 +636,12 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       <div className="flex min-h-0 flex-1">
         <nav
           aria-label="Folders"
-          className="hidden min-h-0 w-48 shrink-0 flex-col overflow-y-auto border-r border-border @4xl:flex @6xl:w-56"
+          className="hidden min-h-0 w-48 shrink-0 flex-col overflow-hidden border-r border-border @4xl:flex @6xl:w-56"
         >
-          <div className="px-1.5 pb-1 pt-2">
+          <div className="shrink-0 border-b border-border bg-background px-1.5 pb-1.5 pt-2">
             <AccountChooser {...props} pickFocus={pickFocus} className="w-full max-w-none" />
           </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
           {props.unified ? (
             <UnifiedRail
               roles={props.roles}
@@ -658,6 +659,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               error={props.foldersError}
             />
           ) : null}
+          </div>
         </nav>
         <section
           aria-label={model.title}
