@@ -9,6 +9,7 @@ import {
   type SmtpConfig,
 } from "../../core/index.ts";
 import { composeHarness } from "../../core/testing/fakes.ts";
+import { mailProposeParamsSchema, proposeMail } from "../../core/agent-proposals.ts";
 import { SERVER_COPY_IDLE_MS } from "../../core/compose-drafts.ts";
 import { createOutboxWorker, type OutboxWorkerDeps } from "./outbox-worker.ts";
 
@@ -183,6 +184,46 @@ describe("createOutboxWorker", () => {
     await running;
     expect(h.drafts.messages).toHaveLength(1);
     expect(changed).toEqual(["acc_1"]);
+  });
+
+  it("never copies a hidden proposal draft to Drafts, even when listDrafts returns it", async () => {
+    const proposed = await proposeMail(
+      h.proposalDeps,
+      mailProposeParamsSchema.parse({
+        kind: "new",
+        accountId: "acc_1",
+        to: ["bob@example.com"],
+        subject: "Invented plan",
+        body: "Hello",
+      }),
+      { threadId: "thread_1" },
+    );
+    const hidden = h.store.getProposal(proposed.proposalId)!.draftId!;
+    const { draftId } = await readyDraft();
+    h.advance(SERVER_COPY_IDLE_MS);
+    const listed: string[][] = [];
+    const listDrafts = h.store.listDrafts.bind(h.store);
+    h.store.listDrafts = (accountId) => {
+      const drafts = listDrafts(accountId);
+      listed.push(drafts.map((d) => d.id));
+      return drafts;
+    };
+    // writeServerCopy starts by reading the draft: the tick must not even get that far.
+    const read: string[] = [];
+    const getDraft = h.store.getDraft.bind(h.store);
+    h.store.getDraft = (id) => {
+      read.push(id);
+      return getDraft(id);
+    };
+    const controller = new AbortController();
+    const running = worker().worker.start(controller.signal);
+    await vi.waitFor(() => expect(h.store.getDraft(draftId)!.serverState).toBe("saved"));
+    controller.abort();
+    await running;
+    expect(listed.flat()).toContain(hidden);
+    expect(read).not.toContain(hidden);
+    expect(h.drafts.messages).toHaveLength(1);
+    expect(getDraft(hidden)!.serverCopy).toBeNull();
   });
 
   it("logs ids, counts and kinds only", async () => {

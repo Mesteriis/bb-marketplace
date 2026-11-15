@@ -52,7 +52,7 @@ export const mailProposeParamsSchema = z.object({
   kind: composeKindSchema,
   /** reply / reply_all / forward: a message id from mail_search, mail_read or a mention. */
   sourceMessageId: z.string().min(1).max(200).optional(),
-  /** new: required. reply / forward: defaults to the source message's account. */
+  /** new: required. reply / forward: the source message's account (another one is refused); leave it out. */
   accountId: z.string().min(1).max(200).optional(),
   to: z.array(headerAddressInput).max(MAX_RECIPIENTS).default([]),
   cc: z.array(headerAddressInput).max(MAX_RECIPIENTS).default([]),
@@ -74,6 +74,7 @@ export type ProposalErrorKind =
   | "off"
   | "vault"
   | "account"
+  | "account_mismatch"
   | "smtp_missing"
   | `caps:${ProposalCapHit}`
   | `invalid_address:${AddressProblem}`
@@ -104,6 +105,7 @@ const ERROR_TEXT: Record<string, string> = {
   off: "Email proposals are turned off in Mail settings.",
   vault: "Mail is locked; the owner needs to unlock it in Mail.",
   account: "That account cannot send right now; the owner needs to check it in Mail.",
+  account_mismatch: "A reply or forward is sent from the account that received the message; leave accountId out.",
   smtp_missing: "SMTP is not set for this account.",
   too_many_recipients: `An email can have at most ${MAX_RECIPIENTS} recipients.`,
   no_recipients: "The email has no recipients.",
@@ -202,7 +204,11 @@ export async function proposeMail(
     } catch (error) {
       throw asProposalError(error, "source_not_found");
     }
-    if (params.accountId !== undefined) plan = { ...plan, accountId: params.accountId };
+    // A reply or forward goes out from the account the source came to: its
+    // Reply rules and its Message-ID domain were computed for that account.
+    if (params.accountId !== undefined && params.accountId !== plan.accountId) {
+      throw new ProposalError("account_mismatch");
+    }
   }
 
   const account = deps.store.getAccount(plan.accountId);
