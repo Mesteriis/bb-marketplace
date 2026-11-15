@@ -111,7 +111,7 @@ export function SelectionBar({
     <div
       role={count > 0 ? "toolbar" : undefined}
       aria-label={count > 0 ? "Selected conversations" : undefined}
-      className="sticky top-0 z-10 flex min-h-9 flex-wrap items-center gap-1 border-b border-border bg-background px-3 py-1"
+      className="sticky top-0 z-10 flex min-h-9 shrink-0 flex-wrap items-center gap-0.5 border-b border-border bg-background px-3 py-1"
     >
       <Checkbox
         aria-label="Select all on page"
@@ -132,18 +132,20 @@ export function SelectionBar({
               <Button
                 key={action}
                 variant="ghost"
-                size="sm"
-                className="h-7 px-2"
+                size="icon"
+                className="size-7"
+                aria-label={label}
                 disabled={pending || disabledReason !== null}
                 aria-describedby={disabledReason !== null ? `${reasonId}-${action}` : undefined}
                 onClick={() => onAction(action)}
               >
                 <Icon name={icon} fallback="Folder" aria-hidden />
-                {label}
               </Button>
             );
             return disabledReason === null ? (
-              button
+              <span key={action} title={label} className="inline-flex">
+                {button}
+              </span>
             ) : (
               <span key={action} title={disabledReason}>
                 {button}
