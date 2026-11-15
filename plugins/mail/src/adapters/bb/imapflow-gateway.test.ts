@@ -115,6 +115,25 @@ describe("toFetchedMessage", () => {
     expect(toFetchedMessage(imapMessage(), await PostalMime.parse(RAW)).replyTo).toEqual([]);
   });
 
+  it("reads Delivered-To and X-Original-To from the parsed headers: every occurrence, addresses only, lower case, at most 10", async () => {
+    const delivered = [
+      "Delivered-To: Alias@Example.org",
+      "Delivered-To: owner@example.org",
+      "X-Original-To: Invented <Second.Alias@example.org>",
+      RAW,
+    ].join("\r\n");
+    expect(toFetchedMessage(imapMessage(), await PostalMime.parse(delivered)).deliveredTo).toEqual([
+      "alias@example.org",
+      "owner@example.org",
+      "second.alias@example.org",
+    ]);
+    const many = [...Array.from({ length: 12 }, (_, i) => `Delivered-To: a${i}@example.org`), RAW].join("\r\n");
+    expect(toFetchedMessage(imapMessage(), await PostalMime.parse(many)).deliveredTo).toHaveLength(10);
+    expect(toFetchedMessage(imapMessage(), await PostalMime.parse(RAW)).deliveredTo).toEqual([]);
+    // A fetch that read no headers leaves it absent (not known).
+    expect(toFetchedMessage(imapMessage(), { headers: [], headerLines: [], attachments: [] }).deliveredTo).toBeUndefined();
+  });
+
   it("reads the bulk headers from the fetched source (no extra fetch item, so nothing sets \\Seen)", async () => {
     const listed = [
       "List-Id: Invented news <news.example.net>",
@@ -366,6 +385,7 @@ type StubOptions = {
   search?: unknown;
   stored?: boolean;
   moved?: unknown;
+  copied?: unknown;
   capabilities?: string[];
   enabled?: string[];
   fetched?: FetchMessageObject[];
@@ -410,6 +430,10 @@ function stubClient(options: StubOptions = {}) {
     messageMove: async (...args: unknown[]) => {
       calls.push({ method: "messageMove", args });
       return options.moved;
+    },
+    messageCopy: async (...args: unknown[]) => {
+      calls.push({ method: "messageCopy", args });
+      return options.copied;
     },
     append: async (...args: unknown[]) => {
       calls.push({ method: "append", args });
@@ -574,6 +598,42 @@ describe("createSession", () => {
     await expect(createSession(client, true).moveMessages([4], "Trash")).rejects.toMatchObject({
       code: "ReadOnly",
     });
+    expect(calls).toEqual([]);
+  });
+
+  it("copyMessages sends UID COPY only and maps COPYUID to a Map of numbers", async () => {
+    const { client, calls } = stubClient({
+      copied: { path: "[Gmail]/All Mail", destination: "INBOX", uidMap: new Map([[4, 204]]) },
+    });
+    const result = await createSession(client, false).copyMessages([4], "INBOX");
+    expect(calls).toEqual([{ method: "messageCopy", args: [[4], "INBOX", { uid: true }] }]);
+    expect([...result.copied!]).toEqual([[4, 204]]);
+    const bare = stubClient({ copied: { path: "[Gmail]/All Mail", destination: "INBOX" } });
+    expect(await createSession(bare.client, false).copyMessages([4], "INBOX")).toEqual({ copied: null });
+  });
+
+  it("copyMessages maps a refusal, a dropped connection and a read-only session to safe codes", async () => {
+    for (const refused of [false, undefined]) {
+      const { client } = stubClient({ copied: refused });
+      await expect(createSession(client, false).copyMessages([4], "INBOX")).rejects.toMatchObject({ code: "CopyFailed" });
+      const dropped = stubClient({ copied: refused, usable: false });
+      await expect(createSession(dropped.client, false).copyMessages([4], "INBOX")).rejects.toMatchObject({ code: "ConnectionLost" });
+    }
+    const { client, calls } = stubClient({ copied: { uidMap: new Map() } });
+    await expect(createSession(client, true).copyMessages([4], "INBOX")).rejects.toMatchObject({ code: "ReadOnly" });
+    expect(calls).toEqual([]);
+    const thrown = {
+      ...stubClient().client,
+      messageCopy: async () => {
+        throw Object.assign(new Error("A5 NO invented-password"), { code: "ETIMEOUT" });
+      },
+    } as unknown as SessionClient;
+    await expect(createSession(thrown, false).copyMessages([4], "INBOX")).rejects.toThrow("IMAP error (ETIMEOUT)");
+  });
+
+  it("copyMessages with no uids returns an empty map without a server call", async () => {
+    const { client, calls } = stubClient({ copied: false });
+    expect((await createSession(client, false).copyMessages([], "INBOX")).copied).toEqual(new Map());
     expect(calls).toEqual([]);
   });
 

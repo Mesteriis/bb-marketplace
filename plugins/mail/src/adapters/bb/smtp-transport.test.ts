@@ -295,6 +295,20 @@ describe("mapSendError", () => {
     expect(mapped.afterData).toBe(started);
   });
 
+  it.each([
+    [{ code: "EENVELOPE", command: "MAIL FROM", responseCode: 550 }, false, "rejected_message", "MAIL FROM"],
+    [{ code: "EENVELOPE", command: "RCPT TO", responseCode: 550 }, false, "rejected_all", "RCPT TO"],
+    [{ code: "EMESSAGE", command: "MAIL FROM" }, false, "too_large", "MAIL FROM"],
+    [{ code: "EMESSAGE", command: "DATA", responseCode: 554 }, true, "rejected_message", "DATA"],
+    [{ code: "EAUTH", command: "AUTH PLAIN", responseCode: 535 }, false, "auth", null],
+    [{ code: "ETIMEDOUT", command: "CONN" }, false, "timeout_before_data", null],
+    [null, false, "connect", null],
+  ] as const)("%j (data started: %s) → %s, command %s", (error, started, kind, command) => {
+    const mapped = mapSendError(error, started);
+    expect(mapped.kind).toBe(kind);
+    expect(mapped.command).toBe(command);
+  });
+
   it("nothing after the data started is a before-DATA kind", () => {
     for (const code of ["ECONNECTION", "ESOCKET", "ETIMEDOUT", "EDNS", "ETLS", "EAUTH", "EABORT", "EPROTOCOL"]) {
       expect(["connect", "tls", "auth", "timeout_before_data"]).not.toContain(mapSendError({ code }, true).kind);

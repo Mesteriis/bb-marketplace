@@ -224,6 +224,14 @@ describe("aliasSuggestions", () => {
     ]);
   });
 
+  it("treats an empty Delivered-To (headers read, none present) like unknown: To and Cc by the domain rule", () => {
+    const rows = [
+      row(["anna.e@example.com", "friend@example.org"], { deliveredTo: [] }),
+      row(["anna.e@example.com", "friend@example.org"], { deliveredTo: [] }),
+    ];
+    expect(aliasSuggestions(rows, known, none, ["example.com"], []).map((s) => s.address)).toEqual(["anna.e@example.com"]);
+  });
+
   it("leaves another person on the message out by the domain rule", () => {
     const rows = [row(["anna.e@example.com", "friend@example.org"]), row(["anna.e@example.com", "friend@example.org"])];
     expect(aliasSuggestions(rows, known, none, ["example.com"], []).map((s) => s.address)).toEqual(["anna.e@example.com"]);
