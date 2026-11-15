@@ -2580,7 +2580,6 @@ describe("agent proposals", () => {
   it("a forged or stale submit queues nothing and says the proposal changed", async () => {
     const host = await loadPropose();
     const cases: [string, (p: ProposedCard, token: string) => JsonValue][] = [
-      ["a wrong token", (p) => submitValue("send", p, "x".repeat(43))],
       ["a wrong hash", (p, token) => ({ ...submitValue("send", p, token), contentHash: "f".repeat(64) })],
       ["another proposal's id", (p, token) => ({ ...submitValue("send", p, token), proposalId: "other-proposal" })],
       ["an extra field", (p, token) => ({ ...submitValue("send", p, token), to: "evil@example.net" })],
@@ -2595,12 +2594,36 @@ describe("agent proposals", () => {
       expect(sqlStore(host).getProposal(p.proposalId)!.draftId, name).toBeNull();
       await expect(call(host, "proposal_status", { proposalId: p.proposalId })).resolves.toMatchObject({ reason: "changed" });
     }
-    // A second view rotates the token: the first one no longer submits.
-    const p = await proposeCard(host, PROPOSAL, `${THREAD}-rotated`);
+  });
+
+  it("a submit with a rotated token keeps the proposal and its draft and opens the card again; only that card sends", async () => {
+    const host = await loadPropose();
+    const p = await proposeCard(host);
     const first = await viewToken(host, p);
-    await viewToken(host, p);
-    expect((await answer(host, p, submitValue("send", p, first))).result).toBe(AGENT_RESULT.changed);
+    await viewToken(host, p); // as if a shell caller viewed the card
+    const draftId = hiddenDraftOf(host, p.proposalId);
+    const draftBefore = JSON.stringify(sqlStore(host).getDraft(draftId));
+    const stale = submitValue("send", p, first);
+    expect(await p.card.describeSubmission!(stale)).toEqual({
+      title: "Not sent: this card was opened elsewhere; reopen it",
+      payload: { proposalId: p.proposalId },
+    });
+    host.harness.behavior.submitInteraction(p.card.id, stale);
+    await vi.waitFor(() =>
+      expect(host.harness.inspection.pendingInteractions.some((c) => c.id !== p.card.id && c.rendererId === "agent-send")).toBe(true),
+    );
+    const again = host.harness.inspection.pendingInteractions.find((c) => c.id !== p.card.id)!;
+    expect(again.payload).toEqual({ proposalId: p.proposalId, contentHash: p.contentHash });
+    expect(again.timeoutMs).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
+    expect(sqlStore(host).getProposal(p.proposalId)).toMatchObject({ state: "pending", draftId });
+    expect(JSON.stringify(sqlStore(host).getDraft(draftId))).toBe(draftBefore);
     expect(sqlStore(host).listOutbox(null)).toEqual([]);
+
+    const token = await viewToken(host, p);
+    const { described, result } = await answer(host, { ...p, card: again }, submitValue("send", p, token));
+    expect(described.title).toBe("Email confirmed");
+    expect(result).toBe(AGENT_RESULT.sent);
+    expect(sqlStore(host).getOutbox(p.proposalId)?.origin).toBe("agent");
   });
 
   it("every compose RPC answers not_found for a hidden proposal draft", async () => {

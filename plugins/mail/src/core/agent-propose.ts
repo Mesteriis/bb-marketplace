@@ -44,11 +44,11 @@ const DAY_MS = 24 * HOUR_MS;
 // ---------------------------------------------------------------------------
 
 export type ProposalState = z.infer<typeof proposalStateSchema>;
-export type ProposalEvent = "confirm" | "queue" | "open" | "queue_failed" | "cancel" | "expire" | "refuse" | "undo";
+export type ProposalEvent = "confirm" | "queue" | "open" | "queue_failed" | "cancel" | "expire" | "refuse" | "undo" | "stale";
 
 const TRANSITIONS: Partial<Record<ProposalState, Partial<Record<ProposalEvent, ProposalState>>>> = {
   pending: { confirm: "confirming", open: "opened", cancel: "cancelled", expire: "expired", refuse: "refused" },
-  confirming: { queue: "queued", open: "opened", queue_failed: "opened", expire: "expired", refuse: "refused" },
+  confirming: { queue: "queued", open: "opened", queue_failed: "opened", expire: "expired", refuse: "refused", stale: "pending" },
   queued: { undo: "opened" },
 };
 

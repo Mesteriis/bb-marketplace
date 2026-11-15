@@ -466,9 +466,10 @@ describe("nextProposalState", () => {
     ["pending", "refuse", "refused"],
     ["confirming", "expire", "expired"],
     ["confirming", "refuse", "refused"],
+    ["confirming", "stale", "pending"],
   ];
   const states: ProposalState[] = ["pending", "confirming", "queued", "opened", "cancelled", "expired", "refused"];
-  const events: ProposalEvent[] = ["confirm", "queue", "open", "queue_failed", "cancel", "expire", "refuse", "undo"];
+  const events: ProposalEvent[] = ["confirm", "queue", "open", "queue_failed", "cancel", "expire", "refuse", "undo", "stale"];
 
   it.each(allowed)("%s --%s--> %s", (from, event, to) => {
     expect(nextProposalState(from, event)).toBe(to);

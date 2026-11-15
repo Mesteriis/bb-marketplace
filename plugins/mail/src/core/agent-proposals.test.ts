@@ -49,8 +49,8 @@ function propose(overrides: Partial<MailProposeParams> & Record<string, unknown>
   return proposeMail(d, params(overrides), { threadId });
 }
 
-async function viewed(overrides: Partial<MailProposeParams> = {}) {
-  const proposed = await propose(overrides);
+async function viewed(overrides: Partial<MailProposeParams> = {}, threadId = THREAD) {
+  const proposed = await propose(overrides, threadId);
   const view = await viewProposal(d, proposed);
   if (view.state !== "ready") throw new Error(`view ${view.state}`);
   return { ...proposed, view, token: view.viewToken };
@@ -325,12 +325,36 @@ describe("viewProposal", () => {
     expect(await viewProposal(d, proposed)).toEqual({ state: "opened_elsewhere" });
   });
 
-  it("an older view's token is refused", async () => {
+  it("an older view's token leaves the proposal pending with its draft, and does not count toward the cool-down", async () => {
     const proposed = await propose();
     const first = await viewProposal(d, proposed);
     await viewProposal(d, proposed);
     if (first.state !== "ready") throw new Error("not ready");
-    expect(await checkSubmit(d, proposed.proposalId, submit("send", { ...proposed, token: first.viewToken }))).toEqual({
+    const draftId = h.store.getProposal(proposed.proposalId)!.draftId!;
+    const draftBefore = JSON.stringify(h.store.getDraft(draftId));
+    for (let i = 0; i < 3; i += 1) {
+      expect(await checkSubmit(d, proposed.proposalId, submit("send", { ...proposed, token: first.viewToken }))).toEqual({
+        retry: "opened_elsewhere",
+      });
+    }
+    expect(h.store.getProposal(proposed.proposalId)).toMatchObject({ state: "pending", draftId });
+    expect(JSON.stringify(h.store.getDraft(draftId))).toBe(draftBefore);
+    expect(h.store.listOutbox(null)).toEqual([]);
+    expect(h.store.proposalCapRows(h.clock.now().toISOString()).map((r) => r.state)).toEqual(["pending"]);
+    // Reopened: the latest view submits.
+    const again = await viewProposal(d, proposed);
+    if (again.state !== "ready") throw new Error("not ready");
+    expect(await checkSubmit(d, proposed.proposalId, submit("send", { ...proposed, token: again.viewToken }))).toEqual({
+      action: "send",
+    });
+  });
+
+  it("a content change still refuses even with a stale token", async () => {
+    const proposed = await propose();
+    await viewProposal(d, proposed);
+    const draftId = h.store.getProposal(proposed.proposalId)!.draftId!;
+    h.store.addAttachment(draftId, { fileName: "x.txt", mimeType: "text/plain", size: 1, sha256: "0".repeat(64), data: new Uint8Array(1) });
+    expect(await checkSubmit(d, proposed.proposalId, submit("send", { ...proposed, token: "t".repeat(43) }))).toEqual({
       refused: "changed",
     });
     expect(h.store.getProposal(proposed.proposalId)!.state).toBe("refused");
@@ -374,7 +398,6 @@ describe("checkSubmit", () => {
     ["a malformed value", (p) => ({ ...submit("send", p), extra: 1 })],
     ["another proposal's id", (p) => ({ ...submit("send", p), proposalId: "other" })],
     ["a wrong hash", (p) => ({ ...submit("send", p), contentHash: "f".repeat(64) })],
-    ["a wrong token", (p) => ({ ...submit("send", p), viewToken: "x".repeat(43) })],
     ["a missing token", (p) => ({ action: "send", proposalId: p.proposalId, contentHash: p.contentHash })],
   ];
   for (const [name, value] of refusedCases) {
@@ -388,9 +411,17 @@ describe("checkSubmit", () => {
     });
   }
 
-  it("refuses a submit with no view", async () => {
+  it("a wrong token or a submit with no view is not a content change: the card was opened elsewhere", async () => {
     const p = await propose();
-    expect(await checkSubmit(d, p.proposalId, submit("send", { ...p, token: "t".repeat(43) }))).toEqual({ refused: "changed" });
+    expect(await checkSubmit(d, p.proposalId, submit("send", { ...p, token: "t".repeat(43) }))).toEqual({
+      retry: "opened_elsewhere",
+    });
+    const v = await viewed({}, "thread_2");
+    expect(await checkSubmit(d, v.proposalId, { ...submit("send", v), viewToken: "x".repeat(43) })).toEqual({
+      retry: "opened_elsewhere",
+    });
+    expect(h.store.getProposal(p.proposalId)!.state).toBe("pending");
+    expect(h.store.getProposal(v.proposalId)!.state).toBe("pending");
   });
 
   it("refuses a hidden draft changed after the view", async () => {
@@ -439,6 +470,9 @@ describe("checkSubmit", () => {
     expect(describeProposalSubmission("p1", { action: "send" })).toEqual({ title: "Email confirmed", payload: { proposalId: "p1" } });
     expect(describeProposalSubmission("p1", { action: "open" }).title).toBe("Opened in Mail");
     expect(describeProposalSubmission("p1", { refused: "changed" }).title).toBe("Not sent: the proposal changed");
+    expect(describeProposalSubmission("p1", { retry: "opened_elsewhere" }).title).toBe(
+      "Not sent: this card was opened elsewhere; reopen it",
+    );
   });
 });
 
