@@ -195,7 +195,11 @@ with them. Spam, Trash and bulk mail are left out: a message with
 `Auto-Submitted` other than `no`, or from a no-reply, notifications,
 newsletter, mailer-daemon or postmaster address. People you wrote to come
 first, then two-way correspondence, then the most recent. Mail synced before
-this release has no bulk mark and is judged by its sender address only.
+this release gets its bulk mark in the background: after each successful
+sync round the plugin asks the server for just those four header fields
+(read-only, never marking mail read, at most 500 messages per account and
+round), so the mark fills in over a few rounds. Until then, and for a
+message no longer on the server, it is judged by its sender address only.
 A new message with no account named goes from the account that corresponds
 with its To recipients (the one that last received mail from them, ties to
 the one that last sent to them); with no history the agent must name one.

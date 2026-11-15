@@ -12,8 +12,12 @@ All notable changes to Makosh Mail are recorded here. The format follows
   is on: people the owner corresponds with, matched by name, address, domain
   or the mail exchanged with them, from header addresses only (never from
   message text), with Spam, Trash and bulk mail left out. Sync marks bulk mail
-  (mailing-list headers, `Precedence`, `Auto-Submitted`, automated senders);
-  mail synced earlier is judged by its sender only.
+  (mailing-list headers, `Precedence`, `Auto-Submitted`, automated senders).
+- Mail synced before the bulk mark gets it in the background: after each
+  successful sync round the plugin fetches only `List-Id`,
+  `List-Unsubscribe`, `Precedence` and `Auto-Submitted` (read-only
+  `BODY.PEEK`, at most 500 messages per account and round) and never
+  overwrites a mark sync set. Until then such mail is judged by its sender.
 - A new proposal with no account named goes from the account that corresponds
   with its To recipients; only without any history is the agent asked to name
   one.

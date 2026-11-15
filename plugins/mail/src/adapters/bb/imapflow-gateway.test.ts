@@ -2,9 +2,12 @@ import { Readable } from "node:stream";
 import PostalMime from "postal-mime";
 import type { Email } from "postal-mime";
 import type { FetchMessageObject, ListResponse } from "imapflow";
+import imapflowFetch from "imapflow/lib/commands/fetch.js";
+import { compiler as imapCompiler, parser as imapParser } from "imapflow/lib/handler/imap-handler.js";
 import { describe, expect, it } from "vitest";
-import { ImapAuthError } from "../../core/index.ts";
+import { ImapAuthError, LIST_HEADER_FIELDS } from "../../core/index.ts";
 import {
+  LIST_HEADERS_QUERY,
   SafeImapError,
   createSession,
   describeImapError,
@@ -1065,5 +1068,65 @@ describe("slice 3b writes", () => {
       createSession(client, false).expungeOwn(12, { messageId: "<draft-1@example.org>", size: 300 }),
     ).rejects.toMatchObject({ code: "ExpungeFailed" });
     expect(calls.at(-1)).toEqual({ method: "messageFlagsRemove", args: ["12", ["\\Deleted"], { uid: true }] });
+  });
+});
+
+describe("fetchListHeaders", () => {
+  it("UID FETCHes only the list header fields and returns each block by uid", async () => {
+    const block = Buffer.from("List-Id: <news.example.net>\r\n\r\n");
+    const { client, calls } = stubClient({
+      fetched: [
+        { seq: 1, uid: 5, headers: block } as FetchMessageObject,
+        // No header section in the answer: nothing to judge by.
+        { seq: 2, uid: 6 } as FetchMessageObject,
+      ],
+    });
+    const found = await createSession(client, true).fetchListHeaders([5, 6, 7]);
+    expect(found).toEqual([{ uid: 5, block: new Uint8Array(block) }]);
+    expect(calls).toEqual([{ method: "fetch", args: [[5, 6, 7], LIST_HEADERS_QUERY, { uid: true }] }]);
+    expect(LIST_HEADERS_QUERY).toEqual({ uid: true, headers: [...LIST_HEADER_FIELDS] });
+  });
+
+  it("sends nothing for no uids and maps a failure to a safe error", async () => {
+    const { client, calls } = stubClient();
+    expect(await createSession(client, true).fetchListHeaders([])).toEqual([]);
+    expect(calls).toEqual([]);
+    const failing = stubClient();
+    (failing.client as { fetch: unknown }).fetch = async function* () {
+      throw Object.assign(new Error("server said: secret text"), { code: "ETIMEOUT" });
+    };
+    await expect(createSession(failing.client, true).fetchListHeaders([1])).rejects.toMatchObject({ code: "ETIMEOUT" });
+  });
+
+  it("imapflow 2.11 turns the query into BODY.PEEK[HEADER.FIELDS (...)] by UID and the answer into a headers Buffer", async () => {
+    const block = Buffer.from("List-Unsubscribe: <mailto:u@example.net>\r\n\r\n");
+    let wire = "";
+    const connection = {
+      state: 3,
+      states: { SELECTED: 3 },
+      mailbox: { path: "INBOX", uidValidity: 7n },
+      capabilities: new Map([["IMAP4rev1", true]]),
+      enabled: new Set<string>(),
+      id: "c1",
+      log: { warn: () => {}, debug: () => {}, trace: () => {} },
+      async exec(
+        command: string,
+        attributes: unknown,
+        options: { untagged: { FETCH: (untagged: unknown) => Promise<void> } },
+      ) {
+        wire = String(await imapCompiler({ tag: "A1", command, attributes } as never));
+        const answer = `* 1 FETCH (UID 5 BODY[HEADER.FIELDS (LIST-ID LIST-UNSUBSCRIBE PRECEDENCE AUTO-SUBMITTED)] {${block.length}}\r\n)`;
+        await options.untagged.FETCH(await imapParser(Buffer.from(answer), { literals: [block] } as never));
+        return { next: () => {} };
+      },
+    };
+    const result = await imapflowFetch(connection as never, [5, 6] as never, LIST_HEADERS_QUERY, { uid: true });
+    expect(wire).toBe(
+      "A1 UID FETCH 5,6 (UID BODY.PEEK[HEADER.FIELDS (List-Id List-Unsubscribe Precedence Auto-Submitted)])",
+    );
+    expect(wire).not.toMatch(/BODY\[|RFC822(?!\.SIZE)|STORE|\\Seen/);
+    expect(result?.list[0]?.uid).toBe(5);
+    expect(Buffer.isBuffer(result?.list[0]?.headers)).toBe(true);
+    expect(String(result?.list[0]?.headers)).toBe(String(block));
   });
 });

@@ -342,3 +342,55 @@ describe("createSyncLoop", () => {
     });
   });
 });
+
+describe("createSyncLoop bulk backfill", () => {
+  it("fills unknown bulk marks after an ok round, inside the account's queue task", async () => {
+    const { store, scripted, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    const queue = createAccountQueue();
+    const lines: string[] = [];
+    let sessionsAtWrite = -1;
+    let write: Promise<void> | null = null;
+    const open = scripted.openFolder.bind(scripted);
+    scripted.openFolder = async (...args) => {
+      // Server work queued while the round runs waits for the backfill too.
+      write ??= queue.run("acc_1", async () => {
+        sessionsAtWrite = scripted.sessions.length;
+      });
+      return open(...args);
+    };
+    const loop = createSyncLoop(deps, SETTINGS, { queue, log: (line) => lines.push(line) });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.waitFor(() => expect(lines).toContain("backfill acc_1: marked 1, not on the server 0"));
+    await write;
+    controller.abort();
+    await done;
+
+    const backfill = scripted.sessions[scripted.sessions.length - 1]!;
+    expect(backfill.readOnly).toBe(true);
+    expect(backfill.calls.map((c) => c.method)).toEqual(["status", "fetchListHeaders"]);
+    expect(sessionsAtWrite).toBe(scripted.sessions.length);
+    expect(store.bulkMarks("acc_1", "INBOX")).toEqual(new Map([[1, false]]));
+    expect(lines.join("\n")).not.toMatch(/@|subject|sender/i);
+  });
+
+  it("does not backfill after a failed round; the next ok round does", async () => {
+    const { store, scripted, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    scripted.failAlways("fetchMessages", new Error("connection dropped"));
+    const lines: string[] = [];
+    const loop = createSyncLoop(deps, SETTINGS, { log: (line) => lines.push(line) });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.waitFor(() => expect(lines.some((l) => l.startsWith("sync acc_1:"))).toBe(true));
+    expect(scripted.sessions.some((s) => s.calls.some((c) => c.method === "fetchListHeaders"))).toBe(false);
+
+    scripted.clearFailure("fetchMessages");
+    lines.length = 0;
+    loop.wake("acc_1");
+    await vi.waitFor(() => expect(lines).toContain("backfill acc_1: marked 1, not on the server 0"));
+    controller.abort();
+    await done;
+  });
+});

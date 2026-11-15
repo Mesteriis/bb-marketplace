@@ -109,6 +109,26 @@ export function makeStoredAccount(overrides: Partial<StoredAccount> = {}): Store
   };
 }
 
+/** The mark the store keeps for a fetched message (as the SQLite upsert). */
+function bulkMarkOf(message: FetchedMessage): boolean | null {
+  return message.bulkHeaders === undefined ? null : classifyBulk(message.bulkHeaders, message.from.address);
+}
+
+/** The HEADER.FIELDS block a server returns for LIST_HEADER_FIELDS: only the fields present, then a blank line. */
+function listHeaderBlock(message: FetchedMessage): Uint8Array {
+  const headers = message.bulkHeaders;
+  const fields: [string, string | null][] = headers
+    ? [
+        ["List-Id", headers.listId],
+        ["List-Unsubscribe", headers.listUnsubscribe],
+        ["Precedence", headers.precedence],
+        ["Auto-Submitted", headers.autoSubmitted],
+      ]
+    : [];
+  const lines = fields.flatMap(([name, value]) => (value === null ? [] : [`${name}: ${value}\r\n`]));
+  return new TextEncoder().encode(`${lines.join("")}\r\n`);
+}
+
 export function makeFetchedMessage(
   uid: number,
   overrides: Partial<FetchedMessage> = {},
@@ -191,6 +211,8 @@ type Row = {
   movePending: string | null;
   moveFailures: number;
   inlineParts: InlinePart[];
+  /** The stored bulk mark: null when not known (the fetch read no headers). */
+  bulk: boolean | null;
 };
 
 type StoreState = {
@@ -378,6 +400,7 @@ export class InMemoryMailStore implements MailStore {
         row.gmMsgId = message.gmMsgId ?? row.gmMsgId;
         row.dedupKey = dedupKeyOf(row.gmMsgId, message.messageId, message.size, row.id);
         row.inlineParts = inlineParts;
+        row.bulk = bulkMarkOf(message);
         continue;
       }
       const id = `m_${this.state.nextId++}`;
@@ -397,6 +420,7 @@ export class InMemoryMailStore implements MailStore {
         movePending: null,
         moveFailures: 0,
         inlineParts,
+        bulk: bulkMarkOf(message),
       });
     }
   }
@@ -454,6 +478,41 @@ export class InMemoryMailStore implements MailStore {
     );
     this.dropOrphanTranslations();
     return before - this.state.rows.length;
+  }
+
+  bulkUnknown(
+    accountId: string,
+    folder: string,
+    belowUid: number | null,
+    limit: number,
+  ): { uid: number; fromAddress: string }[] {
+    if (limit <= 0) return [];
+    return this.attachedRows(accountId, folder)
+      .filter((r) => r.bulk === null && (belowUid === null || r.uid < belowUid))
+      .sort((a, b) => b.uid - a.uid)
+      .slice(0, limit)
+      .map((r) => ({ uid: r.uid, fromAddress: r.message.from.address }));
+  }
+
+  fillBulk(accountId: string, folder: string, uidValidity: number, marks: { uid: number; bulk: boolean }[]): number {
+    if (this.getSyncState(accountId, folder)?.uidValidity !== uidValidity) return 0;
+    let changed = 0;
+    for (const mark of marks) {
+      const row = this.attachedRows(accountId, folder).find((r) => r.uid === mark.uid);
+      if (row === undefined || row.bulk !== null) continue;
+      row.bulk = mark.bulk;
+      changed++;
+    }
+    return changed;
+  }
+
+  /** Test inspection: the bulk mark of every attached row of the folder, by uid. */
+  bulkMarks(accountId: string, folder: string): Map<number, boolean | null> {
+    return new Map(
+      this.attachedRows(accountId, folder)
+        .sort((a, b) => a.uid - b.uid)
+        .map((r) => [r.uid, r.bulk]),
+    );
   }
 
   setDesired(messageIds: string[], change: FlagChange): { accountId: string }[] {
@@ -1149,10 +1208,9 @@ export class InMemoryMailStore implements MailStore {
     return correspondenceOf(messages, wanted, this.listAccounts());
   }
 
-  /** The stored bulk mark: null when the fetch read no headers. */
+  /** The stored bulk mark: null when the fetch read no headers and no backfill filled it. */
   private bulkOf(row: Row): boolean | null {
-    const headers = row.message.bulkHeaders;
-    return headers === undefined ? null : classifyBulk(headers, row.message.from.address);
+    return row.bulk;
   }
 
   /** Rows a contact lookup counts: not moving, not marked bulk, not in junk or trash. */
@@ -1808,6 +1866,13 @@ export class ScriptedImapGateway implements ImapGateway {
         return uids.flatMap((uid) => {
           const message = box().messages.find((m) => m.uid === uid);
           return message ? [structuredClone(message)] : [];
+        });
+      },
+      fetchListHeaders: async (uids) => {
+        record({ method: "fetchListHeaders", uids: [...uids] });
+        return uids.flatMap((uid) => {
+          const message = box().messages.find((m) => m.uid === uid);
+          return message ? [{ uid, block: listHeaderBlock(message) }] : [];
         });
       },
       fetchFlags: async (uids) => {
