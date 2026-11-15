@@ -459,3 +459,122 @@ describe("createSyncLoop send checks and round ends (slice 3d)", () => {
     expect(lines.filter((l) => l.startsWith("sync acc_1: ok"))).toHaveLength(1);
   });
 });
+
+describe("createSyncLoop Inbox-only rounds and onRoundOk (slice 3e)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("an Inbox-only wake skips the listing and the backfills; a full wake of the account wins", async () => {
+    vi.useFakeTimers();
+    const t0 = Date.now();
+    const until = (ms: number) => vi.advanceTimersByTimeAsync(t0 + ms - Date.now());
+    const { store, scripted, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    const lines: string[] = [];
+    const rounds: (string | undefined)[] = [];
+    const unknown = vi.spyOn(store, "unsubscribeUnknown");
+    const loop = createSyncLoop(deps, SETTINGS, {
+      log: (line) => lines.push(line),
+      onRoundOk: (_id, _outcome, only) => {
+        rounds.push(only);
+      },
+    });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(rounds).toEqual([undefined]);
+    const listings = scripted.listFoldersCalls;
+    const unknownCalls = unknown.mock.calls.length;
+    expect(unknownCalls).toBeGreaterThan(0);
+
+    await until(20_000);
+    loop.wake("acc_1", { only: "inbox" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(rounds).toEqual([undefined, "inbox"]);
+    expect(scripted.listFoldersCalls).toBe(listings);
+    expect(unknown.mock.calls.length).toBe(unknownCalls);
+    expect(lines).toContain("sync acc_1 inbox: ok, fetched 0, removed 0, marked read 0, flags 0");
+
+    // Inside the window: both wakes wait and share one round, and "all" wins.
+    await until(21_000);
+    loop.wake("acc_1", { only: "inbox" });
+    loop.wake("acc_1");
+    loop.wake("acc_1", { only: "inbox" });
+    await until(31_000);
+    expect(rounds).toEqual([undefined, "inbox", undefined]);
+    expect(scripted.listFoldersCalls).toBe(listings + 1);
+    controller.abort();
+    await done;
+  });
+
+  it("a scheduled full round clears a queued Inbox-only wake", async () => {
+    vi.useFakeTimers();
+    const t0 = Date.now();
+    const until = (ms: number) => vi.advanceTimersByTimeAsync(t0 + ms - Date.now());
+    const { store, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    const rounds: (string | undefined)[] = [];
+    const loop = createSyncLoop(deps, () => ({ ...SETTINGS(), intervalMinutes: 1 }), {
+      onRoundOk: (_id, _outcome, only) => {
+        rounds.push(only);
+      },
+    });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    await until(5_000);
+    loop.wake("acc_1", { only: "inbox" }); // the window's extra round
+    await vi.advanceTimersByTimeAsync(0);
+    await until(6_000);
+    loop.wake("acc_1", { only: "inbox" }); // waits for the window (until 15 s)
+    await until(14_000);
+    expect(rounds).toEqual([undefined, "inbox"]);
+    await until(15_000);
+    expect(rounds).toEqual([undefined, "inbox", "inbox"]);
+    await until(60_000);
+    expect(rounds).toEqual([undefined, "inbox", "inbox", undefined]);
+    await until(70_000);
+    expect(rounds).toHaveLength(4);
+    controller.abort();
+    await done;
+  });
+
+  it("onRoundOk runs inside the account's queue task after an ok round only", async () => {
+    const { store, scripted, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    const queue = createAccountQueue();
+    const order: string[] = [];
+    scripted.failAlways("fetchMessages", new Error("connection dropped"));
+    const lines: string[] = [];
+    const loop = createSyncLoop(deps, SETTINGS, {
+      queue,
+      log: (line) => lines.push(line),
+      onRoundOk: async (accountId, outcome) => {
+        order.push(`ok ${accountId} ${outcome.newInbox.length}`);
+        // Work queued from inside the hook runs after the hook's task.
+        void queue.run(accountId, async () => {
+          order.push("queued");
+        });
+        await new Promise((r) => setTimeout(r, 5));
+        order.push("hook done");
+        throw new Error("a broken hook does not stop sync");
+      },
+      onRoundEnd: () => order.push("end"),
+    });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.waitFor(() => expect(lines.some((l) => l.startsWith("sync acc_1:"))).toBe(true));
+    expect(order).toEqual(["end"]);
+
+    scripted.clearFailure("fetchMessages");
+    order.length = 0;
+    loop.wake("acc_1");
+    await vi.waitFor(() => expect(order).toContain("queued"));
+    controller.abort();
+    await done;
+    expect(order.slice(0, 2)).toEqual(["ok acc_1 0", "hook done"]);
+    expect(order).toContain("end");
+    expect(lines).toContain("sync acc_1: round hook failed");
+  });
+});

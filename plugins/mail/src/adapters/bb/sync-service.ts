@@ -26,8 +26,15 @@
 // After an ok round the same task also resolves the account's pending alias
 // send checks from the synced Sent copies (slice 3d), and once each account's
 // sync of a round is over, onRoundEnd(accountId) runs (undo's second wake).
+//
+// Slice 3e: wake(accountId, { only: "inbox" }) asks an Inbox-only round
+// (IDLE); the pending map keeps "all" over "inbox" for an account. After an
+// ok round, inside the same queue task and after the send checks,
+// onRoundOk(accountId, outcome, only) runs (the server's block, notify and
+// snooze hooks); the bulk and unsubscribe backfills run on full rounds only.
 import {
   backfillBulk,
+  backfillUnsubscribe,
   syncAccount,
   type BackfillCursors,
   type AccountWriteQueue,
@@ -35,6 +42,7 @@ import {
   type MailStore,
   type SyncDeps,
   type SyncOptions,
+  type SyncOutcome,
 } from "../../core/index.ts";
 
 /** Stored on an account whose sealed password the current vault key cannot open. */
@@ -56,13 +64,26 @@ export interface SyncLoopOptions {
   queue?: AccountWriteQueue;
   /** Runs once each account's sync of a round is over (after its queue task); errors are ignored. */
   onRoundEnd?: (accountId: string) => void;
+  /**
+   * Runs after an ok round inside the account's queue task, after the send
+   * checks and before the backfills (slice 3e); errors are ignored.
+   */
+  onRoundOk?: (
+    accountId: string,
+    outcome: Extract<SyncOutcome, { status: "ok" }>,
+    only: "inbox" | undefined,
+  ) => void | Promise<void>;
 }
 
 export interface SyncLoop {
   /** Runs rounds until signal aborts; resolves promptly then. */
   start(signal: AbortSignal): Promise<void>;
-  /** Starts a round now: for one account, or for all when accountId is null. */
-  wake(accountId: string | null): void;
+  /**
+   * Starts a round now: for one account, or for all when accountId is null.
+   * `only: "inbox"` asks an Inbox-only round of that account; a full wake of
+   * it, before or after, wins.
+   */
+  wake(accountId: string | null, options?: { only?: "inbox" }): void;
   /** Re-reads the interval: the next full round is due interval after the last one. */
   reschedule(): void;
 }
@@ -87,8 +108,8 @@ export function createSyncLoop(
     }
   };
 
-  /** What the next round syncs: "all", some account ids, or nothing queued. */
-  let pending: "all" | Set<string> | null = null;
+  /** What the next round syncs: "all", some accounts (each Inbox-only or all folders), or nothing queued. */
+  let pending: "all" | Map<string, "inbox" | "all"> | null = null;
   /** Date.now() when the last full round finished; null before the first. */
   let lastFullAt: number | null = null;
   let cutSleep: (() => void) | null = null;
@@ -108,12 +129,13 @@ export function createSyncLoop(
     lastStartAt = now;
   }
 
-  function wake(accountId: string | null): void {
+  function wake(accountId: string | null, wakeOptions?: { only?: "inbox" }): void {
     if (accountId === null || pending === "all") {
       pending = "all";
     } else {
-      pending ??= new Set();
-      pending.add(accountId);
+      pending ??= new Map();
+      const kind = wakeOptions?.only === "inbox" ? "inbox" : "all";
+      if (pending.get(accountId) !== "all") pending.set(accountId, kind);
     }
     cutSleep?.();
   }
@@ -174,28 +196,41 @@ export function createSyncLoop(
           return;
         }
         const outcome = await syncAccount(guarded, accountId, syncOptions);
+        const label = syncOptions.only === "inbox" ? `${accountId} inbox` : accountId;
         log(
           outcome.status === "ok"
-            ? `sync ${accountId}: ok, fetched ${outcome.fetched}, removed ${outcome.removed}, marked read ${outcome.pushedSeen}, flags ${outcome.pushedFlags}`
-            : `sync ${accountId}: ${outcome.authFailed ? "authentication failed" : "error"}`,
+            ? `sync ${label}: ok, fetched ${outcome.fetched}, removed ${outcome.removed}, marked read ${outcome.pushedSeen}, flags ${outcome.pushedFlags}`
+            : `sync ${label}: ${outcome.authFailed ? "authentication failed" : "error"}`,
         );
         if (outcome.status !== "ok" || signal.aborted) return;
         guarded.store.resolveSendChecks(accountId, guarded.clock.now().toISOString());
-        const filled = await backfillBulk(guarded, accountId, { cursors, signal });
-        if (!signal.aborted && (filled.folders > 0 || filled.failed > 0 || filled.skipped > 0)) {
-          log(
-            `backfill ${accountId}: marked ${filled.marked}, not on the server ${filled.unanswered}` +
-              (filled.skipped > 0 ? `, folders renumbered ${filled.skipped}` : "") +
-              (filled.failed > 0 ? `, failed ${filled.failed}` : ""),
-          );
+        try {
+          await options.onRoundOk?.(accountId, outcome, syncOptions.only);
+        } catch {
+          if (!signal.aborted) log(`sync ${accountId}: round hook failed`);
         }
+        if (signal.aborted || syncOptions.only !== undefined) return;
+        const filled = await backfillBulk(guarded, accountId, { cursors, signal });
+        logBackfill("backfill", accountId, filled);
+        if (signal.aborted) return;
+        const unsubscribe = await backfillUnsubscribe(guarded, accountId, { cursors, signal });
+        logBackfill("backfill unsubscribe", accountId, unsubscribe);
       } catch {
         if (!signal.aborted) log(`sync ${accountId}: failed unexpectedly`);
       }
     }
 
+    function logBackfill(label: string, accountId: string, filled: Awaited<ReturnType<typeof backfillBulk>>): void {
+      if (signal.aborted || (filled.folders === 0 && filled.failed === 0 && filled.skipped === 0)) return;
+      log(
+        `${label} ${accountId}: marked ${filled.marked}, not on the server ${filled.unanswered}` +
+          (filled.skipped > 0 ? `, folders renumbered ${filled.skipped}` : "") +
+          (filled.failed > 0 ? `, failed ${filled.failed}` : ""),
+      );
+    }
+
     /** True when the round had accounts to sync (only those count toward the wake window). */
-    async function round(target: "all" | Set<string>): Promise<boolean> {
+    async function round(target: "all" | Map<string, "inbox" | "all">): Promise<boolean> {
       if (!isReady()) return false;
       let ids: string[];
       let syncOptions: SyncOptions;
@@ -210,7 +245,8 @@ export function createSyncLoop(
       if (target !== "all") ids = ids.filter((id) => target.has(id));
       for (const id of ids) {
         if (signal.aborted) break;
-        await Promise.race([syncOne(id, syncOptions), aborted]);
+        const only = target !== "all" && target.get(id) === "inbox" ? { only: "inbox" as const } : {};
+        await Promise.race([syncOne(id, { ...syncOptions, ...only }), aborted]);
       }
       return ids.length > 0;
     }
