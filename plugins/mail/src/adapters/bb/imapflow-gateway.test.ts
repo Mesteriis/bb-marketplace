@@ -99,6 +99,19 @@ describe("toFetchedMessage", () => {
     expect(unflagged).toMatchObject({ seen: false, flagged: false, gmThreadId: null });
   });
 
+  it("maps Reply-To from the message's own header, empty without one", async () => {
+    const withReplyTo = `Reply-To: Garden list <list@example.net>, b@example.net\r\n${RAW}`;
+    const message = toFetchedMessage(
+      imapMessage({ envelope: { ...imapMessage().envelope!, replyTo: [{ name: "Env", address: "env@example.org" }] } }),
+      await PostalMime.parse(withReplyTo),
+    );
+    expect(message.replyTo).toEqual([
+      { name: "Garden list", address: "list@example.net" },
+      { name: null, address: "b@example.net" },
+    ]);
+    expect(toFetchedMessage(imapMessage(), await PostalMime.parse(RAW)).replyTo).toEqual([]);
+  });
+
   it("takes text and html from postal-mime", async () => {
     const message = toFetchedMessage(imapMessage(), await PostalMime.parse(RAW));
     expect(message.bodyText?.trim()).toBe("Invented plain body.");
