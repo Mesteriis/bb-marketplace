@@ -1120,15 +1120,14 @@ export class InMemoryMailStore implements MailStore {
   }
 
   putTranslation(row: TranslationRecord): void {
-    this.transaction(() => {
-      this.state.translations.set(translationKey(row.messageId, row.targetLanguage), { ...row });
-      const extra = this.state.translations.size - TRANSLATION_CACHE_ROWS;
-      if (extra <= 0) return;
-      const oldest = [...this.state.translations.entries()]
-        .sort(([ka, a], [kb, b]) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : ka < kb ? -1 : 1))
-        .slice(0, extra);
-      for (const [key] of oldest) this.state.translations.delete(key);
-    });
+    this.state.translations.set(translationKey(row.messageId, row.targetLanguage), { ...row });
+    const extra = this.state.translations.size - TRANSLATION_CACHE_ROWS;
+    if (extra <= 0) return;
+    // Oldest by createdAt, then (messageId, targetLanguage), as the SQLite eviction orders them.
+    const oldest = [...this.state.translations.entries()]
+      .sort(([ka, a], [kb, b]) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : ka < kb ? -1 : 1))
+      .slice(0, extra);
+    for (const [key] of oldest) this.state.translations.delete(key);
   }
 
   clearTranslations(): number {

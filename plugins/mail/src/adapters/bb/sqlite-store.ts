@@ -55,7 +55,9 @@ import type {
 } from "../../core/model.ts";
 import type { ComposeDoc } from "../../core/compose-doc.ts";
 import { cleanSnippet, needsSnippetRepair, snippetOf } from "../../core/snippet.ts";
-import type { MailStore } from "../../core/ports.ts";
+import type { MailStore, ProposalRecord, TranslationRecord } from "../../core/ports.ts";
+import type { ProposalState } from "../../core/agent-propose.ts";
+import { TRANSLATION_CACHE_ROWS } from "../../core/translate.ts";
 import {
   capInlineParts,
   compareFolders,
@@ -313,6 +315,46 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX outbox_state ON outbox(state, send_after);
   CREATE UNIQUE INDEX outbox_draft_live ON outbox(draft_id) WHERE draft_id IS NOT NULL;
   `,
+  // 5: slice 3c. A hidden draft behind an agent's confirmation card carries
+  // its proposal id; proposals keep ids, states and the content hash only (the
+  // content is the hidden draft); translations are plain text, one per
+  // message and language. No REFERENCES: deletes are explicit.
+  `
+  ALTER TABLE compose_drafts ADD COLUMN proposal_id TEXT;
+
+  CREATE TABLE agent_proposals (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    draft_id TEXT,
+    account_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    source_message_id TEXT,
+    added_json TEXT NOT NULL DEFAULT '[]',
+    content_sha256 TEXT NOT NULL,
+    left_out INTEGER NOT NULL DEFAULT 0,
+    view_token_sha256 TEXT,
+    viewed_at TEXT,
+    state TEXT NOT NULL,
+    outbox_id TEXT,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX agent_proposals_thread ON agent_proposals(thread_id, state, created_at);
+
+  CREATE TABLE translations (
+    message_id TEXT NOT NULL,
+    target_language TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    text TEXT NOT NULL,
+    truncated INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (message_id, target_language)
+  );
+  CREATE INDEX translations_created ON translations(created_at);
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -380,8 +422,39 @@ type DraftRow = {
   server_revision: number | null;
   server_size: number | null;
   origin: DraftOrigin;
+  proposal_id: string | null;
   created_at: string;
   updated_at: string;
+};
+
+type ProposalRow = {
+  id: string;
+  thread_id: string;
+  draft_id: string | null;
+  account_id: string;
+  kind: ComposeKind;
+  source_message_id: string | null;
+  added_json: string;
+  content_sha256: string;
+  left_out: number;
+  view_token_sha256: string | null;
+  viewed_at: string | null;
+  state: ProposalState;
+  outbox_id: string | null;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type TranslationRow = {
+  message_id: string;
+  target_language: string;
+  source_sha256: string;
+  provider_id: string;
+  model: string;
+  text: string;
+  truncated: number;
+  created_at: string;
 };
 
 type OutboxRow = {
@@ -566,12 +639,45 @@ function toDraft(row: DraftRow): DraftRecord {
           }
         : null,
     origin: row.origin,
-    // The proposal_id column arrives with migration element 5 (slice 3c, task 5).
-    proposalId: null,
+    proposalId: row.proposal_id,
     createdAt: row.created_at,
     revision: row.revision,
     serverState: row.server_state,
     updatedAt: row.updated_at,
+  };
+}
+
+function toProposal(row: ProposalRow): ProposalRecord {
+  return {
+    id: row.id,
+    threadId: row.thread_id,
+    draftId: row.draft_id,
+    accountId: row.account_id,
+    kind: row.kind,
+    sourceMessageId: row.source_message_id,
+    added: JSON.parse(row.added_json) as string[],
+    contentSha256: row.content_sha256,
+    leftOut: row.left_out,
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+    state: row.state,
+    viewTokenSha256: row.view_token_sha256,
+    viewedAt: row.viewed_at,
+    outboxId: row.outbox_id,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toTranslation(row: TranslationRow): TranslationRecord {
+  return {
+    messageId: row.message_id,
+    targetLanguage: row.target_language,
+    providerId: row.provider_id,
+    model: row.model,
+    text: row.text,
+    truncated: row.truncated === 1,
+    sourceSha256: row.source_sha256,
+    createdAt: row.created_at,
   };
 }
 
@@ -733,6 +839,18 @@ export function createSqliteStore(db: Database.Database): MailStore {
     db.prepare("DELETE FROM compose_attachments WHERE draft_id = ?").run(id);
     db.prepare("DELETE FROM compose_drafts WHERE id = ?").run(id);
   };
+  const proposalById = db.prepare<[string], ProposalRow>("SELECT * FROM agent_proposals WHERE id = ?");
+  /** Deletes the proposal's draft only while it is still hidden (an opened one is the owner's), then clears draft_id. */
+  const dropHiddenDraft = (id: string) => {
+    const row = proposalById.get(id);
+    if (!row || row.draft_id === null) return;
+    const draft = db
+      .prepare<[string], { proposal_id: string | null }>("SELECT proposal_id FROM compose_drafts WHERE id = ?")
+      .get(row.draft_id);
+    if (draft !== undefined && draft.proposal_id !== id) return;
+    if (draft !== undefined) deleteDraftRows(row.draft_id);
+    db.prepare("UPDATE agent_proposals SET draft_id = NULL WHERE id = ?").run(id);
+  };
   const threadIdOf = db.prepare<[string], { thread_id: string }>(
     "SELECT thread_id FROM messages WHERE id = ?",
   );
@@ -812,9 +930,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
   /** Deletes the given rows with their attachment metadata and inline parts; returns their thread ids. */
   function deleteRows(rows: { id: string; thread_id: string }[]): Set<string> {
     const remove = db.prepare("DELETE FROM messages WHERE id = ?");
+    const removeTranslations = db.prepare("DELETE FROM translations WHERE message_id = ?");
     for (const row of rows) {
       deleteAttachmentsOf.run(row.id);
       deleteInlinePartsOf.run(row.id);
+      removeTranslations.run(row.id);
       remove.run(row.id);
     }
     return new Set(rows.map((r) => r.thread_id));
@@ -962,6 +1082,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
         ).run(id);
         db.prepare("DELETE FROM folders WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM image_senders WHERE account_id = ?").run(id);
+        db.prepare(
+          "DELETE FROM translations WHERE message_id IN (SELECT id FROM messages WHERE account_id = ?)",
+        ).run(id);
         db.prepare("DELETE FROM messages WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM threads WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM sync_state WHERE account_id = ?").run(id);
@@ -970,6 +1093,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         ).run(id);
         db.prepare("DELETE FROM compose_drafts WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM outbox WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM agent_proposals WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
       });
     },
@@ -1857,17 +1981,16 @@ export function createSqliteStore(db: Database.Database): MailStore {
     // Compose and send (slice 3b) --------------------------------------------
 
     createDraft(input) {
-      // Hidden proposal drafts need migration element 5 (task 5); no caller passes one before task 7.
-      if (input.proposalId !== null) throw new Error("Proposal drafts are not available yet");
+      // One INSERT with origin and proposal_id: a hidden draft is never visible as an ordinary one.
       const copy = input.serverCopy;
       db.prepare(
         `INSERT INTO compose_drafts (id, account_id, kind, source_message_id, message_id, in_reply_to,
            refs_json, to_json, cc_json, bcc_json, subject, doc_json, import_json, revision, server_state,
            server_folder, server_uidvalidity, server_uid, server_revision, server_size, origin,
-           created_at, updated_at)
+           proposal_id, created_at, updated_at)
          VALUES (@id, @accountId, @kind, @sourceMessageId, @messageId, @inReplyTo, @refs, @to, @cc, @bcc,
            @subject, @doc, @importHtml, 1, @serverState, @folder, @uidValidity, @uid, @serverRevision,
-           @size, @origin, @createdAt, @createdAt)`,
+           @size, @origin, @proposalId, @createdAt, @createdAt)`,
       ).run({
         id: input.id,
         accountId: input.accountId,
@@ -1889,6 +2012,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         serverRevision: copy?.revision ?? null,
         size: copy?.size ?? null,
         origin: input.origin,
+        proposalId: input.proposalId,
         createdAt: input.createdAt,
       });
       return toDraft(draftById.get(input.id)!);
@@ -2286,57 +2410,202 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return rankRecipientSuggestions(entries, prefix, limit);
     },
 
-    // Agent proposals and translation (slice 3c): migration element 5 and these
-    // methods arrive in task 5. ----------------------------------------------
+    // Agent proposals and translation (slice 3c) ------------------------------
 
-    createProposal() {
-      throw notYet("createProposal");
+    createProposal(input) {
+      db.prepare(
+        `INSERT INTO agent_proposals (id, thread_id, draft_id, account_id, kind, source_message_id,
+           added_json, content_sha256, left_out, view_token_sha256, viewed_at, state, outbox_id,
+           expires_at, created_at, updated_at)
+         VALUES (@id, @threadId, @draftId, @accountId, @kind, @sourceMessageId, @added, @contentSha256,
+           @leftOut, NULL, NULL, 'pending', NULL, @expiresAt, @createdAt, @createdAt)`,
+      ).run({
+        id: input.id,
+        threadId: input.threadId,
+        draftId: input.draftId,
+        accountId: input.accountId,
+        kind: input.kind,
+        sourceMessageId: input.sourceMessageId,
+        added: JSON.stringify(input.added),
+        contentSha256: input.contentSha256,
+        leftOut: input.leftOut,
+        expiresAt: input.expiresAt,
+        createdAt: input.createdAt,
+      });
+      return toProposal(proposalById.get(input.id)!);
     },
-    getProposal() {
-      throw notYet("getProposal");
+
+    getProposal(id) {
+      const row = proposalById.get(id);
+      return row ? toProposal(row) : null;
     },
-    proposalCapRows() {
-      throw notYet("proposalCapRows");
+
+    proposalCapRows(nowIso) {
+      const since = new Date(Date.parse(nowIso) - 24 * 60 * 60 * 1000).toISOString();
+      return db
+        .prepare<[string], { thread_id: string; state: ProposalState; created_at: string; updated_at: string }>(
+          `SELECT thread_id, state, created_at, updated_at FROM agent_proposals
+           WHERE state IN ('pending', 'confirming') OR created_at > ?
+           ORDER BY created_at, id`,
+        )
+        .all(since)
+        .map((row) => ({ threadId: row.thread_id, state: row.state, createdAt: row.created_at, updatedAt: row.updated_at }));
     },
-    transitionProposal() {
-      throw notYet("transitionProposal");
+
+    transitionProposal(id, from, to, updatedAt, patch = {}) {
+      const sets = ["state = @to", "updated_at = @updatedAt"];
+      if (patch.outboxId !== undefined) sets.push("outbox_id = @outboxId");
+      if (patch.viewTokenSha256 !== undefined) sets.push("view_token_sha256 = @viewTokenSha256");
+      if (patch.viewedAt !== undefined) sets.push("viewed_at = @viewedAt");
+      return (
+        db
+          .prepare(
+            `UPDATE agent_proposals SET ${sets.join(", ")}
+             WHERE id = @id AND state IN (SELECT value FROM json_each(@from))`,
+          )
+          .run({
+            id,
+            to,
+            updatedAt,
+            from: JSON.stringify(from),
+            outboxId: patch.outboxId ?? null,
+            viewTokenSha256: patch.viewTokenSha256 ?? null,
+            viewedAt: patch.viewedAt ?? null,
+          }).changes === 1
+      );
     },
-    setViewToken() {
-      throw notYet("setViewToken");
+
+    setViewToken(id, sha256, viewedAtIso) {
+      return (
+        db
+          .prepare(
+            `UPDATE agent_proposals SET view_token_sha256 = ?, viewed_at = ?
+             WHERE id = ? AND state = 'pending'`,
+          )
+          .run(sha256, viewedAtIso, id).changes === 1
+      );
     },
-    releaseProposalDraft() {
-      throw notYet("releaseProposalDraft");
+
+    releaseProposalDraft(id, draftId, updatedAt) {
+      return atomic(() => {
+        const moved = db
+          .prepare(
+            `UPDATE agent_proposals SET state = 'opened', updated_at = ?
+             WHERE id = ? AND draft_id = ? AND state IN ('pending', 'confirming')
+               AND EXISTS (SELECT 1 FROM compose_drafts WHERE id = ? AND proposal_id = ?)`,
+          )
+          .run(updatedAt, id, draftId, draftId, id).changes;
+        if (moved !== 1) return false;
+        db.prepare("UPDATE compose_drafts SET proposal_id = NULL WHERE id = ? AND proposal_id = ?").run(draftId, id);
+        return true;
+      });
     },
-    undoAgentSend() {
-      throw notYet("undoAgentSend");
+
+    undoAgentSend(outboxId, from, updatedAt) {
+      return atomic(() => {
+        const row = outboxById.get(outboxId);
+        if (!row) return { cancelled: false, draftId: null };
+        const deleted = db
+          .prepare("DELETE FROM outbox WHERE id = ? AND state IN (SELECT value FROM json_each(?))")
+          .run(outboxId, JSON.stringify(from)).changes;
+        if (deleted !== 1) return { cancelled: false, draftId: row.draft_id };
+        if (row.draft_id !== null) {
+          db.prepare("UPDATE compose_drafts SET proposal_id = NULL WHERE id = ? AND proposal_id = ?").run(
+            row.draft_id,
+            outboxId,
+          );
+        }
+        db.prepare(
+          "UPDATE agent_proposals SET state = 'opened', updated_at = ? WHERE id = ? AND state = 'queued'",
+        ).run(updatedAt, outboxId);
+        return { cancelled: true, draftId: row.draft_id };
+      });
     },
-    dropProposalDraft() {
-      throw notYet("dropProposalDraft");
+
+    dropProposalDraft(id) {
+      atomic(() => dropHiddenDraft(id));
     },
-    recoverProposalsOnStart() {
-      throw notYet("recoverProposalsOnStart");
+
+    recoverProposalsOnStart(nowIso) {
+      return atomic(() => {
+        const queued = db
+          .prepare(
+            `UPDATE agent_proposals SET state = 'queued', outbox_id = id, updated_at = ?
+             WHERE state = 'confirming' AND EXISTS (SELECT 1 FROM outbox WHERE outbox.id = agent_proposals.id)`,
+          )
+          .run(nowIso).changes;
+        const doomed = db
+          .prepare<[], { id: string }>("SELECT id FROM agent_proposals WHERE state IN ('pending', 'confirming')")
+          .all();
+        for (const { id } of doomed) {
+          db.prepare("UPDATE agent_proposals SET state = 'expired', updated_at = ? WHERE id = ?").run(nowIso, id);
+          dropHiddenDraft(id);
+        }
+        return { expired: doomed.length, queued };
+      });
     },
-    purgeProposals() {
-      throw notYet("purgeProposals");
+
+    purgeProposals(beforeIso) {
+      return db
+        .prepare(
+          "DELETE FROM agent_proposals WHERE state NOT IN ('pending', 'confirming') AND updated_at < ?",
+        )
+        .run(beforeIso).changes;
     },
-    addressesSentTo() {
-      throw notYet("addressesSentTo");
+
+    addressesSentTo(addresses) {
+      const wanted = new Set(addresses.map((a) => a.trim().toLowerCase()));
+      const found = new Set<string>();
+      if (wanted.size === 0) return found;
+      const rows = db
+        .prepare<[], { to_json: string; cc_json: string }>(
+          `SELECT m.to_json, m.cc_json FROM ${MESSAGES_WITH_FOLDER} WHERE ${ROW_ROLE} = 'sent'`,
+        )
+        .iterate();
+      for (const row of rows) {
+        for (const a of [
+          ...(JSON.parse(row.to_json) as MailAddress[]),
+          ...(JSON.parse(row.cc_json) as MailAddress[]),
+        ]) {
+          const key = a.address.trim().toLowerCase();
+          if (wanted.has(key)) found.add(key);
+        }
+      }
+      return found;
     },
-    getTranslation() {
-      throw notYet("getTranslation");
+
+    getTranslation(messageId, targetLanguage) {
+      const row = db
+        .prepare<[string, string], TranslationRow>(
+          "SELECT * FROM translations WHERE message_id = ? AND target_language = ?",
+        )
+        .get(messageId, targetLanguage);
+      return row ? toTranslation(row) : null;
     },
-    putTranslation() {
-      throw notYet("putTranslation");
+
+    putTranslation(row) {
+      atomic(() => {
+        db.prepare(
+          `INSERT INTO translations (message_id, target_language, source_sha256, provider_id, model, text,
+             truncated, created_at)
+           VALUES (@messageId, @targetLanguage, @sourceSha256, @providerId, @model, @text, @truncated, @createdAt)
+           ON CONFLICT(message_id, target_language) DO UPDATE SET source_sha256 = excluded.source_sha256,
+             provider_id = excluded.provider_id, model = excluded.model, text = excluded.text,
+             truncated = excluded.truncated, created_at = excluded.created_at`,
+        ).run({ ...row, truncated: row.truncated ? 1 : 0 });
+        db.prepare(
+          `DELETE FROM translations WHERE rowid IN (
+             SELECT rowid FROM translations
+             ORDER BY created_at, message_id, target_language
+             LIMIT max(0, (SELECT count(*) FROM translations) - ?))`,
+        ).run(TRANSLATION_CACHE_ROWS);
+      });
     },
+
     clearTranslations() {
-      throw notYet("clearTranslations");
+      return db.prepare("DELETE FROM translations").run().changes;
     },
   };
   return store;
-}
-
-/** A slice-3c store method that task 5 implements. */
-function notYet(method: string): Error {
-  return new Error(`${method} is not implemented yet`);
 }
 
