@@ -107,6 +107,19 @@ describe("addAccount", () => {
     expect(store.listAccounts()).toEqual([]);
   });
 
+  it("addAccount refuses an address that is an active alias of another account", async () => {
+    store.saveAccount(makeStoredAccount({ id: "acc_9", email: "first@example.net", username: "first@example.net" }));
+    store.upsertIdentity({ accountId: "acc_9", address: "Owner@Example.org", displayName: null }, "2026-11-14T09:00:00.000Z");
+    await expect(addAccount(deps, input())).rejects.toThrow(
+      "This address is already a sending address of another account; remove it there first",
+    );
+    expect(store.listAccounts().map((a) => a.id)).toEqual(["acc_9"]);
+    expect(gateway.sessions).toEqual([]);
+    // Once the alias is removed there, the address can be added.
+    store.removeIdentity("acc_9", "owner@example.org");
+    expect((await addAccount(deps, input())).email).toBe("owner@example.org");
+  });
+
   it("addAccount stores only the sealed password", async () => {
     const account = await addAccount(deps, input({ displayName: "Owner" }));
     expect(account).toEqual({

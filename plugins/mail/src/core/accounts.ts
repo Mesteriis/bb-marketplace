@@ -50,6 +50,7 @@ export class SmtpSettingsRefused extends Error {
 }
 
 const PASSWORD_REQUIRED = "Enter the account password to use this SMTP server";
+export const ADDRESS_IS_ALIAS = "This address is already a sending address of another account; remove it there first";
 const PASSWORD_REFUSED = "The IMAP server refused this password";
 
 /** Thrown by removeAccount while a message of the account is being sent. */
@@ -96,9 +97,18 @@ export async function testAccount(
 /**
  * Tests the connection, then seals the password and saves the account. An
  * account with the same email keeps its id, creation time and sync history;
- * its auth failure and last error are cleared.
+ * its auth failure and last error are cleared. An address that is an active
+ * alias of another account is refused (`ADDRESS_IS_ALIAS`).
  */
 export async function addAccount(deps: AccountDeps, input: NewAccountInput): Promise<Account> {
+  // One address, one account: an active alias of another account is refused
+  // before anything connects (an address both own would be ambiguous as From).
+  const existing = deps.store.findAccountByEmail(input.email);
+  const wanted = input.email.trim().toLowerCase();
+  const aliasElsewhere = deps.store
+    .listIdentities(null)
+    .some((row) => row.state === "active" && row.accountId !== existing?.id && row.address.toLowerCase() === wanted);
+  if (aliasElsewhere) throw new Error(ADDRESS_IS_ALIAS);
   const config = configFor(input);
   const result = await runTest(deps.gateway, config);
   if (!result.ok) throw new Error(result.reason ?? "Connection failed");
@@ -107,7 +117,6 @@ export async function addAccount(deps: AccountDeps, input: NewAccountInput): Pro
     const smtpResult = await verifySmtp(deps.transport, smtpConfigFor(input, config));
     if (!smtpResult.ok) throw new Error(smtpResult.reason ?? "SMTP failed");
   }
-  const existing = deps.store.findAccountByEmail(input.email);
   const stored: StoredAccount = {
     id: existing?.id ?? deps.newId(),
     email: input.email,
