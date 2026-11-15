@@ -15,6 +15,7 @@ import {
   parseSubmitValue,
   proposalContent,
   recipientFlags,
+  refusedHidden,
   revealHidden,
   type ProposalCapRow,
   type ProposalEvent,
@@ -299,9 +300,32 @@ describe("revealHidden", () => {
     expect(revealHidden(`a${ch}b${ch}`)).toEqual({ shown: "ab", hidden: 2 });
   });
 
+  it.each([
+    0x00ad, 0x180e, 0x2061, 0x2062, 0x2063, 0x2064, 0x206a, 0x206f, 0xfff9, 0xfffb, 0x110bd, 0x1d173, 0x1d17a,
+    0xe0001, 0xe0020, 0xe0041, 0xe007f, 0xfe00, 0xfe0f, 0xe0100, 0xe01ef, 0x2028, 0x2029, 0x3164, 0x115f, 0x1160,
+    0xffa0, 0x034f, 0x17b4, 0x17b5, 0x180b, 0x180f,
+  ])("strips and counts invisible U+%s beyond bidi and zero-width marks", (cp) => {
+    const ch = String.fromCodePoint(cp);
+    expect(revealHidden(`a${ch}b${ch}`)).toEqual({ shown: "ab", hidden: 2 });
+  });
+
+  it("counts a supplementary character once", () => {
+    expect(revealHidden("a\u{E0041}b").hidden).toBe(1);
+  });
+
   it("leaves clean text alone", () => {
     const text = "Plain invented text — with dashes, émigré and 日本語.\nNew line\ttab";
     expect(revealHidden(text)).toEqual({ shown: text, hidden: 0 });
+  });
+});
+
+describe("refusedHidden", () => {
+  it.each([0xe0000, 0xe0001, 0xe0041, 0xe007f, 0x3164, 0x115f, 0x1160, 0xffa0])("refuses U+%s", (cp) => {
+    expect(refusedHidden(`a${String.fromCodePoint(cp)}b`)).toBe(true);
+  });
+
+  it.each([0x200b, 0x202e, 0x00ad, 0xfe0f, 0x2028])("only reveals U+%s", (cp) => {
+    expect(refusedHidden(`a${String.fromCodePoint(cp)}b`)).toBe(false);
   });
 });
 

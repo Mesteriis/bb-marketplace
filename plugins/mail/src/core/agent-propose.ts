@@ -184,7 +184,7 @@ export type RecipientFlag = z.infer<typeof recipientFlagSchema>;
  * (`sentTo` holds lowercased addresses from To/Cc of Sent mail; mail received
  * from it does not count). `added`: the agent added it beyond the Reply
  * rules. `outside`: its domain is none of the owner's account domains.
- * `hidden_chars`: it holds bidi or zero-width characters.
+ * `hidden_chars`: it holds invisible characters (revealHidden).
  */
 export function recipientFlags(
   address: string,
@@ -204,10 +204,22 @@ export function recipientFlags(
 // Hidden characters and links
 // ---------------------------------------------------------------------------
 
-/** Bidi controls and zero-width characters (spec resolution 13). */
-const HIDDEN = /[‪-‮⁦-⁩‎‏؜​-‍⁠﻿]/g;
+/**
+ * Invisible characters the card reveals (spec resolutions 13 and 20): every
+ * format character (\p{Cf}: bidi controls, zero-width marks, the soft
+ * hyphen, invisible operators, tag characters), variation selectors, the
+ * line and paragraph separators, the Hangul fillers and the other invisible
+ * marks (combining grapheme joiner, Khmer inherent vowels, Mongolian
+ * variation selectors). The card keeps the same pattern (HIDDEN in
+ * src/ui/agent-send-card.tsx); a test compares them over every code point.
+ */
+const HIDDEN =
+  /[\p{Cf}\u{E0000}-\u{E007F}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}\u2028\u2029\u3164\u115F\u1160\uFFA0\u034F\u17B4\u17B5\u180B-\u180F]/gu;
 
-/** The text as the card shows it, without bidi and zero-width characters, and how many were removed. */
+/** Tag characters and Hangul fillers: refused in the agent's subject and body, never only revealed. */
+const REFUSED_HIDDEN = /[\u{E0000}-\u{E007F}\u3164\u115F\u1160\uFFA0]/u;
+
+/** The text as the card shows it, without invisible characters, and how many were removed. */
 export function revealHidden(text: string): { shown: string; hidden: number } {
   let hidden = 0;
   const shown = text.replace(HIDDEN, () => {
@@ -215,6 +227,11 @@ export function revealHidden(text: string): { shown: string; hidden: number } {
     return "";
   });
   return { shown, hidden };
+}
+
+/** Whether the text holds a tag character or a Hangul filler, which a proposal refuses outright. */
+export function refusedHidden(text: string): boolean {
+  return REFUSED_HIDDEN.test(text);
 }
 
 /** Longest token looked at as a link; longer ones are skipped. */

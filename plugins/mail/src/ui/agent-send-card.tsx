@@ -42,8 +42,14 @@ export interface AgentSendCardProps {
   registerAction?: (handler: (action: string) => boolean) => () => void;
 }
 
-/** Bidi controls and zero-width characters; the server removes them too (spec resolution 13). */
-const HIDDEN = /[‪-‮⁦-⁩‎‏؜​-‍⁠﻿]/g;
+/**
+ * Invisible characters (format characters, variation selectors, line and
+ * paragraph separators, Hangul fillers and other invisible marks); the same
+ * pattern as the server's revealHidden (spec resolutions 13 and 20), which a
+ * test compares over every code point.
+ */
+const HIDDEN =
+  /[\p{Cf}\u{E0000}-\u{E007F}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}\u2028\u2029\u3164\u115F\u1160\uFFA0\u034F\u17B4\u17B5\u180B-\u180F]/gu;
 
 /** What the card shows of a text that came from an agent or a message. */
 export function shownText(text: string): string {
@@ -232,8 +238,8 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
 
       {v.hiddenChars > 0 ? (
         <p role="note" className="rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive">
-          {v.hiddenChars === 1 ? "1 hidden character removed" : `${v.hiddenChars} hidden characters removed`} (direction
-          or zero-width marks in the subject, the addresses or the text).
+          {v.hiddenChars === 1 ? "1 hidden character removed" : `${v.hiddenChars} hidden characters removed`} (invisible
+          marks in the subject, the addresses or the text).
         </p>
       ) : null}
 
