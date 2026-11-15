@@ -63,7 +63,9 @@ const TRANSITIONS: Record<OutboxEvent, Partial<Record<OutboxState, Target>>> = {
   claim: { queued: "sending" },
   undo: { queued: "deleted", held: "deleted", failed: "deleted" },
   send_now: { held: "queued" },
-  accepted: { sending: "sent" },
+  // From unknown too: a reload's recovery may have marked the row while the
+  // old worker was still in SMTP; an accepted send is still a sent one.
+  accepted: { sending: "sent", unknown: "sent" },
   failed: { sending: "failed" },
   lost: { sending: "unknown" },
   copy: { sent: "appending" },
@@ -348,7 +350,8 @@ export async function runOutboxOnce(
   const claimed = outcome.row;
   if (outcome.state === "sent") {
     const updatedAt = deps.clock.now().toISOString();
-    if (deps.store.transitionOutbox(claimed.id, ["sending"], "sent", { rejected: outcome.rejected, updatedAt })) {
+    const accepted = { rejected: outcome.rejected, errorKind: null, updatedAt };
+    if (deps.store.transitionOutbox(claimed.id, fromStates("accepted"), "sent", accepted)) {
       publish(deps, claimed, "sent");
       const row = deps.store.getOutbox(claimed.id);
       if (row !== null) await copyStep(deps, row, stop);
