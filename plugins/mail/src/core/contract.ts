@@ -10,7 +10,12 @@ import {
   mailAddressSchema,
   noLineBreaks,
   outboxRowSchema,
+  proposalStateSchema,
+  proposalViewSchema,
   smtpSecuritySchema,
+  translateErrorKindSchema,
+  translateGatewaySchema,
+  translationViewSchema,
   type OutboxState,
   folderSchema,
   messageActionSchema,
@@ -23,6 +28,7 @@ import {
   threadDetailSchema,
   threadSummarySchema,
 } from "./model.ts";
+import { languageTagSchema } from "./translate.ts";
 
 /** An id, folder path or account id coming in from the page. */
 const idInput = z.string().min(1).max(256);
@@ -30,8 +36,8 @@ const idInput = z.string().min(1).max(256);
 const addressInput = z.string().min(3).max(320);
 
 const NO_LINE_BREAKS = { message: "Line breaks are not allowed" };
-/** An address for a header: also free of CR, LF and NUL. */
-const headerAddressInput = addressInput.refine(noLineBreaks, NO_LINE_BREAKS);
+/** An address for a header: also free of CR, LF and NUL (also the agent tool's recipients). */
+export const headerAddressInput = addressInput.refine(noLineBreaks, NO_LINE_BREAKS);
 /** Recipients per field (To, Cc or Bcc). */
 const recipientList = z.array(headerAddressInput).max(100);
 /** Largest attachment the composer takes, and the cap on one message's attachments. */
@@ -41,6 +47,11 @@ export const UPLOAD_CHUNK_BYTES = 512 * 1024;
 const CHUNK_BASE64_MAX = Math.ceil(UPLOAD_CHUNK_BYTES / 3) * 4;
 
 const okOutput = z.object({ ok: z.boolean() });
+const contentHashInput = z.string().regex(/^[0-9a-f]{64}$/);
+/** A provider id or model id for the translation settings: bounded, one line, no NUL. */
+const settingText = (max: number) => z.string().max(max).refine(noLineBreaks, NO_LINE_BREAKS);
+const translateProviderSchema = z.object({ id: z.string(), displayName: z.string(), available: z.boolean() });
+const translateModelSchema = z.object({ model: z.string(), displayName: z.string() });
 const composeWarning = z.enum(["original_unavailable", "attachments_left_out", "original_kept"]).nullable();
 const smtpSettingsInput = z.object({
   accountId: idInput,
@@ -347,6 +358,75 @@ export const rpcSchemas = {
   accounts_smtp_set: {
     input: smtpSettingsInput,
     output: smtpTestOutput,
+  },
+
+  // ---- Agent proposals and translation (slice 3c). Owner only: every
+  // handler refuses plugin callers, none is discoverable, none is a tool,
+  // CLI or mention. ----
+
+  /**
+   * The card's content and a fresh view token (only the latest view's token
+   * can submit). The hash is recomputed from the hidden draft first; a
+   * mismatch answers `changed` with no content and no token.
+   */
+  proposal_view: {
+    input: z.object({ proposalId: idInput, contentHash: contentHashInput }),
+    output: z.union([
+      z.object({ state: z.literal("ready"), view: proposalViewSchema, viewToken: z.string() }),
+      z.object({ state: z.enum(["changed", "gone", "opened_elsewhere"]) }),
+    ]),
+  },
+  /** Where a settled card stands, for its thread row. Ids and fixed reasons only. */
+  proposal_status: {
+    input: z.object({ proposalId: idInput }),
+    output: z.object({
+      state: proposalStateSchema,
+      outboxId: z.string().nullable(),
+      draftId: z.string().nullable(),
+      reason: z.enum(["rate_limited", "too_large", "account", "changed"]).nullable(),
+    }),
+  },
+  /** A cached translation, or a job to poll. Only the owner starts one. */
+  translate_start: {
+    input: z.object({ messageId: idInput, targetLanguage: languageTagSchema, force: z.boolean().optional() }),
+    output: z.union([z.object({ cached: translationViewSchema }), z.object({ jobId: z.string() })]),
+  },
+  /** Text since `from` (characters already shown). The translation travels only here. */
+  translate_poll: {
+    input: z.object({ jobId: idInput, from: z.number().int().min(0) }),
+    output: z.object({
+      state: z.enum(["running", "done", "failed", "cancelled"]),
+      text: z.string(),
+      finish: z.enum(["complete", "max_tokens"]).optional(),
+      truncatedInput: z.boolean().optional(),
+      error: translateErrorKindSchema.optional(),
+      /** makosh-ai's own refusal text, sanitized; only with pool_unavailable. */
+      gatewayMessage: z.string().optional(),
+      provider: z.string().optional(),
+      model: z.string().optional(),
+    }),
+  },
+  translate_cancel: {
+    input: z.object({ jobId: idInput }),
+    output: z.object({ cancelled: z.boolean() }),
+  },
+  translate_settings_get: {
+    input: z.object({}),
+    output: z.object({
+      gateway: translateGatewaySchema,
+      providers: z.array(translateProviderSchema),
+      models: z.array(translateModelSchema).nullable(),
+      current: z.object({ providerId: z.string(), model: z.string(), language: z.string() }),
+    }),
+  },
+  /** Empty provider or model: the first available one. */
+  translate_settings_set: {
+    input: z.object({ providerId: settingText(64), model: settingText(200), language: languageTagSchema }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  translate_clear: {
+    input: z.object({}),
+    output: z.object({ removed: z.number().int().min(0) }),
   },
 } as const;
 

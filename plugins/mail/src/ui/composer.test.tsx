@@ -49,6 +49,7 @@ function draft(overrides: Partial<DraftView> = {}): DraftView {
     queued: false,
     continues: false,
     import: null,
+    origin: "owner",
     ...overrides,
   };
 }

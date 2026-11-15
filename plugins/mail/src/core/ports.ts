@@ -2,6 +2,7 @@
 import type { ReplySource } from "./compose-reply.ts";
 import type {
   ComposeAttachment,
+  ComposeKind,
   DraftFields,
   DraftServerCopyState,
   DraftRecord,
@@ -35,6 +36,7 @@ import type {
   MailAddress,
 } from "./model.ts";
 import type { OutboxChangedPayload } from "./contract.ts";
+import type { ProposalCapRow, ProposalState } from "./agent-propose.ts";
 
 export interface ImapConfig {
   host: string;
@@ -471,4 +473,98 @@ export interface MailStore {
   ): (ReplySource & { accountId: string; folder: string; replyToKnown: boolean }) | null;
   /** Distinct From/To/Cc addresses of stored mail matching the prefix; the owner's Sent first. Local only. */
   recipientSuggestions(prefix: string, limit: number): MailAddress[];
+
+  // ---- Agent proposals and translation (slice 3c) ----
+
+  createProposal(input: NewProposal): ProposalRecord;
+  getProposal(id: string): ProposalRecord | null;
+  /** Proposals created in the 24 hours before `nowIso`, plus every unsettled one (pending, confirming). */
+  proposalCapRows(nowIso: string): ProposalCapRow[];
+  /**
+   * The compare-and-swap every proposal transition uses: false when the
+   * proposal is not in a `from` state. `updatedAt` (ISO 8601) is recorded,
+   * since the cool-down counts from it.
+   */
+  transitionProposal(
+    id: string,
+    from: ProposalState[],
+    to: ProposalState,
+    updatedAt: string,
+    patch?: { outboxId?: string | null; viewTokenSha256?: string | null; viewedAt?: string | null },
+  ): boolean;
+  /** Replaces the view token's hash and its time; only while the proposal is `pending`. */
+  setViewToken(id: string, sha256: string, viewedAtIso: string): boolean;
+  /**
+   * One transaction: the draft becomes an owner draft (proposal_id cleared)
+   * and the proposal moves to `opened` from pending or confirming. False when
+   * the proposal is in another state or does not own that draft.
+   */
+  releaseProposalDraft(id: string, draftId: string, updatedAt: string): boolean;
+  /**
+   * Undo or Edit of an agent send, one transaction: deletes the outbox row
+   * (only from a `from` state), releases its draft and moves the proposal
+   * (id = the outbox id) from `queued` to `opened`.
+   */
+  undoAgentSend(outboxId: string, from: OutboxState[], updatedAt: string): { cancelled: boolean; draftId: string | null };
+  /** Deletes the proposal's hidden draft and its attachments, and clears its draft id. */
+  dropProposalDraft(id: string): void;
+  /**
+   * On start (a restart never confirms): `pending` becomes `expired` with
+   * its hidden draft deleted; `confirming` becomes `queued` when its outbox
+   * row (id = proposal id) exists, else `expired`.
+   */
+  recoverProposalsOnStart(nowIso: string): { expired: number; queued: number };
+  /** Deletes settled proposals last updated before `beforeIso`; returns how many. */
+  purgeProposals(beforeIso: string): number;
+  /** Of these addresses, the ones (lowercased) in To or Cc of a stored message in a Sent-role folder. */
+  addressesSentTo(addresses: string[]): Set<string>;
+  getTranslation(messageId: string, targetLanguage: string): TranslationRecord | null;
+  /** Upsert by (messageId, targetLanguage), then evict the oldest beyond TRANSLATION_CACHE_ROWS by createdAt. */
+  putTranslation(row: TranslationRecord): void;
+  /** Deletes every cached translation; returns how many. */
+  clearTranslations(): number;
 }
+
+/** What creating an agent proposal stores. Never the content itself: that is the hidden draft. */
+export type NewProposal = {
+  id: string;
+  /** The BB thread the agent proposed in (for the caps). */
+  threadId: string;
+  draftId: string;
+  accountId: string;
+  kind: ComposeKind;
+  sourceMessageId: string | null;
+  /** Recipients the agent added to a reply beyond the Reply rules. */
+  added: string[];
+  contentSha256: string;
+  /** ISO 8601. */
+  expiresAt: string;
+  /** ISO 8601. */
+  createdAt: string;
+};
+
+/** An agent_proposals row. `draftId` is null once its hidden draft was dropped. */
+export type ProposalRecord = Omit<NewProposal, "draftId"> & {
+  draftId: string | null;
+  state: ProposalState;
+  viewTokenSha256: string | null;
+  /** ISO 8601. */
+  viewedAt: string | null;
+  outboxId: string | null;
+  /** ISO 8601. */
+  updatedAt: string;
+};
+
+/** A cached translation. Text only. */
+export type TranslationRecord = {
+  messageId: string;
+  targetLanguage: string;
+  providerId: string;
+  model: string;
+  text: string;
+  truncated: boolean;
+  /** sourceHash of the translated source text, language and prompt version. */
+  sourceSha256: string;
+  /** ISO 8601. */
+  createdAt: string;
+};

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
-import { MAIL_CHANGED_CHANNEL, OUTBOX_CHANGED_CHANNEL, rpcSchemas } from "./contract.ts";
+import { MAIL_CHANGED_CHANNEL, OUTBOX_CHANGED_CHANNEL, headerAddressInput, rpcSchemas } from "./contract.ts";
 import {
   accountSchema,
   draftViewSchema,
@@ -43,6 +43,18 @@ const COMPOSE_METHODS = [
   "accounts_smtp_set",
 ] as const;
 
+/** The 8 owner-only methods slice 3c adds. */
+const SLICE_3C_METHODS = [
+  "proposal_view",
+  "proposal_status",
+  "translate_start",
+  "translate_poll",
+  "translate_cancel",
+  "translate_settings_get",
+  "translate_settings_set",
+  "translate_clear",
+] as const;
+
 /** Header-injection payloads every header field must refuse. */
 const LINE_BREAKS = ["x\r\nBcc: eve@example.net", "x\nBcc: eve@example.net", "x\rX", "x\u0000y"];
 
@@ -63,10 +75,11 @@ function keysOf(schema: z.ZodType): string[] {
 }
 
 describe("rpcSchemas", () => {
-  it("declares exactly the slice-1 methods plus the slice-2, 3a and 3b additions", () => {
+  it("declares exactly the slice-1 methods plus the slice-2, 3a, 3b and 3c additions", () => {
     expect(Object.keys(rpcSchemas).sort()).toEqual(
       [
         ...COMPOSE_METHODS,
+        ...SLICE_3C_METHODS,
         "status_get",
         "accounts_test",
         "accounts_add",
@@ -378,7 +391,7 @@ describe("slice-3b contract", () => {
 
   it("adds exactly 19 methods to the 17 before it", () => {
     expect(COMPOSE_METHODS).toHaveLength(19);
-    expect(Object.keys(rpcSchemas)).toHaveLength(36);
+    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3C_METHODS as readonly string[]).includes(m))).toHaveLength(36);
   });
 
   it("refuses empty and overlong ids in every new method", () => {
@@ -583,6 +596,7 @@ describe("slice-3b contract", () => {
       rejected: [],
       sendAfter: "2026-11-15T10:00:10.000Z",
       attempts: 1,
+      origin: "owner",
     };
     expect(outboxRowSchema.safeParse(row).success).toBe(true);
     expect(outboxRowSchema.safeParse({ ...row, state: "cancelled" }).success).toBe(false);
@@ -602,6 +616,7 @@ describe("slice-3b contract", () => {
       queued: false,
       continues: false,
       import: { html: "<p>quoted</p>", into: "quote" },
+      origin: "owner",
     };
     expect(draftViewSchema.safeParse(draft).success).toBe(true);
     expect(draftViewSchema.safeParse({ ...draft, import: null }).success).toBe(true);
@@ -672,5 +687,216 @@ describe("newAccountInputSchema SMTP fields", () => {
       expect(newAccountInputSchema.safeParse({ ...other, smtpHost: `smtp${bad}` }).success).toBe(false);
       expect(newAccountInputSchema.safeParse({ ...other, smtpUsername: bad }).success).toBe(false);
     }
+  });
+});
+
+describe("slice-3c contract", () => {
+  const parses = (method: keyof typeof rpcSchemas, input: unknown) =>
+    rpcSchemas[method].input.safeParse(input).success;
+  const HASH = "a".repeat(64);
+
+  it("adds exactly 8 methods to the 36 before it", () => {
+    expect(SLICE_3C_METHODS).toHaveLength(8);
+    expect(Object.keys(rpcSchemas)).toHaveLength(44);
+    expect(COMPOSE_METHODS).toHaveLength(19);
+  });
+
+  it("refuses empty and overlong ids in every new method", () => {
+    const idInputs: [keyof typeof rpcSchemas, Record<string, unknown>, string][] = [
+      ["proposal_view", { contentHash: HASH }, "proposalId"],
+      ["proposal_status", {}, "proposalId"],
+      ["translate_start", { targetLanguage: "ru" }, "messageId"],
+      ["translate_poll", { from: 0 }, "jobId"],
+      ["translate_cancel", {}, "jobId"],
+    ];
+    for (const [method, rest, key] of idInputs) {
+      expect(parses(method, { ...rest, [key]: "x" }), `${method} ${key}`).toBe(true);
+      expect(parses(method, { ...rest, [key]: "" })).toBe(false);
+      expect(parses(method, { ...rest, [key]: "x".repeat(257) })).toBe(false);
+    }
+  });
+
+  it("takes a 64-hex content hash in proposal_view", () => {
+    expect(parses("proposal_view", { proposalId: "p", contentHash: HASH })).toBe(true);
+    for (const bad of ["a".repeat(63), "a".repeat(65), "A".repeat(64), "g".repeat(64), ""]) {
+      expect(parses("proposal_view", { proposalId: "p", contentHash: bad })).toBe(false);
+    }
+  });
+
+  it("starts a translation with a known language tag, optionally forced", () => {
+    expect(parses("translate_start", { messageId: "m", targetLanguage: "ru" })).toBe(true);
+    expect(parses("translate_start", { messageId: "m", targetLanguage: "de", force: true })).toBe(true);
+    for (const tag of ["xx", "", "RU", "ru-RU"]) {
+      expect(parses("translate_start", { messageId: "m", targetLanguage: tag })).toBe(false);
+    }
+  });
+
+  it("polls from a non-negative integer", () => {
+    expect(parses("translate_poll", { jobId: "j", from: 10 })).toBe(true);
+    expect(parses("translate_poll", { jobId: "j", from: -1 })).toBe(false);
+    expect(parses("translate_poll", { jobId: "j", from: 1.5 })).toBe(false);
+  });
+
+  it("sets translation settings: bounded, no line breaks or NUL, a known language", () => {
+    const set = (overrides: Record<string, unknown> = {}) => ({
+      providerId: "provider-a",
+      model: "model-a",
+      language: "ru",
+      ...overrides,
+    });
+    expect(parses("translate_settings_set", set())).toBe(true);
+    expect(parses("translate_settings_set", set({ providerId: "", model: "" }))).toBe(true);
+    expect(parses("translate_settings_set", set({ providerId: "p".repeat(64) }))).toBe(true);
+    expect(parses("translate_settings_set", set({ providerId: "p".repeat(65) }))).toBe(false);
+    expect(parses("translate_settings_set", set({ model: "m".repeat(200) }))).toBe(true);
+    expect(parses("translate_settings_set", set({ model: "m".repeat(201) }))).toBe(false);
+    expect(parses("translate_settings_set", set({ language: "xx" }))).toBe(false);
+    for (const bad of LINE_BREAKS) {
+      expect(parses("translate_settings_set", set({ providerId: bad }))).toBe(false);
+      expect(parses("translate_settings_set", set({ model: bad }))).toBe(false);
+    }
+  });
+
+  it("takes empty inputs for settings_get and clear", () => {
+    expect(parses("translate_settings_get", {})).toBe(true);
+    expect(parses("translate_clear", {})).toBe(true);
+  });
+
+  it("puts no credential-like key in any new output; viewToken only in proposal_view", () => {
+    for (const method of SLICE_3C_METHODS) {
+      const keys = keysOf(rpcSchemas[method].output);
+      expect(keys.length, method).toBeGreaterThan(0);
+      expect(keys.filter((key) => SECRET_KEY.test(key)), method).toEqual([]);
+    }
+    for (const [name, method] of Object.entries(rpcSchemas)) {
+      const tokens = keysOf(method.output as z.ZodType).filter((key) => /token/i.test(key));
+      expect(tokens, name).toEqual(name === "proposal_view" ? ["viewToken"] : []);
+    }
+  });
+
+  it("shapes a proposal view with flags per recipient", () => {
+    const view = {
+      proposalId: "p_1",
+      draftId: "d_1",
+      kind: "reply",
+      account: { id: "acc_1", name: "Work", address: "owner@example.org" },
+      fromName: "Owner",
+      source: { fromAddress: "anna@example.org", subject: "Garden plans" },
+      to: [{ address: "anna@example.org", name: "Anna", flags: [] }],
+      cc: [],
+      bcc: [{ address: "x@example.com", name: null, flags: ["new", "added", "outside", "hidden_chars"] }],
+      subject: "Re: Garden plans",
+      hiddenChars: 0,
+      bodyText: "Invented reply",
+      quoteText: "On … wrote:",
+      links: [{ url: "example.com", host: "example.com" }],
+      attachments: [{ fileName: "plan.txt", mimeType: "text/plain", size: 10 }],
+      leftOut: 0,
+      expiresAt: "2026-11-16T10:00:00.000Z",
+    };
+    const ready = { state: "ready", view, viewToken: "A".repeat(43) };
+    expect(rpcSchemas.proposal_view.output.safeParse(ready).success).toBe(true);
+    for (const state of ["changed", "gone", "opened_elsewhere"]) {
+      expect(rpcSchemas.proposal_view.output.safeParse({ state }).success).toBe(true);
+    }
+    expect(rpcSchemas.proposal_view.output.safeParse({ state: "other" }).success).toBe(false);
+    const badFlag = { ...view, to: [{ address: "a@example.org", name: null, flags: ["trusted"] }] };
+    expect(rpcSchemas.proposal_view.output.safeParse({ ...ready, view: badFlag }).success).toBe(false);
+    expect(keysOf(rpcSchemas.proposal_view.output)).toEqual(
+      expect.arrayContaining(["view", "viewToken", "flags", "links", "hiddenChars", "quoteText", "expiresAt"]),
+    );
+  });
+
+  it("shapes proposal_status with the proposal states and fixed reasons", () => {
+    const status = (overrides: Record<string, unknown>) =>
+      rpcSchemas.proposal_status.output.safeParse({ state: "queued", outboxId: "p_1", draftId: null, reason: null, ...overrides })
+        .success;
+    for (const state of ["pending", "confirming", "queued", "opened", "cancelled", "expired", "refused"]) {
+      expect(status({ state })).toBe(true);
+    }
+    for (const reason of ["rate_limited", "too_large", "account", "changed"]) {
+      expect(status({ reason })).toBe(true);
+    }
+    expect(status({ state: "sent" })).toBe(false);
+    expect(status({ reason: "smtp said no" })).toBe(false);
+  });
+
+  it("shapes the translation outputs", () => {
+    const cached = {
+      messageId: "m_1",
+      targetLanguage: "ru",
+      providerId: "provider-a",
+      model: "model-a",
+      text: "Invented translation",
+      truncated: false,
+      cached: true,
+      createdAt: "2026-11-15T10:00:00.000Z",
+    };
+    expect(rpcSchemas.translate_start.output.safeParse({ cached }).success).toBe(true);
+    expect(rpcSchemas.translate_start.output.safeParse({ jobId: "j_1" }).success).toBe(true);
+    expect(rpcSchemas.translate_poll.output.safeParse({ state: "running", text: "Inv" }).success).toBe(true);
+    expect(
+      rpcSchemas.translate_poll.output.safeParse({
+        state: "done",
+        text: "ented",
+        finish: "max_tokens",
+        truncatedInput: true,
+        provider: "provider-a",
+        model: "model-a",
+      }).success,
+    ).toBe(true);
+    expect(
+      rpcSchemas.translate_poll.output.safeParse({
+        state: "failed",
+        text: "",
+        error: "pool_unavailable",
+        gatewayMessage: "Bridge not ready",
+      }).success,
+    ).toBe(true);
+    expect(rpcSchemas.translate_poll.output.safeParse({ state: "failed", text: "", error: "boom" }).success).toBe(false);
+    expect(
+      rpcSchemas.translate_settings_get.output.safeParse({
+        gateway: "ok",
+        providers: [{ id: "provider-a", displayName: "Provider A", available: true }],
+        models: null,
+        current: { providerId: "", model: "", language: "ru" },
+      }).success,
+    ).toBe(true);
+    expect(
+      rpcSchemas.translate_settings_get.output.safeParse({
+        gateway: "gateway_missing",
+        providers: [],
+        models: [{ model: "model-a", displayName: "Model A" }],
+        current: { providerId: "", model: "", language: "ru" },
+      }).success,
+    ).toBe(true);
+    expect(rpcSchemas.translate_cancel.output.safeParse({ cancelled: true }).success).toBe(true);
+    expect(rpcSchemas.translate_settings_set.output.safeParse({ ok: true }).success).toBe(true);
+    expect(rpcSchemas.translate_clear.output.safeParse({ removed: 3 }).success).toBe(true);
+  });
+
+  it("exports headerAddressInput, which refuses CR, LF and NUL", () => {
+    expect(headerAddressInput.safeParse("anna@example.org").success).toBe(true);
+    for (const bad of LINE_BREAKS) expect(headerAddressInput.safeParse(bad).success).toBe(false);
+    expect(headerAddressInput.safeParse("a@").success).toBe(false);
+  });
+
+  it("marks drafts and outbox rows with their origin", () => {
+    expect(draftViewSchema.shape.origin.options).toEqual(["owner", "agent"]);
+    expect(outboxRowSchema.shape.origin.options).toEqual(["owner", "agent"]);
+  });
+
+  it("tells the page whether agent proposals are on and how the translation gateway stands", () => {
+    expect(
+      statusViewSchema.safeParse({
+        vaultReady: true,
+        agentTools: false,
+        agentPropose: false,
+        translate: { gateway: "ok" },
+        accounts: [],
+        unreadCount: 0,
+      }).success,
+    ).toBe(true);
+    expect(keysOf(rpcSchemas.status_get.output)).toEqual(expect.arrayContaining(["agentPropose", "translate", "gateway"]));
   });
 });

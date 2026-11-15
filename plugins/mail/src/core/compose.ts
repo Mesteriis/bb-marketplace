@@ -127,6 +127,7 @@ export function newCompose(deps: ComposeDeps, accountId: string): { draftId: str
     serverCopy: null,
     importHtml: null,
     origin: "owner",
+    proposalId: null,
     createdAt: deps.clock.now().toISOString(),
   });
   return { draftId: draft.id };
@@ -204,6 +205,7 @@ export async function prepareCompose(
     serverCopy: null,
     importHtml: html === null ? null : { html, into: "quote" },
     origin: "owner",
+    proposalId: null,
     createdAt: deps.clock.now().toISOString(),
   });
 
@@ -286,6 +288,7 @@ export async function openDraft(
     serverCopy,
     importHtml: html === null ? null : { html, into: "body" },
     origin: "owner",
+    proposalId: null,
     createdAt: deps.clock.now().toISOString(),
   });
   if (original !== null) await addWithinCap(deps.store, draft.id, original.attachments);
@@ -593,6 +596,7 @@ export function draftView(store: MailStore, draft: DraftRecord): DraftView {
     queued: isQueued(store, draft),
     continues: draft.kind === "new" && draft.sourceMessageId !== null,
     import: draft.importHtml,
+    origin: draft.origin,
   };
 }
 

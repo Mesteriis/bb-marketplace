@@ -7,6 +7,7 @@ import { z } from "zod";
 import { htmlToText } from "./agent-text.ts";
 import { sha256Hex } from "./compose.ts";
 import { removeInvisible, truncateText } from "./html-entities.ts";
+import type { translateErrorKindSchema } from "./model.ts";
 
 /** Characters of subject plus body sent to the model. */
 export const TRANSLATE_INPUT_CHARS = 30_000;
@@ -48,32 +49,15 @@ export interface Translator {
   ): Promise<{ finish: TranslateFinish }>;
 }
 
-export type TranslateErrorKind =
-  | "gateway_missing" // makosh-ai not installed, disabled, or RPC absent
-  | "pool_unavailable" // bridge missing, routing off, provider route refused
-  | "provider_unknown" // chosen provider not offered or no body mapper
-  | "model_unknown" // provider answered 400/404 for the model
-  | "auth" // 401/403
-  | "quota" // 429
-  | "refused" // provider safety stop / refusal event
-  | "too_large" // 413 / 8 MiB
-  | "busy" // stream slots taken
-  | "failed"
-  | "cancelled";
-
-export const translateErrorKindSchema = z.enum([
-  "gateway_missing",
-  "pool_unavailable",
-  "provider_unknown",
-  "model_unknown",
-  "auth",
-  "quota",
-  "refused",
-  "too_large",
-  "busy",
-  "failed",
-  "cancelled",
-]);
+/**
+ * gateway_missing: makosh-ai not installed, disabled, or RPC absent;
+ * pool_unavailable: bridge missing, routing off, provider route refused;
+ * provider_unknown: chosen provider not offered or no body mapper;
+ * model_unknown: the provider answered 400/404 for the model; auth: 401/403;
+ * quota: 429; refused: a safety stop or refusal event; too_large: 413 or
+ * over 8 MiB; busy: stream slots taken (once makosh-ai reports it).
+ */
+export type TranslateErrorKind = z.infer<typeof translateErrorKindSchema>;
 
 const TRANSLATE_ERROR_TEXT: Record<TranslateErrorKind, string> = {
   gateway_missing: "Translation needs the Makosh AI plugin",

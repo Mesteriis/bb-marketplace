@@ -10,6 +10,7 @@ import {
   NEEDS_KEY_MESSAGE,
   PASSWORD_NEEDED_MESSAGE,
   ACCOUNT_BUSY_MESSAGE,
+  NOT_AVAILABLE_YET_MESSAGE,
   PLUGIN_CALLER_MESSAGE,
   REMOVE_IN_THREAD_MESSAGE,
   renderSource,
@@ -1060,6 +1061,31 @@ describe("makosh-mail server", () => {
     expect(sealedPasswords(host)).toEqual(["sealed-password"]);
     const body = (await call("message_body", { messageId })) as MessageBody;
     expect(body.remoteImagesAllowed).toBe(false);
+  });
+
+  it("the slice-3c methods refuse other plugins first, then refuse until wired", async () => {
+    const host = await load();
+    const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    const inputs: [string, unknown][] = [
+      ["proposal_view", { proposalId: "p_1", contentHash: "a".repeat(64) }],
+      ["proposal_status", { proposalId: "p_1" }],
+      ["translate_start", { messageId: "m_1", targetLanguage: "ru" }],
+      ["translate_poll", { jobId: "j_1", from: 0 }],
+      ["translate_cancel", { jobId: "j_1" }],
+      ["translate_settings_get", {}],
+      ["translate_settings_set", { providerId: "", model: "", language: "ru" }],
+      ["translate_clear", {}],
+    ];
+    for (const [method, input] of inputs) {
+      await expect(host.harness.behavior.callRpc(method, input, asPlugin), method).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+      await expect(host.harness.behavior.callRpc(method, input), method).rejects.toThrow(NOT_AVAILABLE_YET_MESSAGE);
+    }
+    const status = (await host.harness.behavior.callRpc("status_get", null)) as {
+      agentPropose: boolean;
+      translate: { gateway: string };
+    };
+    expect(status.agentPropose).toBe(false);
+    expect(status.translate).toEqual({ gateway: "gateway_missing" });
   });
 
   it("message_action refuses while the password needs re-entering", async () => {

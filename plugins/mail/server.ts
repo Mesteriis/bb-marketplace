@@ -211,6 +211,14 @@ function refusePluginCaller(context: ExperimentalPluginRpcHandlerContext): void 
 }
 
 export const ACCOUNT_BUSY_MESSAGE = "A message is being sent";
+/** Slice-3c methods registered before their task wires them. */
+export const NOT_AVAILABLE_YET_MESSAGE = "Not available yet";
+
+/** An owner-only slice-3c method that is declared but not wired yet: refuses every caller. */
+function notAvailableYet(_input: unknown, context: ExperimentalPluginRpcHandlerContext): never {
+  refusePluginCaller(context);
+  throw refuse("conflict", NOT_AVAILABLE_YET_MESSAGE);
+}
 export const COMPOSE_FAILED_MESSAGE = "The request failed; try again";
 
 /** ComposeError kinds as SDK refusal codes; the message is the error's fixed text. */
@@ -256,6 +264,7 @@ function toOutboxRow(row: OutboxRecord): OutboxRow {
     rejected: row.rejected,
     sendAfter: row.sendAfter,
     attempts: row.attempts,
+    origin: row.origin,
   };
 }
 
@@ -682,6 +691,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       status_get: () => ({
         vaultReady: deps.vaultReady(),
         agentTools: deps.agentTools(),
+        // Stubs until slice 3c wires them: the agentPropose setting (task 7)
+        // and the makosh-ai discovery (task 8).
+        agentPropose: false,
+        translate: { gateway: "gateway_missing" as const },
         accounts: store.listAccounts().map(toPublicAccount),
         unreadCount: store.unreadCount(null),
       }),
@@ -913,6 +926,16 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         if (result.ok) publishChanged(input.accountId);
         return result;
       }),
+      // Slice 3c: declared in the contract, wired by later tasks (proposals in
+      // task 7, translation in task 8). Until then each refuses.
+      proposal_view: notAvailableYet,
+      proposal_status: notAvailableYet,
+      translate_start: notAvailableYet,
+      translate_poll: notAvailableYet,
+      translate_cancel: notAvailableYet,
+      translate_settings_get: notAvailableYet,
+      translate_settings_set: notAvailableYet,
+      translate_clear: notAvailableYet,
     },
     { experimental_discoverable: false },
   );
