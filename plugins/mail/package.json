@@ -81,7 +81,7 @@
     "jsdom": "^26.1.0",
     "sonner": "^1.7.4",
     "tailwind-merge": "^3.7.0",
-    "typescript": "^5.7.0",
+    "typescript": "^7.0.2",
     "vaul": "^1.1.2",
     "vitest": "^5.1.0"
   }
