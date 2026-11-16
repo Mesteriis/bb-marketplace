@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { headerLines } from "./headers.ts";
 import {
+  HEADER_LINES_MAX,
   PROVIDER_TRACE_HEADERS,
   TRUSTED_AUTHSERV,
   UNSUBSCRIBE_HEADER_FIELDS,
@@ -337,6 +339,53 @@ describe("unsubscribeInfoOf", () => {
     );
     expect(twoPost?.trust).toBe("not_covered");
     expect(twoPost?.oneClick).toBe(false);
+  });
+
+  it("counts list headers past the 64-line cap: a second one is still a repeat (review item 2)", () => {
+    expect(HEADER_LINES_MAX).toBe(64);
+    // A signed, covered first pair, then enough trace noise to push a second pair past line 64.
+    const full = [
+      ...gmailMessage({ list: [lu("<https://evil.example/u?t=1>"), lup()] }),
+      ...Array.from({ length: 60 }, () => h("Received", "junk")),
+      lu("<https://u.example.com/real>"),
+      lup(),
+    ];
+    expect(full.length).toBeGreaterThan(64);
+    const info = unsubscribeInfoOf(full, "gmail", FROM);
+    expect(info?.trust).toBe("not_covered");
+    expect(info?.oneClick).toBe(false);
+    expect(info?.mailto).toBeNull();
+    expect(info && offeredMethods(info, FROM.address).oneClick).toBeNull();
+  });
+
+  it("marks a header section longer than the cap not_covered and keeps a single mailto", () => {
+    const lines = [
+      ...gmailMessage({ list: [lu("<https://u.example.com/x>, <mailto:leave@example.com>"), lup()] }),
+      ...Array.from({ length: 70 }, () => h("Received", "junk")),
+    ];
+    const info = unsubscribeInfoOf(lines, "gmail", FROM);
+    expect(info?.trust).toBe("not_covered");
+    expect(info && offeredMethods(info, FROM.address).oneClick).toBeNull();
+    expect(info?.mailto?.address).toBe("leave@example.com");
+    // A single List-Unsubscribe past the cap still counts as exactly one.
+    const late = [...Array.from({ length: 70 }, () => h("Received", "junk")), lu("<mailto:leave@example.com>")];
+    expect(unsubscribeInfoOf(late, "gmail", FROM)?.mailto?.address).toBe("leave@example.com");
+    expect(unsubscribeInfoOf(late, "gmail", FROM)?.trust).toBe("not_covered");
+  });
+
+  it("headerLines hands over every field, so the cap is applied with the count", () => {
+    const raw = new TextEncoder().encode(
+      [
+        "List-Unsubscribe: <https://u.example.com/x>",
+        ...Array.from({ length: 70 }, (_, i) => `Received: hop ${i}`),
+        "List-Unsubscribe: <https://evil.example/u>",
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    const lines = headerLines(raw);
+    expect(lines.filter((line) => line.key === "list-unsubscribe")).toHaveLength(2);
+    expect(unsubscribeInfoOf(lines, "gmail", FROM)?.https).toBeNull();
   });
 
   it("is null when the serialized info is over the size cap", () => {

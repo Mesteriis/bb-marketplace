@@ -39,6 +39,7 @@ import {
   type FetchedMessage,
   type FlagChange,
   type HeaderLine,
+  capHeaderLines,
   type ImapConfig,
   type ImapGateway,
   type FolderSession,
@@ -792,8 +793,6 @@ export function toFetchedMessage(message: FetchMessageObject, parsed: Email): Fe
   };
 }
 
-/** Header lines kept for unsubscribe parsing, as headerLines caps them. */
-const UNSUBSCRIBE_HEADER_LINES_MAX = 64;
 const UNSUBSCRIBE_NAMES = new Set(UNSUBSCRIBE_HEADER_FIELDS.map((name) => name.toLowerCase()));
 const TRACE_PREFIXES = [
   ...new Set(
@@ -807,8 +806,10 @@ const TRACE_PREFIXES = [
 /**
  * The header lines unsubscribe parsing reads (slice 3e): the
  * UNSUBSCRIBE_HEADER_FIELDS names and the providers' trace names (prefix
- * ones included), in message order, values as postal-mime unfolded them, at
- * most 64; absent when the source had no headers, so the stored info stays.
+ * ones included), in message order, values as postal-mime unfolded them,
+ * capped by capHeaderLines (64 lines, then the list headers past the cap and
+ * the truncation mark; review item 2); absent when the source had no
+ * headers, so the stored info stays.
  */
 function toUnsubscribeHeaders(parsed: Email): HeaderLine[] | undefined {
   if (parsed.headers.length === 0) return undefined;
@@ -818,9 +819,8 @@ function toUnsubscribeHeaders(parsed: Email): HeaderLine[] | undefined {
     const key = header.key.toLowerCase();
     if (!UNSUBSCRIBE_NAMES.has(key) && !TRACE_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
     out.push({ key, value: header.value });
-    if (out.length >= UNSUBSCRIBE_HEADER_LINES_MAX) break;
   }
-  return out;
+  return capHeaderLines(out);
 }
 
 /** Delivered-To / X-Original-To addresses kept per message (slice 3d). */

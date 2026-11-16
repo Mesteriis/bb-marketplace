@@ -112,6 +112,38 @@ export type ParsedListUnsubscribe = {
 };
 
 /** The methods of List-Unsubscribe and List-Unsubscribe-Post (spec "Parsing at sync"). */
+/** Header lines unsubscribe parsing judges; the rest are only counted. */
+export const HEADER_LINES_MAX = 64;
+/**
+ * The line capHeaderLines appends when it cut lines. Its key has a colon,
+ * which no header name can hold, so no message can forge or hide it.
+ */
+export const HEADER_LINES_TRUNCATED: HeaderLine = Object.freeze({ key: ":truncated", value: "" });
+/** List lines carried past the cap per name: enough to see a repeat. */
+const LIST_LINES_PAST_CAP = 2;
+
+/**
+ * The first HEADER_LINES_MAX lines in order (review item 2). When there are
+ * more, the List-Unsubscribe and List-Unsubscribe-Post lines past the cap
+ * (at most two of each) and HEADER_LINES_TRUNCATED follow, so the
+ * repeated-header rule counts every instance and a long header section is
+ * never trusted for one-click. A list already capped is returned as it is.
+ */
+export function capHeaderLines(lines: readonly HeaderLine[]): HeaderLine[] {
+  if (lines.length <= HEADER_LINES_MAX || lines.includes(HEADER_LINES_TRUNCATED)) return [...lines];
+  const out = lines.slice(0, HEADER_LINES_MAX);
+  const carried = new Map<string, number>();
+  for (const line of lines.slice(HEADER_LINES_MAX)) {
+    if (line.key !== "list-unsubscribe" && line.key !== "list-unsubscribe-post") continue;
+    const count = carried.get(line.key) ?? 0;
+    if (count >= LIST_LINES_PAST_CAP) continue;
+    carried.set(line.key, count + 1);
+    out.push(line);
+  }
+  out.push(HEADER_LINES_TRUNCATED);
+  return out;
+}
+
 export function parseListUnsubscribe(headers: HeaderLine[]): ParsedListUnsubscribe {
   const lists = linesNamed(headers, "list-unsubscribe");
   const posts = linesNamed(headers, "list-unsubscribe-post");
@@ -394,11 +426,14 @@ function domainOfAddress(address: string): string | null {
 
 /** What `messages.unsubscribe_json` holds for a message; null without List-Unsubscribe, headers or over the cap. */
 export function unsubscribeInfoOf(
-  headers: HeaderLine[],
+  lines: HeaderLine[],
   preset: AccountPreset,
   from: { name: string | null; address: string },
 ): UnsubscribeInfo | null {
+  const headers = capHeaderLines(lines);
   if (headers.length === 0 || linesNamed(headers, "list-unsubscribe").length === 0) return null;
+  // Lines past the cap were not judged: one-click is never offered (review item 2).
+  const truncated = headers.includes(HEADER_LINES_TRUNCATED);
   const parsed = parseListUnsubscribe(headers);
   const listId = linesNamed(headers, "list-id")[0]?.value ?? null;
   const id = listId?.match(/<([^<>]+)>/)?.[1]?.trim().toLowerCase() ?? null;
@@ -406,14 +441,14 @@ export function unsubscribeInfoOf(
   const listName = oneLine(phrase !== null && phrase !== "" ? phrase : (from.name ?? ""), LIST_NAME_MAX);
   let httpsHost: string | null = null;
   if (parsed.https !== null) httpsHost = new URL(parsed.https).hostname;
-  const trust: UnsubscribeTrust = parsed.repeated
+  const trust: UnsubscribeTrust = parsed.repeated || truncated
     ? "not_covered"
     : trustOf(headers, preset, domainOfAddress(from.address), httpsHost);
   const info: UnsubscribeInfo = {
     listKey: id !== null && id !== "" ? id : from.address.trim().toLowerCase(),
     listName,
     https: parsed.https,
-    oneClick: parsed.oneClick && !parsed.repeated,
+    oneClick: parsed.oneClick && !parsed.repeated && !truncated,
     mailto: parsed.mailto,
     trust,
   };
