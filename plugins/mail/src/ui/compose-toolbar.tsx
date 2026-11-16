@@ -67,6 +67,11 @@ export interface ComposeToolbarProps {
   /** The Templates button (the composer only): opens or closes the picker. */
   onTemplates?: () => void;
   templatesOpen?: boolean;
+  /** Improve (slice 3f, the composer only): opens or closes its menu. */
+  onImprove?: () => void;
+  improveOpen?: boolean;
+  /** Why Improve is off (Makosh AI is missing), or null. */
+  improveDisabledReason?: string | null;
   className?: string;
 }
 
@@ -77,6 +82,9 @@ export function ComposeToolbar({
   tools: shown,
   onTemplates,
   templatesOpen,
+  onImprove,
+  improveOpen,
+  improveDisabledReason = null,
   className,
 }: ComposeToolbarProps) {
   const mod = modKeyLabel();
@@ -179,12 +187,32 @@ export function ComposeToolbar({
             );
           })}
         </div>
+        {onImprove !== undefined ? (
+          // A disabled button shows no tooltip of its own: the wrapper carries the reason.
+          <span title={improveDisabledReason ?? undefined} className="ml-auto inline-flex">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2"
+              aria-expanded={improveOpen === true}
+              aria-description={improveDisabledReason ?? undefined}
+              disabled={editor === null || improveDisabledReason !== null}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={onImprove}
+            >
+              <Icon name="Sparkles" fallback="Bot" aria-hidden />
+              Improve
+              <Icon name="ChevronDown" fallback="ArrowDown" aria-hidden />
+            </Button>
+          </span>
+        ) : null}
         {onTemplates !== undefined ? (
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            className="ml-auto h-7 px-2"
+            className={cn("h-7 px-2", onImprove === undefined && "ml-auto")}
             aria-label={`Templates (${mod}${mod === "⌘" ? "⌥" : "Alt+"}T)`}
             aria-keyshortcuts="Control+Alt+T Meta+Alt+T"
             aria-expanded={templatesOpen === true}

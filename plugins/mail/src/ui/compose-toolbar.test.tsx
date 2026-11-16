@@ -129,3 +129,48 @@ describe("linkHref", () => {
     expect(linkHref("")).toBeNull();
   });
 });
+
+describe("ComposeToolbar: Improve (slice 3f)", () => {
+  it("shows Improve only when offered, off with the reason", () => {
+    const { rerender } = render(<ComposeToolbar editor={null} linkOpen={false} onLinkOpenChange={() => undefined} />);
+    expect(screen.queryByRole("button", { name: /Improve/ })).toBeNull();
+    rerender(
+      <ComposeToolbar
+        editor={null}
+        linkOpen={false}
+        onLinkOpenChange={() => undefined}
+        onImprove={() => undefined}
+        improveDisabledReason="AI features need the Makosh AI plugin"
+      />,
+    );
+    const off = screen.getByRole("button", { name: /Improve/ }) as HTMLButtonElement;
+    expect(off.disabled).toBe(true);
+    expect(off.closest("span")?.getAttribute("title")).toBe("AI features need the Makosh AI plugin");
+  });
+
+  it("Improve with an editor toggles its menu", () => {
+    let opened = 0;
+    function WithImprove() {
+      const [editor, setEditor] = useState<Editor | null>(null);
+      return (
+        <div>
+          <ComposeToolbar editor={editor} linkOpen={false} onLinkOpenChange={() => undefined} onImprove={() => opened++} improveOpen />
+          <ComposeEditor
+            label="Message"
+            initialDoc={{ type: "doc", content: [{ type: "paragraph" }] }}
+            importFrom={null}
+            onChange={() => undefined}
+            onFiles={() => undefined}
+            onReady={setEditor}
+            onLinkShortcut={() => undefined}
+          />
+        </div>
+      );
+    }
+    render(<WithImprove />);
+    const button = screen.getByRole("button", { name: /Improve/ });
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(button);
+    expect(opened).toBe(1);
+  });
+});

@@ -4314,3 +4314,25 @@ describe("Slice 3f: AI in the reading pane and the list", () => {
     await waitFor(() => expect(slot.queryByText("On Friday")).toBeNull());
   });
 });
+
+describe("Slice 3f: the composer's Remind checkbox and Improve", () => {
+  it("Remind sends remindAfterDays from the setting; Improve sits in the toolbar", async () => {
+    const slot = renderSlot({ component: MailWithSidebar }, { subPath: "" }, {
+      rpc: composeRpc({
+        reminders_due: () => ({ reminders: [] }),
+        compose_send: () => ({ outboxId: "out-1", sendAfter: new Date(Date.now() + 10_000).toISOString() }),
+      }) as never,
+      settings: { replyReminderDays: 5 },
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+    await slot.findByText("Lunch");
+    press(pageRoot(slot as never), { key: "c", code: "KeyC" });
+    const composer = await composerRegion(slot as never, "New message");
+    expect(within(composer).getByRole("button", { name: /Improve/ })).toBeTruthy();
+    fireEvent.change(within(composer).getByRole("combobox", { name: "To" }), { target: { value: "ada@example.org," } });
+    fireEvent.click(within(composer).getByRole("checkbox", { name: "Remind me if no reply in 5 days" }));
+    fireEvent.click(within(composer).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(callsTo(slot as never, "compose_send")).toHaveLength(1));
+    expect(callsTo(slot as never, "compose_send")[0]?.input).toMatchObject({ draftId: "d-1", remindAfterDays: 5 });
+  });
+});

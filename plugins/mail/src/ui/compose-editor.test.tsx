@@ -3,7 +3,8 @@ import { act, cleanup, render } from "@testing-library/react";
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import type { Editor } from "@tiptap/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanEditorHtml, ComposeEditor, type EditorDoc } from "./compose-editor.tsx";
+import { cleanEditorHtml, ComposeEditor, ownerParagraphsOf, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
+import { normalizeDoc, ownerParagraphs } from "../core/compose-doc.ts";
 
 installTestPluginRuntime();
 // jsdom has no ClipboardEvent; EditorView.pasteHTML builds one.
@@ -283,3 +284,80 @@ describe("ComposeEditor: the signature block (slice 3d)", () => {
   });
 });
 
+
+describe("ComposeEditor: the owner's range for Improve (slice 3f)", () => {
+  const text = (value: string, marks?: { type: string; attrs?: Record<string, unknown> }[]) =>
+    marks === undefined ? { type: "text", text: value } : { type: "text", text: value, marks };
+  const p = (...content: EditorDoc[]) => (content.length === 0 ? { type: "paragraph" } : { type: "paragraph", content });
+  const br = { type: "hardBreak" };
+  const QUOTE = { type: "blockquote", content: [p(text("Made-up original"))] };
+  const SIG = { type: "signature", content: [p(text("Made-up Name"))] };
+  const DOC: EditorDoc = {
+    type: "doc",
+    content: [
+      p(text("Hello Ada,")),
+      p(text("line one"), br, text("line two")),
+      { type: "bulletList", content: [{ type: "listItem", content: [p(text("first"))] }, { type: "listItem", content: [p(text("second"))] }] },
+      p(),
+      p(text("See "), text("the page", [{ type: "link", attrs: { href: "https://example.org/page" } }])),
+      QUOTE,
+      p(text("after the quote")),
+      SIG,
+    ],
+  };
+
+  it("stops at the first quote or signature, joins hard breaks and list items, notes marks", () => {
+    expect(ownerParagraphsOf(DOC)).toEqual({
+      paragraphs: ["Hello Ada,", "line one\nline two", "first\nsecond", "", "See the page"],
+      hasMarks: true,
+    });
+    expect(ownerParagraphsOf({ type: "doc", content: [p(text("plain")), SIG] })).toEqual({ paragraphs: ["plain"], hasMarks: false });
+  });
+
+  it("matches the server's ownerParagraphs over the saved draft", () => {
+    const docs: EditorDoc[] = [
+      DOC,
+      { type: "doc", content: [p(text("tab\there\u0007")), SIG] },
+      { type: "doc", content: [QUOTE, p(text("x"))] },
+      { type: "doc", content: [{ type: "orderedList", content: [{ type: "listItem", content: [p(text("a")), p(text("b"))] }] }] },
+    ];
+    for (const doc of docs) {
+      const server = ownerParagraphs(normalizeDoc(doc as never));
+      const page = ownerParagraphsOf(doc);
+      expect(page.paragraphs).toEqual(server.paragraphs);
+      expect(page.hasMarks).toBe(server.marks);
+    }
+  });
+
+  it("ownerRange of the real editor stops at the quote", () => {
+    const { editor } = mount({ initialDoc: DOC });
+    const range = ownerRange(editor());
+    expect(range.paragraphs).toEqual(["Hello Ada,", "line one\nline two", "first\nsecond", "", "See the page"]);
+    expect(range.hasMarks).toBe(true);
+    expect(editor().state.doc.nodeAt(range.to)?.type.name).toBe("blockquote");
+  });
+
+  it("replaces the range in one Undo step; quote and signature stay byte-identical", () => {
+    const { editor } = mount({ initialDoc: DOC });
+    const before = editor().getJSON();
+    const tail = JSON.stringify(before.content!.slice(5));
+    act(() => replaceOwnerRange(editor(), ["Hi Ada,", "one\ntwo", "three"]));
+    const after = editor().getJSON();
+    expect(after.content!.slice(0, 3)).toEqual([p(text("Hi Ada,")), p(text("one"), br, text("two")), p(text("three"))]);
+    expect(JSON.stringify(after.content!.slice(3))).toBe(tail);
+    expect(JSON.stringify(after)).not.toContain("example.org/page");
+    act(() => {
+      editor().commands.undo();
+    });
+    expect(editor().getJSON()).toEqual(before);
+  });
+
+  it("fewer paragraphs, and a draft without a quote", () => {
+    const { editor } = mount({ initialDoc: { type: "doc", content: [p(text("a")), p(text("b")), p(text("c")), SIG] } });
+    act(() => replaceOwnerRange(editor(), ["only"]));
+    expect(editor().getJSON().content).toEqual([p(text("only")), SIG]);
+    const plain = mount({ initialDoc: { type: "doc", content: [p(text("a")), p(text("b"))] } });
+    act(() => replaceOwnerRange(plain.editor(), ["x", "y", "z"]));
+    expect(ownerRange(plain.editor()).paragraphs).toEqual(["x", "y", "z"]);
+  });
+});
