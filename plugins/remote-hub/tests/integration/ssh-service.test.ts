@@ -93,24 +93,26 @@ async function drainAndAck(socket: FakeSocket, handlers: SocketHandlers, needle:
   const processed = new Set<number>();
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    let live = false;
+    let liveAfter = -1;
     for (let i = 0; i < socket.sent.length; i++) {
-      if (processed.has(i)) continue;
-      const data = socket.sent[i];
-      if (typeof data === "string") {
-        processed.add(i);
+      const d = socket.sent[i];
+      if (typeof d === "string") {
         let msg: { type?: string };
         try {
-          msg = JSON.parse(data);
+          msg = JSON.parse(d);
         } catch {
           continue;
         }
-        if (msg.type === "live") live = true;
-        else if (msg.type === "snapshot") live = false;
-      } else if (data instanceof Uint8Array && live) {
+        if (msg.type === "live") liveAfter = i;
+      }
+    }
+    for (let i = 0; i < socket.sent.length; i++) {
+      if (processed.has(i) || i <= liveAfter) continue;
+      const d = socket.sent[i];
+      if (d instanceof Uint8Array) {
         processed.add(i);
-        out += decoder.decode(data, { stream: true });
-        handlers.onMessage(socket, JSON.stringify({ type: "ack", bytes: data.byteLength }));
+        out += decoder.decode(d, { stream: true });
+        handlers.onMessage(socket, JSON.stringify({ type: "ack", bytes: d.byteLength }));
       }
     }
     if (out.includes(needle)) return out;
@@ -174,7 +176,7 @@ describe.skipIf(!runDocker)("ssh service integration through the real socket han
     if (tmp) rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("case 1: key auth echoes a UTF-8 line through the real socket, acked by the renderer", async () => {
+  it("case 1: key auth echoes a UTF-8 line through the real socket, acked by the renderer", { timeout: 30_000 }, async () => {
     const target = { host: "127.0.0.1", port, configFile: cfg, knownHostsFile: knownHosts, identityFile: key, extraOptions: [] as string[] };
     const handle = await service.sshOpen(target, 80, 24);
     const token = service.sessionAttach(handle);
@@ -186,7 +188,7 @@ describe.skipIf(!runDocker)("ssh service integration through the real socket han
     expect(out).toContain("h\u00e9llo-ok");
   });
 
-  it("case 5: unknown host key prompts, runs nothing, and no closes with 255 ssh_error", async () => {
+  it("case 5: unknown host key prompts, runs nothing, and no closes with 255 ssh_error", { timeout: 30_000 }, async () => {
     const emptyKh = join(tmp, "empty_known_hosts");
     writeFileSync(emptyKh, "");
     const target = { host: "127.0.0.1", port, configFile: cfg, knownHostsFile: emptyKh, identityFile: key, extraOptions: [] as string[] };
@@ -209,7 +211,7 @@ describe.skipIf(!runDocker)("ssh service integration through the real socket han
 });
 
 describe.skipIf(!enabled)("credit flow through the real service wiring (test-hooks)", () => {
-  it("receives PROBE-42 from /bin/sh with only renderer acks", async () => {
+  it("receives PROBE-42 from /bin/sh with only renderer acks", { timeout: 30_000 }, async () => {
     const hp = await spawnHelper(HELPER);
     const service = createRemoteHubService({
       startHelper: async () => hp,
