@@ -3,7 +3,7 @@
 Status: builder's design, proposed to the owner on 2026-11-16. The owner
 asked for the whole backlog to be closed and accepts sensible defaults; every
 decision in "Owner's decisions" below is a proposal marked
-*(proposed — owner to confirm)* with a one-line rationale. It follows 3a
+*(owner, accepted 2026-11-16)* with a one-line rationale. It follows 3a
 (organize and read), 3b (write and send), 3c (agent proposals and
 translation), 3d (sending polish), 3e (inbox triage), 3f (agent and mail) and
 3g (BB integration), all on `feat/mail-imap-slice`. Everything in the
@@ -45,7 +45,7 @@ recommendation, and the design below follows it.
 ## Owner's decisions
 
 Proposed by the builder on 2026-11-16; each line is marked
-*(proposed — owner to confirm)* with a one-line rationale.
+*(owner, accepted 2026-11-16)* with a one-line rationale.
 
 1. **Scope of 3h:** server search (#35), older mail on request (#34), search
    operators (#43), saved searches (#63), attachment text search (#84, text
@@ -55,7 +55,7 @@ Proposed by the builder on 2026-11-16; each line is marked
    management (#54), plain text and dark mail (#62), sender card (#86), print
    and save as PDF (#89). **#74 (list virtualization and big mailboxes) and
    #76 (list density and pane layout) move to 3j** (UI and reliability).
-   *(proposed — owner to confirm)* Both rework the same list component and
+   *(owner, accepted 2026-11-16)* Both rework the same list component and
    need a performance harness; 3h only adds timing tests for its own queries.
 2. **Server search runs only on the owner's click and only for the owner.**
    Under local results: **Search on the server** (per account or all). Gmail
@@ -65,13 +65,13 @@ Proposed by the builder on 2026-11-16; each line is marked
    account, on a read-only (`EXAMINE`) connection. The newest 50 hits are
    fetched into Mail (`BODY.PEEK`) and shown like local mail; **More from the
    server** fetches the next 50. Agents keep the local `mail_search`; there
-   is no server-search tool. *(proposed — owner to confirm)* It is network
+   is no server-search tool. *(owner, accepted 2026-11-16)* It is network
    work on the owner's mail server, so it is a visible, bounded,
    owner-started action.
 3. **Server hits are kept for 14 days unless opened.** A fetched hit is
    marked `search`; opening, flagging, moving or replying to it keeps it;
    otherwise it is removed from the local store (never from the server)
-   after 14 days. *(proposed — owner to confirm)* The base must not grow
+   after 14 days. *(owner, accepted 2026-11-16)* The base must not grow
    from every search, and an opened message must not vanish under the owner.
 4. **Older mail loads in steps, per folder or per conversation.** At the
    end of a folder's list: **Load 30 more days** (at most 500 messages per
@@ -79,7 +79,7 @@ Proposed by the builder on 2026-11-16; each line is marked
    (Gmail `X-GM-THRID`, else `HEADER Message-ID` / `References` searches).
    Loaded history is kept, reconciled with the server like the window, and
    dropped only by **Forget older mail** for that folder (a local delete).
-   *(proposed — owner to confirm)* The backlog asks for "по запросу … база не
+   *(owner, accepted 2026-11-16)* The backlog asks for "по запросу … база не
    растёт без нужды"; steps make the cost visible and stoppable.
 5. **Operators.** Added: `to:`, `cc:`, `has:attachment`, `filename:`,
    `in:` (role or folder), `account:`, `is:read`, `is:flagged` (`is:starred`),
@@ -88,13 +88,13 @@ Proposed by the builder on 2026-11-16; each line is marked
    a leading `-` negates any operator; repeated operators AND, except `in:`
    and `account:`, which OR. No `OR` keyword, no free-text negation; unknown
    or malformed operators stay free text, as today, and the search shows a
-   note under the box. *(proposed — owner to confirm)* Gmail's names, which
+   note under the box. *(owner, accepted 2026-11-16)* Gmail's names, which
    the owner already types, without a query language to secure.
 6. **Saved searches are local.** **Save search** names the current query
    (and account); saved searches show in the rail under the folders with a
    local unread count, can be renamed, reordered and deleted, and open as a
    list like a folder. They never run on the server by themselves.
-   *(proposed — owner to confirm)* A virtual folder is a stored query, not a
+   *(owner, accepted 2026-11-16)* A virtual folder is a stored query, not a
    server object.
 7. **Folder management never expunges.** **New folder…** (with a parent),
    **Rename…** and **Subscribe / Unsubscribe** for the owner's folders;
@@ -105,14 +105,14 @@ Proposed by the builder on 2026-11-16; each line is marked
    `MOVE` refuses) and deletes only when the folder is then empty. INBOX,
    folders with a special use, Gmail's `[Gmail]` folders and the snooze
    folder cannot be renamed or deleted. Every command runs on a fresh
-   connection with no mailbox selected. *(proposed — owner to confirm)*
+   connection with no mailbox selected. *(owner, accepted 2026-11-16)*
    imapflow sends `CLOSE` (which expunges `\Deleted` mail) before deleting or
    renaming a selected mailbox when `UNSELECT` is missing; nothing selected
    means that path never runs.
 8. **Drag to folders.** Conversations (one or the selection) are dragged
    from the list onto a folder in the rail; the drop is 3a's move to that
    folder, undoable (3d), with the same refusals. Only Mail's own drag
-   payload is accepted. *(proposed — owner to confirm)* It is the move the
+   payload is accepted. *(owner, accepted 2026-11-16)* It is the move the
    owner already has, with the mouse.
 9. **Gmail labels are labels.** For Gmail accounts Mail fetches
    `X-GM-LABELS` at sync and shows the owner's labels as chips on messages;
@@ -121,7 +121,7 @@ Proposed by the builder on 2026-11-16; each line is marked
    (`\Inbox`, `\Sent`, `\Trash`, `\Spam`, `\Draft`, `\Important`,
    `\Starred`) are not offered — Inbox and Starred keep their 3a actions.
    Label folders stay in the rail; a conversation no longer looks duplicated
-   in them. *(proposed — owner to confirm)* A label change is metadata on the
+   in them. *(owner, accepted 2026-11-16)* A label change is metadata on the
    owner's server; it cannot lose mail.
 10. **Attachments are viewed in Mail's own viewer, never by BB's file
     preview.** Images (PNG, JPEG, GIF, WebP, AVIF, BMP; SVG only as an
@@ -131,7 +131,7 @@ Proposed by the builder on 2026-11-16; each line is marked
     mismatch is download-only. Bytes come through a one-time ticket into a
     `Blob` the page never navigates to. HTML attachments show as source
     text. Office files, archives and everything else: download only.
-    *(proposed — owner to confirm)* BB's preview takes only live files
+    *(owner, accepted 2026-11-16)* BB's preview takes only live files
     (workspace, host path, thread storage); using it would mean writing
     untrusted mail bytes to disk outside a project.
 11. **PDF is drawn with pdf.js — new dependency `pdfjs-dist`, exact pin
@@ -164,26 +164,26 @@ Proposed by the builder on 2026-11-16; each line is marked
     which the backlog's own risk note forbids. Instead the reading pane gets
     **Related mail**: a local ranking by shared distinctive words of the
     subject and opening lines, shared participants and references. #83 stays
-    `[позже]` with that note. *(proposed — owner to confirm)* Nothing leaves
+    `[позже]` with that note. *(owner, accepted 2026-11-16)* Nothing leaves
     the machine and the owner still gets "more like this".
 15. **Thread management.** Quoted text is hidden by default with **Show
     quoted text** per message (plain text: 3f's `stripQuoted` rules; HTML:
     quote blocks marked by the sanitizer and hidden with CSS); **Expand all /
     Collapse all**; per folder **Group by conversation** (on by default) —
-    off lists single messages. *(proposed — owner to confirm)* Defaults keep
+    off lists single messages. *(owner, accepted 2026-11-16)* Defaults keep
     today's grouping; hiding quotes is the common default in mail clients.
 16. **Plain text and dark mail.** Per message **Plain text / Original**, and
     a setting for the default; when BB is dark, HTML mail is shown with
     adapted colors (a CSS-only inversion inside the sandboxed frame, images
     and media re-inverted) unless the message declares its own dark styles,
     with **Original colors** per message and a setting to turn it off.
-    *(proposed — owner to confirm)* Pure CSS inside the existing sandbox; no
+    *(owner, accepted 2026-11-16)* Pure CSS inside the existing sandbox; no
     script, no new request.
 17. **Sender card.** Clicking a sender opens a side card: name and address,
     message counts both ways, first and last date, the latest 10
     conversations, the latest files, and the actions Mail already has (search
     `from:`, Always show images, Block, project binding). Local only.
-    *(proposed — owner to confirm)* Everything shown is already stored.
+    *(owner, accepted 2026-11-16)* Everything shown is already stored.
 18. **Print and Save as PDF.** **Print…** on a message or the conversation
     builds a print document (headers and the sanitized body, remote images
     only when already allowed) in a hidden sandboxed frame without scripts and
@@ -196,10 +196,10 @@ Proposed by the builder on 2026-11-16; each line is marked
     older mail, hits and (opt-in) attachments, folder `CREATE` / `RENAME` /
     `DELETE` / `SUBSCRIBE` / `UNSUBSCRIBE`, `STORE X-GM-LABELS` and 3a moves.
     Nothing goes to an AI provider and there is no new HTTP request.
-    *(proposed — owner to confirm)* README and `PLUGIN_OVERVIEW.md` list each
+    *(owner, accepted 2026-11-16)* README and `PLUGIN_OVERVIEW.md` list each
     new server write.
 20. **One migration element (13)**, appended to `MIGRATIONS`; element 12
-    (the 3g review) and 13 join the SHA pin. *(proposed — owner to confirm)*
+    (the 3g review) and 13 join the SHA pin. *(owner, accepted 2026-11-16)*
     Shipped elements stay frozen, as in every slice.
 
 ## Goals
