@@ -1,9 +1,10 @@
 # Makosh Mail — slice 3f: agent and mail (summaries, questions, tasks, agent log and scope, redaction, categories, digest, reply reminders, draft edits)
 
-Status: builder's design for review (2026-11-16). The owner asked for the
-whole backlog group to be closed and accepts sensible defaults, so "Owner's
-decisions" below holds **proposed** decisions, each waiting for the owner's
-confirmation. It follows 3a (organize and read), 3b (write and send), 3c
+Status: builder's design, accepted by the owner on 2026-11-16. The owner
+asked for the whole backlog group to be closed and accepts sensible defaults;
+every decision in "Owner's decisions" below was accepted on 2026-11-16, and
+"Resolutions after the builder check" at the end overrides the sections above
+it. It follows 3a (organize and read), 3b (write and send), 3c
 (agent proposals and translation), 3d (sending polish) and 3e (inbox triage),
 all on `feat/mail-imap-slice`. Everything in the slice-1, slice-2 and 3a–3e
 specs holds unless this document changes it, and their "Resolutions" sections
@@ -19,8 +20,8 @@ recommendation, and the design below follows it.
 
 ## Owner's decisions
 
-Proposed by the builder on 2026-11-16. None is confirmed yet; each line is
-marked *(owner, accepted 2026-11-16)*.
+Proposed by the builder and accepted by the owner on 2026-11-16; each line
+is marked *(owner, accepted 2026-11-16)*.
 
 1. **Scope of 3f:** thread summary (#22), question to the mail with links to
    the source messages (#60), tasks and deadlines with the owner choosing what
@@ -33,8 +34,7 @@ marked *(owner, accepted 2026-11-16)*.
    agent thread.** Summary, question, tasks, category suggestions, the digest
    summary and draft edits use the same provider-agnostic `Translator` port and
    makosh-ai adapter as translation, with the owner's provider and model
-   setting (relabelled "AI provider" / "AI model"). *(proposed — owner to
-   confirm)* The owner clicked, so no agent and no thread is needed; the
+   setting (relabelled "AI provider" / "AI model"). *(owner, accepted 2026-11-16)* The owner clicked, so no agent and no thread is needed; the
    provider sees only the framed, redacted text of that one request.
 3. **No new agent tools and no new agent-proposed changes in 3f.** Agents keep
    the 3c/3e tools; 3f puts all of them behind the access scope, the
@@ -82,8 +82,7 @@ marked *(owner, accepted 2026-11-16)*.
     (bulk mark, automated senders, people the owner wrote to) and, on the
     owner's click, the model produce *suggestions* only; a label is set only
     by the owner's click, or by a sender rule the owner created ("Always for
-    this sender"). Labels are local and never reach the server. *(proposed —
-    owner to confirm)* Nothing on the server changes and nothing is labelled
+    this sender"). Labels are local and never reach the server. *(owner, accepted 2026-11-16)* Nothing on the server changes and nothing is labelled
     without the owner.
 11. **Morning digest: a "Today" section of the Mail page, not a BB thread.**
     Off by default (setting `morningDigest`, time `digestTime` 08:00). Once a
@@ -91,8 +90,7 @@ marked *(owner, accepted 2026-11-16)*.
     sent mail waiting for an answer, tasks due, and collapsed counts of
     notifications and newsletters; an in-app toast "Today: N conversations need
     a reply · Open" (outside quiet hours). **Summarize** on the section sends
-    the listed conversations to the model on the owner's click. *(proposed —
-    owner to confirm)* A plugin can create a BB thread only by starting an
+    the listed conversations to the model on the owner's click. *(owner, accepted 2026-11-16)* A plugin can create a BB thread only by starting an
     agent turn, which would run a model on a timer and copy mail into a
     transcript.
 12. **Reply reminder: a local flag, not a server move.** In the composer,
@@ -100,15 +98,13 @@ marked *(owner, accepted 2026-11-16)*.
     message, **Remind me…**. A due reminder shows in a **Waiting for a reply**
     strip at the top of the Inbox view and in Today, with an in-app toast
     naming the recipient; a reply (In-Reply-To/References, or a later message
-    from someone else in the conversation) clears it. *(proposed — owner to
-    confirm)* Moving a Sent copy into the server Inbox would show the owner's
+    from someone else in the conversation) clears it. *(owner, accepted 2026-11-16)* Moving a Sent copy into the server Inbox would show the owner's
     own message as new mail on every device and lose it from Sent.
 13. **Draft edits:** **Improve** in the composer (Fix mistakes, Shorter,
     More formal, Friendlier, or a one-line instruction) sends only the owner's
     own text (not the quote, not the signature) to the model and shows a word
     diff; **Apply** replaces the changed paragraphs in the editor, **Cancel**
-    keeps the draft. Nothing is sent or saved by the model. *(proposed — owner
-    to confirm)* The diff dialog is the owner's approval, and the editor's own
+    keeps the draft. Nothing is sent or saved by the model. *(owner, accepted 2026-11-16)* The diff dialog is the owner's approval, and the editor's own
     autosave and Undo stay in charge.
 14. **Fix the makosh-ai provider list now.** Mail's adapter reads
     `ai.v1.providers` with the wrong field names, and maps makosh-ai's
@@ -1140,3 +1136,65 @@ Each task ends with `npm run check`. The last also runs `npm run build` and
 - That the editor accepts a programmatic paragraph replacement as one Undo
   step (TipTap transactions are expected to; pinned by the dialog test with
   the real editor in jsdom where possible).
+
+## Resolutions after the builder check
+
+These override the sections above. Items marked *(owner defaults)* were decided on 2026-11-16 as the builder recommended (the owner asked for sensible defaults); open questions 1–8 are closed as recommended. Names below were checked against the current code (`server.ts`, `app.tsx`, `src/core/agent-text.ts`, `translate.ts`, `contract.ts` and `contract.test.ts`, `ports.ts`, `compose-doc.ts`, `templates.ts`, `src/adapters/bb/sqlite-store.ts` and its test, `makosh-ai-translator.ts`, `translate-jobs.ts`, `outbox-worker.ts`).
+
+1. **Sender exclusion covers the whole correspondence *(owner defaults)*** (replaces "A sender rule matches the From address…" in "AI access scope").
+   - A message is out of scope when its From, any To or any Cc address matches an excluded address (exactly) or domain (equal or a subdomain, label-wise, ASCII), and also when its conversation holds such a message. So the owner's own replies to that sender, and anyone's quote or forward of their mail inside that conversation, are out too.
+   - `mail_contacts` never returns an excluded address or an address of an excluded domain, and counts nothing from out-of-scope mail (no correspondence, no topic match).
+   - `ScopeRow` gains `to: string[]`, `cc: string[]` and `threadId`; `inAiScope` takes a precomputed `excludedThreads: ReadonlySet<string>` for the conversation rule (the store computes it, resolution 12).
+2. **Translation restores hidden values in what the owner reads *(owner defaults)*** (refines "Cache keys" and "Draft edits restore").
+   - Translation builds its input with `redactSecrets(…, { restore: true })`; the model sees numbered placeholders only. The job keeps the map in memory, as draft edits do, and restores the output before the owner sees it; the map is dropped at every end state.
+   - The `translations` row stores the restored text (the store already holds the original mail locally); the cache hash stays over the redacted source with `PROMPT_VERSION` 2. An unknown placeholder is shown literally, never guessed.
+   - Redaction still applies to everything that goes to the model; only the owner's view is restored.
+3. **The path table gains `mail_templates`; a canary test replaces name enumeration** (B1, replaces "Every path redacts and is scoped" in "Testing").
+   - Row 8a: `mail_templates` tool (`server.ts`, `templatesForAgent` in `src/core/templates.ts`). The owner's own templates go to the agent through `redactSecrets` (a template can hold a code or a password); scope does not apply (no mail); log `templates` (count only).
+   - The canary test (`server.test.ts`) seeds distinct made-up secrets (one per kind) in the subject, the From name, the body, the snippet and an attachment name of an in-scope message, plus an out-of-scope message carrying its own canaries. It then runs **every registered agent tool** (the list read from the fake `bb.agents.registerTool` registry, so a new tool runs automatically), **every CLI command** in text and `--json` form inside a thread, the mention provider's `search` and `resolve`, `message_agent_text`, and **every `ai_start` kind** taken from the contract's input union (plus translation) against a fake translator that records its inputs. It asserts that no canary appears in any output, any recorded translator input, `agent_log`, the plugin log or a realtime payload. A tool or kind that cannot be run with a generic fixture must be given one; skipping fails the test.
+4. **Mention titles and the Hand-to-agent chip are redacted; Hand to agent respects scope** (B2).
+   - The mention provider's `search` titles and subtitles pass `redactSecrets` (the chosen title lands in the thread transcript, so it is agent text). The Hand-to-agent chip label (`app.tsx` `composer.insert(… label: subjectOrPlaceholder(message.subject))`) uses a redacted subject that the page gets from `thread_get` (`MessageHeader` gains `agentSubject`, computed by the server).
+   - **Hand to agent** is disabled for an out-of-scope message ("Outside AI access (Mail settings)"), as the AI buttons are; `message_agent_text` still refuses it.
+5. **Redact the whole text first, then truncate** (B3). Every renderer and builder runs `redactSecrets` over the whole field (subject, name, snippet, body, attachment name) before any cut (`AGENT_TEXT_CAP`, excerpt and kind caps, snippet length), so a cut never splits a secret into an unrecognized piece. The snippet tail rule stays for the stored snippet, which is already cut at sync; its detector gets the subject as `context`.
+6. **Search is not an oracle** (B4, adds to "Search as an oracle").
+   - On agent paths (`mail_search`, CLI `search` in a thread, Ask step 2's local search), the store's hits are post-filtered: a hit is kept only when every free-text term still matches the **redacted** subject or the redacted body (case-folded as `mail_lower`). A `subject:` value counts as a free-text term against the redacted subject; other operators (`from:`, dates, `is:`) are not rechecked. The refusal of redactable or 6+-digit free text stays.
+   - `mail_contacts`' topic match (`mail_contact_mask` over subject, snippet and body) runs over the redacted text the same way, so a contact is never found by a secret in its mail.
+7. **Reply reminders: answered by references only** (B5, replaces "Answered" and refines "Bind").
+   - A reminder is answered by any message dated after `sent_at`, other than the sent message itself, whose `In-Reply-To` or `References` holds `rfc_message_id`, whatever its From (a reply from the owner's other device or alias counts), skipping bulk rows and automated senders (`isBulkRow`, `isAutomatedAddress`: out-of-office and delivery notices). The "later message in the same thread" rule is dropped.
+   - The thread is resolved at check time through `messages_message_id` (the sent copy's row by `rfc_message_id`), not stored at bind; `thread_id` stays a cache refreshed then, and a reminder whose sent copy is not synced still clears by references.
+   - `replyArrived` runs after each ok round over the rows that round inserted (the sync outcome gains `inserted: string[]`, every folder) and once over stored rows at `reminder_set` and at bind (bounded to rows dated after `sent_at`). The 60 s day-clock tick only moves `waiting` → `due`; it never scans references.
+   - Stated limit (README): a server that rewrites the Message-ID on send (some corporate relays) leaves replies unmatched; the reminder then turns due and the owner dismisses it.
+8. **Improve: structure, the whole range, links and placeholders** (B6, replaces the paragraph-structure rules in "Draft edits").
+   - A paragraph with `hardBreak` nodes is one input paragraph with `\n` between its lines; a `\n` in an output paragraph becomes a `hardBreak`. List items are lines as before.
+   - The output may have a different number of paragraphs (≤ 2× the input length still holds). **Apply** replaces the whole owner range (everything before the first blockquote or signature node) in one editor transaction, so the editor's Undo reverts it in one step; the diff is shown over the whole range.
+   - Inline marks in the owner range, links included, are dropped by Apply; the dialog says "Formatting and links in your text will be removed" whenever the range has any mark.
+   - Numbered placeholders carry a per-job tag (`[hidden token 1 k3f9]`), drawn like the frame nonce and re-drawn until the owner's text does not contain it; `restoreSecrets` replaces only tagged placeholders, so a literal "[hidden …]" the owner typed is sent and kept as text, never "restored".
+9. **Per-kind output limits and a distinct "too long"** (B7, adds to "Jobs").
+   - `AI_MAX_OUTPUT_TOKENS`: summary 4 096, ask planning 512, ask answer 2 048, tasks 2 048, categories 2 048, digest 4 096, draft 4 096, translation unchanged (8 192).
+   - A stream that ends with `max_tokens` fails with the new `AiErrorKind` `too_long` ("The AI answer was cut off; try fewer messages or a shorter text"), never `unreadable`.
+   - The draft input cap drops from 20 000 to 8 000 characters; over it `ai_start` refuses `too_long` before any call ("Improve works on up to 8 000 characters of your own text").
+10. **Detectors: missed shapes** (gap, adds to "Detectors").
+    - One-time codes split by one space or hyphen (`123 456`, `123-456`) and with a letter prefix (`G-123456`), within the code-word window; the value on the line after a label line ("Your code:" ⏎ "482913").
+    - Grouped app passwords: four groups of four lower-case letters separated by single spaces (`abcd efgh ijkl mnop`) after a credential or code word, or alone on a line under such a label.
+    - Credential labels gain `key`, `token`, `secret`, `ключ`, `токен`, `секрет` (whole words), with the value on the same line or the next one.
+    - Tokens: 32 hexadecimal characters (not only 40+), and lower-case UUIDs (`8-4-4-4-12`), also as URL path segments of reset or magic links.
+    - URL parameters are matched by name substring as well: any name containing `token`, `code` or `key` (case-insensitive), plus `oobCode`, `confirmation_token`, `reset_password_token`, `jwt`. The `t` / `k` rule for 16+ characters stays.
+11. **Detectors: fewer false positives** (gap).
+    - `sk-` needs a word boundary before it and at least 20 following token characters.
+    - `код`, `code` and `PIN` match as whole words only (not `кодекс`, `codec`, `pinned`); the other code words stay word prefixes.
+    - Luhn applies only to 13–19 digits written as one run or in card-like groups (4-4-4-4, 4-6-5, 4-4-4-4-3), or to any 13–19 digit run within the code window of a card label (`card`, `карта`, `Visa`, `Mastercard`, `МИР`); an ungrouped 15-digit IMEI or a tracking number without a label is left.
+    - A 3–4 digit CVV/CVC is hidden only within 80 characters of a hidden card number or of the words `CVV`, `CVC`, `CVV2`.
+12. **Scope filter as a SQL function** (gap, replaces "`ScopeFilter` is applied in SQL…").
+    - The store registers `mail_ai_in_scope(account_id, folder, role, from_address, to_json, cc_json, thread_id)` through `db.function` (not deterministic), reading the in-memory scope and excluded-thread set the server installs with `store.setAiScope(scope)`; no generated `LIKE` lists. `search`, `contacts`, `inboxMessages` and the new `scopedMessage(id)` use it before the dedup picks one row per message.
+    - The excluded-thread set is rebuilt from the sender rules at `setAiScope` and after each ok round (new rows may add a conversation).
+13. **Model output parsing** (gap, replaces "Parsing takes the first top-level `{…}`…").
+    - A ```` ```json ```` (or bare ```` ``` ````) fenced block is preferred; else the first balanced top-level `{…}`, found by a string-aware scan (quotes and escapes respected, so a `}` inside a string does not end it).
+    - Objects are parsed with unknown keys stripped, strings clamped to their caps, and array items that fail their schema dropped (counted in the note "N items could not be read"). Only a missing or non-object top level fails with `unreadable`.
+14. **Today's toast waits for the owner** (gap, replaces the toast part of "The day clock").
+    - Inside quiet hours the digest row is built but not announced; the notice is published at the first tick after quiet hours end.
+    - The notice is kept until a window shows it, not a 10-minute token: `digests` gains `notified_at TEXT`, reminders their `notified_at`, and `day_notice_get({ token? })` returns the oldest unshown notice of today (with no token too) and marks it shown. The badge hook asks once on mount and on each `mail-day` event, so a window opened later still shows it once.
+15. **makosh-ai stream errors** (gap, adds to "Port and adapter" item 2). `stream_lost` and `bad_cursor` map to `failed` ("The AI stream was interrupted; try again"), never `gateway_missing` or `pool_unavailable`.
+16. **Logging edges** (gap). CLI calls outside a thread (the owner's terminal) are not logged; the table's "thread only" stands and the Agent activity view says so. CLI `accounts` shows an account with scope mode `none` by id, label and state, without its address.
+17. **Gmail labels and chosen folders** (gap). On a Gmail account in **Chosen folders** mode, a message is in scope when any of its copies sits in a chosen folder (the dedup picks the in-scope copy); with All Mail chosen, every message is. The settings view states it under the picker: "Gmail: a message is shared when any of its labels or All Mail is chosen".
+18. **Element 9 is pinned with element 10** (replaces "element 9's hash joins the SHA pin in this slice's store task"). The store task leaves the pin at `MIGRATIONS.slice(0, 9)`; the docs-and-listing task pins elements 9 and 10 (`MIGRATIONS.slice(0, 11)`). Element 10 includes `digests.notified_at` and `reply_reminders.notified_at` (resolution 14).
+19. **Timing tests measure one page** (gap). The existing "listThreads by folder stays fast for a few thousand messages" test in `sqlite-store.test.ts` flakes under parallel load: it times each `listThreads` page call alone with a generous bound (250 ms per page) and never times seeding; `listFolders` and `unreadCount` are timed one call each. Every new timing test (the category filter at 5 000+ threads, the scope function, the redaction linear-time check) follows the same rule.
