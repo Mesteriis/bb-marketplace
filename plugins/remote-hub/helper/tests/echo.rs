@@ -1338,3 +1338,17 @@ fn b6_allowlisted_fd_is_passed() {
     assert_eq!(status.code(), Some(0));
     let _ = stderr;
 }
+
+// C2: cancelling a just-opened session kills the child and its descendants.
+#[test]
+fn c2_cancel_connecting_session_kills_descendants() {
+    let mut h = start_with_args(&["--echo-command", "/bin/sh", "-c", "sleep 300 & sleep 300"]);
+    h.hello();
+    let (sid, pid) = h.open();
+    h.send(&Request::SessionClose { id: 1, session_id: sid });
+    match h.read_response() {
+        Response::SessionClosed { reason, .. } => assert_eq!(reason, "killed_by_close"),
+        other => panic!("expected session.closed, got {other:?}"),
+    }
+    assert!(!pid_alive(pid), "child {pid} still alive");
+}

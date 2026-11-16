@@ -15,11 +15,14 @@ import {
   PROTOCOL_VERSION,
   decodeFrame,
   encodeControlFrame,
+  encodeStreamFrame,
   type ControlMessage,
   type RequestMessage,
   type ResponseMessage,
 } from "../../core/protocol.ts";
 import type { SessionHandle } from "../../core/rpc.ts";
+import { Scrollback, SCROLLBACK_MAX_BYTES } from "../../core/scrollback.ts";
+import type { SshSpawnSpec } from "../../core/ssh-args.ts";
 
 export const HELPER_BIN_NAME = "remote-hub-helper";
 /** Must match helper/Cargo.toml version; the adapter refuses a mismatch. */
@@ -181,6 +184,10 @@ export class HelperProcess {
   private readonly pending = new Map<number, PendingRequest>();
   private readonly oneShots: OneShot[] = [];
   private readonly streams = new Map<number, StreamState>();
+  private readonly scrollbacks = new Map<number, Scrollback>();
+  private readonly inputSeq = new Map<number, number>();
+  private readonly closedSessions = new Map<number, { exitCode: number | null; signal: number | null; reason: string }>();
+  private readonly onSessionClosedCallbacks: Array<(sessionId: number, info: { exitCode: number | null; signal: number | null; reason: string }) => void> = [];
   private readonly onExitCallbacks: Array<() => void> = [];
   private buffer: Uint8Array = new Uint8Array(0);
   private _status: Omit<HelperStatus, "alive"> | null = null;
@@ -332,11 +339,20 @@ export class HelperProcess {
     }
     if (resp.type === "session.closed") {
       this.streams.delete(resp.sessionId);
+      const info = { exitCode: resp.exitCode, signal: resp.signal, reason: resp.reason };
+      this.closedSessions.set(resp.sessionId, info);
+      for (const cb of this.onSessionClosedCallbacks) cb(resp.sessionId, info);
       if (this._status !== null) this._status.sessionCount = Math.max(0, this._status.sessionCount - 1);
     }
   }
 
   private handleStream(sessionId: number, data: Uint8Array): void {
+    let scrollback = this.scrollbacks.get(sessionId);
+    if (scrollback === undefined) {
+      scrollback = new Scrollback(SCROLLBACK_MAX_BYTES);
+      this.scrollbacks.set(sessionId, scrollback);
+    }
+    scrollback.append(data);
     let state = this.streams.get(sessionId);
     if (state === undefined) {
       state = { decoder: new TextDecoder("utf-8"), parts: [], bytes: 0, truncated: false };
@@ -512,12 +528,53 @@ export class HelperProcess {
     if (resp.type === "error") throw new Error(resp.message);
   }
 
-  async close(handle: SessionHandle): Promise<void> {
+  async openSsh(spec: SshSpawnSpec, cols: number, rows: number): Promise<SessionHandle> {
+    const resp = await this.request({
+      type: "session.open_ssh",
+      cols,
+      rows,
+      program: spec.program,
+      argv: spec.argv,
+      env: spec.env,
+      cwd: null,
+    } as RequestMessage);
+    if (resp.type === "error") throw new Error(resp.message);
+    if (resp.type !== "session.opened") throw new Error("unexpected helper response: " + resp.type);
+    if (this._status !== null) this._status.sessionCount += 1;
+    return { generation: this.generation, sessionId: resp.sessionId };
+  }
+
+  async credit(handle: SessionHandle, bytes: number): Promise<void> {
+    this.assertGeneration(handle);
+    const resp = await this.request({ type: "session.credit", sessionId: handle.sessionId, bytes } as RequestMessage);
+    if (resp.type === "error") throw new Error(resp.message);
+  }
+
+  /** Write raw terminal bytes to a session as a binary stream frame. */
+  writeInput(sessionId: number, data: Uint8Array): void {
+    const seq = this.inputSeq.get(sessionId) ?? 0;
+    this.inputSeq.set(sessionId, seq + 1);
+    this.child.stdin.write(encodeStreamFrame({ sessionId, seq }, data));
+  }
+
+  scrollbackSnapshot(sessionId: number): Uint8Array {
+    return this.scrollbacks.get(sessionId)?.snapshot() ?? new Uint8Array(0);
+  }
+
+  onSessionClosed(cb: (sessionId: number, info: { exitCode: number | null; signal: number | null; reason: string }) => void): void {
+    this.onSessionClosedCallbacks.push(cb);
+  }
+
+  async close(handle: SessionHandle): Promise<{ exitCode: number | null; signal: number | null; reason: string }> {
     this.assertGeneration(handle);
     const resp = await this.request({ type: "session.close", sessionId: handle.sessionId } as RequestMessage);
     if (resp.type === "error") throw new Error(resp.message);
+    if (resp.type !== "session.closed") throw new Error("unexpected helper response: " + resp.type);
     this.streams.delete(handle.sessionId);
+    const info = { exitCode: resp.exitCode, signal: resp.signal, reason: resp.reason };
+    this.closedSessions.set(handle.sessionId, info);
     if (this._status !== null) this._status.sessionCount = Math.max(0, this._status.sessionCount - 1);
+    return info;
   }
 
   /** Stop the helper; children are torn down by the helper's own shutdown. */
