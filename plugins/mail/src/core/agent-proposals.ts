@@ -51,6 +51,7 @@ import { identityOf, ownerAddressSets, type Identity } from "./identities.ts";
 import { composeKindSchema, noLineBreaks, type DraftRecord, type MailAddress, type ProposalView } from "./model.ts";
 import type { MailStore, ProposalRecord } from "./ports.ts";
 import { bbOriginLabels, cardChecks, inheritedSubject, presendIssues } from "./presend.ts";
+import { replyToElsewhereOf } from "./sender-view.ts";
 import { TEMPLATE_NAME_MAX, templateBlocks, templateNameKey } from "./templates.ts";
 
 export type ProposalDeps = QueueDeps & {
@@ -542,6 +543,7 @@ function buildView(store: MailStore, proposal: ProposalRecord, draft: DraftRecor
       own: new Set(own),
       sentTo,
       conversation: reply && draft.sourceMessageId !== null ? store.conversationAddresses(draft.sourceMessageId) : null,
+      replyToElsewhere: reply && draft.sourceMessageId !== null ? replyToElsewhereOf(store, draft.sourceMessageId, new Set(own)) : [],
       inheritedSubject: inheritedSubject(
         draft.kind,
         draft.sourceMessageId === null ? null : (store.getMessage(draft.sourceMessageId)?.subject ?? null),

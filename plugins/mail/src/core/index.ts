@@ -35,6 +35,7 @@ export * from "./unsubscribe.ts";
 export * from "./sender-check.ts";
 export * from "./punycode.ts";
 export * from "./sender-disguise.ts";
+export * from "./sender-view.ts";
 export * from "./trackers.ts";
 export * from "./link-clean.ts";
 export * from "./mail-crypto.ts";

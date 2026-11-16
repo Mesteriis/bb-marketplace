@@ -392,3 +392,47 @@ describe("ruleThreadMetadata", () => {
     expect(ruleThreadMetadata({ mail: "rule" })).toBeNull();
   });
 });
+
+describe("slice 3i: the sender line and encrypted mail in BB text", () => {
+  const failed = { senderCheck: { state: "failed" as const, summary: "DMARC failed" } };
+
+  it("thread and rule prompts carry Mail's line right after From, inside the frame", () => {
+    const message = { header: header(failed), body: body("Invented body.") };
+    for (const text of [threadPrompt({ instruction: "", messages: [message], kind: "message" }).text, rulePrompt({ template: "t" }, message).text]) {
+      expect(text).toContain(`${UNTRUSTED_NOTICE}\nFrom: Invented Sender <sender@example.org>\nSender check: failed\nTo: `);
+      expect(text).not.toContain("DMARC");
+    }
+  });
+
+  it("prints the placeholder for an encrypted message in thread prompts and task excerpts", () => {
+    const encrypted = { header: header({ crypto: { kind: "pgp_encrypted", opaque: false } }), body: null };
+    const placeholder = ["[encrypted message", "not readable]"];
+    const prompt = threadPrompt({ instruction: "", messages: [encrypted], kind: "message" }).text;
+    for (const part of placeholder) expect(prompt).toContain(part);
+    expect(prompt).not.toContain("(body not available)");
+    const task = taskText({
+      subject: "Invented subject",
+      sender: { name: "Invented Sender", address: "sender@example.org" },
+      date: null,
+      inAiScope: true,
+      excerpt: encrypted,
+      target: "local",
+    });
+    for (const part of placeholder) expect(task.description).toContain(part);
+  });
+
+  it("a task's description carries the line after its From mail line", () => {
+    const task = taskText({
+      subject: "Invented subject",
+      sender: { name: "Invented Sender", address: "sender@example.org" },
+      date: "2026-11-10T09:00:00.000Z",
+      inAiScope: true,
+      security: { warnings: [{ kind: "lookalike", domain: "examp1e.org", like: "example.org" }] },
+      target: "taskboard",
+    });
+    expect(task.description).toContain("From mail: Invented Sender \u00b7 2026-11-10\nSender warning: lookalike domain");
+    expect(task.description).not.toContain("examp1e");
+    const quiet = taskText({ subject: "s", sender: { name: null, address: "a@example.org" }, date: null, inAiScope: true, target: "local" });
+    expect(quiet.description).not.toMatch(/Sender (check|warning)/);
+  });
+});

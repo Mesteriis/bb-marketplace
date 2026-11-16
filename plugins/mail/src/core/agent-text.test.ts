@@ -239,6 +239,7 @@ describe("renderInboxForAgent", () => {
     bulk: true,
     unsubscribe: "one_click" as const,
     snoozedUntil: null,
+    senderFailed: false,
   };
 
   it("starts with the notice and keeps header text on one line, the snippet at 200 characters", () => {
@@ -463,6 +464,7 @@ describe("slice 3f redaction in the renderers", () => {
         bulk: false,
         unsubscribe: null,
         snoozedUntil: null,
+        senderFailed: false,
       },
     ]);
     expectNoSecret(inbox.text);
@@ -548,5 +550,90 @@ describe("scanHtml (slice 3g)", () => {
     expect(out.hrefs).toHaveLength(200);
     const big = scanHtml(`<pre>${"x".repeat(150_000)}</pre><pre>${"y".repeat(150_000)}</pre>`);
     expect(big.preBlocks.join("").length).toBeLessThanOrEqual(200_000);
+  });
+});
+
+describe("slice 3i: the sender line, encrypted bodies and cleaned links", () => {
+  const ENCRYPTED = "[encrypted message \u2014 not readable]";
+
+  it("puts one fixed line directly after From, never a domain or header value", () => {
+    const failed = renderMessageForAgent(header({ senderCheck: { state: "failed", summary: "DMARC failed" } }), body(), 10_000);
+    const lines = failed.split("\n");
+    expect(lines[0]).toBe(UNTRUSTED_NOTICE);
+    expect(lines[1]).toBe("From: Invented Sender <sender@example.org>");
+    expect(lines[2]).toBe("Sender check: failed");
+    expect(failed).not.toContain("DMARC");
+
+    const warned = renderMessageForAgent(
+      header({
+        warnings: [
+          { kind: "reply_to_elsewhere", addresses: ["collect@elsewhere.example.net"] },
+          { kind: "lookalike", domain: "examp1e.org", like: "example.org" },
+          { kind: "mixed_script", domain: "xn--exmple-cua.org" },
+          { kind: "name_shows_address", shown: "boss@example.com", actual: "sender@example.org" },
+        ],
+      }),
+      body(),
+      10_000,
+    );
+    expect(warned.split("\n")[2]).toBe(
+      "Sender warning: reply-to elsewhere, lookalike domain, mixed alphabets, name shows another address",
+    );
+    for (const value of ["elsewhere.example.net", "examp1e.org", "xn--exmple-cua", "boss@example.com"]) expect(warned).not.toContain(value);
+
+    const both = renderMessageForAgent(
+      header({ senderCheck: { state: "failed", summary: null }, warnings: [{ kind: "lookalike", domain: "examp1e.org", like: "example.org" }] }),
+      body(),
+      10_000,
+    );
+    expect(both.split("\n")[2]).toBe("Sender check: failed; sender warning: lookalike domain");
+
+    // ok, unchecked, unknown and no warnings: no line at all (a pass is never printed).
+    for (const state of ["ok", "unchecked", "unknown"] as const) {
+      const quiet = renderMessageForAgent(header({ senderCheck: { state, summary: null } }), body(), 10_000);
+      expect(quiet.split("\n")[2]).toMatch(/^To: /);
+      expect(quiet).not.toMatch(/sender (check|warning)/i);
+    }
+  });
+
+  it("prints a placeholder for an encrypted message, whatever body is left", () => {
+    for (const kind of ["pgp_encrypted", "smime_encrypted"] as const) {
+      const out = renderMessageForAgent(header({ crypto: { kind, opaque: false } }), body({ text: "-----BEGIN PGP MESSAGE-----" }), 10_000);
+      expect(out).toContain(`\n\n${ENCRYPTED}\n--- end of untrusted email ---`);
+      expect(out).not.toContain("BEGIN PGP");
+    }
+    const signed = renderMessageForAgent(header({ crypto: { kind: "pgp_signed", opaque: false } }), body(), 10_000);
+    expect(signed).toContain("Invented body.");
+  });
+
+  it("cleans tracking from links in the body before redaction, and redaction counts stay the same", () => {
+    const secret = ["Pass", "word: ", "Zq9", "-invented-", "77"].join("");
+    const text = `See https://shop.example.com/item?id=7&utm_source=news&utm_medium=email#top now.\n${secret}`;
+    const plain = renderMessageForAgentCounted(header(), body({ text: text.replace(/[?&]utm_[a-z]+=[a-z]+/g, (m) => (m.startsWith("?") ? "?" : "")) }), 10_000);
+    const out = renderMessageForAgentCounted(header(), body({ text }), 10_000);
+    expect(out.text).toContain("https://shop.example.com/item?id=7#top now.");
+    expect(out.text).not.toContain("utm_");
+    expect(out.hiddenCount).toBe(plain.hiddenCount);
+    expect(out.hiddenCount).toBeGreaterThan(0);
+  });
+
+  it("marks an Inbox row whose stored check failed, and only that", () => {
+    const entry = {
+      id: "m_1",
+      accountEmail: "owner@example.org",
+      date: null,
+      from: { name: null, address: "billing@example.com" },
+      subject: "Invented",
+      snippet: "",
+      unread: true,
+      flagged: false,
+      bulk: false,
+      unsubscribe: null,
+      snoozedUntil: null,
+      senderFailed: true,
+    };
+    const out = renderInboxForAgent([entry, { ...entry, id: "m_2", senderFailed: false }]);
+    expect(out).toContain("   From: billing@example.com\n   Sender check: failed\n   Subject: Invented");
+    expect(out.match(/Sender check: failed/g)).toHaveLength(1);
   });
 });

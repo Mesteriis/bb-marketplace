@@ -119,6 +119,11 @@ describe("aiPart", () => {
     expect(built.hidden).toBe(3);
   });
 
+  it("gives a model nothing of an encrypted message: sync nulled its body (slice 3i, resolution 6)", () => {
+    const built = aiPart({ ...message("m1", "x"), body: { text: null, html: null } }, { n: 1, bodyChars: 100 });
+    expect(built.part.body).toBe("");
+  });
+
   it("names the domain only for categories", () => {
     expect(aiPart(message("m1", "x"), { n: 1, bodyChars: 10, fromDomainOnly: true }).part.from).toBe("Ann Example (example.com)");
     expect(aiPart(message("m1", "x", { from: { name: null, address: "x@example.org" } }), { n: 1, bodyChars: 10 }).part.from).toBe("x@example.org");

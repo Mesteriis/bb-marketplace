@@ -208,6 +208,7 @@ import {
   redactedSubject,
   renderContactsCounted,
   renderInboxForAgentCounted,
+  failedSenderIds,
   renderMessageForAgentCounted,
   renderSearchHitsCounted,
   type LogEntryInput,
@@ -4359,6 +4360,7 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
         limit: limit ?? INBOX_DEFAULT,
         scoped: true,
       });
+      const failed = failedSenderIds(store, rows.map((row) => row.id));
       const rendered = renderInboxForAgentCounted(
         rows.map((row) => {
           const offered = row.unsubscribe === null ? null : offeredMethods(row.unsubscribe, row.from.address);
@@ -4374,6 +4376,7 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
             bulk: isBulkRow(row.bulk, row.from.address),
             unsubscribe: offered?.oneClick ? "one_click" : offered?.mailto ? "email" : null,
             snoozedUntil: row.snoozedUntil,
+            senderFailed: failed.has(row.id),
           };
         }),
       );

@@ -5,7 +5,8 @@
 // redacted whole before any cut, quotes are stripped before the renderer
 // sees a body, and the renderer's own UNTRUSTED_NOTICE frames each message
 // (texts it does not build get the notice once). Pure.
-import { bodyPlainText, renderMessageForAgentCounted, UNTRUSTED_NOTICE } from "./agent-text.ts";
+import { bodyPlainText, ENCRYPTED_PLACEHOLDER, renderMessageForAgentCounted, senderLine, UNTRUSTED_NOTICE } from "./agent-text.ts";
+import { isEncrypted } from "./mail-crypto.ts";
 import { stripQuoted } from "./ai-input.ts";
 import { removeControls, removeInvisible } from "./html-entities.ts";
 import type { MailAddress, MessageBody, MessageHeader } from "./model.ts";
@@ -203,6 +204,8 @@ export function taskText(input: {
   date: string | null;
   inAiScope: boolean;
   excerpt?: BbMessage | null;
+  /** Slice 3i: the message's sender check and warnings, for Mail's line after "From mail:". */
+  security?: Pick<MessageHeader, "senderCheck" | "warnings">;
   target: "taskboard" | "local";
 }): { title: string; description: string; hidden: number } {
   const taskboard = input.target === "taskboard";
@@ -213,11 +216,13 @@ export function taskText(input: {
   const rawTitle = input.title !== undefined && input.title.trim() !== "" ? input.title : input.subject;
   const title = cut(oneLine(tally.redact(rawTitle)), taskboard ? TASK_TITLE_MAX : LOCAL_TASK_TITLE_MAX) || NO_SUBJECT;
   const name = input.sender.name === null ? "" : oneLine(tally.redact(input.sender.name));
-  const from = `From mail: ${name === "" ? oneLine(input.sender.address) : name} \u00b7 ${dayOf(input.date)}`;
+  const sender = senderLine(input.security ?? input.excerpt?.header ?? {});
+  const from = `From mail: ${name === "" ? oneLine(input.sender.address) : name} \u00b7 ${dayOf(input.date)}${sender === null ? "" : `\n${sender}`}`;
   let excerpt = "";
   if (input.excerpt !== undefined && input.excerpt !== null) {
-    const plain = stripQuoted(bodyPlainText(input.excerpt.body));
-    const text = removeControls(tally.redact(plain, input.excerpt.header.subject)).trim();
+    const text = isEncrypted(input.excerpt.header.crypto?.kind)
+      ? ENCRYPTED_PLACEHOLDER
+      : removeControls(tally.redact(stripQuoted(bodyPlainText(input.excerpt.body)), input.excerpt.header.subject)).trim();
     excerpt = `${UNTRUSTED_NOTICE}\n${cut(text, TASK_EXCERPT_MAX)}`;
   }
   const max = taskboard ? TASK_DESCRIPTION_MAX : LOCAL_TASK_NOTE_MAX;
