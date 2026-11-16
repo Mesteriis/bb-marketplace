@@ -246,8 +246,19 @@ const LOCK_FILES = new Set([
   "poetry.lock", "pipfile.lock", "uv.lock", "gemfile.lock", "go.sum", "composer.lock", "flake.lock", "mix.lock",
 ]);
 
-/** Why a changed file deserves a second look, by its name only; null for none. */
+/**
+ * Why a changed file deserves a second look, by its name only; null for none.
+ * Read on the path as written and on it without its first segment, so a
+ * mnemonic (c/ w/ i/ o/) or any other one-segment prefix pair, which
+ * readPath keeps, still warns (git applies with -p1); with a/ b/ already
+ * dropped, the second reading may add a warning, never remove one.
+ */
 function nameWarning(path: string): string | null {
+  const slash = path.indexOf("/");
+  return pathWarning(path) ?? (slash === -1 ? null : pathWarning(path.slice(slash + 1)));
+}
+
+function pathWarning(path: string): string | null {
   const lower = path.toLowerCase();
   const segments = lower.split("/");
   const base = segments[segments.length - 1]!;

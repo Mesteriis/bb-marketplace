@@ -216,6 +216,28 @@ describe("parsePatch", () => {
   });
 });
 
+describe("mnemonic and missing diff prefixes", () => {
+  const prefixed = (from: string, to: string, path: string) =>
+    lines(`diff --git ${from}/${path} ${to}/${path}`, `--- ${from}/${path}`, `+++ ${to}/${path}`, "@@ -1 +1 @@", "-x", "+y");
+
+  it.each([
+    ["c", "w"],
+    ["i", "w"],
+    ["c", "i"],
+    ["o", "w"],
+  ])("warns about a CI workflow under %s/ and %s/ prefixes", (from, to) => {
+    const parsed = parsePatch(prefixed(from, to, ".github/workflows/ci.yml"));
+    expect(parsed.refused).toBeNull();
+    expect(parsed.warnings.some((warning) => warning.startsWith("CI workflow"))).toBe(true);
+  });
+
+  it("warns with no prefix at all and for nested agent files", () => {
+    const bare = lines("diff --git .github/workflows/ci.yml .github/workflows/ci.yml", "--- .github/workflows/ci.yml", "+++ .github/workflows/ci.yml", "@@ -1 +1 @@", "-x", "+y");
+    expect(parsePatch(bare).warnings.some((warning) => warning.startsWith("CI workflow"))).toBe(true);
+    expect(parsePatch(prefixed("w", "i", ".gitlab-ci.yml")).warnings.some((w) => w.startsWith("CI configuration"))).toBe(true);
+  });
+});
+
 describe("hostile subjects and bodies", () => {
   const diff = fileDiff("src/a.ts");
   const hostile = (subject: string) => lines(`From ${SHA} Mon Sep 17 00:00:00 2001`, `Subject: ${subject}`, "", "---", diff);

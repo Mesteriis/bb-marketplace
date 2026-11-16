@@ -1251,3 +1251,6 @@ C2. **Patch parsing stays linear on hostile mail** (review finding, refines "Pat
    - `commitMessageOf` cuts the `Subject:` line (and its one folded continuation) to 998 characters before anything reads it, and the `[PATCH ...]` prefix is dropped by a scan, not a regular expression: after leading spaces, a `[` whose `]` is at most 200 characters on and whose inside holds `PATCH` (any case). `patchFileName` uses the same scan.
    - `thread_get` no longer parses a patch body: `patchSummary` counts `diff --git` headers (else bare `---`/`+++`/`@@` diffs) and the `+`/`-` lines after the first header in one pass. `patch_view` keeps the full parse.
    - A test feeds a 1 MB subject of `[` and `PATCH` words (and of spaces) and requires each parse to finish in under 200 ms.
+
+C6. **Warnings hold under mnemonic diff prefixes** (review finding, refines resolution 12).
+   - `readPath` still drops only `a/` and `b/`. Name warnings are read on the path as written and again on it without its first segment, so `c/`, `w/`, `i/`, `o/` (git's `diff.mnemonicPrefix`) or any other one-segment prefix pair still warns for `.github/workflows/`, `.gitlab-ci.yml` and the rest, as does a diff with no prefix. The second reading can only add a warning. Refusals already check every segment.
