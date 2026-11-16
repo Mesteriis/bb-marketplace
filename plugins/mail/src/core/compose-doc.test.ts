@@ -8,6 +8,7 @@ import {
   normalizeDoc,
   renderDoc,
   type ComposeDoc,
+  ownerParagraphs,
 } from "./compose-doc.ts";
 
 const text = (value: string, marks?: unknown[]) => (marks ? { type: "text", text: value, marks } : { type: "text", text: value });
@@ -425,5 +426,30 @@ describe("signature block", () => {
 
   it("docLosesContent keeps a signature", () => {
     expect(docLosesContent(doc(p(text("x")), sig(p(text("Anna")))) as never)).toBe(false);
+  });
+});
+
+describe("ownerParagraphs (slice 3f)", () => {
+  it("takes the text before the quote or signature: hardBreak lines and list items as lines, marks reported", () => {
+    const text = (value: string, marks?: { type: "bold" }[]) => ({ type: "text" as const, text: value, ...(marks ? { marks } : {}) });
+    const doc = {
+      type: "doc" as const,
+      content: [
+        { type: "paragraph" as const, content: [text("Line one"), { type: "hardBreak" as const }, text("line two")] },
+        {
+          type: "bulletList" as const,
+          content: [
+            { type: "listItem" as const, content: [{ type: "paragraph" as const, content: [text("Item a")] }] },
+            { type: "listItem" as const, content: [{ type: "paragraph" as const, content: [text("Item b")] }] },
+          ],
+        },
+        { type: "paragraph" as const },
+        { type: "blockquote" as const, content: [{ type: "paragraph" as const, content: [text("Quoted")] }] },
+        { type: "paragraph" as const, content: [text("After the quote")] },
+      ],
+    };
+    expect(ownerParagraphs(doc)).toEqual({ paragraphs: ["Line one\nline two", "Item a\nItem b", ""], marks: false });
+    const marked = { type: "doc" as const, content: [{ type: "paragraph" as const, content: [text("Bold", [{ type: "bold" }])] }] };
+    expect(ownerParagraphs(marked)).toEqual({ paragraphs: ["Bold"], marks: true });
   });
 });

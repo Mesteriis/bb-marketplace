@@ -40,6 +40,8 @@ import { createAccountQueue } from "./src/adapters/bb/account-queue.ts";
 import { createImapflowGateway, parseMail } from "./src/adapters/bb/imapflow-gateway.ts";
 import { MAKOSH_AI_PLUGIN_ID, createMakoshAiTranslator } from "./src/adapters/bb/makosh-ai-translator.ts";
 import { TranslateJobRefusal, TranslateJobs } from "./src/adapters/bb/translate-jobs.ts";
+import { AiJobRefusal, AiJobs, type AiFinished, type AiJobContext } from "./src/adapters/bb/ai-jobs.ts";
+import { needsReplyNow } from "./src/adapters/bb/day-clock.ts";
 import { createMimeBuilder } from "./src/adapters/bb/mime-builder.ts";
 import { createOriginalReader } from "./src/adapters/bb/original-reader.ts";
 import { createOutboxWorker, type OutboxWorker } from "./src/adapters/bb/outbox-worker.ts";
@@ -129,6 +131,38 @@ import {
   removeInvisible,
   agentHitsCounted,
   agentSearchRefusal,
+  AI_ASK_EXCERPTS,
+  AI_INPUT_CAPS,
+  AiError,
+  CategoryUndoBook,
+  DRAFT_TOO_LONG_TEXT,
+  NonceCollision,
+  aiErrorText,
+  askAnswerInput,
+  askPlanInput,
+  categoriesInput,
+  categoryRuleRefusal,
+  digestInput,
+  draftInput,
+  evidenceFound,
+  localCategory,
+  localDay,
+  newRestoreTag,
+  normalizeBlockValue,
+  ownerParagraphs,
+  queryWords,
+  summaryInput,
+  summarySourceHash,
+  tasksInput,
+  type AiBuild,
+  type AiKind,
+  type AiResultRecord,
+  type AiSourceMessage,
+  type Category,
+  type NewTask,
+  type PreviousLabel,
+  type TaskRecord,
+  type ThreadSummary,
   hitStillMatches,
   logEntry,
   plainBodyText,
@@ -436,8 +470,35 @@ function defineSettings(bb: BbPluginApi) {
       label: "Let agents propose inbox actions for you to approve",
       default: false,
     },
+    // Slice 3f.
+    mailCategories: {
+      type: "boolean",
+      label: "Sort mail into categories (local labels)",
+      default: false,
+    },
+    morningDigest: {
+      type: "boolean",
+      label: "Show a daily Today digest",
+      default: false,
+    },
+    digestTime: {
+      type: "string",
+      label: "Today digest time (this computer's time)",
+      description: "HH:MM, e.g. 08:00.",
+      default: "08:00",
+      experimental_schema: z.string().regex(DIGEST_TIME_PATTERN, "Must be HH:MM"),
+    },
+    replyReminderDays: {
+      type: "number",
+      label: "Default days for reply reminders",
+      default: 3,
+      experimental_schema: z.number().int().min(1).max(30),
+    },
   });
 }
+
+/** The digest time setting: HH:MM on a 24-hour clock. */
+export const DIGEST_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** The quiet-hours setting: a range that may cross midnight (equal ends mean off), or empty. */
 export const QUIET_HOURS_PATTERN = /^(?:([01]\d|2[0-3]):[0-5]\d[-\u2013]([01]\d|2[0-3]):[0-5]\d)?$/;
@@ -624,6 +685,9 @@ function composeRefusal(error: unknown, log: (line: string) => void, method: str
   if (error instanceof ComposeError) return refuse(COMPOSE_REFUSAL[error.kind], error.message);
   if (error instanceof UploadError) return refuse(UPLOAD_REFUSAL[error.code], error.message);
   if (error instanceof SmtpSettingsRefused) return refuse("invalid", error.message);
+  // AI refusals and failures carry fixed text only (never mail data or model output).
+  if (error instanceof AiJobRefusal) return refuse("conflict", error.message);
+  if (error instanceof AiError) return refuse(error.kind === "too_long" ? "invalid" : "conflict", error.message);
   // Its text may name one of the owner's accounts: the page sees it, logs never do.
   if (error instanceof IdentityRefusal) return refuse(error.kind, error.message);
   log(`${method} failed (${errorKind(error)})`);
@@ -1144,11 +1208,25 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       onGateway: translateGateway.report,
     });
     bb.onDispose(() => jobs.dispose());
+    const aiJobs = new AiJobs({
+      translator,
+      clock,
+      newId: randomUUID,
+      log: (line) => bb.log.info(line),
+      // Only what the gateway itself said; an AI-only kind (unreadable, too_long) says nothing about it.
+      onGateway: (state) => {
+        if (state === "ok" || state === "gateway_missing" || state === "pool_unavailable") translateGateway.report(state);
+      },
+    });
+    bb.onDispose(() => aiJobs.dispose());
 
     bb.background.service("sync", {
       start: async (signal) => {
         const daily = setInterval(purgeProposals, PURGE_INTERVAL_MS);
-        const sweep = setInterval(() => jobs.sweep(), JOB_SWEEP_MS);
+        const sweep = setInterval(() => {
+          jobs.sweep();
+          aiJobs.sweep();
+        }, JOB_SWEEP_MS);
         try {
           await Promise.all([loop.start(signal), worker.start(signal), idle.start(signal), snoozeClock.start(signal)]);
         } finally {
@@ -1213,6 +1291,11 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       newMail,
       agentLog: agentLog.log,
       agentLogUpdate: agentLog.update,
+      aiJobs,
+      aiNonce: () => translateNonce((size) => new Uint8Array(randomBytes(size))),
+      restoreTag: (parts) => newRestoreTag((size) => new Uint8Array(randomBytes(size)), parts),
+      categoriesOn: () => current.mailCategories,
+      categoryUndo: new CategoryUndoBook(randomUUID),
     };
     registerRpc(bb, rpcDeps);
     registerDownloadRoute(bb, store, rawDeps, tickets);
@@ -1282,6 +1365,15 @@ type RpcDeps = {
   /** The content-free agent action log (slice 3f). */
   agentLog: AgentLog;
   agentLogUpdate: AgentLogUpdate;
+  /** Owner-click AI jobs (slice 3f). */
+  aiJobs: AiJobs;
+  /** A fresh frame nonce. */
+  aiNonce: () => string;
+  /** A restore tag absent from every part. */
+  restoreTag: (parts: string[]) => string;
+  /** The owner's "Sort mail into categories" setting. */
+  categoriesOn: () => boolean;
+  categoryUndo: CategoryUndoBook;
 };
 
 /** What a download ticket stands for; the name and bytes are resolved again when it is used. */
@@ -2198,6 +2290,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     deps.loop.wake(accountId);
   };
   const nowIso = () => composeDeps.clock.now().toISOString();
+  const ai = createAiRpc(deps, ownerDraft);
   // No method is published as discoverable, and none (message_action and the
   // image methods included) is exposed as a tool, CLI command or mention. They
   // are still reachable by anything that can call local plugin RPC as a client,
@@ -2256,9 +2349,16 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { started: true };
       },
       threads_list: ({ scope, cursor, limit, filter }) => {
-        if (scope.kind === "account") return store.listThreads(scope.accountId, scope.folder, cursor, limit, filter);
-        if (scope.role === "all") throw refuse("invalid", ALL_ROLE_MESSAGE);
-        return store.listThreadsAll(scope.role, cursor, limit, filter);
+        // Category filters and fields only while categories are on (slice 3f).
+        const shown = filter !== undefined && filter.category !== undefined && !deps.categoriesOn() ? { ...filter, category: undefined } : filter;
+        const page =
+          scope.kind === "account"
+            ? store.listThreads(scope.accountId, scope.folder, cursor, limit, shown)
+            : scope.role === "all"
+              ? null
+              : store.listThreadsAll(scope.role, cursor, limit, shown);
+        if (page === null) throw refuse("invalid", ALL_ROLE_MESSAGE);
+        return { ...page, threads: ai.withCategories(page.threads, scope.kind === "account" ? scope.folder : "INBOX") };
       },
       thread_get: ({ threadId, folder }) => {
         const thread = store.getThread(threadId, folder);
@@ -2481,13 +2581,22 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // travels only in translate_poll answers.
       translate_start: translating("translate_start", async ({ messageId, targetLanguage, force }) => {
         const current = deps.translateSettings();
+        // Outside AI access a message is not translated (spec path 12).
+        if (store.scopedMessage(messageId) === null && store.getMessage(messageId) !== null) {
+          deps.agentLog({ actor: "owner_ai", tool: "ai_translate", outcome: "refused_scope", provider: current.providerId, model: current.model });
+          throw refuse("conflict", aiErrorText("out_of_scope"));
+        }
         if (targetLanguage !== current.language) {
           // The picker's last choice becomes the default.
           void deps.saveTranslateSettings({ translateLanguage: targetLanguage }).catch(() => {
             log("translate language could not be saved");
           });
         }
-        return deps.jobs.start(messageId, targetLanguage, current, force === undefined ? {} : { force });
+        const started = await deps.jobs.start(messageId, targetLanguage, current, force === undefined ? {} : { force });
+        if ("jobId" in started) {
+          deps.agentLog({ actor: "owner_ai", tool: "ai_translate", outcome: "ok", messageIds: [messageId], count: 1, provider: current.providerId, model: current.model });
+        }
+        return started;
       }),
       translate_poll: translating("translate_poll", ({ jobId, from }) => {
         const poll = deps.jobs.poll(jobId, from);
@@ -2670,19 +2779,37 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       triage_view: owner("triage_view", (input) => viewTriage(deps, input)),
       triage_status: owner("triage_status", ({ batchId }) => triageStatus(deps, batchId)),
       // Agent and mail (slice 3f): owner only; the server tasks fill these in.
-      ai_start: owner("ai_start", notYet),
-      ai_poll: owner("ai_poll", notYet),
-      ai_cancel: owner("ai_cancel", notYet),
-      tasks_keep: owner("tasks_keep", notYet),
-      tasks_list: owner("tasks_list", notYet),
-      task_update: owner("task_update", notYet),
-      task_delete: owner("task_delete", notYet),
-      category_set: owner("category_set", notYet),
-      category_accept: owner("category_accept", notYet),
-      category_undo: owner("category_undo", notYet),
-      category_rule_add: owner("category_rule_add", notYet),
-      category_rule_remove: owner("category_rule_remove", notYet),
-      category_rules_list: owner("category_rules_list", notYet),
+      // Slice 3f: AI on the owner's click, kept tasks and local categories.
+      ai_start: owner("ai_start", (input) => ai.start(input)),
+      ai_poll: owner("ai_poll", ({ jobId }) => ai.poll(jobId)),
+      ai_cancel: owner("ai_cancel", ({ jobId }) => ({ cancelled: deps.aiJobs.cancel(jobId) })),
+      tasks_keep: owner("tasks_keep", (input) => ai.keepTasks(input)),
+      tasks_list: owner("tasks_list", ({ done, cursor }) => {
+        const page = store.listTasks({ done, cursor: cursor ?? null, limit: TASKS_PAGE });
+        return { tasks: page.tasks.map(taskView), next: page.next };
+      }),
+      task_update: owner("task_update", ({ id, title, due, done }) => {
+        const patch: { title?: string; due?: string | null; done?: boolean } = {};
+        if (title !== undefined) patch.title = oneLine(title);
+        if (patch.title === "") throw refuse("invalid", "A task needs a title");
+        if (due !== undefined) patch.due = due;
+        if (done !== undefined) patch.done = done;
+        if (!store.updateTask(id, patch, nowIso())) throw refuse("not_found", "Unknown task");
+        return { ok: true as const };
+      }),
+      task_delete: owner("task_delete", ({ id }) => {
+        if (!store.deleteTask(id)) throw refuse("not_found", "Unknown task");
+        return { ok: true as const };
+      }),
+      category_set: owner("category_set", (input) => ai.setCategory(input)),
+      category_accept: owner("category_accept", (input) => ai.acceptCategory(input)),
+      category_undo: owner("category_undo", ({ undoId }) => ai.undoCategory(undoId)),
+      category_rule_add: owner("category_rule_add", (input) => ai.addRule(input)),
+      category_rule_remove: owner("category_rule_remove", ({ id }) => {
+        if (!store.removeCategoryRule(id)) throw refuse("not_found", "Unknown rule");
+        return { ok: true as const };
+      }),
+      category_rules_list: owner("category_rules_list", () => ({ rules: store.listCategoryRules() })),
       today_get: owner("today_get", notYet),
       reply_dismiss: owner("reply_dismiss", notYet),
       reminder_set: owner("reminder_set", notYet),
@@ -3771,6 +3898,484 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
       return answer("applied", items);
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// AI on the owner's click (slice 3f): ai_start / ai_poll / ai_cancel, tasks
+// and categories. Every input is built by a core builder over in-scope rows
+// (redacted whole, then cut); results travel only in poll answers.
+// ---------------------------------------------------------------------------
+
+export const CATEGORIES_OFF_MESSAGE = "Categories are off in Mail settings";
+export const CATEGORY_RULES_FULL_MESSAGE = "You have the most category rules Makosh Mail keeps; remove some first";
+export const TASKS_FULL_MESSAGE = "You have the most open tasks Makosh Mail keeps; finish or delete some first";
+export const TASKS_GONE_MESSAGE = "These tasks are no longer available; find tasks again";
+export const DRAFT_CHANGED_MESSAGE = "The draft changed; try again";
+const UNKNOWN_AI_JOB_MESSAGE = "This AI request is no longer available";
+/** Hits read per planned Ask query before the post-filter. */
+const ASK_HITS_PER_QUERY = 20;
+/** Question words searched besides the planned queries. */
+const ASK_QUESTION_WORDS = 5;
+const NONCE_ATTEMPTS = 5;
+
+type AiStartInput = z.output<(typeof rpcSchemas)["ai_start"]["input"]>;
+type AiResultViewOut = z.output<(typeof rpcSchemas)["ai_poll"]["output"]>["result"];
+
+/** A builder over a fresh nonce, re-drawn while a part holds it. */
+function withNonce(deps: RpcDeps, build: (nonce: string) => AiBuild): AiBuild {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return build(deps.aiNonce());
+    } catch (error) {
+      if (!(error instanceof NonceCollision) || attempt >= NONCE_ATTEMPTS) throw error;
+    }
+  }
+}
+
+function sourceMessage(store: MailStore, header: MessageHeader): AiSourceMessage {
+  const body = store.getBody(header.id);
+  return {
+    id: header.id,
+    date: header.date,
+    from: header.from,
+    subject: header.subject,
+    body: body === null ? null : { text: body.text, html: body.html },
+  };
+}
+
+/** A stored message's content hash for the summary cache key. */
+function contentHash(store: MailStore, header: MessageHeader): string {
+  const body = store.getBody(header.id);
+  return sha256Text(JSON.stringify([header.date, header.from.address, header.subject, body?.text ?? null, body?.html ?? null]));
+}
+
+/** The plugin's citation chips: frame numbers mapped to the messages the plugin sent. */
+function citationsOf(store: MailStore, parts: AiBuild["parts"]) {
+  return parts.flatMap((part) => {
+    const header = store.getMessage(part.messageId);
+    return header === null ? [] : [{ n: part.n, messageId: part.messageId, accountId: header.accountId, threadId: header.threadId }];
+  });
+}
+
+/** A finished job as the page reads it. */
+function aiResultView(store: MailStore, finished: AiFinished): NonNullable<AiResultViewOut> {
+  const base = {
+    provider: finished.provider,
+    model: finished.model,
+    cached: false,
+    stale: false,
+    notes: finished.notes,
+    citations: citationsOf(store, finished.parts),
+    createdAt: finished.createdAt,
+  };
+  const messageOf = (n: number) => finished.parts.find((part) => part.n === n);
+  const { output } = finished;
+  switch (output.kind) {
+    case "summary":
+      return { kind: "summary", ...base, ...output.value };
+    case "ask":
+      return { kind: "ask", ...base, ...output.value };
+    case "tasks":
+      return {
+        kind: "tasks",
+        ...base,
+        tasks: output.value.tasks.map((task, index) => ({
+          index,
+          ...task,
+          evidenceFound: evidenceFound(task.evidence, messageOf(task.message)?.text ?? ""),
+        })),
+      };
+    case "categories":
+      return {
+        kind: "categories",
+        ...base,
+        items: output.value.items.flatMap((item) => {
+          const part = messageOf(item.n);
+          return part === undefined ? [] : [{ messageId: part.messageId, category: item.category === "none" ? null : item.category }];
+        }),
+      };
+    case "digest":
+      return {
+        kind: "digest",
+        ...base,
+        items: output.value.items.flatMap((item) => {
+          const part = messageOf(item.n);
+          const threadId = part === undefined ? undefined : store.getMessage(part.messageId)?.threadId;
+          return threadId === undefined ? [] : [{ threadId, gist: item.gist }];
+        }),
+      };
+    case "draft":
+      return { kind: "draft", ...base, ...output.value };
+  }
+}
+
+/** What a cached summary stores (the parsed groups and citations), and its notes. */
+type CachedSummary = Pick<Extract<NonNullable<AiResultViewOut>, { kind: "summary" }>, "decisions" | "questions" | "deadlines" | "citations">;
+
+function cachedSummaryView(row: AiResultRecord, stale: boolean): NonNullable<AiResultViewOut> {
+  const result = JSON.parse(row.resultJson) as CachedSummary;
+  const notes = JSON.parse(row.notesJson) as AiFinished["notes"];
+  return {
+    kind: "summary",
+    provider: row.provider,
+    model: row.model,
+    cached: true,
+    stale,
+    notes,
+    citations: result.citations,
+    createdAt: row.createdAt,
+    decisions: result.decisions,
+    questions: result.questions,
+    deadlines: result.deadlines,
+  };
+}
+
+/** An AI call refused before the model: out of scope, unknown, or the draft changed. */
+function aiRefusal(code: "conflict" | "not_found" | "invalid", message: string): Error {
+  return refuse(code, message);
+}
+
+/** The local category of stored rows (no model): the server computes it for the rows a page shows, never stored. */
+function localCategories(store: MailStore, ids: string[], nowIso: string): Map<string, Category | null> {
+  const rows = store.notifyRows(ids, nowIso);
+  const sentTo = store.addressesSentTo(rows.map((row) => row.fromAddress));
+  return new Map(
+    rows.map((row) => [
+      row.id,
+      localCategory({ bulk: row.bulk, listKey: store.getUnsubscribeInfo(row.id)?.listKey ?? null, fromAddress: row.fromAddress }, sentTo),
+    ]),
+  );
+}
+
+/** Tasks per tasks_list page. */
+const TASKS_PAGE = 100;
+
+function taskView(task: TaskRecord) {
+  return {
+    id: task.id,
+    accountId: task.accountId,
+    messageId: task.messageId,
+    threadId: task.threadId,
+    title: task.title,
+    due: task.due,
+    doneAt: task.doneAt,
+    createdAt: task.createdAt,
+  };
+}
+
+function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord) {
+  const { store } = deps;
+  const clock = deps.composeDeps.clock;
+  const nowIso = () => clock.now().toISOString();
+  const settings = () => {
+    const current = deps.translateSettings();
+    return { provider: current.providerId, model: current.model };
+  };
+  const logAi = (kind: string, outcome: LogOutcome, ids: readonly string[] = [], hidden = 0) => {
+    const { provider, model } = settings();
+    deps.agentLog({
+      actor: "owner_ai",
+      tool: `ai_${kind}` as LogEntryInput["tool"],
+      outcome,
+      messageIds: ids,
+      count: ids.length,
+      hiddenCount: hidden,
+      provider,
+      model,
+    });
+  };
+  const requireCategories = () => {
+    if (!deps.categoriesOn()) throw refuse("invalid", CATEGORIES_OFF_MESSAGE);
+  };
+  const outOfScope = (kind: string): Error => {
+    logAi(kind, "refused_scope");
+    return aiRefusal("conflict", aiErrorText("out_of_scope"));
+  };
+  /** The in-scope messages of a conversation, oldest first, and how many were left out. */
+  const conversation = (threadId: string, folder: string | undefined) => {
+    const thread = store.getThread(threadId, folder ?? "INBOX");
+    if (thread === null) throw aiRefusal("not_found", "Unknown thread");
+    const inScope = thread.messages.filter((m) => m.inAiScope);
+    return { thread, inScope, leftOut: thread.messages.length - inScope.length };
+  };
+
+  const startJob = (kind: AiKind, built: AiBuild, extra: Partial<AiJobContext> = {}) => {
+    try {
+      const started = deps.aiJobs.start(kind, built, { ...settings(), ...extra });
+      logAi(kind, "ok", built.parts.map((part) => part.messageId), built.notes.hidden);
+      return started;
+    } catch (error) {
+      if (error instanceof AiJobRefusal) logAi(kind, "refused_caps");
+      throw error;
+    }
+  };
+
+  /** Ask's second step: the planned queries and the question's words, scoped, post-filtered, deduped, newest first. */
+  const askSearch = (question: string, accountId: string | null, today: string) => (queries: string[]): AiBuild => {
+    const seen = new Set<string>();
+    const hits: MessageSummary[] = [];
+    const words = queryWords(question).filter((word) => [...word].length >= 3).slice(0, ASK_QUESTION_WORDS);
+    for (const query of [...queries, ...words]) {
+      const found = agentSearch(store, query, accountId, ASK_HITS_PER_QUERY);
+      if ("refused" in found) continue;
+      for (const hit of found.hits) {
+        const key = `${hit.accountId}\u0000${hit.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        hits.push(hit);
+      }
+    }
+    hits.sort((a, b) => (Date.parse(b.date ?? "") || 0) - (Date.parse(a.date ?? "") || 0));
+    const excerpts = hits.slice(0, AI_ASK_EXCERPTS).flatMap((hit) => {
+      const header = store.getMessage(hit.id);
+      return header === null ? [] : [sourceMessage(store, header)];
+    });
+    return withNonce(deps, (nonce) => askAnswerInput(question, excerpts, { nonce, today }));
+  };
+
+  async function start(input: AiStartInput): Promise<{ cached: NonNullable<AiResultViewOut> } | { jobId: string }> {
+    const now = clock.now();
+    const today = localDay(now);
+    switch (input.kind) {
+      case "summary": {
+        const { thread, inScope, leftOut } = conversation(input.threadId, input.folder);
+        if (inScope.length === 0) throw outOfScope("summary");
+        const sha = await summarySourceHash(
+          inScope.map((m) => m.id),
+          inScope.map((m) => contentHash(store, m)),
+        );
+        const row = store.getAiResult("summary", input.threadId);
+        if (row !== null && input.force !== true) return { cached: cachedSummaryView(row, row.sourceSha256 !== sha) };
+        const built = withNonce(deps, (nonce) => summaryInput(inScope.map((m) => sourceMessage(store, m)), { nonce, leftOut }));
+        return startJob("summary", built, {
+          onDone: (finished) => {
+            const view = aiResultView(store, finished);
+            if (view.kind !== "summary") return;
+            const cached: CachedSummary = {
+              decisions: view.decisions,
+              questions: view.questions,
+              deadlines: view.deadlines,
+              citations: view.citations,
+            };
+            try {
+              store.putAiResult({
+                kind: "summary",
+                subjectId: input.threadId,
+                accountId: thread.thread.accountId,
+                sourceSha256: sha,
+                provider: finished.provider,
+                model: finished.model,
+                resultJson: JSON.stringify(cached),
+                notesJson: JSON.stringify(finished.notes),
+                createdAt: finished.createdAt,
+              });
+            } catch {
+              // Over the size cap: shown, not cached.
+            }
+          },
+        });
+      }
+      case "tasks": {
+        let messages: MessageHeader[];
+        let leftOut = 0;
+        if ("messageId" in input) {
+          const header = store.scopedMessage(input.messageId);
+          if (header === null) {
+            if (store.getMessage(input.messageId) !== null) throw outOfScope("tasks");
+            throw aiRefusal("not_found", "Unknown message");
+          }
+          messages = [header];
+        } else {
+          const found = conversation(input.threadId, input.folder);
+          if (found.inScope.length === 0) throw outOfScope("tasks");
+          messages = found.inScope;
+          leftOut = found.leftOut;
+        }
+        const built = withNonce(deps, (nonce) => tasksInput(messages.map((m) => sourceMessage(store, m)), { nonce, today, leftOut }));
+        return startJob("tasks", built);
+      }
+      case "ask": {
+        const plan = askPlanInput(input.question, today);
+        return startJob("ask", plan, { search: askSearch(input.question, input.accountId ?? null, today) });
+      }
+      case "categories": {
+        requireCategories();
+        const labels = store.categoriesOf(input.messageIds);
+        const scoped: MessageHeader[] = [];
+        let leftOut = 0;
+        for (const id of input.messageIds) {
+          const header = store.scopedMessage(id);
+          if (header === null) {
+            if (store.getMessage(id) !== null) leftOut++;
+            continue;
+          }
+          if (labels.get(id)?.category != null) continue;
+          scoped.push(header);
+        }
+        if (scoped.length === 0) {
+          if (leftOut > 0) throw outOfScope("categories");
+          throw aiRefusal("invalid", "Every message already has a category");
+        }
+        const built = withNonce(deps, (nonce) => categoriesInput(scoped.map((m) => sourceMessage(store, m)), { nonce, leftOut }));
+        return startJob("categories", built, {
+          onDone: (finished) => {
+            if (finished.output.kind !== "categories") return;
+            const rows = finished.output.value.items.flatMap((item) => {
+              const part = finished.parts.find((p) => p.n === item.n);
+              return part === undefined ? [] : [{ messageId: part.messageId, category: item.category }];
+            });
+            store.putCategorySuggestions(rows, clock.now().toISOString());
+          },
+        });
+      }
+      case "digest": {
+        const latest: MessageHeader[] = [];
+        let leftOut = 0;
+        for (const candidate of needsReplyNow(store, now)) {
+          const header = store.scopedMessage(candidate.messageId);
+          if (header === null) leftOut++;
+          else latest.push(header);
+        }
+        if (latest.length === 0) {
+          if (leftOut > 0) throw outOfScope("digest");
+          throw aiRefusal("invalid", "No conversation needs a reply");
+        }
+        const built = withNonce(deps, (nonce) => digestInput(latest.map((m) => sourceMessage(store, m)), { nonce, leftOut }));
+        return startJob("digest", built);
+      }
+      case "draft": {
+        const draft = ownerDraft(input.draftId);
+        if (draft.revision !== input.revision) throw aiRefusal("conflict", DRAFT_CHANGED_MESSAGE);
+        const stored = ownerParagraphs(draft.doc).paragraphs;
+        if (stored.length !== input.paragraphs.length || stored.some((p, i) => p !== input.paragraphs[i])) throw aiRefusal("conflict", DRAFT_CHANGED_MESSAGE);
+        const length = stored.reduce((sum, p) => sum + p.length, 0);
+        if (length > AI_INPUT_CAPS.draft) {
+          logAi("draft", "refused_invalid");
+          throw aiRefusal("invalid", DRAFT_TOO_LONG_TEXT);
+        }
+        const tag = deps.restoreTag([...stored, input.instruction ?? ""]);
+        const built = withNonce(deps, (nonce) =>
+          draftInput(stored, input.instruction === undefined ? { mode: input.mode } : { mode: input.mode, instruction: input.instruction }, {
+            nonce,
+            tag,
+          }),
+        );
+        return startJob("draft", built, { tag, maxChars: Math.max(1, 2 * length) });
+      }
+    }
+  }
+
+  function poll(jobId: string): z.output<(typeof rpcSchemas)["ai_poll"]["output"]> {
+    const answer = deps.aiJobs.poll(jobId);
+    if (answer === null) throw refuse("not_found", UNKNOWN_AI_JOB_MESSAGE);
+    return {
+      state: answer.state,
+      ...(answer.phase === undefined ? {} : { phase: answer.phase }),
+      ...(answer.result === undefined ? {} : { result: aiResultView(store, answer.result) }),
+      ...(answer.error === undefined ? {} : { error: answer.error }),
+      ...(answer.gatewayMessage === undefined ? {} : { gatewayMessage: answer.gatewayMessage }),
+      ...(answer.provider === undefined ? {} : { provider: answer.provider }),
+      ...(answer.model === undefined ? {} : { model: answer.model }),
+    };
+  }
+
+  function keepTasks(input: { jobId: string; picks: { index: number; title: string; due: string | null }[] }): { kept: number } {
+    const finished = deps.aiJobs.finished(input.jobId, "tasks");
+    if (finished === null || finished.output.kind !== "tasks") throw refuse("not_found", TASKS_GONE_MESSAGE);
+    const suggested = finished.output.value.tasks;
+    const at = nowIso();
+    const rows: NewTask[] = [];
+    const picked = new Set<number>();
+    for (const pick of input.picks) {
+      const task = suggested[pick.index];
+      if (task === undefined || picked.has(pick.index)) throw refuse("invalid", "Unknown task");
+      picked.add(pick.index);
+      const part = finished.parts.find((p) => p.n === task.message);
+      const row = part === undefined ? undefined : store.notifyRows([part.messageId], at)[0];
+      if (row === undefined) throw refuse("not_found", "The message of this task is no longer in Makosh Mail");
+      const title = oneLine(pick.title);
+      if (title === "") throw refuse("invalid", "A task needs a title");
+      rows.push({ id: `task_${randomUUID()}`, accountId: row.accountId, messageId: row.id, dedupKey: row.dedupKey, title, due: pick.due, createdAt: at });
+    }
+    const kept = store.keepTasks(rows);
+    if ("full" in kept) throw refuse("conflict", TASKS_FULL_MESSAGE);
+    return kept;
+  }
+
+  /** Labels by the owner (no IMAP); the previous labels go into the in-memory undo book. */
+  function labelled(previous: PreviousLabel[], changed: number): { changed: number; undoId: string | null } {
+    return { changed, undoId: changed === 0 ? null : deps.categoryUndo.record(previous, clock.now()) };
+  }
+
+  function setCategory(input: { messageIds: string[]; category: Category | null }) {
+    requireCategories();
+    const known = input.messageIds.filter((id) => store.getMessage(id) !== null);
+    const { previous } = store.setCategories(known, input.category, "owner", nowIso());
+    return labelled(previous, known.length);
+  }
+
+  function acceptCategory(input: { messageIds: string[] }) {
+    requireCategories();
+    const at = nowIso();
+    const stored = store.categoriesOf(input.messageIds);
+    const local = localCategories(store, input.messageIds, at);
+    const groups = new Map<Category, string[]>();
+    for (const id of input.messageIds) {
+      const entry = stored.get(id);
+      if (entry === undefined) continue;
+      const suggestion = entry.suggestion !== null && entry.suggestion !== "none" ? entry.suggestion : local.get(id) ?? null;
+      if (suggestion === null) continue;
+      groups.set(suggestion, [...(groups.get(suggestion) ?? []), id]);
+    }
+    const previous: PreviousLabel[] = [];
+    let changed = 0;
+    store.transaction(() => {
+      for (const [category, ids] of groups) {
+        previous.push(...store.setCategories(ids, category, "owner", at).previous);
+        changed += ids.length;
+      }
+    });
+    return labelled(previous, changed);
+  }
+
+  function undoCategory(undoId: string): { ok: true } {
+    const previous = deps.categoryUndo.take(undoId, clock.now());
+    if (previous === null) throw refuse("not_found", "This change can no longer be undone");
+    store.restoreCategories(previous, nowIso());
+    return { ok: true };
+  }
+
+  function addRule(input: { messageId: string; kind: "address" | "domain"; category: Category }) {
+    requireCategories();
+    const message = store.getMessage(input.messageId);
+    if (message === null) throw refuse("not_found", "Unknown message");
+    const address = message.from.address.trim();
+    const raw = input.kind === "address" ? address : address.slice(address.lastIndexOf("@") + 1);
+    const refusal = categoryRuleRefusal(input.kind, raw);
+    if (refusal !== null) throw refuse("invalid", refusal);
+    const added = store.addCategoryRule(input.kind, normalizeBlockValue(input.kind, raw), input.category, `crule_${randomUUID()}`, nowIso());
+    if ("full" in added) throw refuse("conflict", CATEGORY_RULES_FULL_MESSAGE);
+    return { rule: added.rule };
+  }
+
+  /** threads_list's category fields: only with categories on; a missing suggestion falls back to the local one. */
+  function withCategories(threads: ThreadSummary[], folder: string): ThreadSummary[] {
+    if (!deps.categoriesOn()) return threads.map((t) => ({ ...t, category: null, categorySuggestion: null }));
+    const missing = threads.filter((t) => t.category === null && t.categorySuggestion === null);
+    if (missing.length === 0) return threads;
+    const latest = new Map<string, string>();
+    for (const thread of missing) {
+      const id = store.getThread(thread.id, folder)?.messages.at(-1)?.id;
+      if (id !== undefined) latest.set(thread.id, id);
+    }
+    const local = localCategories(store, [...latest.values()], nowIso());
+    return threads.map((thread) => {
+      const id = latest.get(thread.id);
+      return id === undefined ? thread : { ...thread, categorySuggestion: local.get(id) ?? null };
+    });
+  }
+
+  return { start, poll, keepTasks, setCategory, acceptCategory, undoCategory, addRule, withCategories };
 }
 
 const jsonOption = { json: { type: "boolean", description: "Emit machine-readable JSON" } } as const;
