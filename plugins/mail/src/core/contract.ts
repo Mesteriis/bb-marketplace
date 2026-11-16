@@ -1045,7 +1045,8 @@ export const rpcSchemas = {
   },
   /** The exact prompt the thread would start with; refusals out_of_scope, not_found. */
   bb_thread_prepare: {
-    input: bbThreadInput,
+    /** saveAttachments: the preview lists the files Start would save (nothing is written). */
+    input: bbThreadInput.extend({ saveAttachments: z.boolean().optional() }),
     output: z.object({
       prompt: z.string(),
       title: z.string(),

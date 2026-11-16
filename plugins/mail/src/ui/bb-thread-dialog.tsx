@@ -95,6 +95,8 @@ function ThreadBody({ request, call, onStarted, onEditInComposer, onClose }: BbT
       include,
       projectId,
       ...(applied.trim() !== "" ? { instruction: applied } : {}),
+      // The preview lists the files Start saves, so it is the prompt Start sends.
+      ...(saveAttachments ? { saveAttachments: true } : {}),
     }).then(
       (value) => {
         if (live) setPreview({ status: "ready", value });
@@ -106,7 +108,7 @@ function ThreadBody({ request, call, onStarted, onEditInComposer, onClose }: BbT
     return () => {
       live = false;
     };
-  }, [applied, call, include, projectId, request.inAiScope, request.messageId]);
+  }, [applied, call, include, projectId, request.inAiScope, request.messageId, saveAttachments]);
 
   const stale = instruction !== applied;
   const ready = preview.status === "ready" && !stale && projectId !== null && request.inAiScope;

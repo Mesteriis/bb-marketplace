@@ -81,6 +81,9 @@ describe("BbThreadDialog", () => {
     const { to } = mount({ ruleRunId: "run-1" });
     await screen.findByTestId("bb-thread-prompt");
     fireEvent.click(screen.getByRole("checkbox"));
+    // The preview is asked again with the files Start would save.
+    await waitFor(() => expect(to("bb_thread_prepare").at(-1)).toMatchObject({ saveAttachments: true }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Start thread" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Start thread" }));
     await waitFor(() => expect(to("bb_thread_start")).toHaveLength(1));
     expect(to("bb_thread_start")[0]).toMatchObject({ ruleRunId: "run-1", saveAttachments: true });

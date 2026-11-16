@@ -738,12 +738,42 @@ export function createBbRpc(deps: BbRpcDeps) {
 
   // ---- Mail to a BB thread ----
 
-  async function threadPrepare(input: { messageId: string; include: "message" | "conversation"; projectId: string; instruction?: string | undefined }) {
+  /** The parts "Also save the attachments" saves: non-inline ones, at most 20. */
+  function startSaveParts(header: MessageHeader) {
+    return header.attachments.filter((a) => !a.isInline).slice(0, START_SAVE_PARTS_MAX);
+  }
+
+  /**
+   * The paths Start would save to, without writing (bb_thread_prepare with
+   * saveAttachments): the same checks saveParts makes first, then each name
+   * as saveParts places it. A conflict or failure at Start can still change
+   * a path; the start answer's `saved` then shows the real one.
+   */
+  function plannedSavePaths(header: MessageHeader, project: ProjectInfo): string[] {
+    if (!saveEnabled) throw refuse("conflict", BB_REFUSAL_TEXT.save_disabled);
+    if (project.tree === null) throw refuse("conflict", BB_REFUSAL_TEXT.no_tree);
+    const folder = settingFolder(deps.settings().attachmentFolder, "mail-attachments");
+    const checked = projectFolder(folder);
+    if (!checked.ok) throw refuse("invalid", PROJECT_PATH_REFUSAL_TEXT[checked.reason]);
+    return startSaveParts(header).flatMap((part) => {
+      const placed = projectRelativePath(folder, savedName(part.filename));
+      return placed.ok ? [placed.relativePath] : [];
+    });
+  }
+
+  async function threadPrepare(input: {
+    messageId: string;
+    include: "message" | "conversation";
+    projectId: string;
+    instruction?: string | undefined;
+    saveAttachments?: boolean | undefined;
+  }) {
     const header = message(input.messageId);
-    await projectOf(input.projectId, "bb_thread_prepare");
+    const project = await projectOf(input.projectId, "bb_thread_prepare");
     let built;
     try {
-      built = buildThreadText(header, input);
+      const planned = input.saveAttachments === true && header.inAiScope ? plannedSavePaths(header, project) : undefined;
+      built = buildThreadText(header, input, planned);
     } catch (error) {
       throw bbRefusal(error, deps.log, "bb_thread_prepare");
     }
@@ -777,7 +807,7 @@ export function createBbRpc(deps: BbRpcDeps) {
       const project = await projectOf(input.projectId, "bb_thread_start");
       let saved: SaveResult[] | undefined;
       if (input.saveAttachments === true) {
-        const parts = header.attachments.filter((a) => !a.isInline).slice(0, START_SAVE_PARTS_MAX).map((a) => a.partId);
+        const parts = startSaveParts(header).map((a) => a.partId);
         saved = parts.length === 0 ? [] : await saveParts(header, parts, project, undefined, "keep_both", null);
       }
       const savedPaths = (saved ?? []).flatMap((result) => (result.outcome === "saved" ? [result.path] : []));
