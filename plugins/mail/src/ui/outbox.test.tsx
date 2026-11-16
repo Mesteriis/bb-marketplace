@@ -24,6 +24,17 @@ function row(state: OutboxState, overrides: Partial<OutboxRow> = {}): OutboxRow 
 }
 
 describe("outboxActions", () => {
+  it("labels the plugin's unsubscribe email and never offers Edit for it", () => {
+    expect(outboxActions({ state: "held", purpose: "unsubscribe" })).toEqual(["send_now"]);
+    expect(outboxActions({ state: "failed", purpose: "unsubscribe" })).toEqual(["retry", "dismiss"]);
+    expect(outboxActions({ state: "queued", purpose: "unsubscribe" })).toEqual(["undo"]);
+    expect(outboxRowHint({ state: "failed", purpose: "unsubscribe" })).toBe("Discard deletes the request.");
+    render(<OutboxSection rows={[row("failed", { purpose: "unsubscribe", subject: "unsubscribe" })]} onAction={vi.fn()} pending={new Set()} marker={() => null} />);
+    const item = screen.getByRole("listitem", { name: "Unsubscribe request" });
+    expect(within(item).queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(within(item).getByRole("button", { name: "Retry" })).toBeTruthy();
+  });
+
   it("offers exactly what the failure matrix allows per state", () => {
     expect(Object.fromEntries((["queued", "held", "sending", "sent", "appending", "failed", "unknown", "sent_no_copy", "done"] as const).map((s) => [s, outboxActions({ state: s })]))).toEqual({
       queued: ["undo"],

@@ -23,8 +23,18 @@ const ACTION_LABELS: Record<OutboxAction, string> = {
   retry_copy: "Retry copy",
 };
 
-/** What the owner may do with a row in its state. */
-export function outboxActions(row: Pick<OutboxRow, "state">): OutboxAction[] {
+/** What the owner may do with a row in its state; an unsubscribe request is never edited. */
+export function outboxActions(row: Pick<OutboxRow, "state"> & Partial<Pick<OutboxRow, "purpose">>): OutboxAction[] {
+  const actions = stateActions(row);
+  return row.purpose === "unsubscribe" ? actions.filter((action) => action !== "edit") : actions;
+}
+
+/** The row's title: its subject, or "Unsubscribe request" for the plugin's own unsubscribe email. */
+export function outboxRowTitle(row: Pick<OutboxRow, "subject"> & Partial<Pick<OutboxRow, "purpose">>): string {
+  return row.purpose === "unsubscribe" ? "Unsubscribe request" : subjectOrPlaceholder(row.subject);
+}
+
+function stateActions(row: Pick<OutboxRow, "state">): OutboxAction[] {
   switch (row.state) {
     case "queued":
       return ["undo"];
@@ -51,7 +61,8 @@ export function outboxActionLabel(row: Pick<OutboxRow, "state">, action: OutboxA
 }
 
 /** A line under a row that says what its buttons keep and delete, or null. */
-export function outboxRowHint(row: Pick<OutboxRow, "state">): string | null {
+export function outboxRowHint(row: Pick<OutboxRow, "state"> & Partial<Pick<OutboxRow, "purpose">>): string | null {
+  if (row.purpose === "unsubscribe") return row.state === "failed" || row.state === "unknown" ? "Discard deletes the request." : null;
   switch (row.state) {
     case "failed":
       return "Edit reopens the draft. Discard deletes the message and its draft.";
@@ -137,12 +148,12 @@ export function OutboxSection({ rows, onAction, pending, marker }: OutboxSection
           return (
             <li
               key={row.id}
-              aria-label={subjectOrPlaceholder(row.subject)}
+              aria-label={outboxRowTitle(row)}
               className="flex flex-col gap-1 px-3 py-2"
             >
               <div className="flex min-w-0 items-baseline gap-2">
                 <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                  {subjectOrPlaceholder(row.subject)}
+                  {outboxRowTitle(row)}
                 </span>
                 {row.origin === "agent" ? (
                   <span className="shrink-0 rounded-sm bg-secondary px-1 text-xs text-secondary-foreground">

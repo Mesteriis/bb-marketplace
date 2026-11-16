@@ -119,6 +119,20 @@ describe("matchShortcut", () => {
     expect(entries.find((entry) => entry.keys.join(" ") === "z")?.label).toBe("Undo the last action");
   });
 
+  it("b snoozes by the physical key (Cyrillic layout too); never with a modifier or while typing", () => {
+    expect(matchShortcut(key({ key: "b", code: "KeyB" }), false)).toEqual({ kind: "snooze" });
+    expect(matchShortcut(key({ key: "\u0438", code: "KeyB" }), false)).toEqual({ kind: "snooze" });
+    expect(matchShortcut(key({ key: "b", code: "KeyB", metaKey: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "B", code: "KeyB", shiftKey: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "b", code: "KeyB", repeat: true }), false)).toBeNull();
+    const input = document.createElement("input");
+    document.body.append(input);
+    expect(matchShortcut(key({ key: "b", code: "KeyB", target: input }), false)).toBeNull();
+    input.remove();
+    const entries = SHORTCUT_SHEET.flatMap((section) => section.entries);
+    expect(entries.find((entry) => entry.keys.join(" ") === "b")?.label).toBe("Snooze");
+  });
+
   it("the sheet lists t", () => {
     const entries = SHORTCUT_SHEET.flatMap((section) => section.entries);
     expect(entries.find((entry) => entry.keys.join(" ") === "t")?.label).toBe("Translate, or show the original");

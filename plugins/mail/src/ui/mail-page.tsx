@@ -18,7 +18,7 @@ import type {
   ThreadDetail,
   ThreadSummary,
 } from "../core/index.ts";
-import type { IdentityView } from "../core/model.ts";
+import type { IdentityView, UnsubscribeInfoView } from "../core/model.ts";
 import { archiveAllowedFrom, ROLE_NAMES, roleFolders } from "../core/actions.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -43,7 +43,9 @@ import {
   type MailView,
   type RoleName,
 } from "./folder-list.tsx";
+import { BlockDialog, type BlockCheck, type BlockChoice } from "./block-dialog.tsx";
 import { MoveDialog } from "./move-dialog.tsx";
+import { SnoozeMenu } from "./snooze-menu.tsx";
 import { OutboxSection, type OutboxAction } from "./outbox.tsx";
 import { messageToHand, ReadingPane, type BodyState, type ReadingTranslation } from "./reading-pane.tsx";
 import {
@@ -63,7 +65,15 @@ import {
   type GoTarget,
   type ShortcutCommand,
 } from "./shortcuts.ts";
-import { formatListDate, SearchResultList, ThreadList } from "./thread-list.tsx";
+import {
+  filterActive,
+  FilteredEmpty,
+  formatListDate,
+  QuickFilters,
+  SearchResultList,
+  ThreadList,
+  type ListFilter,
+} from "./thread-list.tsx";
 
 export { ALL_ACCOUNTS };
 
@@ -110,6 +120,20 @@ export interface ComposerState {
 }
 
 export type ComposeKind = "reply" | "reply_all" | "forward";
+
+/** Inbox triage on the page (slice 3e): unsubscribe, snooze and block. */
+export interface MailInboxPorts {
+  /** unsubscribe_info of a message of the open conversation (the newest), once loaded. */
+  unsubscribe: { messageId: string; info: UnsubscribeInfoView } | null;
+  /** Unsubscribe in the pane: the page opens its confirmation. */
+  onUnsubscribe: (message: MessageHeader) => void;
+  onArchiveList: (message: MessageHeader) => void;
+  /** Snooze the conversations' Inbox mail until `until` (UTC ISO). */
+  onSnooze: (threadIds: string[], until: string) => void;
+  onReturnNow: (threadId: string) => void;
+  loadBlockCheck: (messageId: string) => Promise<BlockCheck>;
+  onBlock: (messageId: string, choice: BlockChoice) => void;
+}
 
 export interface MailPageProps {
   /** null while the first load is in flight. */
@@ -197,6 +221,11 @@ export interface MailPageProps {
   focusRequest?: number;
   /** Translate in the reading pane (slice 3c); absent: no Translate. */
   translation?: ReadingTranslation;
+  /** The quick filters of the list shown (slice 3e); absent: no toggles. */
+  listFilter?: ListFilter;
+  onListFilter?: (next: ListFilter) => void;
+  /** Unsubscribe, snooze and block (slice 3e); absent: none of them. */
+  inbox?: MailInboxPorts;
 }
 
 function PageFrame({ children }: { children: ReactNode }) {
@@ -361,6 +390,8 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [moveTargets, setMoveTargets] = useState<string[] | null>(null);
+  const [snoozeTargets, setSnoozeTargets] = useState<string[] | null>(null);
+  const [blockMessage, setBlockMessage] = useState<string | null>(null);
   const [composerFocused, setComposerFocused] = useState(false);
   // A composer that closed while focused leaves no focus behind.
   const composerId = props.composer?.draft.id ?? null;
@@ -576,6 +607,12 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     const allFlagged = ids.every((id) => list.threads.find((t) => t.id === id)?.flagged === true);
     props.onThreadsAction(ids, allFlagged ? "unflag" : "flag");
   };
+  /** Snooze (b, the toolbar, the bar): Inbox mail only. */
+  const openSnooze = (ids: string[]) => {
+    if (ids.length === 0 || props.inbox === undefined || model.use !== "inbox" || props.actionPending) return;
+    rememberOpener();
+    setSnoozeTargets(ids);
+  };
   const openMove = (ids: string[]) => {
     if (ids.length === 0) return;
     destructiveGuard.ran();
@@ -643,6 +680,8 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       case "undo":
         props.onUndo?.();
         return;
+      case "snooze":
+        return openSnooze(targets());
       case "sheet":
         rememberOpener();
         setSheetOpen(true);
@@ -661,6 +700,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
 
   const onBarAction = (action: BarAction["action"]) => {
     if (action === "move_to") openMove([...selection]);
+    else if (action === "snooze") openSnooze([...selection]);
     else runAction([...selection], action);
   };
 
@@ -763,6 +803,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               }
             />
           ) : null}
+          {!searching && props.listFilter !== undefined && props.onListFilter !== undefined ? (
+            <QuickFilters filter={props.listFilter} onChange={props.onListFilter} />
+          ) : null}
           {model.use === "sent" && !searching ? (
             <OutboxSection
               rows={outboxShown}
@@ -841,6 +884,33 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               onEditDraft={props.onEditDraft}
               hideToolbar={docked && composerFocused}
               translation={props.translation}
+              inbox={
+                props.inbox === undefined
+                  ? undefined
+                  : {
+                      unsubscribe: (() => {
+                        const shown = reading.detail === null ? null : messageToHand(reading.detail.messages, reading.expandedIds);
+                        const loaded = props.inbox.unsubscribe;
+                        return loaded !== null && shown !== null && loaded.messageId === shown.id ? loaded.info : null;
+                      })(),
+                      onUnsubscribe: () => {
+                        const shown = reading.detail === null ? null : messageToHand(reading.detail.messages, reading.expandedIds);
+                        if (shown !== null) props.inbox?.onUnsubscribe(shown);
+                      },
+                      onArchiveList: () => {
+                        const shown = reading.detail === null ? null : messageToHand(reading.detail.messages, reading.expandedIds);
+                        if (shown !== null) props.inbox?.onArchiveList(shown);
+                      },
+                      onSnooze: () => openSnooze(reading.threadId !== null ? [reading.threadId] : []),
+                      onBlock: (message) => {
+                        rememberOpener();
+                        setBlockMessage(message.id);
+                      },
+                      onReturnNow: () => {
+                        if (reading.threadId !== null) props.inbox?.onReturnNow(reading.threadId);
+                      },
+                    }
+              }
             />
             {docked ? <div className="flex min-h-[24rem] flex-col px-4 pb-6">{composerView}</div> : null}
             </>
@@ -867,6 +937,36 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         onCloseAutoFocus={restoreFocus}
         onAfterCloseAutoFocus={afterClose}
       />
+      {props.inbox !== undefined ? (
+        <>
+          <SnoozeMenu
+            open={snoozeTargets !== null}
+            count={snoozeTargets?.length ?? 1}
+            onOpenChange={(open) => {
+              if (!open) setSnoozeTargets(null);
+            }}
+            onPick={(until) => {
+              const ids = snoozeTargets ?? [];
+              setSnoozeTargets(null);
+              destructiveGuard.ran();
+              props.inbox?.onSnooze(ids, until);
+            }}
+            onCloseAutoFocus={restoreFocus}
+            onAfterCloseAutoFocus={afterClose}
+          />
+          <BlockDialog
+            messageId={blockMessage}
+            load={props.inbox.loadBlockCheck}
+            onBlock={(messageId, choice) => {
+              setBlockMessage(null);
+              props.inbox?.onBlock(messageId, choice);
+            }}
+            onCancel={() => setBlockMessage(null)}
+            onCloseAutoFocus={restoreFocus}
+            onAfterCloseAutoFocus={afterClose}
+          />
+        </>
+      ) : null}
       <DetailsPanel
         details={props.details}
         onClose={props.onCloseDetails}
@@ -921,6 +1021,10 @@ function ListColumn(
   }
   if (list.loading && list.threads.length === 0) return <ListMessage text="Loading mail…" />;
   if (list.threads.length === 0) {
+    const filter = props.listFilter;
+    if (filter !== undefined && filterActive(filter)) {
+      return <FilteredEmpty filter={filter} onClear={() => props.onListFilter?.({})} />;
+    }
     const shown = props.unified ? status.accounts : props.account !== null ? [props.account] : [];
     // The banner above already shows lastError; the folder is simply empty.
     const clean = shown.every((a) => a.lastError === null);
