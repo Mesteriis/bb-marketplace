@@ -1141,8 +1141,14 @@ export interface MailStore {
   setFolderGrouping(accountId: string, path: string, grouping: boolean): void;
 
   listSavedSearches(): SavedSearchRow[];
-  /** Inserts (new id, at the end) or updates. "full" at SAVED_SEARCHES_MAX; "not_found" for an unknown id. */
-  saveSavedSearch(row: { id: string; name: string; query: string; accountId: string | null; nowIso: string }): "ok" | "full" | "not_found";
+  /**
+   * `id` null: inserts under `newId` at the end ("full" at
+   * SAVED_SEARCHES_MAX); else updates that row ("not_found" when unknown).
+   */
+  saveSavedSearch(
+    row: { id: string | null; name: string; query: string; accountId: string | null; nowIso: string },
+    newId: string,
+  ): { id: string } | "full" | "not_found";
   deleteSavedSearch(id: string): boolean;
   moveSavedSearch(id: string, position: number): boolean;
 

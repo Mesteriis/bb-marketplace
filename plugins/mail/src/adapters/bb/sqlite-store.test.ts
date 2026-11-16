@@ -15,6 +15,7 @@ import {
   type BbLinkRow,
   type NewRuleRun,
   type MailStore,
+  type SearchOptions,
   type NewProposal,
   type NewReminder,
   type NewTask,
@@ -22,6 +23,8 @@ import {
 } from "../../core/ports.ts";
 import { REMINDERS_LIVE_MAX, dueAt } from "../../core/reminders.ts";
 import { parseQuery } from "../../core/search.ts";
+import { fileKindOf } from "../../core/file-kinds.ts";
+import type { SearchCursor } from "../../core/model.ts";
 import { RULES_MAX, type Rule } from "../../core/mail-rules.ts";
 import { TRANSLATION_CACHE_ROWS } from "../../core/translate.ts";
 import type { UnsubscribeInfo } from "../../core/unsubscribe.ts";
@@ -3352,7 +3355,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(13);
+    expect(MIGRATIONS).toHaveLength(14);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -4000,7 +4003,7 @@ describe("slice-3f migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(13);
+    expect(MIGRATIONS).toHaveLength(14);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -4806,7 +4809,7 @@ describe("slice-3g migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(13);
+    expect(MIGRATIONS).toHaveLength(14);
     const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
     expect(runs).toEqual([
       { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
@@ -5340,5 +5343,613 @@ describe.each(storeKinds)("slice-3g store semantics (%s)", (_kind, make) => {
       s.purgeDaily(at3g(40 * DAY), []);
       expect(s.conversationProject("acc_1", m1.threadId)).toBeNull();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 3h
+// ---------------------------------------------------------------------------
+
+const NOW_3H = new Date("2026-11-16T12:00:00.000Z");
+const q3h = (raw: string) => parseQuery(raw, NOW_3H);
+const hitIds = (target: MailStore, raw: string, opts: SearchOptions = {}, accountId: string | null = null) =>
+  target.search(q3h(raw), accountId, 50, opts).map((hit) => hit.id);
+
+function seedFolders(target: MailStore, accountId = "acc_1"): void {
+  target.saveFolders(accountId, [
+    remoteFolder(INBOX, "inbox"),
+    remoteFolder("Trash", "trash"),
+    remoteFolder("Junk", "junk"),
+    remoteFolder("Archive", "archive"),
+    remoteFolder("Work"),
+    remoteFolder("Work/Sub"),
+    remoteFolder("Work2"),
+  ]);
+}
+
+describe("slice-3h migration (SQLite)", () => {
+  it("element 13 on a 3g database adds the columns, backfills kinds per CASE arm and indexes attachment text", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 13).forEach((s) => old.exec(s)))();
+    const legacy = createSqliteStore(old);
+    legacy.saveAccount(makeStoredAccount());
+    const arms: [string, string | null, string][] = [
+      ["application/pdf", "a.bin", "pdf"],
+      ["application/octet-stream", "scan.PDF", "pdf"],
+      ["image/png", "a.png", "image"],
+      ["text/calendar", "invite", "calendar"],
+      ["application/octet-stream", "x.ics", "calendar"],
+      ["text/plain", "a.txt", "text"],
+      ["application/json", "a.json", "text"],
+      ["application/zip", "a.zip", "archive"],
+      ["application/vnd.oasis.opendocument.text", "a.odt", "document"],
+      ["application/msword", "a.doc", "document"],
+      ["application/octet-stream", null, "other"],
+    ];
+    legacy.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, {
+        attachments: arms.map(([mimeType, filename], i) => ({ partId: String(i + 2), filename, mimeType, size: 10, isInline: false })),
+      }),
+    ]);
+
+    old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
+
+    expect(MIGRATIONS).toHaveLength(14);
+    const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
+      part_id: string;
+      kind: string;
+    }[];
+    expect(kinds.map((row) => row.kind)).toEqual(arms.map(([, , kind]) => kind));
+    // fileKindOf and the CASE agree on every arm.
+    for (const [mimeType, filename, kind] of arms) expect(fileKindOf(mimeType, filename)).toBe(kind);
+
+    const columns = (table: string) => (old.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+    expect(columns("sync_state")).toEqual(expect.arrayContaining(["history_since", "history_checked_at"]));
+    expect(columns("messages")).toEqual(expect.arrayContaining(["kept", "kept_at", "gm_labels"]));
+    expect(columns("attachments")).toContain("kind");
+    expect(columns("folders")).toContain("subscribed");
+    const tables = ["attachment_text", "saved_searches", "folder_prefs"];
+    const objects = old
+      .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`)
+      .all(...tables) as { name: string; sql: string }[];
+    expect(objects.map((o) => o.name).sort()).toEqual([...tables].sort());
+    for (const object of objects) expect(object.sql).not.toMatch(/REFERENCES/i);
+    const indexes = (old.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]).map((r) => r.name);
+    expect(indexes).toEqual(expect.arrayContaining(["messages_kept", "messages_from", "attachments_kind"]));
+
+    // New attachments get their kind from the same CASE (trigger).
+    const migrated = createSqliteStore(old);
+    migrated.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(2, { attachments: [{ partId: "2", filename: "r.pdf", mimeType: "application/octet-stream", size: 5, isInline: false }] }),
+    ]);
+    expect(migrated.getMessage(idOf(migrated, 2))!.attachments).toEqual([expect.objectContaining({ partId: "2", kind: "pdf" })]);
+
+    // The trigram index follows inserts, updates and deletes.
+    const id = idOf(migrated, 1);
+    const fts = (phrase: string) =>
+      (old.prepare("SELECT rowid FROM attachment_text_fts WHERE attachment_text_fts MATCH ?").all(`"${phrase}"`) as unknown[]).length;
+    migrated.insertAttachmentText({ messageId: id, partId: "2", state: "indexed", reason: null, body: "Invented ledger INV-2041", extractedAt: T0 });
+    expect(fts("ledger")).toBe(1);
+    old.prepare("UPDATE attachment_text SET body = 'Invented quarterly notes'").run();
+    expect(fts("ledger")).toBe(0);
+    expect(fts("quarterly")).toBe(1);
+    old.prepare("DELETE FROM attachment_text").run();
+    expect(fts("quarterly")).toBe(0);
+  });
+});
+
+describe("slice-3h search (SQLite)", () => {
+  beforeEach(() => seedFolders(store));
+
+  it("matches each condition with bound parameters", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, {
+        to: [{ name: "Ann", address: "ann@example.org" }],
+        cc: [{ name: null, address: "carl@example.org" }],
+        size: 5000,
+        attachments: [{ partId: "2", filename: "Invoice.PDF", mimeType: "application/pdf", size: 10, isInline: false }],
+        flagged: true,
+      }),
+      makeFetchedMessage(2, { from: { name: null, address: "other@example.org" }, size: 50, seen: true }),
+    ]);
+    const one = idOf(store, 1);
+    const two = idOf(store, 2);
+    expect(hitIds(store, "to:ann@example.org")).toEqual([one]);
+    expect(hitIds(store, "cc:carl")).toEqual([one]);
+    expect(hitIds(store, "filename:pdf")).toEqual([one]);
+    expect(hitIds(store, "filename:invoice.p")).toEqual([one]);
+    expect(hitIds(store, "has:attachment")).toEqual([one]);
+    expect(hitIds(store, "-has:attachment")).toEqual([two]);
+    expect(hitIds(store, "larger:1K")).toEqual([one]);
+    expect(hitIds(store, "smaller:100")).toEqual([two]);
+    expect(hitIds(store, "is:starred")).toEqual([one]);
+    expect(hitIds(store, "is:read")).toEqual([two]);
+    // A negated from: with a NULL name still matches (NULL-safe NOT).
+    expect(hitIds(store, "-from:sender@example.org")).toEqual([two]);
+    expect(hitIds(store, "account:owner@example.org")).toHaveLength(2);
+    expect(hitIds(store, "account:nobody@example.org")).toEqual([]);
+    expect(hitIds(store, "in:inbox -in:inbox")).toEqual([]);
+  });
+
+  it("finds a Trash copy with in:trash before the dedup picks the Inbox copy", () => {
+    const shared = { messageId: "shared@example.org", size: 300 };
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, shared)]);
+    store.upsertMessages("acc_1", "Trash", [makeFetchedMessage(7, shared)]);
+    expect(hitIds(store, "Invented")).toEqual([idOf(store, 1)]);
+    expect(hitIds(store, "in:trash")).toEqual([idIn(store, "Trash", 7)]);
+    expect(hitIds(store, "in:work in:trash")).toEqual([idIn(store, "Trash", 7)]);
+  });
+
+  it("matches label: by Gmail labels of any copy and by folder name elsewhere", () => {
+    const shared = { messageId: "lab@example.org", gmMsgId: "17", size: 10 };
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("[Gmail]/All Mail", "all"), remoteFolder("Work")]);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, shared)]);
+    store.upsertMessages("acc_1", "[Gmail]/All Mail", [makeFetchedMessage(1, shared)]);
+    store.upsertMessages("acc_1", "Work", [makeFetchedMessage(2)]);
+    store.setGmLabels("acc_1", "[Gmail]/All Mail", [{ uid: 1, labels: ["\\Inbox", "Receipts"] }]);
+    expect(hitIds(store, "label:receipts")).toEqual([idOf(store, 1)]);
+    expect(hitIds(store, "label:work")).toEqual([idIn(store, "Work", 2)]);
+    // The Inbox copy shows the All Mail copy's owner labels.
+    expect(store.getMessage(idOf(store, 1))!.labels).toEqual(["Receipts"]);
+    expect(store.gmLabels([idOf(store, 1)]).get(idOf(store, 1))).toEqual(["\\Inbox", "Receipts"]);
+    expect(store.accountLabels("acc_1")).toEqual(["\\Inbox", "Receipts"]);
+  });
+
+  it("pages across equal and NULL dates without gaps or repeats", () => {
+    const dates = [null, null, "2026-11-10T09:00:00.000Z", "2026-11-10T09:00:00.000Z", "2026-11-10T09:00:00.000Z", "2026-11-09T09:00:00.000Z"];
+    store.upsertMessages(
+      "acc_1",
+      INBOX,
+      dates.map((date, i) => makeFetchedMessage(i + 1, { date })),
+    );
+    const all = store.searchPage(q3h("Invented"), null, 50).hits.map((h) => h.id);
+    expect(all).toHaveLength(6);
+    const seen: string[] = [];
+    let cursor: SearchCursor | null = null;
+    for (let i = 0; i < 6; i++) {
+      const page: ReturnType<MailStore["searchPage"]> = store.searchPage(q3h("Invented"), null, 2, { cursor });
+      seen.push(...page.hits.map((h) => h.id));
+      cursor = page.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(seen).toEqual(all);
+  });
+
+  it("joins attachment text only with attachments: true, scoped or not, with an excerpt", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { attachments: [{ partId: "2", filename: "ledger.txt", mimeType: "text/plain", size: 10, isInline: false }] }),
+    ]);
+    const id = idOf(store, 1);
+    store.insertAttachmentText({ messageId: id, partId: "2", state: "indexed", reason: null, body: "Quarterly zebracorn totals", extractedAt: T0 });
+    expect(hitIds(store, "zebracorn")).toEqual([]);
+    expect(hitIds(store, "zebracorn", { scoped: true })).toEqual([]);
+    expect(store.searchPage(q3h("zebracorn"), null, 50).attachmentMatches).toEqual([]);
+    expect(hitIds(store, "zebracorn", { attachments: true })).toEqual([id]);
+    expect(store.searchPage(q3h("zebracorn"), null, 50, { attachments: true }).attachmentMatches).toEqual([
+      { messageId: id, filename: "ledger.txt", excerpt: "Quarterly zebracorn totals" },
+    ]);
+  });
+});
+
+describe("slice-3h kept rows (SQLite)", () => {
+  it("keeps job rows, never downgrades, and promotes on open, flag, move and snooze", () => {
+    seedFolders(store);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)], { kept: "search" });
+    expect(store.getMessage(idOf(store, 1))!.kept).toBeNull();
+    expect(store.getMessage(idOf(store, 2))!.kept).toBe("search");
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(2), makeFetchedMessage(3)], { kept: "history" });
+    expect(store.getMessage(idOf(store, 2))!.kept).toBe("history");
+    expect(store.getMessage(idOf(store, 3))!.kept).toBe("history");
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(4)], { kept: "search" });
+    store.markOpened(idOf(store, 4));
+    expect(store.getMessage(idOf(store, 4))!.kept).toBe("opened");
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(4)], { kept: "history" });
+    expect(store.getMessage(idOf(store, 4))!.kept).toBe("opened");
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(5), makeFetchedMessage(6), makeFetchedMessage(7)], { kept: "search" });
+    store.setDesired([idOf(store, 5)], { flagged: true });
+    store.queueMove([idOf(store, 6)], "Archive");
+    store.createSnoozes([{ messageId: idOf(store, 7), accountId: "acc_1", returnTo: INBOX, dueAt: T0, state: "snoozed" }], T0);
+    for (const uid of [5, 6, 7]) expect(store.getMessage(idOf(store, uid))!.kept, String(uid)).toBe("opened");
+    expect(store.promoteKept([idOf(store, 3)])).toEqual([idOf(store, 3)]);
+  });
+
+  it("expires old server hits with their attachments and attachment text", () => {
+    store.upsertMessages(
+      "acc_1",
+      INBOX,
+      [makeFetchedMessage(1, { attachments: [{ partId: "2", filename: "a.txt", mimeType: "text/plain", size: 5, isInline: false }] })],
+      { kept: "search" },
+    );
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(2)], { kept: "history" });
+    const id = idOf(store, 1);
+    store.insertAttachmentText({ messageId: id, partId: "2", state: "indexed", reason: null, body: "Invented", extractedAt: T0 });
+    const later = new Date(Date.now() + 15 * DAY).toISOString();
+    expect(store.expireSearchRows(new Date().toISOString(), 14)).toEqual({ removed: 0, accounts: [] });
+    expect(store.expireSearchRows(later, 14)).toEqual({ removed: 1, accounts: ["acc_1"] });
+    expect(store.getMessage(id)).toBeNull();
+    expect(count(db, "attachments")).toBe(0);
+    expect(count(db, "attachment_text")).toBe(0);
+    expect(store.getMessage(idOf(store, 2))).not.toBeNull();
+  });
+
+  it("forgets loaded history before the window, not opened rows", () => {
+    store.saveSyncState("acc_1", INBOX, { uidValidity: 7, lastUid: 10, syncedSince: "2026-10-17T00:00:00.000Z" });
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(9, { date: "2026-11-01T00:00:00.000Z" })]);
+    store.upsertMessages(
+      "acc_1",
+      INBOX,
+      [makeFetchedMessage(1, { date: "2026-09-01T00:00:00.000Z" }), makeFetchedMessage(2, { date: "2026-09-02T00:00:00.000Z" })],
+      { kept: "history" },
+    );
+    store.markOpened(idOf(store, 2));
+    store.setHistorySince("acc_1", INBOX, "2026-09-01T00:00:00.000Z");
+    store.historyChecked("acc_1", INBOX, T0);
+    expect(store.historyState("acc_1", INBOX)).toEqual({ historySince: "2026-09-01T00:00:00.000Z", historyCheckedAt: T0 });
+    expect(store.historyForgetCount("acc_1", INBOX)).toBe(1);
+    expect(store.historyForget("acc_1", INBOX)).toBe(1);
+    expect(store.historyState("acc_1", INBOX)!.historySince).toBeNull();
+    expect(store.localFolderIndex("acc_1", INBOX, EPOCH).map((e) => e.uid)).toEqual([2, 9]);
+    expect(store.historyState("acc_1", "Nowhere")).toBeNull();
+  });
+});
+
+describe("slice-3h folders (SQLite)", () => {
+  /** Every column a folder path can live in: the names folder, path, *_folder and return_to, plus folders_json. */
+  function pathColumns(target: Database.Database): string[] {
+    const tables = (target.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((r) => r.name);
+    return tables.flatMap((table) =>
+      (target.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[])
+        .map((c) => c.name)
+        .filter((name) => name === "folder" || name === "path" || name.endsWith("_folder") || name === "return_to" || name === "folders_json")
+        .map((name) => `${table}.${name}`),
+    );
+  }
+
+  it("re-homes every path column, children included, never a sibling prefix (schema scan)", () => {
+    // Fails when a new column can hold a folder path and rehomeFolder does not cover it.
+    expect(pathColumns(db).sort()).toEqual(
+      [
+        "accounts.snooze_folder",
+        "ai_scope_accounts.folders_json",
+        "compose_drafts.server_folder",
+        "folder_prefs.path",
+        "folders.path",
+        "messages.folder",
+        "snoozes.return_to",
+        "sync_state.folder",
+      ].sort(),
+    );
+    seedFolders(store);
+    for (const path of ["Work", "Work/Sub", "Work2"]) {
+      store.upsertMessages("acc_1", path, [makeFetchedMessage(1, { messageId: `${path}@example.org` })]);
+      store.saveSyncState("acc_1", path, { uidValidity: 1, lastUid: 1, syncedSince: EPOCH });
+      store.setFolderGrouping("acc_1", path, false);
+    }
+    store.setSnoozeFolder("acc_1", "Work/Sub");
+    store.createSnoozes([{ messageId: idIn(store, "Work2", 1), accountId: "acc_1", returnTo: "Work", dueAt: T0, state: "snoozed" }], T0);
+    store.createDraft(newDraft());
+    db.prepare("UPDATE compose_drafts SET server_folder = 'Work/Sub'").run();
+    store.putAiScope([{ accountId: "acc_1", scope: { mode: "folders", folders: [INBOX, "Work", "Work/Sub", "Work2"] } }], [], T0);
+
+    store.rehomeFolder("acc_1", "Work", "Jobs", "/");
+
+    const values = (column: string) => {
+      const [table, name] = column.split(".");
+      return (db.prepare(`SELECT ${name} AS v FROM ${table}`).all() as { v: string | null }[]).map((r) => r.v ?? "");
+    };
+    for (const column of pathColumns(db)) {
+      for (const value of values(column)) {
+        const paths = column.endsWith("folders_json") ? (JSON.parse(value || "[]") as string[]) : [value];
+        for (const path of paths) expect(path === "Work" || path.startsWith("Work/"), `${column} ${path}`).toBe(false);
+      }
+    }
+    expect(store.listFolders("acc_1").map((f) => [f.path, f.name])).toEqual(
+      expect.arrayContaining([["Jobs", "Jobs"], ["Jobs/Sub", "Sub"], ["Work2", "Work2"]]),
+    );
+    expect(store.loadAiScope().accounts.get("acc_1")).toEqual({ mode: "folders", folders: [INBOX, "Jobs", "Jobs/Sub", "Work2"] });
+    expect(store.getAccount("acc_1")!.snoozeFolder).toBe("Jobs/Sub");
+    expect(store.listSnoozes("acc_1", { limit: 10 })[0]!.returnTo).toBe("Jobs");
+    expect(store.folderGrouping("acc_1", "Jobs/Sub")).toBe(false);
+    expect(store.getSyncState("acc_1", "Jobs")).not.toBeNull();
+    expect(store.localFolderIndex("acc_1", "Work2", EPOCH)).toHaveLength(1);
+  });
+
+  it("drops a deleted folder with its rows, prefs and AI scope entry", () => {
+    seedFolders(store);
+    store.upsertMessages("acc_1", "Work2", [makeFetchedMessage(1)]);
+    store.setFolderGrouping("acc_1", "Work2", false);
+    store.putAiScope([{ accountId: "acc_1", scope: { mode: "folders", folders: [INBOX, "Work2"] } }], [], T0);
+    store.dropFolder("acc_1", "Work2");
+    expect(store.listFolders("acc_1").map((f) => f.path)).not.toContain("Work2");
+    expect(store.localFolderIndex("acc_1", "Work2", EPOCH)).toEqual([]);
+    expect(store.folderGrouping("acc_1", "Work2")).toBe(true);
+    expect(store.loadAiScope().accounts.get("acc_1")).toEqual({ mode: "folders", folders: [INBOX] });
+  });
+
+  it("saveFolders stores subscribed and drops removed paths from folders_json", () => {
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Old", null, { subscribed: false })]);
+    expect(store.listFolders("acc_1").find((f) => f.path === "Old")!.subscribed).toBe(false);
+    store.putAiScope([{ accountId: "acc_1", scope: { mode: "folders", folders: [INBOX, "Old"] } }], [], T0);
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox")]);
+    expect(store.loadAiScope().accounts.get("acc_1")).toEqual({ mode: "folders", folders: [INBOX] });
+  });
+
+  it("counts pending moves out of and into a folder", () => {
+    seedFolders(store);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)]);
+    store.queueMove([idOf(store, 1)], "Work");
+    expect(store.movePendingCount("acc_1", "Work")).toBe(1);
+    expect(store.movePendingCount("acc_1", INBOX)).toBe(1);
+    expect(store.movePendingCount("acc_1", "Work2")).toBe(0);
+  });
+});
+
+describe("slice-3h saved searches, prefs and attachment text (SQLite)", () => {
+  it("saves, updates, moves and deletes saved searches, at most 50", () => {
+    const save = (id: string | null, name: string, newId: string) =>
+      store.saveSavedSearch({ id, name, query: "from:a@example.org", accountId: null, nowIso: T0 }, newId);
+    expect(save(null, "A", "s1")).toEqual({ id: "s1" });
+    expect(save(null, "B", "s2")).toEqual({ id: "s2" });
+    expect(save("s1", "A2", "unused")).toEqual({ id: "s1" });
+    expect(save("missing", "X", "unused")).toBe("not_found");
+    expect(store.moveSavedSearch("s2", 0)).toBe(true);
+    expect(store.listSavedSearches().map((s) => [s.id, s.name, s.position])).toEqual([
+      ["s2", "B", 0],
+      ["s1", "A2", 1],
+    ]);
+    expect(store.deleteSavedSearch("s2")).toBe(true);
+    expect(store.listSavedSearches().map((s) => [s.id, s.position])).toEqual([["s1", 0]]);
+    for (let i = 0; i < 49; i++) save(null, `N${i}`, `n${i}`);
+    expect(save(null, "Full", "z")).toBe("full");
+    store.deleteAccount("acc_1");
+    expect(store.listSavedSearches()).toHaveLength(50);
+  });
+
+  it("deletes the account's saved searches, prefs and attachment text with it", () => {
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    store.saveSavedSearch({ id: null, name: "Mine", query: "x", accountId: "acc_1", nowIso: T0 }, "s1");
+    store.setFolderGrouping("acc_1", INBOX, false);
+    store.insertAttachmentText({ messageId: idOf(store, 1), partId: "2", state: "failed", reason: "timeout", body: null, extractedAt: T0 });
+    store.deleteAccount("acc_1");
+    expect(count(db, "saved_searches")).toBe(0);
+    expect(count(db, "folder_prefs")).toBe(0);
+    expect(count(db, "attachment_text")).toBe(0);
+  });
+
+  it("lists candidates, reports status with the total characters, retries and clears", () => {
+    seedFolders(store);
+    const attachment = (partId: string, filename: string, mimeType: string) => ({ partId, filename, mimeType, size: 10, isInline: false });
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { attachments: [attachment("2", "a.txt", "text/plain"), attachment("3", "b.pdf", "application/pdf"), attachment("4", "c.png", "image/png")] }),
+    ]);
+    store.upsertMessages("acc_1", "Junk", [makeFetchedMessage(2, { attachments: [attachment("2", "s.txt", "text/plain")] })]);
+    const id = idOf(store, 1);
+    expect(store.attachmentTextCandidates(10).filter((c) => c.messageId === id).map((c) => [c.partId, c.kind])).toEqual([
+      ["2", "text"],
+      ["3", "pdf"],
+    ]);
+    expect(store.attachmentTextCandidates(10).find((c) => c.folderUse === "junk")).toBeDefined();
+    store.insertAttachmentText({ messageId: id, partId: "2", state: "indexed", reason: null, body: "12345", extractedAt: T0 });
+    store.insertAttachmentText({ messageId: id, partId: "3", state: "failed", reason: "timeout", body: "ignored", extractedAt: T0 });
+    expect(store.attachmentTextStatus()).toEqual({ indexed: 1, skipped: 0, failed: 1, pending: 0, totalChars: 5 });
+    expect(store.retryAttachmentText()).toBe(1);
+    expect(store.attachmentTextStatus()).toMatchObject({ failed: 0, pending: 1 });
+    expect(store.clearAttachmentText()).toBe(1);
+    expect(store.attachmentTextStatus()).toEqual({ indexed: 0, skipped: 0, failed: 0, pending: 2, totalChars: 0 });
+  });
+
+  it("keeps a folder grouping preference, '*' for All accounts", () => {
+    expect(store.folderGrouping("acc_1", INBOX)).toBe(true);
+    store.setFolderGrouping("*", "inbox", false);
+    expect(store.folderGrouping("*", "inbox")).toBe(false);
+    store.setFolderGrouping("*", "inbox", true);
+    expect(store.folderGrouping("*", "inbox")).toBe(true);
+  });
+});
+
+describe("slice-3h files, sender card, related and message lists (SQLite)", () => {
+  const pdf = (partId = "2", filename = "plan.pdf") => ({ partId, filename, mimeType: "application/pdf", size: 10, isInline: false });
+
+  it("lists files once per message copy and part, without Spam and Trash unless asked, paging by keyset", () => {
+    seedFolders(store);
+    const shared = { messageId: "f@example.org", size: 77, attachments: [pdf()] };
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, shared), makeFetchedMessage(2, { date: null, attachments: [pdf("2", "n.pdf")] })]);
+    store.upsertMessages("acc_1", "Archive", [makeFetchedMessage(1, shared)]);
+    store.upsertMessages("acc_1", "Junk", [makeFetchedMessage(3, { attachments: [pdf("2", "spam.pdf")] })]);
+    store.upsertMessages("acc_1", "Work", [
+      makeFetchedMessage(4, { date: "2026-11-01T00:00:00.000Z", attachments: [pdf("2", "a.pdf"), pdf("3", "b.pdf"), { ...pdf("4", "i.png"), mimeType: "image/png", isInline: true }] }),
+    ]);
+    const all = store.filesList({}, null, 100).files;
+    expect(all.map((f) => f.filename)).toEqual(["n.pdf", "plan.pdf", "a.pdf", "b.pdf"]);
+    expect(all[1]!.messageId).toBe(idOf(store, 1));
+    expect(store.filesList({ includeJunk: true }, null, 100).files.map((f) => f.filename)).toContain("spam.pdf");
+    expect(store.filesList({ name: "PLAN" }, null, 100).files.map((f) => f.filename)).toEqual(["plan.pdf"]);
+    expect(store.filesList({ kind: "image" }, null, 100).files).toEqual([]);
+    const paged: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: ReturnType<MailStore["filesList"]> = store.filesList({}, cursor, 1);
+      paged.push(...page.files.map((f) => f.filename ?? ""));
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    expect(paged).toEqual(["n.pdf", "plan.pdf", "a.pdf", "b.pdf"]);
+  });
+
+  it("builds the sender card counts by equality on From, outside Spam and Trash", () => {
+    seedFolders(store);
+    const boss = { name: "Invented Boss", address: "Boss@Example.org" };
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { from: boss, date: "2026-11-01T00:00:00.000Z", attachments: [pdf()] }),
+      makeFetchedMessage(2, { from: { ...boss, address: "boss@example.org" }, date: "2026-11-05T00:00:00.000Z" }),
+      makeFetchedMessage(3, { to: [{ name: null, address: "boss@example.org" }] }),
+    ]);
+    store.upsertMessages("acc_1", "Trash", [makeFetchedMessage(4, { from: boss })]);
+    store.assignThreads("acc_1", new Map());
+    const card = store.senderStats("boss@example.org", null);
+    expect(card).toMatchObject({
+      name: "Invented Boss",
+      fromCount: 2,
+      toCount: 1,
+      toCapped: false,
+      firstDate: "2026-11-01T00:00:00.000Z",
+      lastDate: "2026-11-05T00:00:00.000Z",
+    });
+    expect(card.conversations).toHaveLength(2);
+    expect(card.files.map((f) => f.filename)).toEqual(["plan.pdf"]);
+    expect(store.senderStats("boss@example.org", "acc_other").fromCount).toBe(0);
+  });
+
+  it("finds related candidates by term, participant and reference, outside the open conversation", () => {
+    seedFolders(store);
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { subject: "Ledger review", from: { name: null, address: "ann@example.org" }, references: ["root@example.org"] }),
+      makeFetchedMessage(2, { subject: "Other ledger notes", from: { name: null, address: "zed@example.org" } }),
+      makeFetchedMessage(3, { subject: "Lunch", from: { name: null, address: "ann@example.org" } }),
+      makeFetchedMessage(4, { subject: "Root", messageId: "root@example.org", from: { name: null, address: "x@example.org" } }),
+      makeFetchedMessage(5, { subject: "Unrelated", from: { name: null, address: "y@example.org" } }),
+    ]);
+    store.upsertMessages("acc_1", "Junk", [makeFetchedMessage(6, { subject: "ledger spam" })]);
+    store.assignThreads("acc_1", new Map());
+    const byId = new Map(store.relatedCandidates(idOf(store, 1), ["ledger"]).map((c) => [c.messageId, c]));
+    expect(byId.get(idOf(store, 2))).toMatchObject({ terms: ["ledger"], participants: 0, reference: false });
+    expect(byId.get(idOf(store, 3))).toMatchObject({ terms: [], participants: 1 });
+    expect(byId.get(idOf(store, 4))).toMatchObject({ reference: true });
+    expect(byId.has(idOf(store, 5))).toBe(false);
+    expect(byId.has(idOf(store, 1))).toBe(false);
+    expect(byId.has(idIn(store, "Junk", 6))).toBe(false);
+    expect(store.relatedCandidates("missing", ["ledger"])).toEqual([]);
+  });
+
+  it("lists one row per message of a folder and of a role, paging across NULL dates", () => {
+    seedFolders(store);
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { date: null }),
+      makeFetchedMessage(2, { date: "2026-11-10T00:00:00.000Z" }),
+      makeFetchedMessage(3, { date: "2026-11-10T00:00:00.000Z", seen: true }),
+    ]);
+    const all = store.listMessages("acc_1", INBOX, null, 10).messages.map((m) => m.id);
+    expect(all).toEqual([idOf(store, 1), idOf(store, 3), idOf(store, 2)]);
+    const paged: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: ReturnType<MailStore["listMessages"]> = store.listMessages("acc_1", INBOX, cursor, 1);
+      paged.push(...page.messages.map((m) => m.id));
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    expect(paged).toEqual(all);
+    expect(store.listMessages("acc_1", INBOX, null, 10, { unread: true }).messages).toHaveLength(2);
+    expect(store.listMessagesAll("inbox", null, 10).messages).toHaveLength(3);
+    expect(store.listMessagesAll("all", null, 10).messages).toEqual([]);
+    expect(store.summaries([idOf(store, 2), "missing"]).map((m) => m.id)).toEqual([idOf(store, 2)]);
+  });
+
+  it(
+    "pages search, files, sender card, related candidates and the message list fast at 20 000 messages (each timed alone)",
+    () => {
+      seedFolders(store);
+      const messages = Array.from({ length: 20_000 }, (_, i) =>
+        makeFetchedMessage(i + 1, {
+          date: new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString(),
+          from: { name: null, address: `sender${i % 50}@example.org` },
+          subject: `Invented ledger ${i % 97}`,
+          attachments: i % 10 === 0 ? [pdf("2", `f${i}.pdf`)] : [],
+        }),
+      );
+      store.transaction(() => store.upsertMessages("acc_1", INBOX, messages));
+      const one = idOf(store, 1);
+      const search = timeOne(() => store.searchPage(q3h("ledger has:attachment -is:starred"), null, 50));
+      const files = timeOne(() => store.filesList({ kind: "pdf" }, null, 100));
+      const card = timeOne(() => store.senderStats("sender7@example.org", null));
+      const related = timeOne(() => store.relatedCandidates(one, ["ledger", "invented"]));
+      const list = timeOne(() => store.listMessages("acc_1", INBOX, null, 100));
+      expect(search.value.hits).toHaveLength(50);
+      expect(files.value.files).toHaveLength(100);
+      expect(card.value.fromCount).toBe(400);
+      expect(related.value.length).toBeLessThanOrEqual(200);
+      expect(list.value.messages).toHaveLength(100);
+      for (const [name, entry] of Object.entries({ search, files, card, related, list })) {
+        expect(entry.ms, name).toBeLessThan(PAGE_MS);
+      }
+    },
+    SEEDING_TIMEOUT_MS,
+  );
+});
+
+describe.each(storeKinds)("slice-3h store semantics (%s)", (_kind, make) => {
+  let s: MailStore;
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    seedFolders(s);
+  });
+
+  it("applies conditions before the dedup, ORs in:, and negates NULL-safely", () => {
+    const shared = {
+      messageId: "shared@example.org",
+      size: 300,
+      attachments: [{ partId: "2", filename: "a.pdf", mimeType: "application/pdf", size: 1, isInline: false }],
+    };
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, shared),
+      makeFetchedMessage(2, { from: { name: null, address: "other@example.org" } }),
+    ]);
+    s.upsertMessages("acc_1", "Trash", [makeFetchedMessage(7, shared)]);
+    expect(hitIds(s, "in:trash")).toEqual([idIn(s, "Trash", 7)]);
+    expect(hitIds(s, "in:trash in:Work")).toEqual([idIn(s, "Trash", 7)]);
+    expect(hitIds(s, "filename:pdf")).toEqual([idOf(s, 1)]);
+    expect(hitIds(s, "-has:attachment")).toEqual([idOf(s, 2)]);
+    expect(hitIds(s, "-from:sender@example.org")).toEqual([idOf(s, 2)]);
+  });
+
+  it("joins attachment text only on request and pages with a cursor", () => {
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { attachments: [{ partId: "2", filename: "l.txt", mimeType: "text/plain", size: 1, isInline: false }] }),
+      makeFetchedMessage(2, { date: "2026-11-09T00:00:00.000Z" }),
+    ]);
+    s.insertAttachmentText({ messageId: idOf(s, 1), partId: "2", state: "indexed", reason: null, body: "Invented zebracorn", extractedAt: T0 });
+    expect(hitIds(s, "zebracorn")).toEqual([]);
+    expect(s.searchPage(q3h("zebracorn"), null, 5, { attachments: true }).attachmentMatches).toEqual([
+      { messageId: idOf(s, 1), filename: "l.txt", excerpt: "Invented zebracorn" },
+    ]);
+    const first = s.searchPage(q3h("Invented"), null, 1);
+    expect(first.hits.map((h) => h.id)).toEqual([idOf(s, 1)]);
+    expect(s.searchPage(q3h("Invented"), null, 1, { cursor: first.nextCursor }).hits.map((h) => h.id)).toEqual([idOf(s, 2)]);
+  });
+
+  it("keeps job rows without downgrading and promotes what the owner touches", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2), makeFetchedMessage(3)], { kept: "search" });
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(2)], { kept: "history" });
+    expect([1, 2, 3].map((uid) => s.getMessage(idOf(s, uid))!.kept)).toEqual([null, "history", "search"]);
+    s.markOpened(idOf(s, 3));
+    expect(s.getMessage(idOf(s, 3))!.kept).toBe("opened");
+    expect(s.expireSearchRows(new Date(Date.now() + 30 * DAY).toISOString(), 14)).toEqual({ removed: 0, accounts: [] });
+  });
+
+  it("re-homes a rename, keeps prefs and saved searches, and drops a deleted folder", () => {
+    s.upsertMessages("acc_1", "Work/Sub", [makeFetchedMessage(1)]);
+    s.setFolderGrouping("acc_1", "Work", false);
+    s.putAiScope([{ accountId: "acc_1", scope: { mode: "folders", folders: ["Work", "Work/Sub", "Work2"] } }], [], T0);
+    s.rehomeFolder("acc_1", "Work", "Jobs", "/");
+    expect(s.localFolderIndex("acc_1", "Jobs/Sub", EPOCH)).toHaveLength(1);
+    expect(s.folderGrouping("acc_1", "Jobs")).toBe(false);
+    expect(s.loadAiScope().accounts.get("acc_1")).toEqual({ mode: "folders", folders: ["Jobs", "Jobs/Sub", "Work2"] });
+    expect(s.listFolders("acc_1").find((f) => f.path === "Jobs")?.name).toBe("Jobs");
+    s.dropFolder("acc_1", "Work2");
+    expect(s.loadAiScope().accounts.get("acc_1")).toEqual({ mode: "folders", folders: ["Jobs", "Jobs/Sub"] });
+    expect(s.saveSavedSearch({ id: null, name: "A", query: "x", accountId: null, nowIso: T0 }, "s1")).toEqual({ id: "s1" });
+    expect(s.listSavedSearches().map((row) => row.position)).toEqual([0]);
+  });
+
+  it("stores Gmail labels and shows owner labels on every copy", () => {
+    const shared = { messageId: "g@example.org", gmMsgId: "5", size: 1 };
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("[Gmail]/All Mail", "all")]);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, shared)]);
+    s.upsertMessages("acc_1", "[Gmail]/All Mail", [makeFetchedMessage(9, shared)]);
+    s.setGmLabels("acc_1", "[Gmail]/All Mail", [{ uid: 9, labels: ["\\Important", "Plans"] }]);
+    expect(s.getMessage(idOf(s, 1))!.labels).toEqual(["Plans"]);
+    expect(s.accountLabels("acc_1")).toEqual(["\\Important", "Plans"]);
+    expect(hitIds(s, "label:plans")).toEqual([idOf(s, 1)]);
   });
 });

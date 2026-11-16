@@ -88,9 +88,12 @@ import { AI_RESULT_MAX_BYTES, BINDINGS_MAX, TASKS_OPEN_MAX } from "../../core/po
 import type { BbLinkRow, BindingKind, RuleRecord, RuleRunRecord, RuleRunState } from "../../core/ports.ts";
 import { INCIDENT_PENDING_PREFIX, INCIDENT_RESERVE_MS } from "../../core/ports.ts";
 import type { AttachmentTextRow, FilesFilter, SavedSearchRow, SearchOptions, SenderStats } from "../../core/ports.ts";
-import type { AttachmentMatch, FileRow, SearchCursor } from "../../core/model.ts";
-import type { AttachmentCandidate } from "../../core/attachment-text.ts";
-import type { RelatedCandidate } from "../../core/related.ts";
+import type { AttachmentMatch, FileKind, FileRow, KeptState, SearchCondition, SearchCursor } from "../../core/model.ts";
+import { excerptAround, type AttachmentCandidate } from "../../core/attachment-text.ts";
+import { RELATED_CANDIDATES_MAX, type RelatedCandidate } from "../../core/related.ts";
+import { ownerLabels, parseGmLabels } from "../../core/labels.ts";
+import { renamedPath } from "../../core/folder-ops.ts";
+import { SAVED_SEARCHES_MAX } from "../../core/saved-searches.ts";
 import type { BbLinkRowKind } from "../../core/model.ts";
 import type { DevClass, DevKind, DevSource, DevState } from "../../core/dev-notify.ts";
 import { RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, RULE_THREADS_KEEP_DAYS, RULES_MAX, capVerdict, type RuleMatch, type RuleMode, type RuleRunCounts } from "../../core/mail-rules.ts";
@@ -811,6 +814,99 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX rule_runs_bb_thread ON rule_runs(bb_thread_id);
   CREATE INDEX rule_runs_message ON rule_runs(message_id);
   `,
+  // 13: slice 3h. Older mail and server hits outside the window (kept rows),
+  // Gmail labels, the sender index, attachment kinds (backfilled; new rows
+  // get theirs from the same CASE in a trigger, which core/file-kinds.ts
+  // fileKindOf mirrors), attachment text with its trigram index, saved
+  // searches, per-folder list preferences, folder subscription and the
+  // daily history check (spec resolution 23). No REFERENCES: deletes are
+  // explicit (deleteRows, deleteAccount, expireSearchRows, historyForget).
+  `
+  ALTER TABLE sync_state ADD COLUMN history_since TEXT;
+  ALTER TABLE sync_state ADD COLUMN history_checked_at TEXT;
+  ALTER TABLE messages ADD COLUMN kept TEXT;
+  ALTER TABLE messages ADD COLUMN kept_at TEXT;
+  CREATE INDEX messages_kept ON messages(kept, kept_at) WHERE kept IS NOT NULL;
+
+  ALTER TABLE messages ADD COLUMN gm_labels TEXT;
+
+  CREATE INDEX messages_from ON messages(from_address COLLATE NOCASE, date);
+
+  ALTER TABLE attachments ADD COLUMN kind TEXT NOT NULL DEFAULT 'other';
+  UPDATE attachments SET kind = CASE
+    WHEN lower(mime_type) = 'application/pdf' OR lower(filename) LIKE '%.pdf' THEN 'pdf'
+    WHEN lower(mime_type) LIKE 'image/%' THEN 'image'
+    WHEN lower(mime_type) = 'text/calendar' OR lower(filename) LIKE '%.ics' THEN 'calendar'
+    WHEN lower(mime_type) LIKE 'text/%' OR lower(mime_type) IN
+      ('application/json', 'application/xml', 'application/x-patch', 'application/x-diff') THEN 'text'
+    WHEN lower(mime_type) IN ('application/zip', 'application/gzip', 'application/x-7z-compressed',
+      'application/x-rar-compressed', 'application/vnd.rar', 'application/x-tar') THEN 'archive'
+    WHEN lower(mime_type) LIKE 'application/vnd.openxmlformats-officedocument.%'
+      OR lower(mime_type) LIKE 'application/vnd.oasis.opendocument.%'
+      OR lower(mime_type) IN ('application/msword', 'application/vnd.ms-excel',
+        'application/vnd.ms-powerpoint', 'application/rtf') THEN 'document'
+    ELSE 'other' END;
+  CREATE INDEX attachments_kind ON attachments(kind);
+  CREATE TRIGGER attachments_kind_ai AFTER INSERT ON attachments BEGIN
+    UPDATE attachments SET kind = CASE
+    WHEN lower(new.mime_type) = 'application/pdf' OR lower(new.filename) LIKE '%.pdf' THEN 'pdf'
+    WHEN lower(new.mime_type) LIKE 'image/%' THEN 'image'
+    WHEN lower(new.mime_type) = 'text/calendar' OR lower(new.filename) LIKE '%.ics' THEN 'calendar'
+    WHEN lower(new.mime_type) LIKE 'text/%' OR lower(new.mime_type) IN
+      ('application/json', 'application/xml', 'application/x-patch', 'application/x-diff') THEN 'text'
+    WHEN lower(new.mime_type) IN ('application/zip', 'application/gzip', 'application/x-7z-compressed',
+      'application/x-rar-compressed', 'application/vnd.rar', 'application/x-tar') THEN 'archive'
+    WHEN lower(new.mime_type) LIKE 'application/vnd.openxmlformats-officedocument.%'
+      OR lower(new.mime_type) LIKE 'application/vnd.oasis.opendocument.%'
+      OR lower(new.mime_type) IN ('application/msword', 'application/vnd.ms-excel',
+        'application/vnd.ms-powerpoint', 'application/rtf') THEN 'document'
+    ELSE 'other' END
+    WHERE rowid = new.rowid;
+  END;
+
+  CREATE TABLE attachment_text (
+    seq INTEGER PRIMARY KEY,
+    message_id TEXT NOT NULL,
+    part_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    reason TEXT,
+    body TEXT,
+    extracted_at TEXT NOT NULL,
+    UNIQUE (message_id, part_id)
+  );
+  CREATE VIRTUAL TABLE attachment_text_fts USING fts5(
+    body, content='attachment_text', content_rowid='seq', tokenize='trigram'
+  );
+  CREATE TRIGGER attachment_text_ai AFTER INSERT ON attachment_text BEGIN
+    INSERT INTO attachment_text_fts(rowid, body) VALUES (new.seq, new.body);
+  END;
+  CREATE TRIGGER attachment_text_ad AFTER DELETE ON attachment_text BEGIN
+    INSERT INTO attachment_text_fts(attachment_text_fts, rowid, body) VALUES ('delete', old.seq, old.body);
+  END;
+  CREATE TRIGGER attachment_text_au AFTER UPDATE OF body ON attachment_text BEGIN
+    INSERT INTO attachment_text_fts(attachment_text_fts, rowid, body) VALUES ('delete', old.seq, old.body);
+    INSERT INTO attachment_text_fts(rowid, body) VALUES (new.seq, new.body);
+  END;
+
+  CREATE TABLE saved_searches (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    query TEXT NOT NULL,
+    account_id TEXT,
+    position INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE folder_prefs (
+    account_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    grouping INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (account_id, path)
+  );
+
+  ALTER TABLE folders ADD COLUMN subscribed INTEGER NOT NULL DEFAULT 1;
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -979,6 +1075,9 @@ type MessageRow = {
   is_read: number;
   is_flagged: number;
   has_attachments: number;
+  /** Slice 3h; absent on a store opened on an older schema. */
+  kept?: KeptState | null;
+  gm_labels?: string | null;
 };
 
 type HeaderRow = MessageRow & { to_json: string; cc_json: string; uid: number | null };
@@ -1217,10 +1316,18 @@ type AttachmentRow = {
   mime_type: string;
   size: number;
   is_inline: number;
+  kind?: FileKind;
 };
 
+/**
+ * Slice 3h: X-GM-LABELS of a row (alias m), else of another copy of its
+ * message (Gmail keeps them on the All Mail row).
+ */
+const GM_LABELS_OF_COPIES = `COALESCE(m.gm_labels, (SELECT g.gm_labels FROM messages g
+  WHERE g.account_id = m.account_id AND g.dedup_key = m.dedup_key AND g.gm_labels IS NOT NULL LIMIT 1))`;
+
 const SUMMARY_COLUMNS = `m.id, m.account_id, m.folder, m.thread_id, m.date, m.from_name, m.from_address,
-  m.subject, m.snippet, m.is_read, m.is_flagged, m.has_attachments`;
+  m.subject, m.snippet, m.is_read, m.is_flagged, m.has_attachments, m.kept, ${GM_LABELS_OF_COPIES} AS gm_labels`;
 
 /** Refusals after which a queued move is cancelled. */
 const MOVE_MAX_FAILURES = 3;
@@ -1337,6 +1444,175 @@ function decodeCursor(cursor: string): { lastDate: string | null; id: string } |
   if (bar < 0) return null;
   const lastDate = raw.slice(0, bar);
   return { lastDate: lastDate === "" ? null : lastDate, id: raw.slice(bar + 1) };
+}
+
+// ---- Slice 3h: search conditions, keysets and row shapes ----
+
+/** A row (alias m) outside Spam and Trash (its effective special use). */
+const NOT_JUNK_OR_TRASH = `COALESCE(${SCOPE_ROLE}, '') NOT IN ('junk', 'trash')`;
+
+/** (account, dedup key) pairs whose attachment text matches the phrase `?` (spec resolution 4). */
+const ATTACHMENT_HIT_KEYS = `SELECT c.account_id, c.dedup_key
+  FROM attachment_text_fts f JOIN attachment_text t ON t.seq = f.rowid JOIN messages c ON c.id = t.message_id
+  WHERE attachment_text_fts MATCH ?`;
+
+/** Sender card: To/Cc are counted over the newest rows only. */
+const SENDER_TO_SCAN = 5000;
+const SENDER_CONVERSATIONS = 10;
+const SENDER_FILES = 5;
+
+type FileDbRow = {
+  message_id: string;
+  part_id: string;
+  filename: string | null;
+  kind: FileKind;
+  mime_type: string;
+  size: number;
+  date: string | null;
+  seq: number;
+  from_name: string | null;
+  from_address: string;
+  account_id: string;
+  thread_id: string;
+};
+
+type CandidateDbRow = {
+  id: string;
+  thread_id: string;
+  date: string | null;
+  dedup_key: string;
+  from_address: string;
+  to_json: string;
+  cc_json: string;
+};
+
+type AttachmentCandidateRow = {
+  message_id: string;
+  part_id: string;
+  kind: FileKind;
+  size: number;
+  is_inline: number;
+  message_size: number;
+  date: string | null;
+  kept: KeptState | null;
+  folder_use: SpecialUse | null;
+};
+
+/** A keyset position: a date (null first), a row seq and, for files, a part id. */
+type Keyset = { date: string | null; seq: number; part?: string };
+
+function encodeKeyset(keyset: Keyset): string {
+  return Buffer.from(JSON.stringify(keyset), "utf8").toString("base64");
+}
+
+function decodeKeyset(cursor: string): Keyset | null {
+  try {
+    const value = JSON.parse(Buffer.from(cursor, "base64").toString("utf8")) as Partial<Keyset>;
+    if (typeof value.seq !== "number" || (value.date !== null && typeof value.date !== "string")) return null;
+    return { date: value.date ?? null, seq: value.seq, ...(typeof value.part === "string" ? { part: value.part } : {}) };
+  } catch {
+    return null;
+  }
+}
+
+const LIKE = (expr: string) => `mail_lower(${expr}) LIKE mail_lower(?) ESCAPE '\\'`;
+
+/** A folder named by path or name, case-insensitively (alias m). */
+const FOLDER_NAMED = `(mail_lower(m.folder) = mail_lower(?) OR m.folder IN (
+  SELECT nf.path FROM folders nf WHERE nf.account_id = m.account_id AND mail_lower(nf.name) = mail_lower(?)))`;
+
+const IN_ROLES: ReadonlySet<string> = new Set(["inbox", "sent", "drafts", "junk", "trash", "archive", "all"]);
+
+/** One condition as SQL over alias m, its parameters pushed in order; null when it adds nothing. */
+function conditionSql(condition: SearchCondition, params: unknown[]): string | null {
+  const { field, value } = condition;
+  switch (field) {
+    case "from":
+      params.push(likePattern(value), likePattern(value));
+      return `(${LIKE("m.from_address")} OR ${LIKE("m.from_name")})`;
+    case "to":
+      params.push(likePattern(value));
+      return LIKE("m.to_json");
+    case "cc":
+      params.push(likePattern(value));
+      return LIKE("m.cc_json");
+    case "subject":
+      params.push(likePattern(value));
+      return LIKE("m.subject");
+    case "list":
+      params.push(likePattern(value));
+      return LIKE("m.list_id");
+    case "has":
+      return "m.has_attachments = 1";
+    case "filename": {
+      // No dot: an extension (filename:pdf is *.pdf); else a fragment.
+      const pattern = value.includes(".") ? likePattern(value) : `%.${value.replace(/[\\%_]/g, (c: string) => `\\${c}`)}`;
+      params.push(pattern);
+      return `EXISTS (SELECT 1 FROM attachments fa WHERE fa.message_id = m.id AND fa.is_inline = 0 AND ${LIKE("fa.filename")})`;
+    }
+    case "is":
+      return value === "unread" ? "m.is_read = 0" : "m.is_flagged = 1";
+    case "larger":
+      params.push(Number(value));
+      return "m.size > ?";
+    case "smaller":
+      params.push(Number(value));
+      return "m.size < ?";
+    case "after":
+    case "before": {
+      const date = normalizeDate(value);
+      if (date === null) return null;
+      params.push(date);
+      return field === "after" ? "m.date >= ?" : "m.date < ?";
+    }
+    case "category":
+      params.push(value.toLowerCase());
+      return "(m.account_id, m.dedup_key) IN (SELECT account_id, dedup_key FROM message_categories WHERE category = ?)";
+    case "label":
+      // Gmail: X-GM-LABELS of any copy; elsewhere (and Gmail label folders) the folder's name.
+      params.push(likePattern(JSON.stringify(value)), value, value);
+      return `(EXISTS (SELECT 1 FROM messages g WHERE g.account_id = m.account_id AND g.dedup_key = m.dedup_key
+          AND g.gm_labels IS NOT NULL AND ${LIKE("g.gm_labels")}) OR ${FOLDER_NAMED})`;
+    case "in":
+      if (value === "snoozed") return "m.folder = (SELECT sa.snooze_folder FROM accounts sa WHERE sa.id = m.account_id)";
+      if (IN_ROLES.has(value)) {
+        params.push(value);
+        return `${SCOPE_ROLE} = ?`;
+      }
+      params.push(value, value);
+      return FOLDER_NAMED;
+    case "account":
+      params.push(value, value, value);
+      return `m.account_id IN (SELECT ac.id FROM accounts ac
+        WHERE ac.id = ? OR lower(ac.email) = lower(?) OR mail_lower(ac.display_name) = mail_lower(?))`;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The query's conditions as WHERE parts (spec "Search operators"):
+ * conditions AND, several positive `in:` or `account:` OR among themselves,
+ * `-` wraps one condition in NOT. Every part is NULL-safe.
+ */
+function conditionsSql(conditions: readonly SearchCondition[], params: unknown[]): string[] {
+  const parts: string[] = [];
+  for (const field of ["in", "account"] as const) {
+    const ors: string[] = [];
+    for (const condition of conditions) {
+      if (condition.field !== field || condition.negated) continue;
+      const sql = conditionSql(condition, params);
+      if (sql !== null) ors.push(`COALESCE((${sql}), 0)`);
+    }
+    if (ors.length > 0) parts.push(`(${ors.join(" OR ")})`);
+  }
+  for (const condition of conditions) {
+    if ((condition.field === "in" || condition.field === "account") && !condition.negated) continue;
+    const sql = conditionSql(condition, params);
+    if (sql === null) continue;
+    parts.push(condition.negated ? `NOT COALESCE((${sql}), 0)` : `COALESCE((${sql}), 0)`);
+  }
+  return parts;
 }
 
 function toAccount(row: AccountRow): StoredAccount {
@@ -1598,8 +1874,8 @@ function toSummary(row: MessageRow): MessageSummary {
     isRead: row.is_read === 1,
     isFlagged: row.is_flagged === 1,
     hasAttachments: row.has_attachments === 1,
-    kept: null,
-    labels: [],
+    kept: row.kept ?? null,
+    labels: ownerLabels(parseGmLabels(row.gm_labels ?? null)),
   };
 }
 
@@ -1804,9 +2080,6 @@ function toAttachment(row: AttachmentRow): AttachmentMeta {
     isInline: row.is_inline === 1,
   };
 }
-
-/** What a slice 3h write answers until Task 4 implements it. */
-const NOT_YET = "Not available yet";
 
 export function createSqliteStore(db: Database.Database): MailStore {
   /** Runs fn atomically; nests as a savepoint inside a caller's transaction. */
@@ -2110,7 +2383,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
     // the caps, without the message (review C1); rule_threads is not touched.
     const removeLinks = db.prepare("DELETE FROM bb_links WHERE message_id = ?");
     const removeRuns = db.prepare("UPDATE rule_runs SET message_id = NULL WHERE message_id = ?");
+    // Slice 3h: attachment text goes with its message (no REFERENCES).
+    const removeText = db.prepare("DELETE FROM attachment_text WHERE message_id = ?");
     for (const row of rows) {
+      removeText.run(row.id);
       deleteAttachmentsOf.run(row.id);
       deleteInlinePartsOf.run(row.id);
       removeTranslations.run(row.id);
@@ -2150,10 +2426,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
       ...toSummary(row),
       to: JSON.parse(row.to_json) as MailAddress[],
       cc: JSON.parse(row.cc_json) as MailAddress[],
-      attachments: attachmentsOf.all(row.id).map((a) => {
-        const meta = toAttachment(a);
-        return { ...meta, kind: fileKindOf(meta.mimeType, meta.filename) };
-      }),
+      attachments: attachmentsOf.all(row.id).map((a) => ({
+        ...toAttachment(a),
+        // Stored since migration element 13; computed for a row read on an older schema.
+        kind: a.kind ?? fileKindOf(a.mime_type, a.filename),
+      })),
       draftId: row.uid === null ? null : (draftByServerCopy.get(row.account_id, row.folder, row.uid)?.id ?? null),
       agentSubject: redactSecrets(row.subject).text,
       inAiScope: (freshScope(), anyCopyInScope.get(row.id) !== undefined),
@@ -2250,6 +2527,405 @@ export function createSqliteStore(db: Database.Database): MailStore {
     };
   }
 
+
+  // ---- Slice 3h helpers -----------------------------------------------------
+
+  /**
+   * A job's row (spec resolution 7): a new row takes `kept`; an existing
+   * row is never downgraded (window rows and opened rows stay), and a
+   * server hit covered by a history load becomes history.
+   */
+  const keepNew = lazyPrepare(
+    "UPDATE messages SET kept = ?, kept_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+  );
+  const keepHistory = lazyPrepare(
+    "UPDATE messages SET kept = 'history', kept_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND kept = 'search'",
+  );
+  function keepRow(id: string, isNew: boolean, kept: "history" | "search"): void {
+    if (isNew) keepNew.get().run(kept, id);
+    else if (kept === "history") keepHistory.get().run(id);
+  }
+
+  /** Rows the owner touched never expire: every copy's history or search state becomes opened. */
+  const promoteCopies = lazyPrepare(
+    `UPDATE messages SET kept = 'opened'
+     WHERE kept IN ('history', 'search')
+       AND (account_id, dedup_key) IN (SELECT account_id, dedup_key FROM messages WHERE id = ?)`,
+  );
+  function promote(ids: Iterable<string>): void {
+    for (const id of ids) promoteCopies.get().run(id);
+  }
+
+  /** The search behind search and searchPage (spec "Search operators", resolutions 4 and 17). */
+  function runSearch(
+    query: ParsedQuery,
+    accountId: string | null,
+    limit: number,
+    opts: SearchOptions | undefined,
+  ): { hits: MessageSummary[]; nextCursor: SearchCursor | null; attachmentMatches: AttachmentMatch[] } {
+    if (opts?.scoped === true) freshScope();
+    const where: string[] = [];
+    const params: unknown[] = [];
+    let from = "FROM messages m";
+
+    // Control characters make MATCH throw and never occur in indexed text.
+    const text = query.text.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+    const fts = Array.from(text).length >= FTS_MIN_CHARS;
+    // Attachment text only for an explicit owner request (spec resolution 4).
+    const withAttachments = fts && opts?.attachments === true;
+    if (withAttachments) {
+      where.push(
+        `(m.seq IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?) OR (m.account_id, m.dedup_key) IN (${ATTACHMENT_HIT_KEYS}))`,
+      );
+      params.push(ftsPhrase(text), ftsPhrase(text));
+    } else if (fts) {
+      from = "FROM messages_fts JOIN messages m ON m.seq = messages_fts.rowid";
+      where.push("messages_fts MATCH ?");
+      params.push(ftsPhrase(text));
+    } else if (text !== "") {
+      const pattern = likePattern(text);
+      where.push(
+        "(mail_lower(m.subject) LIKE mail_lower(?) ESCAPE '\\' OR mail_lower(m.from_name) LIKE mail_lower(?) ESCAPE '\\' OR mail_lower(m.from_address) LIKE mail_lower(?) ESCAPE '\\')",
+      );
+      params.push(pattern, pattern, pattern);
+    }
+    if (accountId !== null) {
+      where.push("m.account_id = ?");
+      params.push(accountId);
+    }
+    where.push(...conditionsSql(query.conditions, params));
+    // A row waiting to move out is hidden until the move completes.
+    where.push("m.move_pending IS NULL");
+    // Agent paths: rows outside the AI scope go before the dedup picks a copy.
+    if (opts?.scoped === true) where.push(IN_AI_SCOPE);
+
+    // Keyset after the cursor in the order below (spec resolution 17).
+    const cursor = opts?.cursor ?? null;
+    let after = "";
+    if (cursor !== null && cursor.date === null) {
+      after = "AND ((date IS NULL AND id < ?) OR date IS NOT NULL)";
+      params.push(cursor.id);
+    } else if (cursor !== null) {
+      after = "AND date IS NOT NULL AND (date < ? OR (date = ? AND id < ?))";
+      params.push(cursor.date, cursor.date, cursor.id);
+    }
+    params.push(limit + 1);
+
+    // One hit per message (dedup key): the Inbox copy, else the newest row.
+    const sql = `SELECT * FROM (
+        SELECT ${SUMMARY_COLUMNS}, m.dedup_key,
+          row_number() OVER (PARTITION BY m.account_id, m.dedup_key
+            ORDER BY ${IN_INBOX} DESC, m.seq DESC) AS rn
+        ${from}
+        WHERE ${where.join(" AND ")})
+      WHERE rn = 1 ${after}
+      ORDER BY date IS NULL DESC, date DESC, id DESC
+      LIMIT ?`;
+    const rows = db.prepare(sql).all(...params) as (MessageRow & { dedup_key: string })[];
+    const page = rows.slice(0, limit);
+    const last = page[page.length - 1];
+    return {
+      hits: page.map(toSummary),
+      nextCursor: rows.length > limit && last !== undefined ? { date: last.date, id: last.id } : null,
+      attachmentMatches: withAttachments ? attachmentMatchesOf(page, text) : [],
+    };
+  }
+
+  /** The first matching attachment of each hit (any copy of its message), with an excerpt. */
+  function attachmentMatchesOf(hits: (MessageRow & { dedup_key: string })[], text: string): AttachmentMatch[] {
+    if (hits.length === 0) return [];
+    const byKey = new Map(hits.map((hit) => [`${hit.account_id}\u0000${hit.dedup_key}`, hit.id]));
+    const rows = db
+      .prepare<[string, string], { account_id: string; dedup_key: string; body: string | null; filename: string | null }>(
+        `SELECT c.account_id, c.dedup_key, t.body, a.filename
+         FROM attachment_text_fts f JOIN attachment_text t ON t.seq = f.rowid
+         JOIN messages c ON c.id = t.message_id
+         LEFT JOIN attachments a ON a.message_id = t.message_id AND a.part_id = t.part_id
+         WHERE attachment_text_fts MATCH ?
+           AND (c.account_id, c.dedup_key) IN (SELECT value ->> 0, value ->> 1 FROM json_each(?))
+         ORDER BY t.seq`,
+      )
+      .all(ftsPhrase(text), JSON.stringify(hits.map((hit) => [hit.account_id, hit.dedup_key])));
+    const matches: AttachmentMatch[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const key = `${row.account_id}\u0000${row.dedup_key}`;
+      const messageId = byKey.get(key);
+      if (messageId === undefined || seen.has(key)) continue;
+      seen.add(key);
+      matches.push({ messageId, filename: row.filename, excerpt: excerptAround(row.body ?? "", text) });
+    }
+    return matches;
+  }
+
+  /** One row per deduplicated message, keyset by (date IS NULL DESC, date DESC, seq DESC). */
+  function pageMessages(query: {
+    from: string;
+    where: string;
+    params: Record<string, string>;
+    cursor: string | null;
+    limit: number;
+  }): { messages: MessageSummary[]; nextCursor: string | null } {
+    const after = query.cursor === null ? null : decodeKeyset(query.cursor);
+    let keyset = "";
+    const params: Record<string, unknown> = { ...query.params, limit: query.limit + 1 };
+    if (after !== null && after.date === null) {
+      keyset = "AND ((date IS NULL AND seq < @afterSeq) OR date IS NOT NULL)";
+      params.afterSeq = after.seq;
+    } else if (after !== null) {
+      keyset = "AND date IS NOT NULL AND (date < @afterDate OR (date = @afterDate AND seq < @afterSeq))";
+      params.afterDate = after.date;
+      params.afterSeq = after.seq;
+    }
+    const rows = db
+      .prepare<[Record<string, unknown>], MessageRow & { seq: number }>(
+        `SELECT * FROM (
+           SELECT ${SUMMARY_COLUMNS}, m.seq,
+             row_number() OVER (PARTITION BY m.account_id, m.dedup_key ORDER BY m.seq DESC) AS rn
+           FROM ${query.from} WHERE ${query.where})
+         WHERE rn = 1 ${keyset}
+         ORDER BY date IS NULL DESC, date DESC, seq DESC
+         LIMIT @limit`,
+      )
+      .all(params);
+    const page = rows.slice(0, query.limit);
+    const last = page[page.length - 1];
+    return {
+      messages: page.map(toSummary),
+      nextCursor: rows.length > query.limit && last !== undefined ? encodeKeyset({ date: last.date, seq: last.seq }) : null,
+    };
+  }
+
+  /** Loaded history and server hits of a folder dated before its window (not opened rows). */
+  function forgettable(accountId: string, folder: string): { id: string; thread_id: string }[] {
+    return db
+      .prepare<[string, string, string, string], { id: string; thread_id: string }>(
+        `SELECT m.id, m.thread_id FROM messages m
+         WHERE m.account_id = ? AND m.folder = ? AND m.kept IN ('history', 'search')
+           AND (m.date IS NULL OR m.date < COALESCE(
+             (SELECT s.synced_since FROM sync_state s WHERE s.account_id = ? AND s.folder = ?), ''))`,
+      )
+      .all(accountId, folder, accountId, folder);
+  }
+
+  /** A folder's local rows, sync state, folder row and preference (after a server DELETE or a listing without it). */
+  function removeFolderRows(accountId: string, path: string): void {
+    const rows = db
+      .prepare<[string, string], { id: string; thread_id: string }>(
+        "SELECT id, thread_id FROM messages WHERE account_id = ? AND folder = ?",
+      )
+      .all(accountId, path);
+    refreshThreads(accountId, deleteRows(rows));
+    db.prepare("DELETE FROM sync_state WHERE account_id = ? AND folder = ?").run(accountId, path);
+    db.prepare("DELETE FROM folders WHERE account_id = ? AND path = ?").run(accountId, path);
+    db.prepare("DELETE FROM folder_prefs WHERE account_id = ? AND path = ?").run(accountId, path);
+  }
+
+  /** Rewrites the AI scope's folder list of an account; `map` returns null to drop an entry (spec resolution 3). */
+  function rewriteScopeFolders(accountId: string, map: (path: string) => string | null): void {
+    const row = db
+      .prepare<[string], { folders_json: string | null }>(
+        "SELECT folders_json FROM ai_scope_accounts WHERE account_id = ? AND mode = 'folders'",
+      )
+      .get(accountId);
+    if (row === undefined || row.folders_json === null) return;
+    const before = JSON.parse(row.folders_json) as string[];
+    const after: string[] = [];
+    for (const path of before) {
+      const next = map(path);
+      if (next !== null && !after.includes(next)) after.push(next);
+    }
+    if (JSON.stringify(after) === JSON.stringify(before)) return;
+    db.prepare("UPDATE ai_scope_accounts SET folders_json = ? WHERE account_id = ?").run(JSON.stringify(after), accountId);
+  }
+
+  type SavedSearchDbRow = {
+    id: string;
+    name: string;
+    query: string;
+    account_id: string | null;
+    position: number;
+    created_at: string;
+    updated_at: string;
+  };
+
+  function savedSearchRows(): SavedSearchDbRow[] {
+    return db
+      .prepare<[], SavedSearchDbRow>("SELECT * FROM saved_searches ORDER BY position, created_at, id")
+      .all();
+  }
+
+  function renumberSavedSearches(ids: readonly string[]): void {
+    const set = db.prepare("UPDATE saved_searches SET position = ? WHERE id = ?");
+    ids.forEach((id, index) => set.run(index, id));
+  }
+
+  /**
+   * Non-inline attachments of rows not waiting to move, one per (account,
+   * dedup key, part), keyset by (date IS NULL DESC, date DESC, seq DESC,
+   * part_id) (spec resolution 17). Spam and Trash only with includeJunk.
+   */
+  function pageFiles(
+    filter: FilesFilter,
+    cursor: string | null,
+    limit: number,
+  ): { files: FileRow[]; nextCursor: string | null } {
+    const where = ["a.is_inline = 0", "m.move_pending IS NULL"];
+    const params: Record<string, unknown> = { limit: limit + 1 };
+    if (filter.includeJunk !== true) where.push(NOT_JUNK_OR_TRASH);
+    if (filter.kind !== undefined) {
+      where.push("a.kind = @kind");
+      params.kind = filter.kind;
+    }
+    if (filter.sender !== undefined) {
+      where.push("m.from_address = @sender COLLATE NOCASE");
+      params.sender = filter.sender;
+    }
+    if (filter.accountId !== undefined) {
+      where.push("m.account_id = @accountId");
+      params.accountId = filter.accountId;
+    }
+    if (filter.name !== undefined) {
+      where.push("mail_lower(a.filename) LIKE mail_lower(@name) ESCAPE '\\'");
+      params.name = likePattern(filter.name);
+    }
+    const after = cursor === null ? null : decodeKeyset(cursor);
+    let keyset = "";
+    if (after !== null) {
+      params.afterSeq = after.seq;
+      params.afterPart = after.part ?? "";
+      const sameDate = "(seq < @afterSeq OR (seq = @afterSeq AND part_id > @afterPart))";
+      if (after.date === null) {
+        keyset = `AND ((date IS NULL AND ${sameDate}) OR date IS NOT NULL)`;
+      } else {
+        keyset = `AND date IS NOT NULL AND (date < @afterDate OR (date = @afterDate AND ${sameDate}))`;
+        params.afterDate = after.date;
+      }
+    }
+    const rows = db
+      .prepare<[Record<string, unknown>], FileDbRow>(
+        `SELECT * FROM (
+           SELECT m.id AS message_id, a.part_id, a.filename, a.kind, a.mime_type, a.size, m.date, m.seq,
+             m.from_name, m.from_address, m.account_id, m.thread_id,
+             row_number() OVER (PARTITION BY m.account_id, m.dedup_key, a.part_id
+               ORDER BY ${IN_INBOX} DESC, m.seq DESC) AS rn
+           FROM attachments a JOIN messages m ON m.id = a.message_id
+           WHERE ${where.join(" AND ")})
+         WHERE rn = 1 ${keyset}
+         ORDER BY date IS NULL DESC, date DESC, seq DESC, part_id
+         LIMIT @limit`,
+      )
+      .all(params);
+    const page = rows.slice(0, limit);
+    const last = page[page.length - 1];
+    return {
+      files: page.map((row) => ({
+        messageId: row.message_id,
+        partId: row.part_id,
+        filename: row.filename,
+        kind: row.kind,
+        mimeType: row.mime_type,
+        size: row.size,
+        date: row.date,
+        from: { name: row.from_name, address: row.from_address },
+        accountId: row.account_id,
+        threadId: row.thread_id,
+      })),
+      nextCursor:
+        rows.length > limit && last !== undefined ? encodeKeyset({ date: last.date, seq: last.seq, part: last.part_id }) : null,
+    };
+  }
+
+  /**
+   * At most RELATED_CANDIDATES_MAX local candidates for the open message:
+   * full-text matches of each term, rows sharing a participant, rows
+   * sharing a reference; same account, not Spam or Trash, one per message.
+   */
+  function relatedOf(messageId: string, terms: readonly string[]): RelatedCandidate[] {
+    const open = db
+      .prepare<
+        [string],
+        {
+          account_id: string;
+          thread_id: string;
+          message_id: string | null;
+          refs: string;
+          from_address: string;
+          to_json: string;
+          cc_json: string;
+        }
+      >("SELECT account_id, thread_id, message_id, refs, from_address, to_json, cc_json FROM messages WHERE id = ?")
+      .get(messageId);
+    if (open === undefined) return [];
+    const ownAddress = (accountById.get(open.account_id)?.email ?? "").toLowerCase();
+    const participants = new Set(
+      [open.from_address, ...addressesOf(open.to_json), ...addressesOf(open.cc_json)]
+        .map((address) => address.toLowerCase())
+        .filter((address) => address !== "" && address !== ownAddress),
+    );
+    const refs = new Set<string>(JSON.parse(open.refs) as string[]);
+    if (open.message_id !== null) refs.add(open.message_id);
+
+    type Found = RelatedCandidate & { key: string };
+    const found = new Map<string, Found>();
+    const base = `m.account_id = @accountId AND m.thread_id != @threadId AND m.move_pending IS NULL AND ${NOT_JUNK_OR_TRASH}`;
+    const take = (row: CandidateDbRow): Found | null => {
+      const key = `${row.dedup_key}`;
+      let entry = found.get(key);
+      if (entry === undefined) {
+        if (found.size >= RELATED_CANDIDATES_MAX) return null;
+        const addresses = [row.from_address, ...addressesOf(row.to_json), ...addressesOf(row.cc_json)].map((a) => a.toLowerCase());
+        entry = {
+          key,
+          messageId: row.id,
+          threadId: row.thread_id,
+          date: row.date,
+          terms: [],
+          participants: [...participants].filter((address) => addresses.includes(address)).length,
+          reference: false,
+          rank: null,
+        };
+        found.set(key, entry);
+      }
+      return entry;
+    };
+    const columns = "m.id, m.thread_id, m.date, m.dedup_key, m.from_address, m.to_json, m.cc_json";
+    const params = { accountId: open.account_id, threadId: open.thread_id, max: RELATED_CANDIDATES_MAX };
+    const byTerm = db.prepare<[Record<string, unknown>], CandidateDbRow & { rank: number }>(
+      `SELECT ${columns}, bm25(messages_fts) AS rank
+       FROM messages_fts JOIN messages m ON m.seq = messages_fts.rowid
+       WHERE messages_fts MATCH @phrase AND ${base}
+       ORDER BY rank LIMIT @max`,
+    );
+    for (const term of terms) {
+      if (Array.from(term).length < FTS_MIN_CHARS) continue;
+      for (const row of byTerm.all({ ...params, phrase: ftsPhrase(term.replace(/[\u0000-\u001f\u007f]/g, "")) })) {
+        const entry = take(row);
+        if (entry === null) break;
+        if (!entry.terms.includes(term)) entry.terms.push(term);
+        entry.rank = entry.rank === null ? row.rank : Math.min(entry.rank, row.rank);
+      }
+    }
+    if (participants.size > 0) {
+      const byFrom = db.prepare<[Record<string, unknown>], CandidateDbRow>(
+        `SELECT ${columns} FROM messages m WHERE m.from_address = @address COLLATE NOCASE AND ${base}
+         ORDER BY m.date DESC LIMIT @max`,
+      );
+      for (const address of participants) for (const row of byFrom.all({ ...params, address })) take(row);
+    }
+    if (refs.size > 0) {
+      const byRef = db.prepare<[Record<string, unknown>], CandidateDbRow>(
+        `SELECT ${columns} FROM messages m
+         WHERE m.message_id IN (SELECT value FROM json_each(@refs)) AND ${base} LIMIT @max`,
+      );
+      for (const row of byRef.all({ ...params, refs: JSON.stringify([...refs]) })) {
+        const entry = take(row);
+        if (entry !== null) entry.reference = true;
+      }
+    }
+    return [...found.values()].map(({ key: _key, ...candidate }) => candidate);
+  }
+
   const store: MailStore = {
     transaction<T>(fn: () => T): T {
       return atomic(fn);
@@ -2340,6 +3016,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
         db.prepare(
           "DELETE FROM translations WHERE message_id IN (SELECT id FROM messages WHERE account_id = ?)",
         ).run(id);
+        db.prepare(
+          "DELETE FROM attachment_text WHERE message_id IN (SELECT id FROM messages WHERE account_id = ?)",
+        ).run(id);
+        db.prepare("DELETE FROM saved_searches WHERE account_id = ?").run(id);
+        db.prepare("DELETE FROM folder_prefs WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM messages WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM threads WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM sync_state WHERE account_id = ?").run(id);
@@ -2432,7 +3113,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
 
     // Messages -------------------------------------------------------------
 
-    upsertMessages(accountId, folder, messages: FetchedMessage[]) {
+    upsertMessages(accountId, folder, messages: FetchedMessage[], opts) {
       if (sendersExcluded()) excludedStale = true;
       return atomic(() => {
         const touched = new Set<string>();
@@ -2519,6 +3200,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
             insertInlinePart.run(id, part.contentId, part.mimeType, Buffer.from(part.data));
           }
           touched.add(threadIdOf.get(id)!.thread_id);
+          if (opts?.kept !== undefined) keepRow(id, inserted.includes(id), opts.kept);
         }
         refreshThreads(accountId, touched);
         return { inserted, returning };
@@ -2672,6 +3354,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
           named.run({ id, seen, flagged });
         }
         for (const [accountId, threadIds] of touched) refreshThreads(accountId, threadIds);
+        // Slice 3h: a flagged or read server hit is kept for good.
+        promote(messageIds);
         return accounts.map((accountId) => ({ accountId }));
       });
     },
@@ -2728,6 +3412,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
           )
           .all({ accountId: row.account_id, dedupKey: row.dedup_key, id: messageId });
         refreshThreads(row.account_id, copies.map((c) => c.thread_id));
+        // Slice 3h: an opened server hit or history row is kept for good.
+        promote([messageId]);
         return { accountId: row.account_id };
       });
     },
@@ -2962,69 +3648,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
     },
 
     search(query: ParsedQuery, accountId, limit, opts) {
-      if (opts?.scoped === true) freshScope();
-      const where: string[] = [];
-      const params: unknown[] = [];
-      let from = "FROM messages m";
-
-      // Control characters make MATCH throw and never occur in indexed text.
-      const text = query.text.replace(/[\u0000-\u001f\u007f]/g, "").trim();
-      if (Array.from(text).length >= FTS_MIN_CHARS) {
-        from = "FROM messages_fts JOIN messages m ON m.seq = messages_fts.rowid";
-        where.push("messages_fts MATCH ?");
-        params.push(ftsPhrase(text));
-      } else if (text !== "") {
-        const pattern = likePattern(text);
-        where.push(
-          "(mail_lower(m.subject) LIKE mail_lower(?) ESCAPE '\\' OR mail_lower(m.from_name) LIKE mail_lower(?) ESCAPE '\\' OR mail_lower(m.from_address) LIKE mail_lower(?) ESCAPE '\\')",
-        );
-        params.push(pattern, pattern, pattern);
-      }
-      if (accountId !== null) {
-        where.push("m.account_id = ?");
-        params.push(accountId);
-      }
-      if (query.from) {
-        const pattern = likePattern(query.from);
-        where.push(
-          "(mail_lower(m.from_address) LIKE mail_lower(?) ESCAPE '\\' OR mail_lower(m.from_name) LIKE mail_lower(?) ESCAPE '\\')",
-        );
-        params.push(pattern, pattern);
-      }
-      if (query.subject) {
-        where.push("mail_lower(m.subject) LIKE mail_lower(?) ESCAPE '\\'");
-        params.push(likePattern(query.subject));
-      }
-      if (query.unread !== undefined) {
-        where.push(query.unread ? "m.is_read = 0" : "m.is_read = 1");
-      }
-      const after = normalizeDate(query.after);
-      if (after !== null) {
-        where.push("m.date >= ?");
-        params.push(after);
-      }
-      const before = normalizeDate(query.before);
-      if (before !== null) {
-        where.push("m.date < ?");
-        params.push(before);
-      }
-      // A row waiting to move out is hidden until the move completes.
-      where.push("m.move_pending IS NULL");
-      // Agent paths: rows outside the AI scope go before the dedup picks a copy.
-      if (opts?.scoped === true) where.push(IN_AI_SCOPE);
-      params.push(limit);
-
-      // One hit per message (dedup key): the Inbox copy, else the newest row.
-      const sql = `SELECT * FROM (
-          SELECT ${SUMMARY_COLUMNS},
-            row_number() OVER (PARTITION BY m.account_id, m.dedup_key
-              ORDER BY ${IN_INBOX} DESC, m.seq DESC) AS rn
-          ${from}
-          WHERE ${where.join(" AND ")})
-        WHERE rn = 1
-        ORDER BY date IS NULL DESC, date DESC, id DESC
-        LIMIT ?`;
-      return (db.prepare(sql).all(...params) as MessageRow[]).map(toSummary);
+      return runSearch(query, accountId, limit, opts).hits;
     },
 
     repairSnippets() {
@@ -3094,14 +3718,14 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return atomic(() => {
         const listed = new Set(folders.map((f) => f.path));
         const upsert = db.prepare(
-          `INSERT INTO folders (account_id, path, name, delimiter, special_use, selectable)
-           VALUES (?, ?, ?, ?, ?, ?)
+          `INSERT INTO folders (account_id, path, name, delimiter, special_use, selectable, subscribed)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(account_id, path) DO UPDATE SET name = excluded.name,
              delimiter = excluded.delimiter, special_use = excluded.special_use,
-             selectable = excluded.selectable`,
+             selectable = excluded.selectable, subscribed = excluded.subscribed`,
         );
         for (const f of folders) {
-          upsert.run(accountId, f.path, f.name, f.delimiter, f.specialUse, f.selectable ? 1 : 0);
+          upsert.run(accountId, f.path, f.name, f.delimiter, f.specialUse, f.selectable ? 1 : 0, f.subscribed ? 1 : 0);
         }
         const removed = db
           .prepare<[string], { path: string }>(
@@ -3110,18 +3734,13 @@ export function createSqliteStore(db: Database.Database): MailStore {
           .all(accountId)
           .map((r) => r.path)
           .filter((path) => !listed.has(path));
-        const touched = new Set<string>();
-        for (const path of removed) {
-          const rows = db
-            .prepare<[string, string], { id: string; thread_id: string }>(
-              "SELECT id, thread_id FROM messages WHERE account_id = ? AND folder = ?",
-            )
-            .all(accountId, path);
-          for (const threadId of deleteRows(rows)) touched.add(threadId);
-          db.prepare("DELETE FROM sync_state WHERE account_id = ? AND folder = ?").run(accountId, path);
-          db.prepare("DELETE FROM folders WHERE account_id = ? AND path = ?").run(accountId, path);
+        for (const path of removed) removeFolderRows(accountId, path);
+        // A folder gone from the listing leaves the AI scope too, so a later
+        // folder of the same name never inherits it (spec resolution 3).
+        if (removed.length > 0) {
+          const gone = new Set(removed);
+          rewriteScopeFolders(accountId, (path) => (gone.has(path) ? null : path));
         }
-        refreshThreads(accountId, touched);
         return { removed };
       });
     },
@@ -3135,11 +3754,12 @@ export function createSqliteStore(db: Database.Database): MailStore {
             name: string;
             special_use: SpecialUse | null;
             selectable: number;
+            subscribed: number;
             total: number | null;
             unread: number | null;
           }
         >(
-          `SELECT f.path, f.name, f.special_use, f.selectable, c.total, c.unread
+          `SELECT f.path, f.name, f.special_use, f.selectable, f.subscribed, c.total, c.unread
            FROM folders f LEFT JOIN (
              SELECT folder, count(DISTINCT dedup_key) AS total,
                count(DISTINCT CASE WHEN is_read = 0 THEN dedup_key END) AS unread
@@ -3157,8 +3777,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
           selectable: r.selectable === 1,
           unreadCount: r.unread ?? 0,
           totalCount: r.total ?? 0,
-          // Stored by migration element 13 (Task 4).
-          subscribed: true,
+          subscribed: r.subscribed === 1,
         }))
         .sort(compareFolders);
     },
@@ -3198,6 +3817,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
           "UPDATE messages SET move_pending = ?, move_failures = 0 WHERE id = ?",
         );
         for (const id of ids) queue.run(destination, id);
+        promote(ids);
         return { accountId: first.account_id, folder: first.folder };
       });
     },
@@ -4353,6 +4973,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
              created_at = excluded.created_at, updated_at = excluded.updated_at`,
         );
         for (const row of rows) put.run({ ...row, dueAt: isoOf(row.dueAt), now: isoOf(nowIso) });
+        promote(rows.map((row) => row.messageId));
         return { created: rows.length };
       });
     },
@@ -5289,130 +5910,397 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
-    // ---- Slice 3h (Task 3 stubs; Task 4 implements them) ----
+    // ---- Slice 3h ----------------------------------------------------------
 
-    searchPage(query: ParsedQuery, accountId: string | null, limit: number, opts?: SearchOptions): { hits: MessageSummary[]; nextCursor: SearchCursor | null; attachmentMatches: AttachmentMatch[] } {
-      return { hits: store.search(query, accountId, limit, opts), nextCursor: null, attachmentMatches: [] };
+    searchPage(query, accountId, limit, opts) {
+      return runSearch(query, accountId, limit, opts);
     },
 
-    listMessages(_accountId: string, _folder: string, _cursor: string | null, _limit: number, _filter?: ThreadFilter): { messages: MessageSummary[]; nextCursor: string | null } {
-      return { messages: [], nextCursor: null };
+    listMessages(accountId, folder, cursor, limit, filter) {
+      return pageMessages({
+        from: "messages m",
+        where: `m.account_id = @accountId AND m.folder = @folder AND m.move_pending IS NULL${filterCondition(filter)}`,
+        params: { accountId, folder, ...filterParams(filter) },
+        cursor,
+        limit,
+      });
     },
 
-    listMessagesAll(_role: SpecialUse, _cursor: string | null, _limit: number, _filter?: ThreadFilter): { messages: MessageSummary[]; nextCursor: string | null } {
-      return { messages: [], nextCursor: null };
+    listMessagesAll(role, cursor, limit, filter) {
+      if (role === "all") return { messages: [], nextCursor: null };
+      return pageMessages({
+        from: MESSAGES_WITH_FOLDER,
+        where: `m.move_pending IS NULL AND ${ROW_ROLE} = @role${filterCondition(filter)}`,
+        params: { role, ...filterParams(filter) },
+        cursor,
+        limit,
+      });
     },
 
-    historyState(_accountId: string, _folder: string): { historySince: string | null; historyCheckedAt: string | null } | null {
-      return null;
+    promoteKept(messageIds) {
+      return atomic(() => {
+        const promote = db.prepare<[string], { id: string }>(
+          `UPDATE messages SET kept = 'opened'
+           WHERE kept IN ('history', 'search')
+             AND (account_id, dedup_key) IN (SELECT account_id, dedup_key FROM messages WHERE id = ?)
+           RETURNING id`,
+        );
+        const changed: string[] = [];
+        for (const id of messageIds) for (const row of promote.all(id)) changed.push(row.id);
+        return changed;
+      });
     },
 
-    historyForgetCount(_accountId: string, _folder: string): number {
-      return 0;
+    expireSearchRows(nowIso, days) {
+      const cutoff = new Date(Date.parse(nowIso) - days * 86_400_000).toISOString();
+      return atomic(() => {
+        const rows = db
+          .prepare<[string], { id: string; thread_id: string; account_id: string }>(
+            "SELECT id, thread_id, account_id FROM messages WHERE kept = 'search' AND kept_at < ?",
+          )
+          .all(cutoff);
+        const accounts = [...new Set(rows.map((row) => row.account_id))];
+        for (const accountId of accounts) {
+          refreshThreads(accountId, deleteRows(rows.filter((row) => row.account_id === accountId)));
+        }
+        return { removed: rows.length, accounts };
+      });
     },
 
-    movePendingCount(_accountId: string, _path: string): number {
-      return 0;
+    historyState(accountId, folder) {
+      const row = db
+        .prepare<[string, string], { history_since: string | null; history_checked_at: string | null }>(
+          "SELECT history_since, history_checked_at FROM sync_state WHERE account_id = ? AND folder = ?",
+        )
+        .get(accountId, folder);
+      return row === undefined ? null : { historySince: row.history_since, historyCheckedAt: row.history_checked_at };
     },
 
-    folderGrouping(_accountId: string, _path: string): boolean {
-      return true;
+    setHistorySince(accountId, folder, since) {
+      db.prepare("UPDATE sync_state SET history_since = ? WHERE account_id = ? AND folder = ?").run(
+        since === null ? null : isoOf(since),
+        accountId,
+        folder,
+      );
     },
 
-    listSavedSearches(): SavedSearchRow[] {
-      return [];
+    historyChecked(accountId, folder, atIso) {
+      db.prepare("UPDATE sync_state SET history_checked_at = ? WHERE account_id = ? AND folder = ?").run(
+        isoOf(atIso),
+        accountId,
+        folder,
+      );
     },
 
-    filesList(_filter: FilesFilter, _cursor: string | null, _limit: number): { files: FileRow[]; nextCursor: string | null } {
-      return { files: [], nextCursor: null };
+    historyForgetCount(accountId, folder) {
+      return forgettable(accountId, folder).length;
     },
 
-    senderStats(_address: string, _accountId: string | null): SenderStats {
-      return { name: null, fromCount: 0, toCount: 0, toCapped: false, firstDate: null, lastDate: null, conversations: [], files: [] };
+    historyForget(accountId, folder) {
+      return atomic(() => {
+        const rows = forgettable(accountId, folder);
+        refreshThreads(accountId, deleteRows(rows));
+        db.prepare("UPDATE sync_state SET history_since = NULL WHERE account_id = ? AND folder = ?").run(accountId, folder);
+        return rows.length;
+      });
     },
 
-    relatedCandidates(_messageId: string, _terms: readonly string[]): RelatedCandidate[] {
-      return [];
+    rehomeFolder(accountId, from, to, delimiter) {
+      atomic(() => {
+        // `from` itself, and its children when the account has a delimiter.
+        const prefix = delimiter === "" ? null : from + delimiter;
+        const rewrite = (table: string, column: string, owner: string, orReplace = false) =>
+          db
+            .prepare(
+              `UPDATE ${orReplace ? "OR REPLACE " : ""}${table} SET ${column} = @to || substr(${column}, @cut)
+               WHERE ${owner} = @accountId AND (${column} = @from
+                 OR (@prefix IS NOT NULL AND substr(${column}, 1, length(@prefix)) = @prefix))`,
+            )
+            .run({ accountId, from, to, prefix, cut: from.length + 1 });
+        const touched = db
+          .prepare<[string, string], { thread_id: string }>(
+            "SELECT DISTINCT thread_id FROM messages WHERE account_id = ? AND folder = ?",
+          )
+          .all(accountId, from)
+          .map((row) => row.thread_id);
+        rewrite("messages", "folder", "account_id");
+        rewrite("sync_state", "folder", "account_id", true);
+        rewrite("folders", "path", "account_id", true);
+        rewrite("compose_drafts", "server_folder", "account_id");
+        rewrite("accounts", "snooze_folder", "id");
+        rewrite("snoozes", "return_to", "account_id");
+        rewrite("folder_prefs", "path", "account_id", true);
+        // The renamed folder's own name is its last segment; children keep theirs.
+        const name = prefix === null ? to : to.slice(to.lastIndexOf(delimiter) + 1) || to;
+        db.prepare("UPDATE folders SET name = ? WHERE account_id = ? AND path = ?").run(name, accountId, to);
+        rewriteScopeFolders(accountId, (path) => renamedPath(path, from, to, delimiter) ?? path);
+        refreshThreads(accountId, touched);
+      });
     },
 
-    summaries(_messageIds: readonly string[]): MessageSummary[] {
-      return [];
+    dropFolder(accountId, path) {
+      atomic(() => {
+        const delimiter =
+          db
+            .prepare<[string, string], { delimiter: string | null }>(
+              "SELECT delimiter FROM folders WHERE account_id = ? AND path = ?",
+            )
+            .get(accountId, path)?.delimiter ?? "";
+        removeFolderRows(accountId, path);
+        rewriteScopeFolders(accountId, (entry) => (renamedPath(entry, path, path, delimiter) === null ? entry : null));
+      });
     },
 
-    gmLabels(_messageIds: readonly string[]): Map<string, string[]> {
-      return new Map();
+    movePendingCount(accountId, path) {
+      return (
+        db
+          .prepare<[string, string, string], { n: number }>(
+            `SELECT count(*) AS n FROM messages
+             WHERE account_id = ? AND ((folder = ? AND move_pending IS NOT NULL) OR move_pending = ?)`,
+          )
+          .get(accountId, path, path)?.n ?? 0
+      );
     },
 
-    accountLabels(_accountId: string): string[] {
-      return [];
+    folderGrouping(accountId, path) {
+      const row = db
+        .prepare<[string, string], { grouping: number }>("SELECT grouping FROM folder_prefs WHERE account_id = ? AND path = ?")
+        .get(accountId, path);
+      return row === undefined ? true : row.grouping === 1;
     },
 
-    attachmentTextCandidates(_limit: number): AttachmentCandidate[] {
-      return [];
+    setFolderGrouping(accountId, path, grouping) {
+      db.prepare(
+        `INSERT INTO folder_prefs (account_id, path, grouping) VALUES (?, ?, ?)
+         ON CONFLICT(account_id, path) DO UPDATE SET grouping = excluded.grouping`,
+      ).run(accountId, path, grouping ? 1 : 0);
     },
 
-    attachmentTextStatus(): { indexed: number; skipped: number; failed: number; pending: number; totalChars: number } {
-      return { indexed: 0, skipped: 0, failed: 0, pending: 0, totalChars: 0 };
+    listSavedSearches() {
+      return savedSearchRows().map((row) => ({
+        id: row.id,
+        name: row.name,
+        query: row.query,
+        accountId: row.account_id,
+        position: row.position,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
     },
 
-    promoteKept(_messageIds: readonly string[]): string[] {
-      throw new Error(NOT_YET);
+    saveSavedSearch(row, newId) {
+      return atomic(() => {
+        if (row.id !== null) {
+          const changed = db
+            .prepare("UPDATE saved_searches SET name = ?, query = ?, account_id = ?, updated_at = ? WHERE id = ?")
+            .run(row.name, row.query, row.accountId, row.nowIso, row.id).changes;
+          return changed === 0 ? "not_found" : { id: row.id };
+        }
+        const rows = savedSearchRows();
+        if (rows.length >= SAVED_SEARCHES_MAX) return "full";
+        db.prepare(
+          `INSERT INTO saved_searches (id, name, query, account_id, position, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ).run(newId, row.name, row.query, row.accountId, rows.length, row.nowIso, row.nowIso);
+        return { id: newId };
+      });
     },
 
-    expireSearchRows(_nowIso: string, _days: number): { removed: number; accounts: string[] } {
-      throw new Error(NOT_YET);
+    deleteSavedSearch(id) {
+      return atomic(() => {
+        const removed = db.prepare("DELETE FROM saved_searches WHERE id = ?").run(id).changes > 0;
+        if (removed) renumberSavedSearches(savedSearchRows().map((row) => row.id));
+        return removed;
+      });
     },
 
-    setHistorySince(_accountId: string, _folder: string, _since: string | null): void {
-      throw new Error(NOT_YET);
+    moveSavedSearch(id, position) {
+      return atomic(() => {
+        const ids = savedSearchRows().map((row) => row.id);
+        const at = ids.indexOf(id);
+        if (at === -1) return false;
+        ids.splice(at, 1);
+        ids.splice(Math.max(0, Math.min(position, ids.length)), 0, id);
+        renumberSavedSearches(ids);
+        return true;
+      });
     },
 
-    historyChecked(_accountId: string, _folder: string, _atIso: string): void {
-      throw new Error(NOT_YET);
+    filesList(filter, cursor, limit) {
+      return pageFiles(filter, cursor, limit);
     },
 
-    historyForget(_accountId: string, _folder: string): number {
-      throw new Error(NOT_YET);
+    senderStats(address, accountId) {
+      const params = { address, accountId };
+      const account = accountId === null ? "" : " AND m.account_id = @accountId";
+      const fromRows = `FROM messages m WHERE m.from_address = @address COLLATE NOCASE${account}
+        AND m.move_pending IS NULL AND ${NOT_JUNK_OR_TRASH}`;
+      const stats = db
+        .prepare<[typeof params], { n: number; first: string | null; last: string | null }>(
+          `SELECT count(DISTINCT m.account_id || char(31) || m.dedup_key) AS n, min(m.date) AS first, max(m.date) AS last ${fromRows}`,
+        )
+        .get(params) ?? { n: 0, first: null, last: null };
+      const name =
+        db
+          .prepare<[typeof params], { from_name: string | null }>(
+            `SELECT m.from_name ${fromRows} AND m.from_name IS NOT NULL AND m.from_name != '' ORDER BY m.date DESC LIMIT 1`,
+          )
+          .get(params)?.from_name ?? null;
+      // To/Cc have no index: the newest SENDER_TO_SCAN rows only ("in recent mail").
+      const recent = db
+        .prepare<[{ accountId: string | null; scan: number }], { n: number }>(
+          `SELECT count(*) AS n FROM (SELECT 1 FROM messages m WHERE (@accountId IS NULL OR m.account_id = @accountId)
+             ORDER BY m.seq DESC LIMIT @scan)`,
+        )
+        .get({ accountId, scan: SENDER_TO_SCAN + 1 })?.n ?? 0;
+      const pattern = likePattern(`"${address}"`);
+      const toCount =
+        db
+          .prepare<[{ accountId: string | null; scan: number; pattern: string }], { n: number }>(
+            `SELECT count(DISTINCT m.account_id || char(31) || m.dedup_key) AS n FROM (
+               SELECT * FROM messages m WHERE (@accountId IS NULL OR m.account_id = @accountId)
+               ORDER BY m.seq DESC LIMIT @scan) m
+             WHERE m.move_pending IS NULL AND ${NOT_JUNK_OR_TRASH}
+               AND (mail_lower(m.to_json) LIKE mail_lower(@pattern) ESCAPE '\\'
+                 OR mail_lower(m.cc_json) LIKE mail_lower(@pattern) ESCAPE '\\')`,
+          )
+          .get({ accountId, scan: SENDER_TO_SCAN, pattern })?.n ?? 0;
+      const conversations = pageThreads({
+        where: `threads.id IN (SELECT m.thread_id ${fromRows})`,
+        flagged: "EXISTS (SELECT 1 FROM messages f WHERE f.thread_id = threads.id AND f.move_pending IS NULL AND f.is_flagged = 1)",
+        snoozed: "(SELECT min(z.due_at) FROM messages s JOIN snoozes z ON z.message_id = s.id WHERE s.thread_id = threads.id)",
+        latest: "messages l WHERE l.thread_id = @threadId AND l.move_pending IS NULL",
+        params: accountId === null ? { address } : { address, accountId },
+        cursor: null,
+        limit: SENDER_CONVERSATIONS,
+      }).threads;
+      const files = pageFiles(
+        { sender: address, ...(accountId === null ? {} : { accountId }) },
+        null,
+        SENDER_FILES,
+      ).files;
+      return {
+        name,
+        fromCount: stats.n,
+        toCount,
+        toCapped: recent > SENDER_TO_SCAN,
+        firstDate: stats.first,
+        lastDate: stats.last,
+        conversations,
+        files,
+      };
     },
 
-    rehomeFolder(_accountId: string, _from: string, _to: string, _delimiter: string): void {
-      throw new Error(NOT_YET);
+    relatedCandidates(messageId, terms) {
+      return relatedOf(messageId, terms);
     },
 
-    dropFolder(_accountId: string, _path: string): void {
-      throw new Error(NOT_YET);
+    summaries(messageIds) {
+      if (messageIds.length === 0) return [];
+      const one = db.prepare<[string], MessageRow>(`SELECT ${SUMMARY_COLUMNS} FROM messages m WHERE m.id = ?`);
+      return messageIds.flatMap((id) => {
+        const row = one.get(id);
+        return row === undefined ? [] : [toSummary(row)];
+      });
     },
 
-    setFolderGrouping(_accountId: string, _path: string, _grouping: boolean): void {
-      throw new Error(NOT_YET);
+    gmLabels(messageIds) {
+      const one = db.prepare<[string], { gm_labels: string | null }>(
+        `SELECT ${GM_LABELS_OF_COPIES} AS gm_labels FROM messages m WHERE m.id = ?`,
+      );
+      const out = new Map<string, string[]>();
+      for (const id of messageIds) {
+        const row = one.get(id);
+        if (row !== undefined) out.set(id, parseGmLabels(row.gm_labels));
+      }
+      return out;
     },
 
-    saveSavedSearch(_row: { id: string; name: string; query: string; accountId: string | null; nowIso: string }): "ok" | "full" | "not_found" {
-      throw new Error(NOT_YET);
+    setGmLabels(accountId, folder, entries) {
+      atomic(() => {
+        const update = db.prepare("UPDATE messages SET gm_labels = ? WHERE account_id = ? AND folder = ? AND uid = ?");
+        for (const entry of entries) update.run(JSON.stringify(entry.labels), accountId, folder, entry.uid);
+      });
     },
 
-    deleteSavedSearch(_id: string): boolean {
-      throw new Error(NOT_YET);
+    accountLabels(accountId) {
+      const labels = new Set<string>();
+      for (const row of db
+        .prepare<[string], { gm_labels: string }>(
+          "SELECT DISTINCT gm_labels FROM messages WHERE account_id = ? AND gm_labels IS NOT NULL",
+        )
+        .all(accountId)) {
+        for (const label of parseGmLabels(row.gm_labels)) labels.add(label);
+      }
+      return [...labels].sort((a, b) => a.localeCompare(b));
     },
 
-    moveSavedSearch(_id: string, _position: number): boolean {
-      throw new Error(NOT_YET);
+    attachmentTextCandidates(limit) {
+      return db
+        .prepare<[number], AttachmentCandidateRow>(
+          `SELECT a.message_id, a.part_id, a.kind, a.size, a.is_inline, m.size AS message_size, m.date, m.kept,
+             ${SCOPE_ROLE} AS folder_use
+           FROM attachments a JOIN messages m ON m.id = a.message_id
+           WHERE a.is_inline = 0 AND a.kind IN ('text', 'pdf') AND m.move_pending IS NULL
+             AND (m.kept IS NULL OR m.kept != 'search')
+             AND NOT EXISTS (SELECT 1 FROM attachment_text t WHERE t.message_id = a.message_id AND t.part_id = a.part_id)
+           ORDER BY m.date IS NULL, m.date DESC, m.seq DESC, a.part_id
+           LIMIT ?`,
+        )
+        .all(limit)
+        .map((row) => ({
+          messageId: row.message_id,
+          partId: row.part_id,
+          kind: row.kind,
+          size: row.size,
+          messageSize: row.message_size,
+          date: row.date,
+          folderUse: row.folder_use,
+          kept: row.kept,
+          inline: row.is_inline === 1,
+        }));
     },
 
-    setGmLabels(_accountId: string, _folder: string, _entries: readonly { uid: number; labels: string[] }[]): void {
-      throw new Error(NOT_YET);
+    insertAttachmentText(row) {
+      db.prepare(
+        `INSERT INTO attachment_text (message_id, part_id, state, reason, body, extracted_at)
+         VALUES (@messageId, @partId, @state, @reason, @body, @extractedAt)
+         ON CONFLICT(message_id, part_id) DO UPDATE SET state = excluded.state, reason = excluded.reason,
+           body = excluded.body, extracted_at = excluded.extracted_at`,
+      ).run({ ...row, body: row.state === "indexed" ? row.body : null });
     },
 
-    insertAttachmentText(_row: AttachmentTextRow): void {
-      throw new Error(NOT_YET);
+    attachmentTextStatus() {
+      const counts = db
+        .prepare<[], { state: string; n: number; chars: number | null }>(
+          "SELECT state, count(*) AS n, sum(length(body)) AS chars FROM attachment_text GROUP BY state",
+        )
+        .all();
+      const of = (state: string) => counts.find((row) => row.state === state)?.n ?? 0;
+      const pending =
+        db
+          .prepare<[], { n: number }>(
+            `SELECT count(*) AS n FROM attachments a JOIN messages m ON m.id = a.message_id
+             WHERE a.is_inline = 0 AND a.kind IN ('text', 'pdf') AND m.move_pending IS NULL
+               AND (m.kept IS NULL OR m.kept != 'search') AND ${NOT_JUNK_OR_TRASH}
+               AND NOT EXISTS (SELECT 1 FROM attachment_text t WHERE t.message_id = a.message_id AND t.part_id = a.part_id)`,
+          )
+          .get()?.n ?? 0;
+      return {
+        indexed: of("indexed"),
+        skipped: of("skipped"),
+        failed: of("failed"),
+        pending,
+        totalChars: counts.reduce((sum, row) => sum + (row.chars ?? 0), 0),
+      };
     },
 
-    retryAttachmentText(): number {
-      throw new Error(NOT_YET);
+    retryAttachmentText() {
+      return db.prepare("DELETE FROM attachment_text WHERE state = 'failed'").run().changes;
     },
 
-    clearAttachmentText(): number {
-      throw new Error(NOT_YET);
+    clearAttachmentText() {
+      return db.prepare("DELETE FROM attachment_text").run().changes;
     },
 
     // ---- Slice 3g --------------------------------------------------------
