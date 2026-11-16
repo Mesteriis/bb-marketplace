@@ -4476,6 +4476,24 @@ describe("inbox triage: snooze (slice 3e)", () => {
     expect(sqlStore(host).listSnoozes("acc_1", { limit: 10 })).toEqual([]);
   });
 
+  it("undo keeps the snooze of a message it could not move back, so the return still happens (review item 6)", async () => {
+    const host = await loadTriage({ messages: [{ folder: "INBOX", uid: 1 }, { folder: "INBOX", uid: 2 }] });
+    sqlStore(host).setSnoozeFolder("acc_1", "Work");
+    const [a, b] = [messageIdAt(host, "INBOX", 1), messageIdAt(host, "INBOX", 2)];
+    await snooze(host, [a, b], { undoId: UNDO_A });
+    pushMove(host, "INBOX", "Work", [1, 2]);
+    // The clock already started returning b: its move back is queued.
+    sqlStore(host).updateSnooze(b, { state: "snoozed" }, NOW.toISOString());
+    expect(await call(host, "message_unsnooze", { messageIds: [b] })).toEqual({ ok: true });
+    expect(rowOf(host, b)).toMatchObject({ folder: "Work", movePending: "INBOX" });
+
+    const result = await undo(host);
+    expect(result).toMatchObject({ outcome: "done", restored: 1, skipped: [{ reason: "moved_elsewhere", count: 1 }] });
+    expect(rowOf(host, a)).toMatchObject({ folder: "Work", movePending: "INBOX" });
+    // a's snooze went with its move back; b's stays, so the clock finishes the return.
+    expect(sqlStore(host).listSnoozes("acc_1", { limit: 10 })).toMatchObject([{ messageId: b, state: "returning" }]);
+  });
+
   it("Return now moves a snoozed message back unread through the clock", async () => {
     const host = await loadTriage({ messages: [{ folder: "INBOX", uid: 1 }] });
     sqlStore(host).setSnoozeFolder("acc_1", "Work");
