@@ -443,7 +443,52 @@ export type RawRef = {
   uidValidity: number | null;
 };
 
-/** A parsed search query: free text plus optional operators. */
+/** What an attachment is, for the viewer and the Files view (slice 3h; stored in attachments.kind). */
+export const fileKindSchema = z.enum(["image", "pdf", "text", "document", "archive", "calendar", "other"]);
+export type FileKind = z.infer<typeof fileKindSchema>;
+
+/** The operators a search condition may carry (slice 3h). */
+export const searchFieldSchema = z.enum([
+  "from",
+  "to",
+  "cc",
+  "subject",
+  "has",
+  "filename",
+  "in",
+  "account",
+  "is",
+  "larger",
+  "smaller",
+  "after",
+  "before",
+  "list",
+  "category",
+  "label",
+]);
+export type SearchField = z.infer<typeof searchFieldSchema>;
+
+/**
+ * One operator of a query, its value normalized (slice 3h): `has` is
+ * `attachment`; `is` is `unread` or `flagged` (read and unflagged are their
+ * negations); sizes are whole bytes; dates are ISO dates (relative dates are
+ * already turned into `after` / `before`); `in` roles are lower case
+ * (`spam` is `junk`).
+ */
+export type SearchCondition = { field: SearchField; value: string; negated: boolean };
+
+/** Why a token stayed free text. */
+export const searchNoteSchema = z.object({
+  kind: z.enum(["unknown_operator", "bad_value"]),
+  token: z.string(),
+});
+export type SearchNote = z.infer<typeof searchNoteSchema>;
+
+/**
+ * A parsed search query: free text plus operators. `conditions` is the full
+ * query (slice 3h); `from`, `subject`, `unread`, `after` and `before` are
+ * derived from its positive conditions for older callers.
+ */
 export type ParsedQuery = {
   text: string;
   from?: string;
@@ -451,6 +496,8 @@ export type ParsedQuery = {
   unread?: boolean;
   after?: string;
   before?: string;
+  conditions: SearchCondition[];
+  notes: SearchNote[];
 };
 
 // ---- Compose and send (slice 3b) ----

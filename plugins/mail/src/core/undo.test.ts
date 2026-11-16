@@ -9,6 +9,7 @@ import {
   recordGroups,
   undoResultText,
   undoToastText,
+  labelsGroup,
   type UndoGroup,
   type UndoRecord,
   type UndoRow,
@@ -480,5 +481,62 @@ describe("slice 3e: groups carry their own kind", () => {
     expect(undoToastText("block", 0, null)).toBe("Blocked");
     expect(undoToastText("triage", 5, null)).toBe("Applied 5 actions");
     expect(undoToastText("triage", 1, null)).toBe("Applied 1 action");
+  });
+});
+
+describe("labels (slice 3h)", () => {
+  const deltas = [
+    { messageId: "m1", added: ["Receipts"], removed: [] },
+    { messageId: "m2", added: [], removed: ["Work"] },
+  ];
+
+  it("records a labels group only when something changed", () => {
+    expect(labelsGroup("a1", "[Gmail]/All Mail", [])).toEqual([]);
+    expect(labelsGroup("a1", "[Gmail]/All Mail", deltas)).toEqual([
+      {
+        accountId: "a1",
+        kind: "labels",
+        change: null,
+        source: "[Gmail]/All Mail",
+        destination: null,
+        destinationUse: null,
+        ids: ["m1", "m2"],
+        labelDeltas: deltas,
+      },
+    ]);
+  });
+
+  it("round-trips: undo removes what was added and adds back what was removed", () => {
+    const now = new Date("2026-11-16T10:00:00.000Z");
+    const record = mergeRecord(null, "u1", "labels", labelsGroup("a1", "[Gmail]/All Mail", deltas), now)!;
+    expect(record.action).toBe("labels");
+    const rows = rowsOf(row("m1", "[Gmail]/All Mail"), row("m2", "[Gmail]/All Mail"));
+    expect(planUndo(record, rows, foldersOf(GMAIL))).toEqual({
+      steps: [
+        {
+          kind: "labels",
+          accountId: "a1",
+          ids: ["m1", "m2"],
+          changes: [
+            { messageId: "m1", add: [], remove: ["Receipts"] },
+            { messageId: "m2", add: ["Work"], remove: [] },
+          ],
+        },
+      ],
+      skipped: [],
+    });
+  });
+
+  it("skips a message that is gone", () => {
+    const now = new Date("2026-11-16T10:00:00.000Z");
+    const record = mergeRecord(null, "u1", "labels", labelsGroup("a1", "[Gmail]/All Mail", deltas), now)!;
+    const plan = planUndo(record, rowsOf(row("m1", "[Gmail]/All Mail")), foldersOf(GMAIL));
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.skipped).toEqual([{ accountId: "a1", folder: "[Gmail]/All Mail", count: 1, reason: "gone" }]);
+  });
+
+  it("has its texts", () => {
+    expect(undoToastText("labels", 2, null)).toBe("Labels changed");
+    expect(undoResultText({ outcome: "done", restored: 2, skipped: [], failed: 0 })).toBe("Undone");
   });
 });

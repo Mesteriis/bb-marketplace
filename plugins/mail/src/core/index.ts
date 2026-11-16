@@ -59,3 +59,7 @@ export * from "./alerts.ts";
 export * from "./mail-rules.ts";
 export * from "./dev-groups.ts";
 export * from "./dev-backfill.ts";
+export * from "./file-kinds.ts";
+export * from "./quotes.ts";
+export * from "./labels.ts";
+export * from "./folder-ops.ts";

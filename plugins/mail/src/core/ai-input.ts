@@ -110,7 +110,8 @@ const WROTE = "wrote:";
 /** The Russian forms of "wrote:" (masculine, feminine, either). */
 const WROTE_RU = ["\u043d\u0430\u043f\u0438\u0441\u0430\u043b:", "\u043d\u0430\u043f\u0438\u0441\u0430\u043b\u0430:", "\u043d\u0430\u043f\u0438\u0441\u0430\u043b(\u0430):"];
 
-function isAttribution(line: string): boolean {
+/** An "On ... wrote:" line, English or Russian (also read by quotes.ts). */
+export function isAttribution(line: string): boolean {
   const text = line.trim();
   return text.endsWith(WROTE) || WROTE_RU.some((suffix) => text.endsWith(suffix));
 }

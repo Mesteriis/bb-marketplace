@@ -11,6 +11,7 @@
 // moved to a label, to Trash or to Spam is moved back, which on Gmail also
 // takes the label off (owner's decision, 2026-11-15).
 import { flagChangeOf } from "./actions.ts";
+import type { LabelDelta } from "./labels.ts";
 import type { FlagChange, Folder, MessageAction, SpecialUse } from "./model.ts";
 
 /** How long the last action stays undoable. */
@@ -18,11 +19,14 @@ export const UNDO_TTL_MS = 10 * 60 * 1000;
 /** How long the page shows the Undo toast. */
 export const UNDO_TOAST_MS = 10_000;
 
-/** What a group queued: a move, a \Seen / \Flagged change, or a move into the snooze folder. */
-export type UndoGroupKind = "move" | "flags" | "snooze";
+/**
+ * What a group queued: a move, a \Seen / \Flagged change, a move into the
+ * snooze folder, or a Gmail label change (slice 3h, spec resolution 10).
+ */
+export type UndoGroupKind = "move" | "flags" | "snooze" | "labels";
 
 /** The actions an undo record names; only toast texts read it (spec resolution 14). */
-export type UndoAction = MessageAction | "snooze" | "block" | "triage";
+export type UndoAction = MessageAction | "snooze" | "block" | "triage" | "labels";
 
 /**
  * The ids one action queued in one account and source folder. Each group
@@ -44,6 +48,8 @@ export type UndoGroup = {
   prior?: { id: string; seen: boolean; flagged: boolean }[];
   /** `snooze` groups: the snooze rows (keyed by message id) the group created; undo deletes them. */
   snoozeIds?: string[];
+  /** `labels` groups: per message, only the labels the change really added or removed. */
+  labelDeltas?: LabelDelta[];
 };
 
 export type UndoRecord = {
@@ -79,7 +85,11 @@ export type UndoRow = {
 export type UndoStep =
   | { kind: "cancel_pending"; accountId: string; folder: string; destination: string; ids: string[] }
   | { kind: "move_back"; accountId: string; from: string; to: string; ids: string[]; copyIfGmail: boolean }
-  | { kind: "flags"; ids: string[]; change: FlagChange };
+  | { kind: "flags"; ids: string[]; change: FlagChange }
+  | { kind: "labels"; accountId: string; ids: string[]; changes: LabelUndoChange[] };
+
+/** One message's inverse label change: add back what was removed, remove what was added. */
+export type LabelUndoChange = { messageId: string; add: string[]; remove: string[] };
 
 export type UndoSkipReason = "moved_elsewhere" | "gone" | "folder_gone";
 export type UndoSkip = { accountId: string; folder: string; count: number; reason: UndoSkipReason };
@@ -118,6 +128,10 @@ export function planUndo(
   };
 
   for (const group of record.groups) {
+    if (group.kind === "labels") {
+      planLabels(group, rows, steps, () => skip(group, "gone"));
+      continue;
+    }
     if (group.kind === "flags") {
       if (group.change !== null) planFlags(group, group.change, rows, add);
       continue;
@@ -166,6 +180,52 @@ export function planUndo(
     }
   }
   return { steps: [...steps.values()], skipped: [...skipped.values()] };
+}
+
+/**
+ * A labels group undoes per message: what the change added is removed,
+ * what it removed is added back; labels the message had before are never
+ * touched (they are not in the deltas). A message no longer stored is skipped.
+ */
+function planLabels(
+  group: UndoGroup,
+  rows: ReadonlyMap<string, UndoRow>,
+  steps: Map<string, UndoStep>,
+  gone: () => void,
+): void {
+  const key = `labels\u0000${group.accountId}`;
+  for (const delta of group.labelDeltas ?? []) {
+    const row = rows.get(delta.messageId);
+    if (row === undefined || row.accountId !== group.accountId) {
+      gone();
+      continue;
+    }
+    let step = steps.get(key);
+    if (step === undefined) {
+      step = { kind: "labels", accountId: group.accountId, ids: [], changes: [] };
+      steps.set(key, step);
+    }
+    if (step.kind !== "labels") continue;
+    step.ids.push(delta.messageId);
+    step.changes.push({ messageId: delta.messageId, add: [...delta.removed], remove: [...delta.added] });
+  }
+}
+
+/** The undo group of one labels_change in one account (none when nothing changed). */
+export function labelsGroup(accountId: string, folder: string, deltas: LabelDelta[]): UndoGroup[] {
+  if (deltas.length === 0) return [];
+  return [
+    {
+      accountId,
+      kind: "labels",
+      change: null,
+      source: folder,
+      destination: null,
+      destinationUse: null,
+      ids: deltas.map((delta) => delta.messageId),
+      labelDeltas: deltas.map((delta) => ({ messageId: delta.messageId, added: [...delta.added], removed: [...delta.removed] })),
+    },
+  ];
 }
 
 function planFlags(
@@ -288,6 +348,8 @@ export function undoToastText(action: UndoAction, count: number, detail: string 
       return `Snoozed until ${detail ?? "later"}`;
     case "block":
       return count === 0 ? "Blocked" : `Blocked \u00b7 ${n} moved to Spam`;
+    case "labels":
+      return "Labels changed";
     case "triage":
       return `Applied ${count} action${count === 1 ? "" : "s"}`;
     case "archive":

@@ -21,6 +21,7 @@ import {
   type TranslationRecord,
 } from "../../core/ports.ts";
 import { REMINDERS_LIVE_MAX, dueAt } from "../../core/reminders.ts";
+import { parseQuery } from "../../core/search.ts";
 import { RULES_MAX, type Rule } from "../../core/mail-rules.ts";
 import { TRANSLATION_CACHE_ROWS } from "../../core/translate.ts";
 import type { UnsubscribeInfo } from "../../core/unsubscribe.ts";
@@ -467,7 +468,7 @@ describe("createSqliteStore", () => {
       expect(count(db, table)).toBe(0);
     }
     expect(count(db, "messages_fts_docsize")).toBe(0);
-    expect(store.search({ text: "Invented" }, null, 50)).toEqual([]);
+    expect(store.search(parseQuery("Invented"), null, 50)).toEqual([]);
   });
 
   it("listThreads pages with a cursor", () => {
@@ -502,10 +503,10 @@ describe("createSqliteStore", () => {
       makeFetchedMessage(1, { subject: "Отчёт за квартал" }),
       makeFetchedMessage(2, { subject: "Invented other" }),
     ]);
-    const results = store.search({ text: "квартал" }, "acc_1", 50);
+    const results = store.search(parseQuery("квартал"), "acc_1", 50);
     expect(results.map((r) => r.id)).toEqual([idOf(store, 1)]);
     expect(results[0]).toMatchObject({ subject: "Отчёт за квартал", accountId: "acc_1" });
-    expect(store.search({ text: "ОТЧЁТ" }, null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
+    expect(store.search(parseQuery("ОТЧЁТ"), null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
   });
 
   it("search follows content updates and survives flag-only updates", () => {
@@ -515,16 +516,16 @@ describe("createSqliteStore", () => {
     store.markOpened(id);
     store.applyFlags("acc_1", INBOX, [{ uid: 1, seen: true, flagged: true }]);
     store.assignThreads("acc_1", new Map([[id, "t_other"]]));
-    expect(store.search({ text: "alpha" }, null, 50)).toEqual([]);
-    expect(store.search({ text: "omega" }, null, 50).map((r) => r.id)).toEqual([id]);
+    expect(store.search(parseQuery("alpha"), null, 50)).toEqual([]);
+    expect(store.search(parseQuery("omega"), null, 50).map((r) => r.id)).toEqual([id]);
   });
 
   it("search ignores control characters in the text", () => {
     store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { subject: "Invented hello" })]);
-    expect(store.search({ text: "hel\u0000lo\u001f\u007f" }, null, 50).map((r) => r.id)).toEqual([
+    expect(store.search(parseQuery("hel\u0000lo\u001f\u007f"), null, 50).map((r) => r.id)).toEqual([
       idOf(store, 1),
     ]);
-    expect(() => store.search({ text: "\u0000\u0001" }, null, 50)).not.toThrow();
+    expect(() => store.search(parseQuery("\u0000\u0001"), null, 50)).not.toThrow();
   });
 
   it("subject: filter matches Cyrillic regardless of case", () => {
@@ -532,10 +533,10 @@ describe("createSqliteStore", () => {
       makeFetchedMessage(1, { subject: "Отчёт за квартал" }),
       makeFetchedMessage(2, { subject: "Invented other" }),
     ]);
-    expect(store.search({ text: "", subject: "отчёт" }, null, 50).map((r) => r.id)).toEqual([
+    expect(store.search(parseQuery("subject:отчёт"), null, 50).map((r) => r.id)).toEqual([
       idOf(store, 1),
     ]);
-    expect(store.search({ text: "", subject: "КВАРТАЛ" }, null, 50).map((r) => r.id)).toEqual([
+    expect(store.search(parseQuery("subject:КВАРТАЛ"), null, 50).map((r) => r.id)).toEqual([
       idOf(store, 1),
     ]);
   });
@@ -545,10 +546,10 @@ describe("createSqliteStore", () => {
       makeFetchedMessage(1, { from: { name: "Иван Петров", address: "ivan@example.org" } }),
       makeFetchedMessage(2),
     ]);
-    expect(store.search({ text: "", from: "иван" }, null, 50).map((r) => r.id)).toEqual([
+    expect(store.search(parseQuery("from:иван"), null, 50).map((r) => r.id)).toEqual([
       idOf(store, 1),
     ]);
-    expect(store.search({ text: "", from: "ПЕТРОВ" }, null, 50).map((r) => r.id)).toEqual([
+    expect(store.search(parseQuery("from:ПЕТРОВ"), null, 50).map((r) => r.id)).toEqual([
       idOf(store, 1),
     ]);
   });
@@ -558,8 +559,8 @@ describe("createSqliteStore", () => {
       makeFetchedMessage(1, { subject: "Юг и север" }),
       makeFetchedMessage(2, { subject: "Invented other" }),
     ]);
-    expect(store.search({ text: "юг" }, null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
-    expect(store.search({ text: "ЮГ" }, null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
+    expect(store.search(parseQuery("юг"), null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
+    expect(store.search(parseQuery("ЮГ"), null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
   });
 
   it("search with a 2-character query falls back to LIKE", () => {
@@ -568,17 +569,17 @@ describe("createSqliteStore", () => {
       makeFetchedMessage(2, { subject: "Invented", bodyText: "hi in the body only" }),
       makeFetchedMessage(3, { subject: "Invented", from: { name: "Hilda", address: "h@example.org" } }),
     ]);
-    const ids = store.search({ text: "hi" }, null, 50).map((r) => r.id);
+    const ids = store.search(parseQuery("hi"), null, 50).map((r) => r.id);
     expect(ids.sort()).toEqual([idOf(store, 1), idOf(store, 3)].sort());
-    expect(store.search({ text: "%" }, null, 50)).toEqual([]);
+    expect(store.search(parseQuery("%"), null, 50)).toEqual([]);
   });
 
   it("search escapes quotes in the query", () => {
     store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { subject: 'Say "hello" now' })]);
-    expect(store.search({ text: '"hello"' }, null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
-    expect(() => store.search({ text: 'a"b OR c' }, null, 50)).not.toThrow();
+    expect(store.search(parseQuery('"hello"'), null, 50).map((r) => r.id)).toEqual([idOf(store, 1)]);
+    expect(() => store.search(parseQuery('a"b OR c'), null, 50)).not.toThrow();
     // "zzzz" occurs nowhere: a live OR operator would still match on "hello".
-    expect(store.search({ text: "hello OR zzzz" }, null, 50)).toEqual([]);
+    expect(store.search(parseQuery("hello OR zzzz"), null, 50)).toEqual([]);
   });
 
   it("search applies operators, orders newest first and honours the limit", () => {
@@ -593,13 +594,13 @@ describe("createSqliteStore", () => {
     ]);
     const ids = (q: Parameters<MailStore["search"]>[0], limit = 50) =>
       store.search(q, "acc_1", limit).map((r) => r.id);
-    expect(ids({ text: "budget" })).toEqual([idOf(store, 3), idOf(store, 2), idOf(store, 1)]);
-    expect(ids({ text: "budget" }, 1)).toEqual([idOf(store, 3)]);
-    expect(ids({ text: "", from: "boss" })).toEqual([idOf(store, 3)]);
-    expect(ids({ text: "", subject: "budget", unread: true })).toEqual([idOf(store, 3), idOf(store, 1)]);
-    expect(ids({ text: "", unread: false })).toEqual([idOf(store, 2)]);
-    expect(ids({ text: "", after: "2026-11-05", before: "2026-11-09" })).toEqual([idOf(store, 2)]);
-    expect(store.search({ text: "budget" }, "acc_other", 50)).toEqual([]);
+    expect(ids(parseQuery("budget"))).toEqual([idOf(store, 3), idOf(store, 2), idOf(store, 1)]);
+    expect(ids(parseQuery("budget"), 1)).toEqual([idOf(store, 3)]);
+    expect(ids(parseQuery("from:boss"))).toEqual([idOf(store, 3)]);
+    expect(ids(parseQuery("subject:budget is:unread"))).toEqual([idOf(store, 3), idOf(store, 1)]);
+    expect(ids(parseQuery("is:read"))).toEqual([idOf(store, 2)]);
+    expect(ids(parseQuery("after:2026-11-05 before:2026-11-09"))).toEqual([idOf(store, 2)]);
+    expect(store.search(parseQuery("budget"), "acc_other", 50)).toEqual([]);
   });
 
   it("unreadCount counts per account and overall", () => {
@@ -637,7 +638,7 @@ describe("createSqliteStore", () => {
       store.getThread(threadId, INBOX),
       store.getMessage(id),
       store.getBody(id),
-      store.search({ text: "Invented" }, null, 10),
+      store.search(parseQuery("Invented"), null, 10),
       store.unreadCount(null),
     ];
     for (const output of outputs) {
@@ -1045,7 +1046,7 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
     expect(inboxCounts()).toEqual([1, 1]);
     expect(s.listFolders("acc_1").find((f) => f.path === "Spam")?.totalCount).toBe(0);
     expect(s.unreadCount("acc_1")).toBe(1);
-    expect(s.search({ text: "Invented subject 1" }, "acc_1", 10)).toEqual([]);
+    expect(s.search(parseQuery("Invented subject 1"), "acc_1", 10)).toEqual([]);
     expect(s.getMessage(id1)?.folder).toBe(INBOX);
     expect(s.pendingMoves("acc_1", INBOX)).toEqual([{ uid: 1, id: id1, destination: "Spam" }]);
 
@@ -1183,10 +1184,10 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
 
   it("search returns one hit per dedup key", () => {
     gmail();
-    const hits = s.search({ text: "Invented" }, null, 10);
+    const hits = s.search(parseQuery("Invented"), null, 10);
     expect(hits.map((h) => h.folder).sort()).toEqual([ALL_MAIL, INBOX].sort());
     expect(hits.find((h) => h.subject === "Invented subject 1")?.folder).toBe(INBOX);
-    expect(s.search({ text: "Invented" }, "acc_1", 1)).toHaveLength(1);
+    expect(s.search(parseQuery("Invented"), "acc_1", 1)).toHaveLength(1);
   });
 
   it("Message-ID copies dedupe only when their sizes match", () => {
@@ -1205,7 +1206,7 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
     ]);
     expect(s.unreadCount("acc_1")).toBe(2);
     expect(s.listThreads("acc_1", INBOX, null, 10).threads[0]?.messageCount).toBe(2);
-    expect(s.search({ text: "", subject: "Invented subject" }, "acc_1", 10)).toHaveLength(2);
+    expect(s.search(parseQuery('subject:"Invented subject"'), "acc_1", 10)).toHaveLength(2);
     s.markOpened(idIn(s, INBOX, 1));
     expect(s.getMessage(idIn(s, "Archive", 9))?.isRead).toBe(true);
     expect(s.getMessage(idIn(s, INBOX, 2))?.isRead).toBe(false);
@@ -3951,7 +3952,7 @@ function aiScope(
   };
 }
 
-const ALL_TEXT: ParsedQuery = { text: "" };
+const ALL_TEXT: ParsedQuery = parseQuery("");
 
 function logInput(overrides: Partial<LogEntry> = {}): LogEntry {
   return {
@@ -4157,7 +4158,7 @@ describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
       s.setAiScope(aiScope());
       const archived = idIn("Archive", 10);
       const trashed = idIn("Trash", 11);
-      expect(ids(s.search({ text: "" }, "acc_1", 50))).toContain(trashed);
+      expect(ids(s.search(parseQuery(""), "acc_1", 50))).toContain(trashed);
       const scoped = ids(s.search(ALL_TEXT, "acc_1", 50, { scoped: true }));
       expect(scoped).toContain(archived);
       expect(scoped).not.toContain(trashed);
