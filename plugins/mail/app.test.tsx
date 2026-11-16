@@ -2505,8 +2505,12 @@ describe("Final fix wave", () => {
       await waitFor(() => expect(slot.queryByRole("toolbar", { name: "Selected conversations" })).toBeNull());
       await waitFor(() => expect(document.activeElement).not.toBe(document.body));
 
+      if (label === "Delete") {
+        // Slice 3i (B6): the cursor takes the row after the removed one, so j moves on from there.
+        await waitFor(() => expect(document.activeElement?.closest("li")?.textContent).toMatch(/Lunch/));
+      }
       key(J);
-      expect(document.activeElement?.closest("li")?.textContent).toMatch(label === "Delete" ? /Lunch/ : /Quarterly plan/);
+      expect(document.activeElement?.closest("li")?.textContent).toMatch(label === "Delete" ? /Tickets/ : /Quarterly plan/);
     });
   }
 
@@ -5083,5 +5087,212 @@ describe("Slice 3h: reading", () => {
     expect(slot.queryAllByTitle(/Message from Ada Example/)).toHaveLength(0);
     fireEvent.click(slot.getAllByRole("button", { name: "Show original" }).at(-1)!);
     expect((await slot.findAllByTitle(/Message from Ada Example/)).length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 3i, part B: Apple Mail keys on the page (arrows open, Shift+arrows
+// select, Backspace/Delete delete, never from a field).
+
+describe("Apple keys and reading flow", () => {
+  const DOWN = { key: "ArrowDown", code: "ArrowDown" };
+  const UP = { key: "ArrowUp", code: "ArrowUp" };
+  /** rowsRpc whose conversations arrive unread, so an open marks them read. */
+  function unreadRowsRpc(overrides: Record<string, (input: never) => unknown> = {}) {
+    const ids: Record<string, string[]> = { "th-a": ["a-1", "a-2"], "th-b": ["b-1"], "th-c": ["c-1"] };
+    const threads = [threadA, threadB, threadC];
+    return rowsRpc({
+      thread_get: ({ threadId }: { threadId: string }) => {
+        const detail = detailOf(threads.find((t) => t.id === threadId) ?? threadA, "INBOX", ids[threadId] ?? []);
+        return { ...detail, messages: detail.messages.map((m) => ({ ...m, isRead: false })) };
+      },
+      ...overrides,
+    });
+  }
+  const openedThreads = (slot: ReturnType<typeof render>) =>
+    callsTo(slot, "thread_get").map((call) => (call.input as { threadId: string }).threadId);
+
+  it("Down with nothing open opens the first row and marks it read", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(DOWN);
+    expect(document.activeElement).toBe(rowButton(slot, /Quarterly plan/));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    expect(openedThreads(slot)).toEqual(["th-a"]);
+    await waitFor(() =>
+      expect(callsTo(slot, "message_open").map((call) => call.input)).toEqual(
+        expect.arrayContaining([{ messageId: "a-1" }, { messageId: "a-2" }]),
+      ),
+    );
+
+    key(DOWN);
+    await waitFor(() => expect(openedThreads(slot)).toEqual(["th-a", "th-b"]));
+    key(UP);
+    await waitFor(() => expect(openedThreads(slot)).toEqual(["th-a", "th-b", "th-a"]));
+  });
+
+  it("a held Down moves the cursor only, and opens the row it stopped on when released", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(DOWN);
+    await waitFor(() => expect(openedThreads(slot)).toEqual(["th-a"]));
+    key({ ...DOWN, repeat: true });
+    key({ ...DOWN, repeat: true });
+    expect(document.activeElement).toBe(rowButton(slot, /Tickets/));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(openedThreads(slot)).toEqual(["th-a"]);
+    expect(callsTo(slot, "message_open").map((call) => call.input)).not.toContainEqual({ messageId: "b-1" });
+
+    fireEvent.keyUp(document.activeElement!, DOWN);
+    await waitFor(() => expect(openedThreads(slot)).toEqual(["th-a", "th-c"]));
+    // b was passed, never opened nor marked read.
+    expect(callsTo(slot, "message_open").map((call) => call.input)).not.toContainEqual({ messageId: "b-1" });
+    // A plain release (no held run) opens nothing more.
+    fireEvent.keyUp(document.activeElement!, DOWN);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(openedThreads(slot)).toEqual(["th-a", "th-c"]);
+  });
+
+  it("j with nothing open moves the cursor and opens nothing", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key(J);
+    expect(document.activeElement).toBe(rowButton(slot, /Lunch/));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(callsTo(slot, "thread_get")).toHaveLength(0);
+    expect(callsTo(slot, "message_open")).toHaveLength(0);
+  });
+
+  it("Shift+Down selects the cursor row and the next; turning back shrinks the run; nothing opens", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key({ ...DOWN, shiftKey: true });
+    expect(slot.getByText("2 selected")).toBeTruthy();
+    expect(document.activeElement).toBe(rowButton(slot, /Lunch/));
+    key({ ...DOWN, shiftKey: true });
+    expect(slot.getByText("3 selected")).toBeTruthy();
+    key({ ...UP, shiftKey: true });
+    expect(slot.getByText("2 selected")).toBeTruthy();
+    expect((slot.getByRole("checkbox", { name: "Select Quarterly plan" }) as HTMLInputElement).getAttribute("aria-checked")).toBe("true");
+    expect((slot.getByRole("checkbox", { name: "Select Tickets" }) as HTMLInputElement).getAttribute("aria-checked")).toBe("false");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(callsTo(slot, "thread_get")).toHaveLength(0);
+  });
+
+  it("Shift+Down keeps a selection made with x", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key({ key: "x", code: "KeyX" });
+    key(J);
+    key(J);
+    key({ ...UP, shiftKey: true });
+    expect(slot.getByText("3 selected")).toBeTruthy();
+    key({ ...DOWN, shiftKey: true });
+    expect(slot.getByText("2 selected")).toBeTruthy();
+    expect((slot.getByRole("checkbox", { name: "Select Quarterly plan" }) as HTMLInputElement).getAttribute("aria-checked")).toBe("true");
+    expect((slot.getByRole("checkbox", { name: "Select Lunch" }) as HTMLInputElement).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("Backspace and Delete delete the cursor row, and the open conversation", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key({ key: "Backspace", code: "Backspace" });
+    await waitFor(() => expect(actionInputs(slot).map((input) => [input.action, input.messageIds])).toEqual([["delete", ["a-1", "a-2"]]]));
+    await waitFor(() => expect(slot.queryByText("Quarterly plan")).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 450));
+
+    key({ key: "o", code: "KeyO" });
+    await slot.findByRole("heading", { name: "Lunch" });
+    key({ key: "Delete", code: "Delete" });
+    await waitFor(() =>
+      expect(actionInputs(slot).map((input) => [input.action, input.messageIds])).toEqual([
+        ["delete", ["a-1", "a-2"]],
+        ["delete", ["b-1"]],
+      ]),
+    );
+  });
+
+  it("the Conversation section takes focus for scrolling and keeps the arrows native there", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+    key(DOWN);
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    const conversation = slot.getByRole("region", { name: "Conversation" });
+    expect(conversation.hasAttribute("data-mail-reading")).toBe(true);
+    expect(conversation.getAttribute("tabindex")).toBe("-1");
+
+    conversation.focus();
+    const event = createEvent.keyDown(conversation, DOWN);
+    fireEvent(conversation, event);
+    expect(event.defaultPrevented).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(openedThreads(slot)).toEqual(["th-a"]);
+  });
+
+  it("Backspace on a selection deletes it; the cursor takes the row after the last removed one and nothing opens", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+
+    key(J);
+    key({ ...DOWN, shiftKey: true });
+    expect(slot.getByText("2 selected")).toBeTruthy();
+    key({ key: "Backspace", code: "Backspace" });
+    await waitFor(() => expect(actionInputs(slot).map((input) => input.messageIds)).toEqual([["a-1", "a-2", "b-1"]]));
+    await waitFor(() => expect(slot.queryByText("Lunch")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(rowButton(slot, /Tickets/)));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // thread_get resolves the selection's messages; nothing opens or is marked read.
+    expect(slot.queryByRole("heading", { name: "Tickets" })).toBeNull();
+    expect(callsTo(slot, "message_open")).toHaveLength(0);
+  });
+
+  it("Backspace in the search field, the composer and the Move\u2026 dialog deletes nothing", async () => {
+    const slot = render(composeRpc({ message_action: () => movedTo("INBOX", "Trash") }));
+    await slot.findByText("Lunch");
+    pageRoot(slot).focus();
+    key(J);
+
+    const search = slot.getByRole("searchbox", { name: "Search mail" });
+    for (const code of ["Backspace", "Delete"]) press(search, { key: code, code });
+
+    press(pageRoot(slot), { key: "v", code: "KeyV" });
+    const move = await slot.findByRole("dialog", { name: "Move to\u2026" });
+    for (const code of ["Backspace", "Delete"]) press(within(move).getAllByRole("button")[0]!, { key: code, code });
+    fireEvent.keyDown(move, { key: "Escape", code: "Escape" });
+    await waitFor(() => expect(slot.queryByRole("dialog", { name: "Move to\u2026" })).toBeNull());
+
+    press(pageRoot(slot), { key: "c", code: "KeyC" });
+    const composer = await composerRegion(slot, "New message");
+    const editor = await waitFor(() => {
+      const found = composer.querySelector<HTMLElement>('[contenteditable="true"]');
+      if (found === null) throw new Error("no editor yet");
+      return found;
+    });
+    for (const target of [editor, within(composer).getByRole("toolbar", { name: "Formatting" })]) {
+      for (const code of ["Backspace", "Delete"]) press(target, { key: code, code });
+      press(target, { key: "ArrowDown", code: "ArrowDown" });
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(callsTo(slot, "message_action")).toHaveLength(0);
+    expect(callsTo(slot, "thread_get")).toHaveLength(0);
   });
 });

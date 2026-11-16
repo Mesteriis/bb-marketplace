@@ -77,6 +77,7 @@ import {
   type SelectionGroup,
 } from "./selection-bar.tsx";
 import { ShortcutSheet } from "./shortcut-sheet.tsx";
+import { extendSelection, successorRow } from "./successor.ts";
 import { SmtpDialog, type SmtpResult, type SmtpSettingsInput } from "./smtp-dialog.tsx";
 import {
   createDestructiveGuard,
@@ -159,8 +160,12 @@ export interface MailSlice3hPorts {
   historyStepDays: number;
   onLoadHistory: () => void;
   onStopHistory: () => void;
-  /** A drag of these conversations started (their accounts), or ended (null). */
-  onDragAccounts: (accountIds: string[] | null) => void;
+  /**
+   * A drag of these conversations started (their accounts), or ended (null).
+   * `advance` (slice 3i): opens the next conversation when the open one is
+   * dragged to a folder and moved; null when nothing should open.
+   */
+  onDragAccounts: (accountIds: string[] | null, advance?: (() => void) | null) => void;
   /** Labels... (l) for conversations: Gmail accounts only. */
   onLabels: (threadIds: string[]) => void;
   /** Whether an account is Gmail (labels apply). */
@@ -206,8 +211,11 @@ export interface MailInboxPorts {
   /** Unsubscribe in the pane: the page opens its confirmation. */
   onUnsubscribe: (message: MessageHeader) => void;
   onArchiveList: (message: MessageHeader) => void;
-  /** Snooze the conversations' Inbox mail until `until` (UTC ISO). */
-  onSnooze: (threadIds: string[], until: string) => void;
+  /**
+   * Snooze the conversations' Inbox mail until `until` (UTC ISO). `then`
+   * (slice 3i): run instead of closing when the open conversation went.
+   */
+  onSnooze: (threadIds: string[], until: string, then?: (() => void) | null) => void;
   onReturnNow: (threadId: string) => void;
   loadBlockCheck: (messageId: string) => Promise<BlockCheck>;
   onBlock: (messageId: string, choice: BlockChoice) => void;
@@ -269,8 +277,18 @@ export interface MailPageProps {
   /** Checked conversations of the list. */
   selection: ReadonlySet<string>;
   onSelectionChange: (next: ReadonlySet<string>) => void;
-  /** An action on conversations' messages in the view; `destination` goes with move. */
-  onThreadsAction: (threadIds: string[], action: MessageAction, destination?: string) => void;
+  /**
+   * An action on conversations' messages in the view; `destination` goes with
+   * move. `then` (slice 3i, removing actions on the open conversation with no
+   * selection): run where the open conversation would close, only while it is
+   * still the one acted on; null means nothing is left to open.
+   */
+  onThreadsAction: (
+    threadIds: string[],
+    action: MessageAction,
+    destination?: string,
+    then?: (() => void) | null,
+  ) => void;
   /** An action is in flight; the buttons wait. */
   actionPending: boolean;
   /** The row star: flag the newest message in the view, or unflag the flagged ones. */
@@ -503,6 +521,13 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const anchor = useRef<string | null>(null);
+  /** Slice 3i: a run of Shift+Down/Up: the selection when it started and the row it started on. */
+  const shiftRun = useRef<{ base: ReadonlySet<string>; anchor: string } | null>(null);
+  /** Slice 3i: a held arrow moved the cursor; its release opens the row there. */
+  const heldArrow = useRef(false);
+  /** Slice 3i: where the cursor goes once a removing action on a selection took its rows. */
+  const afterSelection = useRef<{ target: string | null; removed: string[] } | null>(null);
+  const conversationRef = useRef<HTMLElement | null>(null);
   const guardRef = useRef<DestructiveGuard | null>(null);
   guardRef.current ??= createDestructiveGuard();
   const destructiveGuard = guardRef.current;
@@ -588,21 +613,24 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const rowKey = rowIds.join("\n");
 
   // An action took the cursor row off the list: the next row (else the previous) takes the cursor.
+  // After a removing action on a selection (slice 3i), the row after the last removed one does.
   const shownRows = useRef<string[]>(rowIds);
   useEffect(() => {
     const before = shownRows.current;
     shownRows.current = rowIds;
+    // Consumed by the first change of the rows: a failed action leaves nothing behind.
+    const pending = afterSelection.current;
+    afterSelection.current = null;
+    if (pending !== null && pending.removed.some((id) => !rowIds.includes(id))) {
+      const target = pending.target !== null && rowIds.includes(pending.target) ? pending.target : null;
+      if (target !== null) {
+        setFocusedId(target);
+        if (focusLost() && !focusRowElement(target)) focusRoot();
+        return;
+      }
+    }
     if (focusedId === null || rowIds.includes(focusedId)) return;
-    const at = before.indexOf(focusedId);
-    const next =
-      at < 0
-        ? null
-        : (before.slice(at + 1).find((id) => rowIds.includes(id)) ??
-          before
-            .slice(0, at)
-            .reverse()
-            .find((id) => rowIds.includes(id)) ??
-          null);
+    const next = successorRow(before, (id) => !rowIds.includes(id), focusedId);
     setFocusedId(next);
     if (focusLost() && (next === null || !focusRowElement(next))) focusRoot();
     // rowKey stands for rowIds.
@@ -684,9 +712,47 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   };
   /** An action that takes mail out of the list quiets the destructive keys for a moment. */
   const runAction = (ids: string[], action: MessageAction, destination?: string) => {
-    if (REMOVING_ACTIONS.has(action)) destructiveGuard.ran();
-    if (destination === undefined) props.onThreadsAction(ids, action);
+    const removing = REMOVING_ACTIONS.has(action);
+    if (removing) destructiveGuard.ran();
+    const then = removing ? advanceFor(ids) : undefined;
+    if (then !== undefined) props.onThreadsAction(ids, action, destination, then);
+    else if (destination === undefined) props.onThreadsAction(ids, action);
     else props.onThreadsAction(ids, action, destination);
+  };
+  /** Whether a row belongs to one of the conversations `ids` (search hits and message rows by their conversation). */
+  const rowIn = (ids: readonly string[]) => {
+    const set = new Set(ids);
+    return (rowId: string) =>
+      messageRows !== null ? set.has(messageRows.find((h) => h.id === rowId)?.threadId ?? "") : set.has(rowId);
+  };
+  /**
+   * Slice 3i (B5, B6): what comes after a removing action (or snooze) on
+   * `ids`. With a selection, nothing opens: the cursor goes to the row after
+   * the last removed one once the rows go (undefined is returned). On the
+   * open conversation, the next row opens (`then`), or nothing is left (null).
+   * Otherwise undefined: the app closes as before. The rows are the ones shown now.
+   */
+  const advanceFor = (ids: readonly string[]): (() => void) | null | undefined => {
+    const isRemoved = rowIn(ids);
+    if (selecting) {
+      const removed = rowIds.filter(isRemoved);
+      const last = removed.at(-1);
+      afterSelection.current = last === undefined ? null : { target: successorRow(rowIds, isRemoved, last), removed };
+      return undefined;
+    }
+    const open = reading.threadId;
+    if (open === null || !ids.includes(open)) return undefined;
+    const current =
+      focusedId !== null && rowIds.includes(focusedId) && isRemoved(focusedId)
+        ? focusedId
+        : (rowIds.find((id) => rowIn([open])(id)) ?? null);
+    if (current === null) return undefined;
+    const next = successorRow(rowIds, isRemoved, current);
+    if (next === null) return null;
+    return () => {
+      setFocusedId(next);
+      openRow(next);
+    };
   };
 
   const openRow = (id: string) => {
@@ -706,15 +772,70 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     setFocusedId(id);
     focusRowElement(id);
   };
-  /** A held j/k (`repeat`) only moves the cursor: passing a conversation never opens it. */
-  const step = (delta: 1 | -1, repeat: boolean) => {
+  /**
+   * Whether moving the cursor opens the row: j/k only while a conversation is
+   * open; Down/Up (slice 3i) also with nothing open in two columns. Behind the
+   * selection panel nothing opens (it would be marked read unseen).
+   */
+  const moveOpens = (arrow: boolean) => !selecting && (threadOpen || (arrow && wide));
+  /**
+   * A held key (`repeat`) only moves the cursor: passing a conversation never
+   * opens it. A held arrow opens the row it stopped on when released (onKeyUp).
+   */
+  const step = (delta: 1 | -1, repeat: boolean, arrow = false) => {
     if (rowIds.length === 0) return;
     const current = focusedId === null ? -1 : rowIds.indexOf(focusedId);
     const nextIndex = current < 0 ? 0 : Math.min(Math.max(current + delta, 0), rowIds.length - 1);
     const next = rowIds[nextIndex]!;
     focusRow(next);
-    // Behind the selection panel nothing opens (it would be marked read unseen).
-    if (threadOpen && !repeat && !selecting) openRow(next);
+    heldArrow.current = repeat && arrow && moveOpens(true);
+    if (!repeat && moveOpens(arrow)) openRow(next);
+  };
+  /** Releasing a held arrow opens the row under the cursor (same rule as a press). */
+  const onKeyUp = (event: { code: string }) => {
+    if (event.code !== "ArrowDown" && event.code !== "ArrowUp") return;
+    if (!heldArrow.current) return;
+    heldArrow.current = false;
+    if (focusedId === null || !rowIds.includes(focusedId) || !moveOpens(true)) return;
+    openRow(focusedId);
+  };
+  /** Shift+Down/Up (slice 3i): the cursor moves and the selection grows from where the run started. */
+  const extend = (delta: 1 | -1) => {
+    // Grouped lists only, never in one column with a conversation open (as x).
+    if (messageRows !== null || (threadOpen && !wide) || rowIds.length === 0) return;
+    const current = focusedId === null ? -1 : rowIds.indexOf(focusedId);
+    let run = shiftRun.current;
+    if (run === null || !rowIds.includes(run.anchor) || (selection.size > 0 && !selection.has(run.anchor))) {
+      const start = current < 0 ? rowIds[0]! : focusedId!;
+      run = { base: new Set(selection), anchor: start };
+      shiftRun.current = run;
+    }
+    const to = current < 0 ? run.anchor : rowIds[Math.min(Math.max(current + delta, 0), rowIds.length - 1)]!;
+    focusRow(to);
+    anchor.current = to;
+    props.onSelectionChange(extendSelection({ order: rowIds, base: run.base, anchor: run.anchor, to }));
+  };
+  /** Down/Up on a message header or the stack (slice 3i): focus moves to the next or previous one. */
+  const focusMessage = (delta: 1 | -1) => {
+    const container = conversationRef.current;
+    if (container === null) return;
+    const headers = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-mail-message-toggle], [data-mail-stack]"),
+    );
+    const active = document.activeElement;
+    const at = headers.findIndex((element) => element === active || element.contains(active));
+    if (at < 0) return;
+    headers[at + delta]?.focus();
+  };
+  /** Shift+Command+U (slice 3i): mark read when anything targeted is unread, else unread. */
+  const toggleRead = () => {
+    const ids = targets();
+    if (ids.length === 0) return;
+    // The open conversation was marked read when it opened.
+    const anyUnread = ids.some(
+      (id) => id !== reading.threadId && (list.threads.find((t) => t.id === id)?.unreadCount ?? 0) > 0,
+    );
+    runIfAllowed(ids, anyUnread ? "mark_read" : "mark_unread");
   };
   /**
    * A row click (or o/Enter on the cursor row). With a selection: in one
@@ -722,6 +843,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
    * ends the selection and opens the row, as Apple Mail does.
    */
   const activateRow = (id: string) => {
+    shiftRun.current = null;
     if (selecting && !searching) {
       if (!wide) {
         toggleChecked(id, false);
@@ -732,6 +854,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     openRow(id);
   };
   const toggleChecked = (id: string, range: boolean) => {
+    shiftRun.current = null;
     props.onSelectionChange(toggleSelection(rowIds, selection, id, range, anchor.current));
     anchor.current = id;
   };
@@ -834,11 +957,24 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const onKeyDown = useShortcuts((command: ShortcutCommand, repeat: boolean) => {
     // A quick second tap after an action must not reach the cursor row.
     if (!destructiveGuard.admit(command)) return;
+    // Any other key ends a run of Shift+Down/Up; a held arrow's run ends on any other key.
+    if (command.kind !== "select_down" && command.kind !== "select_up") shiftRun.current = null;
+    if (command.kind !== "next" && command.kind !== "previous") heldArrow.current = false;
     switch (command.kind) {
       case "next":
-        return step(1, repeat);
+        return step(1, repeat, command.arrow === true);
       case "previous":
-        return step(-1, repeat);
+        return step(-1, repeat, command.arrow === true);
+      case "select_down":
+        return extend(1);
+      case "select_up":
+        return extend(-1);
+      case "message_next":
+        return focusMessage(1);
+      case "message_previous":
+        return focusMessage(-1);
+      case "toggle_read":
+        return toggleRead();
       case "open":
         if (focusedId === null || !rowIds.includes(focusedId)) return;
         if (model.use === "drafts" && !searching && !selecting) {
@@ -1001,6 +1137,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       ref={rootRef}
       tabIndex={-1}
       onKeyDown={onKeyDown}
+      onKeyUp={onKeyUp}
       className="@container flex h-full min-h-0 flex-1 flex-col outline-none"
     >
       {composerView !== null && !wide ? (
@@ -1151,12 +1288,21 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
             }}
             onToggleChecked={toggleChecked}
             emptyName={model.title}
+            dragAdvance={(ids) => {
+              // A drag of a selection, or of other rows than the open one: nothing opens.
+              if (selecting || reading.threadId === null || !ids.includes(reading.threadId)) return null;
+              return advanceFor(ids) ?? null;
+            }}
           />
         </section>
         <section
+          ref={conversationRef}
           aria-label="Conversation"
+          // Slice 3i: a click on message text focuses the conversation, where the arrows scroll.
+          data-mail-reading=""
+          tabIndex={-1}
           className={cn(
-            "min-h-0 min-w-0 flex-1 flex-col overflow-y-auto @3xl:flex",
+            "min-h-0 min-w-0 flex-1 flex-col overflow-y-auto outline-none @3xl:flex",
             threadOpen && !selecting ? "flex" : "hidden",
           )}
         >
@@ -1331,7 +1477,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               const ids = snoozeTargets ?? [];
               setSnoozeTargets(null);
               destructiveGuard.ran();
-              props.inbox?.onSnooze(ids, until);
+              const then = advanceFor(ids);
+              if (then !== undefined) props.inbox?.onSnooze(ids, until, then);
+              else props.inbox?.onSnooze(ids, until);
             }}
             onCloseAutoFocus={restoreFocus}
             onAfterCloseAutoFocus={afterClose}
@@ -1443,6 +1591,8 @@ function ListColumn(
     onOpenRow: (id: string) => void;
     onToggleChecked: (id: string, range: boolean) => void;
     emptyName: string;
+    /** Slice 3i: what opens if the dragged conversations are moved (see advanceFor). */
+    dragAdvance: (ids: string[]) => (() => void) | null;
   },
 ) {
   const { status, list, search, reading } = props;
@@ -1614,9 +1764,12 @@ function ListColumn(
             drag: {
               pageId: s3.pageId,
               onStart: (ids: string[]) =>
-                s3.onDragAccounts([
-                  ...new Set(ids.map((id) => list.threads.find((t) => t.id === id)?.accountId).filter((a): a is string => a !== undefined)),
-                ]),
+                s3.onDragAccounts(
+                  [
+                    ...new Set(ids.map((id) => list.threads.find((t) => t.id === id)?.accountId).filter((a): a is string => a !== undefined)),
+                  ],
+                  props.dragAdvance(ids),
+                ),
               onEnd: () => s3.onDragAccounts(null),
             },
           }
