@@ -1055,10 +1055,12 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
                             const shown = messageToHand(openDetail.messages, reading.expandedIds);
                             if (shown === null || isDraft(shown)) return null;
                             const address = shown.from.address.trim();
+                            // The list row carries the local suggestion threads_list adds; thread_get may not.
+                            const row = list.threads.find((t) => t.id === openDetail.thread.id);
                             return (
                               <CategoryChip
-                                category={openDetail.thread.category}
-                                suggestion={openDetail.thread.categorySuggestion}
+                                category={row?.category ?? openDetail.thread.category}
+                                suggestion={row?.categorySuggestion ?? openDetail.thread.categorySuggestion}
                                 onAccept={() => ai.onCategoryAccept([shown.id])}
                                 onChange={(category) => ai.onCategorySet([shown.id], category)}
                                 onAlways={
