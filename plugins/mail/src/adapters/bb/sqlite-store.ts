@@ -67,12 +67,27 @@ import {
   type InboundRow,
   type SendCheck,
 } from "../../core/identities.ts";
-import { OPEN_AI_SCOPE } from "../../core/ai-scope.ts";
+import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiScope } from "../../core/ai-scope.ts";
 import { redactSecrets } from "../../core/redact.ts";
+import { AGENT_LOG_IDS_MAX, AGENT_LOG_KEEP_DAYS, AGENT_LOG_ROWS_MAX, type LogEntry } from "../../core/agent-log.ts";
+import type { AiCategoryAnswer } from "../../core/ai-input.ts";
+import {
+  CATEGORY_RULES_MAX,
+  type Category,
+  type CategoryRule,
+  type CategorySource,
+  type PreviousLabel,
+} from "../../core/categories.ts";
+import { dismissalKey } from "../../core/digest.ts";
+import { ANSWERED_KEEP_DAYS, REMINDERS_LIVE_MAX, dueAt, type ReminderState } from "../../core/reminders.ts";
 import { TEMPLATES_MAX } from "../../core/templates.ts";
 import type { UndoRow } from "../../core/undo.ts";
 import { cleanSnippet, needsSnippetRepair, snippetOf } from "../../core/snippet.ts";
+import { AI_RESULT_MAX_BYTES, TASKS_OPEN_MAX } from "../../core/ports.ts";
 import type {
+  AiResultRecord,
+  ReminderRecord,
+  TaskRecord,
   MailStore,
   ProposalRecord,
   TemplateRecord,
@@ -532,6 +547,126 @@ export const MIGRATIONS: string[] = [
   UPDATE OR IGNORE unsubscribes SET list_key =
       CASE WHEN instr(list_key, '@') > 0 THEN 'from:' ELSE 'id:' END || list_key;
   `,
+  // 10: slice 3f — the AI access scope, the agent and AI action log (ids,
+  // counts and codes only), cached summaries, kept tasks, local categories
+  // with suggestions and rules, the day's digest, reply dismissals and reply
+  // reminders. No REFERENCES: deletes are explicit (deleteAccount, deleteRows,
+  // purgeDaily).
+  `
+  CREATE TABLE ai_scope_accounts (
+    account_id TEXT PRIMARY KEY,
+    mode TEXT NOT NULL,
+    folders_json TEXT,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE ai_scope_senders (
+    kind TEXT NOT NULL,
+    value TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (kind, value)
+  );
+
+  CREATE TABLE agent_log (
+    seq INTEGER PRIMARY KEY,
+    at TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    thread_id TEXT,
+    tool TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    message_ids_json TEXT NOT NULL,
+    result_count INTEGER NOT NULL,
+    hidden_count INTEGER NOT NULL,
+    ref_id TEXT,
+    provider TEXT,
+    model TEXT
+  );
+  CREATE INDEX agent_log_at ON agent_log(at);
+  CREATE INDEX agent_log_thread ON agent_log(thread_id, at);
+  CREATE INDEX agent_log_ref ON agent_log(ref_id);
+
+  CREATE TABLE ai_results (
+    kind TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    notes_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (kind, subject_id)
+  );
+
+  CREATE TABLE mail_tasks (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    message_id TEXT,
+    dedup_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    due_date TEXT,
+    done_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX mail_tasks_open ON mail_tasks(done_at, due_date);
+
+  CREATE TABLE message_categories (
+    account_id TEXT NOT NULL,
+    dedup_key TEXT NOT NULL,
+    category TEXT NOT NULL,
+    source TEXT NOT NULL,
+    set_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, dedup_key)
+  );
+  CREATE INDEX message_categories_category ON message_categories(category, account_id, dedup_key);
+  CREATE TABLE category_suggestions (
+    account_id TEXT NOT NULL,
+    dedup_key TEXT NOT NULL,
+    category TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, dedup_key)
+  );
+  CREATE TABLE category_rules (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    value TEXT NOT NULL,
+    category TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX category_rules_value ON category_rules(kind, value);
+
+  CREATE TABLE digests (
+    day TEXT PRIMARY KEY,
+    built_at TEXT NOT NULL,
+    since TEXT NOT NULL,
+    reply_count INTEGER NOT NULL,
+    notice_count INTEGER NOT NULL,
+    notified_at TEXT
+  );
+  CREATE TABLE reply_dismissals (
+    account_id TEXT NOT NULL,
+    dedup_key TEXT NOT NULL,
+    dismissed_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, dedup_key)
+  );
+
+  CREATE TABLE reply_reminders (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    outbox_id TEXT,
+    rfc_message_id TEXT NOT NULL,
+    thread_id TEXT,
+    days INTEGER NOT NULL,
+    sent_at TEXT,
+    due_at TEXT,
+    state TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    notified_at TEXT
+  );
+  CREATE INDEX reply_reminders_state ON reply_reminders(state, due_at);
+  CREATE INDEX reply_reminders_mid ON reply_reminders(rfc_message_id);
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -838,6 +973,16 @@ const IN_ALL_MAIL = `(m.folder IN (
 const ROW_ROLE = `CASE WHEN f.special_use IS NOT NULL THEN f.special_use
   WHEN upper(m.folder) = 'INBOX' THEN 'inbox' END`;
 
+/**
+ * The effective special use of a row (alias m) without a folder join: the
+ * saved special use, else Inbox for INBOX (as ROW_ROLE).
+ */
+const SCOPE_ROLE = `COALESCE((SELECT sf.special_use FROM folders sf WHERE sf.account_id = m.account_id AND sf.path = m.folder),
+  CASE WHEN upper(m.folder) = 'INBOX' THEN 'inbox' END)`;
+
+/** True for a row (alias m) inside the installed AI access scope (slice 3f). */
+const IN_AI_SCOPE = `mail_ai_in_scope(m.account_id, m.folder, ${SCOPE_ROLE}, m.from_address, m.to_json, m.cc_json, m.thread_id) = 1`;
+
 /** What a contact lookup reads of a message (alias m, folder alias f). */
 const CONTACT_COLUMNS = `m.account_id, m.dedup_key, m.date, m.from_name, m.from_address, m.to_json, m.cc_json,
   m.bulk, ${ROW_ROLE} AS role`;
@@ -1035,6 +1180,10 @@ function filterCondition(filter: ThreadFilter | undefined): string {
     filter?.unread === true ? "m.is_read = 0" : null,
     filter?.flagged === true ? "m.is_flagged = 1" : null,
     filter?.attachments === true ? "m.has_attachments = 1" : null,
+    // Slice 3f: an uncorrelated list of labelled (account, dedup key) pairs.
+    filter?.category === undefined
+      ? null
+      : "(m.account_id, m.dedup_key) IN (SELECT account_id, dedup_key FROM message_categories WHERE category = @category)",
   ].filter((part): part is string => part !== null);
   if (flags.length === 0) return "";
   const keep = filter?.keep === undefined ? "" : " OR m.thread_id = @keep";
@@ -1042,7 +1191,10 @@ function filterCondition(filter: ThreadFilter | undefined): string {
 }
 
 function filterParams(filter: ThreadFilter | undefined): Record<string, string> {
-  return filter?.keep === undefined ? {} : { keep: filter.keep };
+  return {
+    ...(filter?.keep === undefined ? {} : { keep: filter.keep }),
+    ...(filter?.category === undefined ? {} : { category: filter.category }),
+  };
 }
 
 function deliveredToJson(addresses: string[] | undefined): string | null {
@@ -1130,8 +1282,177 @@ function toSummary(row: MessageRow): MessageSummary {
   };
 }
 
+// ---- Slice 3f rows ----
+
+/** Digests and reply dismissals kept by the daily purge. */
+const DAY_ROWS_KEEP_DAYS = 60;
+
+type AgentLogRow = {
+  seq: number;
+  at: string;
+  actor: LogEntry["actor"];
+  thread_id: string | null;
+  tool: LogEntry["tool"];
+  outcome: LogEntry["outcome"];
+  message_ids_json: string;
+  result_count: number;
+  hidden_count: number;
+  ref_id: string | null;
+  provider: string | null;
+  model: string | null;
+};
+
+function toLogEntry(row: AgentLogRow): LogEntry & { seq: number } {
+  return {
+    seq: row.seq,
+    at: row.at,
+    actor: row.actor,
+    threadId: row.thread_id,
+    tool: row.tool,
+    outcome: row.outcome,
+    messageIds: JSON.parse(row.message_ids_json) as string[],
+    count: row.result_count,
+    hiddenCount: row.hidden_count,
+    refId: row.ref_id,
+    provider: row.provider,
+    model: row.model,
+  };
+}
+
+type AiResultRow = {
+  kind: "summary";
+  subject_id: string;
+  account_id: string;
+  source_sha256: string;
+  provider: string;
+  model: string;
+  result_json: string;
+  notes_json: string;
+  created_at: string;
+};
+
+function toAiResult(row: AiResultRow): AiResultRecord {
+  return {
+    kind: row.kind,
+    subjectId: row.subject_id,
+    accountId: row.account_id,
+    sourceSha256: row.source_sha256,
+    provider: row.provider,
+    model: row.model,
+    resultJson: row.result_json,
+    notesJson: row.notes_json,
+    createdAt: row.created_at,
+  };
+}
+
+type TaskRow = {
+  id: string;
+  account_id: string;
+  message_id: string | null;
+  dedup_key: string;
+  title: string;
+  due_date: string | null;
+  done_at: string | null;
+  created_at: string;
+  updated_at: string;
+  thread_id: string | null;
+};
+
+function toTask(row: TaskRow): TaskRecord {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    messageId: row.message_id,
+    dedupKey: row.dedup_key,
+    title: row.title,
+    due: row.due_date,
+    createdAt: row.created_at,
+    threadId: row.message_id === null ? null : row.thread_id,
+    doneAt: row.done_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+type CategoryRuleRow = { id: string; kind: CategoryRule["kind"]; value: string; category: Category; created_at: string };
+
+function toCategoryRule(row: CategoryRuleRow): CategoryRule {
+  return { id: row.id, kind: row.kind, value: row.value, category: row.category, createdAt: row.created_at };
+}
+
+type ReplyCandidateRow = {
+  thread_id: string;
+  account_id: string;
+  id: string;
+  dedup_key: string;
+  date: string;
+  role: SpecialUse | null;
+  from_address: string;
+  to_json: string;
+  cc_json: string;
+  bulk: number | null;
+  last_sent: string | null;
+};
+
+type DigestRow = {
+  day: string;
+  built_at: string;
+  since: string;
+  reply_count: number;
+  notice_count: number;
+  notified_at: string | null;
+};
+
+type ReminderRow = {
+  id: string;
+  account_id: string;
+  outbox_id: string | null;
+  rfc_message_id: string;
+  thread_id: string | null;
+  days: number;
+  sent_at: string | null;
+  due_at: string | null;
+  state: ReminderState;
+  created_at: string;
+  updated_at: string;
+  notified_at: string | null;
+};
+
+function toReminder(row: ReminderRow): ReminderRecord {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    outboxId: row.outbox_id,
+    rfcMessageId: row.rfc_message_id,
+    threadId: row.thread_id,
+    days: row.days,
+    sentAt: row.sent_at,
+    dueAt: row.due_at,
+    state: row.state,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    notifiedAt: row.notified_at,
+  };
+}
+
+type AnsweringDbRow = {
+  id: string;
+  account_id: string;
+  thread_id: string | null;
+  message_id: string | null;
+  in_reply_to: string | null;
+  refs: string;
+  date: string | null;
+  bulk: number | null;
+  from_address: string;
+};
+
 /** `flagged` covers the thread's messages in the viewed folder. */
-function toThread(row: ThreadRow, flagged: boolean, snoozedUntil: string | null = null): ThreadSummary {
+function toThread(
+  row: ThreadRow,
+  flagged: boolean,
+  snoozedUntil: string | null = null,
+  labels: { category: Category | null; suggestion: AiCategoryAnswer | null } = { category: null, suggestion: null },
+): ThreadSummary {
   return {
     id: row.id,
     accountId: row.account_id,
@@ -1143,8 +1464,9 @@ function toThread(row: ThreadRow, flagged: boolean, snoozedUntil: string | null 
     snippet: row.snippet,
     flagged,
     snoozedUntil,
-    category: null,
-    categorySuggestion: null,
+    category: labels.category,
+    // "none" is the model's answer, not a category.
+    categorySuggestion: labels.suggestion === null || labels.suggestion === "none" ? null : labels.suggestion,
   };
 }
 
@@ -1183,6 +1505,62 @@ export function createSqliteStore(db: Database.Database): MailStore {
     const text = (value: unknown) => (typeof value === "string" ? value : null);
     return messageTextMask(text(subject), text(snippet), text(body), maskWords.words);
   });
+  // The AI access scope (slice 3f, spec resolution 12): installed by the
+  // server with setAiScope, read by agent paths through mail_ai_in_scope.
+  let aiScope: AiScope = OPEN_AI_SCOPE;
+  let excludedThreads: ReadonlySet<string> = new Set();
+  const sendersExcluded = () => aiScope.senders.addresses.size > 0 || aiScope.senders.domains.size > 0;
+  const addressesOf = (json: unknown): string[] => {
+    if (typeof json !== "string") return [];
+    try {
+      return (JSON.parse(json) as MailAddress[]).map((a) => a.address);
+    } catch {
+      return [];
+    }
+  };
+  db.function("mail_sender_excluded", { deterministic: false }, (from: unknown, to: unknown, cc: unknown) =>
+    senderExcluded([String(from ?? ""), ...addressesOf(to), ...addressesOf(cc)], aiScope) ? 1 : 0,
+  );
+  db.function(
+    "mail_ai_in_scope",
+    { deterministic: false },
+    (accountId: unknown, folder: unknown, role: unknown, from: unknown, to: unknown, cc: unknown, threadId: unknown) => {
+      const withSenders = sendersExcluded();
+      return inAiScope(
+        {
+          accountId: String(accountId),
+          folder: String(folder),
+          folderRole: typeof role === "string" ? (role as SpecialUse) : null,
+          fromAddress: String(from ?? ""),
+          to: withSenders ? addressesOf(to) : [],
+          cc: withSenders ? addressesOf(cc) : [],
+          threadId: typeof threadId === "string" ? threadId : null,
+        },
+        aiScope,
+        excludedThreads,
+      )
+        ? 1
+        : 0;
+    },
+  );
+  /** Some copy of the row's message (account, dedup key) is inside the AI scope. */
+  const anyCopyInScope = db.prepare<[string], { one: number }>(
+    `SELECT 1 AS one FROM messages c JOIN messages m ON m.account_id = c.account_id AND m.dedup_key = c.dedup_key
+     WHERE c.id = ? AND ${IN_AI_SCOPE} LIMIT 1`,
+  );
+  /** Rebuilds the conversations holding mail of an excluded sender. */
+  function rebuildExcludedThreads(): void {
+    excludedThreads = sendersExcluded()
+      ? new Set(
+          db
+            .prepare<[], { thread_id: string }>(
+              "SELECT DISTINCT thread_id FROM messages WHERE mail_sender_excluded(from_address, to_json, cc_json) = 1",
+            )
+            .all()
+            .map((row) => row.thread_id),
+        )
+      : new Set();
+  }
   /**
    * The owner's accounts as a contact lookup needs them, in listAccounts
    * order: the email, the username when it holds `@`, and the active
@@ -1386,11 +1764,14 @@ export function createSqliteStore(db: Database.Database): MailStore {
     const remove = db.prepare("DELETE FROM messages WHERE id = ?");
     const removeTranslations = db.prepare("DELETE FROM translations WHERE message_id = ?");
     const removeSnooze = db.prepare("DELETE FROM snoozes WHERE message_id = ?");
+    // A kept task outlives its message: "no longer in Makosh Mail" (slice 3f).
+    const orphanTasks = db.prepare("UPDATE mail_tasks SET message_id = NULL WHERE message_id = ?");
     for (const row of rows) {
       deleteAttachmentsOf.run(row.id);
       deleteInlinePartsOf.run(row.id);
       removeTranslations.run(row.id);
       removeSnooze.run(row.id);
+      orphanTasks.run(row.id);
       remove.run(row.id);
     }
     return new Set(rows.map((r) => r.thread_id));
@@ -1404,7 +1785,31 @@ export function createSqliteStore(db: Database.Database): MailStore {
       attachments: attachmentsOf.all(row.id).map(toAttachment),
       draftId: row.uid === null ? null : (draftByServerCopy.get(row.account_id, row.folder, row.uid)?.id ?? null),
       agentSubject: redactSecrets(row.subject).text,
-      inAiScope: true,
+      inAiScope: anyCopyInScope.get(row.id) !== undefined,
+    };
+  }
+
+  /**
+   * The label and model suggestion of a listed thread's latest row in the
+   * view (slice 3f): undated rows count as newest, then date, then id (as
+   * the fake's oldest-first order). Run per listed thread, outside the
+   * listing statement, so its plan stays a plain index scan.
+   */
+  function labelLookup(query: {
+    latest: string;
+    params: Record<string, string>;
+  }): (threadId: string) => { category: Category | null; suggestion: AiCategoryAnswer | null } {
+    const statement = db
+      .prepare<[Record<string, unknown>], { category: Category | null; suggestion: AiCategoryAnswer | null }>(
+        `SELECT c.category, s.category AS suggestion
+         FROM (SELECT l.account_id, l.dedup_key FROM ${query.latest}
+               ORDER BY l.date IS NULL DESC, l.date DESC, l.id DESC LIMIT 1) k
+         LEFT JOIN message_categories c ON c.account_id = k.account_id AND c.dedup_key = k.dedup_key
+         LEFT JOIN category_suggestions s ON s.account_id = k.account_id AND s.dedup_key = k.dedup_key`,
+      );
+    return (threadId) => {
+      const row = statement.get({ ...query.params, threadId });
+      return { category: row?.category ?? null, suggestion: row?.suggestion ?? null };
     };
   }
 
@@ -1418,6 +1823,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
     flagged: string;
     /** The earliest snooze due time of the thread's rows in scope (slice 3e). */
     snoozed: string;
+    /** The thread's rows in scope, alias l, for @threadId (slice 3f): the latest one's label and suggestion. */
+    latest: string;
     params: Record<string, string>;
     cursor: string | null;
     limit: number;
@@ -1452,8 +1859,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
     }
     const page = rows.slice(0, query.limit);
     const last = page[page.length - 1];
+    const labels = labelLookup(query);
     return {
-      threads: page.map((row) => toThread(row, row.flagged === 1, row.snoozed_until)),
+      threads: page.map((row) => toThread(row, row.flagged === 1, row.snoozed_until, labels(row.id))),
       nextCursor: rows.length > query.limit && last ? encodeCursor(last.last_date, last.id) : null,
     };
   }
@@ -1565,6 +1973,18 @@ export function createSqliteStore(db: Database.Database): MailStore {
         db.prepare("DELETE FROM spam_seen WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM triage_items WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM triage_batches WHERE id NOT IN (SELECT batch_id FROM triage_items)").run();
+        // Slice 3f. agent_log, ai_scope_senders, category_rules and digests are not per account and stay.
+        for (const table of [
+          "ai_scope_accounts",
+          "ai_results",
+          "mail_tasks",
+          "message_categories",
+          "category_suggestions",
+          "reply_dismissals",
+          "reply_reminders",
+        ]) {
+          db.prepare(`DELETE FROM ${table} WHERE account_id = ?`).run(id);
+        }
         db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
       });
     },
@@ -1966,6 +2386,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
             AND f.move_pending IS NULL AND f.is_flagged = 1)`,
         snoozed: `(SELECT min(z.due_at) FROM messages s JOIN snoozes z ON z.message_id = s.id
           WHERE s.thread_id = threads.id AND s.account_id = @accountId AND s.folder = @folder)`,
+        latest: `messages l WHERE l.thread_id = @threadId AND l.account_id = @accountId AND l.folder = @folder
+          AND l.move_pending IS NULL`,
         params: { accountId, folder, ...filterParams(filter) },
         cursor,
         limit,
@@ -1987,6 +2409,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
             AND ${ROW_ROLE} = @role)`,
         snoozed: `(SELECT min(z.due_at) FROM ${MESSAGES_WITH_FOLDER} JOIN snoozes z ON z.message_id = m.id
           WHERE m.thread_id = threads.id AND ${ROW_ROLE} = @role)`,
+        latest: `messages l LEFT JOIN folders lf ON lf.account_id = l.account_id AND lf.path = l.folder
+          WHERE l.thread_id = @threadId AND l.move_pending IS NULL
+            AND (CASE WHEN lf.special_use IS NOT NULL THEN lf.special_use WHEN upper(l.folder) = 'INBOX' THEN 'inbox' END) = @role`,
         params: { role, ...filterParams(filter) },
         cursor,
         limit,
@@ -2120,7 +2545,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         : null;
     },
 
-    search(query: ParsedQuery, accountId, limit) {
+    search(query: ParsedQuery, accountId, limit, opts) {
       const where: string[] = [];
       const params: unknown[] = [];
       let from = "FROM messages m";
@@ -2168,6 +2593,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
       }
       // A row waiting to move out is hidden until the move completes.
       where.push("m.move_pending IS NULL");
+      // Agent paths: rows outside the AI scope go before the dedup picks a copy.
+      if (opts?.scoped === true) where.push(IN_AI_SCOPE);
       params.push(limit);
 
       // One hit per message (dedup key): the Inbox copy, else the newest row.
@@ -3101,15 +3528,17 @@ export function createSqliteStore(db: Database.Database): MailStore {
         .run(beforeIso).changes;
     },
 
-    contacts(query, limit) {
+    contacts(query, limit, opts) {
       const words = queryWords(query);
       if (words.length === 0 || limit <= 0) return [];
+      const scoped = opts?.scoped === true;
+      // The topic mask runs over redacted text (messageTextMask), so a secret never finds a contact.
       const rows = db
         .prepare<[{ words: string; scan: number }], ContactRow>(
           `SELECT ${CONTACT_COLUMNS},
              mail_contact_mask(m.subject, m.snippet, substr(m.body_text, 1, ${CONTACT_BODY_CHARS}), @words) AS mask
            FROM ${MESSAGES_WITH_FOLDER}
-           WHERE ${CONTACT_ROWS}
+           WHERE ${CONTACT_ROWS}${scoped ? ` AND ${IN_AI_SCOPE}` : ""}
            ORDER BY m.date IS NULL, m.date DESC, m.seq DESC LIMIT @scan`,
         )
         .all({ words: JSON.stringify(words), scan: CONTACT_SCAN });
@@ -3121,7 +3550,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
           .all()
           .map((row) => row.address),
       );
-      return rankContacts(rows.map(toContactMessage), words, ownerAccounts(), bulkSenders, limit);
+      const ranked = rankContacts(rows.map(toContactMessage), words, ownerAccounts(), bulkSenders, scoped ? Infinity : limit);
+      return scoped ? ranked.filter((c) => !senderExcluded([c.address], aiScope)).slice(0, limit) : ranked;
     },
 
     correspondence(addresses) {
@@ -3723,6 +4153,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         params.push(accountId);
       }
       if (opts.unreadOnly) where.push("m.is_read = 0");
+      if (opts.scoped === true) where.push(IN_AI_SCOPE);
       params.push(opts.limit);
       const rows = db
         .prepare(
@@ -3864,130 +4295,542 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
-    // ---- Agent and mail (slice 3f): stubs until the store task ----
+    // ---- Agent and mail (slice 3f) ----------------------------------------
 
-    setAiScope() {
-      throw new Error("Not available yet");
+    setAiScope(scope) {
+      aiScope = scope;
+      rebuildExcludedThreads();
     },
+
     getAiScope() {
-      return OPEN_AI_SCOPE;
+      return aiScope;
     },
+
     loadAiScope() {
-      return OPEN_AI_SCOPE;
+      const accounts = new Map<string, AccountScope>();
+      const rows = db
+        .prepare<[], { account_id: string; mode: string; folders_json: string | null }>(
+          "SELECT account_id, mode, folders_json FROM ai_scope_accounts ORDER BY account_id",
+        )
+        .all();
+      for (const row of rows) {
+        if (row.mode === "none") accounts.set(row.account_id, { mode: "none" });
+        else if (row.mode === "folders") {
+          accounts.set(row.account_id, { mode: "folders", folders: JSON.parse(row.folders_json ?? "[]") as string[] });
+        } else accounts.set(row.account_id, { mode: "all" });
+      }
+      const addresses = new Set<string>();
+      const domains = new Set<string>();
+      for (const row of db
+        .prepare<[], { kind: string; value: string }>("SELECT kind, value FROM ai_scope_senders ORDER BY kind, value")
+        .all()) {
+        (row.kind === "domain" ? domains : addresses).add(row.value);
+      }
+      return { accounts, senders: { addresses, domains } };
     },
-    putAiScope() {
-      throw new Error("Not available yet");
+
+    putAiScope(accounts, senders, nowIso) {
+      atomic(() => {
+        db.prepare("DELETE FROM ai_scope_accounts").run();
+        db.prepare("DELETE FROM ai_scope_senders").run();
+        const putAccount = db.prepare(
+          "INSERT OR REPLACE INTO ai_scope_accounts (account_id, mode, folders_json, updated_at) VALUES (?, ?, ?, ?)",
+        );
+        for (const { accountId, scope } of accounts) {
+          putAccount.run(accountId, scope.mode, scope.mode === "folders" ? JSON.stringify(scope.folders) : null, nowIso);
+        }
+        const putSender = db.prepare("INSERT OR IGNORE INTO ai_scope_senders (kind, value, created_at) VALUES (?, ?, ?)");
+        for (const sender of senders) putSender.run(sender.kind, sender.value, nowIso);
+      });
     },
+
     refreshExcludedThreads() {
-      throw new Error("Not available yet");
+      rebuildExcludedThreads();
     },
-    scopedMessage() {
-      return null;
+
+    scopedMessage(messageId) {
+      const row = db
+        .prepare<[{ id: string }], HeaderRow>(
+          `SELECT ${SUMMARY_COLUMNS}, m.to_json, m.cc_json, m.uid
+           FROM messages c JOIN messages m ON m.account_id = c.account_id AND m.dedup_key = c.dedup_key
+           WHERE c.id = @id AND ${IN_AI_SCOPE}
+           ORDER BY m.id = @id DESC, ${IN_INBOX} DESC, m.seq DESC LIMIT 1`,
+        )
+        .get({ id: messageId });
+      return row ? header(row) : null;
     },
-    appendAgentLog() {
-      throw new Error("Not available yet");
+
+    appendAgentLog(entry) {
+      const result = db
+        .prepare(
+          `INSERT INTO agent_log (at, actor, thread_id, tool, outcome, message_ids_json, result_count, hidden_count,
+             ref_id, provider, model)
+           VALUES (@at, @actor, @threadId, @tool, @outcome, @ids, @count, @hidden, @refId, @provider, @model)`,
+        )
+        .run({
+          at: entry.at,
+          actor: entry.actor,
+          threadId: entry.threadId,
+          tool: entry.tool,
+          outcome: entry.outcome,
+          ids: JSON.stringify(entry.messageIds.slice(0, AGENT_LOG_IDS_MAX)),
+          count: entry.count,
+          hidden: entry.hiddenCount,
+          refId: entry.refId,
+          provider: entry.provider,
+          model: entry.model,
+        });
+      return Number(result.lastInsertRowid);
     },
-    updateAgentLog() {
-      throw new Error("Not available yet");
+
+    updateAgentLog(refId, outcome, count) {
+      return db.prepare("UPDATE agent_log SET outcome = ?, result_count = ? WHERE ref_id = ?").run(outcome, count, refId)
+        .changes;
     },
-    listAgentLog() {
-      return { entries: [], next: null };
+
+    listAgentLog(opts) {
+      const where: string[] = [];
+      const params: Record<string, unknown> = { limit: opts.limit + 1 };
+      if (opts.threadId !== undefined) {
+        where.push("thread_id = @threadId");
+        params.threadId = opts.threadId;
+      }
+      const after = opts.cursor == null ? null : Number(opts.cursor);
+      if (after !== null && Number.isInteger(after)) {
+        where.push("seq < @after");
+        params.after = after;
+      }
+      const rows = db
+        .prepare<[Record<string, unknown>], AgentLogRow>(
+          `SELECT * FROM agent_log ${where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`}
+           ORDER BY seq DESC LIMIT @limit`,
+        )
+        .all(params);
+      const page = rows.slice(0, opts.limit).map(toLogEntry);
+      const last = page[page.length - 1];
+      return { entries: page, next: rows.length > opts.limit && last ? String(last.seq) : null };
     },
+
     clearAgentLog() {
-      throw new Error("Not available yet");
+      return db.prepare("DELETE FROM agent_log").run().changes;
     },
-    purgeAgentLog() {
-      throw new Error("Not available yet");
+
+    purgeAgentLog(beforeIso, maxRows) {
+      return atomic(() => {
+        const old = db.prepare("DELETE FROM agent_log WHERE at < ?").run(beforeIso).changes;
+        const over = db
+          .prepare("DELETE FROM agent_log WHERE seq NOT IN (SELECT seq FROM agent_log ORDER BY seq DESC LIMIT ?)")
+          .run(maxRows).changes;
+        return old + over;
+      });
     },
-    getAiResult() {
-      return null;
+
+    getAiResult(kind, subjectId) {
+      const row = db
+        .prepare<[string, string], AiResultRow>("SELECT * FROM ai_results WHERE kind = ? AND subject_id = ?")
+        .get(kind, subjectId);
+      return row ? toAiResult(row) : null;
     },
-    putAiResult() {
-      throw new Error("Not available yet");
+
+    putAiResult(row) {
+      if (Buffer.byteLength(row.resultJson, "utf8") > AI_RESULT_MAX_BYTES) throw new Error("AI result too large");
+      db.prepare(
+        `INSERT OR REPLACE INTO ai_results (kind, subject_id, account_id, source_sha256, provider, model,
+           result_json, notes_json, created_at)
+         VALUES (@kind, @subjectId, @accountId, @sourceSha256, @provider, @model, @resultJson, @notesJson, @createdAt)`,
+      ).run(row);
     },
-    keepTasks() {
-      throw new Error("Not available yet");
+
+    keepTasks(rows) {
+      return atomic(() => {
+        const open = db.prepare<[], { n: number }>("SELECT count(*) AS n FROM mail_tasks WHERE done_at IS NULL").get()!.n;
+        if (open + rows.length > TASKS_OPEN_MAX) return { full: true as const };
+        const insert = db.prepare(
+          `INSERT INTO mail_tasks (id, account_id, message_id, dedup_key, title, due_date, done_at, created_at, updated_at)
+           VALUES (@id, @accountId, @messageId, @dedupKey, @title, @due, NULL, @createdAt, @createdAt)`,
+        );
+        for (const row of rows) insert.run(row);
+        return { kept: rows.length };
+      });
     },
-    listTasks() {
-      return { tasks: [], next: null };
+
+    listTasks(opts) {
+      const offset = opts.cursor == null ? 0 : Math.max(0, Number(opts.cursor) || 0);
+      const order = opts.done ? "t.done_at DESC, t.id DESC" : "t.due_date IS NULL, t.due_date, t.created_at, t.id";
+      const rows = db
+        .prepare<[number, number], TaskRow>(
+          `SELECT t.*, m.thread_id FROM mail_tasks t LEFT JOIN messages m ON m.id = t.message_id
+           WHERE t.done_at IS ${opts.done ? "NOT NULL" : "NULL"}
+           ORDER BY ${order} LIMIT ? OFFSET ?`,
+        )
+        .all(opts.limit + 1, offset);
+      const page = rows.slice(0, opts.limit).map(toTask);
+      return { tasks: page, next: rows.length > opts.limit ? String(offset + opts.limit) : null };
     },
-    getTask() {
-      return null;
+
+    getTask(id) {
+      const row = db
+        .prepare<[string], TaskRow>(
+          "SELECT t.*, m.thread_id FROM mail_tasks t LEFT JOIN messages m ON m.id = t.message_id WHERE t.id = ?",
+        )
+        .get(id);
+      return row ? toTask(row) : null;
     },
-    updateTask() {
-      throw new Error("Not available yet");
+
+    updateTask(id, patch, nowIso) {
+      const sets = ["updated_at = @now"];
+      const params: Record<string, unknown> = { id, now: nowIso };
+      if (patch.title !== undefined) {
+        sets.push("title = @title");
+        params.title = patch.title;
+      }
+      if (patch.due !== undefined) {
+        sets.push("due_date = @due");
+        params.due = patch.due;
+      }
+      if (patch.done !== undefined) sets.push(patch.done ? "done_at = COALESCE(done_at, @now)" : "done_at = NULL");
+      return db.prepare(`UPDATE mail_tasks SET ${sets.join(", ")} WHERE id = @id`).run(params).changes > 0;
     },
-    deleteTask() {
-      throw new Error("Not available yet");
+
+    deleteTask(id) {
+      return db.prepare("DELETE FROM mail_tasks WHERE id = ?").run(id).changes > 0;
     },
-    taskCounts() {
-      return { overdue: 0, today: 0 };
+
+    taskCounts(today) {
+      const row = db
+        .prepare<[string, string], { overdue: number | null; today: number | null }>(
+          `SELECT sum(due_date < ?) AS overdue, sum(due_date = ?) AS today
+           FROM mail_tasks WHERE done_at IS NULL AND due_date IS NOT NULL`,
+        )
+        .get(today, today)!;
+      return { overdue: row.overdue ?? 0, today: row.today ?? 0 };
     },
-    setCategories() {
-      throw new Error("Not available yet");
+
+    setCategories(messageIds, category, source, nowIso) {
+      return atomic(() => {
+        const previous: PreviousLabel[] = [];
+        const seen = new Set<string>();
+        const keyOf = db.prepare<[string], { account_id: string; dedup_key: string }>(
+          "SELECT account_id, dedup_key FROM messages WHERE id = ?",
+        );
+        const current = db.prepare<[string, string], { category: Category; source: CategorySource }>(
+          "SELECT category, source FROM message_categories WHERE account_id = ? AND dedup_key = ?",
+        );
+        const put = db.prepare(
+          `INSERT OR REPLACE INTO message_categories (account_id, dedup_key, category, source, set_at) VALUES (?, ?, ?, ?, ?)`,
+        );
+        const clear = db.prepare("DELETE FROM message_categories WHERE account_id = ? AND dedup_key = ?");
+        for (const id of messageIds) {
+          const key = keyOf.get(id);
+          if (!key || seen.has(dismissalKey(key.account_id, key.dedup_key))) continue;
+          seen.add(dismissalKey(key.account_id, key.dedup_key));
+          const before = current.get(key.account_id, key.dedup_key);
+          // A rule never overrides the owner's label.
+          if (source === "rule" && before?.source === "owner") continue;
+          previous.push({
+            accountId: key.account_id,
+            dedupKey: key.dedup_key,
+            category: before?.category ?? null,
+            source: before?.source ?? null,
+          });
+          if (category === null) clear.run(key.account_id, key.dedup_key);
+          else put.run(key.account_id, key.dedup_key, category, source, nowIso);
+        }
+        return { previous };
+      });
     },
-    restoreCategories() {
-      throw new Error("Not available yet");
+
+    restoreCategories(previous, nowIso) {
+      atomic(() => {
+        const put = db.prepare(
+          `INSERT OR REPLACE INTO message_categories (account_id, dedup_key, category, source, set_at) VALUES (?, ?, ?, ?, ?)`,
+        );
+        const clear = db.prepare("DELETE FROM message_categories WHERE account_id = ? AND dedup_key = ?");
+        for (const label of previous) {
+          if (label.category === null) clear.run(label.accountId, label.dedupKey);
+          else put.run(label.accountId, label.dedupKey, label.category, label.source ?? "owner", nowIso);
+        }
+      });
     },
-    categoriesOf() {
-      return new Map();
+
+    categoriesOf(messageIds) {
+      const out = new Map<string, { category: Category | null; source: CategorySource | null; suggestion: AiCategoryAnswer | null }>();
+      if (messageIds.length === 0) return out;
+      const rows = db
+        .prepare<
+          [string],
+          { id: string; category: Category | null; source: CategorySource | null; suggestion: AiCategoryAnswer | null }
+        >(
+          `SELECT m.id, c.category, c.source, s.category AS suggestion
+           FROM messages m
+           LEFT JOIN message_categories c ON c.account_id = m.account_id AND c.dedup_key = m.dedup_key
+           LEFT JOIN category_suggestions s ON s.account_id = m.account_id AND s.dedup_key = m.dedup_key
+           WHERE m.id IN (SELECT value FROM json_each(?))`,
+        )
+        .all(JSON.stringify(messageIds));
+      for (const row of rows) out.set(row.id, { category: row.category, source: row.source, suggestion: row.suggestion });
+      return out;
     },
-    putCategorySuggestions() {
-      throw new Error("Not available yet");
+
+    putCategorySuggestions(rows, nowIso) {
+      atomic(() => {
+        const put = db.prepare(
+          `INSERT OR REPLACE INTO category_suggestions (account_id, dedup_key, category, created_at)
+           SELECT account_id, dedup_key, ?, ? FROM messages WHERE id = ?`,
+        );
+        for (const row of rows) put.run(row.category, nowIso, row.messageId);
+      });
     },
+
     listCategoryRules() {
-      return [];
+      return db
+        .prepare<[], CategoryRuleRow>("SELECT * FROM category_rules ORDER BY created_at, id")
+        .all()
+        .map(toCategoryRule);
     },
-    addCategoryRule() {
-      throw new Error("Not available yet");
+
+    addCategoryRule(kind, value, category, id, nowIso) {
+      return atomic(() => {
+        const existing = db
+          .prepare<[string, string], CategoryRuleRow>("SELECT * FROM category_rules WHERE kind = ? AND value = ?")
+          .get(kind, value);
+        if (existing) return { rule: toCategoryRule(existing), created: false };
+        const total = db.prepare<[], { n: number }>("SELECT count(*) AS n FROM category_rules").get()!.n;
+        if (total >= CATEGORY_RULES_MAX) return { full: true as const };
+        db.prepare("INSERT INTO category_rules (id, kind, value, category, created_at) VALUES (?, ?, ?, ?, ?)").run(
+          id,
+          kind,
+          value,
+          category,
+          nowIso,
+        );
+        return { rule: { id, kind, value, category, createdAt: nowIso }, created: true };
+      });
     },
-    removeCategoryRule() {
-      throw new Error("Not available yet");
+
+    removeCategoryRule(id) {
+      return db.prepare("DELETE FROM category_rules WHERE id = ?").run(id).changes > 0;
     },
-    replyCandidates() {
-      return [];
+
+    replyCandidates(sinceIso, limit) {
+      // The latest dated copy of each conversation (an Inbox copy first among
+      // copies of the same date), with the newest Sent-role row of it.
+      const rows = db
+        .prepare<[{ since: string; limit: number }], ReplyCandidateRow>(
+          `SELECT * FROM (
+             SELECT m.thread_id, m.account_id, m.id, m.dedup_key, m.date, ${ROW_ROLE} AS role, m.from_address,
+               m.to_json, m.cc_json, m.bulk,
+               (SELECT max(sm.date) FROM messages sm LEFT JOIN folders sf ON sf.account_id = sm.account_id AND sf.path = sm.folder
+                 WHERE sm.thread_id = m.thread_id AND sf.special_use = 'sent') AS last_sent,
+               row_number() OVER (PARTITION BY m.thread_id
+                 ORDER BY m.date DESC, ${IN_INBOX} DESC, m.seq DESC) AS rn
+             FROM ${MESSAGES_WITH_FOLDER}
+             WHERE m.move_pending IS NULL AND m.date IS NOT NULL
+               AND m.thread_id IN (SELECT thread_id FROM messages WHERE date >= @since))
+           WHERE rn = 1
+           ORDER BY date DESC, id DESC
+           LIMIT @limit`,
+        )
+        .all({ since: sinceIso, limit });
+      return rows.map((row) => ({
+        threadId: row.thread_id,
+        accountId: row.account_id,
+        messageId: row.id,
+        dedupKey: row.dedup_key,
+        date: row.date,
+        folderRole: row.role,
+        fromAddress: row.from_address,
+        to: addressesOf(row.to_json),
+        cc: addressesOf(row.cc_json),
+        bulk: row.bulk === null ? null : row.bulk === 1,
+        lastSentAt: row.last_sent,
+      }));
     },
+
     replyDismissals() {
-      return new Set();
+      return new Set(
+        db
+          .prepare<[], { account_id: string; dedup_key: string }>("SELECT account_id, dedup_key FROM reply_dismissals")
+          .all()
+          .map((row) => dismissalKey(row.account_id, row.dedup_key)),
+      );
     },
-    dismissReply() {
-      throw new Error("Not available yet");
+
+    dismissReply(accountId, dedupKey, nowIso) {
+      db.prepare(
+        "INSERT OR REPLACE INTO reply_dismissals (account_id, dedup_key, dismissed_at) VALUES (?, ?, ?)",
+      ).run(accountId, dedupKey, nowIso);
     },
-    getDigest() {
-      return null;
+
+    getDigest(day) {
+      const row = db.prepare<[string], DigestRow>("SELECT * FROM digests WHERE day = ?").get(day);
+      return row
+        ? {
+            day: row.day,
+            builtAt: row.built_at,
+            since: row.since,
+            replyCount: row.reply_count,
+            noticeCount: row.notice_count,
+            notifiedAt: row.notified_at,
+          }
+        : null;
     },
-    putDigest() {
-      throw new Error("Not available yet");
+
+    putDigest(row) {
+      return (
+        db
+          .prepare(
+            `INSERT OR IGNORE INTO digests (day, built_at, since, reply_count, notice_count, notified_at)
+             VALUES (@day, @builtAt, @since, @replyCount, @noticeCount, @notifiedAt)`,
+          )
+          .run(row).changes > 0
+      );
     },
-    markDigestNotified() {
-      throw new Error("Not available yet");
+
+    markDigestNotified(day, nowIso) {
+      return db.prepare("UPDATE digests SET notified_at = ? WHERE day = ? AND notified_at IS NULL").run(nowIso, day)
+        .changes > 0;
     },
-    createReminder() {
-      throw new Error("Not available yet");
+
+    createReminder(row) {
+      return atomic(() => {
+        const live = db
+          .prepare<[], { n: number }>(
+            "SELECT count(*) AS n FROM reply_reminders WHERE state IN ('queued', 'waiting', 'due')",
+          )
+          .get()!.n;
+        if (live >= REMINDERS_LIVE_MAX) return { full: true as const };
+        db.prepare(
+          `INSERT INTO reply_reminders (id, account_id, outbox_id, rfc_message_id, thread_id, days, sent_at, due_at,
+             state, created_at, updated_at, notified_at)
+           VALUES (@id, @accountId, @outboxId, @rfcMessageId, @threadId, @days, @sentAt, @dueAt, @state, @createdAt,
+             @createdAt, NULL)`,
+        ).run(row);
+        return { created: true as const };
+      });
     },
-    bindReminder() {
-      throw new Error("Not available yet");
+
+    bindReminder(outboxId, sentAtIso) {
+      return atomic(() => {
+        const row = db
+          .prepare<[string], ReminderRow>("SELECT * FROM reply_reminders WHERE outbox_id = ? AND state = 'queued'")
+          .get(outboxId);
+        if (!row) return null;
+        db.prepare(
+          `UPDATE reply_reminders SET state = 'waiting', outbox_id = NULL, sent_at = ?, due_at = ?, updated_at = ?
+           WHERE id = ?`,
+        ).run(sentAtIso, dueAt(sentAtIso, row.days), sentAtIso, row.id);
+        return toReminder(db.prepare<[string], ReminderRow>("SELECT * FROM reply_reminders WHERE id = ?").get(row.id)!);
+      });
     },
-    deleteReminderForOutbox() {
-      throw new Error("Not available yet");
+
+    deleteReminderForOutbox(outboxId) {
+      return db.prepare("DELETE FROM reply_reminders WHERE outbox_id = ?").run(outboxId).changes;
     },
-    getReminder() {
-      return null;
+
+    getReminder(id) {
+      const row = db.prepare<[string], ReminderRow>("SELECT * FROM reply_reminders WHERE id = ?").get(id);
+      return row ? toReminder(row) : null;
     },
-    listReminders() {
-      return [];
+
+    listReminders(opts) {
+      if (opts.states.length === 0) return [];
+      const params: Record<string, unknown> = { states: JSON.stringify(opts.states), limit: opts.limit };
+      let due = "";
+      if (opts.dueBefore !== undefined) {
+        due = " AND due_at IS NOT NULL AND due_at <= @dueBefore";
+        params.dueBefore = opts.dueBefore;
+      }
+      return db
+        .prepare<[Record<string, unknown>], ReminderRow>(
+          `SELECT * FROM reply_reminders WHERE state IN (SELECT value FROM json_each(@states))${due}
+           ORDER BY due_at IS NULL, due_at, created_at, id LIMIT @limit`,
+        )
+        .all(params)
+        .map(toReminder);
     },
-    updateReminder() {
-      throw new Error("Not available yet");
+
+    updateReminder(id, patch, nowIso) {
+      const sets = ["updated_at = @now"];
+      const params: Record<string, unknown> = { id, now: nowIso };
+      const columns: [keyof typeof patch, string][] = [
+        ["state", "state"],
+        ["days", "days"],
+        ["dueAt", "due_at"],
+        ["threadId", "thread_id"],
+        ["notifiedAt", "notified_at"],
+      ];
+      for (const [key, column] of columns) {
+        if (patch[key] === undefined) continue;
+        sets.push(`${column} = @${key}`);
+        params[key] = patch[key];
+      }
+      return db.prepare(`UPDATE reply_reminders SET ${sets.join(", ")} WHERE id = @id`).run(params).changes > 0;
     },
-    answeringRows() {
-      return [];
+
+    answeringRows(rfcMessageIds, afterIso) {
+      const bare = [...new Set(rfcMessageIds.map(normalizeMessageId).filter((id) => id !== ""))];
+      if (bare.length === 0) return [];
+      const spellings = JSON.stringify([...bare, ...bare.map((id) => `<${id}>`)]);
+      const rows = db
+        .prepare<[{ ids: string; after: string }], AnsweringDbRow>(
+          `SELECT m.id, m.account_id, m.thread_id, m.message_id, m.in_reply_to, m.refs, m.date, m.bulk, m.from_address
+           FROM messages m
+           WHERE m.date > @after
+             AND (m.in_reply_to IN (SELECT value FROM json_each(@ids))
+               OR EXISTS (SELECT 1 FROM json_each(m.refs) r WHERE r.value IN (SELECT value FROM json_each(@ids))))
+           ORDER BY m.date, m.seq`,
+        )
+        .all({ ids: spellings, after: afterIso });
+      return rows.map((row) => ({
+        id: row.id,
+        accountId: row.account_id,
+        threadId: row.thread_id,
+        messageId: row.message_id,
+        inReplyTo: row.in_reply_to,
+        references: JSON.parse(row.refs) as string[],
+        date: row.date,
+        bulk: row.bulk === null ? null : row.bulk === 1,
+        fromAddress: row.from_address,
+      }));
     },
-    sentCopyThread() {
-      return null;
+
+    sentCopyThread(accountId, rfcMessageId) {
+      const bare = normalizeMessageId(rfcMessageId);
+      if (bare === "") return null;
+      return (
+        db
+          .prepare<[string, string, string], { thread_id: string }>(
+            `SELECT thread_id FROM messages WHERE account_id = ? AND message_id IN (?, ?) ORDER BY seq DESC LIMIT 1`,
+          )
+          .get(accountId, bare, `<${bare}>`)?.thread_id ?? null
+      );
     },
-    purgeDaily() {
-      throw new Error("Not available yet");
+
+    purgeDaily(nowIso) {
+      const now = Date.parse(nowIso);
+      const before = (days: number) => new Date(now - days * 86_400_000).toISOString();
+      return atomic(() => {
+        let removed = 0;
+        for (const table of ["message_categories", "category_suggestions"]) {
+          removed += db
+            .prepare(
+              `DELETE FROM ${table} WHERE NOT EXISTS (SELECT 1 FROM messages m
+                 WHERE m.account_id = ${table}.account_id AND m.dedup_key = ${table}.dedup_key)`,
+            )
+            .run().changes;
+        }
+        removed += db
+          .prepare("DELETE FROM ai_results WHERE subject_id NOT IN (SELECT id FROM threads)")
+          .run().changes;
+        removed += db.prepare("DELETE FROM digests WHERE built_at < ?").run(before(DAY_ROWS_KEEP_DAYS)).changes;
+        removed += db.prepare("DELETE FROM reply_dismissals WHERE dismissed_at < ?").run(before(DAY_ROWS_KEEP_DAYS)).changes;
+        removed += db
+          .prepare("DELETE FROM reply_reminders WHERE state = 'answered' AND updated_at < ?")
+          .run(before(ANSWERED_KEEP_DAYS)).changes;
+        removed += store.purgeAgentLog(before(AGENT_LOG_KEEP_DAYS), AGENT_LOG_ROWS_MAX);
+        return removed;
+      });
     },
   };
   return store;
