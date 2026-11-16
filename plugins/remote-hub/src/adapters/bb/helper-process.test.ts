@@ -197,6 +197,71 @@ describe("helper-process (lifecycle)", () => {
     },
     10_000,
   );
+  // V3: a stale handle/subscriber must never reach a new generation's session.
+  it(
+    "isolates a stale handle from a new helper generation",
+    async () => {
+      const spawns: FakeChild[] = [];
+      let spawnCount = 0;
+      const spawn: HelperSpawn = () => {
+        const fake = makeFakeChild();
+        spawns.push(fake);
+        const generation = spawnCount === 0 ? GEN_A : GEN_B;
+        spawnCount += 1;
+        setImmediate(() => {
+          fake.child.stdout.push(helloAck(generation));
+          // The open_echo request is sent in the microtask after the handshake
+          // resolves, so answer it in a later macrotask.
+          setTimeout(() => {
+            fake.child.stdout.push(
+              Buffer.from(
+                encodeControlFrame({
+                  type: "session.opened",
+                  id: 1,
+                  sessionId: 1,
+                  cols: 80,
+                  rows: 24,
+                  pid: 99999,
+                  kind: "echo",
+                }),
+              ),
+            );
+          }, 0);
+        });
+        return fake.child as unknown as ChildProcessWithoutNullStreams;
+      };
+      const service = createRemoteHubService({
+        startHelper: () => HelperProcess.spawn("bin", spawn),
+      });
+      const handleA = await service.echoOpen(80, 24);
+      const tokenA = service.sessionAttach(handleA);
+
+      // The helper dies; a new one starts and reuses session id 1.
+      spawns[0].child.emit("exit");
+      const handleB = await service.echoOpen(80, 24);
+
+      expect(service.consumeAttachToken(tokenA)).toBeNull();
+      await expect(service.sessionTerminalInput(handleA, new Uint8Array([0x78]))).rejects.toMatchObject({
+        code: "session_not_found",
+      });
+      await expect(service.sessionResize(handleA, 100, 30)).rejects.toMatchObject({
+        code: "session_not_found",
+      });
+
+      const list = service.sessionList();
+      const oldInfo = list.find(
+        (s) => s.generation === handleA.generation && s.sessionId === handleA.sessionId,
+      );
+      expect(oldInfo?.state).toBe("closed");
+      expect(oldInfo?.reason).toBe("helper_exited");
+      const newInfo = list.find(
+        (s) => s.generation === handleB.generation && s.sessionId === handleB.sessionId,
+      );
+      expect(newInfo?.state).toBe("running");
+    },
+    10_000,
+  );
+
   // R4 + S7(a): a dead helper is marked, rejects immediately, and a new start
   // sends only hello.
   it("marks a dead helper and starts a fresh one without replaying input", async () => {

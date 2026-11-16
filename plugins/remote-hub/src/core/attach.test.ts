@@ -45,3 +45,36 @@ describe("AttachTokens", () => {
     expect(tokens.consume("f".repeat(32))).toBeNull();
   });
 });
+  it("caps outstanding tokens per session at 8", () => {
+    let now = 0;
+    const tokens = new AttachTokens(30_000, { now: () => now });
+    const generation = "a".repeat(32);
+    for (let i = 0; i < 20; i++) {
+      tokens.issue(1, generation);
+      now += 1;
+    }
+    expect(tokens.size).toBe(8);
+  });
+
+  it("caps outstanding tokens globally at 256", () => {
+    let now = 0;
+    const tokens = new AttachTokens(30_000, { now: () => now });
+    for (let i = 0; i < 300; i++) {
+      tokens.issue(i % 100, (i % 7).toString(16).repeat(32));
+      now += 1;
+    }
+    expect(tokens.size).toBe(256);
+  });
+
+  it("revokes every token of one generation", () => {
+    const tokens = new AttachTokens(30_000);
+    const g1 = "a".repeat(32);
+    const g2 = "b".repeat(32);
+    const t1 = tokens.issue(1, g1);
+    const t2 = tokens.issue(2, g1);
+    const t3 = tokens.issue(1, g2);
+    tokens.revokeGeneration(g1);
+    expect(tokens.consume(t1)).toBeNull();
+    expect(tokens.consume(t2)).toBeNull();
+    expect(tokens.consume(t3)).toEqual({ sessionId: 1, generation: g2 });
+  });

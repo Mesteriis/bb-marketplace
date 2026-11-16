@@ -1,22 +1,25 @@
 // Node integration for Remote Hub: drives the real TS layer (service.ts +
 // helper-process.ts) against the real Rust helper and a throwaway sshd
-// container. Only the spawn primitive is injected (node:child_process.spawn),
-// which is exactly what the SDK's experimental_spawnHostProcess wraps. Run via
-// REMOTE_HUB_INTEGRATION=1 vitest run tests/integration/ssh-service.test.ts;
-// without that env var the suite is skipped so 'npm run check' stays offline.
+// container. The spawn primitive is injected (node:child_process.spawn), which
+// is exactly what the SDK's experimental_spawnHostProcess wraps. Run via the
+// test:integration script; without REMOTE_HUB_INTEGRATION=1 the cases are
+// skipped so 'npm run check' stays offline.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createCreditController } from "../../src/core/credit.ts";
 import { HelperProcess } from "../../src/adapters/bb/helper-process.ts";
 import { createRemoteHubService, type RemoteHubService } from "../../src/adapters/bb/service.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const HELPER = join(here, "..", "..", "bin", "remote-hub-helper");
+const HELPER =
+  process.env.REMOTE_HUB_HELPER ??
+  join(here, "..", "..", "bin", "remote-hub-helper");
 const IMAGE = "remote-hub-sshd-test";
 
 const enabled = process.env.REMOTE_HUB_INTEGRATION === "1";
@@ -47,9 +50,24 @@ async function waitFor(cond: () => boolean, timeoutMs = 10_000): Promise<void> {
   throw new Error("waitFor timed out");
 }
 
-const runIt = enabled && dockerAvailable();
+const spawnHelper = (bin: string) =>
+  HelperProcess.spawn(
+    bin,
+    (b, args) => spawn(b, args, { stdio: ["pipe", "pipe", "pipe"] }) as unknown as ChildProcessWithoutNullStreams,
+  );
 
-describe.skipIf(!runIt)("ssh service integration (service.ts + helper-process.ts)", () => {
+const runDocker = enabled && dockerAvailable();
+
+// The standalone integration path must fail loudly (not silently pass) when
+// Docker is requested but unavailable.
+it("docker is available when integration is requested", () => {
+  if (enabled && !dockerAvailable()) {
+    console.log("not run");
+    throw new Error("not run: docker unavailable");
+  }
+});
+
+describe.skipIf(!runDocker)("ssh service integration (service.ts + helper-process.ts)", () => {
   let tmp: string;
   let cid: string;
   let port: number;
@@ -83,10 +101,7 @@ describe.skipIf(!runIt)("ssh service integration (service.ts + helper-process.ts
     cfg = join(tmp, "config");
     writeFileSync(cfg, "Host rh\n");
 
-    helper = await HelperProcess.spawn(
-      HELPER,
-      (bin, args) => spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] }) as unknown as ChildProcessWithoutNullStreams,
-    );
+    helper = await spawnHelper(HELPER);
     service = createRemoteHubService({
       startHelper: async () => helper,
       env: process.env as Record<string, string | undefined>,
@@ -101,71 +116,96 @@ describe.skipIf(!runIt)("ssh service integration (service.ts + helper-process.ts
     if (tmp) rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("case 1: key auth echoes a UTF-8 line through the TS service", async () => {
-    const target = {
-      host: "127.0.0.1",
-      port,
-      configFile: cfg,
-      knownHostsFile: knownHosts,
-      identityFile: key,
-      extraOptions: [],
-    };
-    const handle = await service.sshOpen(target, 80, 24);
-    await service.sessionCredit(handle, 1 << 20);
+  const target = (kh: string) => ({
+    host: "127.0.0.1",
+    port,
+    configFile: cfg,
+    knownHostsFile: kh,
+    identityFile: key,
+    extraOptions: [] as string[],
+  });
 
+  function creditFlow(handle: { generation: string; sessionId: number }, service: RemoteHubService) {
+    const credit = createCreditController();
     const decoder = new TextDecoder();
     let out = "";
-    const unsub = service.subscribeSession(handle.sessionId, (data) => {
-      out += decoder.decode(data, { stream: true });
+    let replenishError: unknown = null;
+    void service.sessionCredit(handle, credit.attach()).catch((e) => {
+      replenishError = e;
     });
+    const unsub = service.subscribeSession(handle, (data) => {
+      out += decoder.decode(data, { stream: true });
+      const replenish = credit.consumed(data.byteLength);
+      if (replenish > 0) {
+        void service.sessionCredit(handle, replenish).catch((e) => {
+          replenishError = e;
+        });
+      }
+    });
+    return { out: () => out, unsub, replenishError: () => replenishError };
+  }
+
+  it("case 1: key auth echoes a UTF-8 line without a manual credit grant", async () => {
+    const handle = await service.sshOpen(target(knownHosts), 80, 24);
+    const flow = creditFlow(handle, service);
     await service.sessionTerminalInput(
-      handle.sessionId,
+      handle,
       new TextEncoder().encode("printf 'h\u00e9llo-ok'\n"),
     );
-    await waitFor(() => out.includes("h\u00e9llo-ok"));
-    unsub();
-    expect(out).toContain("h\u00e9llo-ok");
+    await waitFor(() => flow.out().includes("h\u00e9llo-ok"));
+    flow.unsub();
+    expect(flow.replenishError()).toBeNull();
+    expect(flow.out()).toContain("h\u00e9llo-ok");
   });
 
   it("case 5: unknown host key prompts, runs nothing, and no closes with 255 ssh_error", async () => {
     const emptyKh = join(tmp, "empty_known_hosts");
     writeFileSync(emptyKh, "");
-    const target = {
-      host: "127.0.0.1",
-      port,
-      configFile: cfg,
-      knownHostsFile: emptyKh,
-      identityFile: key,
-      extraOptions: [],
-    };
-    const handle = await service.sshOpen(target, 80, 24);
-    await service.sessionCredit(handle, 1 << 20);
+    const handle = await service.sshOpen(target(emptyKh), 80, 24);
+    const flow = creditFlow(handle, service);
+    await waitFor(() => flow.out().includes("Are you sure you want to continue connecting"));
+    expect(flow.out()).not.toContain("Welcome to Alpine");
+    expect(flow.out()).not.toContain("~#");
 
-    const decoder = new TextDecoder();
-    let out = "";
-    const unsub = service.subscribeSession(handle.sessionId, (data) => {
-      out += decoder.decode(data, { stream: true });
-    });
-    await waitFor(() => out.includes("Are you sure you want to continue connecting"));
-    // The remote shell must not have started before the question is answered.
-    expect(out).not.toContain("Welcome to Alpine");
-    expect(out).not.toContain("~#");
-
-    await service.sessionTerminalInput(handle.sessionId, new TextEncoder().encode("no\n"));
+    await service.sessionTerminalInput(handle, new TextEncoder().encode("no\n"));
     await waitFor(() => {
-      const s = service.sessionList().find((x) => x.sessionId === handle.sessionId);
+      const s = service.sessionList().find((x) => x.generation === handle.generation && x.sessionId === handle.sessionId);
       return s?.state === "closed";
     });
-    const info = service.sessionList().find((x) => x.sessionId === handle.sessionId);
+    const info = service.sessionList().find((x) => x.generation === handle.generation && x.sessionId === handle.sessionId);
     expect(info?.exitCode).toBe(255);
     expect(info?.reason).toBe("ssh_error");
     expect(statSync(emptyKh).size).toBe(0);
-    unsub();
+    flow.unsub();
   });
 });
 
-if (enabled && !runIt) {
-  // Keeps the standalone REMOTE_HUB_INTEGRATION=1 path honest when Docker is
-  // missing: it is reported, not silently passed.
-  console.log("not run");
-}
+describe.skipIf(!enabled)("credit flow through the helper (no manual grant)", () => {
+  it("receives PROBE-42 from /bin/sh with only the credit controller", async () => {
+    const hp = await spawnHelper(HELPER);
+    const handle = await hp.openSsh(
+      {
+        program: "/bin/sh",
+        argv: ["sh", "-c", "echo PROBE-$((6*7))"],
+        env: { TERM: "xterm-256color" },
+      },
+      80,
+      24,
+    );
+    const credit = createCreditController();
+    const decoder = new TextDecoder();
+    let out = "";
+    hp.onSessionOutput((sessionId, data) => {
+      if (sessionId !== handle.sessionId) return;
+      out += decoder.decode(data, { stream: true });
+      const replenish = credit.consumed(data.byteLength);
+      if (replenish > 0) {
+        void hp.credit(handle, replenish).catch(() => {});
+      }
+    });
+    await hp.credit(handle, credit.attach());
+    await waitFor(() => out.includes("PROBE-42"));
+    expect(out).toContain("PROBE-42");
+    hp.stop();
+  });
+});

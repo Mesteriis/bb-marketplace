@@ -36,20 +36,31 @@ export interface RemoteHubService {
   sessionClose(handle: SessionHandle): Promise<{ exitCode: number | null; signal: number | null; reason: string }>;
   sessionAttach(handle: SessionHandle): string;
   consumeAttachToken(token: string): { sessionId: number; generation: string } | null;
-  sessionScrollback(sessionId: number): Promise<Uint8Array>;
-  subscribeSession(sessionId: number, cb: (data: Uint8Array) => void): () => void;
-  sessionTerminalInput(sessionId: number, data: Uint8Array): void;
+  sessionScrollback(handle: SessionHandle): Promise<Uint8Array>;
+  subscribeSession(handle: SessionHandle, cb: (data: Uint8Array) => void): () => void;
+  subscribeSessionEnd(
+    handle: SessionHandle,
+    cb: (info: { exitCode: number | null; signal: number | null; reason: string }) => void,
+  ): () => void;
+  sessionTerminalInput(handle: SessionHandle, data: Uint8Array): Promise<void>;
   sessionResize(handle: SessionHandle, cols: number, rows: number): Promise<void>;
   sessionCredit(handle: SessionHandle, bytes: number): Promise<void>;
+  onHelperExit(cb: () => void): () => void;
   stop(): void;
+}
+
+function keyOf(handle: SessionHandle): string {
+  return handle.generation + ":" + handle.sessionId;
 }
 
 export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubService {
   let helper: HelperProcess | null = null;
   let starting: Promise<HelperProcess> | null = null;
-  const sessions = new Map<number, SessionInfo>();
-  const listeners = new Map<number, Set<(data: Uint8Array) => void>>();
+  const sessions = new Map<string, SessionInfo>();
+  const listeners = new Map<string, Set<(data: Uint8Array) => void>>();
+  const sessionEndListeners = new Map<string, Set<(info: { exitCode: number | null; signal: number | null; reason: string }) => void>>();
   const attachTokens = new AttachTokens(ATTACH_TOKEN_TTL_MS, deps.clock);
+  const helperExitCallbacks = new Set<() => void>();
 
   const start = (): Promise<HelperProcess> => {
     if (helper !== null) return Promise.resolve(helper);
@@ -58,20 +69,41 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         .startHelper()
         .then((started) => {
           helper = started;
+          const generation = started.currentGeneration;
           started.onExit(() => {
-            if (helper === started) helper = null;
+            if (helper === started) {
+              helper = null;
+              for (const info of sessions.values()) {
+                if (info.generation === generation && info.state !== "closed") {
+                  info.state = "closed";
+                  info.exitCode = null;
+                  info.signal = null;
+                  info.reason = "helper_exited";
+                }
+              }
+              for (const key of Array.from(listeners.keys())) {
+                if (key.startsWith(generation + ":")) listeners.delete(key);
+              }
+              attachTokens.revokeGeneration(generation);
+              for (const cb of helperExitCallbacks) cb();
+            }
           });
           started.onSessionClosed((sessionId, info) => {
-            const existing = sessions.get(sessionId);
+            const key = generation + ":" + sessionId;
+            const existing = sessions.get(key);
             if (existing !== undefined) {
               existing.state = "closed";
               existing.exitCode = info.exitCode;
               existing.signal = info.signal;
               existing.reason = info.reason;
             }
+            const ends = sessionEndListeners.get(key);
+            if (ends !== undefined) {
+              for (const cb of ends) cb(info);
+            }
           });
           started.onSessionOutput((sessionId, data) => {
-            const set = listeners.get(sessionId);
+            const set = listeners.get(generation + ":" + sessionId);
             if (set !== undefined) {
               for (const cb of set) cb(data);
             }
@@ -90,7 +122,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     if (handle.generation !== helper.currentGeneration) {
       throw new HelperRuntimeError("session_not_found", "session handle belongs to a different helper generation");
     }
-    if (!sessions.has(handle.sessionId)) {
+    if (!sessions.has(keyOf(handle))) {
       throw new HelperRuntimeError("session_not_found", "unknown session");
     }
   };
@@ -104,7 +136,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     async echoOpen(cols, rows) {
       const process = await start();
       const handle = await process.openEcho(cols, rows);
-      sessions.set(handle.sessionId, {
+      sessions.set(keyOf(handle), {
         generation: handle.generation,
         sessionId: handle.sessionId,
         kind: "echo",
@@ -122,14 +154,14 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     async echoClose(handle) {
       const process = await start();
       await process.close(handle);
-      sessions.delete(handle.sessionId);
+      sessions.delete(keyOf(handle));
       return { closed: true };
     },
     async sshOpen(target, cols, rows) {
       const hp = await start();
       const spec = buildSshSpawn(target, deps.env ?? process.env);
       const handle = await hp.openSsh(spec, cols, rows);
-      sessions.set(handle.sessionId, {
+      sessions.set(keyOf(handle), {
         generation: handle.generation,
         sessionId: handle.sessionId,
         kind: "ssh",
@@ -148,12 +180,17 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       requireGeneration(handle);
       const process = await start();
       const info = await process.close(handle);
-      const existing = sessions.get(handle.sessionId);
+      const key = keyOf(handle);
+      const existing = sessions.get(key);
       if (existing !== undefined) {
         existing.state = "closed";
         existing.exitCode = info.exitCode;
         existing.signal = info.signal;
         existing.reason = info.reason;
+      }
+      const ends = sessionEndListeners.get(key);
+      if (ends !== undefined) {
+        for (const cb of ends) cb(info);
       }
       return info;
     },
@@ -164,24 +201,43 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     consumeAttachToken(token) {
       return attachTokens.consume(token);
     },
-    async sessionScrollback(sessionId) {
+    async sessionScrollback(handle) {
+      requireGeneration(handle);
       const process = await start();
-      return process.scrollbackSnapshot(sessionId);
+      return process.scrollbackSnapshot(handle.sessionId);
     },
-    subscribeSession(sessionId, cb) {
-      let set = listeners.get(sessionId);
+    subscribeSession(handle, cb) {
+      requireGeneration(handle);
+      const key = keyOf(handle);
+      let set = listeners.get(key);
       if (set === undefined) {
         set = new Set();
-        listeners.set(sessionId, set);
+        listeners.set(key, set);
       }
       set.add(cb);
       return () => {
         set.delete(cb);
+        if (set.size === 0) listeners.delete(key);
       };
     },
-    async sessionTerminalInput(sessionId, data) {
+    subscribeSessionEnd(handle, cb) {
+      requireGeneration(handle);
+      const key = keyOf(handle);
+      let set = sessionEndListeners.get(key);
+      if (set === undefined) {
+        set = new Set();
+        sessionEndListeners.set(key, set);
+      }
+      set.add(cb);
+      return () => {
+        set.delete(cb);
+        if (set.size === 0) sessionEndListeners.delete(key);
+      };
+    },
+    async sessionTerminalInput(handle, data) {
+      requireGeneration(handle);
       const process = await start();
-      process.writeInput(sessionId, data);
+      process.writeInput(handle.sessionId, data);
     },
     async sessionResize(handle, cols, rows) {
       requireGeneration(handle);
@@ -192,6 +248,10 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       requireGeneration(handle);
       const process = await start();
       await process.credit(handle, bytes);
+    },
+    onHelperExit(cb) {
+      helperExitCallbacks.add(cb);
+      return () => helperExitCallbacks.delete(cb);
     },
     stop() {
       if (helper !== null) helper.stop();
