@@ -92,7 +92,7 @@ export type SyncOutcome =
       newInbox: string[];
       /** The `newInbox` rows whose dedup key already had another row in the account. */
       returning: string[];
-      /** Rows inserted this round in every folder (slice 3f: reply reminders check them); empty until the post-round task. */
+      /** Rows inserted this round in every folder, reconcile backfill included (slice 3f: reply reminders check them). */
       inserted: string[];
     }
   | {
@@ -110,6 +110,8 @@ type FolderContext = {
   preset: AccountPreset;
   /** Set for an Inbox-role folder: its incremental fetch collects inserted rows here. */
   collect: { newInbox: string[]; returning: string[] } | null;
+  /** Every row inserted this round in any folder, reconcile backfill included (slice 3f). */
+  inserted: string[];
 };
 
 /** What a round has done so far, kept across folders and failures. */
@@ -191,12 +193,14 @@ export async function syncAccount(
 
     const totals: FolderCounts = { fetched: 0, removed: 0, flagsChanged: 0 };
     const collected = { newInbox: [] as string[], returning: [] as string[] };
+    const inserted: string[] = [];
     let synced = 0;
     for (const folder of folders) {
       try {
         const context: FolderContext = {
           preset: account.preset,
           collect: folder.specialUse === "inbox" ? collected : null,
+          inserted,
         };
         const counts = await syncOneFolder(deps, config, accountId, folder, options, progress, context);
         totals.fetched += counts.fetched;
@@ -246,7 +250,7 @@ export async function syncAccount(
       movesCancelled: progress.movesCancelled,
       newInbox: collected.newInbox,
       returning: collected.returning,
-      inserted: [],
+      inserted,
     };
   } catch (error) {
     const authFailed = error instanceof ImapAuthError;
@@ -596,6 +600,7 @@ async function syncFolder(
         store.saveSyncState(accountId, path, { ...baseState, lastUid });
         return result;
       });
+      context.inserted.push(...stored.inserted);
       if (collect !== null) {
         collect.newInbox.push(...stored.inserted);
         collect.returning.push(...stored.returning);
@@ -630,7 +635,7 @@ async function syncFolder(
   // Every successful round, not only the one that saw the change: a reset
   // round that failed midway has already saved the new UIDVALIDITY, so the
   // rows it detached are only cleaned up here.
-  if (kept.size > 0) fetched += await reattachKept(store, session, accountId, path, kept, context.preset, options.batchSize);
+  if (kept.size > 0) fetched += await reattachKept(store, session, accountId, path, kept, context.preset, options.batchSize, context.inserted);
   const stillThere = queuedAtReset.filter((id) => store.getMessage(id) !== null);
   const resetRemoved = store.finishFolderReset(accountId, path);
   const droppedMoves = stillThere.filter((id) => store.getMessage(id) === null);
@@ -679,6 +684,7 @@ async function reattachKept(
   kept: ReadonlyMap<string, number | null>,
   preset: AccountPreset,
   batchSize: number,
+  inserted: string[],
 ): Promise<number> {
   const detached = () => store.detachedRows(accountId, path).filter((row) => kept.has(row.id));
   const ours = (message: FetchedMessage, rows: ReturnType<typeof detached>) =>
@@ -699,7 +705,7 @@ async function reattachKept(
         .filter((message) => ours(message, rows))
         .map((message) => withUnsubscribe(message, preset));
       if (messages.length === 0) continue;
-      store.transaction(() => store.upsertMessages(accountId, path, messages));
+      inserted.push(...store.transaction(() => store.upsertMessages(accountId, path, messages)).inserted);
       stored += messages.length;
     }
   };

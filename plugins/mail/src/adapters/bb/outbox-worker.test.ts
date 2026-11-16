@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  SendError,
   SendRateLimit,
+  dueAt,
   UndoneSends,
   UNDO_MS,
   createComposeDraft,
@@ -267,5 +269,42 @@ describe("createOutboxWorker", () => {
     for (const secret of ["bob@example.com", "Invented plan", "Hello", "invented-password", "owner@example.org"]) {
       expect(all).not.toContain(secret);
     }
+  });
+
+  it("binds the send's reply reminder when the server accepts it; a failed send keeps it queued", async () => {
+    const remind = (id: string, outboxId: string) =>
+      h.store.createReminder({
+        id,
+        accountId: "acc_1",
+        outboxId,
+        rfcMessageId: h.store.getOutbox(outboxId)!.messageId,
+        threadId: null,
+        days: 3,
+        sentAt: null,
+        dueAt: null,
+        state: "queued",
+        createdAt: h.clock.now().toISOString(),
+      });
+    const controller = new AbortController();
+    const { worker: w } = worker();
+    const running = w.start(controller.signal);
+    const sent = await queued();
+    remind("rem-sent", sent);
+    h.advance(UNDO_MS);
+    w.wake("acc_1");
+    await vi.waitFor(() => expect(state(sent)).toBe("gone"));
+    const bound = h.store.getReminder("rem-sent")!;
+    expect(bound).toMatchObject({ state: "waiting", outboxId: null });
+    expect(bound.dueAt).toBe(dueAt(bound.sentAt!, 3));
+
+    h.transport.answer(new SendError("connect", false));
+    const failed = await queued();
+    remind("rem-failed", failed);
+    h.advance(UNDO_MS);
+    w.wake("acc_1");
+    await vi.waitFor(() => expect(state(failed)).toBe("failed"));
+    expect(h.store.getReminder("rem-failed")!.state).toBe("queued");
+    controller.abort();
+    await running;
   });
 });

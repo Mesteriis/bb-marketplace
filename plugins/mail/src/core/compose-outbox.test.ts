@@ -203,6 +203,26 @@ describe("queueSend", () => {
 });
 
 describe("Undo", () => {
+  it("drops the send's queued reply reminder (slice 3f)", async () => {
+    const draft = await readyDraft();
+    const id = requestId();
+    await queueSend(deps, { ...draft, requestId: id, origin: "owner" });
+    h.store.createReminder({
+      id: "rem-1",
+      accountId: "acc_1",
+      outboxId: id,
+      rfcMessageId: h.store.getOutbox(id)!.messageId,
+      threadId: null,
+      days: 3,
+      sentAt: null,
+      dueAt: null,
+      state: "queued",
+      createdAt: h.clock.now().toISOString(),
+    });
+    expect(cancelSend(deps, id).cancelled).toBe(true);
+    expect(h.store.getReminder("rem-1")).toBeNull();
+  });
+
   it("before the tick deletes the row, sends nothing and leaves the draft exactly as it was", async () => {
     const draft = await readyDraft();
     addComposeAttachment(h.store, draft.draftId, { fileName: "a.txt", mimeType: "text/plain", size: 2, sha256: "1".repeat(64), data: new Uint8Array([4, 5]) });

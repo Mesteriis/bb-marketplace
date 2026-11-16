@@ -21,7 +21,9 @@ import {
   settleGmailUnknown,
   writeServerCopy,
   type OutboxDeps,
+  type OutboxNotifier,
 } from "../../core/index.ts";
+import { replyArrived } from "./day-clock.ts";
 
 export const OUTBOX_INTERVAL_MS = 5_000;
 export const DRAIN_MS = 5_000;
@@ -47,9 +49,18 @@ export interface OutboxWorker {
 }
 
 export function createOutboxWorker(
-  deps: OutboxWorkerDeps,
+  given: OutboxWorkerDeps,
   options: { intervalMs?: number; drainMs?: number; settleEveryMs?: number } = {},
 ): OutboxWorker {
+  // A send the server accepted binds its reply reminder (slice 3f): queued ->
+  // waiting, sent now, due after its days, then one check over stored rows.
+  const notifier: OutboxNotifier = {
+    outboxChanged: (change) => {
+      given.notifier.outboxChanged(change);
+      if (change.state === "sent" || change.state === "sent_no_copy" || change.state === "done") bindReminder(change.id);
+    },
+  };
+  const deps: OutboxWorkerDeps = { ...given, notifier };
   const intervalMs = options.intervalMs ?? OUTBOX_INTERVAL_MS;
   const drainMs = options.drainMs ?? DRAIN_MS;
   const settleEveryMs = options.settleEveryMs ?? SETTLE_EVERY_MS;
@@ -67,6 +78,18 @@ export function createOutboxWorker(
       return false;
     }
   };
+
+  function bindReminder(outboxId: string): void {
+    try {
+      const nowIso = deps.clock.now().toISOString();
+      const bound = deps.store.bindReminder(outboxId, nowIso);
+      if (bound === null) return;
+      replyArrived(deps.store, nowIso, undefined, [bound]);
+      log(`reminder ${bound.id} waiting`);
+    } catch {
+      log(`reminder for ${outboxId}: bind failed`);
+    }
+  }
 
   let woken = false;
   let cutSleep: (() => void) | null = null;
