@@ -520,7 +520,7 @@
 - [ ] **The listing and the skill**: `bb.description`, `PLUGIN_OVERVIEW.md` and the `marketplace.json` entry describe current behaviour and change together. `SKILL.md` documents the new operators for `mail_search` and says there is no server search and no attachment text for agents.
 - [ ] **Backlog labels**: `[уже есть]` for 34, 35, 43, 49, 50, 54, 62, 63, 79, 84 (or "текст вложений; PDF — нет" per Task 0), 85, 86, 88 and 89. Item 83 is `[позже]` with "связанные письма — локально, срез 3h". Items 74 and 76 are `[кандидат]` with "срез 3j". Update the header's date line.
 - [ ] **Pin**: `MIGRATIONS.slice(0, 14)` with the SHA of elements 12 and 13 added.
-- [ ] **Build checks**: `npm run check`, `npm run build`, `node ../../scripts/check-manifests.mjs`. Record the `dist/app.js` and `dist/server.js` sizes before (Task 0's numbers) and after, and `grep -c "napi-rs" dist/*.js` = 0.
+- [ ] **Build checks**: `npm run check`, `npm run build`, `node ../../scripts/check-manifests.mjs`. Record the `dist/app.js` and `dist/server.js` sizes before (Task 0's numbers) and after. `grep -c "napi-rs"` is 0 for `dist/server.js` and exactly 1 for `dist/app.js` (pdf.js's own Node-only `NodeCanvasFactory` literal, see "Task 0 result"), and `grep -ci skia dist/*.js` = 0.
 - [ ] **Commit** (`docs(mail): 3h — …`).
 
 ### Task 13: Live check in the owner's BB — **owner-run**
@@ -565,4 +565,48 @@ Each batch is one implementation agent working through its tasks in order and co
 
 ## Task 0 result
 
-*(Filled in by batch A: method chosen for the server worker and the page worker, chunking behaviour, `dist/app.js` and `dist/server.js` sizes before and after, whether `@napi-rs/canvas` is in `node_modules`, and the pass/fail for each part.)*
+Run on 2026-11-16 by batch A, Node v24.20.0, `bb plugin build` with BB's toolchain esbuild 0.28.2. The spike code lived in a scratch copy of the plugin outside the repository; only the dependency, the notice and this note are committed.
+
+**Outcome: server PASS (method a), page PASS (blob worker, inlined).** Task 8 builds PDF text extraction; Task 11 builds `pdf-view.tsx` and `pdf-page.ts`. `pdfjs-dist` stays.
+
+**Dependency.**
+- `pdfjs-dist` 6.5.438 is an exact entry in `dependencies`. `npm run check` stayed green.
+- `@napi-rs/canvas` 1.1.1 landed in `node_modules` (`@napi-rs/canvas` and `@napi-rs/canvas-darwin-arm64`). The lockfile gained the package and its 11 optional per-platform entries (spec resolution 21 accepts this).
+
+**Build facts** (`bb plugin build` code, read from BB's installed toolchain).
+- The server build has exactly one entry (`server.ts` → `dist/server.js`, ESM, `platform: "node"`). Only `node:` modules and the SDK are external. There is no second server entry, so method (b) is not available.
+- The app build is one `outfile` with no `splitting` and `legalComments: "none"`. A dynamic `import()` is **inlined** into `dist/app.js` as a lazy wrapper: no separate chunk, but the module is only evaluated when called.
+- esbuild 0.28.2 accepts `import src from "pdfjs-dist/build/pdf.worker.min.mjs" with { type: "text" }`, which embeds the worker as a string.
+
+**Server worker: PASS with method (a).**
+- The worker is `new Worker(source, { eval: true, resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 32, stackSizeMb: 4 }, stdout: true, stderr: true, workerData, transferList })`. The source string is embedded in `dist/server.js`.
+- The parent resolves `pdfjs-dist/legacy/build/pdf.mjs` and `pdf.worker.mjs` with `createRequire(import.meta.url).resolve(…)` and passes `file:` URLs. From `dist/server.js` this finds the plugin's own `node_modules`. `pdfjs-dist` has no `exports` map, so deep paths resolve. The worker `import()`s pdf.js and sets `GlobalWorkerOptions.workerSrc`, so pdf.js runs its "fake worker" inside that worker thread.
+- Checks, all on the built `dist/server.js` under plain Node 24:
+  - The hand-written two-page PDF gives `"Invoice INV-2041 for example.com\nSecond page made-up text\n"` in about 80 ms.
+  - Heap bomb (360 KB, one Flate content stream that decodes to 120 MB of alternating `Tm … Tj` lines): `ERR_WORKER_OUT_OF_MEMORY` after about 1.9 s, and the parent survives.
+  - A stuck worker (a busy loop) ends as `timeout` at 20 003 ms. `terminate()` works and the process exits.
+  - `grep -c "napi-rs" dist/server.js` = 0.
+- **`@napi-rs/canvas`: pdf.js tries to load it on import, so stubs alone do not stop it.** The legacy build's `node_utils` calls `require("@napi-rs/canvas")` at module load whenever it runs in Node, whatever `DOMMatrix`/`Path2D` are. Control run without a hook: `process.report.getReport().sharedObjects` lists `skia.darwin-arm64.node`.
+  - The worker therefore calls `require("node:module").registerHooks({ resolve })` before importing pdf.js. The hook throws for `/^@napi[-]rs\//`; pdf.js catches the error and warns.
+  - The worker also installs minimal `DOMMatrix`/`Path2D` stubs.
+  - With the hook: one resolve attempt is blocked, no `napi`/`canvas` shared object is loaded, and `require.cache` has no entry for it.
+  - Write the pattern as `napi[-]rs` (not the literal) so the grep check stays 0.
+- **For Task 8:**
+  - Capture the worker's stdout and stderr (`stdout: true, stderr: true`, then drain them). pdf.js prints warnings ("standardFontDataUrl", the blocked canvas), and nothing from a PDF may reach the plugin log.
+  - Use `loadingTask.destroy()`, not `doc.destroy()`, which does not exist.
+  - pdf.js skips text outside the page box, so test fixtures must draw text inside the `MediaBox`.
+  - **Known limit:** `resourceLimits` caps the V8 heap but not `ArrayBuffer` memory. While the bomb ran, the process RSS rose to about 750 MB, from decoded stream buffers outside the heap. The 10 MB file cap, one worker at a time and the 20 s timer bound it, but they do not cap it. Task 8 should keep those three and may lower the per-file cap for PDFs.
+
+**Page bundle: PASS.**
+- `src/adapters/bb/pdf-page.ts` (scratch) imports the worker as text, `import()`s `pdfjs-dist` (the modern build bundled without trouble), and starts the worker as `new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })), { type: "module" })`. It hands the worker to pdf.js as `new PDFWorker({ port: worker })` and calls `getDocument({ data, worker, isEvalSupported: false, disableAutoFetch: true, disableStream: true, enableXfa: false, useSystemFonts: false })`.
+- `dist/app.js` grew from 878 033 bytes to 2 605 315 bytes (+1 727 282). The embedded worker string is about 1.27 MB of that, and the inlined library about 0.46 MB.
+- The same entry was bundled with the same esbuild options as BB's app build (`format: "esm"`, `platform: "browser"`, `target: "es2022"`, `minify`, `legalComments: "none"`; same +1.73 MB). It was loaded in headless Chromium (Playwright's `chrome-headless-shell`) from a local page with no BB:
+  - page 1 of the fixture was drawn to a canvas: 300×200, 1 176 dark pixels;
+  - `globalThis.pdfjsWorker` was absent, so there was no fake worker on the main thread;
+  - the only requests were the page, the bundle and the `blob:` worker. There was no CMap, font or wasm request.
+- With a CSP of `worker-src 'self'`, Chromium refused the `blob:` worker. The refusal was **not** thrown and pdf.js did not fall back: `getDocument` hung with no result. **For Task 11:** the start probe must create the worker itself and wait for its first message, or an `error` event, with a short timeout before giving it to pdf.js. If the probe fails, the engine is `null` (download-only). Never rely on `getDocument` to reject.
+- **`napi-rs` in `dist/app.js`: 1, not 0.** `pdfjs-dist`'s browser build (modern and legacy alike) contains a Node-only `NodeCanvasFactory` with the string literal `createRequire(import.meta.url)("@napi-rs/canvas")`. It sits behind pdf.js's `isNodeJS` check, which is false in a browser and in an Electron renderer. esbuild leaves it as a literal because it is not a bare `require` call.
+  - No canvas code is bundled: `grep -ci skia dist/app.js` = 0, and the minified worker string has no `napi-rs`.
+  - The plugin cannot rewrite the bundle, because `bb plugin build` takes no esbuild plugins.
+  - **This differs from spec resolution 21's literal wording.** It needs owner acceptance. Task 12's check becomes: `dist/server.js` = 0; `dist/app.js` = exactly 1, and that one is pdf.js's `NodeCanvasFactory` literal; `grep -ci skia dist/*.js` = 0.
+- **License header:** `legalComments: "none"` drops pdf.js's `@licstart` header from the inlined library. The embedded worker string keeps its own header. **For Task 11:** `pdf-page.ts` keeps pdf.js's license header as a string constant that the bundle retains (for example, exported and referenced), so the bundle carries it as the notice says.

@@ -247,6 +247,24 @@ SOFTWARE.
    limitations under the License.
 ```
 
+## pdf.js (pdfjs-dist)
+
+- Source: <https://github.com/mozilla/pdf.js>, npm `pdfjs-dist` 6.5.438
+  (build `0a4153349`), an exact dependency of `plugins/mail`.
+- Paths: bundled into `plugins/mail/dist/app.js` (the PDF viewer and its
+  worker, which the page starts from a `blob:` URL), and loaded by
+  `plugins/mail/dist/server.js` from `plugins/mail/node_modules/pdfjs-dist`
+  inside a `worker_threads` worker (attachment text). Both uses passed the
+  slice 3h packaging check (Task 0); the code that uses them lands in later
+  3h tasks.
+- License: Apache-2.0, Copyright Mozilla Foundation. The full license text
+  is the Apache License 2.0 reproduced under "Velo" above, and ships as
+  `plugins/mail/node_modules/pdfjs-dist/LICENSE`. pdf.js ships no NOTICE
+  file. The license header of pdf.js is kept in the bundled code.
+- The optional dependency `@napi-rs/canvas` may be installed with
+  `pdfjs-dist`, but Mail does not use it: the server worker refuses to
+  resolve it, and no canvas code is bundled.
+
 ## Fardgram
 
 The dark chat layout and chat row/avatar styles in Makosh Telegram are adapted
