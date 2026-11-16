@@ -1289,3 +1289,5 @@ P3. **Incident dedup is checked and reserved in one transaction** (review, refin
 
 P5. **compose_attach_bb checks the path itself** (review, refines "Project file or thread file as an attachment").
    - Before any BB call, a path holding a backslash or a `..` segment is refused `invalid` ("This path climbs out of the folder, is absolute or holds a backslash"), and so is an absolute project path (`/…` or a drive letter). A thread storage path may stay absolute: BB's storage listing answers paths next to `storageRootPath`, and the adapter already reads only inside that root (unchanged).
+
+P6. **The task text is built inside the refusal handler for both targets** (review nit). `task_from_mail` reads the excerpt and builds the Taskboard or the local text in one `try`: a scope refusal is logged `refused_scope` and any builder error answers a fixed refusal, never an unhandled error.

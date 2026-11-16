@@ -1008,25 +1008,27 @@ export function createBbRpc(deps: BbRpcDeps) {
   }) {
     const header = message(input.messageId);
     return repeats.run(`task:${header.id}`, async () => {
-      const common = {
-        subject: header.subject,
-        title: input.title,
-        ...(input.note === undefined ? {} : { note: input.note }),
-        sender: header.from,
-        date: header.date,
-        inAiScope: header.inAiScope,
-        excerpt: input.excerpt ? bbMessage(store, header) : null,
-      };
-      if (input.target.kind === "taskboard") {
-        let text;
-        try {
-          text = taskText({ ...common, target: "taskboard" });
-        } catch (error) {
-          if (error instanceof BbTextOutOfScope) {
-            deps.agentLog({ actor: "owner_bb", tool: "bb_task", outcome: "refused_scope", messageIds: [header.id] });
-          }
-          throw bbRefusal(error, deps.log, "task_from_mail");
+      // Built in one try for both targets (review): the excerpt read, a scope
+      // refusal or any other builder error becomes a logged refusal.
+      let text: ReturnType<typeof taskText>;
+      try {
+        text = taskText({
+          subject: header.subject,
+          title: input.title,
+          ...(input.note === undefined ? {} : { note: input.note }),
+          sender: header.from,
+          date: header.date,
+          inAiScope: header.inAiScope,
+          excerpt: input.excerpt ? bbMessage(store, header) : null,
+          target: input.target.kind,
+        });
+      } catch (error) {
+        if (error instanceof BbTextOutOfScope) {
+          deps.agentLog({ actor: "owner_bb", tool: "bb_task", outcome: "refused_scope", messageIds: [header.id] });
         }
+        throw bbRefusal(error, deps.log, "task_from_mail");
+      }
+      if (input.target.kind === "taskboard") {
         const boardId = input.target.boardId;
         const created = await deps.tasks.create(boardId, text.title, text.description);
         if ("unavailable" in created) {
@@ -1063,7 +1065,6 @@ export function createBbRpc(deps: BbRpcDeps) {
         });
         return { kind: "taskboard" as const, taskId: created.taskId };
       }
-      const text = taskText({ ...common, target: "local" });
       const row = store.notifyRows([header.id], nowIso())[0];
       if (row === undefined) throw refuse("not_found", UNKNOWN_MESSAGE_TEXT);
       const id = `task_${deps.newId()}`;
