@@ -9,9 +9,12 @@ use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::protocol::{
-    self, Request, Response, FRAME_KIND_CONTROL, MAX_FRAME_BODY_BYTES, PROTOCOL_VERSION,
+    self, Request, Response, FRAME_KIND_CONTROL, FRAME_KIND_STREAM, MAX_FRAME_BODY_BYTES,
+    PROTOCOL_VERSION, STREAM_HEADER_BYTES,
 };
-use crate::sessions::{SessionError, SessionManager, READ_CHUNK};
+use crate::sessions::{SessionError, SessionManager, SpawnSpec, READ_CHUNK};
+use std::collections::HashMap;
+use std::ffi::CString;
 
 /// Bounded stdout write buffer. The loop stops draining PTY output and stops
 /// reading stdin while it is full (backpressure) instead of buffering without
@@ -126,10 +129,47 @@ fn request_id(req: &Request) -> Option<u64> {
         Request::Hello { .. } => None,
         Request::Ping { id }
         | Request::OpenEcho { id, .. }
+        | Request::OpenSsh { id, .. }
         | Request::SessionInput { id, .. }
         | Request::SessionResize { id, .. }
+        | Request::SessionCredit { id, .. }
         | Request::SessionClose { id, .. } => Some(*id),
     }
+}
+
+/// Validate and build a SpawnSpec from a client-provided session.open_ssh.
+fn build_spawn_spec(
+    program: String,
+    argv: Vec<String>,
+    env: HashMap<String, String>,
+    cwd: Option<String>,
+) -> Result<SpawnSpec, String> {
+    if !program.starts_with('/') {
+        return Err("program must be an absolute path".to_string());
+    }
+    let program = CString::new(program).map_err(|_| "program has a NUL byte".to_string())?;
+    let mut argv_c = Vec::with_capacity(argv.len());
+    for a in &argv {
+        argv_c.push(CString::new(a.as_str()).map_err(|_| "argv has a NUL byte".to_string())?);
+    }
+    let mut env_c = Vec::with_capacity(env.len());
+    for (k, v) in &env {
+        env_c.push((
+            CString::new(k.as_str()).map_err(|_| "env key has a NUL byte".to_string())?,
+            CString::new(v.as_str()).map_err(|_| "env value has a NUL byte".to_string())?,
+        ));
+    }
+    let cwd = match cwd {
+        Some(c) => Some(CString::new(c).map_err(|_| "cwd has a NUL byte".to_string())?),
+        None => None,
+    };
+    Ok(SpawnSpec {
+        program,
+        argv: argv_c,
+        env: env_c,
+        cwd,
+        allow_fds: Vec::new(),
+    })
 }
 
 /// Runs one control request. Returns encoded frames to queue, or a fatal
@@ -176,6 +216,7 @@ fn handle(
                     cols,
                     rows,
                     pid: pid as u32,
+                    kind: "echo".to_string(),
                 }))
             }
             Err(e) => Ok(protocol::encode_response(&Response::Error {
@@ -184,11 +225,47 @@ fn handle(
                 message: e.to_string(),
             })),
         },
+        Request::OpenSsh {
+            id,
+            cols,
+            rows,
+            program,
+            argv,
+            env,
+            cwd,
+        } => {
+            let spec = build_spawn_spec(program, argv, env, cwd);
+            match spec {
+                Ok(spec) => match manager.open_ssh(spec, cols, rows) {
+                    Ok(session_id) => {
+                        let pid = manager.child_pid(session_id).unwrap_or(0);
+                        Ok(protocol::encode_response(&Response::SessionOpened {
+                            id,
+                            session_id,
+                            cols,
+                            rows,
+                            pid: pid as u32,
+                            kind: "ssh".to_string(),
+                        }))
+                    }
+                    Err(e) => Ok(protocol::encode_response(&Response::Error {
+                        id: Some(id),
+                        code: "session_open_failed".to_string(),
+                        message: e.to_string(),
+                    })),
+                },
+                Err(msg) => Ok(protocol::encode_response(&Response::Error {
+                    id: Some(id),
+                    code: "spawn_spec_invalid".to_string(),
+                    message: msg,
+                })),
+            }
+        }
         Request::SessionInput {
             id,
             session_id,
             data,
-        } => match manager.enqueue_input(session_id, &data) {
+        } => match manager.enqueue_input(session_id, data.as_bytes()) {
             Ok(()) => Ok(protocol::encode_response(&Response::SessionInputAck { id, session_id })),
             Err(SessionError::InputOverflow) => Ok(protocol::encode_response(&Response::Error {
                 id: Some(id),
@@ -219,8 +296,23 @@ fn handle(
                 message: format!("no echo session {session_id}"),
             })),
         },
+        Request::SessionCredit {
+            id,
+            session_id,
+            bytes,
+        } => {
+            if manager.add_credit(session_id, bytes) {
+                Ok(protocol::encode_response(&Response::SessionCreditAck { id, session_id }))
+            } else {
+                Ok(protocol::encode_response(&Response::Error {
+                    id: Some(id),
+                    code: "session_not_found".to_string(),
+                    message: format!("no echo session {session_id}"),
+                }))
+            }
+        }
         Request::SessionClose { id, session_id } => match manager.close(session_id) {
-            Some((base_seq, chunks)) => {
+            Some((base_seq, chunks, exit_code, signal, reason)) => {
                 let mut out = Vec::new();
                 for (i, chunk) in chunks.iter().enumerate() {
                     out.extend_from_slice(&protocol::encode_stream(
@@ -232,6 +324,9 @@ fn handle(
                 out.extend_from_slice(&protocol::encode_response(&Response::SessionClosed {
                     id: Some(id),
                     session_id,
+                    exit_code,
+                    signal,
+                    reason,
                 }));
                 Ok(out)
             }
@@ -250,6 +345,12 @@ fn handle(
 enum FrameError {
     Fatal(String),
     Invalid(String),
+}
+
+/// A parsed inbound frame (control request or binary stream input).
+enum IncomingFrame {
+    Control(Request),
+    Stream { session_id: u32, data: Vec<u8> },
 }
 
 /// Incremental reader over the helper's stdin (non-blocking): buffers whatever
@@ -307,7 +408,7 @@ impl FrameReader {
         self.eof = true;
     }
 
-    fn try_take(&mut self) -> Result<Option<Request>, FrameError> {
+    fn try_take(&mut self) -> Result<Option<IncomingFrame>, FrameError> {
         if self.buf.len() < 4 {
             return Ok(None);
         }
@@ -324,12 +425,20 @@ impl FrameReader {
             return Ok(None);
         }
         let frame: Vec<u8> = self.buf.drain(..4 + body_len).collect();
-        if frame[4] != FRAME_KIND_CONTROL {
-            return Err(FrameError::Fatal(format!("unexpected frame kind {}", frame[4])));
-        }
-        match serde_json::from_slice(&frame[5..]) {
-            Ok(req) => Ok(Some(req)),
-            Err(e) => Err(FrameError::Invalid(format!("invalid control frame: {e}"))),
+        match frame[4] {
+            FRAME_KIND_CONTROL => match serde_json::from_slice(&frame[5..]) {
+                Ok(req) => Ok(Some(IncomingFrame::Control(req))),
+                Err(e) => Err(FrameError::Invalid(format!("invalid control frame: {e}"))),
+            },
+            FRAME_KIND_STREAM => {
+                if frame.len() < 5 + STREAM_HEADER_BYTES {
+                    return Err(FrameError::Invalid("stream frame shorter than its header".to_string()));
+                }
+                let session_id = u32::from_le_bytes(frame[5..9].try_into().unwrap());
+                let data = frame[5 + STREAM_HEADER_BYTES..].to_vec();
+                Ok(Some(IncomingFrame::Stream { session_id, data }))
+            }
+            other => Err(FrameError::Fatal(format!("unexpected frame kind {other}"))),
         }
     }
 }
@@ -544,10 +653,13 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         }
 
         // Finished sessions (child reaped, PTY done, output drained): notify.
-        for session_id in guard.manager.remove_finished(keep_finished) {
+        for (session_id, exit_code, signal, reason) in guard.manager.remove_finished(keep_finished) {
             outbox.extend(protocol::encode_response(&Response::SessionClosed {
                 id: None,
                 session_id,
+                exit_code,
+                signal,
+                reason,
             }));
         }
 
@@ -575,18 +687,24 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         }
         while outbox.len() + OUTBOX_RESERVE <= OUTBOX_CAP {
             match reader.try_take() {
-                Ok(Some(req)) => match handle(&mut guard.manager, &mut handshaken, &generation, req) {
-                    Ok(frames) => outbox.extend(frames),
-                    Err((code, message)) => {
-                        outbox.extend(protocol::encode_response(&Response::Error {
-                            id: None,
-                            code,
-                            message,
-                        }));
-                        SHUTDOWN.store(true, Ordering::SeqCst);
-                        break;
+                Ok(Some(IncomingFrame::Control(req))) => {
+                    match handle(&mut guard.manager, &mut handshaken, &generation, req) {
+                        Ok(frames) => outbox.extend(frames),
+                        Err((code, message)) => {
+                            outbox.extend(protocol::encode_response(&Response::Error {
+                                id: None,
+                                code,
+                                message,
+                            }));
+                            SHUTDOWN.store(true, Ordering::SeqCst);
+                            break;
+                        }
                     }
-                },
+                }
+                Ok(Some(IncomingFrame::Stream { session_id, data })) => {
+                    // Binary terminal input; overflow is dropped (backpressure).
+                    let _ = guard.manager.enqueue_input(session_id, &data);
+                }
                 Ok(None) => break,
                 Err(FrameError::Invalid(message)) => {
                     // Well-framed but unparseable body: answer and keep running.

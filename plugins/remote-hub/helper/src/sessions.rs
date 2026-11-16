@@ -1,23 +1,33 @@
-//! Session ownership: the helper creates a real PTY per echo session, forks a
-//! child into it, and reaps children on close and on shutdown so none are ever
+//! Session ownership: the helper creates a real PTY per session, forks a child
+//! into it, and reaps children on close and on shutdown so none are ever
 //! orphaned. All session fds are non-blocking and close-on-exec; the child path
 //! between fork and exec performs no allocation.
 
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::time::{Duration, Instant};
 
-/// Per-session bound on buffered, not-yet-flushed PTY output. When a session's
-/// pending output reaches this bound the helper stops reading from its PTY,
-/// which fills the kernel PTY buffer and applies backpressure to the child.
+/// Per-session bound on buffered, not-yet-flushed PTY output.
 pub const PENDING_OUTPUT_CAP: usize = 256 * 1024;
-/// Per-session bound on buffered input that has not yet been written to the
-/// PTY. Input beyond this bound is refused with input_overflow.
+/// Per-session bound on buffered input that has not yet been written to the PTY.
 pub const PENDING_INPUT_CAP: usize = 256 * 1024;
 /// Most bytes read from a PTY per poll wake-up.
 pub const READ_CHUNK: usize = 64 * 1024;
 /// Most bytes written to a PTY per poll wake-up.
 pub const WRITE_CHUNK: usize = 64 * 1024;
+/// How long to wait for the PTY to reach EOF after the direct child exits
+/// before the process group is reaped (lingering descendants).
+pub const LINGER_GRACE: Duration = Duration::from_secs(2);
+
+/// A validated child spawn: built before fork, never through a shell.
+pub struct SpawnSpec {
+    pub program: CString,
+    pub argv: Vec<CString>,
+    pub env: Vec<(CString, CString)>,
+    pub cwd: Option<CString>,
+    pub allow_fds: Vec<i32>,
+}
 
 pub struct Session {
     pub id: u32,
@@ -27,8 +37,14 @@ pub struct Session {
     pub pending_out: Vec<u8>,
     pub pending_in: Vec<u8>,
     pub child_exited: bool,
-    /// The PTY is complete: read returned 0 (EOF) or EIO.
     pub pty_done: bool,
+    /// Bytes the client has granted this session for output in flight.
+    pub credit: u64,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub close_reason: Option<String>,
+    pub child_exited_at: Option<Instant>,
+    pub kind: String,
 }
 
 impl Session {
@@ -40,15 +56,13 @@ impl Session {
 pub struct SessionManager {
     sessions: HashMap<u32, Session>,
     next_id: u32,
-    /// Test-only argv hook (never exposed over RPC, and only compiled when the
-    /// test-hooks cargo feature is on): open_echo execs this argv instead of
-    /// /bin/cat.
+    /// Test-only argv hook (never exposed over RPC): when set, open_echo execs
+    /// this argv instead of /bin/cat.
     echo_argv: Option<Vec<CString>>,
 }
 
 #[derive(Debug)]
 pub enum SessionError {
-    /// A named step failed with this errno (diagnosable in the error frame).
     Sys { step: &'static str, errno: i32 },
     Unknown,
     InputOverflow,
@@ -88,41 +102,9 @@ fn errno_text(errno: i32) -> String {
     }
 }
 
-/// Transient errnos (positive or the negative values macOS pty code paths
-/// store) that a bounded retry may clear: EAGAIN, EINTR, ENXIO.
 fn is_transient_errno(errno: i32) -> bool {
     let e = errno.abs();
     e == libc::EAGAIN || e == libc::EINTR || e == libc::ENXIO
-}
-
-/// The fds above 2 currently open in this process, listed from /dev/fd. Built
-/// in the parent so the child can close exactly the open ones without any
-/// allocation between fork and exec.
-fn open_fds_above_two() -> Result<Vec<i32>, SessionError> {
-    let mut fds: Vec<i32> = Vec::new();
-    match std::fs::read_dir("/dev/fd") {
-        Ok(entries) => {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                if let Some(name) = name.to_str() {
-                    if let Ok(n) = name.parse::<i32>() {
-                        if n > 2 {
-                            fds.push(n);
-                        }
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            return Err(SessionError::Sys {
-                step: "fd_enumeration",
-                errno: e.raw_os_error().unwrap_or(0),
-            });
-        }
-    }
-    fds.sort_unstable();
-    fds.dedup();
-    Ok(fds)
 }
 
 fn set_cloexec(fd: RawFd) -> Result<(), SessionError> {
@@ -151,8 +133,46 @@ fn set_nonblocking(fd: RawFd) -> Result<(), SessionError> {
     Ok(())
 }
 
-/// Block every signal in the calling (parent) thread around fork so the child
-/// cannot run a handler that belongs to the helper. Stores the previous mask.
+fn clear_cloexec(fd: RawFd) -> Result<(), SessionError> {
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags < 0 {
+            return Err(SessionError::Sys { step: "fcntl", errno: last_errno() });
+        }
+        if libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+            return Err(SessionError::Sys { step: "fcntl", errno: last_errno() });
+        }
+    }
+    Ok(())
+}
+
+fn open_fds_above_two() -> Result<Vec<i32>, SessionError> {
+    let mut fds: Vec<i32> = Vec::new();
+    match std::fs::read_dir("/dev/fd") {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if let Some(name) = name.to_str() {
+                    if let Ok(n) = name.parse::<i32>() {
+                        if n > 2 {
+                            fds.push(n);
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            return Err(SessionError::Sys {
+                step: "fd_enumeration",
+                errno: e.raw_os_error().unwrap_or(0),
+            });
+        }
+    }
+    fds.sort_unstable();
+    fds.dedup();
+    Ok(fds)
+}
+
 fn block_all_signals(old_mask: &mut libc::sigset_t) {
     unsafe {
         let mut all: libc::sigset_t = std::mem::zeroed();
@@ -165,8 +185,6 @@ fn restore_signal_mask(old_mask: &libc::sigset_t) {
     unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, old_mask, std::ptr::null_mut()) };
 }
 
-/// Child-side, before exec: reset every disposition to SIG_DFL and unblock all
-/// signals. Async-signal-safe (only sigaction/sigemptyset/pthread_sigmask).
 fn reset_signals_and_unblock() {
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
@@ -181,6 +199,16 @@ fn reset_signals_and_unblock() {
         let mut empty: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut empty);
         libc::pthread_sigmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut());
+    }
+}
+
+fn parse_status(status: libc::c_int) -> (Option<i32>, Option<i32>) {
+    if libc::WIFEXITED(status) {
+        (Some(libc::WEXITSTATUS(status)), None)
+    } else if libc::WIFSIGNALED(status) {
+        (None, Some(libc::WTERMSIG(status)))
+    } else {
+        (None, None)
     }
 }
 
@@ -206,35 +234,126 @@ impl SessionManager {
         self.sessions.iter().map(|(&id, s)| (id, s.master)).collect()
     }
 
-    /// Whether a session has input waiting to be written to its PTY.
     pub fn wants_write(&self, id: u32) -> bool {
         self.sessions.get(&id).map(|s| !s.pending_in.is_empty()).unwrap_or(false)
     }
 
-    /// Whether a session's pending output has room to read more PTY bytes.
     pub fn can_read_output(&self, id: u32) -> bool {
         self.sessions
             .get(&id)
-            .map(|s| s.pending_out.len() < PENDING_OUTPUT_CAP && !s.pty_done)
+            .map(|s| s.pending_out.len() < PENDING_OUTPUT_CAP && !s.pty_done && s.credit > 0)
             .unwrap_or(false)
     }
 
-    /// Build the exec argv BEFORE fork so the child performs no allocation.
-    fn build_exec_argv(&self) -> (CString, Vec<CString>, Vec<*const libc::c_char>) {
-        let (prog, argv): (CString, Vec<CString>) = match &self.echo_argv {
-            Some(args) if !args.is_empty() => (args[0].clone(), args.clone()),
-            _ => (
-                CString::new("/bin/cat").unwrap(),
-                vec![CString::new("cat").unwrap()],
-            ),
-        };
-        let mut c_args: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
-        c_args.push(std::ptr::null());
-        (prog, argv, c_args)
+    pub fn pending_output_len(&self, id: u32) -> usize {
+        self.sessions.get(&id).map(|s| s.pending_out.len()).unwrap_or(0)
+    }
+
+    pub fn take_pending_output_chunk(&mut self, id: u32) -> Option<(u32, Vec<u8>)> {
+        let session = self.sessions.get_mut(&id)?;
+        if session.pending_out.is_empty() {
+            return None;
+        }
+        let n = session.pending_out.len().min(READ_CHUNK);
+        let data: Vec<u8> = session.pending_out.drain(..n).collect();
+        let seq = session.seq;
+        session.seq = session.seq.wrapping_add(1);
+        Some((seq, data))
+    }
+
+    pub fn add_credit(&mut self, id: u32, bytes: u64) -> bool {
+        match self.sessions.get_mut(&id) {
+            Some(s) => {
+                s.credit = s.credit.saturating_add(bytes);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The default echo spawn spec (/bin/cat) or the test-hook override.
+    fn echo_spec(&self) -> SpawnSpec {
+        #[cfg(feature = "test-hooks")]
+        if let Ok(v) = std::env::var("REMOTE_HUB_TEST_ALLOW_PIPE") {
+            if v == "1" {
+                // A pipe carrying "token\n"; allowlist its read end and run a
+                // shell that reads from it, then sleeps (so the test can lsof).
+                if let Some(r) = make_token_pipe() {
+                    let cmd = format!("read x <&{r}; echo got:$x; sleep 30");
+                    return SpawnSpec {
+                        program: CString::new("/bin/sh").unwrap(),
+                        argv: vec![
+                            CString::new("sh").unwrap(),
+                            CString::new("-c").unwrap(),
+                            CString::new(cmd).unwrap(),
+                        ],
+                        env: Vec::new(),
+                        cwd: None,
+                        allow_fds: vec![r],
+                    };
+                }
+            }
+        }
+        match &self.echo_argv {
+            Some(args) if !args.is_empty() => SpawnSpec {
+                program: args[0].clone(),
+                argv: args.clone(),
+                env: Vec::new(),
+                cwd: None,
+                allow_fds: Vec::new(),
+            },
+            _ => SpawnSpec {
+                program: CString::new("/bin/cat").unwrap(),
+                argv: vec![CString::new("cat").unwrap()],
+                env: Vec::new(),
+                cwd: None,
+                allow_fds: Vec::new(),
+            },
+        }
     }
 
     pub fn open_echo(&mut self, cols: u16, rows: u16) -> Result<u32, SessionError> {
-        let (prog, _argv, c_args) = self.build_exec_argv();
+        let spec = self.echo_spec();
+        self.open_session(spec, cols, rows, "echo".to_string())
+    }
+
+    /// Open an SSH session from a client-provided (already validated) spawn spec.
+    pub fn open_ssh(
+        &mut self,
+        spec: SpawnSpec,
+        cols: u16,
+        rows: u16,
+    ) -> Result<u32, SessionError> {
+        self.open_session(spec, cols, rows, "ssh".to_string())
+    }
+
+    fn build_exec_argv(&self, spec: &SpawnSpec) -> (CString, Vec<CString>, Vec<*const libc::c_char>, Vec<*const libc::c_char>) {
+        let mut c_args: Vec<*const libc::c_char> = spec.argv.iter().map(|a| a.as_ptr()).collect();
+        c_args.push(std::ptr::null());
+        // envp: KEY=VALUE strings
+        let env_strings: Vec<CString> = spec
+            .env
+            .iter()
+            .map(|(k, v)| {
+                let mut kv = k.as_bytes().to_vec();
+                kv.push(b'=');
+                kv.extend_from_slice(v.as_bytes());
+                CString::new(kv).expect("env has no NUL")
+            })
+            .collect();
+        let mut envp: Vec<*const libc::c_char> = env_strings.iter().map(|s| s.as_ptr()).collect();
+        envp.push(std::ptr::null());
+        (spec.program.clone(), spec.argv.clone(), c_args, envp)
+    }
+
+    pub fn open_session(
+        &mut self,
+        spec: SpawnSpec,
+        cols: u16,
+        rows: u16,
+        kind: String,
+    ) -> Result<u32, SessionError> {
+        let (prog, _argv, c_args, envp) = self.build_exec_argv(&spec);
         let mut master: libc::c_int = -1;
         let mut slave: libc::c_int = -1;
         let mut winsize = libc::winsize {
@@ -243,9 +362,6 @@ impl SessionManager {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-
-        // openpty fails transiently (EAGAIN/EINTR/ENXIO) under concurrent PTY
-        // creation; retry a bounded number of times and keep the last errno.
         let mut openpty_errno = 0;
         for _ in 0..8 {
             master = -1;
@@ -266,16 +382,11 @@ impl SessionManager {
             if !is_transient_errno(openpty_errno) {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(Duration::from_millis(2));
         }
         if master < 0 || slave < 0 {
-            return Err(SessionError::Sys {
-                step: "openpty",
-                errno: openpty_errno,
-            });
+            return Err(SessionError::Sys { step: "openpty", errno: openpty_errno });
         }
-        // RAII ownership: any setup failure below (or the fork-failure path)
-        // closes both descriptors.
         let master_owned = unsafe { OwnedFd::from_raw_fd(master) };
         let slave_owned = unsafe { OwnedFd::from_raw_fd(slave) };
         let master = master_owned.as_raw_fd();
@@ -284,9 +395,6 @@ impl SessionManager {
         set_cloexec(slave)?;
         set_nonblocking(master)?;
 
-        // Raw mode is applied to the slave by the parent, before fork, so no
-        // input is ever processed in canonical/ECHO mode (which would double
-        // the echo and translate newlines).
         unsafe {
             let mut tio: libc::termios = std::mem::zeroed();
             if libc::tcgetattr(slave, &mut tio) != 0 {
@@ -298,13 +406,13 @@ impl SessionManager {
             }
         }
 
-        // List the fds the child will inherit (before fork) so the child can
-        // close exactly the open ones, including any non-CLOEXEC fd it got from
-        // its parent.
+        // Allowlisted fds must survive exec: clear CLOEXEC on them.
+        for fd in &spec.allow_fds {
+            clear_cloexec(*fd)?;
+        }
         let inherited = open_fds_above_two()?;
+        let allow_fds = spec.allow_fds.clone();
 
-        // Block every signal around fork so the child never runs a helper
-        // handler (e.g. writing S into the signal pipe) before exec.
         let mut old_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
         block_all_signals(&mut old_mask);
         let mut pid: libc::pid_t;
@@ -320,21 +428,13 @@ impl SessionManager {
             if !is_transient_errno(fork_errno) || fork_attempts >= 8 {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(Duration::from_millis(1));
         }
         if pid < 0 {
             restore_signal_mask(&old_mask);
-            // master_owned/slave_owned drop here, closing both descriptors.
-            return Err(SessionError::Sys {
-                step: "fork",
-                errno: fork_errno,
-            });
+            return Err(SessionError::Sys { step: "fork", errno: fork_errno });
         }
         if pid == 0 {
-            // Child: default dispositions, unblocked signals, the slave as
-            // controlling terminal, raw mode, stdin/stdout/stderr to the slave,
-            // then exec. No allocation here: prog/c_args/inherited were built
-            // by the parent.
             reset_signals_and_unblock();
             unsafe {
                 libc::setsid();
@@ -346,17 +446,18 @@ impl SessionManager {
                     libc::close(slave);
                 }
                 for fd in &inherited {
-                    if *fd != slave {
+                    if *fd != slave && !allow_fds.contains(fd) {
                         libc::close(*fd);
                     }
                 }
-                libc::execv(prog.as_ptr(), c_args.as_ptr());
+                if let Some(cwd) = &spec.cwd {
+                    libc::chdir(cwd.as_ptr());
+                }
+                libc::execve(prog.as_ptr(), c_args.as_ptr(), envp.as_ptr());
                 libc::_exit(127);
             }
         }
 
-        // Parent restores its signal mask, closes the slave, and transfers
-        // ownership of the master into the session.
         restore_signal_mask(&old_mask);
         drop(slave_owned);
         let master_raw = master_owned.into_raw_fd();
@@ -373,6 +474,12 @@ impl SessionManager {
                 pending_in: Vec::new(),
                 child_exited: false,
                 pty_done: false,
+                credit: if kind == "echo" { u64::MAX } else { 0 },
+                exit_code: None,
+                signal: None,
+                close_reason: None,
+                child_exited_at: None,
+                kind,
             },
         );
         Ok(id)
@@ -382,9 +489,7 @@ impl SessionManager {
         self.sessions.get(&id).map(|s| s.child)
     }
 
-    /// Buffer input for a session; refused when the session would exceed the
-    /// bounded pending-input window.
-    pub fn enqueue_input(&mut self, id: u32, data: &str) -> Result<(), SessionError> {
+    pub fn enqueue_input(&mut self, id: u32, data: &[u8]) -> Result<(), SessionError> {
         let session = self.sessions.get_mut(&id).ok_or(SessionError::Unknown)?;
         if session.child_exited || session.pty_done {
             return Err(SessionError::Unknown);
@@ -392,11 +497,10 @@ impl SessionManager {
         if session.pending_in.len() + data.len() > PENDING_INPUT_CAP {
             return Err(SessionError::InputOverflow);
         }
-        session.pending_in.extend_from_slice(data.as_bytes());
+        session.pending_in.extend_from_slice(data);
         Ok(())
     }
 
-    /// Write as much pending input as the PTY accepts right now (non-blocking).
     pub fn write_pending_input(&mut self, id: u32) -> Result<usize, SessionError> {
         let session = self.sessions.get_mut(&id).ok_or(SessionError::Unknown)?;
         if session.pending_in.is_empty() || session.child_exited || session.pty_done {
@@ -419,7 +523,6 @@ impl SessionManager {
         Ok(n as usize)
     }
 
-    /// Apply a resize and read the effective size back from the PTY.
     pub fn resize(&mut self, id: u32, cols: u16, rows: u16) -> Result<(u16, u16), SessionError> {
         let session = self.sessions.get_mut(&id).ok_or(SessionError::Unknown)?;
         let winsize = libc::winsize {
@@ -440,18 +543,20 @@ impl SessionManager {
         Ok((readback.ws_col, readback.ws_row))
     }
 
-    /// Read available PTY output into the session's bounded pending buffer.
-    /// A non-blocking read of 0 (EOF) or an EIO marks the PTY done.
     pub fn read_output(&mut self, id: u32) -> Result<usize, SessionError> {
         let session = self.sessions.get_mut(&id).ok_or(SessionError::Unknown)?;
-        if session.pty_done {
+        if session.pty_done || session.credit == 0 {
             return Ok(0);
         }
         let free = PENDING_OUTPUT_CAP.saturating_sub(session.pending_out.len());
         if free == 0 {
-            return Ok(0); // backpressure: stop reading until the client drains us
+            return Ok(0);
         }
-        let chunk = free.min(READ_CHUNK);
+        let budget = session.credit.min(free as u64) as usize;
+        let chunk = budget.min(READ_CHUNK);
+        if chunk == 0 {
+            return Ok(0);
+        }
         let mut buf = vec![0u8; chunk];
         let n = unsafe {
             libc::read(session.master, buf.as_mut_ptr() as *mut libc::c_void, chunk as libc::size_t)
@@ -461,7 +566,6 @@ impl SessionManager {
             if errno == libc::EINTR || errno == libc::EAGAIN {
                 return Ok(0);
             }
-            // EIO (or any other read error) also completes the PTY.
             session.pty_done = true;
             return Err(SessionError::Sys { step: "read", errno });
         }
@@ -470,29 +574,10 @@ impl SessionManager {
             return Ok(0);
         }
         session.pending_out.extend_from_slice(&buf[..n as usize]);
+        session.credit = session.credit.saturating_sub(n as u64);
         Ok(n as usize)
     }
 
-    /// Bytes of buffered, not-yet-flushed output for one session.
-    pub fn pending_output_len(&self, id: u32) -> usize {
-        self.sessions.get(&id).map(|s| s.pending_out.len()).unwrap_or(0)
-    }
-
-    /// Take up to READ_CHUNK bytes of a session's pending output as one
-    /// (sequence, bytes) stream frame, so sequence numbers stay consecutive.
-    pub fn take_pending_output_chunk(&mut self, id: u32) -> Option<(u32, Vec<u8>)> {
-        let session = self.sessions.get_mut(&id)?;
-        if session.pending_out.is_empty() {
-            return None;
-        }
-        let n = session.pending_out.len().min(READ_CHUNK);
-        let data: Vec<u8> = session.pending_out.drain(..n).collect();
-        let seq = session.seq;
-        session.seq = session.seq.wrapping_add(1);
-        Some((seq, data))
-    }
-
-    /// Reap children that exited on their own; returns ids newly marked done.
     pub fn reap(&mut self) -> Vec<u32> {
         let mut newly = Vec::new();
         loop {
@@ -501,9 +586,14 @@ impl SessionManager {
             if r <= 0 {
                 break;
             }
+            let (code, sig) = parse_status(status);
             for session in self.sessions.values_mut() {
                 if session.child == r && !session.child_exited {
                     session.child_exited = true;
+                    session.exit_code = code;
+                    session.signal = sig;
+                    session.close_reason = Some("exited".to_string());
+                    session.child_exited_at = Some(Instant::now());
                     newly.push(session.id);
                     #[cfg(feature = "test-hooks")]
                     eprintln!("helper-reaped pid={r}");
@@ -513,12 +603,7 @@ impl SessionManager {
         newly
     }
 
-    /// Terminate and reap live children whose PTY is already done, then remove
-    /// sessions that are fully finished (child reaped, PTY done, output
-    /// drained). With keep=true (test hook) orphans are still terminated but
-    /// finished sessions stay open for an explicit close.
-    pub fn remove_finished(&mut self, keep: bool) -> Vec<u32> {
-        // No orphan: a live child whose PTY closed still gets terminated+reaped.
+    pub fn remove_finished(&mut self, keep: bool) -> Vec<(u32, Option<i32>, Option<i32>, String)> {
         let orphans: Vec<u32> = self
             .sessions
             .values()
@@ -527,20 +612,47 @@ impl SessionManager {
             .collect();
         for id in orphans {
             if let Some(session) = self.sessions.get_mut(&id) {
-                terminate_orphan(session.child);
+                let (code, sig) = terminate_orphan(session.child);
                 session.child_exited = true;
+                session.exit_code = code;
+                session.signal = sig;
+                session.close_reason = Some("exited".to_string());
+                session.child_exited_at = Some(Instant::now());
             }
         }
+
+        // Lingering descendants: after the grace period, reap the process group.
+        let lingerers: Vec<u32> = self
+            .sessions
+            .values()
+            .filter(|s| s.child_exited && !s.pty_done)
+            .filter(|s| s.child_exited_at.map(|t| t.elapsed() >= LINGER_GRACE).unwrap_or(false))
+            .map(|s| s.id)
+            .collect();
+        for id in lingerers {
+            if let Some(session) = self.sessions.get_mut(&id) {
+                kill_process_group(session.child);
+                session.pty_done = true;
+            }
+        }
+
         if keep {
             return Vec::new();
         }
-        let ids: Vec<u32> = self
+        let ids: Vec<(u32, Option<i32>, Option<i32>, String)> = self
             .sessions
             .values()
             .filter(|s| s.finished())
-            .map(|s| s.id)
+            .map(|s| {
+                (
+                    s.id,
+                    s.exit_code,
+                    s.signal,
+                    s.close_reason.clone().unwrap_or_else(|| "exited".to_string()),
+                )
+            })
             .collect();
-        for id in &ids {
+        for (id, _, _, _) in &ids {
             if let Some(session) = self.sessions.remove(id) {
                 unsafe { libc::close(session.master) };
             }
@@ -548,10 +660,7 @@ impl SessionManager {
         ids
     }
 
-    /// Close one session now: emit everything already read (pending_out) plus
-    /// the freshly drained tail, then kill and reap the child. Returns the
-    /// base sequence number and READ_CHUNK-sized chunks to flush before the ack.
-    pub fn close(&mut self, id: u32) -> Option<(u32, Vec<Vec<u8>>)> {
+    pub fn close(&mut self, id: u32) -> Option<(u32, Vec<Vec<u8>>, Option<i32>, Option<i32>, String)> {
         let mut session = self.sessions.remove(&id)?;
         let mut all = std::mem::take(&mut session.pending_out);
         loop {
@@ -574,17 +683,19 @@ impl SessionManager {
         } else {
             all.chunks(READ_CHUNK).map(|c| c.to_vec()).collect()
         };
-        if session.child_exited {
-            // Already reaped by reap(): only close the master; never signal a
-            // pid that may have been reused.
-            unsafe { libc::close(session.master) };
+        let (code, sig, reason) = if session.child_exited {
+            (
+                session.exit_code,
+                session.signal,
+                session.close_reason.unwrap_or_else(|| "exited".to_string()),
+            )
         } else {
-            terminate_child(session.child, session.master);
-        }
-        Some((base_seq, chunks))
+            let (c, s) = terminate_child(session.child, session.master);
+            (c, s, "killed_by_close".to_string())
+        };
+        Some((base_seq, chunks, code, sig, reason))
     }
 
-    /// Kill and reap every child immediately. Used on shutdown; leaves nothing.
     pub fn terminate_all(&mut self) {
         let ids: Vec<u32> = self.sessions.keys().copied().collect();
         for id in ids {
@@ -599,18 +710,12 @@ impl SessionManager {
     }
 }
 
-/// Graceful, bounded teardown of one child (and its process group): SIGTERM, a
-/// short non-blocking reap window, then SIGKILL and a guaranteed reap.
-fn terminate_child(pid: libc::pid_t, master: RawFd) {
-    unsafe {
-        libc::close(master);
-    }
-    terminate_orphan(pid);
+fn terminate_child(pid: libc::pid_t, master: RawFd) -> (Option<i32>, Option<i32>) {
+    unsafe { libc::close(master) };
+    terminate_orphan(pid)
 }
 
-/// Terminate and reap a live child (and its process group) without touching
-/// its master fd.
-fn terminate_orphan(pid: libc::pid_t) {
+fn terminate_orphan(pid: libc::pid_t) -> (Option<i32>, Option<i32>) {
     #[cfg(feature = "test-hooks")]
     eprintln!("helper-signal pid={pid} sig=SIGTERM");
     unsafe {
@@ -619,18 +724,29 @@ fn terminate_orphan(pid: libc::pid_t) {
         let mut status: libc::c_int = 0;
         for _ in 0..5 {
             let r = libc::waitpid(pid, &mut status, libc::WNOHANG);
-            if r == pid || r < 0 {
-                return;
+            if r == pid {
+                return parse_status(status);
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            if r < 0 {
+                return (None, None);
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
         libc::kill(pid, libc::SIGKILL);
         libc::kill(-pid, libc::SIGKILL);
-        libc::waitpid(pid, std::ptr::null_mut(), 0);
+        libc::waitpid(pid, &mut status, 0);
+        parse_status(status)
     }
 }
 
-/// Immediate SIGKILL teardown for shutdown.
+fn kill_process_group(pid: libc::pid_t) {
+    unsafe {
+        libc::kill(-pid, libc::SIGHUP);
+        libc::kill(-pid, libc::SIGTERM);
+        libc::kill(-pid, libc::SIGKILL);
+    }
+}
+
 fn kill_and_reap(pid: libc::pid_t, master: RawFd) {
     #[cfg(feature = "test-hooks")]
     eprintln!("helper-signal pid={pid} sig=SIGKILL");
@@ -640,4 +756,27 @@ fn kill_and_reap(pid: libc::pid_t, master: RawFd) {
         libc::kill(-pid, libc::SIGKILL);
         libc::waitpid(pid, std::ptr::null_mut(), 0);
     }
+}
+
+#[cfg(feature = "test-hooks")]
+fn make_token_pipe() -> Option<i32> {
+    let mut fds = [0i32; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let token = b"token\n";
+    let mut written = 0usize;
+    while written < token.len() {
+        let n = unsafe { libc::write(fds[1], token[written..].as_ptr() as *const libc::c_void, token.len() - written) };
+        if n <= 0 {
+            unsafe {
+                libc::close(fds[0]);
+                libc::close(fds[1]);
+            }
+            return None;
+        }
+        written += n as usize;
+    }
+    unsafe { libc::close(fds[1]) };
+    Some(fds[0])
 }

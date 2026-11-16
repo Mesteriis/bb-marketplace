@@ -7,6 +7,7 @@
 //!   stream  = body[0] kind, body[1..5] u32 LE sessionId,
 //!             body[5..9] u32 LE seq, body[9..] terminal bytes
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_FRAME_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -23,6 +24,16 @@ pub enum Request {
     Ping { id: u64 },
     #[serde(rename = "session.open_echo")]
     OpenEcho { id: u64, cols: u16, rows: u16 },
+    #[serde(rename = "session.open_ssh")]
+    OpenSsh {
+        id: u64,
+        cols: u16,
+        rows: u16,
+        program: String,
+        argv: Vec<String>,
+        env: HashMap<String, String>,
+        cwd: Option<String>,
+    },
     #[serde(rename = "session.input")]
     SessionInput {
         id: u64,
@@ -37,6 +48,13 @@ pub enum Request {
         session_id: u32,
         cols: u16,
         rows: u16,
+    },
+    #[serde(rename = "session.credit")]
+    SessionCredit {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        bytes: u64,
     },
     #[serde(rename = "session.close")]
     SessionClose {
@@ -68,6 +86,7 @@ pub enum Response {
         cols: u16,
         rows: u16,
         pid: u32,
+        kind: String,
     },
     #[serde(rename = "session.input_ack")]
     SessionInputAck {
@@ -83,11 +102,21 @@ pub enum Response {
         cols: u16,
         rows: u16,
     },
+    #[serde(rename = "session.credit_ack")]
+    SessionCreditAck {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+    },
     #[serde(rename = "session.closed")]
     SessionClosed {
         id: Option<u64>,
         #[serde(rename = "sessionId")]
         session_id: u32,
+        #[serde(rename = "exitCode")]
+        exit_code: Option<i32>,
+        signal: Option<i32>,
+        reason: String,
     },
     #[serde(rename = "error")]
     Error {
@@ -95,6 +124,26 @@ pub enum Response {
         code: String,
         message: String,
     },
+}
+
+/// A parsed inbound stream frame (client -> helper terminal bytes).
+pub struct InboundStream {
+    pub session_id: u32,
+    pub seq: u32,
+    pub data: Vec<u8>,
+}
+
+pub fn decode_stream_body(payload: &[u8]) -> Option<InboundStream> {
+    if payload.len() < STREAM_HEADER_BYTES {
+        return None;
+    }
+    let session_id = u32::from_le_bytes(payload[0..4].try_into().ok()?);
+    let seq = u32::from_le_bytes(payload[4..8].try_into().ok()?);
+    Some(InboundStream {
+        session_id,
+        seq,
+        data: payload[8..].to_vec(),
+    })
 }
 
 fn encode_frame_body(body: Vec<u8>) -> Vec<u8> {

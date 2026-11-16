@@ -2,6 +2,7 @@
 //! handshake, echo round trip with resize, stdin-EOF lifecycle cleanup, and the
 //! stage-1 repair regressions (signal separation, bounded non-blocking IO,
 //! invalid frames, fd hygiene, output draining and child-visible resize).
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -46,6 +47,23 @@ fn start_with_args(args: &[&str]) -> Helper {
 fn send_req(stdin: &mut ChildStdin, req: &Request) {
     stdin.write_all(&encode_request(req)).expect("write request");
     stdin.flush().expect("flush request");
+}
+
+fn read_until_stream_contains_io(stdout: &mut ChildStdout, sid: u32, needle: &str) -> String {
+    let mut got = String::new();
+    for _ in 0..400 {
+        let (kind, payload) = read_frame_io(stdout);
+        if kind == FRAME_KIND_STREAM {
+            let rsid = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+            if rsid == sid {
+                got.push_str(&String::from_utf8_lossy(&payload[8..]));
+                if got.contains(needle) {
+                    return got;
+                }
+            }
+        }
+    }
+    got
 }
 
 fn read_frame_io(stdout: &mut ChildStdout) -> (u8, Vec<u8>) {
@@ -130,6 +148,26 @@ impl Helper {
             }
         }
         got
+    }
+
+    fn read_until_closed_status(&mut self, sid: u32) -> (Option<i32>, Option<i32>, String) {
+        for _ in 0..400 {
+            let (kind, payload) = self.read_frame();
+            if kind == FRAME_KIND_CONTROL {
+                if let Response::SessionClosed {
+                    session_id,
+                    exit_code,
+                    signal,
+                    reason,
+                    ..
+                } = decode_response(&payload).unwrap()
+                {
+                    assert_eq!(session_id, sid);
+                    return (exit_code, signal, reason);
+                }
+            }
+        }
+        panic!("session.closed never arrived for {sid}");
     }
 
     fn read_until_closed(&mut self, sid: u32) {
@@ -1169,4 +1207,134 @@ fn a3_ingress_full_hangup_does_not_spin() {
     }
     let status = wait_timeout(&mut child, Duration::from_secs(5)).expect("helper did not exit");
     assert_eq!(status.code(), Some(0));
+}
+
+// B3: a zero-credit producer must not stall another session or spin.
+#[test]
+fn b3_credit_isolates_sessions() {
+    let mut helper = start();
+    helper.hello();
+
+    helper.send(&Request::OpenSsh {
+        id: 1,
+        cols: 80,
+        rows: 24,
+        program: "/usr/bin/yes".to_string(),
+        argv: vec!["yes".to_string()],
+        env: HashMap::new(),
+        cwd: None,
+    });
+    let _x_sid = match helper.read_response() {
+        Response::SessionOpened { session_id, .. } => session_id,
+        other => panic!("expected session.opened, got {other:?}"),
+    };
+
+    helper.send(&Request::OpenEcho {
+        id: 2,
+        cols: 80,
+        rows: 24,
+    });
+    let y_sid = match helper.read_response() {
+        Response::SessionOpened { session_id, .. } => session_id,
+        other => panic!("expected session.opened, got {other:?}"),
+    };
+
+    helper.send(&Request::SessionInput {
+        id: 3,
+        session_id: y_sid,
+        data: "y-alive\n".to_string(),
+    });
+    match helper.read_response() {
+        Response::SessionInputAck { .. } => {}
+        other => panic!("expected session.input_ack, got {other:?}"),
+    }
+    let echoed = helper.read_until_stream_contains(y_sid, "y-alive");
+    assert!(echoed.contains("y-alive"), "{echoed:?}");
+
+    let helper_pid = helper.child.id();
+    let t0 = cpu_seconds(helper_pid);
+    std::thread::sleep(Duration::from_secs(2));
+    let t1 = cpu_seconds(helper_pid);
+    assert!(t1 - t0 < 0.5, "helper spun: {} s CPU over 2 s", t1 - t0);
+}
+
+// B4: exit status is reported in session.closed.
+#[test]
+fn b4_exit_status_is_reported() {
+    let mut h = start_with_args(&["--echo-command", "/bin/sh", "-c", "exit 7"]);
+    h.hello();
+    let (sid, _pid) = h.open();
+    let (code, sig, reason) = h.read_until_closed_status(sid);
+    assert_eq!(code, Some(7));
+    assert_eq!(sig, None);
+    assert_eq!(reason, "exited");
+
+    let mut h2 = start_with_args(&["--echo-command", "/bin/sh", "-c", "kill -TERM $$"]);
+    h2.hello();
+    let (sid2, _pid2) = h2.open();
+    let (code2, sig2, reason2) = h2.read_until_closed_status(sid2);
+    assert_eq!(code2, None);
+    assert_eq!(sig2, Some(15));
+    assert_eq!(reason2, "exited");
+}
+
+// B5: a direct child that exits while a descendant holds the PTY is closed
+// after the grace period.
+#[test]
+fn b5_lingering_descendants_are_reaped() {
+    let mut h = start_with_args(&["--echo-command", "/bin/sh", "-c", "sleep 300 & exit 0"]);
+    h.hello();
+    let (sid, pid) = h.open();
+    let (code, _sig, reason) = h.read_until_closed_status(sid);
+    assert_eq!(code, Some(0));
+    assert_eq!(reason, "exited");
+    assert!(!pid_alive(pid), "direct child {pid} still alive");
+}
+
+// B6: an allowlisted pipe fd reaches the child and nothing else above 2 does.
+#[test]
+fn b6_allowlisted_fd_is_passed() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_remote-hub-helper"));
+    command
+        .env("REMOTE_HUB_TEST_ALLOW_PIPE", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn helper");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+
+    send_req(&mut stdin, &Request::Hello {
+        protocol: PROTOCOL_VERSION,
+    });
+    match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+        Response::HelloAck { .. } => {}
+        other => panic!("expected hello_ack, got {other:?}"),
+    }
+    send_req(&mut stdin, &Request::OpenEcho {
+        id: 100,
+        cols: 80,
+        rows: 24,
+    });
+    let (sid, pid) = match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+        Response::SessionOpened {
+            session_id, pid, ..
+        } => (session_id, pid),
+        other => panic!("expected session.opened, got {other:?}"),
+    };
+
+    let echoed = read_until_stream_contains_io(&mut stdout, sid, "got:token");
+    assert!(echoed.contains("got:token"), "{echoed:?}");
+
+    std::thread::sleep(Duration::from_millis(300));
+    let fds = child_fds(pid);
+    assert_eq!(fds.len(), 4, "unexpected fds: {fds:?}");
+    assert_eq!(&fds[..3], &[0, 1, 2]);
+    assert!(fds[3] > 2);
+
+    drop(stdin);
+    let status = wait_timeout(&mut child, Duration::from_secs(5)).expect("helper did not exit");
+    assert_eq!(status.code(), Some(0));
+    let _ = stderr;
 }
