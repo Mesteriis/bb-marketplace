@@ -251,6 +251,7 @@ export function cancelSend(
     const undone = deps.store.undoAgentSend(id, fromStates("undo"), deps.clock.now().toISOString());
     if (!undone.cancelled) return { cancelled: false, draftId: row.draftId };
     deps.undone.add(id);
+    dropReminder(deps, id);
     deps.notifier.outboxChanged({ accountId: row.accountId, id, state: "cancelled" });
     return { cancelled: true, draftId: undone.draftId ?? row.draftId };
   }
@@ -259,13 +260,24 @@ export function cancelSend(
   if (draft !== null && draft.purpose !== null) {
     if (!deps.store.cancelSendPurpose(id, fromStates("undo")).cancelled) return { cancelled: false, draftId: null };
     deps.undone.add(id);
+    dropReminder(deps, id);
     deps.notifier.outboxChanged({ accountId: row.accountId, id, state: "cancelled" });
     return { cancelled: true, draftId: null };
   }
   if (!deps.store.deleteOutbox(id, fromStates("undo"))) return { cancelled: false, draftId: row.draftId };
   deps.undone.add(id);
+  dropReminder(deps, id);
   deps.notifier.outboxChanged({ accountId: row.accountId, id, state: "cancelled" });
   return { cancelled: true, draftId: row.draftId };
+}
+
+/** Undo, Edit, a cancelled or dismissed send: its queued reply reminder goes too (slice 3f). A bound one stays. */
+function dropReminder(deps: Pick<QueueDeps, "store">, outboxId: string): void {
+  try {
+    deps.store.deleteReminderForOutbox(outboxId);
+  } catch {
+    // The reminder stays queued; it never turns due without a send.
+  }
 }
 
 /** Held → queued with a fresh Undo window. Counts against the send cap. */
@@ -305,6 +317,7 @@ export async function dismissOutbox(
   const row = deps.store.getOutbox(id);
   if (row === null) throw new ComposeError("not_found");
   if (!deps.store.deleteOutbox(id, fromStates("dismiss"))) throw new ComposeError("conflict");
+  dropReminder(deps, id);
   await dropDraft(deps, row);
   deps.notifier.outboxChanged({
     accountId: row.accountId,

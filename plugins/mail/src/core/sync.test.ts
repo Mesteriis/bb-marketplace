@@ -88,8 +88,9 @@ describe("syncAccount", () => {
       movesCancelled: [],
       newInbox: [],
       returning: [],
-      inserted: [],
+      inserted: expect.any(Array),
     });
+    if (outcome.status === "ok") expect(outcome.inserted).toHaveLength(120);
     const batches = fetchBatches(gateway);
     expect(batches.map((b) => b.length)).toEqual([50, 50, 20]);
     expect(batches[0]![0]).toBe(120);
@@ -667,8 +668,9 @@ describe("syncAccount over folders", () => {
       movesCancelled: [],
       newInbox: [],
       returning: [],
-      inserted: [],
+      inserted: expect.any(Array),
     });
+    if (outcome.status === "ok") expect(outcome.inserted).toHaveLength(5);
     expect(gateway.listFoldersCalls).toBe(1);
     expect(store.getSyncState(ACCOUNT_ID, INBOX)).toMatchObject({ uidValidity: 7, lastUid: 3 });
     expect(store.getSyncState(ACCOUNT_ID, "Archive")).toMatchObject({ uidValidity: 3, lastUid: 2 });
@@ -1454,6 +1456,21 @@ describe("slice-3e sync", () => {
     const next = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
     expect(next).toMatchObject({ status: "ok", newInbox: [idByUid(store, INBOX, fresh.uid)], returning: [] });
+  });
+
+  it("inserted lists every row inserted this round in any folder, reconcile backfill included", async () => {
+    const { store, gateway, deps } = setupWithArchive(2);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const inbox = gateway.deliver({}, INBOX);
+    const archive = gateway.deliver({ messageId: "archive-new@example.org" }, "Archive");
+    store.deleteByUids(ACCOUNT_ID, INBOX, [1]);
+    const next = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    if (next.status !== "ok") throw new Error("round failed");
+    expect(new Set(next.inserted)).toEqual(
+      new Set([idByUid(store, INBOX, inbox.uid), idByUid(store, "Archive", archive.uid), idByUid(store, INBOX, 1)]),
+    );
+    const quiet = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(quiet).toMatchObject({ status: "ok", inserted: [] });
   });
 
   it("newInbox leaves out a UIDVALIDITY reset and a reconcile backfill", async () => {
