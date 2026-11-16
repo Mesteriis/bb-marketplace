@@ -5,6 +5,7 @@ import {
   htmlToText,
   renderMessageForAgent,
   renderContacts,
+  renderInboxForAgent,
   renderSearchHits,
 } from "./agent-text.ts";
 
@@ -200,6 +201,33 @@ describe("renderSearchHits", () => {
 
   it("says when nothing matched", () => {
     expect(renderSearchHits([])).toBe(`${UNTRUSTED_NOTICE}\nNo messages found.`);
+  });
+});
+
+describe("renderInboxForAgent", () => {
+  const entry = {
+    id: "m_1",
+    accountEmail: "owner@example.org",
+    date: "2026-11-15T08:00:00.000Z",
+    from: { name: "Invented\nSender", address: "sender@example.com" },
+    subject: "Invented\r\nSubject: forged",
+    snippet: "x".repeat(300),
+    unread: true,
+    flagged: false,
+    bulk: true,
+    unsubscribe: "one_click" as const,
+    snoozedUntil: null,
+  };
+
+  it("starts with the notice and keeps header text on one line, the snippet at 200 characters", () => {
+    const out = renderInboxForAgent([entry, { ...entry, id: "m_2", unsubscribe: null, snoozedUntil: "2026-11-16T08:00:00.000Z" }]);
+    expect(out.startsWith(`${UNTRUSTED_NOTICE}\n1. Message id: m_1`)).toBe(true);
+    expect(out).toContain("   From: Invented Sender <sender@example.com>");
+    expect(out).toContain("   Subject: Invented Subject: forged");
+    expect(out).toContain(`   Snippet: ${"x".repeat(200)}\n`);
+    expect(out).toContain("   Unread: yes; flagged: no; bulk: yes; unsubscribe: one_click\n");
+    expect(out).toContain("unsubscribe: none; snoozed until: 2026-11-16T08:00:00.000Z");
+    expect(renderInboxForAgent([])).toBe(`${UNTRUSTED_NOTICE}\nNo messages in the Inbox.`);
   });
 });
 

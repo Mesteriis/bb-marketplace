@@ -772,6 +772,11 @@ export interface MailStore {
   ): { uid: number; from: MailAddress }[];
   getUnsubscribeInfo(messageId: string): UnsubscribeInfo | null;
   getUnsubscribe(accountId: string, listKey: string): UnsubscribeRecord | null;
+  /**
+   * mail_inbox (slice 3e): attached Inbox-role messages not moving, one per
+   * (account, dedup key), newest first; `accountId` null: every account.
+   */
+  inboxMessages(accountId: string | null, opts: { unreadOnly: boolean; limit: number }): InboxMessage[];
   /** Upsert by (account, list key). */
   putUnsubscribe(row: UnsubscribeRecord): void;
   /** A mailto request follows its outbox row: sets the state of the row with this outbox id; false when none. */
@@ -798,6 +803,15 @@ export interface MailStore {
    */
   cancelSendPurpose(outboxId: string, states: OutboxState[]): { cancelled: boolean };
 }
+
+/** One Inbox message as mail_inbox lists it (slice 3e). */
+export type InboxMessage = MessageSummary & {
+  bulk: boolean | null;
+  /** `messages.unsubscribe_json`; null when not known. */
+  unsubscribe: UnsubscribeInfo | null;
+  /** A snooze's due time when the message has one; ISO 8601. */
+  snoozedUntil: string | null;
+};
 
 /** An unsubscribes row (slice 3e): the latest request per list and account. */
 export type UnsubscribeRecord = {

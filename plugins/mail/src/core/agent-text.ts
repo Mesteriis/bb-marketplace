@@ -272,6 +272,43 @@ export function renderSearchHits(
   return `${UNTRUSTED_NOTICE}\n${entries.join("\n")}`;
 }
 
+/** One mail_inbox entry (slice 3e): what the agent may judge an Inbox message by. */
+export type InboxEntry = {
+  id: string;
+  accountEmail: string;
+  date: string | null;
+  from: MailAddress;
+  subject: string;
+  snippet: string;
+  unread: boolean;
+  flagged: boolean;
+  bulk: boolean;
+  unsubscribe: "one_click" | "email" | null;
+  snoozedUntil: string | null;
+};
+
+/** Characters of a snippet mail_inbox shows. */
+export const INBOX_SNIPPET_CHARS = 200;
+
+/** mail_inbox output: the notice, then one entry per message (ids, header text, flags). */
+export function renderInboxForAgent(entries: InboxEntry[]): string {
+  if (entries.length === 0) return `${UNTRUSTED_NOTICE}\nNo messages in the Inbox.`;
+  const yes = (value: boolean) => (value ? "yes" : "no");
+  const lines = entries.map((entry, index) =>
+    [
+      `${index + 1}. Message id: ${entry.id}`,
+      `   Account: ${oneLine(entry.accountEmail)}`,
+      `   Date: ${entry.date ?? "unknown"}`,
+      `   From: ${formatAddress(entry.from)}`,
+      `   Subject: ${oneLine(entry.subject)}`,
+      `   Snippet: ${[...oneLine(entry.snippet)].slice(0, INBOX_SNIPPET_CHARS).join("")}`,
+      `   Unread: ${yes(entry.unread)}; flagged: ${yes(entry.flagged)}; bulk: ${yes(entry.bulk)}; unsubscribe: ${entry.unsubscribe ?? "none"}` +
+        (entry.snoozedUntil === null ? "" : `; snoozed until: ${entry.snoozedUntil}`),
+    ].join("\n"),
+  );
+  return `${UNTRUSTED_NOTICE}\n${lines.join("\n")}`;
+}
+
 /**
  * mail_contacts output: the notice, then one entry per person. Names are what
  * senders wrote (untrusted); addresses come from headers only.

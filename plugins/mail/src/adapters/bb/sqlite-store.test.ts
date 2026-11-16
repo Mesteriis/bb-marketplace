@@ -2552,6 +2552,24 @@ describe.each(storeKinds)("slice-3c store semantics (%s)", (_kind, make) => {
     expect(s.addressesSentTo([]).size).toBe(0);
   });
 
+  it("inboxMessages lists attached Inbox mail not moving, once per message, newest first", () => {
+    s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Archive", "archive")]);
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { messageId: "a@example.org", date: "2026-11-10T08:00:00.000Z", seen: true }),
+      makeFetchedMessage(2, { messageId: "b@example.org", date: "2026-11-12T08:00:00.000Z", unsubscribe: null }),
+      makeFetchedMessage(3, { messageId: "c@example.org", date: "2026-11-11T08:00:00.000Z" }),
+    ]);
+    s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(1, { messageId: "d@example.org", date: "2026-11-13T08:00:00.000Z" })]);
+    const id = (uid: number) => s.localFolderIndex("acc_1", INBOX, "1970-01-01T00:00:00.000Z").find((e) => e.uid === uid)!.id;
+    s.queueMove([id(3)], "Archive");
+    const all = s.inboxMessages(null, { unreadOnly: false, limit: 10 });
+    expect(all.map((m) => m.id)).toEqual([id(2), id(1)]);
+    expect(all[0]).toMatchObject({ accountId: "acc_1", isRead: false, unsubscribe: null, snoozedUntil: null });
+    expect(s.inboxMessages("acc_1", { unreadOnly: true, limit: 10 }).map((m) => m.id)).toEqual([id(2)]);
+    expect(s.inboxMessages("acc_2", { unreadOnly: false, limit: 10 })).toEqual([]);
+    expect(s.inboxMessages(null, { unreadOnly: false, limit: 1 })).toHaveLength(1);
+  });
+
   it("sentToCount counts Sent mail with the address in To or Cc, once per message", () => {
     s.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Sent", "sent")]);
     s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { to: [{ name: null, address: "bob@example.com" }] })]);
