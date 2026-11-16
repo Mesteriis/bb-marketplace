@@ -3417,7 +3417,7 @@ describe("Translation", () => {
     );
     await openThread(slot);
     fireEvent.click(toolbar(slot).getByRole("button", { name: "Translate" }));
-    const dialog = await slot.findByRole("dialog", { name: "Translation settings" });
+    const dialog = await slot.findByRole("dialog", { name: "AI settings" });
     expect(callsTo(slot, "translate_start")).toHaveLength(0);
     // The settings load after the dialog opens.
     const trigger = await within(dialog).findByRole("combobox", { name: "Provider" });

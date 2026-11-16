@@ -28,6 +28,8 @@ export interface TranslateProvider {
   id: string;
   displayName: string;
   available: boolean;
+  /** makosh-ai's reason code when the provider is unavailable (`bridge_missing`, `pool_missing`). */
+  reason?: string | null;
 }
 
 export type TranslateModel = { model: string; displayName: string };

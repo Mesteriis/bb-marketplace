@@ -59,7 +59,13 @@ const okOutput = z.object({ ok: z.boolean() });
 const contentHashInput = z.string().regex(/^[0-9a-f]{64}$/);
 /** A provider id or model id for the translation settings: bounded, one line, no NUL. */
 const settingText = (max: number) => z.string().max(max).refine(noLineBreaks, NO_LINE_BREAKS);
-const translateProviderSchema = z.object({ id: z.string(), displayName: z.string(), available: z.boolean() });
+/** `reason`: makosh-ai's code for an unavailable provider (slice 3f). */
+const translateProviderSchema = z.object({
+  id: z.string(),
+  displayName: z.string(),
+  available: z.boolean(),
+  reason: z.string().max(200).nullable(),
+});
 const translateModelSchema = z.object({ model: z.string(), displayName: z.string() });
 const composeWarning = z.enum(["original_unavailable", "attachments_left_out", "original_kept"]).nullable();
 const smtpSettingsInput = z.object({

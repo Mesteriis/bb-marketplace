@@ -3130,8 +3130,8 @@ describe("translation", () => {
     await expect(call(host, "translate_settings_get", {})).resolves.toEqual({
       gateway: "ok",
       providers: [
-        { id: "claude-code", displayName: "Claude Code", available: true },
-        { id: "codex", displayName: "Codex", available: true },
+        { id: "claude-code", displayName: "Claude Code", available: true, reason: null },
+        { id: "codex", displayName: "Codex", available: true, reason: null },
       ],
       models: [
         { model: "invented-model-a", displayName: "A" },

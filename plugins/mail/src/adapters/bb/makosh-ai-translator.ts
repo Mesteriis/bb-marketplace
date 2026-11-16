@@ -4,8 +4,9 @@
 // forwards the provider-native body through Account Pooler.
 //
 // A body mapper is chosen by the provider's API format, not its brand. Until
-// makosh-ai lists providers (`ai.v1.providers`, discovered when present), the
-// offered providers are the static pair with a mapper. The stream is read
+// makosh-ai lists providers (`ai.v1.providers`, discovered when present: items
+// `{ id, displayName, apiFormat, available, reason? }`), the offered providers
+// are the static pair with a mapper. The stream is read
 // chunk by chunk (base64 bytes of the provider's SSE), and `ai.v1.cancel`
 // always runs at the end. Nothing here logs: neither the prompt (the owner's
 // mail), the model's text, nor a provider's error body, which is only
@@ -16,6 +17,7 @@ import {
   TRANSLATE_OUTPUT_CHARS,
   TranslateError,
   inlineInstructions,
+  sanitizeGatewayMessage,
   type TranslateErrorKind,
   type TranslateFinish,
   type TranslateModel,
@@ -182,9 +184,16 @@ const readOutput = z.discriminatedUnion("state", [
 ]);
 const cancelOutput = z.object({ cancelled: z.boolean() });
 const modelsOutput = z.object({ models: z.array(z.object({ model: z.string(), displayName: z.string() })) });
+/** makosh-ai 0.1.0's `ai.v1.providers`; `reason` says why a provider is unavailable. */
 const providersOutput = z.object({
   providers: z.array(
-    z.object({ providerId: z.string(), displayName: z.string(), api: z.string(), available: z.boolean() }),
+    z.object({
+      id: z.string(),
+      displayName: z.string(),
+      apiFormat: z.string(),
+      available: z.boolean(),
+      reason: z.string().optional(),
+    }),
   ),
 });
 
@@ -202,17 +211,38 @@ export function statusKind(status: number, body: string): TranslateErrorKind {
   return "failed";
 }
 
+/** makosh-ai's stable refusal reasons (its `errorReasons`) as error kinds (slice 3f resolution 15). */
+const REASON_KIND: Record<string, TranslateErrorKind> = {
+  busy: "busy",
+  bridge_missing: "pool_unavailable",
+  pool_missing: "pool_unavailable",
+  too_large: "too_large",
+  forbidden_caller: "failed",
+  stream_lost: "failed",
+  bad_cursor: "failed",
+};
+
+/** A refusal message's leading `<reason>: ` (as makosh-ai's parseReason), when it is a known reason. */
+export function parseReasonPrefix(message: string): { reason: string; text: string } | null {
+  const match = /^([a-z_]+): /.exec(message);
+  if (match === null || !Object.hasOwn(REASON_KIND, match[1]!)) return null;
+  return { reason: match[1]!, text: message.slice(match[0].length) };
+}
+
 /**
- * A failed makosh-ai call. After discovery found makosh-ai, `conflict` and
- * `not_found` are ambiguous (bridge missing, busy, routing off) and become
- * pool_unavailable with makosh-ai's own text (spec resolution 16); a method
- * that vanished means makosh-ai went away.
+ * A failed makosh-ai call. A known `<reason>: ` prefix decides first; the
+ * kept gateway text drops it. Without one, after discovery found makosh-ai,
+ * `conflict` and `not_found` are ambiguous and become pool_unavailable with
+ * makosh-ai's own text (3c resolution 16); a method that vanished means
+ * makosh-ai went away.
  */
 function rpcFailure(error: unknown, signal: AbortSignal): TranslateError {
   if (error instanceof TranslateError) return error;
   if (signal.aborted) return new TranslateError("cancelled");
   if (error instanceof experimental_PluginRpcCallError) {
     if (error.code === "unknown_method") return new TranslateError("gateway_missing");
+    const prefixed = parseReasonPrefix(error.message);
+    if (prefixed !== null) return new TranslateError(REASON_KIND[prefixed.reason]!, prefixed.text);
     if (error.code === "conflict" || error.code === "not_found") {
       return new TranslateError("pool_unavailable", error.message);
     }
@@ -254,7 +284,7 @@ export function createMakoshAiTranslator(deps: MakoshAiTranslatorDeps): Translat
   /** Providers with a mapper, each with its format. */
   async function offered(found: string[], signal: AbortSignal): Promise<(TranslateProvider & { api: ApiFormat })[]> {
     if (!found.includes("ai.v1.providers")) {
-      return STATIC_PROVIDERS.map((p) => ({ ...p, available: true }));
+      return STATIC_PROVIDERS.map((p) => ({ ...p, available: true, reason: null }));
     }
     let listed: z.infer<typeof providersOutput>;
     try {
@@ -263,8 +293,14 @@ export function createMakoshAiTranslator(deps: MakoshAiTranslatorDeps): Translat
       throw rpcFailure(error, signal);
     }
     return listed.providers
-      .filter((p): p is typeof p & { api: ApiFormat } => p.api in MAPPERS)
-      .map((p) => ({ id: p.providerId, displayName: p.displayName, available: p.available, api: p.api }));
+      .filter((p): p is typeof p & { apiFormat: ApiFormat } => Object.hasOwn(MAPPERS, p.apiFormat))
+      .map((p) => ({
+        id: p.id,
+        displayName: p.displayName,
+        available: p.available,
+        reason: p.reason === undefined ? null : sanitizeGatewayMessage(p.reason),
+        api: p.apiFormat,
+      }));
   }
 
   type Attempt = { finish: TranslateFinish } | { retryInline: true };
@@ -375,7 +411,12 @@ export function createMakoshAiTranslator(deps: MakoshAiTranslatorDeps): Translat
   return {
     async providers(signal) {
       const found = await methods(signal);
-      return (await offered(found, signal)).map(({ id, displayName, available }) => ({ id, displayName, available }));
+      return (await offered(found, signal)).map(({ id, displayName, available, reason }) => ({
+        id,
+        displayName,
+        available,
+        reason: reason ?? null,
+      }));
     },
 
     async models(providerId, signal): Promise<TranslateModel[]> {

@@ -16,8 +16,8 @@ function data(overrides: Partial<TranslateSettingsData> = {}): TranslateSettings
   return {
     gateway: "ok",
     providers: [
-      { id: "provider-a", displayName: "Provider A", available: true },
-      { id: "provider-b", displayName: "Provider B", available: false },
+      { id: "provider-a", displayName: "Provider A", available: true, reason: null },
+      { id: "provider-b", displayName: "Provider B", available: false, reason: "bridge_missing" },
     ],
     models: [
       { model: "model-1", displayName: "Model One" },
@@ -64,6 +64,14 @@ describe("TranslationSettings", () => {
     mount(data({ current: { providerId: "provider-b", model: "", language: "en" }, models: null }));
     await screen.findByRole("combobox", { name: "Provider" });
     expect(screen.getByText("This provider is not available in Makosh AI right now.")).toBeTruthy();
+    expect(screen.getByText("Makosh AI: bridge_missing")).toBeTruthy();
+  });
+
+  it("is titled AI settings and shows no reason for an available provider", async () => {
+    mount(data());
+    await screen.findByRole("combobox", { name: "Provider" });
+    expect(screen.getByRole("heading", { name: "AI settings" })).toBeTruthy();
+    expect(screen.queryByText(/^Makosh AI: /)).toBeNull();
   });
 
   it.each([null, []])("falls back to a text field when there is no model list (%j)", async (models) => {
