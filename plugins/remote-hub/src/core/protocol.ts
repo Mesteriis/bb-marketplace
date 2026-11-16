@@ -38,6 +38,16 @@ export const openEchoRequestSchema = z.object({
   cols: sizeSchema,
   rows: sizeSchema,
 });
+export const openSshRequestSchema = z.object({
+  type: z.literal("session.open_ssh"),
+  id: idSchema,
+  cols: sizeSchema,
+  rows: sizeSchema,
+  program: z.string().min(1),
+  argv: z.array(z.string()),
+  env: z.record(z.string(), z.string()),
+  cwd: z.string().nullable(),
+});
 /** Maximum UTF-8 bytes a single session.input may carry (matches Rust PENDING_INPUT_CAP). */
 export const MAX_SESSION_INPUT_BYTES = 262_144;
 
@@ -80,6 +90,12 @@ export const sessionResizeRequestSchema = z.object({
   cols: sizeSchema,
   rows: sizeSchema,
 });
+export const sessionCreditRequestSchema = z.object({
+  type: z.literal("session.credit"),
+  id: idSchema,
+  sessionId: sessionIdSchema,
+  bytes: z.number().int().min(0),
+});
 export const sessionCloseRequestSchema = z.object({
   type: z.literal("session.close"),
   id: idSchema,
@@ -105,6 +121,7 @@ export const sessionOpenedSchema = z.object({
   sessionId: sessionIdSchema,
   cols: sizeSchema,
   rows: sizeSchema,
+  kind: z.string().min(1),
 });
 export const sessionInputAckSchema = z.object({
   type: z.literal("session.input_ack"),
@@ -118,10 +135,18 @@ export const sessionResizedSchema = z.object({
   cols: sizeSchema,
   rows: sizeSchema,
 });
+export const sessionCreditAckSchema = z.object({
+  type: z.literal("session.credit_ack"),
+  id: idSchema,
+  sessionId: sessionIdSchema,
+});
 export const sessionClosedSchema = z.object({
   type: z.literal("session.closed"),
   id: idSchema.nullable(),
   sessionId: sessionIdSchema,
+  exitCode: z.number().int().nullable(),
+  signal: z.number().int().nullable(),
+  reason: z.string().min(1),
 });
 export const errorEnvelopeSchema = z.object({
   type: z.literal("error"),
@@ -134,8 +159,10 @@ export const requestSchema = z.discriminatedUnion("type", [
   helloRequestSchema,
   pingRequestSchema,
   openEchoRequestSchema,
+  openSshRequestSchema,
   sessionInputRequestSchema,
   sessionResizeRequestSchema,
+  sessionCreditRequestSchema,
   sessionCloseRequestSchema,
 ]);
 
@@ -145,6 +172,7 @@ export const responseSchema = z.discriminatedUnion("type", [
   sessionOpenedSchema,
   sessionInputAckSchema,
   sessionResizedSchema,
+  sessionCreditAckSchema,
   sessionClosedSchema,
   errorEnvelopeSchema,
 ]);
@@ -153,14 +181,17 @@ export const controlMessageSchema = z.discriminatedUnion("type", [
   helloRequestSchema,
   pingRequestSchema,
   openEchoRequestSchema,
+  openSshRequestSchema,
   sessionInputRequestSchema,
   sessionResizeRequestSchema,
+  sessionCreditRequestSchema,
   sessionCloseRequestSchema,
   helloAckSchema,
   pongSchema,
   sessionOpenedSchema,
   sessionInputAckSchema,
   sessionResizedSchema,
+  sessionCreditAckSchema,
   sessionClosedSchema,
   errorEnvelopeSchema,
 ]);

@@ -32,7 +32,7 @@ export default function plugin(bb: BbPluginApi): void {
     startHelper: () => HelperProcess.start(pluginRootDir()),
   });
 
-  const withHelper = async <T>(run: () => Promise<T>): Promise<T> => {
+  const withHelper = async <T>(run: () => T | Promise<T>): Promise<T> => {
     try {
       return await run();
     } catch (error) {
@@ -52,6 +52,14 @@ export default function plugin(bb: BbPluginApi): void {
       ),
     echo_close: (input) =>
       withHelper(() => service.echoClose({ generation: input.generation, sessionId: input.sessionId })),
+    ssh_open: (input) => withHelper(() => service.sshOpen(input.target, input.cols, input.rows)),
+    session_list: () => withHelper(() => service.sessionList()),
+    session_close: (input) =>
+      withHelper(() =>
+        service.sessionClose({ generation: input.generation, sessionId: input.sessionId }),
+      ),
+    session_attach: (input) =>
+      withHelper(() => ({ token: service.sessionAttach({ generation: input.generation, sessionId: input.sessionId }) })),
   });
 
   bb.onDispose(() => {
