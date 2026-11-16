@@ -637,3 +637,16 @@ Recorded by batch E (2026-11-16); batch D's code is unchanged by this note.
 - **Delimiter:** `Folder` carries no delimiter, so name checks read it from the stored paths. Rename and delete use the fresh listing's delimiter inside the queue.
 - **Kept rows:** `promoteKept` is added to `compose_prepare` (reply and reply all) and to `conversation_project_set` (bind). The store already promotes on open, flags, moves and snoozes.
 - **Shell limit:** the new writes and fetching RPCs are named in `skills/mail/SKILL.md`. README's "The shell limit" section is Task 12's.
+
+## Batch F deviations
+
+Recorded by batch F (2026-11-16).
+
+- **Group by conversation** is kept on the page (`localStorage`, key `makosh-mail.ungroupedFolders`) and mirrored to `folder_prefs_set`. No RPC returns `folder_prefs.grouping`, so the server copy is write-only. The menu is on folder rows only; merged role views (All accounts) have no grouping switch yet.
+- **Menus** are small dialogs (`src/ui/action-menu.tsx`): the design system has no dropdown or popover. The search help is a dialog too. The options buttons are named "Folder options" / "Account options" (the folder name is the title) so existing `/Inbox/`-style queries stay unique.
+- **Sender card** opens from an "About <sender>" button beside the message's flag (the sender name sits inside the expand button). It offers Search from this sender, Files, Always show images and Block…; **Bind to a project…** is not offered (no 3g RPC binds by sender without a project picker).
+- **Save to project…** is not in the viewer or the Files view: the save dialog lives in the reading pane's BB dialogs. The attachment chip keeps it.
+- **Expand all / Collapse all (`;`)** expands (or collapses to the newest) the conversation's messages and shows (hides) their quoted text.
+- **Viewer and PDF**: `PdfEngine` and `PdfUnavailable` are declared in `src/ui/pdf-view.tsx` and implemented in `src/adapters/bb/pdf-page.ts`. Each opened PDF gets its own probed worker, terminated on close. The worker text import is in `src/adapters/bb/pdf-worker-source.ts` (typed by `pdf-worker-text.d.ts`), so tests replace it. `PDFJS_LICENSE` is kept by being a property of the engine.
+- **Core:** `isAttribution` moved from `ai-input.ts` to `quotes.ts` (re-exported), so the page bundle does not pull `ai-input.ts` and zod. `grep -c ZodError dist/app.js` stays 0.
+- **Build** (batch F end): `dist/app.js` 2 692 361 bytes; `napi-rs`: app 1, server 0; `skia`: 0 in both.
