@@ -1,6 +1,6 @@
 This experimental release puts your mailbox next to your threads: read,
-sort, snooze and send iCloud, Gmail or IMAP mail, translate it, and let an
-agent propose mail and inbox actions you confirm.
+sort, snooze and send iCloud, Gmail or IMAP mail, use AI on your click, and
+let an agent propose mail and inbox actions you confirm.
 
 ## What you get
 
@@ -8,62 +8,65 @@ agent propose mail and inbox actions you confirm.
   HTML. Every folder syncs on the BB server every 5 minutes, last 30 days;
   the Inbox also within seconds (IMAP IDLE).
 - **All accounts** merges Inbox, Sent, Drafts, Spam, Archive and Trash.
-- Mark, flag, archive, delete or **Move to…** a selection; **Undo** or `z`.
-  **Unread**, **Flagged** and **Attachments** filters; hotkeys (`?`).
-- **Translate** (`t`) through Makosh AI: only the subject and text are sent.
-- **Details** shows headers; downloads use a one-time 60-second link.
-- Remote images stay hidden until you allow them.
+- Mark, flag, archive, delete or **Move to…** a selection; **Undo** or `z`;
+  filters; hotkeys (`?`).
+- Remote images stay hidden until you allow them; downloads use a one-time
+  60-second link.
 - **Hand to agent** and an `@` mention give an agent a message you picked.
 
 ## Inbox tools
 
-- Toasts for new mail from people you write to: sender only, never the
-  subject; quiet hours on the BB server's clock. In-app, not system
-  notifications.
-- **Unsubscribe** confirms your address is read, so it asks first. One click
-  only on Gmail with the provider's DKIM vouching, else an email with Undo.
-- **Snooze** (`b`) creates a "Snoozed" folder on your confirmation; mail
-  comes back only while BB runs.
+- Toasts for new mail from people you write to (sender only). Quiet hours.
+- **Unsubscribe** asks first; one click only on Gmail with DKIM vouching.
+- **Snooze** (`b`) into a "Snoozed" folder created on your confirmation.
 - **Block** an address or domain: rules move new Inbox mail to Spam.
+
+## AI on your click
+
+Through Makosh AI only, on your click only: **Translate**, **Summarize** with
+cited messages, **Ask** your mail, **Find tasks** for a local Tasks list,
+local **categories**, a **Today** view, **reply reminders** and **Improve**
+for your draft behind a diff you apply. Answers are plain text; nothing a
+model says acts without your click.
+
+What goes to the provider: subjects, sender names, dates and bodies without
+quotes of the mail involved; your question; your own draft text. Never
+recipients' addresses, attachments, images or HTML.
+
+## Your secrets and agents
+
+Codes, passwords, tokens and card numbers become `[hidden …]` before any
+agent or model sees them. It is a heuristic: unusual formats can pass.
+**AI access** limits agents and AI to chosen accounts and folders (Spam and
+Trash never) and excludes senders. **Agent activity** logs every agent and AI
+call locally, ids and counts only.
 
 ## Writing and sending
 
 - **Compose**, **Reply**, **Reply all**, **Forward**: rich text,
-  attachments up to 25 MB.
-- Sending addresses with signatures; templates; advisory checks before
-  sending. The plugin cannot verify an alias.
+  attachments up to 25 MB, signatures, templates, advisory checks.
 - **Send** waits 10 seconds with **Undo**, then goes out over SMTP with TLS.
-  The **Outbox** shows every send not done; nothing resends on its own.
+  The **Outbox** shows every send not done.
 
 ## Agent access
 
 `mail_search`, `mail_read` and the `mail` skill are off until you turn on
-`agentTools`. No tool marks, moves or downloads mail.
+`agentTools`. `mail_propose` (`agentPropose`, off) proposes mail on a card;
+only **Send** sends it. `mail_inbox` and `mail_triage` (`agentTriage`, off)
+propose inbox actions; only the ones you tick run.
 
-`mail_propose` (`agentPropose`, off) proposes a message, reply or forward on
-a card showing every address, the text and attachments. **Send** queues
-exactly that with Undo; nothing is sent otherwise.
-
-`mail_inbox` and `mail_triage` (`agentTriage`, off) propose up to 50
-archive, mark read, snooze, Spam, unsubscribe or reply items on a card; only
-the ones you tick run, undoable from the thread.
-
-None of these stops an agent with shell access to the BB server machine: it
-can reach the plugin's internal calls (`unsubscribe_run`, `block_add`,
-`snooze_folder_create` included) and answer a card. Sends still show Undo
-and sit in the Outbox.
-
-Text handed to an agent goes to that agent's model provider.
+None of this stops an agent with shell access to the BB server: it can call
+the page's own methods (`ai_start`, `message_body`, `thread_get`, `search`,
+`unsubscribe_run` among them). Sends still show Undo.
 
 ## What it changes on the server
 
-Read state, flags and moves change on your click or key, and by the snoozes
-and block rules you set. Snooze creates one folder per account when you
-confirm it. Delete moves to Trash. It appends drafts and sent copies and
-expunges only its own superseded drafts, by UID; nothing else is
-permanently deleted. Undo of a Gmail archive uses UID COPY. The only web
-request is a one-click unsubscribe you confirmed: https, public addresses,
-no cookies, no redirects.
+Read state, flags and moves on your click or key, and by your snoozes and
+block rules. Snooze creates one folder per account when you confirm. Delete
+moves to Trash. Drafts and sent copies are appended; only its own superseded
+drafts are expunged. Categories, tasks and reminders stay local: nothing new
+is written in this release. The only web request is a one-click unsubscribe
+you confirmed.
 
 ## What it costs
 
@@ -71,9 +74,7 @@ no cookies, no redirects.
 - Mail and encrypted credentials stay on the BB server.
 - One more IMAP connection per account while BB runs.
 - Allowing images or unsubscribing tells senders you read the mail.
-- The page bundle is about 710 KB, mostly the editor.
-- Pre-send checks and block rules keep local lists (addresses you sent to,
-  blocked senders) until removed.
+- The page bundle is about 770 KB, mostly the editor.
 
 ## Not yet
 
