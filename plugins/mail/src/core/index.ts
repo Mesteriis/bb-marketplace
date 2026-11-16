@@ -41,3 +41,5 @@ export { removeControls, removeInvisible } from "./html-entities.ts";
 export * from "./redact.ts";
 export * from "./ai-scope.ts";
 export * from "./agent-log.ts";
+export * from "./ai-input.ts";
+export * from "./text-diff.ts";
