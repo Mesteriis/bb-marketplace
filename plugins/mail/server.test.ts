@@ -27,7 +27,15 @@ import {
   DIGEST_TIME_PATTERN,
   NO_THREAD_MESSAGE,
 } from "./server.ts";
-import { BB_REFUSAL_TEXT } from "./src/core/contract.ts";
+import { BB_REFUSAL_TEXT, SLICE_3H_METHODS } from "./src/core/contract.ts";
+import {
+  FOLDER_REFUSAL_MESSAGES,
+  LABELS_REFUSED_MESSAGE,
+  NEW_MAIL_ARRIVED_MESSAGE,
+  NOTHING_TO_SEARCH_MESSAGE,
+  NOT_VIEWABLE_MESSAGE,
+  VIEW_TOO_LARGE_MESSAGE,
+} from "./src/adapters/bb/slice-3h-rpc.ts";
 import { BB_PATH_REFUSED_TEXT } from "./src/adapters/bb/bb-rpc.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
 import { createAccountQueue } from "./src/adapters/bb/account-queue.ts";
@@ -1598,7 +1606,7 @@ function rawMail(
   options: {
     messageId?: string | null;
     subject?: string;
-    attachment?: { filename: string; mimeType: string; content: string };
+    attachment?: { filename: string; mimeType: string; content: string | Uint8Array };
   } = {},
 ): Uint8Array {
   const lines = [
@@ -7502,5 +7510,504 @@ describe("slice 3g: mail rules", () => {
     expectNoCanary(host, [JSON.stringify(notice)]);
     service.controller.abort();
     await service.done;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 3h
+// ---------------------------------------------------------------------------
+
+/** A seeded account (acc_1) whose password the plugin can open, with the same folders on the scripted server. */
+async function load3h(options: {
+  preset?: AccountPreset;
+  folders: SeedFolder[];
+  messages?: { folder: string; message: FetchedMessage }[];
+  server?: (gateway: RawGateway) => void;
+  settings?: Record<string, string | number | boolean>;
+  syncStates?: { folder: string; uidValidity: number; lastUid: number }[];
+  seed?: (bb: BbPluginApi) => void;
+}) {
+  const vaultKey = generateVaultKey();
+  const queued: string[] = [];
+  const inner = createAccountQueue();
+  const queue = Object.assign(Object.create(inner) as typeof inner, {
+    run: <T,>(accountId: string, task: () => Promise<T>) => {
+      queued.push(accountId);
+      return inner.run(accountId, task);
+    },
+  });
+  const host = await load({
+    settings: { vaultKey, ...options.settings },
+    queue,
+    seed: (bb) => {
+      seedMail(bb, { preset: options.preset ?? "other", folders: options.folders, messages: options.messages ?? [] });
+      bb.storage.database().prepare("UPDATE accounts SET password_sealed = ?").run(createVault(vaultKey).seal(PASSWORD));
+      const store = createSqliteStore(bb.storage.database());
+      for (const state of options.syncStates ?? []) {
+        store.saveSyncState("acc_1", state.folder, { uidValidity: state.uidValidity, lastUid: state.lastUid, syncedSince: "2026-10-15T00:00:00.000Z" });
+      }
+      options.seed?.(bb);
+    },
+    server: (gateway) => {
+      for (const folder of options.folders) {
+        if (folder.path === "INBOX") continue;
+        gateway.addFolder({ path: folder.path, specialUse: folder.specialUse ?? null, selectable: folder.selectable ?? true });
+      }
+      options.server?.(gateway);
+    },
+  });
+  return { ...host, queued };
+}
+
+function folderRows(host: Host, folder: string): { id: string; uid: number | null }[] {
+  return host.bb.storage.database().prepare("SELECT id, uid FROM messages WHERE folder = ? ORDER BY uid").all(folder) as never;
+}
+
+function realtimeText(host: Host): string {
+  return JSON.stringify(host.harness.inspection.realtimeSignals);
+}
+
+describe("makosh-mail server: slice 3h", () => {
+  const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+
+  it("every 3h method and search refuse other plugins first", async () => {
+    const host = await load3h({ folders: ICLOUD_FOLDERS, messages: [{ folder: "INBOX", message: makeFetchedMessage(1) }] });
+    const messageId = messageIdAt(host, "INBOX", 1);
+    const threadId = (await threadOf(host, messageId).catch(() => null))?.thread.id ?? "t_1";
+    const inputs: Record<(typeof SLICE_3H_METHODS)[number], unknown> = {
+      server_search_start: { query: "Invented", accountId: null },
+      server_search_more: { jobId: "job_1" },
+      history_load: { accountId: "acc_1", folder: "INBOX" },
+      conversation_load: { threadId },
+      server_job_poll: { jobId: "job_1" },
+      server_job_cancel: { jobId: "job_1" },
+      history_forget_check: { accountId: "acc_1", folder: "INBOX" },
+      history_forget: { accountId: "acc_1", folder: "INBOX" },
+      saved_searches_list: {},
+      saved_search_save: { name: "Invented", query: "Invented", accountId: null },
+      saved_search_delete: { id: "ss_1" },
+      saved_search_move: { id: "ss_1", position: 0 },
+      folder_create: { accountId: "acc_1", parent: null, name: "Invented" },
+      folder_rename: { accountId: "acc_1", path: "Work", name: "Invented" },
+      folder_delete_check: { accountId: "acc_1", path: "Work" },
+      folder_delete: { accountId: "acc_1", path: "Work", moveToTrash: false, expectedMessages: 0 },
+      folder_subscribe: { accountId: "acc_1", path: "Work", subscribed: false },
+      folder_prefs_set: { accountId: "acc_1", path: "INBOX", grouping: false },
+      messages_list: { scope: { kind: "account", accountId: "acc_1", folder: "INBOX" }, cursor: null, limit: 10 },
+      labels_list: { accountId: "acc_1" },
+      labels_change: { messageIds: [messageId], add: ["Invented"], remove: [] },
+      attachment_view_ticket: { messageId, partId: "1" },
+      files_list: { cursor: null, limit: 10 },
+      attachment_text_status: {},
+      attachment_text_retry: {},
+      attachment_text_clear: {},
+      related_messages: { messageId },
+      sender_card: { address: "sender@example.org", accountId: null },
+    };
+    for (const method of SLICE_3H_METHODS) {
+      await expect(host.harness.behavior.callRpc(method, inputs[method], asPlugin), method).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    }
+    await expect(host.harness.behavior.callRpc("search", { query: "Invented", accountId: null, limit: 10 }, asPlugin)).rejects.toThrow(
+      PLUGIN_CALLER_MESSAGE,
+    );
+    expect(host.queued).toEqual([]);
+    expect(host.gateway.folderOps).toEqual([]);
+  });
+
+  it("search pages with a cursor, reads relative dates and returns notes", async () => {
+    const dates = ["2026-11-13T09:00:00.000Z", "2026-11-12T09:00:00.000Z", "2026-11-01T09:00:00.000Z"];
+    const host = await load3h({
+      folders: ICLOUD_FOLDERS,
+      messages: dates.map((date, i) => ({ folder: "INBOX", message: makeFetchedMessage(i + 1, { date }) })),
+    });
+    const first = (await call(host, "search", { query: "Invented", accountId: null, limit: 2 })) as { hits: MessageSummary[]; nextCursor: string | null };
+    expect(first.hits).toHaveLength(2);
+    expect(first.nextCursor).not.toBeNull();
+    const second = (await call(host, "search", { query: "Invented", accountId: null, limit: 2, cursor: first.nextCursor })) as {
+      hits: MessageSummary[];
+      nextCursor: string | null;
+    };
+    expect(second.hits.map((h) => h.id)).toEqual([messageIdAt(host, "INBOX", 3)]);
+    expect(second.nextCursor).toBeNull();
+    const recent = (await call(host, "search", { query: "newer_than:7d bogus:x", accountId: null, limit: 10 })) as {
+      hits: MessageSummary[];
+      notes: { kind: string; term: string }[];
+    };
+    expect(recent.notes).toEqual([{ kind: "unknown_operator", term: "bogus:x" }]);
+    await expect(call(host, "search", { query: "Invented", accountId: null, limit: 2, cursor: "not-a-cursor" })).rejects.toThrow("Unknown search page");
+  });
+
+  it("attachment text is owner-only: only the page's search with attachments joins it", async () => {
+    const message = makeFetchedMessage(1, {
+      subject: "Invented plain subject",
+      bodyText: "Invented body",
+      attachments: [{ partId: "1", filename: "ledger.txt", mimeType: "text/plain", size: 30, isInline: false }],
+    });
+    const host = await load3h({
+      folders: ICLOUD_FOLDERS,
+      messages: [{ folder: "INBOX", message }],
+      settings: { agentTools: true },
+      seed: (bb) => {
+        const db = bb.storage.database();
+        const { id } = db.prepare("SELECT id FROM messages WHERE uid = 1").get() as { id: string };
+        createSqliteStore(db).insertAttachmentText({
+          messageId: id,
+          partId: "1",
+          state: "indexed",
+          reason: null,
+          body: "Invented ledger mentions Zanzibarite totals",
+          extractedAt: NOW.toISOString(),
+        });
+      },
+    });
+    const messageId = messageIdAt(host, "INBOX", 1);
+    const page = (await call(host, "search", { query: "Zanzibarite", accountId: null, limit: 10, attachments: true })) as {
+      hits: MessageSummary[];
+      attachmentMatches: { messageId: string; filename: string | null; excerpt: string }[];
+    };
+    expect(page.hits.map((h) => h.id)).toEqual([messageId]);
+    expect(page.attachmentMatches).toEqual([{ messageId, filename: "ledger.txt", excerpt: expect.stringContaining("Zanzibarite") }]);
+
+    const plain = (await call(host, "search", { query: "Zanzibarite", accountId: null, limit: 10 })) as { hits: MessageSummary[]; attachmentMatches: unknown[] };
+    expect(plain).toMatchObject({ hits: [], attachmentMatches: [] });
+    const cli = await host.harness.behavior.runCli(["search", "Zanzibarite"]);
+    expect(cli.stdout).not.toContain("Invented plain subject");
+    const cliThread = await host.harness.behavior.runCli(["search", "Zanzibarite"], { threadId: "thread-1" });
+    expect(cliThread.stdout).not.toContain("Invented plain subject");
+    const tool = JSON.stringify(await host.harness.behavior.callAgentTool("mail_search", { query: "Zanzibarite" }));
+    expect(tool).not.toContain("Invented plain subject");
+    expect(tool).not.toContain("Zanzibarite totals");
+  });
+
+  it("agent search screens every free-text-bearing operator value", async () => {
+    const host = await load3h({ folders: ICLOUD_FOLDERS, messages: [{ folder: "INBOX", message: makeFetchedMessage(1) }], settings: { agentTools: true } });
+    const digits = ["48", "1", "93", "7"].join("");
+    for (const query of [`to:"x${digits}"`, `filename:${digits}`, `label:${digits}`, `-cc:${digits}`, `list:${digits}`]) {
+      const result = JSON.stringify(await host.harness.behavior.callAgentTool("mail_search", { query }));
+      expect(result, query).toContain("Agents cannot search for codes");
+    }
+    const ok = JSON.stringify(await host.harness.behavior.callAgentTool("mail_search", { query: "from:sender@example.org has:attachment" }));
+    expect(ok).not.toContain("Agents cannot search for codes");
+  });
+
+  it("folder_create checks the name, runs on the queue with nothing selected and lists the folders again", async () => {
+    const host = await load3h({ folders: [...ICLOUD_FOLDERS, { path: "Work/Old" }] });
+    await expect(call(host, "folder_create", { accountId: "acc_1", parent: null, name: "Trash" })).rejects.toThrow("used for system folders");
+    await expect(call(host, "folder_create", { accountId: "acc_1", parent: null, name: "inbox" })).rejects.toThrow("reserved");
+    await expect(call(host, "folder_create", { accountId: "acc_1", parent: null, name: "work" })).rejects.toThrow("A folder with that name exists");
+    await expect(call(host, "folder_create", { accountId: "acc_1", parent: null, name: "a/b" })).rejects.toThrow('cannot contain "/"');
+    expect(host.queued).toEqual([]);
+    const listed = host.gateway.listFoldersCalls;
+    expect(await call(host, "folder_create", { accountId: "acc_1", parent: "Work", name: "Plans" })).toEqual({ path: "Work/Plans" });
+    expect(host.gateway.created).toEqual(["Work/Plans"]);
+    expect(host.queued).toEqual(["acc_1"]);
+    expect(host.gateway.listFoldersCalls).toBeGreaterThan(listed);
+    const folders = (await call(host, "folders_list", { accountId: "acc_1" })) as { folders: Folder[] };
+    expect(folders.folders.map((f) => f.path)).toContain("Work/Plans");
+  });
+
+  it("folder_rename re-homes the rows, children and the AI scope; system folders refuse", async () => {
+    const host = await load3h({
+      folders: [...ICLOUD_FOLDERS, { path: "Work/Sub" }],
+      messages: [
+        { folder: "Work", message: makeFetchedMessage(1, { subject: "Invented work note" }) },
+        { folder: "Work/Sub", message: makeFetchedMessage(2, { subject: "Invented sub note" }) },
+      ],
+      settings: { agentTools: true },
+    });
+    await call(host, "ai_scope_set", { accounts: [{ accountId: "acc_1", mode: "folders", folders: ["Work"] }], senders: [] });
+    for (const path of ["INBOX", "Archive"]) {
+      await expect(call(host, "folder_rename", { accountId: "acc_1", path, name: "Invented" })).rejects.toThrow(
+        path === "INBOX" ? FOLDER_REFUSAL_MESSAGES.inbox : FOLDER_REFUSAL_MESSAGES.special_use,
+      );
+    }
+    expect(await call(host, "folder_rename", { accountId: "acc_1", path: "Work", name: "Projects" })).toEqual({ path: "Projects" });
+    expect(host.gateway.folderOps).toContainEqual({ op: "rename", path: "Work", to: "Projects", selected: null });
+    expect(folderRows(host, "Work")).toEqual([]);
+    expect(folderRows(host, "Projects")).toHaveLength(1);
+    expect(folderRows(host, "Projects/Sub")).toHaveLength(1);
+    const scope = host.bb.storage.database().prepare("SELECT folders_json FROM ai_scope_accounts WHERE account_id = 'acc_1'").get() as { folders_json: string };
+    expect(JSON.parse(scope.folders_json)).toEqual(["Projects"]);
+    // The in-memory scope followed: an agent still finds the renamed folder's mail.
+    const tool = JSON.stringify(await host.harness.behavior.callAgentTool("mail_search", { query: "work note" }));
+    expect(tool).toContain("Invented work note");
+  });
+
+  it("folder_delete refuses system folders, children and the snooze folder, deletes an empty folder and never expunges", async () => {
+    const host = await load3h({
+      folders: [...ICLOUD_FOLDERS, { path: "Work/Sub" }, { path: "Snoozed" }, { path: "Empty" }],
+      seed: (bb) => createSqliteStore(bb.storage.database()).setSnoozeFolder("acc_1", "Snoozed"),
+    });
+    await expect(call(host, "folder_delete", { accountId: "acc_1", path: "Archive", moveToTrash: false, expectedMessages: 0 })).rejects.toThrow(
+      FOLDER_REFUSAL_MESSAGES.special_use,
+    );
+    await expect(call(host, "folder_delete", { accountId: "acc_1", path: "Work", moveToTrash: false, expectedMessages: 0 })).rejects.toThrow(
+      FOLDER_REFUSAL_MESSAGES.has_children,
+    );
+    await expect(call(host, "folder_delete", { accountId: "acc_1", path: "Snoozed", moveToTrash: false, expectedMessages: 0 })).rejects.toThrow(
+      FOLDER_REFUSAL_MESSAGES.snooze_folder,
+    );
+    expect(await call(host, "folder_delete_check", { accountId: "acc_1", path: "Work" })).toEqual({
+      messages: 0,
+      children: 1,
+      gmailLabel: false,
+      refusal: "has_children",
+    });
+    expect(await call(host, "folder_delete_check", { accountId: "acc_1", path: "Empty" })).toEqual({ messages: 0, children: 0, gmailLabel: false, refusal: null });
+    expect(await call(host, "folder_delete", { accountId: "acc_1", path: "Empty", moveToTrash: false, expectedMessages: 0 })).toEqual({ ok: true, moved: 0 });
+    expect(host.gateway.folderOps.filter((op) => op.op === "delete")).toEqual([{ op: "delete", path: "Empty", expectEmpty: true, selected: null }]);
+    expect(host.gateway.folderOps.every((op) => op.selected === null)).toBe(true);
+    const folders = (await call(host, "folders_list", { accountId: "acc_1" })) as { folders: Folder[] };
+    expect(folders.folders.map((f) => f.path)).not.toContain("Empty");
+    expect(host.gateway.sessions.flatMap((session) => session.calls).filter((c) => c.method === "expungeOwn")).toEqual([]);
+  });
+
+  it("move-then-delete empties a folder into Trash with MOVE, and stops when new mail arrives", async () => {
+    const oldMail = (count: number) =>
+      Array.from({ length: count }, (_, i) => makeFetchedMessage(i + 1, { subject: `Invented old ${i}`, messageId: `old-${i}@example.org` }));
+    const host = await load3h({
+      folders: [...ICLOUD_FOLDERS, { path: "Old" }, { path: "Busy" }],
+      messages: oldMail(3).map((message) => ({ folder: "Old", message })),
+      server: (gateway) => {
+        for (const message of oldMail(3)) gateway.deliver(message, "Old");
+        for (const message of oldMail(2)) gateway.deliver(message, "Busy");
+      },
+    });
+    await expect(call(host, "folder_delete", { accountId: "acc_1", path: "Old", moveToTrash: true, expectedMessages: 2 })).rejects.toThrow(
+      "The folder changed",
+    );
+    expect(await call(host, "folder_delete_check", { accountId: "acc_1", path: "Old" })).toMatchObject({ messages: 3 });
+    expect(await call(host, "folder_delete", { accountId: "acc_1", path: "Old", moveToTrash: true, expectedMessages: 3 })).toEqual({ ok: true, moved: 3 });
+    expect(host.gateway.mailboxes.get("Deleted Messages")!.messages).toHaveLength(3);
+    expect(host.gateway.folderOps).toContainEqual({ op: "delete", path: "Old", expectEmpty: true, selected: null });
+
+    // Mail arrives in Busy while it is being emptied: the delete stops.
+    const original = host.gateway.folderStatus.bind(host.gateway);
+    let statusCalls = 0;
+    host.gateway.folderStatus = async (config, path) => {
+      if (path === "Busy" && ++statusCalls === 2) host.gateway.deliver({ subject: "Invented new arrival" }, "Busy");
+      return original(config, path);
+    };
+    await expect(call(host, "folder_delete", { accountId: "acc_1", path: "Busy", moveToTrash: true, expectedMessages: 2 })).rejects.toThrow(
+      NEW_MAIL_ARRIVED_MESSAGE,
+    );
+    expect(host.gateway.folders.map((f) => f.path)).toContain("Busy");
+    expect(host.gateway.folderOps.filter((op) => op.op === "delete" && op.path === "Busy")).toEqual([]);
+  });
+
+  it("a Gmail label folder is deleted by a plain DELETE and its mail never moves", async () => {
+    const host = await load3h({
+      preset: "gmail",
+      folders: [...GMAIL_FOLDERS, { path: "Receipts" }],
+      server: (gateway) => {
+        gateway.gmail = true;
+        gateway.deliver({ subject: "Invented receipt" }, "Receipts");
+        gateway.deliver({ subject: "Invented receipt 2" }, "Receipts");
+      },
+    });
+    expect(await call(host, "folder_delete_check", { accountId: "acc_1", path: "Receipts" })).toEqual({
+      messages: 2,
+      children: 0,
+      gmailLabel: true,
+      refusal: null,
+    });
+    expect(await call(host, "folder_delete", { accountId: "acc_1", path: "Receipts", moveToTrash: false, expectedMessages: 2 })).toEqual({ ok: true, moved: 0 });
+    expect(host.gateway.folderOps.filter((op) => op.op === "delete")).toEqual([{ op: "delete", path: "Receipts", expectEmpty: false, selected: null }]);
+    expect(host.gateway.sessions.flatMap((session) => session.calls).filter((c) => c.method === "moveMessages")).toEqual([]);
+    await expect(call(host, "folder_delete", { accountId: "acc_1", path: "[Gmail]/Trash", moveToTrash: false, expectedMessages: 0 })).rejects.toThrow(
+      FOLDER_REFUSAL_MESSAGES.special_use,
+    );
+  });
+
+  it("labels change on All Mail through the queue; undo restores only the deltas; a refused STORE records nothing", async () => {
+    const shared = { messageId: "lab@example.org", gmMsgId: "4242", size: 120, subject: "Invented labelled" };
+    const host = await load3h({
+      preset: "gmail",
+      folders: GMAIL_FOLDERS,
+      messages: [
+        { folder: "INBOX", message: makeFetchedMessage(1, shared) },
+        { folder: "[Gmail]/All Mail", message: makeFetchedMessage(5, shared) },
+      ],
+      seed: (bb) => createSqliteStore(bb.storage.database()).setGmLabels("acc_1", "[Gmail]/All Mail", [{ uid: 5, labels: ["\\Inbox", "Old"] }]),
+      server: (gateway) => {
+        gateway.gmail = true;
+        gateway.mailboxes.get("[Gmail]/All Mail")!.uidNext = 5;
+        gateway.deliver({ ...shared, gmLabels: ["\\Inbox", "Old"] }, "[Gmail]/All Mail");
+      },
+    });
+    const messageId = messageIdAt(host, "INBOX", 1);
+    await expect(call(host, "labels_change", { messageIds: [messageId], add: ["\\Starred"], remove: [] })).rejects.toThrow("system label");
+    const changed = await call(host, "labels_change", { messageIds: [messageId], add: ["Receipts"], remove: ["Old", "Missing"], undoId: UNDO_A });
+    expect(changed).toEqual({ changed: 1 });
+    const stores = () => host.gateway.sessions.flatMap((session) => (session.readOnly ? [] : session.calls.filter((c) => c.method === "setLabels").map((c) => ({ path: session.path, ...c }))));
+    expect(stores()).toEqual([{ path: "[Gmail]/All Mail", method: "setLabels", uids: [5], labels: { add: ["Receipts"], remove: ["Old", "Missing"] } }]);
+    expect(host.queued).toContain("acc_1");
+    const labels = () => (host.bb.storage.database().prepare("SELECT gm_labels FROM messages WHERE uid = 5").get() as { gm_labels: string }).gm_labels;
+    expect(JSON.parse(labels())).toEqual(["\\Inbox", "Receipts"]);
+
+    const undone = (await call(host, "action_undo", { undoId: UNDO_A })) as { outcome: string; restored: number };
+    expect(undone).toMatchObject({ outcome: "done", restored: 1 });
+    expect(stores().at(-1)).toMatchObject({ uids: [5], labels: { add: ["Old"], remove: ["Receipts"] } });
+    expect(JSON.parse(labels())).toEqual(["\\Inbox", "Old"]);
+
+    host.gateway.gmail = false;
+    await expect(call(host, "labels_change", { messageIds: [messageId], add: ["Receipts"], remove: [], undoId: UNDO_A })).rejects.toThrow(
+      LABELS_REFUSED_MESSAGE,
+    );
+    expect(await call(host, "action_undo", { undoId: UNDO_A })).toMatchObject({ outcome: "nothing" });
+  });
+
+  it("view tickets: sniffed per kind, a mismatch is 409, SVG not viewable, caps, single use", async () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+    const ticketFor = async (attachment: { filename: string; mimeType: string; content: string | Uint8Array }, overrides: Partial<FetchedMessage> = {}) => {
+      const loaded = await loadRaw(rawMail({ attachment }), overrides);
+      return { ...loaded, view: () => call(loaded.host, "attachment_view_ticket", { messageId: loaded.messageId, partId: "1" }) };
+    };
+    const fetchView = async (host: Host, url: string) => host.harness.behavior.fetchHttp("GET", url.replace("/api/v1/plugins/makosh-mail/http", ""));
+
+    const image = await ticketFor({ filename: "photo.png", mimeType: "image/png", content: png });
+    const ticket = (await image.view()) as { url: string; kind: string; mimeType: string; size: number };
+    expect(ticket).toMatchObject({ kind: "image", mimeType: "image/png", size: png.byteLength });
+    const response = await fetchView(image.host, ticket.url);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("content-security-policy")).toBe("default-src 'none'");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(png);
+    expect((await fetchView(image.host, ticket.url)).status).toBe(404);
+
+    const fake = await ticketFor({ filename: "photo.png", mimeType: "image/png", content: "Invented text, not an image" });
+    const mismatch = await fetchView(fake.host, ((await fake.view()) as { url: string }).url);
+    expect(mismatch.status).toBe(409);
+    expect(await mismatch.text()).toBe("not_viewable");
+
+    const text = await ticketFor({ filename: "notes.txt", mimeType: "text/plain", content: "Invented notes" });
+    const shown = await fetchView(text.host, ((await text.view()) as { url: string }).url);
+    expect(shown.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(await shown.text()).toBe("Invented notes");
+
+    const svg = await ticketFor({ filename: "logo.svg", mimeType: "image/svg+xml", content: "<svg xmlns='http://www.w3.org/2000/svg'/>" });
+    await expect(svg.view()).rejects.toThrow(NOT_VIEWABLE_MESSAGE);
+    const html = await ticketFor({ filename: "page.html", mimeType: "text/html", content: "<html><body>Invented</body></html>" });
+    const htmlView = await fetchView(html.host, ((await html.view()) as { url: string }).url);
+    expect(htmlView.status).toBe(409);
+
+    const big = await ticketFor(
+      { filename: "huge.png", mimeType: "image/png", content: png },
+      { attachments: [{ partId: "1", filename: "huge.png", mimeType: "image/png", size: 21 * 1024 * 1024, isInline: false }] },
+    );
+    await expect(big.view()).rejects.toThrow(VIEW_TOO_LARGE_MESSAGE);
+  });
+
+  it("server search runs read-only jobs and refuses a query with nothing for the server", async () => {
+    const host = await load3h({
+      folders: ICLOUD_FOLDERS,
+      syncStates: [{ folder: "INBOX", uidValidity: 3, lastUid: 10 }],
+      server: (gateway) => {
+        gateway.deliver({ subject: "Invented archive find", date: "2026-08-01T09:00:00.000Z" });
+      },
+    });
+    await expect(call(host, "server_search_start", { query: "list:invented.example.org", accountId: null })).rejects.toThrow(NOTHING_TO_SEARCH_MESSAGE);
+    const { jobId } = (await call(host, "server_search_start", { query: "archive find", accountId: "acc_1" })) as { jobId: string };
+    let view: { state: string; messageIds: string[] } = { state: "running", messageIds: [] };
+    await vi.waitFor(async () => {
+      view = (await call(host, "server_job_poll", { jobId })) as typeof view;
+      expect(view.state).toBe("done");
+    });
+    expect(view.messageIds).toHaveLength(1);
+    expect(host.gateway.sessions.every((session) => session.readOnly)).toBe(true);
+    const kept = host.bb.storage.database().prepare("SELECT kept FROM messages WHERE id = ?").get(view.messageIds[0]) as { kept: string };
+    expect(kept.kept).toBe("search");
+    await expect(call(host, "server_job_poll", { jobId: "job_unknown" })).rejects.toThrow("has ended");
+  });
+
+  it("saved searches, folder prefs, files, related mail, the sender card and attachment text status", async () => {
+    const host = await load3h({
+      folders: ICLOUD_FOLDERS,
+      messages: [
+        { folder: "INBOX", message: makeFetchedMessage(1, { subject: "Invented INV-2041 ledger", attachments: [{ partId: "1", filename: "plan.pdf", mimeType: "application/pdf", size: 10, isInline: false }] }) },
+        { folder: "INBOX", message: makeFetchedMessage(2, { subject: "Invented INV-2041 reminder", seen: true }) },
+      ],
+    });
+    const { id } = (await call(host, "saved_search_save", { name: "Ledgers", query: "INV-2041", accountId: null })) as { id: string };
+    expect(await call(host, "saved_searches_list", {})).toEqual({
+      searches: [{ id, name: "Ledgers", query: "INV-2041", accountId: null, unread: 1, capped: false }],
+    });
+    expect(await call(host, "saved_search_move", { id, position: 0 })).toEqual({ ok: true });
+    expect(await call(host, "saved_search_delete", { id })).toEqual({ ok: true });
+    await expect(call(host, "saved_search_save", { id, name: "Ledgers", query: "x", accountId: null })).rejects.toThrow("deleted");
+
+    expect(await call(host, "folder_prefs_set", { accountId: "*", path: "inbox", grouping: false })).toEqual({ ok: true });
+    const files = (await call(host, "files_list", { cursor: null, limit: 10 })) as { files: { filename: string }[] };
+    expect(files.files.map((f) => f.filename)).toEqual(["plan.pdf"]);
+    const related = (await call(host, "related_messages", { messageId: messageIdAt(host, "INBOX", 1) })) as { hits: { summary: MessageSummary }[] };
+    expect(related.hits.map((h) => h.summary.id)).toContain(messageIdAt(host, "INBOX", 2));
+    const card = (await call(host, "sender_card", { address: "sender@example.org", accountId: null })) as { fromCount: number; blocked: boolean; projectId: string | null };
+    expect(card).toMatchObject({ fromCount: 2, blocked: false, projectId: null });
+    expect(await call(host, "attachment_text_status", {})).toEqual({ indexed: 0, skipped: 0, failed: 0, pending: 1, running: false, full: false });
+    expect(await call(host, "attachment_text_clear", {})).toEqual({ ok: true });
+    expect(await call(host, "attachment_text_retry", {})).toEqual({ ok: true });
+    const listed = (await call(host, "messages_list", { scope: { kind: "account", accountId: "acc_1", folder: "INBOX" }, cursor: null, limit: 10 })) as { messages: MessageSummary[] };
+    expect(listed.messages).toHaveLength(2);
+  });
+
+  it("turning attachment text on indexes stored attachments, which only the owner's page search finds", async () => {
+    const raw = rawMail({ attachment: { filename: "ledger.txt", mimeType: "text/plain", content: "Invented ledger Quokkaline totals" } });
+    const message = await storedFor(raw);
+    const host = await load3h({
+      folders: ICLOUD_FOLDERS,
+      messages: [{ folder: "INBOX", message }],
+      syncStates: [{ folder: "INBOX", uidValidity: 3, lastUid: 1 }],
+      server: (gateway) => {
+        gateway.mailbox.uidValidity = 3;
+        gateway.setRaw("INBOX", 1, raw);
+      },
+    });
+    expect(await call(host, "attachment_text_status", {})).toMatchObject({ indexed: 0, pending: 1 });
+    await host.harness.behavior.setSettings({ indexAttachmentText: true });
+    await vi.waitFor(async () => expect(await call(host, "attachment_text_status", {})).toMatchObject({ indexed: 1, pending: 0, running: false }));
+    const page = (await call(host, "search", { query: "Quokkaline", accountId: null, limit: 10, attachments: true })) as { hits: MessageSummary[] };
+    expect(page.hits).toHaveLength(1);
+    expect(host.gateway.sessions.every((session) => session.readOnly)).toBe(true);
+    expect(logText(host)).not.toContain("ledger.txt");
+  });
+
+  it("settings bounds", async () => {
+    const host = await load();
+    await expect(host.harness.behavior.setSettings({ historyStepDays: 6 })).rejects.toThrow();
+    await expect(host.harness.behavior.setSettings({ historyStepDays: 366 })).rejects.toThrow();
+    await expect(host.harness.behavior.setSettings({ historyStepDays: 365 })).resolves.toBeUndefined();
+    await expect(host.harness.behavior.setSettings({ serverSearchKeepDays: 0 })).rejects.toThrow();
+    await expect(host.harness.behavior.setSettings({ serverSearchKeepDays: 91 })).rejects.toThrow();
+    await expect(host.harness.behavior.setSettings({ serverSearchKeepDays: 90 })).resolves.toBeUndefined();
+    await expect(host.harness.behavior.setSettings({ mailView: "plain", darkMail: "original", hideQuotes: false, indexAttachmentText: true })).resolves.toBeUndefined();
+  });
+
+  it("no query, folder, label or file name reaches the log, the agent log or realtime", async () => {
+    const shared = { messageId: "canary@example.org", gmMsgId: "77", size: 50 };
+    const host = await load3h({
+      preset: "gmail",
+      folders: [...GMAIL_FOLDERS, { path: "Folder-canary-77" }],
+      messages: [
+        { folder: "INBOX", message: makeFetchedMessage(1, { ...shared, attachments: [{ partId: "1", filename: "file-canary.txt", mimeType: "text/plain", size: 5, isInline: false }] }) },
+        { folder: "[Gmail]/All Mail", message: makeFetchedMessage(5, shared) },
+      ],
+      syncStates: [{ folder: "INBOX", uidValidity: 3, lastUid: 10 }],
+      server: (gateway) => {
+        gateway.gmail = true;
+        gateway.mailboxes.get("[Gmail]/All Mail")!.uidNext = 5;
+        gateway.deliver(shared, "[Gmail]/All Mail");
+      },
+    });
+    const messageId = messageIdAt(host, "INBOX", 1);
+    await call(host, "search", { query: "Zebracanary", accountId: null, limit: 10, attachments: true });
+    const { jobId } = (await call(host, "server_search_start", { query: "Zebracanary", accountId: null })) as { jobId: string };
+    await vi.waitFor(async () => expect(((await call(host, "server_job_poll", { jobId })) as { state: string }).state).not.toBe("running"));
+    await call(host, "folder_rename", { accountId: "acc_1", path: "Folder-canary-77", name: "Folder-canary-78" });
+    await call(host, "folder_create", { accountId: "acc_1", parent: null, name: "Folder-canary-79" });
+    await call(host, "labels_change", { messageIds: [messageId], add: ["Label-canary-5"], remove: [] });
+    await call(host, "attachment_view_ticket", { messageId, partId: "1" });
+    const seen = [logText(host), realtimeText(host), JSON.stringify(agentLogRows(host))].join("\n");
+    for (const canary of ["Zebracanary", "Folder-canary", "Label-canary", "file-canary"]) expect(seen, canary).not.toContain(canary);
   });
 });

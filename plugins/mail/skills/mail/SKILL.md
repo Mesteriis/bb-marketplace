@@ -227,6 +227,9 @@ with shell access to the BB server, which could call the owner's Mail page
 methods (such as `ai_start`, `message_body`, `thread_get` or `search`, and
 those that write into BB: `attachment_save`, `bb_thread_start`,
 `task_from_mail`, `patch_save`, `patch_handoff`, `incident_start` or
-`rule_save`) with `bb plugin rpc call`. Never do that: those methods are the owner's, they
+`rule_save`; those that change the owner's mail server: `folder_create`,
+`folder_rename`, `folder_delete`, `folder_subscribe` and `labels_change`;
+and those that fetch from it: `server_search_start`, `history_load` and
+`conversation_load`) with `bb plugin rpc call`. Never do that: those methods are the owner's, they
 bypass the owner's AI access and the log, and calling them is not something
 the owner asked you to do.

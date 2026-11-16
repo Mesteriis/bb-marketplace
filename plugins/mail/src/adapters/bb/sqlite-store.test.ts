@@ -5495,6 +5495,16 @@ describe("slice-3h search (SQLite)", () => {
     expect(store.accountLabels("acc_1")).toEqual(["\\Inbox", "Receipts"]);
   });
 
+  it("finds a message's copy in a folder by dedup key, with its uid", () => {
+    const shared = { messageId: "copy@example.org", gmMsgId: "21", size: 10 };
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("[Gmail]/All Mail", "all")]);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, shared), makeFetchedMessage(2)]);
+    store.upsertMessages("acc_1", "[Gmail]/All Mail", [makeFetchedMessage(5, shared)]);
+    const copies = store.copiesIn("[Gmail]/All Mail", [idOf(store, 1), idOf(store, 2), "m_unknown"]);
+    expect([...copies.keys()]).toEqual([idOf(store, 1)]);
+    expect(copies.get(idOf(store, 1))).toEqual({ id: idIn(store, "[Gmail]/All Mail", 5), accountId: "acc_1", uid: 5 });
+  });
+
   it("pages across equal and NULL dates without gaps or repeats", () => {
     const dates = [null, null, "2026-11-10T09:00:00.000Z", "2026-11-10T09:00:00.000Z", "2026-11-10T09:00:00.000Z", "2026-11-09T09:00:00.000Z"];
     store.upsertMessages(

@@ -1178,6 +1178,12 @@ export interface MailStore {
   gmLabels(messageIds: readonly string[]): Map<string, string[]>;
   /** Stores the labels the server reported for these uids of one folder. */
   setGmLabels(accountId: string, folder: string, entries: readonly { uid: number; labels: string[] }[]): void;
+  /**
+   * Per message id: its copy in `folder` (same account and dedup key) with
+   * that copy's uid (null while detached). Messages with no copy there are
+   * left out (labels_change resolves All Mail uids by it).
+   */
+  copiesIn(folder: string, messageIds: readonly string[]): Map<string, { id: string; accountId: string; uid: number | null }>;
   /** Every label any stored message of the account carries, system labels included. */
   accountLabels(accountId: string): string[];
 

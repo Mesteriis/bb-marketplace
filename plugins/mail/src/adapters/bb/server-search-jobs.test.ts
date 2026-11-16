@@ -215,6 +215,34 @@ describe("server search jobs", () => {
     expect(view.messageIds).toHaveLength(3);
   });
 
+  it("cancelAll stops every job (the plugin's shutdown)", async () => {
+    const env = setup();
+    env.scripted.addFolder({ path: "Archive", specialUse: "archive" });
+    deliverOld(env.scripted, 2);
+    deliverOld(env.scripted, 2, "Archive");
+    await syncAccount(env.syncDeps, ACCOUNT, { windowDays: 30, batchSize: 50 });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let entered!: () => void;
+    const arrived = new Promise<void>((resolve) => (entered = resolve));
+    const { gateway } = readOnlyGuard(env.scripted, {
+      beforeSearch: async (path) => {
+        if (path !== "Archive") return;
+        entered();
+        await gate;
+      },
+    });
+    const { jobs } = jobsOf(env, gateway);
+    const first = jobs.startSearch(query("Invoice"), [ACCOUNT]).jobId;
+    const queued = jobs.startHistory(ACCOUNT, "INBOX");
+    await arrived;
+    jobs.cancelAll();
+    release();
+    await jobs.settled(first);
+    expect(jobs.poll(first)!.state).toBe("cancelled");
+    expect("jobId" in queued && jobs.poll(queued.jobId)!.state).toBe("cancelled");
+  });
+
   it("the time budget ends an account's search as partial", async () => {
     const env = setup();
     env.scripted.addFolder({ path: "Archive", specialUse: "archive" });

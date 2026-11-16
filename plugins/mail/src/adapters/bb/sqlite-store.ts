@@ -6254,6 +6254,20 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
+    copiesIn(folder, messageIds) {
+      const one = db.prepare<[string, string], { id: string; account_id: string; uid: number | null }>(
+        `SELECT c.id, c.account_id, c.uid FROM messages m JOIN messages c
+           ON c.account_id = m.account_id AND c.dedup_key = m.dedup_key AND c.folder = ?
+         WHERE m.id = ? ORDER BY c.uid IS NULL, c.id LIMIT 1`,
+      );
+      const out = new Map<string, { id: string; accountId: string; uid: number | null }>();
+      for (const id of new Set(messageIds)) {
+        const row = one.get(folder, id);
+        if (row !== undefined) out.set(id, { id: row.id, accountId: row.account_id, uid: row.uid });
+      }
+      return out;
+    },
+
     accountLabels(accountId) {
       const labels = new Set<string>();
       for (const row of db

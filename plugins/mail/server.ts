@@ -27,6 +27,7 @@ import {
   FETCH_FAILED_MESSAGE,
   RawRefusal,
   STALE_MESSAGE,
+  TOO_LARGE_MESSAGE,
   TicketBook,
   checkRawRef,
   downloadHeaders,
@@ -58,6 +59,11 @@ import { createOutboxWorker, type OutboxWorker } from "./src/adapters/bb/outbox-
 import { createSmtpTransport } from "./src/adapters/bb/smtp-transport.ts";
 import { UploadBook, UploadError } from "./src/adapters/bb/uploads.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
+import { createServerJobs } from "./src/adapters/bb/server-search-jobs.ts";
+import { RetryLater, charsetOf, createAttachmentIndexer, matchingPart } from "./src/adapters/bb/attachment-indexer.ts";
+import { extractPdfText } from "./src/adapters/bb/pdf-text.ts";
+import { Slice3hRefusal, createSlice3hRpc, decodeCursor, encodeCursor, type Slice3hRpc } from "./src/adapters/bb/slice-3h-rpc.ts";
+import { SNIFF_BYTES, VIEW_CAPS, sniffType, viewableAs } from "./src/core/file-kinds.ts";
 import { createSyncLoop, type SyncLoop } from "./src/adapters/bb/sync-service.ts";
 import { createIdleSupervisor, type IdleSupervisor } from "./src/adapters/bb/idle-service.ts";
 import { NewMailBook } from "./src/adapters/bb/new-mail-book.ts";
@@ -579,6 +585,44 @@ function defineSettings(bb: BbPluginApi) {
       experimental_optionLabels: { auto: "Taskboard when available", taskboard: "Taskboard", local: "Mail's own tasks" },
       default: "auto",
     },
+    // Slice 3h.
+    historyStepDays: {
+      type: "number",
+      label: "Days loaded by \"Load more days\"",
+      default: 30,
+      experimental_schema: z.number().int().min(7).max(365),
+    },
+    serverSearchKeepDays: {
+      type: "number",
+      label: "Keep unopened server search results (days)",
+      default: 14,
+      experimental_schema: z.number().int().min(1).max(90),
+    },
+    indexAttachmentText: {
+      type: "boolean",
+      label: "Search inside attachments (text and PDF, on this computer)",
+      description: "Text is extracted on this computer and only your own Mail search reads it; agents never do.",
+      default: false,
+    },
+    mailView: {
+      type: "select",
+      label: "Show mail as",
+      options: ["original", "plain"],
+      experimental_optionLabels: { original: "Original", plain: "Plain text" },
+      default: "original",
+    },
+    darkMail: {
+      type: "select",
+      label: "Mail in dark mode",
+      options: ["adapt", "original"],
+      experimental_optionLabels: { adapt: "Adapt colors", original: "Original colors" },
+      default: "adapt",
+    },
+    hideQuotes: {
+      type: "boolean",
+      label: "Hide quoted text in replies",
+      default: true,
+    },
   });
 }
 
@@ -936,11 +980,16 @@ function agentSearch(
   raw: string,
   accountId: string | null,
   limit: number,
+  now: Date,
   scoped = true,
 ): { refused: string } | { hits: MessageSummary[] } {
-  const parsed = parseQuery(raw);
-  const refused =
-    agentSearchRefusal(parsed.text.trim()) ?? (parsed.subject === undefined ? null : agentSearchRefusal(parsed.subject.trim()));
+  const parsed = parseQuery(raw, now);
+  // Every free-text-bearing value is screened, not only text and subject (slice 3h, spec "Agents").
+  const values = [
+    parsed.text,
+    ...parsed.conditions.filter((condition) => SCREENED_FIELDS.has(condition.field)).map((condition) => condition.value),
+  ];
+  const refused = values.map((value) => agentSearchRefusal(value.trim())).find((answer) => answer !== null) ?? null;
   if (refused !== null) return { refused };
   const terms = [parsed.text.trim(), parsed.subject?.trim() ?? ""].filter((term) => term !== "");
   const hits = store.search(parsed, accountId, limit, { scoped });
@@ -954,6 +1003,9 @@ function agentSearch(
     ),
   };
 }
+
+/** Operator values an agent's search is screened on, beside the free text (slice 3h). */
+const SCREENED_FIELDS: ReadonlySet<string> = new Set(["to", "cc", "subject", "filename", "list", "label"]);
 
 function searchText(store: MailStore, hits: MessageSummary[]): { text: string; hiddenCount: number } {
   return renderSearchHitsCounted(hits, folderNames(store));
@@ -1194,9 +1246,14 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
           // New rows may add a conversation with an excluded sender (spec resolution 12).
           try {
             store.refreshExcludedThreads();
+            // A full round listed the folders again (saveFolders drops removed
+            // paths from the scope table): the in-memory scope follows (slice 3h).
+            if (only === undefined) store.setAiScope(store.loadAiScope());
           } catch (error) {
             bb.log.warn(`AI scope refresh failed (${errorKind(error)})`);
           }
+          // Attachment text after an ok round (slice 3h), when the owner turned it on.
+          if (only === undefined) startIndexing();
           afterRound(newMailDeps, accountId, outcome, only);
           // Category rules and reply reminders over the round's new rows (slice 3f).
           afterRoundAi({ store, clock, categoriesOn: () => current.mailCategories, log: (line) => bb.log.info(line) }, accountId, outcome);
@@ -1262,6 +1319,57 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       vaultReady: () => vault !== null,
       messages: { needsKey: NEEDS_KEY_MESSAGE, passwordNeeded: PASSWORD_NEEDED_MESSAGE },
     };
+
+    // Slice 3h: server search, history and conversation jobs and the
+    // attachment text indexer run outside sync's loop, so they write through
+    // a store that refuses every call once the plugin stopped (the host
+    // closes the database then); stopping also cancels every job.
+    let stopped = false;
+    const lateStore = new Proxy(store, {
+      get(target, key, receiver) {
+        const value = Reflect.get(target, key, receiver) as unknown;
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          if (stopped) throw new Error("Mail stopped");
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    }) as MailStore;
+    const serverJobs = createServerJobs({
+      store: lateStore,
+      gateway,
+      vault: sealer,
+      clock,
+      notifier: { mailChanged: (accountId) => (stopped ? undefined : publishChanged(accountId)) },
+      settings: () => ({ historyStepDays: current.historyStepDays, classify: current.devNotifications, devHosts }),
+      log: (line) => bb.log.info(line),
+    });
+    const indexerRaw: RawDeps = { ...rawDeps, store: lateStore };
+    const indexer = createAttachmentIndexer({
+      store: lateStore,
+      clock,
+      fetchRaw: async (messageId) => {
+        try {
+          return (await fetchRawGuarded(indexerRaw, messageId)).raw;
+        } catch (error) {
+          // The account or server cannot be reached now: the parts stay pending.
+          if (error instanceof RawRefusal && error.message !== STALE_MESSAGE && error.message !== TOO_LARGE_MESSAGE) throw new RetryLater();
+          throw error;
+        }
+      },
+      parse: (raw) => parseMail(raw),
+      extractPdf: (bytes) => extractPdfText(bytes),
+      log: (line) => bb.log.info(line),
+    });
+    /** A round of attachment text, when the owner turned it on and a key is set. */
+    const startIndexing = () => {
+      if (stopped || !current.indexAttachmentText || vault === null) return;
+      void indexer.runRound();
+    };
+    bb.onDispose(() => {
+      stopped = true;
+      serverJobs.cancelAll();
+    });
     const composeDeps: ComposeDeps = {
       store,
       gateway,
@@ -1379,6 +1487,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         digestTime: current.digestTime,
         quietHours: current.quietHours,
         mailCategories: current.mailCategories,
+        serverSearchKeepDays: current.serverSearchKeepDays,
       }),
       publish: (token) => bb.realtime.publish(DAY_NOTICE_CHANNEL, { token } satisfies DayNoticePayload),
       book: dayNotices,
@@ -1468,9 +1577,40 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       }
       if (next.syncIntervalMinutes !== prev.syncIntervalMinutes) loop.reschedule();
       if (next.instantMail !== prev.instantMail || wasReady !== (vault !== null)) idle.refresh();
+      if (next.indexAttachmentText && !prev.indexAttachmentText) startIndexing();
     });
 
     const tickets = new TicketBook<DownloadRequest>(clock);
+    const undoBook = new UndoBook(clock);
+    const slice3h = createSlice3hRpc({
+      store,
+      gateway,
+      vault: sealer,
+      vaultReady: () => vault !== null,
+      clock,
+      queue,
+      jobs: serverJobs,
+      indexer,
+      undo: undoBook,
+      viewUrl: (request) => `${downloadUrl(bb.pluginId)}?t=${tickets.mint(request)}`,
+      newId: randomUUID,
+      changed: (accountId) => {
+        publishChanged(accountId);
+        loop.wake(accountId);
+      },
+      foldersChanged: () => {
+        try {
+          store.setAiScope(store.loadAiScope());
+        } catch (error) {
+          bb.log.warn(`AI scope reload failed (${errorKind(error)})`);
+        }
+        idle.refresh();
+      },
+      indexAttachmentText: () => current.indexAttachmentText,
+      startIndexing,
+      messages: { needsKey: NEEDS_KEY_MESSAGE, passwordNeeded: PASSWORD_NEEDED_MESSAGE },
+      log: (line) => bb.log.info(line),
+    });
     const rpcDeps: RpcDeps = {
       projects: projectDirectory,
       bbThreads,
@@ -1512,7 +1652,8 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       },
       rawDeps,
       tickets,
-      undo: new UndoBook(clock),
+      undo: undoBook,
+      slice3h,
       roundWakes,
       undoWaitMs: overrides.undoWaitMs ?? UNDO_WAIT_MS,
       idle,
@@ -1532,6 +1673,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     // Every agent tool refuses inside a rule thread, by the thread it runs in (spec resolution 4).
     const agentBb = gateRuleThreads(bb, isRuleThread, agentLog.log);
     registerAgentSurfaces(agentBb, store, {
+      now: () => clock.now(),
       agentTools: () => current.agentTools,
       agentPropose: () => current.agentPropose,
       agentTriage: () => current.agentTriage,
@@ -1545,6 +1687,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     });
     registerTriageTools(agentBb, rpcDeps);
     registerCli(bb, store, {
+      now: () => clock.now(),
       isRuleThread,
       loop,
       accountDeps,
@@ -1588,6 +1731,8 @@ type RpcDeps = {
   tickets: TicketBook<DownloadRequest>;
   /** The one undo slot (slice 3d). */
   undo: UndoBook;
+  /** Slice 3h methods (search jobs, folders, labels, files, attachment text). */
+  slice3h: Slice3hRpc;
   roundWakes: RoundWakes;
   undoWaitMs: number;
   /** The IDLE supervisor: refreshed when accounts change (slice 3e). */
@@ -1622,7 +1767,8 @@ type RpcDeps = {
 
 /** What a download ticket stands for; the name and bytes are resolved again when it is used. */
 type DownloadRequest = {
-  kind: "attachment" | "eml";
+  /** `view` (slice 3h): the attachment viewer's bytes, sniffed on the server. */
+  kind: "attachment" | "eml" | "view";
   messageId: string;
   partId: string | null;
 };
@@ -1954,9 +2100,32 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
     }
   };
 
+  // Label steps (slice 3h, spec resolution 10): per message, through the account's queue.
+  const labelGroups = runnable.filter((group) => group.kind === "labels");
+  const labelTasks: Promise<void>[] = [];
+  if (labelGroups.length > 0) {
+    const plan = planUndo({ ...record, groups: labelGroups }, rowsOf(labelGroups), foldersOf);
+    for (const entry of plan.skipped) skip(entry.reason, entry.count);
+    for (const step of plan.steps) {
+      if (step.kind !== "labels") continue;
+      labelTasks.push(
+        deps.slice3h
+          .undoLabels(step)
+          .then(({ restored, failed: notDone }) => {
+            for (const id of restored) restoredIds.add(id);
+            failed += notDone;
+          })
+          .catch((error: unknown) => {
+            log(`undo ${step.accountId}: labels failed (${errorKind(error)})`);
+            failed += step.changes.length;
+          }),
+      );
+    }
+  }
+
   const byAccount = new Map<string, UndoGroup[]>();
   for (const group of runnable) {
-    if (group.kind === "flags" || group.destination === null) continue;
+    if (group.kind === "flags" || group.kind === "labels" || group.destination === null) continue;
     byAccount.set(group.accountId, [...(byAccount.get(group.accountId) ?? []), group]);
   }
   const tasks = [...byAccount].map(([accountId, groups]) =>
@@ -1997,7 +2166,7 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
   );
   let timer: ReturnType<typeof setTimeout> | undefined;
   const finished = await Promise.race([
-    Promise.all(tasks).then(() => true),
+    Promise.all([...tasks, ...labelTasks]).then(() => true),
     new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), deps.undoWaitMs))),
   ]);
   clearTimeout(timer);
@@ -2013,7 +2182,10 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
       accountId: group.accountId,
       folder: group.source,
       queued: error === null ? group.ids.filter((id) => restoredIds.has(id)).length : 0,
-      destination: group.kind === "flags" || group.destination === null || error !== null ? null : folderName(group.accountId, group.source),
+      destination:
+        group.kind === "flags" || group.kind === "labels" || group.destination === null || error !== null
+          ? null
+          : folderName(group.accountId, group.source),
       error,
     };
   });
@@ -2554,11 +2726,21 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   });
   const day = createDayRpc(deps, ai.withCategories, { dev: () => bbRpc.todayDev(), rulesReady: () => bbRpc.rulesReady() });
   /** A slice 3g owner method: plugin callers refused first; BB failures as fixed texts. */
-  /** A slice 3h method not built yet: plugin callers refused first, then a fixed refusal. */
-  const notYet3h = (_input: unknown, context: ExperimentalPluginRpcHandlerContext): never => {
-    refusePluginCaller(context);
-    throw refuse("conflict", "Not available yet");
-  };
+  /** A slice 3h method: plugin callers refused first; failures as fixed-text refusals, logged by kind only. */
+  function owner3h<I, O>(method: string, run: (input: I) => O | Promise<O>) {
+    return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
+      refusePluginCaller(context);
+      try {
+        return await run(input);
+      } catch (error) {
+        if (error instanceof experimental_PluginRpcRefusal) throw error;
+        if (error instanceof Slice3hRefusal) throw refuse(error.code, error.message);
+        log(`${method} failed (${errorKind(error)})`);
+        throw refuse("conflict", COMPOSE_FAILED_MESSAGE);
+      }
+    };
+  }
+  const s3 = deps.slice3h;
   function ownerBb<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
       refusePluginCaller(context);
@@ -2687,10 +2869,15 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { ok: true };
       },
       // Slice 3h Task 3: the new output fields; Task 9 adds paging, attachment text and the plugin-caller refusal.
-      search: ({ query, accountId, limit }) => {
-        const parsed = parseQuery(query);
-        return { hits: store.search(parsed, accountId, limit), nextCursor: null, notes: parsed.notes, attachmentMatches: [] };
-      },
+      // Owner-only (slice 3h); attachment text only when the page asks (spec resolution 4).
+      search: owner3h("search", ({ query, accountId, limit, cursor, attachments }) => {
+        const parsed = parseQuery(query, composeDeps.clock.now());
+        const page = store.searchPage(parsed, accountId, limit, {
+          cursor: decodeCursor(cursor),
+          attachments: attachments === true,
+        });
+        return { hits: page.hits, nextCursor: encodeCursor(page.nextCursor), notes: parsed.notes, attachmentMatches: page.attachmentMatches };
+      }),
       folders_list: ({ accountId }) =>
         accountId === null
           ? {
@@ -2763,7 +2950,12 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // Compose and send (slice 3b). Owner only: every handler refuses plugin
       // callers first; none is discoverable, a tool, a CLI command or a mention.
       compose_new: owner("compose_new", ({ accountId }) => newCompose(composeDeps, accountId)),
-      compose_prepare: owner("compose_prepare", (input) => prepareCompose(composeDeps, input)),
+      compose_prepare: owner("compose_prepare", async (input) => {
+        const prepared = await prepareCompose(composeDeps, input);
+        // Replying to a loaded or server-found message keeps it (slice 3h: kept = opened).
+        if (input.kind !== "forward") store.promoteKept([input.messageId]);
+        return prepared;
+      }),
       compose_open: owner("compose_open", async (input) => {
         if ("draftId" in input) ownerDraft(input.draftId);
         const opened = await openDraft(composeDeps, input);
@@ -3156,7 +3348,15 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       incident_prepare: ownerBb("incident_prepare", (input) => bbRpc.incidentPrepare(input)),
       incident_start: ownerBb("incident_start", (input) => bbRpc.incidentStart(input)),
       incident_append: ownerBb("incident_append", (input) => bbRpc.incidentAppend(input)),
-      conversation_project_set: ownerBb("conversation_project_set", (input) => bbRpc.conversationProjectSet(input)),
+      conversation_project_set: ownerBb("conversation_project_set", async (input) => {
+        const result = await bbRpc.conversationProjectSet(input);
+        // A bound conversation's loaded or server-found rows are kept (slice 3h).
+        if (input.projectId !== null) {
+          const thread = store.getThread(input.threadId, "");
+          if (thread !== null) store.promoteKept(thread.messages.map((message) => message.id));
+        }
+        return result;
+      }),
       binding_add: ownerBb("binding_add", (input) => bbRpc.bindingAdd(input)),
       binding_remove: ownerBb("binding_remove", (input) => bbRpc.bindingRemove(input)),
       bindings_list: ownerBb("bindings_list", () => bbRpc.bindingsList()),
@@ -3168,35 +3368,40 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       rules_pause: ownerBb("rules_pause", (input) => bbRpc.rulesPause(input)),
       rule_runs_list: ownerBb("rule_runs_list", (input) => bbRpc.ruleRunsList(input)),
       rule_run_dismiss: ownerBb("rule_run_dismiss", (input) => bbRpc.ruleRunDismiss(input)),
-      // Slice 3h: owner-only; Tasks 7-9 implement them.
-      server_search_start: notYet3h,
-      server_search_more: notYet3h,
-      history_load: notYet3h,
-      conversation_load: notYet3h,
-      server_job_poll: notYet3h,
-      server_job_cancel: notYet3h,
-      history_forget_check: notYet3h,
-      history_forget: notYet3h,
-      saved_searches_list: notYet3h,
-      saved_search_save: notYet3h,
-      saved_search_delete: notYet3h,
-      saved_search_move: notYet3h,
-      folder_create: notYet3h,
-      folder_rename: notYet3h,
-      folder_delete_check: notYet3h,
-      folder_delete: notYet3h,
-      folder_subscribe: notYet3h,
-      folder_prefs_set: notYet3h,
-      messages_list: notYet3h,
-      labels_list: notYet3h,
-      labels_change: notYet3h,
-      attachment_view_ticket: notYet3h,
-      files_list: notYet3h,
-      attachment_text_status: notYet3h,
-      attachment_text_retry: notYet3h,
-      attachment_text_clear: notYet3h,
-      related_messages: notYet3h,
-      sender_card: notYet3h,
+      // Slice 3h: owner-only.
+      server_search_start: owner3h("server_search_start", (input) => s3.serverSearchStart(input)),
+      server_search_more: owner3h("server_search_more", (input) => s3.serverSearchMore(input)),
+      history_load: owner3h("history_load", (input) => s3.historyLoad(input)),
+      conversation_load: owner3h("conversation_load", (input) => s3.conversationLoad(input)),
+      server_job_poll: owner3h("server_job_poll", (input) => s3.jobPoll(input)),
+      server_job_cancel: owner3h("server_job_cancel", (input) => s3.jobCancel(input)),
+      history_forget_check: owner3h("history_forget_check", (input) => s3.historyForgetCheck(input)),
+      history_forget: owner3h("history_forget", (input) => s3.historyForget(input)),
+      saved_searches_list: owner3h("saved_searches_list", () => s3.savedSearchesList()),
+      saved_search_save: owner3h("saved_search_save", (input) => s3.savedSearchSave(input)),
+      saved_search_delete: owner3h("saved_search_delete", (input) => s3.savedSearchDelete(input)),
+      saved_search_move: owner3h("saved_search_move", (input) => s3.savedSearchMove(input)),
+      folder_create: owner3h("folder_create", (input) => s3.folderCreate(input)),
+      folder_rename: owner3h("folder_rename", (input) => s3.folderRename(input)),
+      folder_delete_check: owner3h("folder_delete_check", (input) => s3.folderDeleteCheck(input)),
+      folder_delete: owner3h("folder_delete", (input) => s3.folderDelete(input)),
+      folder_subscribe: owner3h("folder_subscribe", (input) => s3.folderSubscribe(input)),
+      folder_prefs_set: owner3h("folder_prefs_set", (input) => s3.folderPrefsSet(input)),
+      messages_list: owner3h("messages_list", ({ scope, cursor, limit, filter }) => {
+        // The same filter rules as threads_list.
+        const categorized = filter !== undefined && filter.category !== undefined && !deps.categoriesOn() ? { ...filter, category: undefined } : filter;
+        const shown = categorized !== undefined && categorized.notDev !== undefined && !deps.bbSettings().devNotifications ? { ...categorized, notDev: undefined } : categorized;
+        return s3.messagesList({ scope, cursor, limit, ...(shown === undefined ? {} : { filter: shown }) });
+      }),
+      labels_list: owner3h("labels_list", (input) => s3.labelsList(input)),
+      labels_change: owner3h("labels_change", (input) => s3.labelsChange(input)),
+      attachment_view_ticket: owner3h("attachment_view_ticket", (input) => s3.attachmentViewTicket(input)),
+      files_list: owner3h("files_list", (input) => s3.filesList(input)),
+      attachment_text_status: owner3h("attachment_text_status", () => s3.attachmentTextStatus()),
+      attachment_text_retry: owner3h("attachment_text_retry", () => s3.attachmentTextRetry()),
+      attachment_text_clear: owner3h("attachment_text_clear", () => s3.attachmentTextClear()),
+      related_messages: owner3h("related_messages", (input) => s3.relatedMessages(input)),
+      sender_card: owner3h("sender_card", (input) => s3.senderCard(input)),
     },
     { experimental_discoverable: false },
   );
@@ -3239,12 +3444,6 @@ function textResponse(status: number, text: string): Response {
   });
 }
 
-function partBytes(content: ArrayBuffer | Uint8Array | string): Uint8Array | null {
-  if (content instanceof Uint8Array) return content;
-  if (content instanceof ArrayBuffer) return new Uint8Array(content);
-  return null;
-}
-
 /**
  * GET /download?t=<ticket>: the one way bytes leave the plugin. The ticket
  * is resolved once; an unknown, used or expired one is a bare 404. The raw
@@ -3279,16 +3478,23 @@ function registerDownloadRoute(
         const stored = header.attachments.find((a) => a.partId === request.partId);
         if (stored === undefined) throw new RawRefusal("conflict", STALE_MESSAGE);
         const parsed = await parseMail(raw);
-        const part = parsed.attachments[Number(request.partId) - 1];
-        const bytes = part === undefined ? null : partBytes(part.content);
-        if (
-          part === undefined ||
-          bytes === null ||
-          (part.filename ?? null) !== stored.filename ||
-          part.mimeType !== stored.mimeType ||
-          bytes.byteLength !== stored.size
-        ) {
-          throw new RawRefusal("conflict", STALE_MESSAGE);
+        const bytes = matchingPart(parsed.attachments, request.partId ?? "", stored);
+        if (bytes === null) throw new RawRefusal("conflict", STALE_MESSAGE);
+        if (request.kind === "view") {
+          // The viewer (slice 3h): the bytes are sniffed here, and only a kind
+          // that agrees with the stored one is served, with the sniffed type.
+          // SVG and HTML never agree (spec resolutions 13, 20).
+          const sniffed = sniffType(bytes.subarray(0, SNIFF_BYTES), stored.mimeType);
+          const kind = viewableAs(stored.kind, stored.mimeType, sniffed);
+          if (kind === null || sniffed === null) return textResponse(409, "not_viewable");
+          const cap = kind === "image" ? VIEW_CAPS.image : kind === "pdf" ? VIEW_CAPS.pdf : null;
+          if (cap !== null && bytes.byteLength > cap) return textResponse(409, "too_large");
+          const shown = cap === null ? bytes.subarray(0, VIEW_CAPS.textShown) : bytes;
+          const type = cap === null ? `text/plain; charset=${charsetOf(bytes) ?? "utf-8"}` : sniffed.mimeType;
+          return new Response(new Uint8Array(shown), {
+            status: 200,
+            headers: downloadHeaders(sanitizeFileName(stored.filename, "attachment"), type, shown.byteLength),
+          });
         }
         return new Response(new Uint8Array(bytes), {
           status: 200,
@@ -3318,6 +3524,8 @@ const AGENT_MAIL_OFF_RESULT = {
 };
 
 type AgentSurfaceDeps = {
+  /** The clock for relative dates in queries (newer_than, older_than). */
+  now: () => Date;
   agentTools: () => boolean;
   agentPropose: () => boolean;
   agentTriage: () => boolean;
@@ -3579,7 +3787,7 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
   bb.agents.registerTool({
     name: "mail_search",
     description:
-      "Search the owner's synced mail (every synced folder of every connected account; a message in several folders is listed once). Operators: from:x, subject:x, is:unread, after:YYYY-MM-DD, before:YYYY-MM-DD. Returns message ids, dates, senders, subjects, folders and snippets.",
+      "Search the owner's synced mail (every synced folder of every connected account; a message in several folders is listed once). Operators: from:x, to:x, cc:x, subject:x, has:attachment, filename:x, in:folder, is:unread, is:flagged, larger:5M, smaller:1M, after:YYYY-MM-DD, before:YYYY-MM-DD, newer_than:7d, older_than:1y, list:x, label:x; a leading - negates one. Returns message ids, dates, senders, subjects, folders and snippets.",
     instructions: SEARCH_INSTRUCTIONS,
     presentation: { label: { pending: "Searching mail", completed: "Searched mail" } },
     parameters: z.object({
@@ -3593,7 +3801,7 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
         agentLog({ actor: "agent", tool: "search", outcome: "refused_off", threadId });
         return AGENT_MAIL_OFF_RESULT;
       }
-      const found = agentSearch(store, query, accountId ?? null, limit ?? TOOL_SEARCH_DEFAULT);
+      const found = agentSearch(store, query, accountId ?? null, limit ?? TOOL_SEARCH_DEFAULT, deps.now());
       if ("refused" in found) {
         agentLog({ actor: "agent", tool: "search", outcome: "refused_invalid", threadId });
         return toolError(found.refused);
@@ -4550,7 +4758,7 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
     const hits: MessageSummary[] = [];
     const words = queryWords(question).filter((word) => [...word].length >= 3).slice(0, ASK_QUESTION_WORDS);
     for (const query of [...queries, ...words]) {
-      const found = agentSearch(store, query, accountId, ASK_HITS_PER_QUERY);
+      const found = agentSearch(store, query, accountId, ASK_HITS_PER_QUERY, clock.now());
       if ("refused" in found) continue;
       for (const hit of found.hits) {
         const key = `${hit.accountId}\u0000${hit.id}`;
@@ -5071,6 +5279,8 @@ type CliDeps = {
   vaultReady: () => boolean;
   agentTools: () => boolean;
   agentLog: AgentLog;
+  /** The clock for relative dates in queries (newer_than, older_than). */
+  now: () => Date;
 };
 
 function unknownAccount(accountId: string): PluginCliError {
@@ -5133,7 +5343,7 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
           },
         }),
         search: cliCommand({
-          summary: "Search synced mail (from:, subject:, is:unread, after:, before:)",
+          summary: "Search synced mail (from:, to:, subject:, has:, in:, is:, after:, before:, newer_than:, -negation)",
           positionals: [
             {
               name: "query",
@@ -5160,8 +5370,8 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
             // Inside an agent thread: the scope, the refusal and the post-filter of
             // mail_search, and a log row; the owner's terminal is not logged (spec resolution 16).
             const found = inThread
-              ? agentSearch(store, query, options.account ?? null, options.limit)
-              : { hits: store.search(parseQuery(query), options.account ?? null, options.limit) };
+              ? agentSearch(store, query, options.account ?? null, options.limit, deps.now())
+              : { hits: store.search(parseQuery(query, deps.now()), options.account ?? null, options.limit) };
             if ("refused" in found) {
               agentLog({ actor: "cli", tool: "cli_search", outcome: "refused_invalid", threadId: ctx.threadId });
               throw new PluginCliError(found.refused, { code: "search_refused" });

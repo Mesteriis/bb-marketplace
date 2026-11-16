@@ -3408,6 +3408,20 @@ export class InMemoryMailStore implements MailStore {
     return out;
   }
 
+  copiesIn(folder: string, messageIds: readonly string[]): Map<string, { id: string; accountId: string; uid: number | null }> {
+    const out = new Map<string, { id: string; accountId: string; uid: number | null }>();
+    for (const id of new Set(messageIds)) {
+      const row = this.state.rows.find((r) => r.id === id);
+      if (row === undefined) continue;
+      const copies = this.state.rows
+        .filter((r) => r.accountId === row.accountId && r.dedupKey === row.dedupKey && r.folder === folder)
+        .sort((a, b) => (a.uid === null ? 1 : 0) - (b.uid === null ? 1 : 0) || (a.id < b.id ? -1 : 1));
+      const copy = copies[0];
+      if (copy !== undefined) out.set(id, { id: copy.id, accountId: copy.accountId, uid: copy.uid });
+    }
+    return out;
+  }
+
   setGmLabels(accountId: string, folder: string, entries: readonly { uid: number; labels: string[] }[]): void {
     for (const entry of entries) {
       const row = this.state.rows.find((r) => r.accountId === accountId && r.folder === folder && r.uid === entry.uid);

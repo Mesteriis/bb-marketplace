@@ -134,6 +134,8 @@ export interface ServerJobs {
   startConversation(threadId: string): { jobId: string } | { refused: StartRefusal };
   poll(jobId: string): JobView | null;
   cancel(jobId: string): boolean;
+  /** Cancels every job (the plugin stops). */
+  cancelAll(): void;
   /** Resolves when the job has no task left running or queued (tests and shutdown). */
   settled(jobId: string): Promise<void>;
 }
@@ -648,7 +650,7 @@ export function createServerJobs(deps: ServerJobsDeps): ServerJobs {
     return fields;
   }
 
-  return {
+  const api: ServerJobs = {
     startSearch(parsed, accountIds) {
       const job = newJob("search", parsed);
       for (const accountId of accountIds) enqueue(job, accountId, (signal) => searchAccount(job, accountId, signal));
@@ -728,10 +730,15 @@ export function createServerJobs(deps: ServerJobsDeps): ServerJobs {
       return true;
     },
 
+    cancelAll() {
+      for (const job of [...jobs.values()]) if (job.open > 0) api.cancel(job.id);
+    },
+
     settled(jobId) {
       const job = jobs.get(jobId);
       if (job === undefined || job.open === 0) return Promise.resolve();
       return new Promise((resolve) => job.waiters.push(resolve));
     },
   };
+  return api;
 }
