@@ -2,6 +2,8 @@
 import { describe, expect, it } from "vitest";
 import {
   cleanEmailCss,
+  declaresDarkSupport,
+  htmlToPlainText,
   EMAIL_CSP,
   EMAIL_CSP_REMOTE_IMAGES,
   isAllowedLinkUrl,
@@ -369,5 +371,68 @@ describe("sanitizeEmailHtml and the signature class (slice 3d)", () => {
     );
     expect(html).toContain('<div class="makosh-signature"><p>Made-up Name</p></div>');
     expect(html).not.toContain("onclick");
+  });
+});
+
+describe("slice 3h: quotes, own marks and dark mail", () => {
+  const body = (html: string) => new DOMParser().parseFromString(html, "text/html");
+
+  it("strips an incoming data-mk-quote, so the mail cannot hide its own text", () => {
+    const result = sanitizeEmailHtml("<div data-mk-quote>Shown text</div><p data-mk-x='1'>more</p>", { remoteImages: false });
+    expect(result.html).toContain("<body><div>Shown text</div><p>more</p></body>");
+    expect(result.quotes).toBe(0);
+  });
+
+  it("marks quote blocks and the attribution above a plain blockquote", () => {
+    const result = sanitizeEmailHtml(
+      "<p>My answer</p><div class=\"gmail_quote\">On Mon, Ada wrote:<blockquote>old</blockquote></div>" +
+        "<p>On Tue, Bo wrote:</p><blockquote>older</blockquote>",
+      { remoteImages: false },
+    );
+    const doc = body(result.html);
+    expect(result.quotes).toBe(3);
+    expect(doc.querySelector("div.gmail_quote")?.hasAttribute("data-mk-quote")).toBe(true);
+    expect(doc.querySelectorAll("[data-mk-quote]")).toHaveLength(3);
+    expect(doc.querySelector("p")?.hasAttribute("data-mk-quote")).toBe(false);
+    expect(result.html).toContain('html:not([data-mk-quotes="shown"]) [data-mk-quote] { display: none !important; }');
+  });
+
+  it("marks Outlook's reply header and everything after it", () => {
+    const result = sanitizeEmailHtml('<p>Reply</p><div id="divRplyFwdMsg">From: Ada</div><p>Old text</p>', { remoteImages: false });
+    const marked = Array.from(body(result.html).querySelectorAll("[data-mk-quote]")).map((e) => e.textContent);
+    expect(marked).toEqual(["From: Ada", "Old text"]);
+  });
+
+  it("hides nothing when everything would be hidden", () => {
+    const result = sanitizeEmailHtml('<blockquote type="cite">Forwarded text only</blockquote>', { remoteImages: false });
+    expect(result.quotes).toBe(0);
+    expect(result.html).toContain('<body><blockquote type="cite">Forwarded text only</blockquote></body>');
+  });
+
+  it("reads dark support from the raw HTML", () => {
+    expect(declaresDarkSupport('<meta name="color-scheme" content="light dark">')).toBe(true);
+    expect(declaresDarkSupport("<meta name='supported-color-schemes' content='dark'>")).toBe(true);
+    expect(declaresDarkSupport("<style>@media (prefers-color-scheme: dark) { body { color: #fff } }</style>")).toBe(true);
+    expect(declaresDarkSupport('<meta name="color-scheme" content="light">')).toBe(false);
+    expect(declaresDarkSupport("<p>prefers-color-scheme: dark</p>")).toBe(false);
+    expect(declaresDarkSupport("<p>Hello</p>")).toBe(false);
+  });
+
+  it("adds the dark style only with dark set and no dark styles in the mail; the CSP is the same", () => {
+    const light = sanitizeEmailHtml("<p>x</p>", { remoteImages: false });
+    expect(light.html).not.toContain("color-scheme: dark");
+    const adapted = sanitizeEmailHtml("<p>x</p>", { remoteImages: false, dark: true });
+    expect(adapted.html).toContain(":root { color-scheme: dark; }");
+    expect(adapted.html).toContain("filter: invert(0.9) hue-rotate(180deg)");
+    const own = sanitizeEmailHtml("<p>x</p>", { remoteImages: false, dark: true, darkSupported: true });
+    expect(own.html).toContain(":root { color-scheme: dark; }");
+    expect(own.html).not.toContain("invert(");
+    for (const result of [light, adapted, own]) expect(result.html).toContain(`content="${EMAIL_CSP}"`);
+  });
+
+  it("turns HTML into plain text with links", () => {
+    expect(htmlToPlainText('<p>Hello</p><p>See <a href="https://example.org/a">the page</a><br>bye</p>')).toBe(
+      "Hello\n\nSee the page <https://example.org/a>\nbye",
+    );
   });
 });

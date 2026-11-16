@@ -6,6 +6,7 @@
 // When the owner allows remote images, `https:` `<img src>` is the one
 // remote load kept; everything else stays blocked.
 import DOMPurify from "dompurify";
+import { isAttribution } from "../core/quotes.ts";
 
 /** The policy inside every rendered message: only data: images, only inline styles. */
 export const EMAIL_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'";
@@ -16,6 +17,15 @@ export const EMAIL_CSP_REMOTE_IMAGES =
 export interface SanitizeOptions {
   /** Keep `https:` `<img src>` (the owner allowed remote images for this message). */
   remoteImages: boolean;
+  /**
+   * Slice 3h: BB is dark and the owner wants mail adapted. The document
+   * takes a dark color scheme and, unless the mail declares dark support
+   * (`darkSupported`, read from the raw HTML), an inverting filter that
+   * puts media back. The CSP is the same.
+   */
+  dark?: boolean;
+  /** Slice 3h: declaresDarkSupport() of the raw HTML. */
+  darkSupported?: boolean;
 }
 
 export interface SanitizedEmail {
@@ -27,6 +37,8 @@ export interface SanitizedEmail {
    * allowed mode; srcset, CSS url(), backgrounds and http: never count.
    */
   blockedRemoteImages: boolean;
+  /** Slice 3h: quoted blocks marked with `data-mk-quote` (hidden until the parent shows them). */
+  quotes: number;
 }
 
 const FORBID_TAGS = [
@@ -78,7 +90,104 @@ const BASE_STYLE = [
   "table { max-width: 100%; }",
   "pre { white-space: pre-wrap; }",
   "blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid GrayText; }",
+  // Slice 3h: Mail's own quote marks; the parent sets data-mk-quotes="shown" to show them.
+  'html:not([data-mk-quotes="shown"]) [data-mk-quote] { display: none !important; }',
 ].join("");
+
+/** Slice 3h: the dark scheme for a mail that declares dark support itself. */
+const DARK_SCHEME_STYLE = ":root { color-scheme: dark; }";
+/** Slice 3h: the adapted colors for a light-only mail; media is inverted back. */
+const DARK_ADAPT_STYLE = [
+  "html { filter: invert(0.9) hue-rotate(180deg); background: #fff; }",
+  'img, video, picture, [style*="background-image"] { filter: invert(1) hue-rotate(180deg); }',
+].join("");
+
+/** Mail's own attribute prefix; incoming attributes with it are dropped (spec resolution 14). */
+const OWN_DATA_PREFIX = "data-mk-";
+
+/** Characters of raw HTML read for the dark-support check. */
+export const DARK_SCAN_CHARS = 200_000;
+
+/**
+ * Whether a mail says it has its own dark colors (spec resolution 14): a
+ * `color-scheme` or `supported-color-schemes` meta naming dark, or a
+ * `prefers-color-scheme: dark` query inside a style. Reads the raw HTML (the
+ * sanitizer drops meta) and never renders it.
+ */
+export function declaresDarkSupport(rawHtml: string): boolean {
+  const text = rawHtml.slice(0, DARK_SCAN_CHARS);
+  const metas = text.match(/<meta\b[^>]*>/gi) ?? [];
+  for (const meta of metas) {
+    if (/name\s*=\s*["']?(?:color-scheme|supported-color-schemes)\b/i.test(meta) && /content\s*=\s*["'][^"']*\bdark\b/i.test(meta)) {
+      return true;
+    }
+  }
+  const lower = text.toLowerCase();
+  let from = 0;
+  for (;;) {
+    const open = lower.indexOf("<style", from);
+    if (open === -1) return false;
+    const close = lower.indexOf("</style", open);
+    const css = lower.slice(open, close === -1 ? lower.length : close);
+    if (/prefers-color-scheme\s*:\s*dark/.test(css)) return true;
+    if (close === -1) return false;
+    from = close + 7;
+  }
+}
+
+/** Gmail, Yahoo, Outlook and Apple quote containers. */
+const QUOTE_SELECTORS = 'blockquote[type="cite"], div.gmail_quote, .yahoo_quoted';
+/** Outlook's reply header and the "append on send" marker: they and everything after them are quoted. */
+const QUOTE_FROM_HERE = ["divRplyFwdMsg", "appendonsend"];
+
+function textOf(node: Node): string {
+  return (node.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+
+/** The element before `element` that holds text, skipping empty ones. */
+function previousWithText(element: Element): Element | null {
+  let at = element.previousElementSibling;
+  while (at !== null && textOf(at) === "") at = at.previousElementSibling;
+  return at;
+}
+
+/**
+ * Marks quoted blocks of a sanitized body with `data-mk-quote` (slice 3h,
+ * #54). Nothing is marked when everything would be (a forwarded message).
+ * Returns how many blocks were marked.
+ */
+export function markQuotes(body: HTMLElement): number {
+  const marked = new Set<Element>();
+  const mark = (element: Element) => {
+    if ([...marked].some((outer) => outer.contains(element))) return;
+    for (const inner of [...marked]) if (element.contains(inner)) marked.delete(inner);
+    marked.add(element);
+  };
+  for (const element of Array.from(body.querySelectorAll(QUOTE_SELECTORS))) mark(element);
+  for (const id of QUOTE_FROM_HERE) {
+    const start = body.querySelector(`[id="${id}"]`);
+    if (start === null) continue;
+    for (let at: Element | null = start; at !== null; at = at.nextElementSibling) mark(at);
+  }
+  for (const quote of Array.from(body.querySelectorAll("blockquote"))) {
+    const before = previousWithText(quote);
+    if (before !== null && isAttribution(textOf(before))) {
+      mark(quote);
+      mark(before);
+    }
+  }
+  if (marked.size === 0) return 0;
+  // Nothing is hidden when the whole body would be.
+  const clone = body.cloneNode(true) as HTMLElement;
+  const all = Array.from(body.querySelectorAll("*"));
+  const cloned = Array.from(clone.querySelectorAll("*"));
+  all.forEach((element, index) => {
+    if (marked.has(element)) cloned[index]?.remove();
+  });
+  if (textOf(clone) === "" && clone.querySelector("img") === null) return 0;
+  for (const element of marked) element.setAttribute("data-mk-quote", "");
+  return marked.size;
+}
 
 /** True for absolute http, https and mailto URLs, the only links a message may open. */
 export function isAllowedLinkUrl(value: string): boolean {
@@ -271,6 +380,10 @@ const run = { remoteImages: false, blockedRemoteImages: false };
 function emailPurifier(): Purifier {
   if (purifier !== null) return purifier;
   const instance = DOMPurify(window);
+  // Slice 3h: Mail's own data-mk-* marks never come from the mail itself.
+  instance.addHook("uponSanitizeAttribute", (_node, data) => {
+    if (data.attrName.toLowerCase().startsWith(OWN_DATA_PREFIX)) data.keepAttr = false;
+  });
   instance.addHook("uponSanitizeElement", (node, data) => {
     if (data.tagName === "style") node.textContent = cleanEmailCss(node.textContent ?? "");
   });
@@ -323,15 +436,51 @@ export function sanitizeEmailHtml(html: string, options: SanitizeOptions): Sanit
   } finally {
     run.remoteImages = false;
   }
+  const marked = markBody(body);
   const csp = options.remoteImages ? EMAIL_CSP_REMOTE_IMAGES : EMAIL_CSP;
+  const darkStyle = options.dark === true ? DARK_SCHEME_STYLE + (options.darkSupported === true ? "" : DARK_ADAPT_STYLE) : "";
   return {
     html:
       "<!doctype html><html><head>" +
       `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
       `<meta http-equiv="x-dns-prefetch-control" content="off">` +
       `<meta name="referrer" content="no-referrer">` +
-      `<style>${BASE_STYLE}</style>` +
-      `</head><body>${body}</body></html>`,
+      `<style>${BASE_STYLE}${darkStyle}</style>` +
+      `</head><body>${marked.html}</body></html>`,
     blockedRemoteImages: run.blockedRemoteImages,
+    quotes: marked.quotes,
   };
+}
+
+/** Marks the quotes of a sanitized body string; the string is unchanged when there are none. */
+function markBody(body: string): { html: string; quotes: number } {
+  if (!/blockquote|gmail_quote|yahoo_quoted|divRplyFwdMsg|appendonsend/i.test(body)) return { html: body, quotes: 0 };
+  // Already sanitized; DOMParser runs no script and loads nothing for text/html.
+  const doc = new DOMParser().parseFromString(`<!doctype html><html><body>${body}</body></html>`, "text/html");
+  const quotes = markQuotes(doc.body);
+  return quotes === 0 ? { html: body, quotes: 0 } : { html: doc.body.innerHTML, quotes };
+}
+
+/**
+ * Slice 3h: a sanitized body as plain text for Show plain text when the mail
+ * has no text part: block elements end lines and links read `text <url>`.
+ */
+export function htmlToPlainText(html: string): string {
+  const doc = new DOMParser().parseFromString(`<!doctype html><html><body>${html}</body></html>`, "text/html");
+  for (const element of Array.from(doc.querySelectorAll("script, style, head, title"))) element.remove();
+  for (const link of Array.from(doc.querySelectorAll("a[href]"))) {
+    const href = link.getAttribute("href") ?? "";
+    const text = textOf(link);
+    if (isAllowedLinkUrl(href) && text !== href && !href.startsWith("mailto:")) link.append(` <${href}>`);
+  }
+  for (const br of Array.from(doc.querySelectorAll("br"))) br.replaceWith("\n");
+  const blocks = "p, div, li, tr, h1, h2, h3, h4, h5, h6, blockquote, pre, table, ul, ol, section, article";
+  for (const block of Array.from(doc.querySelectorAll(blocks))) {
+    block.prepend("\n");
+    block.append("\n");
+  }
+  return (doc.body.textContent ?? "")
+    .replace(/[ \t\u00a0]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }

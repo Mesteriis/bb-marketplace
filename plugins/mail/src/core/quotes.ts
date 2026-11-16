@@ -4,7 +4,17 @@
 // them, plus Outlook's "-----Original Message-----" line and its
 // From/Sent header block, each of which hides everything after it. Nothing
 // is hidden when the whole body would be (a forwarded message).
-import { isAttribution } from "./ai-input.ts";
+// isAttribution lives here (ai-input.ts re-exports it), so the reading pane
+// can use these rules without pulling the AI input module into the page.
+
+/** The Russian forms of "wrote:" (masculine, feminine, either). */
+const WROTE_RU = ["\u043d\u0430\u043f\u0438\u0441\u0430\u043b:", "\u043d\u0430\u043f\u0438\u0441\u0430\u043b\u0430:", "\u043d\u0430\u043f\u0438\u0441\u0430\u043b(\u0430):"];
+
+/** An "On ... wrote:" line, English or Russian (also read by ai-input.ts). */
+export function isAttribution(line: string): boolean {
+  const text = line.trim();
+  return text.endsWith(WROTE) || WROTE_RU.some((suffix) => text.endsWith(suffix));
+}
 
 export type QuoteRange = { start: number; end: number };
 

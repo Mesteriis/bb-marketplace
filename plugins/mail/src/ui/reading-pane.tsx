@@ -4,9 +4,11 @@
 // messages show sender, date and snippet; an expanded one shows its body.
 // The toolbar acts on the conversation's messages in the folder (or role)
 // being viewed; each message has its own flag, Details and downloads.
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type {
   AttachmentMeta,
+  AttachmentView,
+  RelatedHit,
   MessageAction,
   MessageBody,
   MessageHeader,
@@ -28,6 +30,7 @@ import { DevLinksStrip } from "./dev-links-strip.tsx";
 import { PatchCard } from "./patch-dialog.tsx";
 import { ProjectChip, type AlwaysChoice } from "./project-chip.tsx";
 import { LabelChips } from "./label-chips.tsx";
+import { RelatedMail } from "./related-mail.tsx";
 
 export type BodyState =
   | { status: "loading" }
@@ -91,6 +94,43 @@ export interface ReadingPaneProps {
   onShowConversation?: () => void;
   /** Slice 3h: Labels... for a Gmail conversation (l); absent: not offered. */
   onLabels?: () => void;
+  /** Slice 3h: the viewer, quotes, plain text, dark mail, sender card, related mail and print; absent: none. */
+  reading3h?: ReadingSlice3h;
+}
+
+/** The reading pane's part of slice 3h. */
+export interface ReadingSlice3h {
+  /** Whether an attachment opens in the viewer (else a click downloads it). */
+  viewable: (attachment: AttachmentView) => boolean;
+  onView: (message: MessageHeader, attachment: AttachmentView) => void;
+  /** The sender card. */
+  onSender: (message: MessageHeader) => void;
+  /** mailView: how messages show until the owner switches one. */
+  mailView: "original" | "plain";
+  /** BB is dark and darkMail is adapt. */
+  dark: boolean;
+  /** hideQuotes. */
+  hideQuotes: boolean;
+  /** Expand all / Collapse all (`;`): null until used on this conversation. */
+  quotesAll: boolean | null;
+  onExpandAll: () => void;
+  onCollapseAll: () => void;
+  /** Print... one message, or the conversation (Shift+P). */
+  onPrint: (messages: MessageHeader[]) => void;
+  /** Load the whole conversation from the server. */
+  conversation: { state: "idle" | "running" | "done"; note: string | null; onLoad: () => void };
+  related: { load: (messageId: string) => Promise<RelatedHit[]>; onOpen: (hit: RelatedHit) => void };
+}
+
+/** One message's 3h view state in the pane. */
+interface MessageView {
+  plain: boolean;
+  /** Original colors: the mail's own colors in dark BB. */
+  original: boolean;
+  quotesShown: boolean;
+  onTogglePlain: () => void;
+  onToggleOriginal: () => void;
+  onToggleQuotes: () => void;
 }
 
 /** The reading pane's part of the BB integration (slice 3g). */
@@ -270,6 +310,8 @@ function MessageBodyView({
   onOpenLink,
   images,
   renderers,
+  view,
+  dark = false,
 }: {
   state: BodyState | undefined;
   title: string;
@@ -277,6 +319,9 @@ function MessageBodyView({
   onOpenLink: (url: string) => void;
   images: ImageProps;
   renderers?: CodeRenderers;
+  /** Slice 3h. */
+  view?: MessageView;
+  dark?: boolean;
 }) {
   if (state === undefined || state.status === "loading") {
     return <LoadingState label="Loading message…" />;
@@ -300,6 +345,14 @@ function MessageBodyView({
       senderTrusted={images.senderAllowed || state.body.remoteImagesAllowed}
       onStopImages={images.onStopImages}
       {...(renderers !== undefined ? { renderers } : {})}
+      {...(view !== undefined
+        ? {
+            view: view.plain ? ("plain" as const) : ("original" as const),
+            dark: dark && !view.original,
+            quotesShown: view.quotesShown,
+            onToggleQuotes: view.onToggleQuotes,
+          }
+        : {})}
     />
   );
 }
@@ -317,11 +370,14 @@ function AttachmentButton({
   attachment,
   onDownload,
   onSave,
+  onView,
 }: {
   attachment: AttachmentMeta;
   onDownload: () => void;
   /** Slice 3g: Save to project...; absent: not offered. */
   onSave?: () => void;
+  /** Slice 3h: a click opens the viewer; the download moves to its own button. */
+  onView?: () => void;
 }) {
   const name = attachment.filename ?? "Unnamed attachment";
   const type = attachmentType(attachment);
@@ -329,16 +385,21 @@ function AttachmentButton({
     <li className="flex items-center gap-0.5">
       <button
         type="button"
-        onClick={onDownload}
-        aria-label={`Download ${name}, ${type}, ${formatSize(attachment.size)}`}
+        onClick={onView ?? onDownload}
+        aria-label={`${onView !== undefined ? "View" : "Download"} ${name}, ${type}, ${formatSize(attachment.size)}`}
         className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         <Icon name="Paperclip" className="size-3.5" aria-hidden />
         <span className="max-w-48 truncate text-foreground">{name}</span>
         <span>{type}</span>
         <span>{formatSize(attachment.size)}</span>
-        <Icon name="Download" fallback="Paperclip" className="size-3.5" aria-hidden />
+        <Icon name={onView !== undefined ? "Eye" : "Download"} fallback="Paperclip" className="size-3.5" aria-hidden />
       </button>
+      {onView !== undefined ? (
+        <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" aria-label={`Download ${name}`} onClick={onDownload}>
+          <Icon name="Download" fallback="Paperclip" aria-hidden />
+        </Button>
+      ) : null}
       {onSave !== undefined ? (
         <Button
           variant="ghost"
@@ -355,6 +416,8 @@ function AttachmentButton({
 }
 
 function MessageItem({
+  r3,
+  view,
   message,
   expanded,
   body,
@@ -393,6 +456,9 @@ function MessageItem({
   bb?: ReadingBb;
   /** The conversation's project (slice 3g). */
   projectId?: string | null;
+  /** Slice 3h. */
+  r3?: ReadingSlice3h;
+  view?: MessageView;
 }) {
   const sender = addressLabel(message.from);
   const senderAddress = message.from.address.trim() !== "" ? message.from.address : null;
@@ -454,6 +520,17 @@ function MessageItem({
         >
           <Icon name="Star" fallback="Check" aria-hidden />
         </Button>
+        {r3 !== undefined && senderAddress !== null ? (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 shrink-0 text-muted-foreground"
+            aria-label={`About ${sender}`}
+            onClick={() => r3.onSender(message)}
+          >
+            <Icon name="User" fallback="Info" aria-hidden />
+          </Button>
+        ) : null}
       </div>
       {expanded ? (
         <div className="flex flex-col gap-3 px-3 pb-3">
@@ -490,6 +567,7 @@ function MessageItem({
             onOpenLink={onOpenLink}
             images={images}
             {...(bb !== undefined ? { renderers: bb.renderers } : {})}
+            {...(view !== undefined ? { view, dark: r3?.dark === true } : {})}
           />
           {attachments.length > 0 ? (
             <ul aria-label="Attachments" className="flex flex-wrap gap-2">
@@ -499,6 +577,7 @@ function MessageItem({
                   attachment={attachment}
                   onDownload={() => onDownloadAttachment(attachment)}
                   {...(bb !== undefined ? { onSave: () => bb.onSaveAttachments(message, [attachment]) } : {})}
+                  {...(r3 !== undefined && r3.viewable(attachment) ? { onView: () => r3.onView(message, attachment) } : {})}
                 />
               ))}
             </ul>
@@ -542,6 +621,24 @@ function MessageItem({
               <Icon name="Download" fallback="Paperclip" aria-hidden />
               Download .eml
             </Button>
+            {r3 !== undefined && view !== undefined ? (
+              <>
+                <Button variant="ghost" size="sm" className="h-7 px-2" onClick={view.onTogglePlain}>
+                  <Icon name="FileText" fallback="Mail" aria-hidden />
+                  {view.plain ? "Show original" : "Show plain text"}
+                </Button>
+                {r3.dark && !view.plain ? (
+                  <Button variant="ghost" size="sm" className="h-7 px-2" aria-pressed={view.original} onClick={view.onToggleOriginal}>
+                    <Icon name="Palette" fallback="Eye" aria-hidden />
+                    {view.original ? "Adapt colors" : "Original colors"}
+                  </Button>
+                ) : null}
+                <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => r3.onPrint([message])}>
+                  <Icon name="Printer" fallback="Download" aria-hidden />
+                  {"Print\u2026"}
+                </Button>
+              </>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -563,6 +660,23 @@ export function messageToHand(messages: MessageHeader[], expandedIds: ReadonlySe
 export function ReadingPane(props: ReadingPaneProps) {
   const { detail, loading, error, expandedIds, bodies, onBack, folderUse, archiveAllowed } = props;
   const highlight = props.ai?.highlight ?? null;
+  // Slice 3h: per-message switches of this conversation (plain text, original colors, quotes).
+  const r3 = props.reading3h;
+  const threadKey = detail?.thread.id ?? null;
+  const [switched, setSwitched] = useState<Switches>(() => noSwitches(threadKey));
+  const own = switched.thread === threadKey ? switched : noSwitches(threadKey);
+  const viewOf = (message: MessageHeader): MessageView | undefined => {
+    if (r3 === undefined) return undefined;
+    const quotesShown = own.quotes.get(message.id) ?? r3.quotesAll ?? !r3.hideQuotes;
+    return {
+      plain: own.plain.has(message.id) !== (r3.mailView === "plain"),
+      original: own.original.has(message.id),
+      quotesShown,
+      onTogglePlain: () => setSwitched({ ...own, plain: flip(own.plain, message.id) }),
+      onToggleOriginal: () => setSwitched({ ...own, original: flip(own.original, message.id) }),
+      onToggleQuotes: () => setSwitched({ ...own, quotes: new Map(own.quotes).set(message.id, !quotesShown) }),
+    };
+  };
   // A citation chip was clicked: its message comes into view.
   useEffect(() => {
     if (highlight === null || typeof document === "undefined") return;
@@ -753,9 +867,40 @@ export function ReadingPane(props: ReadingPaneProps) {
             </Button>
           ) : null}
         </div>
-        <p className="text-xs text-muted-foreground">
-          {messages.length === 1 ? "1 message" : `${messages.length} messages`}
-        </p>
+        <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+          <span className="mr-1">{messages.length === 1 ? "1 message" : `${messages.length} messages`}</span>
+          {r3 !== undefined && messages.length > 1 ? (
+            <>
+              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" aria-keyshortcuts=";" onClick={r3.onExpandAll}>
+                Expand all
+              </Button>
+              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={r3.onCollapseAll}>
+                Collapse all
+              </Button>
+            </>
+          ) : null}
+          {r3 !== undefined ? (
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" aria-keyshortcuts="Shift+P" onClick={() => r3.onPrint(messages)}>
+              {"Print conversation\u2026"}
+            </Button>
+          ) : null}
+        </div>
+        {r3 !== undefined ? (
+          <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+            {r3.conversation.state === "running" ? (
+              <span role="status">{"Loading the whole conversation\u2026"}</span>
+            ) : r3.conversation.note !== null ? (
+              <span role="status">{r3.conversation.note}</span>
+            ) : (
+              <>
+                <span>Older messages of this conversation may be on the server</span>
+                <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={r3.conversation.onLoad}>
+                  Load the whole conversation
+                </Button>
+              </>
+            )}
+          </div>
+        ) : null}
         {inbox !== undefined && thread.snoozedUntil !== null ? (
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <Icon name="Clock" fallback="Info" className="size-3.5" aria-hidden />
@@ -825,11 +970,34 @@ export function ReadingPane(props: ReadingPaneProps) {
             translation={props.translation?.shown?.messageId === message.id ? props.translation.shown.block : null}
             highlighted={highlight?.messageId === message.id}
             {...(props.bb !== undefined ? { bb: props.bb, projectId: detail.project?.id ?? null } : {})}
+            {...(r3 !== undefined ? { r3, view: viewOf(message)! } : {})}
           />
         );
       })}
+      {r3 !== undefined && messages.length > 0 ? (
+        <RelatedMail messageId={messages.at(-1)!.id} load={r3.related.load} onOpen={r3.related.onOpen} />
+      ) : null}
     </div>
   );
+}
+
+/** Slice 3h: the owner's per-message switches, for one conversation. */
+interface Switches {
+  thread: string | null;
+  plain: ReadonlySet<string>;
+  original: ReadonlySet<string>;
+  quotes: ReadonlyMap<string, boolean>;
+}
+
+function noSwitches(thread: string | null): Switches {
+  return { thread, plain: new Set(), original: new Set(), quotes: new Map() };
+}
+
+function flip(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(set);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
 }
 
 /** Summarize and Find tasks; off with the reason as the tooltip. */

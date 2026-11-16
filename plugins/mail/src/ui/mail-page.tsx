@@ -16,6 +16,7 @@ import type {
   OutboxRow,
   SearchField,
   SearchNote,
+  SenderCard,
   SpecialUse,
   StatusView,
   ThreadDetail,
@@ -64,6 +65,7 @@ import {
   messageToHand,
   ReadingPane,
   type BodyState,
+  type ReadingSlice3h,
   type ReadingTranslation,
 } from "./reading-pane.tsx";
 import {
@@ -97,6 +99,7 @@ import {
 import { SearchHelpButton, SearchNotes } from "./search-help.tsx";
 import { ServerSearchStrip, type ServerJobView } from "./server-search-strip.tsx";
 import { SAVED_SEARCH_GONE_TEXT } from "./saved-searches.tsx";
+import { SenderCardDialog } from "./sender-card.tsx";
 
 export { ALL_ACCOUNTS };
 
@@ -140,7 +143,8 @@ export interface ServerSearchState {
 export interface MailSlice3hPorts {
   /** This page load's drag id (drag-move.ts). */
   pageId: string;
-  onOpenFiles: () => void;
+  /** Files; the sender card opens it filtered by the sender. */
+  onOpenFiles: (filter?: { sender: string }) => void;
   /** Save search: the page's dialog, with the query. */
   onSaveSearch: (query: string) => void;
   server: ServerSearchState | null;
@@ -161,6 +165,10 @@ export interface MailSlice3hPorts {
   onLabels: (threadIds: string[]) => void;
   /** Whether an account is Gmail (labels apply). */
   gmail: (accountId: string) => boolean;
+  /** Reading (Task 11): viewer, quotes, plain text, dark mail, sender card, related mail and print. */
+  reading?: Omit<ReadingSlice3h, "quotesAll" | "onExpandAll" | "onCollapseAll" | "onSender"> & {
+    loadSenderCard: (address: string, accountId: string | null) => Promise<SenderCard>;
+  };
 }
 
 export interface ReadingState {
@@ -513,6 +521,10 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const [remindMessage, setRemindMessage] = useState<string | null>(null);
   /** Slice 3h: the message opened from a folder that is not grouped; it shows alone. */
   const [singleMessage, setSingleMessage] = useState<string | null>(null);
+  /** Slice 3h: the sender card open, from a message of the conversation. */
+  const [senderFor, setSenderFor] = useState<{ message: MessageHeader; card: SenderCard | null; error: string | null } | null>(null);
+  /** Slice 3h: Expand all / Collapse all of the open conversation (quotes follow). */
+  const [quotesAll, setQuotesAll] = useState<{ threadId: string; shown: boolean } | null>(null);
   // A composer that closed while focused leaves no focus behind.
   const composerId = props.composer?.draft.id ?? null;
   useEffect(() => {
@@ -784,6 +796,39 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     const message = messageToHand(reading.detail.messages, reading.expandedIds);
     return message !== null && !isDraft(message) ? message : null;
   };
+  /** Slice 3h: every message of the open conversation opens (quotes shown), or all but the newest close. */
+  const expandAll = (expand: boolean) => {
+    const detail = reading.detail;
+    if (detail === null || reading.threadId === null) return;
+    const messages = detail.messages;
+    for (const [index, message] of messages.entries()) {
+      const open = reading.expandedIds.has(message.id);
+      const wanted = expand || index === messages.length - 1;
+      if (open !== wanted) props.onToggleMessage(message.id);
+    }
+    setQuotesAll({ threadId: reading.threadId, shown: expand });
+  };
+  const openSender = (message: MessageHeader) => {
+    const port = props.slice3h?.reading;
+    if (port === undefined) return;
+    rememberOpener();
+    setSenderFor({ message, card: null, error: null });
+    port.loadSenderCard(message.from.address, message.accountId).then(
+      (card) => setSenderFor((prev) => (prev?.message === message ? { ...prev, card } : prev)),
+      (error: unknown) =>
+        setSenderFor((prev) => (prev?.message === message ? { ...prev, error: error instanceof Error ? error.message : String(error) } : prev)),
+    );
+  };
+  const reading3h: ReadingSlice3h | undefined =
+    props.slice3h?.reading === undefined
+      ? undefined
+      : {
+          ...props.slice3h.reading,
+          onSender: openSender,
+          quotesAll: quotesAll !== null && quotesAll.threadId === reading.threadId ? quotesAll.shown : null,
+          onExpandAll: () => expandAll(true),
+          onCollapseAll: () => expandAll(false),
+        };
   const summaryShown = summaryFor !== null && summaryFor.threadId === reading.threadId && openDetail !== null && ai !== undefined;
 
   const onKeyDown = useShortcuts((command: ShortcutCommand, repeat: boolean) => {
@@ -860,6 +905,17 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       case "make_task": {
         const message = bbMessage();
         if (message !== null) bbUi.makeTaskFor(message);
+        return;
+      }
+      case "expand_all": {
+        if (!threadOpen || selecting || reading.detail === null || reading3h === undefined) return;
+        const allOpen = reading.detail.messages.every((m) => reading.expandedIds.has(m.id));
+        expandAll(!allOpen || reading3h.quotesAll !== true);
+        return;
+      }
+      case "print": {
+        if (!threadOpen || selecting || reading.detail === null || reading3h === undefined) return;
+        reading3h.onPrint(reading.detail.messages);
         return;
       }
       case "labels": {
@@ -1122,6 +1178,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               error={reading.error}
               onlyMessageId={list.messages !== undefined && !searching ? singleMessage : null}
               onShowConversation={() => setSingleMessage(null)}
+              {...(reading3h !== undefined ? { reading3h } : {})}
               {...(props.slice3h !== undefined && openAccount !== null && props.slice3h.gmail(openAccount) && reading.threadId !== null
                 ? { onLabels: () => props.slice3h?.onLabels([reading.threadId!]) }
                 : {})}
@@ -1332,6 +1389,46 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         onTest={props.onTestSmtp}
         onSave={props.onSaveSmtp}
       />
+      {props.slice3h?.reading !== undefined ? (
+        <SenderCardDialog
+          address={senderFor?.message.from.address ?? null}
+          card={senderFor?.card ?? null}
+          error={senderFor?.error ?? null}
+          onClose={() => setSenderFor(null)}
+          actions={{
+            onSearch: (address) => {
+              setSenderFor(null);
+              props.onSearch(`from:${address}`);
+            },
+            onFiles: (address) => {
+              setSenderFor(null);
+              props.slice3h?.onOpenFiles({ sender: address });
+            },
+            onOpenConversation: (thread) => {
+              setSenderFor(null);
+              props.onSelectThread(thread.id, null, thread.accountId);
+            },
+            ...(senderFor !== null
+              ? {
+                  onAlwaysShowImages: () => {
+                    const message = senderFor.message;
+                    setSenderFor(null);
+                    props.onAlwaysShowImages(message);
+                  },
+                }
+              : {}),
+            ...(senderFor !== null && props.inbox !== undefined
+              ? {
+                  onBlock: () => {
+                    const message = senderFor.message;
+                    setSenderFor(null);
+                    setBlockMessage(message.id);
+                  },
+                }
+              : {}),
+          }}
+        />
+      ) : null}
       <ShortcutSheet open={sheetOpen} onOpenChange={setSheetOpen} onCloseAutoFocus={restoreFocus}
         onAfterCloseAutoFocus={afterClose} />
     </div>

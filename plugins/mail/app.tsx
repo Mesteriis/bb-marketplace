@@ -12,6 +12,8 @@ import {
   definePluginApp,
   experimental_copyToClipboard,
   experimental_Diff,
+  experimental_ImageLightbox,
+  experimental_useCodeTheme,
   experimental_saveFile,
   experimental_SourceCode,
   experimental_InfoSection,
@@ -158,6 +160,11 @@ import {
 import { HistoryForgetDialog, type ForgetRequest } from "./src/ui/history-forget-dialog.tsx";
 import { LabelsDialog, type LabelsRequest } from "./src/ui/labels-dialog.tsx";
 import { FILES_PAGE, FilesView, type FilesFilter } from "./src/ui/files-view.tsx";
+import { AttachmentViewer, viewerShows, type ViewerHost, type ViewRequest } from "./src/ui/attachment-viewer.tsx";
+import { printDocument, printFileName, printHtml, type PrintMessage } from "./src/ui/print.ts";
+import type { SettingsSearchPorts } from "./src/ui/mail-settings.tsx";
+// The page-side pdf.js engine: pdf.js loads lazily, in a blob: worker only.
+import { browserPdfEngine } from "./src/adapters/bb/pdf-page.ts";
 import type { RuleRunView } from "./src/core/contract.ts";
 
 // The channel name is checked against the core constant without importing it
@@ -165,6 +172,7 @@ import type { RuleRunView } from "./src/core/contract.ts";
 const MAIL_CHANGED_CHANNEL: typeof MailChangedChannel = "mail-changed";
 /** BB's highlighter and diff viewer, injected into src/ui as render props (slice 3g, spec resolution 6). */
 const HostSourceCode = experimental_SourceCode;
+const HostImageLightbox = experimental_ImageLightbox;
 const HostDiff = experimental_Diff;
 const HostInfoSection = experimental_InfoSection;
 const OUTBOX_CHANGED_CHANNEL: typeof OutboxChangedChannel = "outbox-changed";
@@ -2438,6 +2446,40 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   // ---- Slice 3f: plugin settings the page reads, and Mail settings' AI tabs ----
 
   const pluginSettings = useSettings().values;
+  // Slice 3h: the reading settings and the Search and reading tab.
+  const readingSettings = {
+    mailView: pluginSettings?.mailView === "plain" ? ("plain" as const) : ("original" as const),
+    darkMail: pluginSettings?.darkMail === "original" ? ("original" as const) : ("adapt" as const),
+    hideQuotes: pluginSettings?.hideQuotes !== false,
+  };
+  const settingsSearch = useMemo<SettingsSearchPorts>(
+    () => ({
+      values: {
+        historyStepDays: typeof pluginSettings?.historyStepDays === "number" ? pluginSettings.historyStepDays : 30,
+        serverSearchKeepDays: typeof pluginSettings?.serverSearchKeepDays === "number" ? pluginSettings.serverSearchKeepDays : 14,
+        indexAttachmentText: pluginSettings?.indexAttachmentText === true,
+        mailView: pluginSettings?.mailView === "plain" ? "plain" : "original",
+        darkMail: pluginSettings?.darkMail === "original" ? "original" : "adapt",
+        hideQuotes: pluginSettings?.hideQuotes !== false,
+      },
+      loadStatus: () => rpc.call("attachment_text_status", {}),
+      retry: async () => {
+        await rpc.call("attachment_text_retry", {});
+      },
+      clear: async () => {
+        await rpc.call("attachment_text_clear", {});
+      },
+    }),
+    [
+      pluginSettings?.darkMail,
+      pluginSettings?.hideQuotes,
+      pluginSettings?.historyStepDays,
+      pluginSettings?.indexAttachmentText,
+      pluginSettings?.mailView,
+      pluginSettings?.serverSearchKeepDays,
+      rpc,
+    ],
+  );
   /** Slice 3g: the owner RPCs of the BB integration, typed for src/ui. */
   const bbCall = useCallback<BbCall>(
     (method, input) => rpc.call(method as never, input as never) as never,
@@ -2547,6 +2589,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           toast(text, action !== undefined ? { action: { label: action.label, onClick: action.run } } : undefined);
         },
       }}
+      search={settingsSearch}
     />
   );
 
@@ -3504,17 +3547,100 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         accounts={accounts}
         load={loadFiles}
         initial={filesFilter.filter}
-        viewable={() => false}
-        onView={() => {}}
+        viewable={(file) => viewerShows(file.kind, file.mimeType)}
+        onView={(file) =>
+          setViewing({ messageId: file.messageId, partId: file.partId, filename: file.filename, mimeType: file.mimeType, size: file.size, kind: file.kind })
+        }
         onDownload={(file) => void downloadPart(file.messageId, file.partId)}
         onOpenMessage={(file) => navigate.toPluginPanel("mail", { subPath: threadSubPath(file.accountId, file.threadId) })}
       />
     ) : undefined;
   const shownContent = pageContent ?? filesContent;
 
+  // Reading (#50, #54, #62, #83, #86, #89).
+  const codeTheme = experimental_useCodeTheme();
+  const [viewing, setViewing] = useState<ViewRequest | null>(null);
+  const pdfEngine = useMemo(() => browserPdfEngine(), []);
+  const viewerHost = useMemo<ViewerHost>(
+    () => ({
+      getTicket: (request) => rpc.call("attachment_view_ticket", { messageId: request.messageId, partId: request.partId }),
+      fetch: (url) => fetch(url, { credentials: "same-origin", cache: "no-store" }),
+      createObjectUrl: (blob) => URL.createObjectURL(blob),
+      revokeObjectUrl: (url) => URL.revokeObjectURL(url),
+      renderCode: (content, path) => <HostSourceCode content={content} path={path} overflow="wrap" />,
+      Lightbox: HostImageLightbox,
+      pdf: pdfEngine,
+    }),
+    [pdfEngine, rpc],
+  );
+  const loadRelated = useCallback(async (messageId: string) => (await rpc.call("related_messages", { messageId })).hits, [rpc]);
+  const [conversationJob, setConversationJob] = useState<{ threadId: string; state: "running" | "done"; note: string | null } | null>(null);
+  const loadConversation = useCallback(async () => {
+    const threadId = latest.current.reading.threadId;
+    if (threadId === null) return;
+    setConversationJob({ threadId, state: "running", note: null });
+    try {
+      const { jobId } = await rpc.call("conversation_load", { threadId });
+      watchJob(
+        "conversation",
+        jobId,
+        (poll) => {
+          if (poll.state === "running") return;
+          const fetched = poll.accounts.reduce((sum, row) => sum + row.fetched, 0);
+          const note =
+            poll.state === "failed"
+              ? "The conversation could not be loaded"
+              : poll.state === "cancelled"
+                ? "Stopped"
+                : fetched === 0
+                  ? "Nothing more of this conversation on the server"
+                  : `Loaded ${plural(fetched, "message", "messages")} from the server`;
+          setConversationJob({ threadId, state: "done", note });
+          if (latest.current.reading.threadId === threadId) void loadThread(threadId, null);
+        },
+        (error) => setConversationJob({ threadId, state: "done", note: error }),
+      );
+    } catch (error) {
+      setConversationJob({ threadId, state: "done", note: messageOf(error) });
+    }
+  }, [loadThread, rpc, watchJob]);
+  const printMessages = useCallback(
+    async (messages: readonly MessageHeader[]) => {
+      if (messages.length === 0) return;
+      const bodies = latest.current.reading.bodies;
+      let printable: PrintMessage[];
+      try {
+        printable = await Promise.all(
+          messages.map(async (message) => {
+            const known = bodies[message.id];
+            const body = known?.status === "ready" ? known.body : await rpc.call("message_body", { messageId: message.id });
+            return { header: message, body };
+          }),
+        );
+      } catch (error) {
+        toast.error(`Could not prepare the page: ${messageOf(error)}`);
+        return;
+      }
+      const subject = messages[0]!.subject;
+      const html = printDocument(printable, subject);
+      if (await printHtml(html)) return;
+      const save = () => {
+        const fileName = printFileName(new Date(), subject);
+        void experimental_saveFile({ fileName, blob: new Blob([html], { type: "text/html" }) }).catch(() => {
+          toast.error("The page could not be saved");
+        });
+      };
+      toast("Printing is not available here", { action: { label: "Save printable page", onClick: save } });
+    },
+    [rpc],
+  );
+
   const slice3hPorts: MailSlice3hPorts = {
     pageId: PAGE_ID,
-    onOpenFiles: () => navigate.toPluginPanel("mail", { subPath: pageSubPath("files") }),
+    onOpenFiles: (filter) => {
+      setFilesFilter((prev) => ({ filter: filter ?? {}, serial: prev.serial + 1 }));
+      navigate.toPluginPanel("mail", { subPath: pageSubPath("files") });
+    },
     onSaveSearch: (query) => setSavedEdit({ kind: "save", query, accountId: searchAccount }),
     server: serverSearch,
     onServerSearch: (query) => void startServerSearch(query),
@@ -3534,6 +3660,32 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     onDragAccounts: setDragAccounts,
     onLabels: (threadIds) => void openLabels(threadIds),
     gmail: (accountId) => gmailIds.has(accountId),
+    reading: {
+      viewable: (attachment) => viewerShows(attachment.kind, attachment.mimeType),
+      onView: (_message, attachment) =>
+        setViewing({
+          messageId: _message.id,
+          partId: attachment.partId,
+          filename: attachment.filename,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+          kind: attachment.kind,
+        }),
+      loadSenderCard: (address, accountId) => rpc.call("sender_card", { address, accountId }),
+      mailView: readingSettings.mailView,
+      dark: codeTheme.mode === "dark" && readingSettings.darkMail === "adapt",
+      hideQuotes: readingSettings.hideQuotes,
+      onPrint: (messages) => void printMessages(messages),
+      conversation: {
+        state: conversationJob !== null && conversationJob.threadId === reading.threadId ? conversationJob.state : "idle",
+        note: conversationJob !== null && conversationJob.threadId === reading.threadId ? conversationJob.note : null,
+        onLoad: () => void loadConversation(),
+      },
+      related: {
+        load: loadRelated,
+        onOpen: (hit) => navigate.toPluginPanel("mail", { subPath: threadSubPath(hit.summary.accountId, hit.summary.threadId) }),
+      },
+    },
   };
   const slice3hDialogs = (
     <>
@@ -3559,6 +3711,13 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           refreshAfterChange();
         }}
         onCancel={() => setForget(null)}
+      />
+      <AttachmentViewer
+        request={viewing}
+        host={viewerHost}
+        onDownload={(request) => void downloadPart(request.messageId, request.partId)}
+        onOpenLink={openLink}
+        onClose={() => setViewing(null)}
       />
       <LabelsDialog
         request={labelsAsk?.request ?? null}

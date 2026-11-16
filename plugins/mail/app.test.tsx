@@ -1757,7 +1757,7 @@ describe("Details and downloads", () => {
     fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
     fireEvent.click(await slot.findByRole("button", { name: "Download .eml" }));
     await waitFor(() => expect(saves.calls).toHaveLength(1));
-    fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf, PDF, 2 KB" }));
+    fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf" }));
     await waitFor(() => expect(saves.calls).toHaveLength(2));
 
     expect(callsTo(slot, "download_ticket").map((call) => call.input)).toEqual([
@@ -1790,7 +1790,7 @@ describe("Details and downloads", () => {
 
       // "failed": the ticket may be spent, so a fresh one goes to the link.
       saves.outcome = "failed";
-      fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf, PDF, 2 KB" }));
+      fireEvent.click(slot.getByRole("button", { name: "Download plan.pdf" }));
       await waitFor(() => expect(clicks).toHaveLength(2));
       expect(callsTo(slot, "download_ticket")).toHaveLength(4);
       expect(document.querySelector("a[download]")).toBeNull();
@@ -4926,5 +4926,162 @@ describe("Slice 3h: search, saved searches, folders, labels, drag and Files", ()
     await waitFor(() => expect(callsTo(slot, "history_load")[0]?.input).toEqual({ accountId: "acc-1", folder: "INBOX" }));
     expect(await slot.findByText("No older mail on the server in this folder")).toBeTruthy();
     expect(slot.getByText(/Showing mail since/)).toBeTruthy();
+  });
+});
+
+describe("Slice 3h: reading", () => {
+  function renderWith(rpc: Record<string, unknown>, settings: Record<string, string | number | boolean> = {}, codeTheme?: { mode: "dark" | "light" }) {
+    return renderSlot({ component: MailWithSidebar }, { subPath: "" }, {
+      rpc: rpc as never,
+      settings,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+      ...(codeTheme !== undefined ? { codeTheme } : {}),
+    } as never);
+  }
+  const withPhoto: ThreadDetail = {
+    ...detailA,
+    messages: [
+      detailA.messages[0]!,
+      message({
+        id: "m-new",
+        date: "2026-11-14T08:30:00.000Z",
+        isRead: false,
+        hasAttachments: true,
+        attachments: [{ partId: "2", filename: "photo.png", mimeType: "image/png", size: 2048, isInline: false, kind: "image" }],
+      }),
+    ],
+  };
+
+  async function openThread(slot: ReturnType<typeof renderWith>) {
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+  }
+
+  it("views an image attachment from a blob of the server's type and revokes it on close", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Blob([new Uint8Array([137, 80, 78, 71])]), { status: 200, headers: { "content-type": "image/png" } }));
+    const created: string[] = [];
+    const revoked: string[] = [];
+    const urls = URL as unknown as { createObjectURL?: (b: Blob) => string; revokeObjectURL?: (u: string) => void };
+    const before = { create: urls.createObjectURL, revoke: urls.revokeObjectURL };
+    urls.createObjectURL = (blob: Blob) => {
+      created.push(blob.type);
+      return "blob:photo";
+    };
+    urls.revokeObjectURL = (url: string) => void revoked.push(url);
+    try {
+      const slot = renderWith(
+        mailRpc({
+          thread_get: () => withPhoto,
+          attachment_view_ticket: () => ({ url: "/plugins/makosh-mail/download/v-1", kind: "image", mimeType: "image/png", size: 2048 }),
+        }),
+      );
+      await openThread(slot);
+      fireEvent.click(await slot.findByRole("button", { name: "View photo.png, PNG, 2 KB" }));
+      await waitFor(() => expect(callsTo(slot, "attachment_view_ticket")[0]?.input).toEqual({ messageId: "m-new", partId: "2" }));
+      expect(await slot.findByRole("img", { name: "photo.png" })).toBeTruthy();
+      expect(created).toEqual(["image/png"]);
+      expect(fetchSpy).toHaveBeenCalledWith("/plugins/makosh-mail/download/v-1", expect.objectContaining({ credentials: "same-origin" }));
+      fireEvent.keyDown(slot.getByRole("dialog"), { key: "Escape", code: "Escape" });
+      await waitFor(() => expect(revoked).toEqual(["blob:photo"]));
+    } finally {
+      fetchSpy.mockRestore();
+      urls.createObjectURL = before.create;
+      urls.revokeObjectURL = before.revoke;
+    }
+  });
+
+  it("opens the sender card and searches from the sender", async () => {
+    const slot = renderWith(
+      mailRpc({
+        sender_card: () => ({
+          name: "Ada Example",
+          address: "ada@example.org",
+          fromCount: 48,
+          toCount: 12,
+          toCapped: false,
+          firstDate: null,
+          lastDate: null,
+          conversations: [],
+          files: [],
+          imagesAllowed: false,
+          blocked: false,
+          projectId: null,
+        }),
+        search: () => ({ hits: [], nextCursor: null, notes: [], attachmentMatches: [] }),
+      }),
+    );
+    await openThread(slot);
+    fireEvent.click((await slot.findAllByRole("button", { name: "About Ada Example" }))[0]!);
+    expect(await slot.findByText("48 from, 12 to")).toBeTruthy();
+    expect(callsTo(slot, "sender_card")[0]?.input).toEqual({ address: "ada@example.org", accountId: "acc-1" });
+    fireEvent.click(slot.getByRole("button", { name: "Search from this sender" }));
+    await waitFor(() => expect(callsTo(slot, "search")[0]?.input).toMatchObject({ query: "from:ada@example.org" }));
+  });
+
+  it("shows related mail with reasons, loaded on open", async () => {
+    const slot = renderWith(
+      mailRpc({
+        related_messages: () => ({
+          hits: [{ summary: message({ id: "m-r", subject: "Invoice INV-2041", threadId: "th-b" }), reasons: [{ kind: "terms", terms: ["INV-2041"] }] }],
+        }),
+      }),
+    );
+    await openThread(slot);
+    expect(callsTo(slot, "related_messages")).toHaveLength(0);
+    fireEvent.click(slot.getByRole("button", { name: /Related/ }));
+    expect(await slot.findByText(/mentions INV-2041/)).toBeTruthy();
+    expect(callsTo(slot, "related_messages")[0]?.input).toEqual({ messageId: "m-new" });
+  });
+
+  it("loads the whole conversation from the server and reloads it", async () => {
+    const slot = renderWith(
+      mailRpc({
+        conversation_load: () => ({ jobId: "c-1" }),
+        server_job_poll: () => ({
+          state: "done",
+          accounts: [{ accountId: "acc-1", searched: 2, total: 2, fetched: 3, found: 3, skipped: 0, partial: false, reason: null }],
+          messageIds: ["m-1", "m-2", "m-3"],
+          moreAvailable: false,
+        }),
+      }),
+    );
+    await openThread(slot);
+    const gets = callsTo(slot, "thread_get").length;
+    fireEvent.click(slot.getByRole("button", { name: "Load the whole conversation" }));
+    expect(await slot.findByText("Loaded 3 messages from the server")).toBeTruthy();
+    expect(callsTo(slot, "conversation_load")[0]?.input).toEqual({ threadId: "th-a" });
+    await waitFor(() => expect(callsTo(slot, "thread_get").length).toBeGreaterThan(gets));
+  });
+
+  it("; expands every message and Shift+P prints from a sandboxed frame", async () => {
+    const slot = renderWith(mailRpc());
+    await openThread(slot);
+    key({ key: ";", code: "Semicolon" });
+    await waitFor(() => expect(callsTo(slot, "message_body").map((c) => (c.input as { messageId: string }).messageId)).toContain("m-old"));
+    key({ key: "P", code: "KeyP", shiftKey: true });
+    await waitFor(() => expect(document.querySelector('iframe[sandbox="allow-same-origin allow-modals"]')).not.toBeNull());
+    const printed = document.querySelector('iframe[sandbox="allow-same-origin allow-modals"]')!.getAttribute("srcdoc") ?? "";
+    expect(printed).toContain("Body of m-old");
+    expect(printed).not.toContain("https:");
+    document.querySelector('iframe[sandbox="allow-same-origin allow-modals"]')?.remove();
+  });
+
+  it("dark BB adapts mail colors; Original colors turns it off for the message", async () => {
+    const slot = renderWith(mailRpc(), {}, { mode: "dark" });
+    await openThread(slot);
+    const frameDoc = async () =>
+      ((await slot.findAllByTitle(/Message from Ada Example/)).at(-1) as HTMLIFrameElement).getAttribute("srcdoc") ?? "";
+    await waitFor(async () => expect(await frameDoc()).toContain("invert(0.9)"));
+    fireEvent.click(slot.getAllByRole("button", { name: "Original colors" }).at(-1)!);
+    await waitFor(async () => expect(await frameDoc()).not.toContain("invert(0.9)"));
+  });
+
+  it("Show plain text renders the text of an HTML mail", async () => {
+    const slot = renderWith(mailRpc(), { mailView: "plain" });
+    await openThread(slot);
+    expect(await slot.findByText("Body of m-new")).toBeTruthy();
+    expect(slot.queryAllByTitle(/Message from Ada Example/)).toHaveLength(0);
+    fireEvent.click(slot.getAllByRole("button", { name: "Show original" }).at(-1)!);
+    expect((await slot.findAllByTitle(/Message from Ada Example/)).length).toBeGreaterThan(0);
   });
 });

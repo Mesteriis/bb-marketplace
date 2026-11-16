@@ -8,7 +8,7 @@
 // Inbox tab: Blocked senders (Unblock asks first) and each account's
 // Snoozed folder with Change…. Slice 3f adds AI access, Agent activity
 // and AI features (categories, Today, reply reminders, AI settings).
-import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import type { Editor } from "@tiptap/react";
 import type { Account, BlockRuleView, CategoryRuleView, IdentityView } from "../core/model.ts";
 import { AiAccessSettings, type AiAccessSettingsProps } from "./ai-access-settings.tsx";
@@ -38,7 +38,113 @@ import type { BbCall } from "./bb-ports.ts";
 export type TemplateView = { id: string; name: string; doc: EditorDoc; updatedAt: string };
 export type SuggestionView = { address: string; count: number; lastDate: string };
 export type IdentityKey = { accountId: string; address: string };
-export type SettingsSection = "addresses" | "templates" | "inbox" | "ai_access" | "activity" | "ai" | "bb" | "rules";
+export type SettingsSection = "addresses" | "templates" | "inbox" | "ai_access" | "activity" | "ai" | "bb" | "rules" | "search";
+
+/** attachment_text_status (slice 3h). */
+export interface AttachmentTextStatus {
+  indexed: number;
+  skipped: number;
+  failed: number;
+  pending: number;
+  running: boolean;
+  full: boolean;
+}
+
+/** Mail settings' Search and reading tab (slice 3h). */
+export interface SettingsSearchPorts {
+  /** The plugin settings as BB has them now. */
+  values: {
+    historyStepDays: number;
+    serverSearchKeepDays: number;
+    indexAttachmentText: boolean;
+    mailView: "original" | "plain";
+    darkMail: "adapt" | "original";
+    hideQuotes: boolean;
+  };
+  loadStatus: () => Promise<AttachmentTextStatus>;
+  retry: () => Promise<void>;
+  clear: () => Promise<void>;
+}
+
+/** "Attachment text: 1 240 indexed - 18 skipped (too large or unreadable) - indexing...". */
+export function attachmentTextLine(status: AttachmentTextStatus): string {
+  const parts = [`${status.indexed} indexed`];
+  if (status.skipped + status.failed > 0) parts.push(`${status.skipped + status.failed} skipped (too large or unreadable)`);
+  if (status.running || status.pending > 0) parts.push("indexing\u2026");
+  return `Attachment text: ${parts.join(" \u00b7 ")}`;
+}
+
+export function SearchSection({ search, hint }: { search: SettingsSearchPorts; hint: string }) {
+  const [status, setStatus] = useState<AttachmentTextStatus | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const reload = useCallback(async () => {
+    try {
+      setStatus(await search.loadStatus());
+      setProblem(null);
+    } catch (error) {
+      setProblem(messageOf(error, "The status could not be loaded"));
+    }
+  }, [search]);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await action();
+    } catch (error) {
+      setProblem(messageOf(error, "That did not work"));
+    } finally {
+      setBusy(false);
+      void reload();
+    }
+  };
+  const v = search.values;
+  return (
+    <div className="flex flex-col gap-4 text-sm">
+      <section className="flex flex-col gap-1">
+        <h3 className="font-medium text-foreground">Search and older mail</h3>
+        <p className="text-muted-foreground">{`Load more days loads ${v.historyStepDays} days at a time. Unopened server search results are kept ${v.serverSearchKeepDays} days.`}</p>
+        <p className="text-muted-foreground">
+          {v.indexAttachmentText
+            ? "Search inside attachments is on: text and PDF attachments are read on this computer, and only your own search uses them."
+            : "Search inside attachments is off."}
+        </p>
+        {v.indexAttachmentText && status !== null ? (
+          <>
+            <p className="text-muted-foreground">{attachmentTextLine(status)}</p>
+            {status.full ? <p className="text-destructive">Attachment text index is full</p> : null}
+          </>
+        ) : null}
+        {problem !== null ? (
+          <p role="alert" className="text-destructive">
+            {problem}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap gap-1">
+          {v.indexAttachmentText && status !== null && status.failed > 0 ? (
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(search.retry)}>
+              Retry failed
+            </Button>
+          ) : null}
+          {status !== null && status.indexed + status.skipped + status.failed + status.pending > 0 ? (
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(search.clear)}>
+              Remove attachment text
+            </Button>
+          ) : null}
+        </div>
+      </section>
+      <section className="flex flex-col gap-1">
+        <h3 className="font-medium text-foreground">Reading</h3>
+        <p className="text-muted-foreground">{`Show mail as: ${v.mailView === "plain" ? "Plain text" : "Original"}`}</p>
+        <p className="text-muted-foreground">{`Mail in dark mode: ${v.darkMail === "adapt" ? "Adapt colors" : "Original colors"}`}</p>
+        <p className="text-muted-foreground">{`Hide quoted text in replies: ${v.hideQuotes ? "On" : "Off"}`}</p>
+      </section>
+      <p className="text-xs text-muted-foreground">{hint}</p>
+    </div>
+  );
+}
 
 /** Mail settings' BB tabs (slice 3g). */
 export interface SettingsBbPorts {
@@ -105,6 +211,8 @@ export interface MailSettingsProps {
   ai?: SettingsAiPorts;
   /** BB integration and Rules (slice 3g); absent: neither tab. */
   bb?: SettingsBbPorts;
+  /** Search and reading (slice 3h); absent: no tab. */
+  search?: SettingsSearchPorts;
 }
 
 function messageOf(error: unknown, fallback: string): string {
@@ -192,6 +300,7 @@ export function MailSettings(props: MailSettingsProps) {
                     ["rules", "Rules"],
                   ] as const)
                 : []),
+              ...(props.search !== undefined ? ([["search", "Search and reading"]] as const) : []),
             ] as const
           ).map(([id, label]) => (
             <button
@@ -233,6 +342,8 @@ export function MailSettings(props: MailSettingsProps) {
             <BbIntegrationSettings values={props.bb.values} call={props.bb.call} hint={PLUGIN_SETTINGS_HINT} />
           ) : section === "rules" && props.bb !== undefined ? (
             <RulesSettings on={props.bb.mailRules} call={props.bb.call} notify={props.bb.notify} hint={PLUGIN_SETTINGS_HINT} />
+          ) : section === "search" && props.search !== undefined ? (
+            <SearchSection search={props.search} hint={PLUGIN_SETTINGS_HINT} />
           ) : section === "inbox" && props.onUnblock !== undefined ? (
             <InboxSection
               accounts={accounts}

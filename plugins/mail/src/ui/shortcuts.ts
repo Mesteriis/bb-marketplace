@@ -34,6 +34,8 @@ export type ShortcutCommand =
   | { kind: "new_bb_thread" }
   | { kind: "make_task" }
   | { kind: "labels" }
+  | { kind: "expand_all" }
+  | { kind: "print" }
   | { kind: "go"; target: GoTarget };
 
 /** How long `g` waits for its second key. */
@@ -127,6 +129,8 @@ function matchKey(event: KeyLike, afterG: boolean): KeyMatch {
   if (symbol(event, "!", "Digit1")) return { kind: "spam" };
   if (symbol(event, "?", "Slash")) return { kind: "sheet" };
   if (!event.shiftKey && (event.key === "/" || event.code === "Slash")) return { kind: "search" };
+  // Slice 3h: `;` expands or collapses the whole conversation.
+  if (event.key === ";" || (!event.shiftKey && event.code === "Semicolon")) return { kind: "expand_all" };
 
   if (event.code === "Enter" || event.key === "Enter") {
     return isActivatable(event.target) || event.shiftKey ? null : { kind: "open" };
@@ -141,6 +145,8 @@ function matchKey(event: KeyLike, afterG: boolean): KeyMatch {
     // Slice 3g: New thread... and Make a task....
     if (event.code === "KeyN") return { kind: "new_bb_thread" };
     if (event.code === "KeyK") return { kind: "make_task" };
+    // Slice 3h: Print....
+    if (event.code === "KeyP") return { kind: "print" };
     return null;
   }
   switch (event.code) {
@@ -275,6 +281,8 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
       { keys: ["v"], label: "Move to…" },
       { keys: ["b"], label: "Snooze" },
       { keys: ["l"], label: "Labels (Gmail)" },
+      { keys: [";"], label: "Expand or collapse the conversation" },
+      { keys: ["Shift", "p"], label: "Print the conversation" },
       { keys: ["t"], label: "Translate, or show the original" },
       { keys: ["Shift", "s"], label: "Summarize the conversation (AI)" },
       { keys: ["Shift", "t"], label: "Find tasks in the conversation (AI)" },

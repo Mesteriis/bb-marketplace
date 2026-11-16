@@ -219,6 +219,19 @@ describe("slice 3h keys", () => {
     const labels = SHORTCUT_SHEET.flatMap((section) => section.entries.map((entry) => entry.keys.join(" ")));
     expect(labels).toEqual(expect.arrayContaining(["g f", "l"]));
   });
+
+  it("; toggles the conversation and Shift+P prints, never while typing", () => {
+    expect(matchShortcut(key({ key: ";", code: "Semicolon" }), false)).toEqual({ kind: "expand_all" });
+    expect(matchShortcut(key({ key: "\u0436", code: "Semicolon" }), false)).toEqual({ kind: "expand_all" });
+    expect(matchShortcut(key({ key: "P", code: "KeyP", shiftKey: true }), false)).toEqual({ kind: "print" });
+    expect(matchShortcut(key({ key: "p", code: "KeyP" }), false)).toBeNull();
+    const input = document.createElement("textarea");
+    document.body.append(input);
+    expect(matchShortcut(key({ key: "P", code: "KeyP", shiftKey: true, target: input }), false)).toBeNull();
+    input.remove();
+    const labels = SHORTCUT_SHEET.flatMap((section) => section.entries.map((entry) => entry.keys.join(" ")));
+    expect(labels).toEqual(expect.arrayContaining([";", "Shift p"]));
+  });
 });
 
 describe("isTypingTarget", () => {

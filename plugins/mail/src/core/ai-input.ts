@@ -11,6 +11,7 @@ import { sha256Hex } from "./compose.ts";
 import { removeControls, removeInvisible, truncateText } from "./html-entities.ts";
 import { draftModeSchema, type AiErrorKind, type MailAddress } from "./model.ts";
 import { redactSecrets, hiddenTotal, type Redaction } from "./redact.ts";
+import { isAttribution } from "./quotes.ts";
 
 // ---------------------------------------------------------------------------
 // Kinds, caps and rates
@@ -107,14 +108,9 @@ export class AiError extends Error {
 const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 
 const WROTE = "wrote:";
-/** The Russian forms of "wrote:" (masculine, feminine, either). */
-const WROTE_RU = ["\u043d\u0430\u043f\u0438\u0441\u0430\u043b:", "\u043d\u0430\u043f\u0438\u0441\u0430\u043b\u0430:", "\u043d\u0430\u043f\u0438\u0441\u0430\u043b(\u0430):"];
 
-/** An "On ... wrote:" line, English or Russian (also read by quotes.ts). */
-export function isAttribution(line: string): boolean {
-  const text = line.trim();
-  return text.endsWith(WROTE) || WROTE_RU.some((suffix) => text.endsWith(suffix));
-}
+// The attribution rule moved to quotes.ts (slice 3h), so the page can read it without this module.
+export { isAttribution };
 
 /**
  * The message without quoted text: lines starting with ">" removed, then a

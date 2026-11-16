@@ -6,9 +6,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MessageBody } from "../core/index.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import { isAllowedLinkUrl, sanitizeEmailHtml } from "./sanitize.ts";
+import { quoteRanges } from "../core/quotes.ts";
+import { declaresDarkSupport, htmlToPlainText, isAllowedLinkUrl, sanitizeEmailHtml } from "./sanitize.ts";
 import type { CodeRenderers } from "./bb-ports.ts";
 import { BodyParts, HtmlCodeBlocks } from "./code-blocks.tsx";
+
+/** Slice 3h: the fold of quoted text, in a plain body and under an HTML frame. */
+export const SHOW_QUOTES_TEXT = "\u00b7\u00b7\u00b7 Show quoted text";
+export const HIDE_QUOTES_TEXT = "Hide quoted text";
 
 const INITIAL_HEIGHT = 120;
 const NO_RENDERERS: CodeRenderers = {};
@@ -36,6 +41,66 @@ export interface MessageFrameProps {
   onStopImages: () => void;
   /** Slice 3g: BB's code renderers for code in the body; absent: the <pre> fallback. */
   renderers?: CodeRenderers;
+  /** Slice 3h: Show plain text renders the text part (or text from the HTML). */
+  view?: "original" | "plain";
+  /** Slice 3h: BB is dark and the mail's colors are adapted (darkMail adapt, not Original colors). */
+  dark?: boolean;
+  /** Slice 3h: quoted text shows (the owner's toggle, Expand all, or hideQuotes off). */
+  quotesShown?: boolean;
+  onToggleQuotes?: () => void;
+}
+
+/**
+ * Plain text with quoted ranges folded behind one button each (slice 3h).
+ * The ranges come from core/quotes.ts.
+ */
+export function PlainBody({
+  text,
+  renderers,
+  quotesShown,
+  onToggleQuotes,
+}: {
+  text: string;
+  renderers: CodeRenderers;
+  quotesShown: boolean;
+  onToggleQuotes?: () => void;
+}) {
+  const ranges = useMemo(() => quoteRanges(text), [text]);
+  if (ranges.length === 0 || onToggleQuotes === undefined) return <BodyParts text={text} renderers={renderers} />;
+  const parts: { quoted: boolean; text: string }[] = [];
+  let at = 0;
+  for (const range of ranges) {
+    if (range.start > at) parts.push({ quoted: false, text: text.slice(at, range.start) });
+    parts.push({ quoted: true, text: text.slice(range.start, range.end) });
+    at = range.end;
+  }
+  if (at < text.length) parts.push({ quoted: false, text: text.slice(at) });
+  return (
+    <div className="flex flex-col gap-1">
+      {parts.map((part, index) =>
+        !part.quoted ? (
+          part.text.trim() === "" ? null : <BodyParts key={index} text={part.text.replace(/\n+$/, "")} renderers={renderers} />
+        ) : quotesShown ? (
+          <div key={index} className="flex flex-col gap-1 border-l-2 border-border pl-2 text-muted-foreground">
+            <BodyParts text={part.text.replace(/\n+$/, "")} renderers={renderers} />
+            <QuoteToggle shown onToggle={onToggleQuotes} />
+          </div>
+        ) : (
+          <QuoteToggle key={index} shown={false} onToggle={onToggleQuotes} />
+        ),
+      )}
+    </div>
+  );
+}
+
+function QuoteToggle({ shown, onToggle }: { shown: boolean; onToggle: () => void }) {
+  return (
+    <div>
+      <Button variant="ghost" size="sm" className="h-6 px-2 text-xs text-muted-foreground" aria-expanded={shown} onClick={onToggle}>
+        {shown ? HIDE_QUOTES_TEXT : SHOW_QUOTES_TEXT}
+      </Button>
+    </div>
+  );
 }
 
 /** Duck-typed: the click target lives in the frame's own realm. */
@@ -55,16 +120,34 @@ export function MessageFrame({
   senderTrusted,
   onStopImages,
   renderers = NO_RENDERERS,
+  view = "original",
+  dark = false,
+  quotesShown = true,
+  onToggleQuotes,
 }: MessageFrameProps) {
   const showRemote = remoteImages || body.remoteImagesAllowed;
+  // Dark support is read from the raw HTML (the sanitizer drops meta); it is never rendered.
+  const darkSupported = useMemo(() => (dark && body.html !== null ? declaresDarkSupport(body.html) : false), [body.html, dark]);
   const sanitized = useMemo(
-    () => (body.html !== null ? sanitizeEmailHtml(body.html, { remoteImages: showRemote }) : null),
-    [body.html, showRemote],
+    () =>
+      body.html !== null
+        ? sanitizeEmailHtml(body.html, { remoteImages: showRemote, ...(dark ? { dark: true, darkSupported } : {}) })
+        : null,
+    [body.html, showRemote, dark, darkSupported],
   );
+
+  if (view === "plain") {
+    const text = body.text !== null && body.text.trim() !== "" ? body.text : body.html !== null ? htmlToPlainText(sanitizeEmailHtml(body.html, { remoteImages: false }).html) : "";
+    return text.trim() !== "" ? (
+      <PlainBody text={text} renderers={renderers} quotesShown={quotesShown} {...(onToggleQuotes !== undefined ? { onToggleQuotes } : {})} />
+    ) : (
+      <p className="text-sm text-muted-foreground">This message has no text.</p>
+    );
+  }
 
   if (sanitized === null) {
     return body.text !== null && body.text.trim() !== "" ? (
-      <BodyParts text={body.text} renderers={renderers} />
+      <PlainBody text={body.text} renderers={renderers} quotesShown={quotesShown} {...(onToggleQuotes !== undefined ? { onToggleQuotes } : {})} />
     ) : (
       <p className="text-sm text-muted-foreground">This message has no text.</p>
     );
@@ -91,7 +174,13 @@ export function MessageFrame({
           </Button>
         </div>
       ) : null}
-      <HtmlFrame srcDoc={sanitized.html} title={title} onOpenLink={onOpenLink} />
+      <HtmlFrame
+        srcDoc={sanitized.html}
+        title={title}
+        onOpenLink={onOpenLink}
+        quotesShown={sanitized.quotes === 0 || onToggleQuotes === undefined || quotesShown}
+      />
+      {sanitized.quotes > 0 && onToggleQuotes !== undefined ? <QuoteToggle shown={quotesShown} onToggle={onToggleQuotes} /> : null}
       <HtmlCodeBlocks blocks={body.codeBlocks ?? []} renderers={renderers} />
       {body.htmlTruncated ? (
         <p className="text-xs text-muted-foreground">
@@ -136,16 +225,35 @@ function ImagesBar({
   );
 }
 
+/**
+ * Shows or hides Mail's quote marks in a loaded frame (spec resolution 14):
+ * an attribute on the frame's root, set through contentDocument, which
+ * `allow-same-origin` permits; the frame runs no script.
+ */
+export function applyQuotesShown(frame: HTMLIFrameElement | null, shown: boolean): void {
+  const root = frame?.contentDocument?.documentElement;
+  if (root == null) return;
+  if (shown) root.setAttribute("data-mk-quotes", "shown");
+  else root.removeAttribute("data-mk-quotes");
+}
+
 function HtmlFrame({
   srcDoc,
   title,
   onOpenLink,
+  quotesShown = true,
 }: {
   srcDoc: string;
   title: string;
   onOpenLink: (url: string) => void;
+  quotesShown?: boolean;
 }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const quotesRef = useRef(quotesShown);
+  quotesRef.current = quotesShown;
+  useEffect(() => {
+    applyQuotesShown(frameRef.current, quotesShown);
+  }, [quotesShown]);
   const openLinkRef = useRef(onOpenLink);
   const detachRef = useRef<(() => void) | null>(null);
   const [height, setHeight] = useState(INITIAL_HEIGHT);
@@ -162,6 +270,7 @@ function HtmlFrame({
     const frame = frameRef.current;
     const doc = frame?.contentDocument;
     if (!frame || !doc) return;
+    applyQuotesShown(frame, quotesRef.current);
 
     // body.scrollHeight follows the content both ways; the root element's
     // never drops below the frame's current height.
