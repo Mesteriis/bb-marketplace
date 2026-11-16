@@ -1544,7 +1544,7 @@
     {
       "id": "meetings",
       "displayName": "Meetings",
-      "description": "Record Zoom, Google Meet, Telemost and Jitsi with local transcription, summary templates, action items and MCP.",
+      "description": "Record Zoom, Google Meet, Telemost and Jitsi (bot on Linux, or local recording on macOS Apple silicon) with local transcription, summary templates, action items and MCP.",
       "icon": "Puzzle",
       "author": {
         "name": "AiXenix",
