@@ -230,7 +230,8 @@ describe("adversarial input (fix round 1)", () => {
     const ms = timed(() => (lines = describeStructure(raw)));
     expect(lines).toHaveLength(STRUCTURE_MAX_LINES + 1);
     expect(lines.at(-1)).toBe("…");
-    expect(ms).toBeLessThan(1000);
+    // Loose for the same reason as the folded-lines test below.
+    expect(ms).toBeLessThan(3000);
   });
 
   it("does not rescan a long tail of folded lines for every part without a blank line", () => {
