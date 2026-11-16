@@ -116,3 +116,14 @@ describe("draft subPath", () => {
     expect(parseViewSubPath(draftSubPath("draft-1"))).toBeNull();
   });
 });
+
+describe("Today and Tasks pages (slice 3f)", () => {
+  it("parse and build today and tasks, nothing else", async () => {
+    const { pageSubPath, parsePageSubPath, parseViewSubPath, parseThreadSubPath } = await import("./routes.ts");
+    expect(parsePageSubPath(pageSubPath("today"))).toBe("today");
+    expect(parsePageSubPath(pageSubPath("tasks"))).toBe("tasks");
+    for (const other of ["", "today/x", "Tasks", "v/all/inbox", "t/a/b"]) expect(parsePageSubPath(other)).toBeNull();
+    expect(parseViewSubPath("today")).toBeNull();
+    expect(parseThreadSubPath("tasks")).toBeNull();
+  });
+});
