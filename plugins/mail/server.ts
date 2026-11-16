@@ -1854,6 +1854,9 @@ async function fetchUnsubscribeInfo(deps: RpcDeps, messageId: string, log: (line
   }
 }
 
+/** Stored Inbox rows "Archive all from this list" archives at most. */
+const UNSUBSCRIBE_ARCHIVE_MAX = 1_000;
+
 /** unsubscribe_info: what the reading pane may offer (never the list key). */
 async function unsubscribeView(deps: RpcDeps, messageId: string, log: (line: string) => void): Promise<UnsubscribeInfoView> {
   const { store } = deps;
@@ -2366,6 +2369,21 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return unsubscribeView(deps, messageId, (line) => bb.log.info(line));
       },
       unsubscribe_run: owner("unsubscribe_run", (input) => runUnsubscribe(deps, input, (line) => bb.log.info(line))),
+      // "Archive all from this list": an ordinary archive of the account's stored Inbox rows of that list.
+      unsubscribe_archive: owner("unsubscribe_archive", ({ messageId, undoId }) => {
+        const message = store.getMessage(messageId);
+        if (message === null) throw refuse("not_found", "Unknown message");
+        const info = store.getUnsubscribeInfo(messageId);
+        if (info === null) throw refuse("conflict", UNSUBSCRIBE_NOT_OFFERED_MESSAGE);
+        const ids = store
+          .inboxMessages(message.accountId, { unreadOnly: false, limit: UNSUBSCRIBE_ARCHIVE_MAX })
+          .filter((row) => row.unsubscribe?.listKey === info.listKey)
+          .map((row) => row.id);
+        if (ids.length === 0) return { groups: [], undoable: false };
+        const { groups, undo } = runMessageAction(deps, { messageIds: ids, action: "archive", role: "inbox" });
+        const undoable = undoId !== undefined && deps.undo.record(undoId, "archive", undo);
+        return { groups, undoable };
+      }),
       // Snooze (slice 3e): Inbox mail only, into the account's snooze folder.
       message_snooze: (input, context) => {
         refusePluginCaller(context);

@@ -22,6 +22,7 @@ import {
   REMOVE_IN_THREAD_MESSAGE,
   renderSource,
   PROPOSE_OFF_INSTRUCTIONS,
+  UNSUBSCRIBE_NOT_OFFERED_MESSAGE,
 } from "./server.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
 import { createAccountQueue } from "./src/adapters/bb/account-queue.ts";
@@ -4265,6 +4266,34 @@ describe("inbox triage: unsubscribe (slice 3e)", () => {
     await expect(call(host, "unsubscribe_run", { messageId: id, method: "mailto", requestId: REQ_B })).resolves.toMatchObject({
       outcome: "queued",
     });
+  });
+
+  it("unsubscribe_archive archives the account's stored Inbox rows of the list, undoably", async () => {
+    const host = await loadUnsubscribe();
+    const store = sqlStore(host);
+    store.saveFolders("acc_1", [
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
+      { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true },
+      { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true },
+      { path: "Junk", name: "Junk", delimiter: "/", specialUse: "junk", selectable: true },
+    ]);
+    const listed = messageIdAt(host, "INBOX", 1);
+    const unknown = messageIdAt(host, "INBOX", 2);
+    const result = (await call(host, "unsubscribe_archive", { messageId: listed, undoId: REQ_B })) as {
+      groups: { folder: string; queued: number; error: string | null }[];
+      undoable: boolean;
+    };
+    expect(result.groups).toEqual([{ accountId: "acc_1", folder: "INBOX", queued: 1, destination: "Archive", error: null }]);
+    expect(result.undoable).toBe(true);
+    expect(movePending(host, listed)).toBe("Archive");
+    // No stored list info: not part of the list. Spam stays where it is.
+    expect(movePending(host, unknown)).toBeNull();
+    expect(movePending(host, messageIdAt(host, "Junk", 1))).toBeNull();
+    await expect(call(host, "unsubscribe_archive", { messageId: unknown })).rejects.toThrow(UNSUBSCRIBE_NOT_OFFERED_MESSAGE);
+    await expect(host.harness.behavior.callRpc("unsubscribe_archive", { messageId: listed }, asPlugin)).rejects.toThrow(
+      PLUGIN_CALLER_MESSAGE,
+    );
   });
 
   it("both unsubscribe methods refuse plugin callers", async () => {

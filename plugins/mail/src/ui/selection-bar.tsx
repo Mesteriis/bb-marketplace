@@ -32,7 +32,8 @@ export function toggleSelection(
 }
 
 export interface BarAction {
-  action: MessageAction | "move_to";
+  /** A message action, or a dialog: Move to… or Snooze (slice 3e). */
+  action: MessageAction | "move_to" | "snooze";
   label: string;
   icon: string;
   /** Why the action is offered but cannot run on this selection; null when it can. */
@@ -48,7 +49,7 @@ export interface SelectionGroup {
 /**
  * The actions for a selection in a folder (or role) of this special use, by
  * the slice-2 rules: Not spam only in Spam, Spam elsewhere, Delete except in
- * Trash, Archive where the server allows it. With several accounts an action
+ * Trash, Archive where the server allows it, Snooze in the Inbox. With several accounts an action
  * shows when it applies to some of them and runs only when it applies to all;
  * Move to… needs one account.
  */
@@ -77,6 +78,8 @@ export function selectionActions(
   else ok("spam", "Spam", "AlertTriangle");
   if (use !== "trash") ok("delete", "Delete", "Trash2");
   ok("move_to", "Move to…", "Folder", groups.length > 1 ? "Moving works within one account" : null);
+  // Snooze takes Inbox mail only (slice 3e).
+  if (use === "inbox") ok("snooze", "Snooze", "Clock");
   return actions;
 }
 

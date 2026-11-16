@@ -1,4 +1,5 @@
-// The left column: conversations (or search hits) as dense rows, unread in bold.
+// The left column: conversations (or search hits) as dense rows, unread in
+// bold, and the quick filters above them (slice 3e).
 import type { MailAddress, MessageSummary, ThreadSummary } from "../core/index.ts";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -40,6 +41,89 @@ export function formatFullDate(iso: string | null): string {
   return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
+/**
+ * When snoozed mail comes back, short: the weekday and time within the next
+ * six days ("Tue 08:00"), else the date and time.
+ */
+export function formatUntil(iso: string | null, now: Date = new Date()): string {
+  if (iso === null) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const soon = date.getTime() - now.getTime() < 6 * 86_400_000;
+  const day = soon
+    ? date.toLocaleDateString(undefined, { weekday: "short" })
+    : date.toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+      });
+  return `${day} ${time}`;
+}
+
+/** The quick filters of a list (slice 3e); `keep` is the page's, not a toggle. */
+export type ListFilter = { unread?: true; flagged?: true; attachments?: true };
+
+export const LIST_FILTERS: readonly { key: keyof ListFilter; label: string }[] = [
+  { key: "unread", label: "Unread" },
+  { key: "flagged", label: "Flagged" },
+  { key: "attachments", label: "Attachments" },
+];
+
+/** Whether any toggle is on. */
+export function filterActive(filter: ListFilter): boolean {
+  return filter.unread === true || filter.flagged === true || filter.attachments === true;
+}
+
+/** The empty list's text under the toggles that are on. */
+export function filterEmptyText(filter: ListFilter): string {
+  const on = LIST_FILTERS.filter(({ key }) => filter[key] === true).map(({ key }) => key);
+  if (on.length === 1 && on[0] === "unread") return "No unread conversations here";
+  if (on.length === 1 && on[0] === "flagged") return "No flagged conversations here";
+  if (on.length === 1 && on[0] === "attachments") return "No conversations with attachments here";
+  return "No matching conversations here";
+}
+
+/** Unread, Flagged and Attachments: Tab-reachable toggles, no hotkeys. */
+export function QuickFilters({ filter, onChange }: { filter: ListFilter; onChange: (next: ListFilter) => void }) {
+  return (
+    <div role="group" aria-label="Quick filters" className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-3 py-1">
+      {LIST_FILTERS.map(({ key, label }) => {
+        const on = filter[key] === true;
+        return (
+          <Button
+            key={key}
+            variant={on ? "secondary" : "ghost"}
+            size="sm"
+            className={cn("h-6 px-2 text-xs", !on && "text-muted-foreground")}
+            aria-pressed={on}
+            onClick={() => {
+              const next: ListFilter = { ...filter };
+              if (on) delete next[key];
+              else next[key] = true;
+              onChange(next);
+            }}
+          >
+            {label}
+          </Button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The list under the toggles is empty: say so, with Clear filters. */
+export function FilteredEmpty({ filter, onClear }: { filter: ListFilter; onClear: () => void }) {
+  return (
+    <div role="status" className="flex flex-col items-start gap-2 px-3 py-4">
+      <p className="text-sm text-muted-foreground">{filterEmptyText(filter)}</p>
+      <Button variant="outline" size="sm" className="h-7" onClick={onClear}>
+        Clear filters
+      </Button>
+    </div>
+  );
+}
+
 /** Who a conversation is with: everyone but the account itself, by name where known. */
 export function participantsLabel(participants: MailAddress[], ownAddress: string | null): string {
   const own = ownAddress?.toLowerCase() ?? null;
@@ -62,6 +146,8 @@ interface RowProps {
   snippet: string;
   /** Short account label, shown in All accounts. */
   marker: string | null;
+  /** When a snoozed conversation comes back (slice 3e). */
+  snoozedUntil?: string | null;
   onSelect: () => void;
   /** Checkbox and star; absent for search hits. */
   check?: { checked: boolean; anyChecked: boolean; onToggle: (range: boolean) => void };
@@ -79,6 +165,7 @@ function Row({
   subject,
   snippet,
   marker,
+  snoozedUntil = null,
   onSelect,
   check,
   star,
@@ -147,6 +234,12 @@ function Row({
           {label}
         </span>
         <span className="truncate pl-3.5 text-xs text-muted-foreground">{snippet}</span>
+        {snoozedUntil !== null ? (
+          <span className="flex items-center gap-1 pl-3.5 text-xs text-muted-foreground">
+            <Icon name="Clock" fallback="Info" className="size-3" aria-hidden />
+            until {formatUntil(snoozedUntil)}
+          </span>
+        ) : null}
       </button>
       {star !== undefined ? (
         <span className="shrink-0 pr-1.5 pt-1.5">
@@ -219,6 +312,7 @@ export function ThreadList({
             subject={thread.subject}
             snippet={thread.snippet}
             marker={marker(thread.accountId)}
+            snoozedUntil={thread.snoozedUntil}
             onSelect={() => onSelect(thread)}
             check={{
               checked: checked.has(thread.id),

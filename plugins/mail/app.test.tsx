@@ -580,7 +580,19 @@ async function openFolder(slot: ReturnType<typeof render>, name: RegExp) {
 }
 
 /** Toolbar buttons that are not role moves. */
-const NOT_MOVES = ["Back", "Hand to agent", "Move to…", "Mark unread", "Reply", "Reply all", "Forward", "Translate", "Edit draft"];
+const NOT_MOVES = [
+  "Back",
+  "Hand to agent",
+  "Move to…",
+  "Mark unread",
+  "Reply",
+  "Reply all",
+  "Forward",
+  "Translate",
+  "Edit draft",
+  "Snooze",
+  "Block",
+];
 
 function toolbar(slot: ReturnType<typeof render>) {
   return within(slot.getByRole("toolbar", { name: "Conversation actions" }));
@@ -954,7 +966,7 @@ describe("Fix round 1", () => {
       .map((button) => button.textContent?.trim())
       .filter((label) => label !== "Back");
     // Writing still applies; the moves do not.
-    expect(labels).toEqual(["Reply", "Reply all", "Forward", "Translate", "Hand to agent"]);
+    expect(labels).toEqual(["Reply", "Reply all", "Forward", "Translate", "Block", "Hand to agent"]);
   });
 
   it("shows Spam and Delete but no Archive in an archive folder", async () => {
@@ -2480,6 +2492,7 @@ describe("One action toolbar", () => {
       "Spam",
       "Delete",
       "Move to…",
+      "Snooze",
     ]);
     expect(slot.getByText("1 conversation selected")).toBeTruthy();
   });
@@ -3562,7 +3575,7 @@ describe("Undo the last action (slice 3d)", () => {
   it("a single star toggle shows no toast, and z still undoes it with the page's own id", async () => {
     const slot = render(undoRpc({ action_undo: () => ({ outcome: "done", restored: 1, skipped: [], failed: 0, groups: [] }) }));
     await slot.findByText("Tickets");
-    fireEvent.click(slot.getAllByRole("button", { name: /^Flag/ })[0]!);
+    fireEvent.click(slot.getAllByRole("button", { name: "Flag conversation" })[0]!);
     await waitFor(() => expect(callsTo(slot, "message_action")).toHaveLength(1));
     expect(undoToasts()).toEqual([]);
     const undoId = (callsTo(slot, "message_action")[0]!.input as { undoId: string }).undoId;
@@ -3638,5 +3651,249 @@ describe("Undo the last action (slice 3d)", () => {
     await waitFor(() => expect(toasts.error.at(-1)).toContain("Unlock mail first"));
     press(pageRoot(slot), { key: "z", code: "KeyZ" });
     await waitFor(() => expect(callsTo(slot, "action_undo")).toHaveLength(2));
+  });
+});
+
+describe("Inbox triage on the page (slice 3e)", () => {
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const undoToasts = () => toasts.log.filter((t) => t.options?.id === "mail-undo");
+  const listCalls = (slot: ReturnType<typeof render>) =>
+    callsTo(slot, "threads_list").map((c) => (c.input as { filter?: unknown }).filter);
+  const unsubInfo = (overrides: Record<string, unknown> = {}) => ({
+    methods: {
+      oneClick: { host: "news.example.com" },
+      mailto: { address: "leave@example.com", subject: "unsubscribe", foreignDomain: false },
+    },
+    trust: "covered",
+    listName: "Invented Weekly",
+    already: null,
+    hidden: false,
+    ...overrides,
+  });
+  async function openA(slot: ReturnType<typeof render>) {
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+  }
+
+  it("the toggles send the filter, stay with their view and come back with it", async () => {
+    const slot = render(folderRpc());
+    await slot.findByText("Lunch");
+    const filters = within(slot.getByRole("group", { name: "Quick filters" }));
+    fireEvent.click(filters.getByRole("button", { name: "Unread" }));
+    await waitFor(() => expect(listCalls(slot).at(-1)).toEqual({ unread: true }));
+    expect(filters.getByRole("button", { name: "Unread" }).getAttribute("aria-pressed")).toBe("true");
+    await openFolder(slot, /Spam/);
+    await waitFor(() => expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ scope: { folder: "[Gmail]/Spam" } }));
+    expect(listCalls(slot).at(-1)).toBeUndefined();
+    await openFolder(slot, /Inbox/);
+    await waitFor(() => expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ scope: { folder: "INBOX" } }));
+    expect(listCalls(slot).at(-1)).toEqual({ unread: true });
+  });
+
+  it("keeps the open conversation listed under a filter, and an empty filtered list clears", async () => {
+    let filtered = false;
+    const slot = render(
+      folderRpc({
+        threads_list: ({ filter }: { filter?: unknown }) => {
+          filtered = filter !== undefined;
+          return { threads: filtered ? [] : [threadA, threadB], nextCursor: null };
+        },
+      }),
+    );
+    await openA(slot);
+    fireEvent.click(within(slot.getByRole("group", { name: "Quick filters" })).getByRole("button", { name: "Flagged" }));
+    await waitFor(() => expect(listCalls(slot).at(-1)).toEqual({ flagged: true, keep: "th-a" }));
+    expect(await slot.findByText("No flagged conversations here")).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() => expect(listCalls(slot).at(-1)).toBeUndefined());
+    expect(await slot.findByText("Lunch")).toBeTruthy();
+  });
+
+  it("shows until on a snoozed row and in the pane, and Return now brings it back", async () => {
+    const snoozed = { ...threadA, snoozedUntil: "2026-11-17T07:00:00.000Z" };
+    const slot = render(
+      folderRpc({
+        threads_list: () => ({ threads: [snoozed, threadB], nextCursor: null }),
+        thread_get: () => ({ ...detailIn("INBOX"), thread: snoozed }),
+        message_unsnooze: () => ({ ok: true }),
+      }),
+    );
+    expect(await slot.findByText(/^until /)).toBeTruthy();
+    await openA(slot);
+    expect(slot.getByText(/^Snoozed until /)).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Return now" }));
+    await waitFor(() => expect(callsTo(slot, "message_unsnooze")[0]?.input).toEqual({ messageIds: ["m-old", "m-sent", "m-new"] }));
+    await waitFor(() => expect(toasts.plain).toContain("Coming back to the Inbox"));
+  });
+
+  it("Unsubscribe is not offered in Spam, and says what to use there", async () => {
+    const slot = render(folderRpc({ unsubscribe_info: () => unsubInfo({ hidden: true, methods: { oneClick: null, mailto: null } }) }));
+    await openFolder(slot, /Spam/);
+    await openA(slot);
+    await waitFor(() => expect(callsTo(slot, "unsubscribe_info")).toHaveLength(1));
+    expect(await slot.findByText("Use Spam or Block for mail you never signed up for")).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Unsubscribe" })).toBeNull();
+  });
+
+  it("no method, no Unsubscribe", async () => {
+    const slot = render(folderRpc({ unsubscribe_info: () => unsubInfo({ methods: { oneClick: null, mailto: null } }) }));
+    await openA(slot);
+    await waitFor(() => expect(callsTo(slot, "unsubscribe_info")).toHaveLength(1));
+    expect(slot.queryByRole("button", { name: "Unsubscribe" })).toBeNull();
+  });
+
+  it("one click confirms first, sends a fresh requestId each time, then offers Archive all from this list", async () => {
+    let asked = false;
+    const slot = render(
+      folderRpc({
+        unsubscribe_info: () => unsubInfo(asked ? { already: { state: "done", at: "2026-11-15T10:00:00.000Z" } } : {}),
+        unsubscribe_run: () => {
+          asked = true;
+          return { outcome: "done", reason: null, outboxId: null };
+        },
+        unsubscribe_archive: () => ({
+          groups: [{ accountId: "acc-1", folder: "INBOX", queued: 3, destination: "Archive", error: null }],
+          undoable: true,
+        }),
+      }),
+    );
+    await openA(slot);
+    expect(callsTo(slot, "unsubscribe_info")[0]?.input).toEqual({ messageId: "m-new" });
+    fireEvent.click(await slot.findByRole("button", { name: "Unsubscribe" }));
+    const dialog = within(await slot.findByRole("dialog"));
+    expect(dialog.getByText("One click to news.example.com")).toBeTruthy();
+    expect(dialog.getByText(/tells the sender this address is read/)).toBeTruthy();
+    expect(callsTo(slot, "unsubscribe_run")).toHaveLength(0);
+    fireEvent.click(dialog.getByRole("button", { name: "Unsubscribe" }));
+    await waitFor(() => expect(callsTo(slot, "unsubscribe_run")).toHaveLength(1));
+    const run = callsTo(slot, "unsubscribe_run")[0]!.input as { messageId: string; method: string; requestId: string };
+    expect(run).toMatchObject({ messageId: "m-new", method: "one_click" });
+    expect(run.requestId).toMatch(UUID_RE);
+    await waitFor(() => expect(toasts.success).toContain("Unsubscribed"));
+    expect(await slot.findByText(/^You asked to unsubscribe on /)).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Unsubscribe" })).toBeNull();
+    // Nothing was archived by itself.
+    expect(callsTo(slot, "unsubscribe_archive")).toHaveLength(0);
+    fireEvent.click(slot.getByRole("button", { name: "Archive all from this list" }));
+    await waitFor(() => expect(callsTo(slot, "unsubscribe_archive")).toHaveLength(1));
+    expect((callsTo(slot, "unsubscribe_archive")[0]!.input as { messageId: string; undoId: string })).toMatchObject({
+      messageId: "m-new",
+      undoId: expect.stringMatching(UUID_RE),
+    });
+    await waitFor(() => expect(undoToasts().at(-1)?.text).toBe("Archived 3 conversations"));
+  });
+
+  it("a failed one click names the reason and offers the email instead; the email queues with Undo", async () => {
+    let outcome: "failed" | "queued" = "failed";
+    const slot = render(
+      folderRpc({
+        unsubscribe_info: () => unsubInfo(),
+        unsubscribe_run: () =>
+          outcome === "failed"
+            ? { outcome: "failed", reason: "timeout", outboxId: null }
+            : { outcome: "queued", reason: null, outboxId: "out-u" },
+        outbox_list: () => ({ rows: [] }),
+        outbox_cancel: () => ({ cancelled: true, draftId: null }),
+      }),
+    );
+    await openA(slot);
+    fireEvent.click(await slot.findByRole("button", { name: "Unsubscribe" }));
+    fireEvent.click(within(await slot.findByRole("dialog")).getByRole("button", { name: "Unsubscribe" }));
+    await waitFor(() => expect(toasts.error).toContain("Could not unsubscribe: the list did not answer"));
+    const failed = toasts.log.find((t) => t.text === "Could not unsubscribe: the list did not answer")!;
+    expect(failed.options?.action?.label).toBe("Send an email instead");
+    outcome = "queued";
+    await act(async () => {
+      failed.options!.action!.onClick();
+    });
+    const dialog = within(await slot.findByRole("dialog"));
+    expect(dialog.getByText("An email from owner@example.org goes to leave@example.com.")).toBeTruthy();
+    fireEvent.click(dialog.getByRole("button", { name: "Unsubscribe" }));
+    await waitFor(() => expect(callsTo(slot, "unsubscribe_run")).toHaveLength(2));
+    const [first, second] = callsTo(slot, "unsubscribe_run").map((c) => c.input as { method: string; requestId: string });
+    expect(second!.method).toBe("mailto");
+    expect(second!.requestId).not.toBe(first!.requestId);
+    await waitFor(() => expect(toasts.plain.some((t) => t.startsWith("Unsubscribe email queued · Sending in"))).toBe(true));
+    const queued = toasts.log.filter((t) => t.text.startsWith("Unsubscribe email queued")).at(-1)!;
+    expect(queued.options?.action?.label).toBe("Undo");
+    await act(async () => {
+      queued.options!.action!.onClick();
+    });
+    await waitFor(() => expect(callsTo(slot, "outbox_cancel")[0]?.input).toEqual({ id: "out-u" }));
+  });
+
+  it("b opens the snooze menu; a missing folder asks first, then the snooze runs again with Undo", async () => {
+    let hasFolder = false;
+    const slot = render(
+      folderRpc({
+        message_snooze: ({ messageIds }: { messageIds: string[] }) =>
+          hasFolder
+            ? {
+                groups: [{ accountId: "acc-1", folder: "INBOX", queued: messageIds.length, destination: "Snoozed", error: null }],
+                undoable: true,
+                needsFolder: [],
+              }
+            : { groups: [], undoable: false, needsFolder: [{ accountId: "acc-1", proposedName: "Snoozed" }] },
+        snooze_folder_create: () => {
+          hasFolder = true;
+          return { path: "Snoozed" };
+        },
+      }),
+    );
+    await openA(slot);
+    pageRoot(slot).focus();
+    press(pageRoot(slot), { key: "и", code: "KeyB" });
+    const menu = within(await slot.findByRole("dialog"));
+    fireEvent.click(menu.getByRole("button", { name: /^Tomorrow/ }));
+    await waitFor(() => expect(callsTo(slot, "message_snooze")).toHaveLength(1));
+    const first = callsTo(slot, "message_snooze")[0]!.input as { messageIds: string[]; folder: string; until: string; undoId: string };
+    expect(first).toMatchObject({ messageIds: ["m-old", "m-new"], folder: "INBOX" });
+    expect(Number.isNaN(Date.parse(first.until))).toBe(false);
+    expect(first.until.endsWith("Z")).toBe(true);
+    const ask = within(await slot.findByRole("dialog", { name: /Create a folder 'Snoozed' in owner@example.org/ }));
+    expect(callsTo(slot, "snooze_folder_create")).toHaveLength(0);
+    fireEvent.click(ask.getByRole("button", { name: "Create folder" }));
+    await waitFor(() => expect(callsTo(slot, "snooze_folder_create")[0]?.input).toEqual({ accountId: "acc-1" }));
+    await waitFor(() => expect(callsTo(slot, "message_snooze")).toHaveLength(2));
+    expect((callsTo(slot, "message_snooze")[1]!.input as { until: string }).until).toBe(first.until);
+    await waitFor(() => expect(undoToasts().at(-1)?.text).toMatch(/^Snoozed until /));
+    expect(undoToasts().at(-1)?.options?.action?.label).toBe("Undo");
+  });
+
+  it("Snooze is only in the Inbox toolbar", async () => {
+    const slot = render(folderRpc());
+    await openA(slot);
+    expect(toolbar(slot).getByRole("button", { name: "Snooze" })).toBeTruthy();
+    await openFolder(slot, /Alpha/);
+    await openA(slot);
+    expect(toolbar(slot).queryByRole("button", { name: "Snooze" })).toBeNull();
+  });
+
+  it("Block checks the sender, then adds the rule with Undo", async () => {
+    const slot = render(
+      folderRpc({
+        block_check: () => ({ address: "ada@example.org", domain: "example.org", sentToCount: 2, storedCount: { address: 1, domain: 5 } }),
+        block_add: () => ({
+          ruleId: "rule-1",
+          groups: [{ accountId: "acc-1", folder: "INBOX", queued: 1, destination: "Spam", error: null }],
+          undoable: true,
+        }),
+      }),
+    );
+    await openA(slot);
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "Block" }));
+    const dialog = within(await slot.findByRole("dialog"));
+    expect(await dialog.findByText("You have written to this sender 2 times.")).toBeTruthy();
+    expect(callsTo(slot, "block_check")[0]?.input).toEqual({ messageId: "m-new" });
+    fireEvent.click(dialog.getByRole("button", { name: "Block" }));
+    await waitFor(() => expect(callsTo(slot, "block_add")).toHaveLength(1));
+    expect(callsTo(slot, "block_add")[0]!.input).toMatchObject({
+      messageId: "m-new",
+      kind: "address",
+      moveExisting: true,
+      undoId: expect.stringMatching(UUID_RE),
+    });
+    await waitFor(() => expect(undoToasts().at(-1)?.text).toBe("Blocked · 1 conversation moved to Spam"));
+    expect(undoToasts().at(-1)?.options?.action?.label).toBe("Undo");
   });
 });

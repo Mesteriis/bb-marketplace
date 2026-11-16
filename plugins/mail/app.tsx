@@ -41,9 +41,10 @@ import type {
   StatusView,
   ThreadDetail,
 } from "./src/core/index.ts";
+import type { UnsubscribeInfoView } from "./src/core/model.ts";
 import { isRoleMoveAction, roleFolders } from "./src/core/actions.ts";
 // undo.ts imports only actions.ts: no zod reaches the bundle (checked on build).
-import { UNDO_TOAST_MS, undoResultText, undoToastText } from "./src/core/undo.ts";
+import { UNDO_TOAST_MS, undoResultText, undoToastText, type UndoAction } from "./src/core/undo.ts";
 import type { ComposerPorts, ComposeWarningKind } from "./src/ui/composer.tsx";
 import type { SmtpSettingsInput } from "./src/ui/smtp-dialog.tsx";
 import type { DetailsState } from "./src/ui/details-panel.tsx";
@@ -62,12 +63,13 @@ import {
   type AccountFormRequest,
   type ComposeKind,
   type ComposerState,
+  type MailInboxPorts,
   type ReadingState,
   type SearchState,
   type ThreadListState,
 } from "./src/ui/mail-page.tsx";
 import { outboxStateText, type OutboxAction } from "./src/ui/outbox.tsx";
-import type { BodyState } from "./src/ui/reading-pane.tsx";
+import { messageToHand, type BodyState } from "./src/ui/reading-pane.tsx";
 import { MailSidebar, type MailSidebarState } from "./src/ui/mail-sidebar.tsx";
 import {
   draftSubPath,
@@ -88,7 +90,15 @@ import {
 import { TranslationSettings } from "./src/ui/translation-settings.tsx";
 import { MailSettings, type SettingsSection, type TemplateView } from "./src/ui/mail-settings.tsx";
 import type { LanguageTag } from "./src/core/translate.ts";
-import { subjectOrPlaceholder } from "./src/ui/thread-list.tsx";
+import { filterActive, formatUntil, subjectOrPlaceholder, type ListFilter } from "./src/ui/thread-list.tsx";
+import {
+  preferredMethod,
+  UnsubscribeDialog,
+  unsubscribeFailureText,
+  type UnsubscribeMethod,
+} from "./src/ui/unsubscribe-dialog.tsx";
+import { SnoozeFolderDialog, type SnoozeFolderRequest } from "./src/ui/snooze-folder-dialog.tsx";
+import type { BlockChoice } from "./src/ui/block-dialog.tsx";
 
 // The channel name is checked against the core constant without importing it
 // at runtime: a value import of the core would bundle its zod schemas.
@@ -138,6 +148,14 @@ const NO_READING: ReadingState = {
   imageSenders: new Set(),
 };
 const NO_SELECTION: ReadonlySet<string> = new Set();
+const NO_FILTER: ListFilter = {};
+const REDIRECTED_TEXT = "The list answered with a redirect, so it may not have unsubscribed you";
+
+/** Undo of these moves mail back (the "Moving back…" toast waits for it). */
+function movesMail(action: UndoAction): boolean {
+  return action === "move" || action === "snooze" || action === "block" || action === "triage" ||
+    action === "spam" || action === "not_spam" || action === "archive" || action === "delete";
+}
 
 function messageOf(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
@@ -446,8 +464,20 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const searchAccount = unified ? null : (account?.id ?? null);
 
   // Latest values for callbacks that outlive a render (realtime, async results).
-  const latest = useRef({ scopeKey, searchAccount, unified, view, folders, list, search, reading, selection, subPath });
-  latest.current = { scopeKey, searchAccount, unified, view, folders, list, search, reading, selection, subPath };
+  const latest = useRef({
+    scopeKey,
+    searchAccount,
+    unified,
+    view,
+    folders,
+    list,
+    search,
+    reading,
+    selection,
+    subPath,
+    unsubscribe: null as { messageId: string; info: UnsubscribeInfoView } | null,
+  });
+  latest.current = { ...latest.current, scopeKey, searchAccount, unified, view, folders, list, search, reading, selection, subPath };
   /** Messages this page already marked opened, so message_open runs once each. */
   const opened = useRef(new Set<string>());
   /** The account of the conversation open in the reading pane. */
@@ -473,6 +503,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const flagIntents = useRef(new Map<string, boolean>());
   const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusLoaded = useRef(false);
+  /** The quick filters per view while the page is open (slice 3e); a reload clears them. */
+  const filtersRef = useRef(new Map<string, ListFilter>());
+  const [, setFilterVersion] = useState(0);
 
   /** A failed first load replaces the page; a failed refresh keeps the mailbox and toasts. */
   const loadStatus = useCallback(async () => {
@@ -507,7 +540,15 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         let cursor = mode === "more" ? current.nextCursor : null;
         do {
           const limit = Math.min(wanted - threads.length, MAX_PAGE);
-          const page = await rpc.call("threads_list", { scope: scopeOf(forView), cursor, limit });
+          const flags = filtersRef.current.get(viewKey(forView)) ?? NO_FILTER;
+          const keep = openThreadId.current;
+          const filter = filterActive(flags) ? { ...flags, ...(keep !== null ? { keep } : {}) } : undefined;
+          const page = await rpc.call("threads_list", {
+            scope: scopeOf(forView),
+            cursor,
+            limit,
+            ...(filter !== undefined ? { filter } : {}),
+          });
           if (token !== requests.current.list) return;
           threads.push(...page.threads);
           cursor = page.nextCursor;
@@ -986,8 +1027,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
 
   /** After an undoable action: the page's last id, and the toast with Undo when one is due. */
   const recordUndo = useCallback(
-    (undoId: string, action: MessageAction, count: number, destinationName: string | null, toastIt: boolean) => {
-      const moving = isRoleMoveAction(action) || action === "move";
+    (undoId: string, action: UndoAction, count: number, destinationName: string | null, toastIt: boolean) => {
+      const moving = movesMail(action);
       lastUndo.current = { id: undoId, moving };
       if (!toastIt) return;
       toast(undoToastText(action, count, destinationName), {
@@ -1517,10 +1558,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
 
   /** "Sending in N s · Undo" for a queued send, on every queued event. */
   const showUndo = useCallback(
-    (outboxId: string, sendAfter: string | null, origin: OutboxRow["origin"] = "owner") => {
+    (outboxId: string, sendAfter: string | null, origin: OutboxRow["origin"] = "owner", purpose: OutboxRow["purpose"] = null) => {
       const due = sendAfter === null ? NaN : Date.parse(sendAfter);
       const left = Number.isNaN(due) ? UNDO_WINDOW_MS : Math.max(0, due - Date.now());
-      const label = origin === "agent" ? "Agent message · " : "";
+      const label = purpose === "unsubscribe" ? "Unsubscribe email queued · " : origin === "agent" ? "Agent message · " : "";
       toast(`${label}Sending in ${Math.max(1, Math.ceil(left / 1000))} s`, {
         id: sendToastId(outboxId),
         duration: left + 2_000,
@@ -1536,7 +1577,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     if (!status?.vaultReady || outboxChecked.current) return;
     outboxChecked.current = true;
     void loadOutbox().then((rows) => {
-      for (const row of rows ?? []) if (row.state === "queued") showUndo(row.id, row.sendAfter, row.origin);
+      for (const row of rows ?? []) if (row.state === "queued") showUndo(row.id, row.sendAfter, row.origin, row.purpose);
     });
   }, [loadOutbox, showUndo, status?.vaultReady]);
 
@@ -1554,7 +1595,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         const row = rows?.find((r) => r.id === event.id) ?? null;
         switch (event.state) {
           case "queued":
-            showUndo(event.id, row?.sendAfter ?? null, row?.origin);
+            showUndo(event.id, row?.sendAfter ?? null, row?.origin, row?.purpose);
             break;
           case "sending":
           case "cancelled":
@@ -1641,6 +1682,298 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       }
     },
     [loadStatus, rpc],
+  );
+
+  // ---- Inbox triage on the page (slice 3e): filters, unsubscribe, snooze, block ----
+
+  const listFilter = filtersRef.current.get(currentViewKey) ?? NO_FILTER;
+  /** A toggle: the view keeps it while the page is open, and the list starts again. */
+  const setListFilter = useCallback(
+    (next: ListFilter) => {
+      const key = viewKey(latest.current.view);
+      const filters = new Map(filtersRef.current);
+      if (filterActive(next)) filters.set(key, next);
+      else filters.delete(key);
+      filtersRef.current = filters;
+      setFilterVersion((n) => n + 1);
+      setSelection(NO_SELECTION);
+      if (latest.current.scopeKey !== null) void loadList(latest.current.view, "reset");
+    },
+    [loadList],
+  );
+
+  /** unsubscribe_info of the open conversation's newest message, once per message. */
+  const [unsubscribe, setUnsubscribe] = useState<{ messageId: string; info: UnsubscribeInfoView } | null>(null);
+  const unsubscribeToken = useRef(0);
+  const loadUnsubscribe = useCallback(
+    async (messageId: string) => {
+      const token = ++unsubscribeToken.current;
+      try {
+        const info = await rpc.call("unsubscribe_info", { messageId });
+        if (token === unsubscribeToken.current) setUnsubscribe({ messageId, info });
+      } catch {
+        // Nothing is offered for a message the server cannot answer for.
+        if (token === unsubscribeToken.current) setUnsubscribe(null);
+      }
+    },
+    [rpc],
+  );
+  const handedId =
+    reading.detail === null ? null : (messageToHand(reading.detail.messages, reading.expandedIds)?.id ?? null);
+  useEffect(() => {
+    if (handedId === null) {
+      unsubscribeToken.current++;
+      setUnsubscribe(null);
+      return;
+    }
+    void loadUnsubscribe(handedId);
+  }, [handedId, loadUnsubscribe]);
+
+  const [unsubscribeAsk, setUnsubscribeAsk] = useState<{
+    message: MessageHeader;
+    info: UnsubscribeInfoView;
+    method: UnsubscribeMethod;
+  } | null>(null);
+  const askUnsubscribe = useCallback(
+    (message: MessageHeader, method?: UnsubscribeMethod) => {
+      const loaded = latest.current.unsubscribe;
+      if (loaded === null || loaded.messageId !== message.id) return;
+      const chosen = method ?? preferredMethod(loaded.info);
+      if (chosen !== null) setUnsubscribeAsk({ message, info: loaded.info, method: chosen });
+    },
+    [],
+  );
+
+  /** The confirmed request, a fresh requestId each time; the result as a toast. */
+  const runUnsubscribe = useCallback(
+    async (message: MessageHeader, info: UnsubscribeInfoView, method: UnsubscribeMethod) => {
+      const viaEmail =
+        method === "one_click" && info.methods.mailto !== null
+          ? { label: "Send an email instead", onClick: () => askUnsubscribe(message, "mailto") }
+          : undefined;
+      try {
+        const result = await rpc.call("unsubscribe_run", {
+          messageId: message.id,
+          method,
+          requestId: crypto.randomUUID(),
+        });
+        switch (result.outcome) {
+          case "done":
+            toast.success("Unsubscribed");
+            break;
+          case "redirected":
+            toast(REDIRECTED_TEXT, viaEmail !== undefined ? { action: viaEmail } : undefined);
+            break;
+          case "failed":
+            toast.error(
+              `Could not unsubscribe: ${unsubscribeFailureText(result.reason)}`,
+              viaEmail !== undefined ? { action: viaEmail } : undefined,
+            );
+            break;
+          case "queued":
+            if (result.outboxId !== null) showUndo(result.outboxId, null, "owner", "unsubscribe");
+            void loadOutbox();
+            break;
+        }
+      } catch (error) {
+        toast.error(messageOf(error));
+      }
+      if (latest.current.unsubscribe?.messageId === message.id) void loadUnsubscribe(message.id);
+    },
+    [askUnsubscribe, loadOutbox, loadUnsubscribe, rpc, showUndo],
+  );
+
+  /** Sums a call's groups: one toast per distinct error, and what was queued. */
+  const groupsOutcome = (groups: readonly { queued: number; error: string | null }[]) => {
+    for (const error of new Set(groups.map((g) => g.error).filter((e): e is string => e !== null))) toast.error(error);
+    return groups.reduce((sum, g) => sum + (g.error === null ? g.queued : 0), 0);
+  };
+
+  const archiveList = useCallback(
+    async (message: MessageHeader) => {
+      const undoId = crypto.randomUUID();
+      try {
+        const { groups, undoable } = await rpc.call("unsubscribe_archive", { messageId: message.id, undoId });
+        const queued = groupsOutcome(groups);
+        if (queued === 0) {
+          if (groups.every((g) => g.error === null)) toast("Nothing from this list is left in the Inbox");
+          return;
+        }
+        if (undoable) recordUndo(undoId, "archive", queued, null, true);
+        else toast.success(`Archived ${plural(queued, "message", "messages")}`);
+        refreshAfterChange();
+      } catch (error) {
+        toast.error(messageOf(error));
+      }
+    },
+    [recordUndo, refreshAfterChange, rpc],
+  );
+
+  /** The snooze folder question, one account at a time; then the snooze runs again for those. */
+  const [folderAsk, setFolderAsk] = useState<{
+    pending: { accountId: string; proposedName: string }[];
+    threadIds: string[];
+    until: string;
+  } | null>(null);
+  const [askFolders, setAskFolders] = useState<Folder[] | null>(null);
+  const askAccountId = folderAsk?.pending[0]?.accountId ?? null;
+  useEffect(() => {
+    setAskFolders(null);
+    if (askAccountId === null) return;
+    let live = true;
+    rpc.call("folders_list", { accountId: askAccountId }).then(
+      ({ folders: listed }) => {
+        if (live) setAskFolders(listed);
+      },
+      () => {
+        if (live) setAskFolders([]);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [askAccountId, rpc]);
+
+  const snoozeThreads = useCallback(
+    async (threadIds: string[], until: string) => {
+      if (threadIds.length === 0 || pendingRef.current) return;
+      pendingRef.current = true;
+      setActionPending(true);
+      const snapshot = latest.current.reading;
+      const ctx: ViewContext = { view: latest.current.view, folders: latest.current.folders };
+      try {
+        const collected = await collect(threadIds, snapshot, ctx);
+        for (const error of new Set(collected.failures.values())) toast.error(error);
+        const items = collected.items;
+        if (items.length === 0) return;
+        const undoId = crypto.randomUUID();
+        const done = new Set<string>();
+        const needs = new Map<string, string>();
+        let undoable = false;
+        for (let start = 0; start < items.length; start += ACTION_CHUNK) {
+          const chunk = items.slice(start, start + ACTION_CHUNK);
+          try {
+            const result = await rpc.call("message_snooze", {
+              messageIds: chunk.map((item) => item.id),
+              ...sourceOf(ctx.view),
+              until,
+              undoId,
+            });
+            if (result.undoable) undoable = true;
+            groupsOutcome(result.groups);
+            for (const group of result.groups) {
+              if (group.error !== null || group.queued === 0) continue;
+              for (const item of chunk) {
+                if (item.accountId === group.accountId && item.folder === group.folder) done.add(item.threadId);
+              }
+            }
+            for (const entry of result.needsFolder) needs.set(entry.accountId, entry.proposedName);
+          } catch (error) {
+            toast.error(messageOf(error));
+          }
+        }
+        if (done.size > 0) {
+          if (undoable) recordUndo(undoId, "snooze", done.size, formatUntil(until), true);
+          else toast.success(undoToastText("snooze", done.size, formatUntil(until)));
+          setSelection((prev) => ([...prev].some((id) => done.has(id)) ? new Set([...prev].filter((id) => !done.has(id))) : prev));
+          setList((prev) => ({ ...prev, threads: prev.threads.filter((t) => !done.has(t.id)) }));
+          const open = latest.current.reading.threadId;
+          if (open !== null && done.has(open)) closeThread();
+          refreshAfterChange();
+        }
+        if (needs.size > 0) {
+          const waiting = [...new Set(items.filter((item) => needs.has(item.accountId)).map((item) => item.threadId))];
+          setFolderAsk({
+            pending: [...needs].map(([accountId, proposedName]) => ({ accountId, proposedName })),
+            threadIds: waiting,
+            until,
+          });
+        }
+      } finally {
+        pendingRef.current = false;
+        setActionPending(false);
+      }
+    },
+    [closeThread, collect, recordUndo, refreshAfterChange, rpc],
+  );
+
+  /** One account's folder is settled: the next account, or the snooze again. */
+  const folderSettled = useCallback(() => {
+    const ask = folderAsk;
+    if (ask === null) return;
+    const rest = ask.pending.slice(1);
+    const key = latest.current.scopeKey;
+    if (key !== null) void loadFolders(key);
+    if (rest.length > 0) {
+      setFolderAsk({ ...ask, pending: rest });
+      return;
+    }
+    setFolderAsk(null);
+    void snoozeThreads(ask.threadIds, ask.until);
+  }, [folderAsk, loadFolders, snoozeThreads]);
+
+  const folderRequest: SnoozeFolderRequest | null =
+    folderAsk === null || folderAsk.pending[0] === undefined
+      ? null
+      : {
+          accountId: folderAsk.pending[0].accountId,
+          accountLabel: accounts.find((a) => a.id === folderAsk.pending[0]!.accountId)?.email ?? "this account",
+          proposedName: folderAsk.pending[0].proposedName,
+          current: null,
+        };
+
+  const returnNow = useCallback(
+    async (threadId: string) => {
+      const detail = latest.current.reading.detail;
+      if (detail === null || detail.thread.id !== threadId) return;
+      try {
+        const { ok } = await rpc.call("message_unsnooze", { messageIds: detail.messages.map((m) => m.id) });
+        toast(ok ? "Coming back to the Inbox" : "Nothing here is snoozed any more");
+        refreshAfterChange();
+      } catch (error) {
+        toast.error(messageOf(error));
+      }
+    },
+    [refreshAfterChange, rpc],
+  );
+
+  const blockSender = useCallback(
+    async (messageId: string, choice: BlockChoice) => {
+      const undoId = crypto.randomUUID();
+      try {
+        const { groups, undoable } = await rpc.call("block_add", {
+          messageId,
+          kind: choice.kind,
+          moveExisting: choice.moveExisting,
+          undoId,
+        });
+        const moved = groupsOutcome(groups);
+        if (undoable) recordUndo(undoId, "block", moved, null, true);
+        else toast.success(undoToastText("block", moved, null));
+        if (moved > 0) {
+          const open = latest.current.reading;
+          if (open.detail?.messages.some((m) => m.id === messageId) === true) closeThread();
+          refreshAfterChange();
+        }
+      } catch (error) {
+        toast.error(messageOf(error));
+      }
+    },
+    [closeThread, recordUndo, refreshAfterChange, rpc],
+  );
+
+  latest.current.unsubscribe = unsubscribe;
+  const inboxPorts = useMemo<MailInboxPorts>(
+    () => ({
+      unsubscribe,
+      onUnsubscribe: (message) => askUnsubscribe(message),
+      onArchiveList: (message) => void archiveList(message),
+      onSnooze: (threadIds, until) => void snoozeThreads(threadIds, until),
+      onReturnNow: (threadId) => void returnNow(threadId),
+      loadBlockCheck: (messageId) => rpc.call("block_check", { messageId }),
+      onBlock: (messageId, choice) => void blockSender(messageId, choice),
+    }),
+    [archiveList, askUnsubscribe, blockSender, returnNow, rpc, snoozeThreads, unsubscribe],
   );
 
   // ---- Translation (slice 3c) ----
@@ -2043,6 +2376,32 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       templates={templates}
       onManageTemplates={() => openSettings("templates")}
       onUndo={() => void undo(lastUndo.current?.id ?? null, lastUndo.current?.moving ?? false)}
+      listFilter={listFilter}
+      onListFilter={setListFilter}
+      inbox={inboxPorts}
+    />
+    <UnsubscribeDialog
+      request={unsubscribeAsk === null ? null : { info: unsubscribeAsk.info, method: unsubscribeAsk.method }}
+      fromAddress={accounts.find((a) => a.id === unsubscribeAsk?.message.accountId)?.email ?? "your address"}
+      onConfirm={(method) => {
+        const ask = unsubscribeAsk;
+        setUnsubscribeAsk(null);
+        if (ask !== null) void runUnsubscribe(ask.message, ask.info, method);
+      }}
+      onCancel={() => setUnsubscribeAsk(null)}
+    />
+    <SnoozeFolderDialog
+      request={folderRequest}
+      folders={askFolders}
+      onCreate={async (accountId) => {
+        await rpc.call("snooze_folder_create", { accountId });
+        folderSettled();
+      }}
+      onUse={async (accountId, path) => {
+        await rpc.call("snooze_folder_use", { accountId, path });
+        folderSettled();
+      }}
+      onCancel={() => setFolderAsk(null)}
     />
     <TranslationSettings
       open={translateSettingsOpen}

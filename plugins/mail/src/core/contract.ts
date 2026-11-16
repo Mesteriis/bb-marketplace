@@ -563,6 +563,14 @@ export const rpcSchemas = {
       outboxId: z.string().nullable(),
     }),
   },
+  /**
+   * "Archive all from this list": an ordinary archive of the stored Inbox
+   * rows of the message's account that carry the same list (never automatic).
+   */
+  unsubscribe_archive: {
+    input: z.object({ messageId: idInput, undoId: z.uuid().optional() }),
+    output: z.object({ groups: z.array(actionGroupSchema), undoable: z.boolean() }),
+  },
   /** Moves Inbox mail to the account's snooze folder until `until`; `needsFolder` when it has none. */
   message_snooze: {
     input: z

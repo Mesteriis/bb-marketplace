@@ -80,11 +80,12 @@ const SLICE_3D_METHODS = [
   "action_undo",
 ] as const;
 
-/** The 13 owner-only methods slice 3e adds. */
+/** The 14 owner-only methods slice 3e adds. */
 const SLICE_3E_METHODS = [
   "new_mail_get",
   "unsubscribe_info",
   "unsubscribe_run",
+  "unsubscribe_archive",
   "message_snooze",
   "message_unsnooze",
   "snooze_folder_create",
@@ -1147,9 +1148,9 @@ describe("slice-3e contract", () => {
   const HASH = "a".repeat(64);
   const UNTIL = "2026-11-16T08:00:00.000Z";
 
-  it("adds exactly 13 methods to the 55 before it", () => {
-    expect(SLICE_3E_METHODS).toHaveLength(13);
-    expect(Object.keys(rpcSchemas)).toHaveLength(68);
+  it("adds exactly 14 methods to the 55 before it", () => {
+    expect(SLICE_3E_METHODS).toHaveLength(14);
+    expect(Object.keys(rpcSchemas)).toHaveLength(69);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
     expect(SLICE_3D_METHODS).toHaveLength(11);
@@ -1159,6 +1160,7 @@ describe("slice-3e contract", () => {
     const idInputs: [keyof typeof rpcSchemas, Record<string, unknown>, string][] = [
       ["unsubscribe_info", {}, "messageId"],
       ["unsubscribe_run", { method: "mailto", requestId: UUID }, "messageId"],
+      ["unsubscribe_archive", {}, "messageId"],
       ["message_snooze", { messageIds: ["m"], until: UNTIL }, "folder"],
       ["snooze_folder_create", {}, "accountId"],
       ["snooze_folder_use", { path: "Snoozed" }, "accountId"],

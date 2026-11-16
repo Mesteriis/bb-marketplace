@@ -28,6 +28,7 @@ export type ShortcutCommand =
   | { kind: "forward" }
   | { kind: "translate" }
   | { kind: "undo" }
+  | { kind: "snooze" }
   | { kind: "go"; target: GoTarget };
 
 /** How long `g` waits for its second key. */
@@ -159,6 +160,9 @@ function matchKey(event: KeyLike, afterG: boolean): KeyMatch {
     // z alone: undo the last action (Mod+Z stays the editor's).
     case "KeyZ":
       return { kind: "undo" };
+    // b: snooze (slice 3e), as in Gmail.
+    case "KeyB":
+      return { kind: "snooze" };
     case "KeyG":
       return { kind: "g" };
     default:
@@ -251,6 +255,7 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
       { keys: ["Shift", "u"], label: "Mark unread" },
       { keys: ["Shift", "i"], label: "Mark read" },
       { keys: ["v"], label: "Move to…" },
+      { keys: ["b"], label: "Snooze" },
       { keys: ["t"], label: "Translate, or show the original" },
       { keys: ["z"], label: "Undo the last action" },
     ],

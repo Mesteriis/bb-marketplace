@@ -13,12 +13,14 @@ import type {
   SpecialUse,
   ThreadDetail,
 } from "../core/index.ts";
+import type { UnsubscribeInfoView } from "../core/model.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { LoadingState } from "./empty-states.tsx";
 import { MessageFrame } from "./message-frame.tsx";
-import { addressLabel, formatFullDate, subjectOrPlaceholder } from "./thread-list.tsx";
+import { addressLabel, formatFullDate, formatUntil, subjectOrPlaceholder } from "./thread-list.tsx";
+import { UNSUBSCRIBE_HIDDEN_HINT, preferredMethod } from "./unsubscribe-dialog.tsx";
 
 export type BodyState =
   | { status: "loading" }
@@ -71,6 +73,30 @@ export interface ReadingPaneProps {
   hideToolbar?: boolean;
   /** Translate in the toolbar and the translation block; absent: no Translate. */
   translation?: ReadingTranslation;
+  /** Unsubscribe, Snooze and Block (slice 3e); absent: none of them. */
+  inbox?: ReadingInbox;
+}
+
+/** The reading pane's part of inbox triage (slice 3e). */
+export interface ReadingInbox {
+  /** unsubscribe_info of the newest message; null while unknown or for none. */
+  unsubscribe: UnsubscribeInfoView | null;
+  onUnsubscribe: () => void;
+  /** "Archive all from this list" after an unsubscribe request. */
+  onArchiveList: () => void;
+  onSnooze: () => void;
+  onBlock: (message: MessageHeader) => void;
+  /** "Return now" for a snoozed conversation. */
+  onReturnNow: () => void;
+}
+
+/** An earlier request that still stands: Unsubscribe is not offered again. */
+const SETTLED_UNSUBSCRIBE = new Set(["done", "queued", "sent"]);
+
+function formatDay(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
 /** The reading pane's part of translation (slice 3c). */
@@ -388,6 +414,16 @@ export function ReadingPane(props: ReadingPaneProps) {
   const inFolder = messages.some(props.inView);
   const handed = messageToHand(messages, expandedIds);
   const handedDraft = handed !== null && props.isDraft(handed);
+  const inbox = props.inbox;
+  // Block takes the sender of a received message: not in Sent or Drafts, not a draft.
+  const blockable =
+    handed !== null && !handedDraft && folderUse !== "sent" && folderUse !== "drafts" && handed.from.address.trim() !== ""
+      ? handed
+      : null;
+  const unsubscribe = inbox?.unsubscribe ?? null;
+  const already = unsubscribe?.already ?? null;
+  const canUnsubscribe =
+    preferredMethod(unsubscribe) !== null && (already === null || !SETTLED_UNSUBSCRIBE.has(already.state));
   return (
     <div className="box-border flex w-full min-w-0 flex-col gap-3 px-4 pb-6 pt-2">
       {props.hideToolbar !== true ? (
@@ -458,7 +494,19 @@ export function ReadingPane(props: ReadingPaneProps) {
               <Icon name="Mail" aria-hidden />
               Mark unread
             </Button>
+            {inbox !== undefined && folderUse === "inbox" ? (
+              <Button variant="ghost" size="sm" disabled={props.actionPending} onClick={inbox.onSnooze}>
+                <Icon name="Clock" fallback="Info" aria-hidden />
+                Snooze
+              </Button>
+            ) : null}
           </>
+        ) : null}
+        {inbox !== undefined && blockable !== null ? (
+          <Button variant="ghost" size="sm" disabled={props.actionPending} onClick={() => inbox.onBlock(blockable)}>
+            <Icon name="Ban" fallback="AlertTriangle" aria-hidden />
+            Block
+          </Button>
         ) : null}
         <span className="flex-1" />
         {handed !== null ? (
@@ -470,12 +518,39 @@ export function ReadingPane(props: ReadingPaneProps) {
       </div>
       ) : null}
       <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-foreground">
-          {subjectOrPlaceholder(thread.subject)}
-        </h2>
+        <div className="flex flex-wrap items-start gap-2">
+          <h2 className="min-w-0 flex-1 text-lg font-semibold text-foreground">
+            {subjectOrPlaceholder(thread.subject)}
+          </h2>
+          {inbox !== undefined && canUnsubscribe ? (
+            <Button variant="outline" size="sm" className="h-7 shrink-0 px-2" onClick={inbox.onUnsubscribe}>
+              Unsubscribe
+            </Button>
+          ) : null}
+        </div>
         <p className="text-xs text-muted-foreground">
           {messages.length === 1 ? "1 message" : `${messages.length} messages`}
         </p>
+        {inbox !== undefined && thread.snoozedUntil !== null ? (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <Icon name="Clock" fallback="Info" className="size-3.5" aria-hidden />
+            <span>Snoozed until {formatUntil(thread.snoozedUntil)}</span>
+            <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={inbox.onReturnNow}>
+              Return now
+            </Button>
+          </div>
+        ) : null}
+        {inbox !== undefined && already !== null ? (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span>You asked to unsubscribe on {formatDay(already.at)}</span>
+            <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={inbox.onArchiveList}>
+              Archive all from this list
+            </Button>
+          </div>
+        ) : null}
+        {inbox !== undefined && unsubscribe !== null && unsubscribe.hidden && unsubscribe.listName !== null ? (
+          <p className="text-xs text-muted-foreground">{UNSUBSCRIBE_HIDDEN_HINT}</p>
+        ) : null}
       </div>
       {messages.map((message) => {
         const sender = message.from.address.trim().toLowerCase();
