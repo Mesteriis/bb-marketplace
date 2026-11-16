@@ -28,6 +28,7 @@ import {
   NO_THREAD_MESSAGE,
 } from "./server.ts";
 import { BB_REFUSAL_TEXT } from "./src/core/contract.ts";
+import { BB_PATH_REFUSED_TEXT } from "./src/adapters/bb/bb-rpc.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
 import { createAccountQueue } from "./src/adapters/bb/account-queue.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
@@ -6479,9 +6480,20 @@ describe("slice 3g: BB files as draft attachments", () => {
     await expect(call(host, "compose_attach_bb", { draftId, source: { kind: "project", projectId: "api", path: ".git/config" } })).rejects.toThrow(
       "Files under .git",
     );
-    await expect(call(host, "compose_attach_bb", { draftId, source: { kind: "thread", bbThreadId: "bb_t1", path: "../other/x.txt" } })).rejects.toThrow(
-      "BB refused the request",
-    );
+    // Climbing, absolute and backslash paths are refused by Mail itself, before any BB call (review).
+    const contentCalls = sdkCalls(host, "projects.fileContent").length;
+    for (const path of ["../other/x.txt", "docs/../../x.txt", "/etc/hosts", "C:/x.txt", "docs\\x.txt"]) {
+      await expect(call(host, "compose_attach_bb", { draftId, source: { kind: "project", projectId: "api", path } }), path).rejects.toThrow(
+        BB_PATH_REFUSED_TEXT,
+      );
+    }
+    for (const path of ["../other/x.txt", "a/../../x.txt", "a\\b.txt"]) {
+      await expect(call(host, "compose_attach_bb", { draftId, source: { kind: "thread", bbThreadId: "bb_t1", path } }), path).rejects.toThrow(
+        BB_PATH_REFUSED_TEXT,
+      );
+    }
+    expect(sdkCalls(host, "projects.fileContent")).toHaveLength(contentCalls);
+    expect(sdkCalls(host, "threads.storageLocation")).toEqual([]);
     expect(sdkCalls(host, "files.read")).toEqual([]);
     host.harness.sdk.stub("files.read", async (args: { path: string }) => ({ content: "aGk=", contentEncoding: "base64", path: args.path, sha256: "f".repeat(64), sizeBytes: 2 }));
     await expect(call(host, "compose_attach_bb", { draftId, source: { kind: "thread", bbThreadId: "bb_t1", path: "out.txt" } })).resolves.toMatchObject({

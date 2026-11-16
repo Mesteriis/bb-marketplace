@@ -129,6 +129,20 @@ export const SAVE_TOO_LARGE_TEXT = "More than 100 MB in one save";
 export const NAME_TAKEN_TEXT = "Too many files with this name in the folder";
 export const UNKNOWN_ATTACHMENT_TEXT = "Unknown attachment";
 export const GIT_FILE_TEXT = "Files under .git are not offered";
+export const BB_PATH_REFUSED_TEXT = "This path climbs out of the folder, is absolute or holds a backslash";
+
+/**
+ * Mail's own check of a path the page sends for compose_attach_bb (review),
+ * before any BB call: no backslash, no ".." segment, and for a project file
+ * nothing absolute (a thread storage path may be absolute; the adapter keeps
+ * it inside the thread's storage root).
+ */
+function plainBbPath(path: string, allowAbsolute: boolean): boolean {
+  if (path.includes("\\")) return false;
+  if (path.split("/").some((segment) => segment === "..")) return false;
+  if (!allowAbsolute && (path.startsWith("/") || /^[A-Za-z]:/.test(path))) return false;
+  return true;
+}
 export const DRAFT_ROOM_TEXT = "The draft has no room for this file";
 export const NO_PATCH_TEXT = "This email holds no patch";
 export const PATCH_TOO_LARGE_TEXT = "The patch is larger than 1 MB";
@@ -1122,6 +1136,7 @@ export function createBbRpc(deps: BbRpcDeps) {
     const draft = deps.ownerDraft(input.draftId);
     if (isQueued(store, draft)) throw new ComposeError("queued");
     const path = input.source.path;
+    if (!plainBbPath(path, input.source.kind === "thread")) throw refuse("invalid", BB_PATH_REFUSED_TEXT);
     if (underGit(path)) throw refuse("invalid", GIT_FILE_TEXT);
     const fileName = sanitizeFileName(baseName(path), "attachment");
     if (sensitiveName(fileName) && input.confirmed !== true) throw refuse("conflict", BB_REFUSAL_TEXT.confirm_needed);
