@@ -906,3 +906,18 @@ export const DAY_NOTICE_CHANNEL = "mail-day";
 /** Payload on DAY_NOTICE_CHANNEL: a token, nothing else. */
 export const dayNoticePayloadSchema = z.strictObject({ token: dayNoticeToken });
 export type DayNoticePayload = z.infer<typeof dayNoticePayloadSchema>;
+
+// ---- Page-side types of the 3f methods (type-only for src/ui: no zod reaches the bundle) ----
+
+/** What ai_start takes. */
+export type AiStartInput = z.input<typeof aiStartInput>;
+/** What ai_start answers. */
+export type AiStartOutput = z.output<(typeof rpcSchemas)["ai_start"]["output"]>;
+/** What ai_poll answers. */
+export type AiPollOutput = z.output<(typeof rpcSchemas)["ai_poll"]["output"]>;
+/** What today_get answers. */
+export type TodayView = z.output<(typeof rpcSchemas)["today_get"]["output"]>;
+/** What day_notice_get answers. */
+export type DayNotice = z.output<(typeof rpcSchemas)["day_notice_get"]["output"]>;
+/** What ai_scope_set takes. */
+export type AiScopeInput = z.input<(typeof rpcSchemas)["ai_scope_set"]["input"]>;
