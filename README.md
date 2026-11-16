@@ -1,91 +1,140 @@
-# BB Marketplace
+# Mesteriis · BB Marketplace
 
-Personal BB marketplace maintained by [Mesteriis](https://github.com/Mesteriis). Independent plugins retain their upstream identity and licenses. Makosh packages remain a separate family inside this collection.
+A personal [BB](https://github.com/get-bb/bb) plugin collection for development, browsers, terminals, tasks, notes and communication. Independent plugins retain their authors, branding and licenses. Makosh packages are a separate family in the same collection.
 
-See [subtree maintenance](docs/subtree-maintenance.md) and [subtrees.json](subtrees.json).
-
-Plugins of the Makosh family for [BB](https://github.com/get-bb/bb), the agent
-IDE. They bring personal communication into the IDE: you read and answer it
-beside your threads, agents get scoped access to it, and a message can become
-the start of an agent's work.
-
-[Русская версия](README.ru.md)
-
-> **Status: pre-release.** The first plugin reads and sends IMAP mail as an
-> experimental slice: it marks, flags and moves mail only when you click or
-> press a key, and sends only what you write, after a 10-second Undo. No
-> release tag exists yet, and nothing is listed in the BB Community
-> marketplace.
-
-## Plugins
-
-| Plugin | Id | What it does today |
-| --- | --- | --- |
-| [Makosh Mail](plugins/mail) | `makosh-mail` | Reads every folder of iCloud, Gmail and other IMAP accounts on a **Mail** page, with an All accounts view, search, read state and flags synced with the server, multi-select with Spam / Archive / Delete / Move to… on your click, .eml and attachment downloads, hotkeys and opt-in agent tools. Composes, replies and forwards with drafts on the server, sends over SMTP with a 10-second Undo and an Outbox. Sending addresses (aliases) with signatures, templates, advisory checks before sending, and Undo (or `z`) for the last move or flag change. Translates a message through Makosh AI. Agents can propose an email; it is sent only when you press Send on its card (off by default). New mail within seconds with toasts for people you write to, Unsubscribe that asks first, Snooze (`b`), Block rules that move mail to Spam, and Unread / Flagged / Attachments filters. With `agentTriage` on, an agent can propose inbox actions; only the ones you tick on its card run. On your click, through Makosh AI: Summarize with cited messages, Ask your mail, Find tasks for a local Tasks list, local categories, a Today view, reply reminders and Improve for your draft behind a diff. Codes, passwords and tokens are hidden before any agent or model sees mail, AI access limits what they read, and Agent activity logs what they did. |
-| [Makosh Taskboard](plugins/taskboard/README.md) | `makosh-taskboard` | Persistent local tasks and Jira Cloud / Server / Data Center connections, List and Kanban, filters, descriptions and workflow transitions. |
+[Русский](README.ru.md) · [BB catalog](marketplace.json) · [Fork registry](subtrees.json) · [Maintenance](docs/subtree-maintenance.md)
 
 ## Install
 
-You need BB 0.49 or later.
-
-From a clone:
-
-```sh
-git clone https://github.com/Mesteriis/bb-marketplace.git
-cd bb-marketplace/plugins/mail
-npm install
-bb plugin install .
-```
-
-
-Or through this marketplace:
-
 ```sh
 bb marketplace add git:github.com/Mesteriis/bb-marketplace@main
-bb plugin install makosh-mail@mesteriis
+bb plugin search unified-inbox
+bb plugin install unified-inbox@mesteriis
 ```
 
-BB plugins run with full trust. Read what you install.
+The marketplace ID is **mesteriis** and the catalog tracks `main`. Adding it does not install plugins or change existing installations. Read each package's README for its platform, services and account requirements. Credentials and user data are configured separately and are not included here.
 
-## Repository layout
+## Subtrees, not submodules
 
-```text
-.bb/plugins.json     BB collection manifest: the plugins of this repository
-marketplace.json     BB marketplace "mesteriis": entries tracking main
-icons/               Icons the marketplace entries use
-plugins/<name>/      One self-contained plugin each (own package.json and lockfile)
-scripts/             Manifest and release checks
-docs/                Architecture and release process
-```
+This collection uses **git subtree**. Source lives directly in `plugins/`, so a normal clone includes it without `--recurse-submodules`. There are no nested Git repositories and no `.gitmodules` file.
 
-## Develop
-
-Each plugin is developed from its own directory:
+`subtrees.json` records the author's repository, directory and revision, the Mesteriis fork, its `marketplace/<id>` branch, and the aggregate prefix. A fork of an author monorepo can maintain several independent plugin branches. Restore remotes after cloning with:
 
 ```sh
-cd plugins/mail
-npm install
-npm run check        # typecheck + tests
-npm run build        # bb plugin build
-bb plugin install .  # register it in your BB
-bb plugin dev        # rebuild and reload on every save
+node scripts/configure-subtree-remotes.mjs
 ```
 
-From the repository root, `node scripts/check-manifests.mjs` checks that the
-collection manifest, the marketplace catalog, and the plugin manifests agree.
+`origin` is this marketplace; `plugin-<id>` is the maintained fork; `upstream-<id>` is the author's repository. See [maintenance](docs/subtree-maintenance.md) for subtree pull/push and updates from authors.
 
-Plugins keep host code at the edge so they can move from BB to another host
-without a rewrite. [docs/architecture.md](docs/architecture.md) states the
-rule, and a test in each plugin enforces it. [CONTRIBUTING.md](CONTRIBUTING.md)
-covers the workflow and how to add a plugin; [docs/releasing.md](docs/releasing.md)
-covers releases.
+## Plugins
 
-## Security
+Descriptions come from the published package manifests. Each name links to its source and documentation; upstream links to the original project and fork to the maintained Mesteriis repository.
 
-Mail is private, and mail content is untrusted input for a person and for an
-agent alike. Report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
+### Makosh family
 
-## License
+| Plugin / ID | Purpose | GitHub |
+| --- | --- | --- |
+| [Makosh AI [Experimental]](plugins/makosh-ai)<br>`makosh-ai` | Streams Claude Messages and Codex Responses to BB plugins through the existing Account Pooler. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/makosh-ai) |
+| [Makosh Mail [Experimental]](plugins/mail)<br>`makosh-mail` | Reads, snoozes, sends and translates iCloud, Gmail and IMAP mail; AI summaries, Ask, tasks and Today on click; agent access scoped, logged. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/mail) |
+| [Makosh Navigation](plugins/navigation)<br>`makosh-navigation` | Customizable BB navigation with nested groups, icons, separators and a settings editor with autosave. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/navigation) |
+| [Makosh Sidebar [Experimental]](plugins/sidebar)<br>`makosh-sidebar` | Project tree with a configurable root, recent activity sorting, reversible hiding, and running threads visible in collapsed groups. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/sidebar) |
+| [Makosh Taskboard [Experimental]](plugins/taskboard)<br>`makosh-taskboard` | Local task CRUD plus Jira Cloud and Server/Data Center boards in one focused List and Kanban view. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/taskboard) |
+| [Makosh Telegram [Experimental]](plugins/telegram)<br>`makosh-telegram` | Sign in with a QR code, read chats, and send text in BB through TDLib on macOS. Agent requests require approval. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/telegram) |
 
-[MIT](LICENSE). Third-party code keeps its own notices in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+### Independent plugins
+
+| Plugin / ID | Purpose | GitHub |
+| --- | --- | --- |
+| [Action Topbar](plugins/action-topbar)<br>`action-topbar` | Mirror open thread-panel tabs in a compact topbar with a searchable + launcher. | [upstream](https://github.com/MateoCerquetella/bb-plugins) · [fork](https://github.com/Mesteriis/mateocerquetella-bb-plugins/tree/marketplace/action-topbar) |
+| [Agent Icons](plugins/agent-icons)<br>`agent-icons` | Give each BB agent provider its own icon and colour: built-in glyphs or your own SVG sets, synced across devices. | [upstream](https://github.com/ponomr/bb-plugin-agent-icons) · [fork](https://github.com/Mesteriis/bb-plugin-agent-icons/tree/marketplace/agent-icons) |
+| [Agent instructions](plugins/agent-instructions)<br>`agent-instructions` | Manage global and project instructions, skills, references, and plugin prompts. | [upstream](https://github.com/smsunarto/bb-plugins) · [fork](https://github.com/Mesteriis/smsunarto-bb-plugins/tree/marketplace/agent-instructions) |
+| [Agent Plugins](plugins/agent-plugins)<br>`agent-plugins` | Install Agent Plugins (skills + MCP) once; flow to every provider. | [upstream](https://github.com/patleeman/bb-plugins) · [fork](https://github.com/Mesteriis/patleeman-bb-plugins/tree/marketplace/agent-plugins) |
+| [Agent Traces](plugins/agent-traces)<br>`agent-traces` | See where an agent's time goes: a waterfall of every turn's commands, tool calls, and subagents. | [upstream](https://github.com/charpeni/bb-plugins) · [fork](https://github.com/Mesteriis/charpeni-bb-plugins/tree/marketplace/agent-traces) |
+| [Agentation](plugins/agentation)<br>`agentation` | Point at any part of the bb UI — including plugin surfaces — and turn it into structured AFS 1.1 feedback that bb agents can read, answer, and resolve. | [upstream](https://github.com/smsunarto/bb-plugins) · [fork](https://github.com/Mesteriis/smsunarto-bb-plugins/tree/marketplace/agentation) |
+| [AI Usage](plugins/ai-usage)<br>`ai-usage` | Shows your team's Claude Code, Codex and Grok subscriptions: what is left of each limit, when it runs out, who used it, and what it costs. Installs ai-usage on this machine when it is missing. | [upstream](https://github.com/neoromantic/ai-usage) · [fork](https://github.com/Mesteriis/ai-usage/tree/marketplace/ai-usage) |
+| [Android Emulator](plugins/android-emulator)<br>`android-emulator` | See and control Android emulators on your bb hosts from a thread panel, with agent commands for the same device. | [upstream](https://github.com/nicolay-i/bb-plugin-android-emulator) · [fork](https://github.com/Mesteriis/bb-plugin-android-emulator/tree/marketplace/android-emulator) |
+| [Animation](plugins/animation)<br>`animation` | Play technical diagrams as a sequence of beats, then export a looping HTML page. | [upstream](https://github.com/MacHatter1/bb-plugin-animation) · [fork](https://github.com/Mesteriis/bb-plugin-animation/tree/marketplace/animation) |
+| [App Preview](plugins/app-preview)<br>`app-preview` | Detect the app in a thread worktree, launch the detected start recipe, and list, share, or kill listening ports on this machine. Start may install dependencies and run repository scripts. Share exposes a port over BB Connect. Kill sends SIGTERM/SIGKILL. A setting chooses whether you open the in-app browser yourself, or agents open it when the app is ready. | [upstream](https://github.com/hungv47/bb-plugin-app-preview) · [fork](https://github.com/Mesteriis/bb-plugin-app-preview/tree/marketplace/app-preview) |
+| [Autopilots](plugins/automation-groups)<br>`automation-groups` | Organize scheduled work into folders and control groups together. | [upstream](https://github.com/dmitriikapustin/bb-plugins-by-kapustin) · [fork](https://github.com/Mesteriis/dmitriikapustin-bb-plugins-by-kapustin/tree/marketplace/automation-groups) |
+| [Autorouter](plugins/autorouter)<br>`autorouter` | Route new threads by task difficulty, live provider quota, and benchmark cost. | [upstream](https://github.com/jjcm/bb-plugin-autorouter) · [fork](https://github.com/Mesteriis/bb-plugin-autorouter/tree/marketplace/autorouter) |
+| [BB Surf](plugins/steel-browser)<br>`steel-browser` | Operate self-hosted Steel browser sessions from BB. | [upstream](https://github.com/MateoCerquetella/bb-plugins) · [fork](https://github.com/Mesteriis/mateocerquetella-bb-plugins/tree/marketplace/steel-browser) |
+| [Beautiful Chat](plugins/beautiful-chat)<br>`beautiful-chat` | Restyles BB's chat — composer, messages, work rows, loading states — in BeautifulUI's design language, using your active theme's colors. | [upstream](https://github.com/diip3sh/bb-plugin-beautiful-chat) · [fork](https://github.com/Mesteriis/bb-plugin-beautiful-chat/tree/marketplace/beautiful-chat) |
+| [Chat Sidebar](plugins/chat-sidebar)<br>`chat-sidebar` | Read your threads like a messenger: one row per task with live status, an Attention folder, project tabs, and search. | [upstream](https://github.com/seoperin/bb-plugin-chat-sidebar) · [fork](https://github.com/Mesteriis/bb-plugin-chat-sidebar/tree/marketplace/chat-sidebar) |
+| [ChatGPT Realtime Connection](plugins/codex-realtime)<br>`codex-realtime` | Run Voice Mode on your ChatGPT subscription instead of an OpenAI API key, using the sign-in `codex login` already keeps on this Mac. | [upstream](https://github.com/gpambrozio/bb-plugins) · [fork](https://github.com/Mesteriis/gpambrozio-bb-plugins/tree/marketplace/codex-realtime) |
+| [Computer Use](plugins/cua-driver)<br>`cua-driver` | Gives bb agents desktop and browser control, powered by Cua Driver from Cua AI, with per-provider routing. | [upstream](https://github.com/juanbermudez/bb-plugin-cua-driver) · [fork](https://github.com/Mesteriis/bb-plugin-cua-driver/tree/marketplace/cua-driver) |
+| [Context Health](plugins/context-health)<br>`context-health` | Inspect thread context usage, skills, instructions and conversation content. | [upstream](https://github.com/MacHatter1/bb-context-health) · [fork](https://github.com/Mesteriis/bb-context-health/tree/marketplace/context-health) |
+| [Copy Session ID](plugins/copy-session-id)<br>`copy-session-id` | Add Copy session ID to thread context menus in the left sidebar. | [upstream](https://github.com/patleeman/bb-plugins) · [fork](https://github.com/Mesteriis/patleeman-bb-plugins/tree/marketplace/copy-session-id) |
+| [Desktop & Browser Agent](plugins/desktop-browser-agent)<br>`desktop-browser-agent` | Computer use for bb agents: desktop apps and browser windows through Cua Driver from Cua AI, and your own Chrome, Edge or Brave tabs through a browser extension, with per-provider routing. | [upstream](https://github.com/qwadrox/bb-plugin-desktop-browser-agent) · [fork](https://github.com/Mesteriis/bb-plugin-desktop-browser-agent/tree/marketplace/desktop-browser-agent) |
+| [Dev Bar](plugins/dev-bar)<br>`dev-bar` | A status bar that starts, stops, and restarts a checkout's dev services, and stops them when its last thread is archived or deleted. | [upstream](https://github.com/danielbachhuber/bb-plugins) · [fork](https://github.com/Mesteriis/danielbachhuber-bb-plugins/tree/marketplace/dev-bar) |
+| [Dev Servers](plugins/dev-servers)<br>`dev-servers` | Supervise persistent machine servers and discover thread dev servers. | [upstream](https://github.com/darknoon/bb-plugins) · [fork](https://github.com/Mesteriis/darknoon-bb-plugins/tree/marketplace/dev-servers) |
+| [Dictation Shortcuts](plugins/dictation-shortcuts)<br>`dictation-shortcuts` | Hold Space to dictate with BB native voice input; Enter finishes, Escape cancels, with button and modifier hints. | [upstream](https://github.com/architawr/bb-plugin-dictation-shortcuts) · [fork](https://github.com/Mesteriis/bb-plugin-dictation-shortcuts/tree/marketplace/dictation-shortcuts) |
+| [Diff Review](plugins/diff-review)<br>`diff-review` | Comment on a thread's changes line by line, then send the comments to its agent, which fixes the code and answers each one. | [upstream](https://github.com/gpambrozio/bb-plugins) · [fork](https://github.com/Mesteriis/gpambrozio-bb-plugins/tree/marketplace/diff-review) |
+| [Docker](plugins/docker)<br>`docker` | Manage containers, images, volumes, and networks from the bb sidebar. | [upstream](https://github.com/grikomsn/bb-plugins) · [fork](https://github.com/Mesteriis/grikomsn-bb-plugins/tree/marketplace/docker) |
+| [Dockside](plugins/dockside)<br>`dockside` | Project-first threads, inline agents, and mobile active-thread navigation. | [upstream](https://github.com/MateoCerquetella/bb-plugins) · [fork](https://github.com/Mesteriis/mateocerquetella-bb-plugins/tree/marketplace/dockside) |
+| [File Gateway](plugins/file-gateway)<br>`file-gateway` | Browse BB machines and FTP/SFTP sites, add remote file mentions to chats, and let agents read or download the right file. | [upstream](https://github.com/VKirill/bb-plugin-file-gateway) · [fork](https://github.com/Mesteriis/bb-plugin-file-gateway/tree/marketplace/file-gateway) |
+| [FirstMate Crew](plugins/firstmate-crew)<br>`firstmate-crew` | Hand one agent your to-do list and it runs a crew of worker threads, each in its own git worktree, until the work lands. | [upstream](https://github.com/gpambrozio/bb-plugins) · [fork](https://github.com/Mesteriis/gpambrozio-bb-plugins/tree/marketplace/firstmate-crew) |
+| [Generative UI](plugins/genui)<br>`genui` | Lets agents answer with interactive UI rendered inline in chat. | [upstream](https://github.com/smsunarto/bb-plugins) · [fork](https://github.com/Mesteriis/smsunarto-bb-plugins/tree/marketplace/genui) |
+| [GigaAM Voice Input](plugins/gigaam)<br>`gigaam` | Offline Russian voice input powered by GigaAM v3. Installs and runs the model on your own machine; CPU only, no API keys. | [upstream](https://github.com/AiXenix/bb-plugin-gigaam) · [fork](https://github.com/Mesteriis/bb-plugin-gigaam/tree/marketplace/gigaam) |
+| [Git History](plugins/git-history)<br>`git-history` | Browse the complete Git history of a project from a bb right panel. | [upstream](https://github.com/yusuf8834/bb-git-history) · [fork](https://github.com/Mesteriis/bb-git-history/tree/marketplace/git-history) |
+| [Gitea](plugins/gitea)<br>`gitea` | Gitea issues and pull requests inside BB, backed by the Gitea tea CLI. | [upstream](https://github.com/Nick-Motion/bb-plugin-gitea) · [fork](https://github.com/Mesteriis/bb-plugin-gitea/tree/marketplace/gitea) |
+| [GitHub Actions](plugins/github-actions)<br>`github-actions` | Live GitHub Actions runs for your projects: start any workflow with inputs, watch job logs, rerun failures, hand them to an agent, or send them to BB threads. | [upstream](https://github.com/pers0na2dev/bb-github-actions) · [fork](https://github.com/Mesteriis/bb-github-actions/tree/marketplace/github-actions) |
+| [GitHub Copilot](plugins/gh-copilot)<br>`gh-copilot` | Adds GitHub Copilot CLI to bb as an ACP coding-agent provider. | [upstream](https://github.com/ai-ecoverse/bb-gh-copilot) · [fork](https://github.com/Mesteriis/bb-gh-copilot/tree/marketplace/gh-copilot) |
+| [GitHub PR Dashboard](plugins/bb-github-pr-dashboard)<br>`bb-github-pr-dashboard` | Track your GitHub PRs and review requests in one tab: why each is stuck, changed files, replies, and alerts. | [upstream](https://github.com/ahsan7162/bb-github-pr-dashboard) · [fork](https://github.com/Mesteriis/bb-github-pr-dashboard/tree/marketplace/bb-github-pr-dashboard) |
+| [GTD Sidebar](plugins/gtd-sidebar)<br>`gtd-sidebar` | An action-oriented sidebar that groups threads by who can act next. | [upstream](https://github.com/smsunarto/bb-plugins) · [fork](https://github.com/Mesteriis/smsunarto-bb-plugins/tree/marketplace/gtd-sidebar) |
+| [Handoff](plugins/handoff)<br>`handoff` | Move a session between agents and machines, in both directions — hand off a bb thread to another provider (and optionally another enrolled machine, carrying uncommitted work), or adopt an outside Claude Code / Codex / Gemini CLI / OpenCode / Pi session, local or remote, as a bb thread. | [upstream](https://github.com/vburojevic/bb-plugin-handoff) · [fork](https://github.com/Mesteriis/bb-plugin-handoff/tree/marketplace/handoff) |
+| [Hooks](plugins/hooks)<br>`hooks` | Run your own shell commands or webhooks on thread events, and gate message dispatch with custom policy. | [upstream](https://github.com/MacHatter1/bb-plugin-hooks) · [fork](https://github.com/Mesteriis/bb-plugin-hooks/tree/marketplace/hooks) |
+| [Hotspot](plugins/hotspot)<br>`hotspot` | Records when your Mac runs hot and names the BB thread that caused it. | [upstream](https://github.com/Hazihell/bb-plugin-hotspot) · [fork](https://github.com/Mesteriis/bb-plugin-hotspot/tree/marketplace/hotspot) |
+| [Image Preview](plugins/image-preview)<br>`image-preview` | Turn chat images into compact previews with an accessible click-to-expand lightbox. | [upstream](https://github.com/Dwite/bb-plugin-image-preview) · [fork](https://github.com/Mesteriis/bb-plugin-image-preview/tree/marketplace/image-preview) |
+| [Impromptu UI](plugins/impromptu-ui)<br>`impromptu-ui` | Turns your agent's walls of text into interfaces you can click. | [upstream](https://github.com/danielbachhuber/bb-plugins) · [fork](https://github.com/Mesteriis/danielbachhuber-bb-plugins/tree/marketplace/impromptu-ui) |
+| [Inline Review](plugins/inline-review)<br>`inline-review` | Review exact assistant passages and send one clear feedback batch to the same thread. | [upstream](https://github.com/rdanhau/bb-plugin-inline-review) · [fork](https://github.com/Mesteriis/bb-plugin-inline-review/tree/marketplace/inline-review) |
+| [KodaForge](plugins/kodaforge)<br>`kodaforge` | Edit, run and debug your project inside BB, with agent chat, threads and workflows open beside the code. A Monaco code editor with tabs, split editors, quick open (⌘P), find in files, and search and replace with a preview. Language servers (LSP) for Python and TypeScript give completion, go to definition, find references, rename and a Problems panel. Debug Python with breakpoints, pick the Python environment (venv, uv, Poetry, conda), run Makefile and npm tasks, and work in split terminals that survive restarts. Source control stages, diffs, commits, stashes, pulls and pushes with git. The Agent Network maps the agents and MCP servers working on your project, and in App mode the agents, tools, MCP servers, models and skills your code builds. Install the language servers (pyright or basedpyright, typescript-language-server) and debugpy yourself. | [upstream](https://github.com/Kodaks94/bb-plugin-kodaforge) · [fork](https://github.com/Mesteriis/bb-plugin-kodaforge/tree/marketplace/kodaforge) |
+| [Markdown Editor](plugins/markdown-editor)<br>`markdown-editor` | Edit markdown files in the tab bb opens them in, preview the result, and save with Cmd+S without overwriting an agent's edits. | [upstream](https://github.com/danielbachhuber/bb-plugins) · [fork](https://github.com/Mesteriis/danielbachhuber-bb-plugins/tree/marketplace/markdown-editor) |
+| [MCP Hub](plugins/mcp-hub)<br>`mcp-hub` | One host-level and project-level source of truth for MCP servers, materialized into Kimi Code, Claude Code, OpenCode, Cursor and Codex. | [upstream](https://github.com/fgbm/bb-plugin-mcp-hub) · [fork](https://github.com/Mesteriis/bb-plugin-mcp-hub/tree/marketplace/mcp-hub) |
+| [Meetings](plugins/meetings)<br>`meetings` | Record Zoom, Google Meet, Telemost and Jitsi with local transcription, summary templates, action items and MCP. | [upstream](https://github.com/AiXenix/bb-plugin-meetings) · [fork](https://github.com/Mesteriis/bb-plugin-meetings/tree/marketplace/meetings) |
+| [Memory Explorer](plugins/memory-explorer)<br>`memory-explorer` | See what your agents remember: BB memory as a searchable table and a zoomable link graph, with a detail drawer for each memory. | [upstream](https://github.com/d-asensio/bb-plugin-memory-explorer) · [fork](https://github.com/Mesteriis/bb-plugin-memory-explorer/tree/marketplace/memory-explorer) |
+| [Model Pricing](plugins/model-pricing)<br>`model-pricing` | Compare what every AI model costs per million tokens, across Anthropic, OpenAI, Fireworks AI, Ollama Cloud and OpenRouter, in one table. | [upstream](https://github.com/gpambrozio/bb-plugins) · [fork](https://github.com/Mesteriis/gpambrozio-bb-plugins/tree/marketplace/model-pricing) |
+| [Next Prompt](plugins/next-prompt)<br>`next-prompt` | Suggests the next prompt you are likely to type after each finished turn. | [upstream](https://github.com/CrazyCoder/bb-plugin-next-prompt) · [fork](https://github.com/Mesteriis/bb-plugin-next-prompt/tree/marketplace/next-prompt) |
+| [Notifications Pro](plugins/notifications-pro)<br>`notifications-pro` | Desktop OS notifications, Dock badge, and an in-app notification center for thread attention and assigned tasks. | [upstream](https://github.com/kr3t3n/bb-plugin-notifications-pro) · [fork](https://github.com/Mesteriis/bb-plugin-notifications-pro/tree/marketplace/notifications-pro) |
+| [Obsidian at Home](plugins/wikilinks)<br>`wikilinks` | Edit Markdown notes in BB with wikilinks, recursive previews, contextual backlinks, and queryable thinking trails. | [upstream](https://github.com/classicrob/obsidian-at-home) · [fork](https://github.com/Mesteriis/obsidian-at-home/tree/marketplace/wikilinks) |
+| [OXI Account Pool](plugins/account-pool-balanced)<br>`account-pool-balanced` | Balance provider accounts, track quotas and switch to reserve accounts for BB agents. | [upstream](https://github.com/OXI-717/bb-plugins) · [fork](https://github.com/Mesteriis/oxi-717-bb-plugins/tree/marketplace/account-pool-balanced) |
+| [Plan Progress](plugins/plan-progress)<br>`plan-progress` | Live progress bars above the message box: the agent plans stages and steps, and the bar fills as it works. | [upstream](https://github.com/mrsu-smirnov/bb-plugin-plan-progress) · [fork](https://github.com/Mesteriis/bb-plugin-plan-progress/tree/marketplace/plan-progress) |
+| [Plannotator](plugins/plannotator)<br>`plannotator` | Review plans in Plannotator inside BB and send decisions to agents as new thread messages. | [upstream](https://github.com/patleeman/bb-plugins) · [fork](https://github.com/Mesteriis/patleeman-bb-plugins/tree/marketplace/plannotator) |
+| [Plugin Finder](plugins/at-plugin)<br>`at-plugin` | Mention installed and Community plugins in bb conversations. | [upstream](https://github.com/brsbl/bb-plugins) · [fork](https://github.com/Mesteriis/brsbl-bb-plugins/tree/marketplace/at-plugin) |
+| [Plugin Updates](plugins/plugin-updates)<br>`plugin-updates` | Shows which plugins have updates, including releases outside their version range, and installs them. | [upstream](https://github.com/frankieshakes/bb-plugin-updates) · [fork](https://github.com/Mesteriis/bb-plugin-updates/tree/marketplace/plugin-updates) |
+| [Project Instructions](plugins/project-instructions)<br>`project-instructions` | Per-project agent instructions, stored in bb rather than in your repository. | [upstream](https://github.com/Hazihell/bb-plugin-project-instructions) · [fork](https://github.com/Mesteriis/bb-plugin-project-instructions/tree/marketplace/project-instructions) |
+| [Prompt Improver](plugins/prompt-shaper)<br>`prompt-shaper` | Adds an Improve prompt action to the composer that sends your rough draft to a hidden helper agent, which follows your editable rewrite instructions to rewrite it into a clear, complete prompt and returns it in place for review before you send. | [upstream](https://github.com/brsbl/bb-plugins) · [fork](https://github.com/Mesteriis/brsbl-bb-plugins/tree/marketplace/prompt-shaper) |
+| [Read Aloud](plugins/read-aloud)<br>`read-aloud` | Speak any chat message with streaming neural TTS, with pause and stop. | [upstream](https://github.com/csells/bb-plugins) · [fork](https://github.com/Mesteriis/csells-bb-plugins/tree/marketplace/read-aloud) |
+| [Read Aloud](plugins/read-aloud-local)<br>`read-aloud-local` | Speak any chat message with streaming neural TTS, with pause and stop. | [upstream](https://github.com/csells/bb-plugins) · [fork](https://github.com/Mesteriis/csells-bb-plugins/tree/marketplace/read-aloud-local) |
+| [Scheduled Jobs](plugins/launchd-jobs)<br>`launchd-jobs` | Run shell commands on your Mac on a cron schedule or a fixed interval, as launchd jobs that keep running while bb is closed. macOS only. | [upstream](https://github.com/gpambrozio/bb-plugins) · [fork](https://github.com/Mesteriis/gpambrozio-bb-plugins/tree/marketplace/launchd-jobs) |
+| [Secrets](plugins/scott-secrets)<br>`scott-secrets` | Request credentials into dotenv files, and run approved sudo commands without retyping the password. | [upstream](https://github.com/smsunarto/bb-plugins) · [fork](https://github.com/Mesteriis/smsunarto-bb-plugins/tree/marketplace/scott-secrets) |
+| [Session History](plugins/session-history)<br>`session-history` | Browse past Claude, Codex and Qwen sessions with their original titles, and continue conversations directly in BB. | [upstream](https://github.com/neonick/bb-plugin-session-history) · [fork](https://github.com/Mesteriis/bb-plugin-session-history/tree/marketplace/session-history) |
+| [Skills](plugins/skills)<br>`skills` | See every skill a thread's agent can use, where each one comes from and what it says, and add one to the chat from the panel or composer. | [upstream](https://github.com/gpambrozio/bb-plugins) · [fork](https://github.com/Mesteriis/gpambrozio-bb-plugins/tree/marketplace/skills) |
+| [Skills Sync](plugins/skills-sync)<br>`skills-sync` | Sync installed agent skills against upstream git repositories, showing what is new, deprecated, cleanly updatable, and locally modified. | [upstream](https://github.com/Hazihell/bb-plugin-skills-sync) · [fork](https://github.com/Mesteriis/bb-plugin-skills-sync/tree/marketplace/skills-sync) |
+| [Source Control](plugins/source-control)<br>`source-control` | Each thread's branch and pull request as one Change: checkout state from its host, pull request state from GitHub. | [upstream](https://github.com/smsunarto/bb-plugins) · [fork](https://github.com/Mesteriis/smsunarto-bb-plugins/tree/marketplace/source-control) |
+| [Specs](plugins/specs)<br>`specs` | Spec documents any project can read, annotate, discuss, and update. | [upstream](https://github.com/peteabu/bb-plugin-specs) · [fork](https://github.com/Mesteriis/bb-plugin-specs/tree/marketplace/specs) |
+| [SQL](plugins/sql)<br>`sql` | Postgres in bb: browse all databases, schema-aware completion, controlled write/DDL (Agent write / Allow DDL on by default for new connections). | [upstream](https://github.com/yazydzhi/bb-plugin-sql) · [fork](https://github.com/Mesteriis/bb-plugin-sql/tree/marketplace/sql) |
+| [Subagents](plugins/subagents)<br>`subagents` | Inspect native subagents and child threads that belong to the current chat. | [upstream](https://github.com/imyeskela/bb-plugin-subagents) · [fork](https://github.com/Mesteriis/bb-plugin-subagents/tree/marketplace/subagents) |
+| [Team](plugins/team)<br>`team` | Agent teams with a shared task tracker, reusable roles, safe session handoffs, review gates and finite execution budgets. | [upstream](https://github.com/kirei4ik/bb-plugin-team) · [fork](https://github.com/Mesteriis/bb-plugin-team/tree/marketplace/team) |
+| [Terminal jobs](plugins/terminal-jobs)<br>`terminal-jobs` | Runs durable terminal jobs and sends completion notices. | [upstream](https://github.com/ryanbbrown/bb-plugin-terminal-jobs) · [fork](https://github.com/Mesteriis/bb-plugin-terminal-jobs/tree/marketplace/terminal-jobs) |
+| [Terminals](plugins/terminals)<br>`terminals` | Open shells in tabs on any machine connected to bb, in its home folder, and find them still running when you come back. | [upstream](https://github.com/gpambrozio/bb-plugins) · [fork](https://github.com/Mesteriis/gpambrozio-bb-plugins/tree/marketplace/terminals) |
+| [Thread Images](plugins/thread-images)<br>`thread-images` | Shows the images an agent opens: in the chat and in a gallery in the thread context card. | [upstream](https://github.com/kartollikaa/bb-plugin-thread-images) · [fork](https://github.com/Mesteriis/bb-plugin-thread-images/tree/marketplace/thread-images) |
+| [Tokenomics](plugins/tokenomics)<br>`tokenomics` | See what your threads cost in tokens and time, how each turn compared with Claude's forecast, and whether your limits will last. | [upstream](https://github.com/danielbachhuber/bb-plugins) · [fork](https://github.com/Mesteriis/danielbachhuber-bb-plugins/tree/marketplace/tokenomics) |
+| [Tree Sidebar](plugins/tree-sidebar)<br>`tree-sidebar` | A sidebar that nests threads under their projects, laid out the way the projects sit on disk. | [upstream](https://github.com/chadbailey59/bb-plugin-tree-sidebar) · [fork](https://github.com/Mesteriis/bb-plugin-tree-sidebar/tree/marketplace/tree-sidebar) |
+| [Tree Sidebar](plugins/tree-sidebar-local)<br>`tree-sidebar-local` | A sidebar that nests threads under their projects, laid out the way the projects sit on disk. | [upstream](https://github.com/chadbailey59/bb-plugin-tree-sidebar) · [fork](https://github.com/Mesteriis/bb-plugin-tree-sidebar/tree/marketplace/tree-sidebar-local) |
+| [UltraGoal](plugins/ultragoal)<br>`ultragoal` | Provider-neutral durable UltraGoals for Codex, Cursor, OpenCode, Claude Code, and Pi, with scheduled workers, verification, and defect remediation. | [upstream](https://github.com/braedonsaunders/bb-plugin-ultragoal) · [fork](https://github.com/Mesteriis/bb-plugin-ultragoal/tree/marketplace/ultragoal) |
+| [Unified Inbox](plugins/unified-inbox)<br>`unified-inbox` | One inbox for Gmail, WhatsApp, Messages, and LinkedIn on this machine. | [upstream](https://github.com/robertsinke/bb-plugin-unified-inbox) · [fork](https://github.com/Mesteriis/bb-plugin-unified-inbox/tree/marketplace/unified-inbox) |
+| [Visual Workflows](plugins/visual-workflows)<br>`visual-workflows` | Design visual agent workflows with independent step profiles and inspect every run. | [upstream](https://github.com/dmitriikapustin/bb-plugins-by-kapustin) · [fork](https://github.com/Mesteriis/dmitriikapustin-bb-plugins-by-kapustin/tree/marketplace/visual-workflows) |
+| [Voice Mode](plugins/voice-mode)<br>`voice-mode` | Start a hands-free voice chat from an empty composer. The voice model hands work to the thread's agent and tells you when it's done; talk over it any time to interrupt. | [upstream](https://github.com/steveafrost/bb-plugin-voice-mode) · [fork](https://github.com/Mesteriis/bb-plugin-voice-mode/tree/marketplace/voice-mode) |
+| [Wiki](plugins/wiki)<br>`wiki` | Search and write a personal wiki of Markdown notes from BB threads. | [upstream](https://github.com/himynameisjonas/bb-plugin-wiki) · [fork](https://github.com/Mesteriis/bb-plugin-wiki/tree/marketplace/wiki) |
+| [Workspaces](plugins/workspaces)<br>`workspaces` | Group related repositories and launch isolated multi-repo threads. | [upstream](https://github.com/wishcreator/bb-plugin-workspaces) · [fork](https://github.com/Mesteriis/bb-plugin-workspaces/tree/marketplace/workspaces) |
+| [Worktree Ports](plugins/worktree-ports)<br>`worktree-ports` | Live listening ports per worktree, with one click to open them. | [upstream](https://github.com/to-infinity-labs/bb-plugin-worktree-ports) · [fork](https://github.com/Mesteriis/bb-plugin-worktree-ports/tree/marketplace/worktree-ports) |
+| [Русский язык](plugins/ru)<br>`ru` | Перевод навигации, меню и настроек BB на русский. | [upstream](https://github.com/nick8cyber/bb-addons) · [fork](https://github.com/Mesteriis/nick8cyber-bb-addons/tree/marketplace/ru) |
+| [Следующий шаг](plugins/next-step)<br>`next-step` | Подсказка следующего сообщения после ответа Codex. Tab — принять, Esc — скрыть. | [upstream](https://github.com/rutracker152/bb-plugin-next-step) · [fork](https://github.com/Mesteriis/bb-plugin-next-step/tree/marketplace/next-step) |
+
+## Checks and updates
+
+GitHub Actions validates the whole catalog, subtree registry and validator tests. Dependency installation, tests and builds run for changed packages. Dispatch CI with `full_audit` for an explicit all-package audit. Catalog checks do not prove every UI or external integration works. Dependabot proposes Mail and Actions updates; there is no automatic merge.
+
+## Licenses
+
+Original collection code is [MIT](LICENSE). Imported packages keep their individual licenses and restrictions. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), [licenses/](licenses/) and each package's notices.
