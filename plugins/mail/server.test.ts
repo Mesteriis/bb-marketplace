@@ -6114,7 +6114,14 @@ const ATTACHMENT = { filename: "invented-report.pdf", mimeType: "application/pdf
 
 /** acc_1 with one INBOX message (uid 1) whose raw bytes (with an attachment) the server serves, and the BB fakes. */
 async function loadBb(
-  options: { sdk?: LoadOptions["sdk"]; settings?: Record<string, string | number | boolean>; saveToProjectEnabled?: boolean; raw?: Uint8Array } = {},
+  options: {
+    sdk?: LoadOptions["sdk"];
+    settings?: Record<string, string | number | boolean>;
+    saveToProjectEnabled?: boolean;
+    raw?: Uint8Array;
+    /** More stored mail before the plugin loads. */
+    more?: (store: ReturnType<typeof createSqliteStore>) => void;
+  } = {},
 ) {
   const raw = options.raw ?? rawMail({ attachment: ATTACHMENT });
   const message = await storedFor(raw);
@@ -6126,6 +6133,7 @@ async function loadBb(
       const store = createSqliteStore(bb.storage.database());
       store.upsertMessages("acc_1", "INBOX", [message]);
       store.saveSyncState("acc_1", "INBOX", { uidValidity: 3, lastUid: 1, syncedSince: "2026-10-01T00:00:00.000Z" });
+      options.more?.(store);
     },
     server: (gateway) => {
       composeServer(gateway);
@@ -6523,5 +6531,386 @@ describe("slice 3g: owner only", () => {
     for (const canary of CANARIES) expect(handedOver, `canary ${canary}`).not.toContain(canary);
     expectNoCanary(host, outputs);
     expect(handedOver).toContain("[hidden token]");
+  });
+});
+
+// ---- Slice 3g Task 11: dev mail, links, code, patches, alerts and binding ----
+
+const DEV_REPO = "github.com/example-org/demo";
+const PATCH_SHA = "0123456789abcdef0123456789abcdef01234567";
+const FORMAT_PATCH = [
+  `From ${PATCH_SHA} Mon Sep 17 00:00:00 2001`,
+  "From: Invented Author <author@example.org>",
+  "Date: Mon, 16 Nov 2026 10:00:00 +0000",
+  "Subject: [PATCH] Fix the invented parser",
+  "",
+  "The parser dropped the last line.",
+  "",
+  "---",
+  " src/parser.ts | 2 +-",
+  " 1 file changed, 1 insertion(+), 1 deletion(-)",
+  "",
+  "diff --git a/src/parser.ts b/src/parser.ts",
+  "index 1111111..2222222 100644",
+  "--- a/src/parser.ts",
+  "+++ b/src/parser.ts",
+  "@@ -1,3 +1,3 @@",
+  " const a = 1;",
+  "-const b = 2;",
+  "+const b = 3;",
+  " export { a, b };",
+  "-- ",
+  "2.47.0",
+  "",
+].join("\n");
+const GIT_PATCH = [
+  "diff --git a/.git/config b/.git/config",
+  "--- a/.git/config",
+  "+++ b/.git/config",
+  "@@ -1 +1 @@",
+  "-a",
+  "+b",
+  "",
+].join("\n");
+
+const hoursAgo = (hours: number) => new Date(NOW.getTime() - hours * 3_600_000).toISOString();
+
+/** INBOX 2-7: a GitHub CI failure, HTML with a link and code, a patch, a firing and a resolved alert, a refused patch. */
+function seedDevMail(store: ReturnType<typeof createSqliteStore>): void {
+  store.upsertMessages("acc_1", "INBOX", [
+    makeFetchedMessage(2, {
+      date: hoursAgo(2),
+      from: { name: "GitHub", address: "notifications@github.com" },
+      subject: "[example-org/demo] Run failed: build",
+      bodyText: "See https://github.com/example-org/demo/actions/runs/77 and https://github.com/example-org/demo/pull/42.",
+    }),
+    makeFetchedMessage(3, {
+      date: hoursAgo(3),
+      subject: "Invented code review",
+      bodyText: null,
+      bodyHtml: '<p>See <a href="https://github.com/example-org/demo/issues/7">this issue</a></p><pre>const a = 1;\nconst b = 2;</pre>',
+    }),
+    makeFetchedMessage(4, { date: hoursAgo(4), subject: "[PATCH] Fix the invented parser", bodyText: FORMAT_PATCH }),
+    makeFetchedMessage(5, {
+      date: hoursAgo(1),
+      from: { name: "Grafana", address: "alerts@grafana.net" },
+      subject: "[FIRING:1] HighLatency",
+      bodyText: "Labels:\n - service = checkout\n - env = prod\n",
+    }),
+    makeFetchedMessage(6, {
+      date: hoursAgo(0.5),
+      from: { name: "Grafana", address: "alerts@grafana.net" },
+      subject: "[RESOLVED] HighLatency",
+      bodyText: "Labels:\n - service = checkout\n - env = prod\n",
+    }),
+    makeFetchedMessage(7, { date: hoursAgo(5), subject: "Invented bad patch", bodyText: GIT_PATCH }),
+  ]);
+}
+
+function setDev(host: Host, uid: number, dev: Record<string, unknown> | null): void {
+  sqlStore(host).setDevClass([{ id: messageIdAt(host, "INBOX", uid), dev: dev as never }]);
+}
+
+async function loadDev(options: { sdk?: LoadOptions["sdk"]; settings?: Record<string, string | number | boolean> } = {}) {
+  const loaded = await loadBb({ ...options, more: seedDevMail });
+  const { host } = loaded;
+  setDev(host, 2, { source: "github", repo: DEV_REPO, kind: "ci", state: "failed", ref: "77" });
+  setDev(host, 5, { source: "monitoring", repo: "grafana", kind: "alert", state: "firing", ref: null });
+  setDev(host, 6, { source: "monitoring", repo: "grafana", kind: "alert", state: "resolved", ref: null });
+  const ids = Object.fromEntries([2, 3, 4, 5, 6, 7].map((uid) => [uid, messageIdAt(host, "INBOX", uid)])) as Record<number, string>;
+  return { ...loaded, ids };
+}
+
+async function threadAt(host: Host, messageId: string): Promise<ThreadDetail> {
+  const threadId = (sqlStore(host).getMessage(messageId) as { threadId: string }).threadId;
+  return (await call(host, "thread_get", { threadId, folder: "INBOX" })) as ThreadDetail;
+}
+
+describe("slice 3g: dev mail, links and code", () => {
+  it("groups dev mail by repository with its project, fills Today's line, and hides dev mail on request", async () => {
+    const { host, ids } = await loadDev();
+    const digest = (await call(host, "dev_digest_get", {})) as { groups: Record<string, unknown>[] };
+    expect(digest.groups).toEqual([
+      expect.objectContaining({ source: "monitoring", repo: "grafana", projectId: null, total: 2 }),
+      expect.objectContaining({
+        source: "github",
+        repo: DEV_REPO,
+        ciFailed: 1,
+        projectId: "api",
+        projectName: "Invented api",
+        counts: expect.objectContaining({ ci: 1, pr: 0 }),
+        latestFailure: expect.objectContaining({ messageId: ids[2] }),
+      }),
+    ]);
+    const today = (await call(host, "today_get", {})) as { dev: unknown };
+    expect(today.dev).toEqual({ ciFailed: 1, repos: 1, alertsFiring: 1 });
+
+    const subjects = async (filter: Record<string, unknown>) =>
+      (
+        (await call(host, "threads_list", { scope: { kind: "account", accountId: "acc_1", folder: "INBOX" }, cursor: null, limit: 50, filter })) as {
+          threads: ThreadSummary[];
+        }
+      ).threads.map((thread) => thread.subject);
+    expect(await subjects({ notDev: true })).not.toContain("[example-org/demo] Run failed: build");
+    expect(await subjects({})).toContain("[example-org/demo] Run failed: build");
+  });
+
+  it("with dev notifications off, Today has no dev line and nothing is hidden", async () => {
+    const { host } = await loadDev({ settings: { devNotifications: false } });
+    expect(((await call(host, "today_get", {})) as { dev: unknown }).dev).toEqual({ ciFailed: 0, repos: 0, alertsFiring: 0 });
+    const { threads } = (await call(host, "threads_list", {
+      scope: { kind: "account", accountId: "acc_1", folder: "INBOX" },
+      cursor: null,
+      limit: 50,
+      filter: { notDev: true },
+    })) as { threads: ThreadSummary[] };
+    expect(threads.map((thread) => thread.subject)).toContain("[example-org/demo] Run failed: build");
+  });
+
+  it("lists dev links from plain and HTML mail by their URL, mapped to the project; code blocks come from <pre>", async () => {
+    const { host, ids } = await loadDev();
+    const plain = (await threadAt(host, ids[2]!)).messages[0]!;
+    expect(plain.devLinks).toEqual([
+      expect.objectContaining({ url: "https://github.com/example-org/demo/actions/runs/77", kind: "run", projectId: "api" }),
+      expect.objectContaining({ url: "https://github.com/example-org/demo/pull/42", kind: "pr", number: "42", projectId: "api" }),
+    ]);
+    expect(plain.dev).toMatchObject({ source: "github", kind: "ci" });
+    const html = await threadAt(host, ids[3]!);
+    expect(html.messages[0]!.devLinks).toEqual([expect.objectContaining({ url: "https://github.com/example-org/demo/issues/7", kind: "issue" })]);
+    // A suggestion only: nothing is bound by it.
+    expect(html.project).toBeNull();
+    expect(html.projectSuggestion).toEqual({ id: "api", name: "Invented api", repo: DEV_REPO });
+    const body = (await call(host, "message_body", { messageId: ids[3] })) as MessageBody;
+    expect(body.codeBlocks).toEqual(["const a = 1;\nconst b = 2;"]);
+    const alert = (await threadAt(host, ids[5]!)).messages[0]!;
+    expect(alert.alert).toBe(true);
+    expect((await threadAt(host, ids[4]!)).messages[0]!.patch).toEqual({ files: 1, added: 1, removed: 1 });
+  });
+});
+
+describe("slice 3g: patches", () => {
+  it("shows a patch with its reference, saves it create-only and hands it to a worktree thread as an upload", async () => {
+    const { host, ids } = await loadDev();
+    const view = (await call(host, "patch_view", { messageId: ids[4] })) as { files: { newPath: string }[]; refused: null; patchRef: string; commitMessage: string };
+    expect(view.files.map((file) => file.newPath)).toEqual(["src/parser.ts"]);
+    expect(view.refused).toBeNull();
+    expect(view.commitMessage).toContain("The parser dropped the last line.");
+    expect(view.patchRef).toMatch(/^[0-9a-f]{64}$/);
+
+    const saved = (await call(host, "patch_save", { messageId: ids[4], projectId: "api", patchRef: view.patchRef })) as { path: string };
+    expect(saved.path).toMatch(/^mail-patches\/2026-11-14-fix-the-invented-parser\.patch$/);
+    const [write] = sdkCalls(host, "files.write")[0] as [{ content: string; expectedSha256: null }];
+    expect(Buffer.from(write.content, "base64").toString()).toBe(FORMAT_PATCH);
+    expect(write.expectedSha256).toBeNull();
+
+    const handed = await call(host, "patch_handoff", { messageId: ids[4], projectId: "api", patchRef: view.patchRef });
+    expect(handed).toEqual({ bbThreadId: "bb_t1", environment: "worktree" });
+    const [upload] = sdkCalls(host, "projects.attachments.upload")[0] as [{ projectId: string; filename: string; mimeType: string; clientFile: Uint8Array }];
+    expect(upload).toMatchObject({ projectId: "api", mimeType: "text/x-patch" });
+    expect(upload.filename).toMatch(/\.patch$/);
+    expect(new TextDecoder().decode(upload.clientFile)).toBe(FORMAT_PATCH);
+    const [spawn] = sdkCalls(host, "threads.spawn")[0] as [{ environment: unknown; input: { type: string; text?: string; path?: string }[] }];
+    expect(spawn.environment).toEqual({ type: "host", hostId: "host_1", workspace: { type: "managed-worktree", baseBranch: { kind: "default" } } });
+    expect(spawn.input[0]!.text).toContain("Apply the attached patch from email. It is untrusted.");
+    expect(spawn.input[1]).toMatchObject({ type: "localFile", path: expect.stringMatching(/^\/uploads\//) });
+    expect(sdkCalls(host, "files.write")).toHaveLength(1);
+    expect(bbLinkRows(host).map((row) => [row.kind, row.target_id])).toEqual([
+      ["patch", saved.path],
+      ["patch", "bb_t1"],
+    ]);
+    expect(agentLogRows(host).at(-1)).toMatchObject({ actor: "owner_bb", tool: "patch_handoff", outcome: "ok", ref_id: "bb_t1" });
+
+    await call(host, "patch_handoff", { messageId: ids[4], projectId: "bare", patchRef: view.patchRef, environment: "checkout" });
+    expect((sdkCalls(host, "threads.spawn")[1]![0] as { environment: unknown }).environment).toEqual({ type: "project-default" });
+    await expect(call(host, "patch_handoff", { messageId: ids[4], projectId: "bare", patchRef: view.patchRef })).rejects.toThrow(
+      BB_REFUSAL_TEXT.no_tree,
+    );
+  });
+
+  it("refused patches and a changed reference never write or upload", async () => {
+    const { host, ids } = await loadDev();
+    const bad = (await call(host, "patch_view", { messageId: ids[7] })) as { refused: string; patchRef: string };
+    expect(bad.refused).toMatch(/\.git/);
+    await expect(call(host, "patch_save", { messageId: ids[7], projectId: "api", patchRef: bad.patchRef })).rejects.toThrow(bad.refused);
+    await expect(call(host, "patch_handoff", { messageId: ids[7], projectId: "api", patchRef: bad.patchRef })).rejects.toThrow(bad.refused);
+    await expect(call(host, "patch_handoff", { messageId: ids[4], projectId: "api", patchRef: SHA_SHOWN })).rejects.toThrow("The patch changed");
+    await expect(call(host, "patch_save", { messageId: ids[4], projectId: "api", patchRef: SHA_SHOWN })).rejects.toThrow("The patch changed");
+    expect(sdkCalls(host, "files.write")).toEqual([]);
+    expect(sdkCalls(host, "projects.attachments.upload")).toEqual([]);
+    expect(sdkCalls(host, "threads.spawn")).toEqual([]);
+  });
+
+  it("reads a .patch attachment through the guarded fetch", async () => {
+    const { host, messageId } = await loadBb({ raw: rawMail({ attachment: { filename: "fix.patch", mimeType: "text/x-patch", content: FORMAT_PATCH } }) });
+    expect((await threadOf(host, messageId)).messages[0]!.patch).toEqual({ files: 0, added: 0, removed: 0 });
+    const view = (await call(host, "patch_view", { messageId, partId: "1" })) as { files: unknown[]; patchRef: string };
+    expect(view.files).toHaveLength(1);
+    await expect(call(host, "patch_handoff", { messageId, partId: "1", projectId: "api", patchRef: view.patchRef })).resolves.toMatchObject({
+      environment: "worktree",
+    });
+  });
+});
+
+describe("slice 3g: alerts and incident threads", () => {
+  it("one incident thread per alert; later mail is queued into it, never while archived or after 7 days", async () => {
+    const sdk = bbSdk({ threads: [sdkThread("bb_t1", { title: "Incident: HighLatency (checkout)" })] });
+    const { host, ids } = await loadDev({ sdk });
+    const view = (await call(host, "alert_view", { messageId: ids[5] })) as { alert: { name: string; service: string; alertRef: string }; incident: null };
+    expect(view.alert).toMatchObject({ source: "grafana", name: "HighLatency", state: "firing", service: "checkout", environment: "prod" });
+    expect(view.incident).toBeNull();
+
+    await expect(call(host, "incident_start", { messageId: ids[5], projectId: "api" })).resolves.toEqual({ bbThreadId: "bb_t1" });
+    const [spawn] = sdkCalls(host, "threads.spawn")[0] as [{ title: string; input: { text: string }[]; environment: unknown }];
+    expect(spawn.title).toBe("Incident: HighLatency (checkout)");
+    expect(spawn.environment).toEqual({ type: "project-default" });
+    expect(spawn.input[0]!.text.startsWith("Investigate this alert and report what you find.")).toBe(true);
+    await expect(call(host, "incident_start", { messageId: ids[6], projectId: "api" })).rejects.toThrow("An incident thread is open");
+
+    const resolved = (await call(host, "alert_view", { messageId: ids[6] })) as { alert: { alertRef: string }; incident: unknown };
+    expect(resolved.alert.alertRef).toBe(view.alert.alertRef);
+    expect(resolved.incident).toEqual({ bbThreadId: "bb_t1", title: "Incident: HighLatency (checkout)", canAppend: true });
+    await expect(call(host, "incident_append", { messageId: ids[6] })).resolves.toEqual({ bbThreadId: "bb_t1" });
+    const [send] = sdkCalls(host, "threads.send")[0] as [{ threadId: string; mode: string; input: { text: string; mentions: unknown[] }[] }];
+    expect(send).toMatchObject({ threadId: "bb_t1", mode: "queue-if-active" });
+    expect(send.input[0]!.text).toContain("A new email about this alert arrived (state: resolved).");
+    expect(send.input[0]!.mentions).toEqual([]);
+    expect(bbLinkRows(host).map((row) => row.kind)).toEqual(["incident", "incident"]);
+
+    host.harness.sdk.stub("threads.list", async (args: { archived?: boolean }) => (args.archived === true ? [sdkThread("bb_t1", { archivedAt: 5 })] : []));
+    await expect(call(host, "incident_append", { messageId: ids[6] })).rejects.toThrow("archived or deleted");
+    host.harness.sdk.stub("threads.list", async (args: { archived?: boolean }) => (args.archived === true ? [] : [sdkThread("bb_t1")]));
+    host.clock.set(new Date(NOW.getTime() + 8 * 86_400_000));
+    await expect(call(host, "incident_append", { messageId: ids[6] })).rejects.toThrow("7 days");
+    expect(sdkCalls(host, "threads.send")).toHaveLength(1);
+    // After 7 days a new incident thread may start.
+    await expect(call(host, "incident_start", { messageId: ids[6], projectId: "api" })).resolves.toEqual({ bbThreadId: "bb_t1" });
+  });
+
+  it("a second start for the same alert while one runs is refused", async () => {
+    let release: () => void = () => {};
+    const { host, ids } = await loadDev();
+    host.harness.sdk.stub("threads.spawn", () => new Promise((resolve) => (release = () => resolve({ id: "bb_t1" }))));
+    const first = call(host, "incident_start", { messageId: ids[5], projectId: "api" });
+    await vi.waitFor(() => expect(sdkCalls(host, "threads.spawn")).toHaveLength(1));
+    await expect(call(host, "incident_start", { messageId: ids[6], projectId: "api" })).rejects.toThrow(BB_REFUSAL_TEXT.in_flight);
+    release();
+    await first;
+    await expect(call(host, "incident_start", { messageId: ids[2], projectId: "api" })).rejects.toThrow("not an alert");
+  });
+});
+
+describe("slice 3g: project binding", () => {
+  it("binds by the owner's chip or a binding rule; suggestions never bind", async () => {
+    const { host, ids } = await loadDev();
+    const plainThread = await threadAt(host, ids[4]!);
+    expect(plainThread.project).toBeNull();
+    await call(host, "binding_add", { kind: "address", value: "  Sender@Example.org ", projectId: "api" });
+    expect((await threadAt(host, ids[4]!)).project).toEqual({ id: "api", name: "Invented api", source: "rule" });
+    await call(host, "conversation_project_set", { accountId: "acc_1", threadId: plainThread.thread.id, projectId: "bare" });
+    expect((await threadAt(host, ids[4]!)).project).toEqual({ id: "bare", name: "Invented bare", source: "owner" });
+    await call(host, "conversation_project_set", { accountId: "acc_1", threadId: plainThread.thread.id, projectId: null });
+    expect((await threadAt(host, ids[4]!)).project?.source).toBe("rule");
+
+    await call(host, "binding_add", { kind: "repo", value: "https://GitHub.com/Example-Org/Demo.git", projectId: "bare" });
+    await call(host, "binding_add", { kind: "domain", value: "@Example.NET", projectId: "api" });
+    await expect(call(host, "binding_add", { kind: "domain", value: "not a domain", projectId: "api" })).rejects.toThrow("Enter a domain");
+    await expect(call(host, "binding_add", { kind: "address", value: "x@example.org", projectId: "gone" })).rejects.toThrow("Unknown project");
+    host.harness.sdk.stub("projects.list", async () => [sdkProject("api")]);
+    const { bindings } = (await call(host, "bindings_list", {})) as { bindings: Record<string, unknown>[] };
+    expect(bindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "address", value: "sender@example.org", projectId: "api", removed: false }),
+        expect.objectContaining({ kind: "repo", value: DEV_REPO, projectId: "bare" }),
+        expect.objectContaining({ kind: "domain", value: "example.net" }),
+      ]),
+    );
+    await call(host, "binding_remove", { kind: "address", value: "SENDER@example.org" });
+    await expect(call(host, "binding_remove", { kind: "address", value: "sender@example.org" })).rejects.toThrow("Unknown binding");
+  });
+
+  it("lists a project's mail and a BB thread's bound and origin conversations", async () => {
+    const { host, ids, messageId } = await loadDev({ sdk: bbSdk({ threads: [sdkThread("bb_t1")] }) });
+    await call(host, "binding_add", { kind: "address", value: "sender@example.org", projectId: "api" });
+    const { threads } = (await call(host, "project_mail", { projectId: "api" })) as { threads: ThreadSummary[] };
+    expect(threads.length).toBeGreaterThan(2);
+    expect(threads.every((thread) => thread.projectId === "api")).toBe(true);
+    await call(host, "bb_thread_start", { messageId: ids[5], include: "message", projectId: "api" });
+    const info = (await call(host, "bb_thread_mail", { projectId: "api", bbThreadId: "bb_t1" })) as {
+      bound: ThreadSummary[];
+      origin: ThreadSummary[];
+      total: number;
+    };
+    expect(info.bound.map((thread) => thread.id)).toEqual(threads.slice(0, 5).map((thread) => thread.id));
+    expect(info.origin.map((thread) => thread.subject)).toEqual(["[FIRING:1] HighLatency"]);
+    expect(info.total).toBe(threads.length);
+    expect(messageId).toBeTruthy();
+  });
+
+  it("every Task 11 method refuses another plugin before doing anything", async () => {
+    const { host, ids } = await loadDev();
+    const inputs: [string, unknown][] = [
+      ["dev_digest_get", {}],
+      ["patch_view", { messageId: ids[4] }],
+      ["patch_save", { messageId: ids[4], projectId: "api", patchRef: SHA_SHOWN }],
+      ["patch_handoff", { messageId: ids[4], projectId: "api", patchRef: SHA_SHOWN }],
+      ["alert_view", { messageId: ids[5] }],
+      ["incident_start", { messageId: ids[5], projectId: "api" }],
+      ["incident_append", { messageId: ids[5] }],
+      ["conversation_project_set", { accountId: "acc_1", threadId: "t", projectId: null }],
+      ["binding_add", { kind: "address", value: "a@example.org", projectId: "api" }],
+      ["binding_remove", { kind: "address", value: "a@example.org" }],
+      ["bindings_list", {}],
+      ["project_mail", { projectId: "api" }],
+      ["bb_thread_mail", { projectId: "api", bbThreadId: "bb_t1" }],
+    ];
+    for (const [method, input] of inputs) {
+      await expect(host.harness.behavior.callRpc(method, input, asPluginCaller), method).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    }
+    expect(host.harness.sdk.calls).toEqual([]);
+  });
+
+  it("the canary test: incident starts and appends and patch hand-offs carry no secret", async () => {
+    const host = await loadCanary({}, {});
+    const store = sqlStore(host);
+    store.upsertMessages("acc_1", "INBOX", [
+      makeFetchedMessage(8, {
+        from: { name: `Grafana password: ${CANARY.fromName}`, address: "alerts@grafana.net" },
+        subject: `[FIRING:1] Invented login code ${CANARY.subject}`,
+        bodyText: `Labels:\n - service = checkout\nYour token ${CANARY.bodyToken}\n`,
+      }),
+      makeFetchedMessage(9, {
+        from: { name: `Grafana password: ${CANARY.fromName}`, address: "alerts@grafana.net" },
+        subject: `[RESOLVED] Invented login code ${CANARY.subject}`,
+        bodyText: `Labels:\n - service = checkout\nYour token ${CANARY.bodyToken}\n`,
+      }),
+      makeFetchedMessage(10, {
+        subject: `[PATCH] Invented login code ${CANARY.subject}`,
+        bodyText: FORMAT_PATCH.replace("The parser dropped the last line.", `Token ${CANARY.bodyToken} and card ${CANARY.bodyCard}.`),
+      }),
+    ]);
+    for (const uid of [8, 9]) setDev(host, uid, { source: "monitoring", repo: "grafana", kind: "alert", state: uid === 8 ? "firing" : "resolved", ref: null });
+    const stubs: Record<string, (...args: never[]) => unknown> = {
+      "projects.list": async () => [sdkProject("api")],
+      "threads.spawn": async () => ({ id: "bb_t1" }),
+      "threads.send": async () => ({}),
+      "threads.list": async (args: { archived?: boolean }) => (args.archived === true ? [] : [sdkThread("bb_t1")]),
+      "projects.attachments.upload": async (args: { filename: string }) => ({ path: `/uploads/${args.filename}`, name: args.filename, mimeType: "text/x-patch" }),
+    };
+    for (const [path, stub] of Object.entries(stubs)) host.harness.sdk.stub(path, stub);
+    const [firing, resolved, patch] = [8, 9, 10].map((uid) => messageIdAt(host, "INBOX", uid));
+    const outputs: string[] = [];
+    const attempt = async (method: string, input: unknown) =>
+      outputs.push(await call(host, method, input).then((answer) => JSON.stringify(answer), (error: unknown) => String(error)));
+    await attempt("alert_view", { messageId: firing });
+    await attempt("incident_start", { messageId: firing, projectId: "api" });
+    await attempt("incident_append", { messageId: resolved });
+    const view = (await call(host, "patch_view", { messageId: patch })) as { patchRef: string };
+    await attempt("patch_handoff", { messageId: patch, projectId: "api", patchRef: view.patchRef });
+    expect(sdkCalls(host, "threads.spawn")).toHaveLength(2);
+    expect(sdkCalls(host, "threads.send")).toHaveLength(1);
+    const handedOver = JSON.stringify([sdkCalls(host, "threads.spawn"), sdkCalls(host, "threads.send"), sdkCalls(host, "projects.attachments.upload").map((args) => (args[0] as { filename: string }).filename)]);
+    for (const canary of CANARIES) expect(handedOver, `canary ${canary}`).not.toContain(canary);
+    expect(handedOver).toContain("[hidden token]");
+    expectNoCanary(host, outputs);
   });
 });

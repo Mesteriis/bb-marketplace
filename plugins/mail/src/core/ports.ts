@@ -1015,6 +1015,8 @@ export type DevGroupRow = {
   repo: string | null;
   counts: Partial<Record<DevKind, number>>;
   ciFailed: number;
+  /** Alert mails in the firing state (Today's line). */
+  firing: number;
   latestFailure: { messageId: string; subject: string; date: string | null } | null;
   unread: number;
   total: number;

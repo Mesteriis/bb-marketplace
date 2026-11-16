@@ -40,6 +40,7 @@ export function groupDevRows(rows: readonly DevListRow[]): DevGroupRow[] {
         repo: row.repo,
         counts: {},
         ciFailed: 0,
+        firing: 0,
         latestFailure: null,
         unread: 0,
         total: 0,
@@ -51,6 +52,7 @@ export function groupDevRows(rows: readonly DevListRow[]): DevGroupRow[] {
     group.total++;
     group.counts[row.kind] = (group.counts[row.kind] ?? 0) + 1;
     if (!row.isRead) group.unread++;
+    if (row.kind === "alert" && row.state === "firing") group.firing++;
     if (row.kind === "ci" && row.state === "failed") {
       group.ciFailed++;
       if (group.latestFailure === null) group.latestFailure = { messageId: row.id, subject: row.subject, date: row.date };

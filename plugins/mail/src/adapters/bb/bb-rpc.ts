@@ -14,9 +14,32 @@
 // - Agent-log rows, log lines and refusals carry ids, counts and fixed texts
 //   only: never a path, project name, title, prompt or file name.
 import { createHash } from "node:crypto";
+import { domainToASCII } from "node:url";
 import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
 import {
   BB_REFUSAL_TEXT,
+  BINDINGS_MAX,
+  DEV_KINDS,
+  INCIDENT_APPEND_DAYS,
+  PATCH_FILES_MAX,
+  PATCH_MAX_BYTES,
+  alertFingerprint,
+  alertOf,
+  bodyPlainText,
+  devLinks,
+  incidentPrompt,
+  incidentTitle,
+  incidentUpdate,
+  isPatchAttachment,
+  normalizeListId,
+  parsePatch,
+  patchFileName,
+  patchFromBody,
+  patchPrompt,
+  patchRef,
+  redactSecrets,
+  repoRefOf,
+  scanHtml,
   BbPortError,
   BbTextOutOfScope,
   ComposeError,
@@ -43,8 +66,14 @@ import {
   threadPrompt,
   threadTitle,
   underGit,
+  type AlertParts,
+  type BindingKind,
+  type BindingRow,
   type BbLinkRow,
   type BbMessage,
+  type DevGroupRow,
+  type IncidentRow,
+  type ProjectRemote,
   type BbPermissionMode,
   type BbThreads,
   type Clock,
@@ -62,7 +91,7 @@ import {
   type WorkingTree,
 } from "../../core/index.ts";
 import { SAVE_TO_PROJECT_ENABLED } from "./bb-projects.ts";
-import { projectDefaultEnvironment } from "./bb-threads.ts";
+import { projectDefaultEnvironment, worktreeEnvironment } from "./bb-threads.ts";
 import { RawRefusal, STALE_MESSAGE, fetchRawGuarded, type RawDeps } from "./downloads.ts";
 import { parseMail } from "./imapflow-gateway.ts";
 
@@ -84,6 +113,23 @@ export const NAME_TAKEN_TEXT = "Too many files with this name in the folder";
 export const UNKNOWN_ATTACHMENT_TEXT = "Unknown attachment";
 export const GIT_FILE_TEXT = "Files under .git are not offered";
 export const DRAFT_ROOM_TEXT = "The draft has no room for this file";
+export const NO_PATCH_TEXT = "This email holds no patch";
+export const PATCH_TOO_LARGE_TEXT = "The patch is larger than 1 MB";
+export const PATCH_CHANGED_TEXT = "The patch changed; open it again";
+export const NOT_ALERT_TEXT = "This email is not an alert";
+export const INCIDENT_OPEN_TEXT = "An incident thread is open for this alert; add this email to it";
+export const NO_INCIDENT_TEXT = "No incident thread for this alert";
+export const INCIDENT_OLD_TEXT = "The incident thread had no update for 7 days; start a new one";
+export const INCIDENT_GONE_TEXT = "The incident thread was archived or deleted";
+export const BINDING_INVALID_TEXT: Record<BindingKind, string> = {
+  address: "Enter an email address",
+  domain: "Enter a domain such as example.com",
+  list: "Enter a mailing list id",
+  repo: "Enter a repository as host/owner/repo",
+};
+export const BINDINGS_FULL_TEXT = "You have the most binding rules Makosh Mail keeps (500); remove some first";
+export const UNKNOWN_BINDING_TEXT = "Unknown binding rule";
+export const REMOVED_PROJECT_NAME = "Removed project";
 
 /** One attachment saved into a project: at most this many bytes. */
 export const SAVE_PART_MAX_BYTES = 25 * 1024 * 1024;
@@ -95,11 +141,24 @@ export const BB_ATTACH_MAX_BYTES = 25 * 1024 * 1024;
 const START_SAVE_PARTS_MAX = 20;
 const KEEP_BOTH_MAX = 99;
 const DRAFT_SUBJECT_MAX = 200;
+/** Dev view groups a page. */
+const DEV_DIGEST_PAGE = 50;
+const DEV_DIGEST_DAYS = 7;
+/** Today's dev line reads at most this many groups. */
+const TODAY_DEV_GROUPS = 1_000;
+const PROJECT_MAIL_PAGE = 50;
+const INFO_THREADS = 5;
+/** bb_thread_mail's total counts at most this many conversations. */
+const INFO_TOTAL_MAX = 500;
+const DAY_MS = 86_400_000;
+const ADDRESS = /^[^\s@<>]{1,64}@[^\s@<>]{1,253}$/;
+const DOMAIN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 
 export type BbSettings = {
   attachmentFolder: string;
   patchFolder: string;
   taskTarget: "auto" | "taskboard" | "local";
+  devNotifications: boolean;
 };
 
 export type BbRpcDeps = {
@@ -255,6 +314,60 @@ export async function writeIntoTree(
     }
   }
   return { outcome: "failed", reason: NAME_TAKEN_TEXT };
+}
+
+/** "host/owner/repo" of a project's remote, lower case; null without one. */
+export function projectRepo(project: Pick<ProjectInfo, "remote">): string | null {
+  return project.remote === null ? null : `${project.remote.host}/${project.remote.path}`.toLowerCase();
+}
+
+/**
+ * A binding rule's value as stored (resolution 14 and "Project binding"):
+ * an address and a domain in lower case (the domain in ASCII), a normalized
+ * List-Id, a repository as "host/owner/repo"; null when it is none of them.
+ */
+export function normalizeBinding(kind: BindingKind, raw: string): string | null {
+  const value = raw.trim();
+  if (value === "") return null;
+  switch (kind) {
+    case "address": {
+      const address = value.toLowerCase();
+      return ADDRESS.test(address) ? address : null;
+    }
+    case "domain": {
+      const ascii = domainToASCII(value.replace(/^@/, "").replace(/\.$/, "").toLowerCase());
+      return ascii !== "" && DOMAIN.test(ascii) ? ascii : null;
+    }
+    case "list":
+      return normalizeListId(value);
+    case "repo": {
+      const ref = repoRefOf(value) ?? (/^[a-z][a-z0-9+.-]*:/i.test(value) ? null : repoRefOf(`https://${value}`));
+      return ref === null ? null : `${ref.host}/${ref.path}`.toLowerCase();
+    }
+  }
+}
+
+/** The project a dev group or repo maps to: a repo binding rule first, else a project whose remote is that repo. */
+function projectForRepo(
+  repo: string | null,
+  projects: readonly ProjectInfo[],
+  bindings: readonly BindingRow[],
+): { id: string; name: string | null } | null {
+  if (repo === null) return null;
+  const key = repo.toLowerCase();
+  const bound = bindings.find((row) => row.kind === "repo" && row.value === key);
+  if (bound !== undefined) return { id: bound.projectId, name: projects.find((p) => p.id === bound.projectId)?.name ?? null };
+  const matched = projects.find((project) => projectRepo(project) === key);
+  return matched === undefined ? null : { id: matched.id, name: matched.name };
+}
+
+function devCounts(counts: DevGroupRow["counts"]): Record<(typeof DEV_KINDS)[number], number> {
+  return Object.fromEntries(DEV_KINDS.map((kind) => [kind, counts[kind] ?? 0])) as Record<(typeof DEV_KINDS)[number], number>;
+}
+
+/** An incident thread still takes updates (7 days since its last). */
+function appendable(row: IncidentRow, now: Date): boolean {
+  return now.getTime() - Date.parse(row.lastAt) <= INCIDENT_APPEND_DAYS * DAY_MS;
 }
 
 export function createBbRpc(deps: BbRpcDeps) {
@@ -802,7 +915,416 @@ export function createBbRpc(deps: BbRpcDeps) {
     };
   }
 
+
+  // ---- Dev mail (Task 11) ----
+
+  async function listOrNull(): Promise<ProjectInfo[] | null> {
+    try {
+      return await projects.list();
+    } catch {
+      return null;
+    }
+  }
+
+  async function devDigest(input: { days?: number | undefined; accountId?: string | undefined; cursor?: string | null | undefined }) {
+    const since = new Date(clock.now().getTime() - (input.days ?? DEV_DIGEST_DAYS) * DAY_MS).toISOString();
+    const page = store.devGroups({ sinceIso: since, accountId: input.accountId ?? null, cursor: input.cursor ?? null, limit: DEV_DIGEST_PAGE });
+    const list = (await listOrNull()) ?? [];
+    const bindings = store.listBindings();
+    return {
+      groups: page.groups.map((group) => {
+        const project = group.source === "github" || group.source === "gitlab" ? projectForRepo(group.repo, list, bindings) : null;
+        return {
+          source: group.source,
+          repo: group.repo,
+          counts: devCounts(group.counts),
+          ciFailed: group.ciFailed,
+          latestFailure: group.latestFailure,
+          unread: group.unread,
+          total: group.total,
+          latestDate: group.latestDate,
+          messageIds: group.messageIds,
+          projectId: project?.id ?? null,
+          projectName: project?.name ?? null,
+        };
+      }),
+      next: page.next,
+    };
+  }
+
+  /** Today's dev line: the last 24 hours. */
+  function todayDev(): { ciFailed: number; repos: number; alertsFiring: number } {
+    if (!deps.settings().devNotifications) return { ciFailed: 0, repos: 0, alertsFiring: 0 };
+    const since = new Date(clock.now().getTime() - DAY_MS).toISOString();
+    const { groups } = store.devGroups({ sinceIso: since, limit: TODAY_DEV_GROUPS });
+    return {
+      ciFailed: groups.reduce((sum, group) => sum + group.ciFailed, 0),
+      repos: groups.filter((group) => group.source !== "monitoring" && group.repo !== null).length,
+      alertsFiring: groups.reduce((sum, group) => sum + group.firing, 0),
+    };
+  }
+
+  /** The text and hrefs links are read from: the plain body, else the HTML's text. */
+  function linkSource(header: MessageHeader): { text: string; hrefs: string[]; plain: string } {
+    const body = store.getBody(header.id);
+    if (body === null) return { text: "", hrefs: [], plain: "" };
+    const scan = body.html === null ? null : scanHtml(body.html);
+    const text = body.text !== null && body.text.trim() !== "" ? body.text : (scan?.text ?? "");
+    return { text, hrefs: scan?.hrefs ?? [], plain: bodyPlainText(body) };
+  }
+
+  /**
+   * thread_get's 3g fields: BB links (withBbLinks), dev links mapped to
+   * projects, the patch summary, the alert flag, the bound project (the
+   * owner's chip, else a binding rule) and, when none is bound, a suggestion
+   * from the links or the dev repo that never binds by itself.
+   */
+  async function threadDetail(detail: ThreadDetail): Promise<ThreadDetail> {
+    const linked = await withBbLinks(detail);
+    const list = await listOrNull();
+    const remotes: ProjectRemote[] = (list ?? []).flatMap((project) => (project.remote === null ? [] : [{ projectId: project.id, remote: project.remote }]));
+    const messages = linked.messages.map((header) => {
+      const source = linkSource(header);
+      const fromBody = patchFromBody(source.plain);
+      let patch: MessageHeader["patch"] = null;
+      if (fromBody !== null) {
+        const parsed = parsePatch(fromBody);
+        patch = {
+          files: parsed.files.length,
+          added: parsed.files.reduce((sum, file) => sum + file.added, 0),
+          removed: parsed.files.reduce((sum, file) => sum + file.removed, 0),
+        };
+      } else if (header.attachments.some((part) => !part.isInline && isPatchAttachment(part))) {
+        // Counted when the owner opens it (patch_view fetches the attachment).
+        patch = { files: 0, added: 0, removed: 0 };
+      }
+      return { ...header, devLinks: devLinks(source.text, source.hrefs, remotes), patch, alert: header.dev?.source === "monitoring" };
+    });
+    const owned = store.conversationProject(detail.thread.accountId, detail.thread.id);
+    const boundId = owned ?? detail.thread.projectId;
+    const nameOf = (id: string) => list?.find((project) => project.id === id)?.name ?? (list === null ? id : REMOVED_PROJECT_NAME);
+    const project = boundId === null ? null : { id: boundId, name: nameOf(boundId), source: owned !== null ? ("owner" as const) : ("rule" as const) };
+    let projectSuggestion: ThreadDetail["projectSuggestion"] = null;
+    if (project === null && list !== null) {
+      for (const header of messages) {
+        const viaLink = header.devLinks.find((devLink) => devLink.projectId !== null);
+        const target = viaLink !== undefined ? list.find((p) => p.id === viaLink.projectId) : undefined;
+        const viaRepo = target === undefined ? projectForRepo(header.dev?.repo ?? null, list, []) : null;
+        const chosen = target ?? (viaRepo === null ? undefined : list.find((p) => p.id === viaRepo.id));
+        if (chosen !== undefined) {
+          projectSuggestion = { id: chosen.id, name: chosen.name, repo: projectRepo(chosen) };
+          break;
+        }
+      }
+    }
+    return { ...linked, messages, project, projectSuggestion };
+  }
+
+  // ---- Patches (Task 11) ----
+
+  async function patchSource(header: MessageHeader, partId: string | undefined): Promise<{ bytes: Uint8Array; text: string }> {
+    if (partId !== undefined) {
+      const stored = header.attachments.find((part) => part.partId === partId);
+      if (stored === undefined) throw refuse("not_found", UNKNOWN_ATTACHMENT_TEXT);
+      if (stored.size > PATCH_MAX_BYTES) throw refuse("invalid", PATCH_TOO_LARGE_TEXT);
+      const read = (await readParts(deps.rawDeps, header))(partId);
+      if (!read.ok) throw refuse("conflict", read.reason);
+      return { bytes: read.bytes, text: new TextDecoder().decode(read.bytes) };
+    }
+    const text = patchFromBody(bodyPlainText(store.getBody(header.id)));
+    if (text === null) throw refuse("not_found", NO_PATCH_TEXT);
+    return { bytes: new TextEncoder().encode(text), text };
+  }
+
+  async function patchView(input: { messageId: string; partId?: string | undefined }) {
+    const header = message(input.messageId);
+    const source = await patchSource(header, input.partId);
+    const parsed = parsePatch(source.text);
+    return {
+      files: parsed.files.slice(0, PATCH_FILES_MAX),
+      warnings: parsed.warnings,
+      refused: parsed.refused,
+      commitMessage: parsed.commitMessage === null ? null : redactSecrets(parsed.commitMessage).text,
+      patchRef: await patchRef(source.bytes),
+    };
+  }
+
+  /** Fresh bytes, the reference the owner was shown checked again, refused patches refused. */
+  async function checkedPatch(header: MessageHeader, partId: string | undefined, shown: string) {
+    const source = await patchSource(header, partId);
+    if ((await patchRef(source.bytes)) !== shown) throw refuse("conflict", PATCH_CHANGED_TEXT);
+    const parsed = parsePatch(source.text);
+    if (parsed.refused !== null) throw refuse("invalid", parsed.refused);
+    return { ...source, parsed };
+  }
+
+  async function patchSave(input: { messageId: string; partId?: string | undefined; projectId: string; patchRef: string }) {
+    const header = message(input.messageId);
+    if (!saveEnabled) throw refuse("conflict", BB_REFUSAL_TEXT.save_disabled);
+    const project = await projectOf(input.projectId, "patch_save");
+    if (project.tree === null) throw refuse("conflict", BB_REFUSAL_TEXT.no_tree);
+    const patch = await checkedPatch(header, input.partId, input.patchRef);
+    const folder = settingFolder(deps.settings().patchFolder, "mail-patches");
+    // The bytes as they came: Mail never rewrites a patch.
+    const written = await writeIntoTree(projects, project.tree, folder, patchFileName(header.date, header.agentSubject), patch.bytes, "keep_both", null);
+    if (written.outcome !== "saved") {
+      deps.agentLog({ actor: "owner_bb", tool: "project_save", outcome: "failed", messageIds: [header.id] });
+      throw refuse("conflict", written.outcome === "failed" ? written.reason : NAME_TAKEN_TEXT);
+    }
+    link({ accountId: header.accountId, messageId: header.id, threadId: header.threadId, kind: "patch", targetId: written.path, projectId: project.id, extra: input.patchRef });
+    deps.agentLog({ actor: "owner_bb", tool: "project_save", outcome: "ok", messageIds: [header.id], count: 1 });
+    return { path: written.path };
+  }
+
+  /**
+   * Hands a patch to an agent (resolution 10): uploaded as a thread
+   * attachment, never written into the tree, in a fresh managed worktree;
+   * the checkout only when the owner chose it after a worktree refusal.
+   */
+  async function patchHandoff(input: {
+    messageId: string;
+    partId?: string | undefined;
+    projectId: string;
+    patchRef: string;
+    environment?: "worktree" | "checkout" | undefined;
+  }) {
+    const header = message(input.messageId);
+    if (!header.inAiScope) {
+      deps.agentLog({ actor: "owner_bb", tool: "patch_handoff", outcome: "refused_scope", messageIds: [header.id] });
+      throw refuse("conflict", BB_REFUSAL_TEXT.out_of_scope);
+    }
+    const project = await projectOf(input.projectId, "patch_handoff");
+    const where: "worktree" | "checkout" = input.environment === "checkout" ? "checkout" : "worktree";
+    if (where === "worktree" && project.tree === null) throw refuse("conflict", BB_REFUSAL_TEXT.no_tree);
+    const patch = await checkedPatch(header, input.partId, input.patchRef);
+    return starts.run(header.id, async () => {
+      const prompt = patchPrompt(patch.parsed.commitMessage);
+      let bbThreadId: string;
+      try {
+        const item = await threads.uploadAttachment(project.id, patch.bytes, patchFileName(header.date, header.agentSubject), "text/x-patch");
+        bbThreadId = (
+          await threads.spawn({
+            projectId: project.id,
+            environment: where === "checkout" || project.tree === null ? projectDefaultEnvironment() : worktreeEnvironment(project.tree),
+            title: threadTitle(header.subject, "Apply patch"),
+            prompt: prompt.text,
+            extraInput: [item],
+            pluginMetadata: metadataFor({ accountId: header.accountId, messageId: header.id, threadId: header.threadId, kind: "patch" }),
+          })
+        ).threadId;
+      } catch (error) {
+        deps.agentLog({ actor: "owner_bb", tool: "patch_handoff", outcome: "failed", messageIds: [header.id] });
+        throw bbRefusal(error, deps.log, "patch_handoff");
+      }
+      link({ accountId: header.accountId, messageId: header.id, threadId: header.threadId, kind: "patch", targetId: bbThreadId, projectId: project.id, extra: input.patchRef });
+      deps.agentLog({
+        actor: "owner_bb",
+        tool: "patch_handoff",
+        outcome: "ok",
+        messageIds: [header.id],
+        count: 1,
+        hiddenCount: prompt.hidden,
+        refId: bbThreadId,
+      });
+      return { bbThreadId, environment: where };
+    });
+  }
+
+  // ---- Alerts and incident threads (Task 11) ----
+
+  async function alertOfMessage(header: MessageHeader): Promise<{ parts: AlertParts; ref: string } | null> {
+    if (header.dev === null || header.dev.source !== "monitoring") return null;
+    const parts = alertOf({ devClass: header.dev, subject: header.subject, text: bodyPlainText(store.getBody(header.id)) });
+    return parts === null ? null : { parts, ref: await alertFingerprint(parts) };
+  }
+
+  /** The incident thread as BB knows it now, or null when BB does not answer or it is gone. */
+  async function incidentThread(bbThreadId: string): Promise<{ title: string | null; archived: boolean } | null | "unknown"> {
+    try {
+      const [thread] = await threads.list({ threadIds: [bbThreadId] });
+      return thread === undefined ? null : { title: thread.title, archived: thread.archived };
+    } catch {
+      return "unknown";
+    }
+  }
+
+  async function alertView(input: { messageId: string }) {
+    const header = message(input.messageId);
+    const alert = await alertOfMessage(header);
+    if (alert === null) return { alert: null, incident: null };
+    const row = store.incidentFor(alert.ref);
+    let incident = null;
+    if (row !== null) {
+      const thread = await incidentThread(row.bbThreadId);
+      const live = thread !== null && thread !== "unknown" && !thread.archived;
+      incident = {
+        bbThreadId: row.bbThreadId,
+        title: thread === null || thread === "unknown" ? null : thread.title,
+        canAppend: live && appendable(row, clock.now()),
+      };
+    }
+    return { alert: { ...alert.parts, alertRef: alert.ref }, incident };
+  }
+
+  function scopedAlertMessage(messageId: string): MessageHeader {
+    const header = message(messageId);
+    if (!header.inAiScope) {
+      deps.agentLog({ actor: "owner_bb", tool: "incident", outcome: "refused_scope", messageIds: [header.id] });
+      throw refuse("conflict", BB_REFUSAL_TEXT.out_of_scope);
+    }
+    return header;
+  }
+
+  async function incidentStart(input: { messageId: string; projectId: string; instruction?: string | undefined }) {
+    const header = scopedAlertMessage(input.messageId);
+    const alert = await alertOfMessage(header);
+    if (alert === null) throw refuse("invalid", NOT_ALERT_TEXT);
+    const project = await projectOf(input.projectId, "incident_start");
+    return starts.run(`incident:${alert.ref}`, async () => {
+      const open = store.incidentFor(alert.ref);
+      if (open !== null && appendable(open, clock.now())) {
+        const thread = await incidentThread(open.bbThreadId);
+        if (thread !== null && (thread === "unknown" || !thread.archived)) throw refuse("conflict", INCIDENT_OPEN_TEXT);
+      }
+      let text;
+      try {
+        text = incidentPrompt(alert.parts, bbMessage(store, header), input.instruction);
+      } catch (error) {
+        throw bbRefusal(error, deps.log, "incident_start");
+      }
+      let bbThreadId: string;
+      try {
+        bbThreadId = (
+          await threads.spawn({
+            projectId: project.id,
+            environment: projectDefaultEnvironment(),
+            title: incidentTitle(alert.parts),
+            prompt: text.text,
+            pluginMetadata: metadataFor({ accountId: header.accountId, messageId: header.id, threadId: header.threadId, kind: "incident" }),
+          })
+        ).threadId;
+      } catch (error) {
+        deps.agentLog({ actor: "owner_bb", tool: "incident", outcome: "failed", messageIds: [header.id] });
+        throw bbRefusal(error, deps.log, "incident_start");
+      }
+      const at = nowIso();
+      store.putIncident({ fingerprint: alert.ref, bbThreadId, projectId: project.id, createdAt: at, lastAt: at });
+      link({ accountId: header.accountId, messageId: header.id, threadId: header.threadId, kind: "incident", targetId: bbThreadId, projectId: project.id, extra: null });
+      deps.agentLog({ actor: "owner_bb", tool: "incident", outcome: "ok", messageIds: [header.id], count: 1, hiddenCount: text.hidden, refId: bbThreadId });
+      return { bbThreadId };
+    });
+  }
+
+  async function incidentAppend(input: { messageId: string }) {
+    const header = scopedAlertMessage(input.messageId);
+    const alert = await alertOfMessage(header);
+    if (alert === null) throw refuse("invalid", NOT_ALERT_TEXT);
+    const row = store.incidentFor(alert.ref);
+    if (row === null) throw refuse("not_found", NO_INCIDENT_TEXT);
+    if (!appendable(row, clock.now())) throw refuse("conflict", INCIDENT_OLD_TEXT);
+    const thread = await incidentThread(row.bbThreadId);
+    if (thread === "unknown") throw refuse("conflict", BB_PORT_TEXT.failed);
+    if (thread === null || thread.archived) throw refuse("conflict", INCIDENT_GONE_TEXT);
+    let text;
+    try {
+      text = incidentUpdate(alert.parts, bbMessage(store, header));
+      // Queued when the thread is running: an update never interrupts a turn.
+      await threads.send(row.bbThreadId, text.text);
+    } catch (error) {
+      deps.agentLog({ actor: "owner_bb", tool: "incident", outcome: "failed", messageIds: [header.id] });
+      throw bbRefusal(error, deps.log, "incident_append");
+    }
+    store.touchIncident(alert.ref, nowIso());
+    link({ accountId: header.accountId, messageId: header.id, threadId: header.threadId, kind: "incident", targetId: row.bbThreadId, projectId: row.projectId, extra: null });
+    deps.agentLog({ actor: "owner_bb", tool: "incident", outcome: "ok", messageIds: [header.id], count: 1, hiddenCount: text.hidden, refId: row.bbThreadId });
+    return { bbThreadId: row.bbThreadId };
+  }
+
+  // ---- Project binding (Task 11) ----
+
+  async function conversationProjectSet(input: { accountId: string; threadId: string; projectId: string | null }) {
+    if (store.getAccount(input.accountId) === null) throw refuse("not_found", "Unknown account");
+    if (input.projectId !== null) await projectOf(input.projectId, "conversation_project_set");
+    store.setConversationProject(input.accountId, input.threadId, input.projectId, nowIso());
+    deps.publishChanged(input.accountId);
+    return { ok: true as const };
+  }
+
+  async function bindingAdd(input: { kind: BindingKind; value: string; projectId: string }) {
+    const value = normalizeBinding(input.kind, input.value);
+    if (value === null) throw refuse("invalid", BINDING_INVALID_TEXT[input.kind]);
+    await projectOf(input.projectId, "binding_add");
+    const added = store.addBinding({ kind: input.kind, value, projectId: input.projectId, createdAt: nowIso() });
+    if ("full" in added) throw refuse("conflict", BINDINGS_FULL_TEXT);
+    deps.publishChanged(null);
+    return { ok: true as const };
+  }
+
+  function bindingRemove(input: { kind: BindingKind; value: string }) {
+    const value = normalizeBinding(input.kind, input.value) ?? input.value.trim().toLowerCase();
+    if (!store.removeBinding(input.kind, value)) throw refuse("not_found", UNKNOWN_BINDING_TEXT);
+    deps.publishChanged(null);
+    return { ok: true as const };
+  }
+
+  async function bindingsList() {
+    const list = await listOrNull();
+    return {
+      bindings: store.listBindings().slice(0, BINDINGS_MAX).map((row) => {
+        const project = list?.find((p) => p.id === row.projectId);
+        return {
+          kind: row.kind,
+          value: row.value,
+          projectId: row.projectId,
+          projectName: project?.name ?? null,
+          removed: list !== null && project === undefined,
+          createdAt: row.createdAt,
+        };
+      }),
+    };
+  }
+
+  function projectMail(input: { projectId: string; cursor?: string | null | undefined }) {
+    const page = store.projectThreads(input.projectId, { cursor: input.cursor ?? null, limit: PROJECT_MAIL_PAGE });
+    return { threads: page.threads, next: page.nextCursor };
+  }
+
+  /** The thread Info section (resolution 17): the project's latest bound conversations and those Mail's links tie the thread to. */
+  function bbThreadMail(input: { projectId: string; bbThreadId: string }) {
+    const bound = store.projectThreads(input.projectId, { cursor: null, limit: INFO_THREADS }).threads;
+    const seen = new Set<string>();
+    const origin: ThreadDetail["thread"][] = [];
+    const links = store.listBbLinks({ targetId: input.bbThreadId }).filter((row) => row.kind === "thread" || row.kind === "incident" || row.kind === "patch");
+    for (const row of [...links].reverse()) {
+      if (origin.length >= INFO_THREADS) break;
+      const header = store.getMessage(row.messageId);
+      if (header === null) continue;
+      const key = `${header.accountId}\u0000${header.threadId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const thread = store.getThread(header.threadId, header.folder)?.thread;
+      if (thread !== undefined) origin.push(thread);
+    }
+    const total = store.projectThreads(input.projectId, { cursor: null, limit: INFO_TOTAL_MAX }).threads.length;
+    return { bound, origin, total };
+  }
+
   return {
+    devDigest,
+    todayDev,
+    threadDetail,
+    patchView,
+    patchSave,
+    patchHandoff,
+    alertView,
+    incidentStart,
+    incidentAppend,
+    conversationProjectSet,
+    bindingAdd,
+    bindingRemove,
+    bindingsList,
+    projectMail,
+    bbThreadMail,
     projectsList,
     threadPrepare,
     threadStart,

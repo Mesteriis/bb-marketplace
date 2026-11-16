@@ -277,6 +277,7 @@ import {
   type TriageView,
   BB_REFUSAL_TEXT,
   projectFolder,
+  scanHtml,
   type BbThreads,
   type ProjectDirectory,
   type TaskTarget,
@@ -536,6 +537,12 @@ function defineSettings(bb: BbPluginApi) {
       experimental_schema: z.number().int().min(1).max(30),
     },
     // Slice 3g.
+    devNotifications: {
+      type: "boolean",
+      label: "Recognise GitHub, GitLab, CI and monitoring mail (Dev view)",
+      description: "Judged on this computer when mail arrives; nothing is sent anywhere.",
+      default: true,
+    },
     attachmentFolder: {
       type: "string",
       label: "Folder for attachments saved into a project",
@@ -1121,6 +1128,8 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         windowDays: current.syncWindowDays,
         batchSize: FETCH_BATCH_SIZE,
         intervalMinutes: clampInterval(current.syncIntervalMinutes),
+        // Slice 3g: dev notifications judged at sync, older rows by the dev backfill after full rounds.
+        classify: current.devNotifications,
       }),
       {
         log: (line) => bb.log.info(line),
@@ -1381,6 +1390,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         attachmentFolder: folderOr(current.attachmentFolder, ATTACHMENT_FOLDER_DEFAULT),
         patchFolder: folderOr(current.patchFolder, PATCH_FOLDER_DEFAULT),
         taskTarget: current.taskTarget === "taskboard" || current.taskTarget === "local" ? current.taskTarget : "auto",
+        devNotifications: current.devNotifications,
       }),
       agentTriage: () => current.agentTriage,
       poster: overrides.poster ?? createOneClickPoster({ clock }),
@@ -2436,7 +2446,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   };
   const nowIso = () => composeDeps.clock.now().toISOString();
   const ai = createAiRpc(deps, ownerDraft);
-  const day = createDayRpc(deps, ai.withCategories);
+
   const bbRpc = createBbRpc({
     store,
     clock: composeDeps.clock,
@@ -2453,6 +2463,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     log,
     ...(deps.saveToProjectEnabled === undefined ? {} : { saveEnabled: deps.saveToProjectEnabled }),
   });
+  const day = createDayRpc(deps, ai.withCategories, { dev: () => bbRpc.todayDev() });
   /** A slice 3g owner method: plugin callers refused first; BB failures as fixed texts. */
   function ownerBb<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
@@ -2534,7 +2545,9 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       },
       threads_list: ({ scope, cursor, limit, filter }) => {
         // Category filters and fields only while categories are on (slice 3f).
-        const shown = filter !== undefined && filter.category !== undefined && !deps.categoriesOn() ? { ...filter, category: undefined } : filter;
+        const categorized = filter !== undefined && filter.category !== undefined && !deps.categoriesOn() ? { ...filter, category: undefined } : filter;
+        // "Hide dev notifications" only while they are recognised (slice 3g).
+        const shown = categorized !== undefined && categorized.notDev !== undefined && !deps.bbSettings().devNotifications ? { ...categorized, notDev: undefined } : categorized;
         const page =
           scope.kind === "account"
             ? store.listThreads(scope.accountId, scope.folder, cursor, limit, shown)
@@ -2547,14 +2560,15 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       thread_get: async ({ threadId, folder }) => {
         const thread = store.getThread(threadId, folder);
         if (thread === null) throw refuse("not_found", "Unknown thread");
-        return bbRpc.withBbLinks(thread);
+        return bbRpc.threadDetail(thread);
       },
       // cid: images come inline as data: URLs, so the page fetches nothing for them.
       message_body: ({ messageId }) => {
         const body = store.getBody(messageId);
         if (body === null) throw refuse("not_found", "Unknown message");
         if (body.html === null) return body;
-        return { ...body, html: inlineCidImages(body.html, store.inlineParts(messageId)) };
+        // Slice 3g: the HTML's <pre> blocks for the code-block view (no DOM on the server).
+        return { ...body, html: inlineCidImages(body.html, store.inlineParts(messageId)), codeBlocks: scanHtml(body.html).preBlocks };
       },
       // Hand to agent without a mention: the text goes into the owner's prompt.
       // Like the tools and mentions, it never marks the message read.
@@ -3024,7 +3038,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       ai_scope_set: owner("ai_scope_set", (input) => day.setScope(input)),
       agent_log_list: owner("agent_log_list", (input) => day.logList(input)),
       agent_log_clear: owner("agent_log_clear", () => ({ removed: store.clearAgentLog() })),
-      // Slice 3g (owner only, like every compose method). Tasks 11-12 wire the rest; until then they refuse.
+      // Slice 3g (owner only, like every compose method). Task 12 wires the rules; until then they refuse.
       projects_list: ownerBb("projects_list", () => bbRpc.projectsList()),
       bb_thread_prepare: ownerBb("bb_thread_prepare", (input) => bbRpc.threadPrepare(input)),
       bb_thread_start: ownerBb("bb_thread_start", (input) => bbRpc.threadStart(input)),
@@ -3037,19 +3051,19 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       bb_threads_recent: ownerBb("bb_threads_recent", (input) => bbRpc.threadsRecent(input)),
       compose_attach_bb: ownerBb("compose_attach_bb", (input) => bbRpc.composeAttachBb(input)),
       draft_from_bb: ownerBb("draft_from_bb", (input) => bbRpc.draftFromBb(input)),
-      dev_digest_get: notYet3g,
-      patch_view: notYet3g,
-      patch_save: notYet3g,
-      patch_handoff: notYet3g,
-      alert_view: notYet3g,
-      incident_start: notYet3g,
-      incident_append: notYet3g,
-      conversation_project_set: notYet3g,
-      binding_add: notYet3g,
-      binding_remove: notYet3g,
-      bindings_list: notYet3g,
-      project_mail: notYet3g,
-      bb_thread_mail: notYet3g,
+      dev_digest_get: ownerBb("dev_digest_get", (input) => bbRpc.devDigest(input)),
+      patch_view: ownerBb("patch_view", (input) => bbRpc.patchView(input)),
+      patch_save: ownerBb("patch_save", (input) => bbRpc.patchSave(input)),
+      patch_handoff: ownerBb("patch_handoff", (input) => bbRpc.patchHandoff(input)),
+      alert_view: ownerBb("alert_view", (input) => bbRpc.alertView(input)),
+      incident_start: ownerBb("incident_start", (input) => bbRpc.incidentStart(input)),
+      incident_append: ownerBb("incident_append", (input) => bbRpc.incidentAppend(input)),
+      conversation_project_set: ownerBb("conversation_project_set", (input) => bbRpc.conversationProjectSet(input)),
+      binding_add: ownerBb("binding_add", (input) => bbRpc.bindingAdd(input)),
+      binding_remove: ownerBb("binding_remove", (input) => bbRpc.bindingRemove(input)),
+      bindings_list: ownerBb("bindings_list", () => bbRpc.bindingsList()),
+      project_mail: ownerBb("project_mail", (input) => bbRpc.projectMail(input)),
+      bb_thread_mail: ownerBb("bb_thread_mail", (input) => bbRpc.bbThreadMail(input)),
       rules_list: notYet3g,
       rule_save: notYet3g,
       rule_delete: notYet3g,
@@ -4701,7 +4715,11 @@ function aiScopeView(store: MailStore) {
   };
 }
 
-function createDayRpc(deps: RpcDeps, withCategories: (threads: ThreadSummary[], folder: string) => ThreadSummary[]) {
+function createDayRpc(
+  deps: RpcDeps,
+  withCategories: (threads: ThreadSummary[], folder: string) => ThreadSummary[],
+  bb: { dev: () => { ciFailed: number; repos: number; alertsFiring: number } },
+) {
   const { store } = deps;
   const clock = deps.composeDeps.clock;
   const nowIso = () => clock.now().toISOString();
@@ -4724,7 +4742,7 @@ function createDayRpc(deps: RpcDeps, withCategories: (threads: ThreadSummary[], 
       tasksDue,
       since: { ...sinceCountsNow(store, since, deps.categoriesOn()), from: since },
       digestDay: store.getDigest(day)?.day ?? null,
-      dev: { ciFailed: 0, repos: 0, alertsFiring: 0 },
+      dev: bb.dev(),
       rulesReady: 0,
     };
   }
