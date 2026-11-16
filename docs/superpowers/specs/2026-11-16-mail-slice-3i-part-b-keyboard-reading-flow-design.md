@@ -1,11 +1,13 @@
 # Makosh Mail — slice 3i, part B: Apple Mail keyboard and reading flow (Apple Mail keys, the next message after a delete, earlier messages in one closed stack)
 
-Status: builder's design, proposed on 2026-11-16, **not yet accepted by the
-owner**. Part A of 3i is
+Status: builder's design, **accepted by the owner on 2026-11-16**: every
+decision B1–B10 is marked *(owner, accepted 2026-11-16)*, and open questions
+1–4 are closed (question 1 against the recommendation: ↓/↑ open the row
+even when nothing is open, as in Apple Mail). Part A of 3i is
 `2026-11-16-mail-slice-3i-security-privacy-design.md` (security and
-privacy); this document adds part B to the same slice and changes nothing in
-part A. Every decision is marked *Proposed (owner to accept)* with a safe
-default; the open questions are few and each has a recommendation.
+privacy); this document adds part B to the same slice. The "Resolutions
+after the builder check" at the end override every section above them, and
+their "Interactions with part A" bind both parts.
 Everything in the slice-1, slice-2, 3a–3h specs and 3i part A holds unless
 this document changes it. In particular: hotkeys never fire while typing
 (`isTypingTarget`), letters match the physical key (`event.code`), a held key
@@ -33,7 +35,7 @@ in "Not verified" at the end.
 Numbered B1–B10 so they do not clash with part A's 1–10.
 
 B1. **Both key sets.** The Gmail-style single keys stay exactly as they are;
-    Apple Mail keys are added beside them. *Proposed (owner to accept).*
+    Apple Mail keys are added beside them. *(owner, accepted 2026-11-16).*
     Removing a key the owner already uses would be a regression; the two sets
     do not overlap (Apple's are arrows, Backspace/Delete and Command chords,
     Gmail's are plain letters and symbols).
@@ -41,14 +43,14 @@ B1. **Both key sets.** The Gmail-style single keys stay exactly as they are;
 B2. **Arrows and Backspace/Delete on every platform; Command chords on macOS
     only.** Up/Down, Shift+Up/Down, Backspace, Delete (⌦) work everywhere.
     The Apple Mail Command chords (⌘R, ⌃⌘A, …) are bound only when the page
-    runs on macOS. *Proposed (owner to accept).* On Windows and Linux the
+    runs on macOS. *(owner, accepted 2026-11-16).* On Windows and Linux the
     same chords with Ctrl collide with browser and OS keys (Ctrl+R, Ctrl+N,
     Ctrl+Shift+J, Ctrl+Shift+R …) and Apple's map has no Ctrl version there;
     the letters already cover those platforms.
 
 B3. **Only chords BB does not own.** A chord that BB 0.49.0 binds by default
     (⌘N, ⇧⌘N, ⌘F, ⌘P, ⌘K, ⌘1–9, …) is never bound by Mail, even though the
-    page could `preventDefault` some of them. *Proposed (owner to accept).*
+    page could `preventDefault` some of them. *(owner, accepted 2026-11-16).*
     Taking BB's keys inside one plugin page would make BB behave differently
     on the Mail page; the fallback is the Gmail letter (`c` for New message,
     `/` for search, Shift+P for print). Full list in "Keys that are not
@@ -59,8 +61,7 @@ B4. **Up/Down by focus zone.** In the list (or anywhere on the page outside
     when a conversation is already open. On a message header or the
     "earlier messages" stack in the conversation, Up/Down move focus between
     the headers. Anywhere else inside the conversation (the message text,
-    a toolbar) Up/Down keep the browser's own scrolling. *Proposed (owner to
-    accept).* Apple Mail scrolls the message when the message has focus;
+    a toolbar) Up/Down keep the browser's own scrolling. *(owner, accepted 2026-11-16).* Apple Mail scrolls the message when the message has focus;
     taking the arrows there would make a long message unscrollable by
     keyboard.
 
@@ -68,21 +69,20 @@ B5. **After delete, archive, junk, move or snooze of the open conversation,
     the next one opens** — the row below; at the end of the list, the row
     above; no rows left → the empty state. The same for the reading pane's
     toolbar, the hotkeys, the Apple chords and drag-to-folder (every path
-    through `threadsAction`, plus snooze). *Proposed (owner to accept).*
+    through `threadsAction`, plus snooze). *(owner, accepted 2026-11-16).*
     This is Apple Mail's behaviour; opening marks the next conversation read,
     as any open does.
 
 B6. **Multi-selection: the cursor moves, nothing opens.** After a removing
     action on a selection, the cursor goes to the first remaining row after
     the last removed one (else before the first); the reading pane shows the
-    empty state. *Proposed (owner to accept).* With a selection no
+    empty state. *(owner, accepted 2026-11-16).* With a selection no
     conversation is open (its panel hides it, `SelectionPanel`), and opening
     a conversation the owner never chose would mark it read unseen.
 
 B7. **Undo brings the conversation back and reopens it** when the reading
     pane still shows the conversation the action opened (or nothing);
-    otherwise the restored row only takes the cursor. *Proposed (owner to
-    accept).* It undoes the visible effect without overriding a choice the
+    otherwise the restored row only takes the cursor. *(owner, accepted 2026-11-16).* It undoes the visible effect without overriding a choice the
     owner made after the action.
 
 B8. **Earlier messages collapse into one closed stack.** When a conversation
@@ -91,20 +91,20 @@ B8. **Earlier messages collapse into one closed stack.** When a conversation
     message the owner expanded) collapse into one closed stack — "N earlier
     messages" — when there are two or more of them. A click, Enter or Space
     opens it; `;` (Expand all) opens it with everything; Collapse all closes
-    it again. *Proposed (owner to accept).* The newest (or the target)
+    it again. *(owner, accepted 2026-11-16).* The newest (or the target)
     message sits right under the conversation header; nothing is hidden that
     the owner has not read.
 
 B9. **Order stays oldest → newest.** The stack sits above the shown messages,
     in date order, as print, `;` and "Load the whole conversation" already
-    assume. *Proposed (owner to accept).* A "newest at the top" order (an
+    assume. *(owner, accepted 2026-11-16).* A "newest at the top" order (an
     Apple Mail setting) would change print, quotes, citations and the agent
     text order; it is listed for another slice.
 
 B10. **Keys typed inside a message body reach the page.** The message frame
     forwards key presses from its document to the page, so hotkeys (and
-    Backspace) still work after a click into a message's text. *Proposed
-    (owner to accept).* Today a click into the sandboxed frame silently
+    Backspace) still work after a click into a message's text. *(owner, accepted
+    2026-11-16).* Today a click into the sandboxed frame silently
     turns every hotkey off (the frame's events never reach the page root).
 
 ## Goals
@@ -414,8 +414,8 @@ Vitest + jsdom, `@testing-library/react`; async UI assertions use `waitFor`
     `[contenteditable]`, inside `[data-mail-composer]`, `[role="dialog"]`,
     `[role="textbox"]`, a select's listbox; null with `isComposing` and with
     `key: "Process"`.
-  - Mac chords with a Russian layout: `{ key: "к", code: "KeyR", metaKey }`
-    → reply; `{ key: "Ф", code: "KeyA", metaKey, ctrlKey }` → archive; ⇧⌘J,
+  - Mac chords with a Russian layout: `{ key: "\u043a", code: "KeyR", metaKey }`
+    → reply; `{ key: "\u0424", code: "KeyA", metaKey, ctrlKey }` → archive; ⇧⌘J,
     ⇧⌘U, ⇧⌘L, ⌥⌘F, ⌃⌘M, ⇧⌘F, ⌘Z, ⌘Backspace.
   - The same chords with `mac: false`, and Ctrl in place of Meta → null.
   - Every `HOST_RESERVED` chord → null; no `SHORTCUT_SHEET` entry uses one.
@@ -513,20 +513,23 @@ text changed). Paths are under `plugins/mail/`.
 
 ## Open questions for the owner
 
-Each has a recommended default that the design above implements.
+All four are **closed on 2026-11-16**.
 
 1. **↓/↑ with nothing open:** move the cursor only (proposed), or open the
-   row as Apple Mail does (and mark it read)? *Recommendation:* cursor only;
-   Enter opens. Once a conversation is open, arrows open as in Apple Mail.
+   row as Apple Mail does (and mark it read)? **Answer (2026-11-16): open
+   the row immediately, as Apple Mail does, and mark it read** (not the
+   recommendation; resolution 2 gives the details). `j`/`k` stay as they
+   are (B1).
 2. **After a multi-selection delete:** cursor only (proposed) or open the
-   next conversation? *Recommendation:* cursor only (B6).
+   next conversation? **Answer: cursor only; nothing opens** (B6).
 3. **⌘R / ⇧⌘R / ⌘Z** bound on the desktop app (proposed, subject to the
-   live check), or left out to be safe? *Recommendation:* bind; the live
-   check removes any that reloads.
+   live check), or left out to be safe? **Answer: bind them; any chord the
+   live check shows reloading the window or running the host's own undo is
+   dropped from the map and the sheet** (resolution 10).
 4. **Stack scope:** collapse every earlier read message (proposed), or keep
    the first message of the conversation visible above the stack (Gmail's
-   style)? *Recommendation:* collapse all earlier; the first message is one
-   click away.
+   style)? **Answer: collapse all earlier messages; the opened message, the
+   newest and every message unread at open are never hidden** (B8).
 
 ## Items proposed for another slice
 
@@ -554,3 +557,283 @@ Each has a recommended default that the design above implements.
 - That a re-dispatched `keydown` on the `<iframe>` element reaches React's
   root listener in BB desktop as in jsdom (it is an ordinary bubbling DOM
   event).
+
+## Resolutions after the builder check
+
+These override every section above. The owner accepted B1–B10 and answered
+open questions 1–4 on 2026-11-16 (resolution 1). The builder checked this
+part against the tree at commit `168abbb5`: `src/ui/shortcuts.ts`,
+`src/ui/mail-page.tsx`, `src/ui/reading-pane.tsx`,
+`src/ui/message-frame.tsx`, `src/ui/sanitize.ts`, `src/ui/selection-bar.tsx`,
+`src/ui/composer.tsx`, `src/ui/compose-toolbar.tsx`, `src/ui/mail-settings.tsx`,
+`app.tsx`, `src/core/threading.ts`, `src/adapters/bb/sqlite-store.ts`,
+`server.ts`. Every cited symbol exists as described, within a line or two
+of the cited lines. Findings that change the design are below.
+
+1. **The owner's answers (2026-11-16).** (1) ↓/↑ open the row even when
+   nothing is open, as Apple Mail does, and opening marks it read
+   (resolution 2). (2) After a removing action on a multi-selection the
+   cursor moves and nothing opens (B6 unchanged). (3) ⌘R, ⇧⌘R and ⌘Z are
+   bound on the desktop app; whichever the live check shows reloading the
+   window or running the host's own undo is removed from the map, the sheet
+   and README in the same slice (resolution 10). (4) The stack collapses all
+   earlier messages; the opened message, the newest and every message that
+   was unread at open are never hidden (B8 unchanged).
+
+2. **Arrows open; `j`/`k` do not change (owner answer 1).** Replaces B4's
+   "move the cursor, and open the row when a conversation is already open"
+   for arrows only.
+   - `ShortcutCommand`'s `next`/`previous` gain `arrow?: true`; ↓/↑ in zone
+     `"page"` produce them with `arrow: true`. `step(delta, repeat, arrow)`
+     (`mail-page.tsx` 710–718) opens the new cursor row when `arrow` is set
+     even if nothing is open; `j`/`k` keep today's rule (open only when a
+     conversation is open).
+   - Still never behind a selection (`selecting`), as today.
+   - **Held arrows** move the cursor only (each `repeat` press), as `j`/`k`
+     do. The page root gains an `onKeyUp`: releasing an arrow after a run of
+     repeats opens the row under the cursor (same conditions). So a held ↓
+     ends with the row it stopped on open, without opening and marking read
+     every row it passed.
+   - **One column** (`wide` false) with nothing open: arrows move the cursor
+     only. Opening there would replace the list the owner is moving through
+     with the conversation; once a conversation is open, arrows open as in
+     two columns. *Builder call, flagged for the owner* (it narrows answer 1
+     to the two-column layout the owner uses).
+   - In Drafts, an arrow open uses `openRow` (the reading pane), never
+     `activateRow`'s "continue in the composer".
+
+3. **Field, dialog and IME safety: verified, with three additions.**
+   - Verified: `matchKey` (`shortcuts.ts` 118–) returns null for any
+     Ctrl/Alt/Meta or `isComposing` key before the typing check today;
+     `isTypingTarget` (68–79) covers `input`, `textarea`, `select`,
+     `isContentEditable`, `[contenteditable]`, `[data-mail-composer]` (the
+     composer root, `composer.tsx` 794), dialogs and alert dialogs, listbox,
+     option, combobox, menus and `[role="textbox"]`. The Move… filter, the
+     search field, the composer and every vendored dialog are covered. The
+     settings `tablist` (`mail-settings.tsx` 284) renders through
+     `props.page`, outside the Mailbox root that carries `onKeyDown`
+     (`mail-page.tsx` 401–406, 999–1004), so its arrows never reach Mail's
+     handler. The message frame's document has no field: the sanitizer
+     forbids `form`, `input`, `button`, `textarea`, `select` (`sanitize.ts`
+     44–57).
+   - Added: the IME guard also drops `keyCode === 229` (WebKit's
+     composition keydown, where `isComposing` can be false), beside
+     `isComposing` and `key === "Process"`.
+   - Added: arrows (only arrows) return null when the target is inside an
+     element that owns arrow keys: `[role="tablist"]`, `[role="radiogroup"]`,
+     `[role="slider"]`, `[role="spinbutton"]`, `[role="tree"]`,
+     `[role="grid"]`, `[role="toolbar"]`. None is in the page zone today; the
+     guard keeps a later widget from losing its arrows.
+   - Added: the typing check runs first for every key (as designed), so a
+     chord never reaches a field; `HOST_RESERVED` chords still return null
+     on a Mac.
+
+4. **Shift+↓/↑ need their own selection rule.** Replaces "extend the
+   selection with `toggleChecked(next, true)` from the anchor".
+   `toggleSelection` (`selection-bar.tsx` 15–32) sets every row of the range
+   to the **clicked row's new state** and `toggleChecked` moves the anchor to
+   the clicked row (`mail-page.tsx` 734–737). Used for Shift+arrows it would
+   not select the starting row on the first press, and turning back (⇧↓ then
+   ⇧↑) would clear both rows instead of one. A pure
+   `extendSelection({ order, base, anchor, to })` in `src/ui/successor.ts`
+   returns `base ∪ order[anchor..to]`: the anchor is the cursor row when the
+   Shift run starts (the selection then is `base`), each press moves `to`,
+   and turning back shrinks the range. A run ends on any other key or a
+   click. Grouped lists only, never in one column with a conversation open,
+   as `x`. Tests: first press selects two rows; back over the anchor; a
+   `base` selection made with `x` is kept.
+
+5. **Successor paths, checked one by one.** Added to "`src/ui/mail-page.tsx`"
+   and "`app.tsx`".
+   - Toolbar, hotkeys, Apple chords and the selection bar all reach
+     `threadsAction` (`app.tsx` 1272–1353) through `runAction`
+     (`mail-page.tsx` 686–690); its `closeThread()` at 1318 already compares
+     the **current** open id, so `then()` runs where `closeThread()` runs
+     today, only when the open conversation is still `snapshot.threadId`.
+   - **Snooze** reaches `snoozeThreads` (`app.tsx` 2045–2105) from the
+     page's snooze menu (`mail-page.tsx` 1334) and the toolbar; `then` is
+     passed the same way (closing at 2089 today). The "needs a folder" retry
+     (`folderSettled`) runs without `then` and closes as today.
+   - **Drag to a folder does not pass through the page.** The drop lands in
+     the sidebar and reaches `dropThreads` (`app.tsx` 3433–3456) through the
+     rail command `drop` (3503). So the page computes the successor when the
+     drag starts (`drag.onStart`, `mail-page.tsx` 1614–1620) and hands it
+     up: `onDragAccounts(accountIds, advance)` with `advance: (() => void) |
+     null` (null when there is a selection or the open conversation is not
+     dragged). `app.tsx` keeps it in a ref, passes it to `threadsAction`
+     from `dropThreads`, and clears it on drag end.
+   - **Rows**: `rowIds` are thread ids for grouped lists and message ids for
+     search hits and non-grouped folders (`mail-page.tsx` 586–587); in the
+     latter `isRemoved` matches the row's `threadId`. The successor is
+     computed from the rows shown when the action starts (B5 call) and
+     opened with `openRow` from that render, which captures the hit.
+   - **Not in B5** (close as today): Mark unread (its own "back to the
+     list", 1281–1284), Block sender (2163), Archive all from this list, and
+     anything that removes the open conversation from outside the page (a
+     rule, another device). README lists the B5 actions exactly.
+   - A second removing key while the first action runs is dropped
+     (`pendingRef`, then the destructive guard), so Backspace held or
+     tapped twice never deletes the successor unseen.
+
+6. **Undo keeps the thread id in the usual case; the reopen waits for the
+   row.** Replaces B7's "[unverified]" on thread ids.
+   - A moved row keeps its id: `takeOver` in the store's move settlement
+     ("the moved row keeps its id and takes that copy's uid",
+     `sqlite-store.ts` 3871–3893) rehomes the row instead of inserting a new
+     one, also when it merges with a synced copy. Thread ids are
+     `t_<root row id>` (`threading.ts` 231), so a conversation moved and
+     moved back keeps its id. The exception is Gmail's copy back from All
+     Mail (`UID COPY`, `server.ts` 1935–1944): the Inbox copy is a new row
+     at the next sync and the thread id can change; then nothing reopens
+     and the cursor stays (the undo itself is unaffected).
+   - `app.tsx` keeps `reopenByUndo: Map<undoId, { threadId, accountId,
+     advancedTo }>` (not a field of `lastUndo`), so both `z` and an older
+     toast's own **Undo** find their entry. After a `done` undo with
+     `restored > 0`, the page reopens `threadId` once the row is back in the
+     list, waiting at most `MOVING_BACK_MAX_MS`; any owner open or close in
+     between cancels it.
+
+7. **The stack's open state lives in the page, beside `quotesAll`.**
+   Replaces "Opening state `open` is per conversation in the pane".
+   - `;`, Expand all and Collapse all are the page's `expandAll`
+     (`mail-page.tsx` 800–811), which toggles messages through
+     `onToggleMessage` and sets `quotesAll` (527, 809, 828). The stack's
+     `open` is therefore page state `{ threadId, open }` passed to the pane
+     in `ReadingSlice3h` (`stackOpen`, `onStackOpen`), like `quotesAll`.
+     Expand all sets it open (every message expanded also moves the
+     boundary to the first message); Collapse all sets it closed (the
+     newest stays expanded, so the stack forms again before the anchors).
+   - Anchors at first render, verified: `loadThread` sets `detail` and
+     expands the focus in the same tick, then calls `markOpened`, which
+     only sends `message_open` and does not flip `isRead` locally (`app.tsx`
+     879–897, 925–945); the first render carries the server's `isRead`. The
+     pane records the anchors in state keyed by thread id on the first
+     render that has `detail` (as `Switches`).
+   - Citation chips: `cite` (`mail-page.tsx` 779–787) expands the message
+     before setting the highlight, so the boundary moves first and the
+     highlight effect finds the `[data-message-id]` card after the render.
+   - Print (`r3.onPrint(messages)`, reading-pane header; the `print` hotkey
+     case) and `messageToHand` read the full `messages` list; plain text,
+     original colors and quote switches are keyed by message id (`Switches`)
+     and survive the stack; the single-message view (`single`) has no stack;
+     Related mail uses the newest message. All unaffected, as designed.
+   - "Load the whole conversation": the page remembers the message count
+     when the job starts (`r3.conversation.state === "running"`); when it
+     ends with more messages, the page sets the stack open.
+   - Message headers get `data-mail-message-toggle` on the existing
+     `<button aria-expanded>` (`reading-pane.tsx` 474–477).
+   - The `Conversation` section that gets `data-mail-reading` and
+     `tabIndex={-1}` is `mail-page.tsx` 1156–1161; it is the reading pane's
+     scroll container (`overflow-y-auto`), so focusing it makes arrows
+     scroll it natively.
+
+8. **Frame key forwarding is feasible, with two corrections.** Added to
+   "Message frame key forwarding".
+   - Verified: the parent already attaches `click`/`auxclick` to the frame's
+     `contentDocument` in `handleLoad` and removes them in `detachRef`
+     (`message-frame.tsx` 266–301); `sandbox="allow-same-origin"` (312)
+     permits it; each new `srcDoc` re-runs `handleLoad`. A `keydown`
+     listener is added and removed the same way. The copy is built with the
+     **parent** realm's `KeyboardEvent` (`frame.ownerDocument.defaultView`)
+     and dispatched on the `<iframe>` element, so it bubbles through React's
+     root listener and then to BB's `window` listener like a page key.
+   - **Enter, Space and Tab are not forwarded.** In the frame they activate
+     a focused link or `<summary>` or move focus. Forwarded, Enter would also
+     run `open` (the copy's target is the `<iframe>`, which `isActivatable`
+     does not treat as a link) and open the cursor row on top of the link.
+   - **Arrows, Page Up/Down, Home and End are not forwarded** either: in the
+     reading zone they map to no command, and a synthetic event has no
+     default action. Their native default runs in the frame; the frame has
+     no scroll of its own (its height is its content), so whether Chromium
+     chains that scroll to the pane is a live check (step 6). If it does
+     not, the frame listener scrolls the `[data-mail-reading]` container by
+     a line or a page itself.
+   - The forwarder drops `isComposing`, `key === "Process"` and `keyCode ===
+     229` events itself (the copy's `keyCode` is 0), and keys whose target is
+     a typing target.
+   - BB's dispatcher may ignore synthetic (`isTrusted: false`) events
+     **[unverified]**; either way nothing of BB's breaks, since BB never saw
+     frame keys before.
+
+9. **Composer ⇧⌘D.** `composer.tsx` `onKeyDown` (760–781) gains a Mac-only
+   branch beside ⌘/Ctrl+Enter that calls the same `send()` (pre-send
+   included) and stops propagation as the Enter branch does. The platform
+   test is one exported `isMacPlatform()` in `shortcuts.ts` (the
+   `navigator.userAgentData?.platform` else `navigator.platform` rule), and
+   `compose-toolbar.tsx`'s `modKeyLabel` (12) uses it too, so there is one
+   definition.
+
+10. **⌘R, ⇧⌘R, ⌘Z: bound, then decided by the live check (owner answer
+    3).** Live step 1 is owner-run after the build. A chord it shows
+    reloading the window or running the host's undo is removed from `matchKey`, `SHORTCUT_SHEET`'s
+    `mac` keys, README and CHANGELOG in a follow-up commit, and recorded
+    here. Until then they are bound.
+
+11. **Not verified, updated.** Still open: Apple Mail's own chords for
+    delete, flag and mailbox search (not on Apple's page); Electron menu
+    accelerators for ⌘R / ⇧⌘R / ⌘Z (live step 1); whether a browser tab lets
+    the page prevent ⌘R; whether BB's dispatcher honours synthetic events;
+    whether keyboard scrolling chains from the frame to the pane (live step
+    6). Now verified: thread ids survive move and move back except Gmail's
+    copy back (resolution 6); "unread at open" is captured on the first
+    render (resolution 7); the frame forwarding path (resolution 8, jsdom;
+    BB desktop in live step 6).
+
+### Interactions with part A
+
+These bind both parts (part A's status line points here).
+
+- **I1. One frame load handler.** `message-frame.tsx` `handleLoad` gains
+  part A's link listeners (`click`/`auxclick` reporting `{ href, text }`,
+  `mouseover`/`focusin`/`mouseout`/`focusout` for the status line) and part
+  B's `keydown` forwarder. All are attached in that one handler and removed
+  by the one `detachRef`; tests assert that a new `srcDoc` leaves exactly
+  one listener of each kind. The two parts' frame work is done by one agent
+  in sequence (plan batches E then F).
+- **I2. Keyboard link opening.** A link focused with Tab inside the frame and
+  activated with Enter goes through the frame's own click → `onOpenLink({
+  href, text })` → `cleanLink` and the deceptive-link dialog; Enter is not
+  forwarded (resolution 8), so it cannot also open the cursor row. The
+  dialog is a `[role="dialog"]`, so Backspace, arrows and chords inside it
+  never act on mail.
+- **I3. Arrow opens vs. the open-time sender check.** Every arrow open is a
+  real open: `loadThread` marks the conversation read (`message_open`,
+  accepted). The part A refresh (`sender_check_refresh`) is not sent per
+  arrow press: the page sends it once the conversation has stayed open for
+  600 ms (the timer is cleared when another conversation opens), only for
+  expanded messages whose state is `unknown`, and the server drops a
+  refresh for a message that already has one in flight. A held arrow opens
+  nothing until release (resolution 2), so a run of presses queues at most
+  one refresh. A result that lands after the owner moved on is stored and
+  shown next time.
+- **I4. Automatic images wait for the check.** An auto-opened successor or
+  arrow-opened old message from an always-show sender loads images only
+  after its state is known (part A resolution 5); the bar says so.
+- **I5. The successor may be a warned message.** It opens with its warning
+  strip and without automatic images, as any open does; nothing about the
+  successor rule changes.
+- **I6. The stack and warnings.** Earlier messages in the stack are read
+  ones; their warning lines are hidden with them. The stack's summary line
+  names senders with the same `addressLabel` as the headers, shows the
+  address instead of the name for a message with a `name_shows_address`
+  warning, and adds "· sender warning" when any stacked message has a failed
+  check or a warning. A message unread at open (a fresh spoof included) is
+  an anchor and never stacked.
+- **I7. Stacked messages are not refreshed.** The part A refresh runs for
+  expanded messages only, so opening a long old conversation fetches
+  headers for the newest (and any anchors) only; opening the stack expands
+  nothing by itself, and a message expanded from it is refreshed then.
+- **I8. Encrypted and signed mail.** The crypto chip and the encrypted
+  placeholder live in `MessageItem` and behave the same inside or outside
+  the stack; Print prints the placeholder for an encrypted message (its body
+  is null, part A resolution 6).
+- **I9. ⇧⌘D** sends through the composer's pre-send path, so part A's
+  `reply_to_elsewhere` item shows for it as for ⌘Enter.
+- **I10. Attributes.** Part B's `data-mail-reading`, `data-mail-stack` and
+  `data-mail-message-toggle` live in Mail's own DOM, never inside the frame;
+  part A's `data-mk-*` marks live only inside the frame and are stripped
+  from mail input (`sanitize.ts` 418). Neither selector matches the other.
+- **I11. Shared files, one order.** Part A's UI and part B's app, frame and
+  stack work both edit `app.tsx`, `reading-pane.tsx` and
+  `message-frame.tsx`; the plan runs them in strictly sequential batches
+  (A's UI first, since B's stack summary reads A's header fields).

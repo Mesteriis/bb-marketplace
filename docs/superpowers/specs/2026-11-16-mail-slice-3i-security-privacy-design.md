@@ -1,11 +1,17 @@
 # Makosh Mail — slice 3i: security and privacy (sender checks and spoofing warnings, trackers and link cleaning, read receipts, signed and encrypted mail recognised)
 
-Status: builder's design, proposed on 2026-11-16, **not yet accepted by the
-owner**. Every decision below is marked *Proposed (owner to accept)* with a
-safe default and a one-line rationale; the owner tends to accept sensible
-safe defaults, so the open questions are kept few and each has a
-recommendation. It follows 3a (organize and read), 3b (write and send), 3c
-(agent proposals and translation), 3d (sending polish), 3e (inbox triage), 3f
+Status: builder's design, **accepted by the owner on 2026-11-16**: every
+decision below is marked *(owner, accepted 2026-11-16)*, and open questions
+1–5 are closed as recommended (SafeLinks unwrapped; read receipts never
+sent; a failed check stops rules, the dev class and automatic images; full
+PGP and S/MIME in 3k; `secure_delete` on). The owner also answered the
+builder check's three questions (resolution 1). The "Resolutions after the
+builder check" at the end override every section above them. Part B of 3i
+(`2026-11-16-mail-slice-3i-part-b-keyboard-reading-flow-design.md`) adds
+keys and the reading flow; where the two parts meet, part B's resolutions
+section "Interactions with part A" is binding for both.
+
+It follows 3a (organize and read), 3b (write and send), 3c (agent proposals and translation), 3d (sending polish), 3e (inbox triage), 3f
 (agent and mail), 3g (BB integration) and 3h (search, history, folders,
 attachments), all on `feat/mail-imap-slice`. Everything in the slice-1,
 slice-2 and 3a–3h specs holds unless this document changes it, and their
@@ -40,22 +46,22 @@ in "Not verified" at the end.
 
 ## Owner's decisions
 
-Proposed by the builder on 2026-11-16. Each line is *Proposed (owner to
-accept)*; the default given is what the design below implements unless the
-owner changes it.
+Proposed by the builder and accepted by the owner on 2026-11-16. Each line
+is marked *(owner, accepted 2026-11-16)*; where a later resolution changes a
+decision, the resolution wins.
 
 1. **Scope of 3i:** sender checks and spoofing warnings (#39), tracker
    blocking and link cleaning (#40), read receipts never sent and the request
    shown (#72), signed and encrypted mail recognised but not verified or
    decrypted (#92, #97 partial), deleted rows overwritten on disk (#93
-   partial). *Proposed (owner to accept).* These are the security items that
+   partial). *(owner, accepted 2026-11-16).* These are the security items that
    need no keys, accounts or new dependencies.
 2. **Full PGP (#92) and S/MIME (#97) move to 3k.** Both need the owner to do
    things outside the code (create or import a key pair, get a certificate
    from a CA, collect correspondents' public keys or certificates) and each
    needs a new dependency (`openpgp` for PGP; a CMS/ASN.1 library such as
-   `pkijs` for S/MIME, since `node:crypto` cannot parse CMS). *Proposed
-   (owner to accept).* 3i lays the ground: the badge, the stored crypto kind,
+   `pkijs` for S/MIME, since `node:crypto` cannot parse CMS). *(owner, accepted
+   2026-11-16).* 3i lays the ground: the badge, the stored crypto kind,
    and the rule that an encrypted body never reaches an agent or a model.
 3. **#93 stays `[позже]`.** `bb.storage.database()` hands out the host's own
    better-sqlite3 handle on a fixed file (sdk 19830–19851) with no
@@ -63,7 +69,7 @@ owner changes it.
    (anti-goal) or field encryption that breaks the FTS5 search index; and the
    key would sit in the same plugin settings as `vaultKey`, readable by an
    agent with shell access, which the backlog's own risk note already says.
-   *Proposed (owner to accept).* The partial step in decision 10 is cheap and
+   *(owner, accepted 2026-11-16).* The partial step in decision 10 is cheap and
    honest.
 4. **Sender check from the provider's own results only.** Mail does not
    verify DKIM or SPF itself (that needs DNS and a DKIM library). It reads
@@ -72,7 +78,7 @@ owner changes it.
    rules 3e already uses for one-click unsubscribe (`TRUSTED_AUTHSERV`,
    `trustOf`). Gmail (`mx.google.com`) is trusted today; iCloud's id is
    pinned at the live check (3e left it empty, `unsubscribe.ts` 68–72);
-   other servers get **Not checked**. *Proposed (owner to accept).* A forged
+   other servers get **Not checked**. *(owner, accepted 2026-11-16).* A forged
    result lower in the headers is ignored; nothing is fetched from the
    network.
 5. **What a failed check does.** A message whose sender check is **failed**
@@ -81,20 +87,20 @@ owner changes it.
    **Always show from** (per-message **Show images** still works); gets no
    dev class, so no Dev digest entry, no alert card and no rule match on dev
    fields; and never prepares or starts a mail rule (#82). Agent text gains
-   one fixed line "Sender check: failed". *Proposed (owner to accept).* A
+   one fixed line "Sender check: failed". *(owner, accepted 2026-11-16).* A
    spoofed GitHub, Sentry or bank mail must not steer automation or confirm
    an open.
 6. **Warnings, not verdicts of trust.** Mail shows warnings only (failed
    check, foreign Reply-To, lookalike domain, a name that shows another
    address, mixed alphabets in a domain). A **pass** is shown in Details,
-   never as a badge in the list or the header. *Proposed (owner to accept).*
+   never as a badge in the list or the header. *(owner, accepted 2026-11-16).*
    A green tick on a phishing domain that passes its own DMARC would mislead.
 7. **Lookalike domains** are judged against domains the owner wrote to
    (Sent rows and `sent_recipients`) and the owner's own identity domains,
    computed when a message is opened, not stored. A From domain that is not
    itself known is flagged when its name equals a known one after mapping
    confusable characters, or is one edit away (names of 5+ characters), or
-   mixes alphabets in one label. *Proposed (owner to accept).* Known
+   mixes alphabets in one label. *(owner, accepted 2026-11-16).* Known
    correspondents are the domains a spoofer imitates; the owner's own mail is
    local and ready.
 8. **Trackers are removed even when images are allowed.** In allowed mode,
@@ -102,7 +108,7 @@ owner changes it.
    images from a short built-in list of open-tracking hosts are dropped; the
    image bar says "2 trackers blocked". Default mode is unchanged (nothing
    remote loads) and the bar says how many trackers the message carries.
-   No setting. *Proposed (owner to accept).* It only removes loads the owner
+   No setting. *(owner, accepted 2026-11-16).* It only removes loads the owner
    cannot see.
 9. **Links are cleaned and shown before they open.** Every link Mail opens
    (message HTML, the PDF viewer's link list, alert cards, dev links) goes
@@ -116,13 +122,12 @@ owner changes it.
    on) turns parameter removal and unwrapping off; the dialog and the status
    line stay. Click-tracking redirects that hide their target (an ESP's
    `/ls/click?...`) are never followed by Mail to find out; the status line
-   names the tracking host. *Proposed (owner to accept).* Nothing new goes
+   names the tracking host. *(owner, accepted 2026-11-16).* Nothing new goes
    on the network; one choke point is easy to test.
 10. **Deleted mail is overwritten on disk.** The plugin's connection runs
     `PRAGMA secure_delete = ON` once per load, so rows Mail deletes (Forget
     older mail, expired server hits, account removal, purges) are zeroed in
-    the database file rather than left in free pages. *Proposed (owner to
-    accept).* It is the part of #93 the plugin can do alone; the cost is
+    the database file rather than left in free pages. *(owner, accepted 2026-11-16).* It is the part of #93 the plugin can do alone; the cost is
     extra writes on delete. README states that the WAL file and backups
     are outside this.
 11. **Read receipts are never sent.** Mail has no code that sends a
@@ -130,14 +135,13 @@ owner changes it.
     pins it. When a message asks for one (`Disposition-Notification-To`,
     `Return-Receipt-To`, `X-Confirm-Reading-To`), the reading pane shows a
     quiet line: "The sender asked for a read receipt. Makosh Mail does not
-    send receipts." There is no **Send receipt** button. *Proposed (owner to
-    accept).* The backlog says "ignored by default"; a button can come later
+    send receipts." There is no **Send receipt** button. *(owner, accepted 2026-11-16).* The backlog says "ignored by default"; a button can come later
     if the owner ever wants one (open question 2).
 12. **Older mail is checked when opened.** Rows synced before 3i have no
     stored sender check. Opening one (in the reading pane only) fetches its
     header fields once with `BODY.PEEK` through the account's queue, as 3e's
     `fetchUnsubscribeInfo` does (`server.ts` 2511–2545), and stores the
-    result. Nothing is backfilled in bulk. *Proposed (owner to accept).* One
+    result. Nothing is backfilled in bulk. *(owner, accepted 2026-11-16).* One
     round trip per opened old message, no server change.
 13. **Signed and encrypted mail is recognised, never claimed valid.**
     `multipart/signed` (PGP or S/MIME), `multipart/encrypted` (PGP/MIME),
@@ -146,15 +150,15 @@ owner changes it.
     does not check signatures" or "Encrypted (S/MIME) — Mail cannot read
     it". An encrypted body is never handed to an agent, a model, BB or the
     attachment-text index (it is ciphertext, but its presence is still
-    nobody else's business). *Proposed (owner to accept).*
+    nobody else's business). *(owner, accepted 2026-11-16).*
 14. **One migration element (14)**, appended to `MIGRATIONS`; element 14
-    joins the SHA pin. *Proposed (owner to accept).* Shipped elements 0–13
+    joins the SHA pin. *(owner, accepted 2026-11-16).* Shipped elements 0–13
     stay frozen, as in every slice.
 15. **No new dependency.** Domain handling uses the existing
     `toAsciiDomain` (`compose-address.ts` 47) and a small registrable-domain
     rule; the confusable map, tracking parameters, tracker hosts and
     redirect wrappers are short lists written for Mail, not ported.
-    *Proposed (owner to accept).* `tldts` exists in `node_modules` only as
+    *(owner, accepted 2026-11-16).* `tldts` exists in `node_modules` only as
     jsdom's dev dependency and is not used.
 
 ## Goals
@@ -733,23 +737,23 @@ Each task ends with `npm run check`. The last also runs `npm run build` and
 
 ## Open questions for the owner
 
-Each has a recommended default that the design above already implements.
+All five are **closed on 2026-11-16 as recommended** (the owner accepted
+every recommendation).
 
 1. **Unwrapping Outlook SafeLinks.** Unwrap Google, Outlook SafeLinks and
    Facebook wrappers (proposed), or leave SafeLinks alone because it is an
-   employer's scanner? *Recommendation:* unwrap all three; the accounts are
-   personal and the owner sees the target before opening.
+   employer's scanner? **Answer (2026-11-16): unwrap all three.**
 2. **Read receipts.** Never send, show a note (proposed), or also offer a
-   **Send receipt** button per message? *Recommendation:* never send.
+   **Send receipt** button per message? **Answer: never send; the note
+   only, no button.**
 3. **Failed check and automation.** Block rules, dev class and auto images
-   for failed checks (proposed), or only warn? *Recommendation:* block; a
-   forged GitHub or Sentry mail must not start an agent thread.
+   for failed checks (proposed), or only warn? **Answer: block.** Resolution
+   5 extends "auto images" to lookalike and "name shows another address"
+   warnings (builder-check owner question 3).
 4. **Full PGP and S/MIME to 3k** (proposed), keeping 3i to recognition?
-   *Recommendation:* yes. 3k needs the owner's keys or a CA certificate and
-   a new dependency (`openpgp`; `pkijs` or similar for S/MIME), each an
-   explicit owner decision there.
-5. **`secure_delete`** on (proposed) or not? *Recommendation:* on; the
-   extra writes happen only on deletes.
+   **Answer: yes, 3k.**
+5. **`secure_delete`** on (proposed) or not? **Answer: on** (resolution 8
+   adds the FTS5 option).
 
 ## Items proposed for another slice
 
@@ -761,6 +765,9 @@ Each has a recommended default that the design above already implements.
   which is an anti-goal to patch).
 - **Trusted authserv-ids for "other" servers** (a per-account setting) →
   later, unscheduled.
+- **Cleaning quoted content on reply and forward** (the original's tracking
+  links and pixels travel onward in the quote) → later, unscheduled
+  (resolution 20).
 
 ## Not verified
 
@@ -783,3 +790,384 @@ Each has a recommended default that the design above already implements.
   harmless (they are invisible).
 - Real S/MIME and PGP messages from the owner's mail (fixtures only unless
   the owner has some).
+
+## Resolutions after the builder check
+
+These override every section above. The owner accepted every decision and
+closed open questions 1–5 as recommended on 2026-11-16, and answered the
+builder check's three questions (resolution 1). Every blocking finding
+(B1–B7), gap (G1–G12) and nit of the builder check is resolved below; the
+builder's proposed resolution is taken unless a resolution says why not.
+Names were re-checked against the tree at commit `168abbb5` (no Mail code
+changed after `e6c41bbe`): `src/core/sync.ts`, `src/core/unsubscribe.ts`,
+`src/core/agent-text.ts`, `src/core/presend.ts`, `src/core/file-kinds.ts`,
+`src/ui/sanitize.ts`, `src/ui/message-frame.tsx`, `src/ui/reading-pane.tsx`,
+`src/adapters/bb/sqlite-store.ts`, `src/adapters/bb/bb-rpc.ts`, `server.ts`,
+`server.test.ts`, `src/core/contract.test.ts`. Interactions with part B are
+in part B's resolutions ("Interactions with part A") and bind this part too.
+
+1. **The owner's answers to the builder check's questions** (2026-11-16).
+   - **Link text names one site, the target is a known click-tracking
+     host** (most newsletters): no dialog. The status line says "→ via
+     tracking redirect at `click.example-esp.com`; Mail cannot see where it
+     ends", and the link opens on the first click. The known hosts are a
+     short list `TRACKING_REDIRECT_HOSTS` in `src/core/trackers.ts` (ESP
+     click hosts only, exact host or a listed suffix after a dot, reviewed in
+     the plan). The dialog stays for every other mismatch: an unknown or
+     unlisted target, a host that mixes alphabets, and a lookalike of a known
+     domain (resolution 10). The owner accepts that a phish sent through a
+     listed ESP skips the dialog; the status line still names the tracking
+     host.
+   - **Punycode-only hosts** (`.рф` and other IDN without mixed alphabets or
+     a lookalike match): no dialog; the status line shows the `xn--` form.
+     `unusualHost: "punycode"` stays in `CleanLink` for the status line and
+     no longer gates the dialog (G3).
+   - **Lookalike and "name shows another address" also stop automatic
+     images**, as the design text says; **Show images** per message still
+     works. Decision 5 is read with this addition (B4).
+
+2. **A failed row never gets a dev class, not even from the backfill (B1).**
+   Replaces "`prepareMessage` skips `classifyDev`" in "Effects of a failed
+   check".
+   - For a `failed` row `prepareMessage` sets `dev: null` (stored as `''`,
+     "checked, not dev"), whatever `context.classifyDev` says. The store's
+     write at `sqlite-store.ts` 3183 then writes `''`.
+   - `devUnclassified` (`sqlite-store.ts` 6383–6389) adds
+     `AND (sender_check_json IS NULL OR json_extract(sender_check_json, '$.state') <> 'failed')`,
+     so `devBackfill` (`src/core/dev-backfill.ts` 35) never classifies a
+     failed row from From and subject.
+   - When the open-time refresh (resolution 7) turns a row `failed`, the
+     same store write clears its dev columns to `''` (Dev view, alert card
+     and rule dev matches drop it on the next read).
+   - Tests: all three paths (sync, backfill query, refresh write).
+
+3. **Own mail is exempt by folder role only (B2).** Replaces "Own mail (Sent,
+   Drafts, the owner's identities in From) is not checked".
+   - A message in a Sent or Drafts role folder, and the plugin's own outbox
+     copies, are `unchecked` with no warnings. Every other folder judges the
+     message from its A-R whoever From claims, so mail forged from the
+     owner's own address into the Inbox is checked like any other.
+   - `PrepareContext` (`sync.ts` 134–140) gains `folderRole: SpecialUse |
+     null`. `syncFolder` passes the folder's role; the 3h server-search and
+     history jobs build their own context (`server-search-jobs.ts` 323) and
+     pass it too. A test feeds a forged Inbox message from an owner address
+     with a trusted `dmarc=fail` and expects `failed`.
+
+4. **The A-R reading rules (B3).** Added to "Sender check"; `trustOf` and its
+   tests stay unchanged.
+   1. `senderCheckOf` uses only the **topmost** trusted A-R header (the
+      provider prepends its own, so a sender cannot write above it). Other
+      trusted A-R headers below it are ignored for the state; Details may
+      list them as "also present".
+   2. Within that header the **worst result per method wins**: any
+      `dmarc=fail` gives `failed`, and a pass never cancels a fail.
+   3. A `dmarc` entry counts only when its `header.from` equals the message's
+      From domain (ASCII, lower case). A `dmarc` entry for another domain is
+      kept for Details and does not decide the state.
+   4. `parseAuthResults`' `;` split becomes quote-aware, and `stripComments`
+      tracks quoted strings inside comments, so a quoted `smtp.mailfrom`
+      local part containing `;` or `)` cannot inject an entry. Bounds (4 KB
+      per value, 20 entries) run first, as designed.
+   5. More than one From header line, or more than one mailbox in From, is
+      never `ok`: the state is `failed` when the results say so, else
+      `unchecked`.
+   - Tests: a forged `Received:` plus a trusted-id A-R above From with no
+     `DKIM-Signature` (only the topmost trusted header counts, and it is the
+     provider's); duplicate `dmarc` entries (fail wins); a quoted `;`; an
+     unbalanced `)` inside a comment; two From lines.
+
+5. **Where automatic images are decided (B4, owner answer 3).** Replaces the
+   "Images" bullet of "Effects of a failed check", which put the rule in the
+   store; disguise warnings are computed at read time and never stored.
+   - A pure `autoImagesAllowed(check, warnings)` in `src/core/sender-check.ts`:
+     true only when the state is `ok` or `unchecked` and there is no
+     `lookalike` or `name_shows_address` warning. `unknown` (resolution 7) is
+     **not** allowed until the refresh has judged the row; an old message
+     from an always-show sender therefore loads its images one round trip
+     later, and stays blocked (with **Show images**) if the refresh fails.
+   - The server's `message_body` returns `remoteImagesAllowed =
+     stored images_allowed && autoImagesAllowed(...)` (the store keeps
+     answering the stored rule only, `sqlite-store.ts` 3620–3647).
+   - The page's own paths are gated too: `remoteImages` in
+     `reading-pane.tsx` 959–960 becomes `remoteImageIds.has(id) ||
+     (imageSenders.has(sender) && autoImagesAllowed(header.senderCheck,
+     header.warnings))`, and the "Images … are always shown" region and
+     **Always show** (`senderTrusted`, `reading-pane.tsx` 345) are hidden for
+     such a message, with the bar text "Images from this sender are not
+     loaded automatically because …" (fixed reasons: the check failed / the
+     domain looks like another / the name shows another address / the
+     sender check has not run yet). The stored always-show row is never
+     removed.
+   - Tests in the server (`message_body`) and the page (`app.test.tsx`: an
+     always-show sender with a failed check loads nothing; **Show images**
+     still loads), not in the store.
+
+6. **Encrypted bodies are dropped before the store (B5).** Replaces the
+   "Encrypted rows" bullet of "Signed and encrypted mail".
+   - For `pgp_encrypted` and `smime_encrypted`, `prepareMessage` sets
+     `bodyText` and `bodyHtml` to null and the snippet to empty before the
+     store sees the message. Every reader of `store.getBody` (`server.ts`
+     964, 1000, 4567, 4579; `bb-rpc.ts` 305, 554, 1336, 1397, 1528;
+     `slice-3h-rpc.ts` 781; `translate-jobs.ts` 116; `compose.ts` 255) and
+     the three direct `htmlToText` callers (`ai-input.ts` 162,
+     `agent-propose.ts` 430, `translate.ts` 149) are then safe by
+     construction. The FTS triggers of frozen element 1 stay as they are; a
+     null body indexes nothing.
+   - The pane shows the placeholder from `crypto`; agent and BB text print
+     "[encrypted message — not readable]" from the same field.
+   - The ciphertext stays reachable through the attachment list and
+     **Download .eml**. `attachmentTextCandidates` (`sqlite-store.ts`
+     6290–6300) adds `AND (m.crypto IS NULL OR m.crypto NOT IN
+     ('pgp_encrypted', 'smime_encrypted'))`, so an armored `text/plain` part
+     of an encrypted message is never indexed (builder addition: postal-mime
+     can hand such a part over as text).
+   - An old row that the refresh finds encrypted (resolution 7) has its
+     body nulled in the same write; the existing update trigger removes it
+     from `messages_fts`.
+
+7. **The old-row check: an `unknown` state and one refresh RPC (B6).**
+   Replaces decision 12's "stores the result" detail, the contract's
+   `senderCheck.state` and `sender_check_refresh` in "RPC contract".
+   - `senderCheck.state` is `"ok" | "failed" | "unchecked" | "unknown"`;
+     `unknown` is a NULL `sender_check_json`. A stored `unchecked` with
+     `authserv: null` on a preset whose `TRUSTED_AUTHSERV` is no longer
+     empty also reads as `unknown`, so pinning iCloud's id rechecks old
+     iCloud mail on open.
+   - `sender_check_refresh { messageIds: string[] (1–50); force?: boolean }
+     → { refreshed: number; failed: number }`, owner only (refuses plugin
+     callers). The server groups the ids per account and folder and runs one
+     read-only session per folder through the account queue (PEEK header
+     fetch, UIDVALIDITY guard, as `fetchUnsubscribeInfo`, `server.ts`
+     2511–2545). Without `force` it writes only where the row is `unknown`;
+     `force` (Details' **Check again**) overwrites.
+   - The page calls it only for **expanded** messages whose state is
+     `unknown`, after the conversation has stayed open briefly (part B's
+     interaction I3), never for collapsed or stacked ones. A 50-message old
+     thread is one call and one session per folder.
+   - The same write fills `receipt_requested` and `crypto` where NULL (the
+     header fields include `Content-Type`; inline armor is judged from the
+     stored body's first non-blank line), and nulls an encrypted body
+     (resolution 6) and the dev columns of a failed row (resolution 2).
+   - `message_source` already fetches the raw message (`server.ts`
+     2899–2906): it computes `authenticity` from those full headers (no
+     64-line cap) and stores the check where the row is `unknown`.
+
+8. **`secure_delete` covers the search indexes, and the shipped line is
+   tested (B7).** Replaces "Deleted rows overwritten (#93 partial)" and the
+   migration test line "`secure_delete` reads back 1".
+   - An exported `hardenDatabase(db)` in `sqlite-store.ts` runs
+     `PRAGMA secure_delete = ON`, then, each in its own try/catch,
+     `INSERT INTO messages_fts(messages_fts, rank) VALUES('secure-delete', 1)`
+     and the same for `attachment_text_fts` (the FTS5 option, SQLite 3.42+;
+     it is stored in the FTS config, so repeating it each load is harmless).
+     It returns `{ pragma: boolean; fts: boolean }`.
+   - `server.ts` calls it once per load, right after `migrate` (the FTS
+     tables exist only then; 1133–1134). The store test asserts the pragma
+     reads back 1 and both FTS options are set on the test database after
+     `hardenDatabase`; a server test asserts the server calls it (fake
+     database records the call).
+   - The host's SQLite version is not known. If the FTS option fails, the
+     server logs `secure_delete: fts option unavailable` once, and README
+     says the search index may keep words of deleted mail until SQLite
+     merges it. README's sentence names the WAL file, backups and BB's own
+     files as outside, as designed.
+   - The "test that runs every path with secret- and address-filled
+     fixtures (3f)" is the canary block in `server.test.ts` ("Agent paths
+     (slice 3f) … the canary test", from line 5187, `CANARY`, `CANARIES`);
+     the plan adds the 3i paths there.
+
+9. **Links that leave Mail by other routes are cleaned too (G1).** Added to
+   "Links".
+   - `sanitizeEmailHtml` gains `cleanLinks: boolean` and rewrites each kept
+     `href` through `cleanLink(..., { clean: cleanLinks })` (with the
+     anchor's text). A rewritten anchor carries Mail's own
+     `data-mk-cleaned="n"` and `data-mk-unwrapped` marks for the status
+     line; the sanitizer already drops every `data-mk-*` attribute the mail
+     brings (`sanitize.ts` 418), so the sender cannot forge them. That one
+     change covers the frame, print and the saved printable page
+     (`print.ts` 57–60, `app.tsx` 3625–3633), the host's copy-link and
+     link drag.
+   - `htmlToPlainText` (`sanitize.ts` 497–503) gets the same option, so
+     "Show plain text" prints cleaned `<url>`s.
+   - `devLinks` are cleaned where the server computes them (`bb-rpc.ts`
+     1364), with `{ clean: true }`.
+   - The click handler still runs `cleanLink` (idempotent) for the dialog.
+     `openLink` refuses when `cleanLink` returns null ("This link cannot be
+     opened here."), so a PDF-viewer or alert-card link with a custom scheme
+     never reaches `navigate.openUrl` (which would launch application links,
+     sdk 26513). Other exits were checked and are fine (PDF links, alert
+     card, dev strip all reach `openLink`; there is no `window.open` or
+     `openExternal`).
+
+10. **When the deceptive-link dialog opens (G2, G3, owner answers 1–2).**
+    Replaces "A link whose visible text names a different site, or whose
+    host is punycode or mixes alphabets, opens only after a dialog".
+    - `CleanLink.deceptive` is set when the visible text looks like a URL or
+      bare host and its `orgDomain` differs from the final target's, **and**
+      the target host is not on `TRACKING_REDIRECT_HOSTS`. A listed tracking
+      host sets `trackingHost` and gets the status-line note only.
+    - The dialog opens for `deceptive`, for `unusualHost: "mixed_script"`,
+      and for a target whose `orgDomain` is a lookalike of a known domain
+      (`skeleton` match, resolution 11; the page passes the known-domain
+      skeleton set it already receives for the open thread). Punycode alone
+      never opens it.
+    - The dialog wording names what it found ("says X but opens Y" / "mixes
+      alphabets" / "looks like Y, which you write to") and shows the host in
+      ASCII.
+
+11. **A hand-written punycode decoder in core (G4).** Added to "Disguise
+    checks" and Task 2. `toUnicode` does not exist and `node:` imports are
+    forbidden in `src/core`. `src/core/punycode.ts` implements RFC 3492
+    decoding for one label (bounded to 63 characters input, refusing bad
+    digits and overflow) and `toUnicodeDomain(ascii)`. Tests use the RFC
+    3492 section 7.1 samples with the Unicode written as `\u` escapes.
+    `skeleton()` drops the dead `I`→`l` entry (inputs are lower-cased
+    first).
+
+12. **Parameter removal and unwrapping rules (G5).** Added to "Links".
+    - Tracking parameters are removed at string level: matching `name=value`
+      segments are cut from the query and the rest is kept byte for byte
+      (no `URLSearchParams` re-serialization, which re-encodes and can break
+      signed links). A test asserts the other parameters are byte-identical.
+    - Order: unwrap one level, then clean the target, then run the
+      deceptive, mixed-script and lookalike checks on the final URL.
+    - Wrapper hosts match exactly (`www.google.<tld>`, `google.<tld>` with
+      `<tld>` one or two labels from the `orgDomain` rule;
+      `*.safelinks.protection.outlook.com`; `l.facebook.com`,
+      `lm.facebook.com`), never by substring: `google.evil.example` is not
+      a wrapper.
+    - The unwrapped target must be `http:` or `https:`; `mailto:` and
+      anything else leave the wrapper URL as it is.
+
+13. **Trackers against the sanitizer (G6).** Replaces "in default mode the
+    would-be trackers are counted among the blocked images" in "Trackers".
+    - `blockedRemoteImages` excludes trackers; `trackers` is a separate
+      count. A message whose only remote images are trackers shows the count
+      and no **Show images**. The sanitizer comment at `sanitize.ts`
+      436–437 is corrected.
+    - In allowed mode a tracker `<img>` is **removed**, not only stripped of
+      its `src`, so `markQuotes`' "any `<img>` is content" check
+      (`clone.querySelector("img")`) decides as for mail without the pixel.
+    - `print.ts` 60 uses the non-tracker blocked flag for "Remote images are
+      not printed".
+    - `TRACKER_HOSTS` lists real open-tracking hosts only. The existing
+      fixture `https://tracker.example.org/pixel.gif` (`sanitize.test.ts`
+      28, 195) must stay a non-tracker in allowed mode, so neither
+      `tracker.example.org` nor a bare `/pixel.gif` path shape is listed.
+    - Limit stated in README: an image hidden by a `<style>` class or a
+      hidden parent is not detected (no layout). Dark mail (3h) does not
+      interact.
+    - `src/core/trackers.ts` holds `TRACKER_HOSTS` and
+      `TRACKING_REDIRECT_HOSTS`; the "so the server can count too" remark
+      is dropped (no server consumer).
+
+14. **The status line (G7).** Replaces "shows the status line under the
+    frame". The frame is as tall as its content (`message-frame.tsx` 315),
+    so the line is sticky at the bottom of the reading pane's scroll area,
+    one per pane (the hovered message's). It clears on `mouseout` /
+    `focusout` of the anchor and on a new `srcDoc`. The listeners are added
+    in the frame's existing load handler beside `click`/`auxclick` and
+    removed by the same detach (no new sandbox token).
+
+15. **The agent line and agent link cleaning (G8).** Added to "Effects of a
+    failed check" and "Links".
+    - The "Sender check: failed" / "Sender warning: …" line sits in Mail's
+      header block directly after `From:`. `skills/mail/SKILL.md` says that
+      only header-block lines are Mail's, that a "sender check" sentence in
+      the body is the sender's text, and that Mail never prints a positive
+      result.
+    - Link cleaning in agent and BB text is a URL pass over the rendered
+      body text **before** `redactSecrets` (`agent-text.ts` 393), not a
+      change inside `scanHtml` / `htmlToText`, whose output also feeds
+      snippets, dev links and stored text. It always uses `{ clean: true }`,
+      whatever `cleanLinks` says (intended: an agent fetching a link must
+      not confirm a tracked open).
+    - Inbox rows for agents (`renderInboxForAgent`) get only the stored
+      `failed` marker; disguise warnings stay per message.
+
+16. **Receipt and content-type headers stay out of `unsubscribeHeaders`
+    (G9).** Replaces "the gateway adds them to the kept header lines".
+    `FetchedMessage` gains `receiptRequested: boolean` and `contentType:
+    string | null`, read from `parsed.headers` in the gateway. The kept
+    trace/unsubscribe lines are unchanged, so `trustOf`'s block end and the
+    64-line cap are unaffected. The old-row fetch asks for
+    `SECURITY_HEADER_FIELDS` but filters the block to the unsubscribe names
+    before judging, so sync-time and open-time verdicts agree.
+
+17. **Contract and plumbing (G10).** Added to "RPC contract" and "Pre-send".
+    - `PresendIssue` gains `{ kind: "reply_to_elsewhere"; addresses:
+      string[] }`; `PresendInput` gains `replyToElsewhere: string[]` (the
+      source's flagged addresses). Pre-send runs in core with the store,
+      not in the page: `checkDraft` (`src/core/sending-settings.ts`
+      204–225) and the agent proposal checks (`agent-proposals.ts` 535)
+      compute it from the source message's stored From and Reply-To through
+      `disguiseWarnings`. The issue also renders on the agent send card
+      (`agent-send-card.tsx` 365).
+    - `messageHeaderSchema` gains `senderCheck`, `warnings`,
+      `receiptRequested`, `crypto` with zod defaults (`{ state: "unknown",
+      summary: null }`, `[]`, `false`, `null`), so existing fixtures and
+      `src/core/testing/fakes.ts` (979) need no churn beyond new tests.
+    - `thread_get` and `message_body` keep serving plugin callers
+      (`server.ts` 2836–2848). The new `warnings` hold only addresses and
+      domains such a caller can already read there; this is a known and
+      accepted exposure, not an oversight. `sender_check_refresh` refuses
+      plugin callers.
+
+18. **Logs (G11).** Replaces the "Logs" bullet of "Security and privacy".
+    The plugin log gets `sender_check: fetch failed (kind)` with the message
+    id (as `server.ts` 2542 does) and `secure_delete: fts option
+    unavailable`; nothing else. `trackers=n` and `links: cleaned=n` are
+    dropped (page-side numbers with no log path). No address, domain, URL or
+    header value reaches the plugin log, the agent log or realtime
+    (realtime payloads stay ids and tokens).
+
+19. **Tests added (G12).** Added to "Testing".
+    - The tests named in resolutions 2–8.
+    - Page: an always-show sender does not load images for a failed,
+      lookalike or name-shows-address message, nor for an `unknown` one
+      before its refresh.
+    - Print and the saved printable page carry cleaned hrefs; the plain view
+      prints cleaned URLs.
+    - `cleanLink` returning null blocks `openUrl` (fake `navigate`).
+    - Wrapper-host spoof `google.evil.example`; a SafeLinks wrapper whose
+      target is `mailto:` stays wrapped.
+    - Punycode decoder RFC samples.
+    - `hardenDatabase` sets the pragma and both FTS options; the server
+      calls it.
+    - Read receipts, concretely: the MIME built for every compose kind (new,
+      reply, reply all, forward, draft resume, outbox send) has no
+      `Disposition-Notification-To`, `Return-Receipt-To` or
+      `X-Confirm-Reading-To` header and no `multipart/report`; and a source
+      scan of `src`, `server.ts`, `app.tsx` finds those header names only in
+      the detection file (`src/core/receipts.ts`) and its test.
+    - Timing: `disguiseWarnings` for a 200-message thread against 5 000
+      known domains, one call, generous bound; the known set is indexed by
+      skeleton and by TLD and first-label length (about 10^6 cheap
+      comparisons at worst).
+    - The canary block in `server.test.ts` (resolution 8) covers
+      `sender_check_refresh`, the new header fields and the agent line.
+
+20. **Nits.**
+    - `smime_encrypted` matches `smime-type` `enveloped-data`,
+      `authEnveloped-data` or absent only; `compressed-data` and
+      `certs-only` are not encrypted.
+    - Inline PGP armor counts only as the **first non-blank line** of the
+      text, so mail that quotes armor further down is not flagged.
+    - Opaque-signed S/MIME (`smime-type=signed-data`) has no readable body:
+      `smime_signed` with a body placeholder "This signed message's text is
+      inside the signature. Open it in a mail client that reads S/MIME."
+    - README says a failed check can be a mailing list or a forwarder (Mail
+      does not evaluate ARC); the strip's "could not confirm" wording
+      already fits.
+    - Reply and forward quoting still carry the original's tracking links
+      and pixels onward: listed under "Items proposed for another slice".
+    - `disguiseWarnings` considers at most 10 Reply-To addresses.
+
+21. **Not verified, updated.** Still open: iCloud's authserv-id (live step
+    1); whether Gmail strips incoming A-R headers with its own id
+    (resolution 4 does not depend on it); the host BB's SQLite version and
+    so whether the FTS `secure-delete` option applies (resolution 8);
+    whether `mouseover`/`focusin` from the parent fire in BB desktop.
+    Verified by the builder check: `db.pragma("secure_delete = ON")` is
+    callable on the SDK handle and reads back 1 (better-sqlite3 in the
+    plugin's `node_modules`, SQLite 3.53.2).
