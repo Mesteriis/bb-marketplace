@@ -4,10 +4,12 @@
 // server found in inbound mail, and a link to the account's SMTP dialog;
 // and the templates. Nothing is added by itself: a suggestion only fills
 // Add address. Every call is a host port; the texts it rejects with are the
-// server's fixed refusals, shown where they happened.
+// server's fixed refusals, shown where they happened. Slice 3e adds the
+// Inbox tab: Blocked senders (Unblock asks first) and each account's
+// Snoozed folder with Change….
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import type { Editor } from "@tiptap/react";
-import type { Account, IdentityView } from "../core/model.ts";
+import type { Account, BlockRuleView, IdentityView } from "../core/model.ts";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -29,7 +31,7 @@ import { stopEscape } from "./shortcuts.ts";
 export type TemplateView = { id: string; name: string; doc: EditorDoc; updatedAt: string };
 export type SuggestionView = { address: string; count: number; lastDate: string };
 export type IdentityKey = { accountId: string; address: string };
-export type SettingsSection = "addresses" | "templates";
+export type SettingsSection = "addresses" | "templates" | "inbox";
 
 /** The template editor's tools: everything but the quote (templates cannot hold quotes). */
 export const TEMPLATE_TOOLS: readonly ToolId[] = [
@@ -59,6 +61,11 @@ export interface MailSettingsProps {
   onSaveTemplate: (input: { id?: string; name: string; doc: EditorDoc }) => Promise<void>;
   onDeleteTemplate: (id: string) => Promise<void>;
   onOpenSmtp: (accountId: string) => void;
+  /** Blocked senders (slice 3e); null while they load. Absent: no Inbox tab. */
+  blockRules?: readonly BlockRuleView[] | null;
+  onUnblock?: (id: string) => Promise<void>;
+  /** Change… (or set up) an account's snooze folder. */
+  onChangeSnoozeFolder?: (accountId: string) => void;
 }
 
 function messageOf(error: unknown, fallback: string): string {
@@ -132,6 +139,7 @@ export function MailSettings(props: MailSettingsProps) {
             [
               ["addresses", "Sending addresses"],
               ["templates", "Templates"],
+              ...(props.onUnblock !== undefined ? ([["inbox", "Inbox"]] as const) : []),
             ] as const
           ).map(([id, label]) => (
             <button
@@ -163,6 +171,13 @@ export function MailSettings(props: MailSettingsProps) {
                 onSelectAccount={setAccountId}
               />
             )
+          ) : section === "inbox" && props.onUnblock !== undefined ? (
+            <InboxSection
+              accounts={accounts}
+              rules={props.blockRules ?? null}
+              onUnblock={props.onUnblock}
+              onChangeSnoozeFolder={props.onChangeSnoozeFolder}
+            />
           ) : (
             <TemplatesSection
               templates={props.templates}
@@ -524,6 +539,114 @@ function IdentityRow({ identity, onUpdate, onRemove }: { identity: IdentityView 
 }
 
 type TemplateEdit = { id: string | null; name: string; doc: EditorDoc };
+
+/** The Inbox tab (slice 3e): Blocked senders, and where each account's snoozed mail waits. */
+function InboxSection({
+  accounts,
+  rules,
+  onUnblock,
+  onChangeSnoozeFolder,
+}: {
+  accounts: readonly Account[];
+  rules: readonly BlockRuleView[] | null;
+  onUnblock: (id: string) => Promise<void>;
+  onChangeSnoozeFolder: ((accountId: string) => void) | undefined;
+}) {
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <div className="flex flex-col gap-2">
+      <SectionHeading>Blocked senders</SectionHeading>
+      <p className="text-xs text-muted-foreground">
+        New mail from them moves to Spam in every account while BB runs. Mail already in Spam stays there.
+      </p>
+      {rules === null ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
+      {rules !== null && rules.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No blocked senders. Block one from a message's toolbar.</p>
+      ) : null}
+      {rules !== null && rules.length > 0 ? (
+        <ul aria-label="Blocked senders" className="flex flex-col divide-y divide-border rounded-md border border-border">
+          {rules.map((rule) => (
+            <li key={rule.id} aria-label={rule.value} className="flex flex-col gap-1 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="shrink-0 rounded-sm border border-border px-1 text-xs text-muted-foreground">
+                  {rule.kind === "address" ? "Address" : "Domain"}
+                </span>
+                <span className="min-w-0 flex-1 break-all text-sm text-foreground">{rule.value}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">{formatDay(rule.createdAt)}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7"
+                  aria-label={`Unblock ${rule.value}`}
+                  onClick={() => {
+                    setProblem(null);
+                    setRemoving(rule.id);
+                  }}
+                >
+                  Unblock
+                </Button>
+              </div>
+              {removing === rule.id ? (
+                <div role="alertdialog" aria-label={`Unblock ${rule.value}`} className="flex flex-wrap items-center gap-2">
+                  <p className="min-w-0 flex-1 text-xs text-foreground">
+                    Unblock {rule.value}? Mail already in Spam stays there.
+                  </p>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="h-7"
+                    onClick={() => {
+                      onUnblock(rule.id).then(
+                        () => setRemoving(null),
+                        (error: unknown) => setProblem(messageOf(error, "Could not unblock.")),
+                      );
+                    }}
+                  >
+                    Unblock
+                  </Button>
+                  <Button variant="ghost" size="sm" className="h-7" onClick={() => setRemoving(null)}>
+                    Cancel
+                  </Button>
+                </div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {problem !== null ? (
+        <p role="alert" className="text-xs text-destructive">
+          {problem}
+        </p>
+      ) : null}
+      <SectionHeading>Snoozed folder</SectionHeading>
+      <p className="text-xs text-muted-foreground">
+        Snoozed mail waits in this folder and comes back while BB runs. Renaming it elsewhere ends those snoozes.
+      </p>
+      <ul aria-label="Snoozed folders" className="flex flex-col divide-y divide-border rounded-md border border-border">
+        {accounts.map((account) => (
+          <li key={account.id} aria-label={accountLabel(account)} className="flex flex-wrap items-center gap-2 px-3 py-2">
+            <span className="min-w-0 flex-1 truncate text-sm text-foreground">{accountLabel(account)}</span>
+            <span className="min-w-0 truncate text-xs text-muted-foreground">
+              {account.snoozeFolder ?? "None yet; the first snooze asks"}
+            </span>
+            {onChangeSnoozeFolder !== undefined ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7"
+                aria-label={`Change the snoozed folder of ${accountLabel(account)}`}
+                onClick={() => onChangeSnoozeFolder(account.id)}
+              >
+                Change…
+              </Button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 function TemplatesSection({
   templates,

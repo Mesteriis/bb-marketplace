@@ -12,7 +12,7 @@ import type {
   ThreadSummary,
 } from "./src/core/index.ts";
 import type { DraftView, OutboxRow } from "./src/core/index.ts";
-import { MAIL_CHANGED_CHANNEL, OUTBOX_CHANGED_CHANNEL } from "./src/core/index.ts";
+import { MAIL_CHANGED_CHANNEL, NEW_MAIL_CHANNEL, OUTBOX_CHANGED_CHANNEL } from "./src/core/index.ts";
 
 // BB shims sonner to its own toasts; the tests read what the page asked for.
 type ToastOptions = { id?: string; duration?: number; action?: { label: string; onClick: () => void } };
@@ -51,7 +51,11 @@ const saves = vi.hoisted(() => ({
 }));
 // The host's router: a test that renders the page with its sidebar follows
 // toPluginPanel("mail") into the subPath both receive, as BB does.
-const routing = vi.hoisted(() => ({ follow: null as ((subPath: string) => void) | null }));
+const routing = vi.hoisted(() => ({
+  follow: null as ((subPath: string) => void) | null,
+  /** useBbNavigate throws, as outside BB's router (slice 3e toasts). */
+  navigateThrows: false,
+}));
 type PanelNavigate = { toPluginPanel: (path: string, options?: { subPath?: string; replace?: boolean }) => void };
 vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -64,6 +68,7 @@ vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
       return Promise.resolve(saves.outcome);
     },
     useBbNavigate: () => {
+      if (routing.navigateThrows) throw new Error("no router here");
       const navigate = useActualNavigate();
       return useMemo(
         () =>
@@ -94,6 +99,7 @@ afterEach(() => {
   toasts.dismissed.length = 0;
   saves.calls.length = 0;
   saves.outcome = "started";
+  routing.navigateThrows = false;
 });
 
 const app = await loadPluginApp(() => import("./app.tsx"));
@@ -3181,8 +3187,8 @@ describe("Agent proposals", () => {
   };
 
   it("registers the card and the settled row", () => {
-    expect(app.pendingInteractions.map((r) => r.id)).toEqual(["agent-send"]);
-    expect(app.timelineRenderers.map((r) => r.kind)).toEqual(["makosh-mail/agent-send"]);
+    expect(app.pendingInteractions.map((r) => r.id)).toEqual(["agent-send", "agent-triage"]);
+    expect(app.timelineRenderers.map((r) => r.kind)).toEqual(["makosh-mail/agent-send", "makosh-mail/agent-triage"]);
   });
 
   function renderCard(rpc: Record<string, unknown>, payload: unknown = { proposalId: "prop-1", contentHash: HASH }) {
@@ -3895,5 +3901,231 @@ describe("Inbox triage on the page (slice 3e)", () => {
     });
     await waitFor(() => expect(undoToasts().at(-1)?.text).toBe("Blocked · 1 conversation moved to Spam"));
     expect(undoToasts().at(-1)?.options?.action?.label).toBe("Undo");
+  });
+});
+
+describe("New-mail toasts, settings and agent triage (slice 3e)", () => {
+  const ADA = { accountId: "acc-1", threadId: "th-a", messageId: "m-new", name: "Ada Example", address: "ada@example.org" };
+  const newMailToasts = () => toasts.log.filter((t) => t.options?.id?.startsWith("makosh-mail-new-") === true);
+
+  function BadgeProbe() {
+    const badge = panel.experimental_useBadge!();
+    return <span data-testid="badge">{badge === null ? "none" : `${badge.count}`}</span>;
+  }
+  function BadgeWithPage({ subPath }: { subPath: string }) {
+    const Page = panel.component;
+    return (
+      <>
+        <BadgeProbe />
+        <MailFolderSidebar subPath={subPath} />
+        <Page subPath={subPath} />
+      </>
+    );
+  }
+  const renderBadge = (rpc: Record<string, unknown>, withPage = false) =>
+    renderSlot({ component: withPage ? BadgeWithPage : BadgeProbe }, { subPath: "" } as never, {
+      rpc: rpc as never,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+
+  it("a mail-new token becomes one toast with the sender and Open, however often it arrives", async () => {
+    const slot = renderBadge(mailRpc({ new_mail_get: () => ({ items: [ADA], more: 0 }) }));
+    await waitFor(() => expect(slot.getByTestId("badge").textContent).toBe("1"));
+    await slot.behavior.emitRealtime(NEW_MAIL_CHANNEL, { token: "tok-1" });
+    await slot.behavior.emitRealtime(NEW_MAIL_CHANNEL, { token: "tok-1" });
+    await waitFor(() => expect(newMailToasts()).toHaveLength(1));
+    expect(callsTo(slot as never, "new_mail_get")).toEqual([expect.objectContaining({ input: { token: "tok-1" } })]);
+    const shown = newMailToasts()[0]!;
+    expect(shown.text).toBe("New mail from Ada Example");
+    expect((shown.options as { description?: string }).description).toBe("ada@example.org");
+    expect(shown.options?.duration).toBe(8_000);
+    expect(shown.options?.action?.label).toBe("Open");
+    shown.options!.action!.onClick();
+    expect(slot.inspection.navigateCalls.at(-1)).toEqual({
+      method: "toPluginPanel",
+      path: "mail",
+      options: { subPath: "t/acc-1/th-a" },
+    });
+  });
+
+  it("a failing new_mail_get shows nothing and the badge stays", async () => {
+    const slot = renderBadge(
+      mailRpc({
+        new_mail_get: () => {
+          throw new Error("gone");
+        },
+      }),
+    );
+    await waitFor(() => expect(slot.getByTestId("badge").textContent).toBe("1"));
+    await slot.behavior.emitRealtime(NEW_MAIL_CHANNEL, { token: "tok-2" });
+    await slot.behavior.emitRealtime(NEW_MAIL_CHANNEL, { nothing: true });
+    await waitFor(() => expect(callsTo(slot as never, "new_mail_get")).toHaveLength(1));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(newMailToasts()).toEqual([]);
+    expect(slot.getByTestId("badge").textContent).toBe("1");
+  });
+
+  it("without BB's navigation and no Mail page the toast has no Open", async () => {
+    routing.navigateThrows = true;
+    const slot = renderBadge(mailRpc({ new_mail_get: () => ({ items: [ADA], more: 1 }) }));
+    await waitFor(() => expect(slot.getByTestId("badge").textContent).toBe("1"));
+    await slot.behavior.emitRealtime(NEW_MAIL_CHANNEL, { token: "tok-3" });
+    await waitFor(() => expect(newMailToasts()).toHaveLength(1));
+    expect(newMailToasts()[0]!.text).toBe("New mail from Ada Example and 1 more");
+    expect(newMailToasts()[0]!.options?.action).toBeUndefined();
+  });
+
+  it("no toast while the Mail page shows the Inbox", async () => {
+    const slot = renderBadge(mailRpc({ new_mail_get: () => ({ items: [ADA], more: 0 }) }), true);
+    await slot.findByText("Lunch");
+    await slot.behavior.emitRealtime(NEW_MAIL_CHANNEL, { token: "tok-4" });
+    await waitFor(() => expect(callsTo(slot as never, "new_mail_get")).toHaveLength(1));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(newMailToasts()).toEqual([]);
+  });
+
+  it("Mail settings lists blocked senders; Unblock removes the rule after a confirmation", async () => {
+    let rules = [{ id: "rule-1", kind: "address", value: "promo@shop.example.com", createdAt: "2026-11-15T09:00:00.000Z" }];
+    const slot = render(
+      mailRpc({
+        identities_list: () => ({ identities: [] }),
+        identity_suggestions: () => ({ suggestions: [] }),
+        templates_list: () => ({ templates: [] }),
+        block_list: () => ({ rules }),
+        block_remove: () => {
+          rules = [];
+          return { ok: true };
+        },
+      }),
+    );
+    fireEvent.click(await folderRail(slot).findByRole("button", { name: "Mail settings" }));
+    const dialog = within(await slot.findByRole("dialog", { name: "Mail settings" }));
+    fireEvent.click(dialog.getByRole("tab", { name: "Inbox" }));
+    fireEvent.click(await dialog.findByRole("button", { name: "Unblock promo@shop.example.com" }));
+    await act(async () => {
+      fireEvent.click(within(dialog.getByRole("alertdialog")).getByRole("button", { name: "Unblock" }));
+    });
+    expect(callsTo(slot, "block_remove")[0]?.input).toEqual({ id: "rule-1" });
+    expect(await dialog.findByText("No blocked senders. Block one from a message's toolbar.")).toBeTruthy();
+  });
+
+  it("Change… of the snoozed folder offers the account's folders and uses the pick", async () => {
+    const slot = render(
+      mailRpc({
+        status_get: () => status({ accounts: [{ ...account, snoozeFolder: "Snoozed" }] }),
+        identities_list: () => ({ identities: [] }),
+        identity_suggestions: () => ({ suggestions: [] }),
+        templates_list: () => ({ templates: [] }),
+        block_list: () => ({ rules: [] }),
+        folders_list: () => ({
+          folders: [
+            folder({ path: "INBOX", name: "Inbox", specialUse: "inbox" }),
+            folder({ path: "Snoozed", name: "Snoozed" }),
+            folder({ path: "Later", name: "Later" }),
+          ],
+          roles: [],
+        }),
+        snooze_folder_use: () => ({ ok: true }),
+      }),
+    );
+    fireEvent.click(await folderRail(slot).findByRole("button", { name: "Mail settings" }));
+    const dialog = within(await slot.findByRole("dialog", { name: "Mail settings" }));
+    fireEvent.click(dialog.getByRole("tab", { name: "Inbox" }));
+    fireEvent.click(dialog.getByRole("button", { name: "Change the snoozed folder of owner@example.org" }));
+    const picker = within(await slot.findByRole("dialog", { name: "Snoozed folder" }));
+    const list = within(await picker.findByRole("list", { name: "Folders" }));
+    expect(list.getAllByRole("button").map((b) => b.textContent)).toEqual(["Later"]);
+    await act(async () => {
+      fireEvent.click(list.getByRole("button", { name: "Later" }));
+    });
+    expect(callsTo(slot, "snooze_folder_use")[0]?.input).toEqual({ accountId: "acc-1", path: "Later" });
+    await waitFor(() => expect(slot.queryByRole("dialog", { name: "Snoozed folder" })).toBeNull());
+  });
+
+  const TRIAGE_HASH = "b".repeat(64);
+  const triageView = {
+    batchId: "batch-1",
+    summary: null,
+    items: [1, 2, 3].map((position) => ({
+      position,
+      messageId: `m-${position}`,
+      accountId: "acc-1",
+      accountEmail: "owner@example.org",
+      action: position === 3 ? "unsubscribe" : "archive",
+      snoozeUntil: null,
+      note: position === 1 ? "Made-up note" : null,
+      fromName: null,
+      fromAddress: `s${position}@example.com`,
+      subject: `Made-up subject ${position}`,
+      date: null,
+      folder: "Inbox",
+      available: true,
+      reason: null,
+      unsubscribe: position === 3 ? { method: "mailto", host: null, address: "leave@example.com" } : null,
+    })),
+    needsFolder: [],
+    expiresAt: "2026-11-17T10:00:00.000Z",
+  };
+
+  it("the triage card views the batch and submits the ticked positions with its token, under 2 KiB", async () => {
+    const submit = vi.fn(async () => undefined);
+    const slot = renderSlot(
+      app.pendingInteractions[1]!,
+      {
+        interaction: { id: "int-2", threadId: "thr-1", title: "Review inbox actions", payload: { batchId: "batch-1", contentHash: TRIAGE_HASH }, createdAt: 0, expiresAt: null },
+        submit,
+        cancel: vi.fn(async () => undefined),
+      } as never,
+      { rpc: { triage_view: () => ({ state: "ready", view: triageView, viewToken: "view-tok" }) } as never },
+    );
+    expect(await slot.findByText("Made-up note")).toBeTruthy();
+    expect(callsTo(slot as never, "triage_view")[0]?.input).toEqual({ batchId: "batch-1", contentHash: TRIAGE_HASH });
+    await act(async () => {
+      fireEvent.click(slot.getByRole("button", { name: "Apply 2" }));
+    });
+    const value = {
+      action: "apply",
+      batchId: "batch-1",
+      contentHash: TRIAGE_HASH,
+      viewToken: "view-tok",
+      approved: [1, 2],
+      createSnoozeFolder: [],
+    };
+    expect(submit).toHaveBeenCalledWith(value);
+    const largest = { ...value, approved: Array.from({ length: 50 }, (_, i) => i + 1), createSnoozeFolder: ["acc_".padEnd(40, "x"), "acc_".padEnd(40, "y")], viewToken: "t".repeat(43) };
+    expect(new TextEncoder().encode(JSON.stringify(largest)).length).toBeLessThan(2048);
+  });
+
+  it("the settled triage row reads the batch and Undo undoes it by the batch id", async () => {
+    const slot = renderSlot(
+      app.timelineRenderers[1]!,
+      { payload: { batchId: "batch-1" } } as never,
+      {
+        rpc: {
+          triage_status: () => ({
+            state: "applied",
+            total: 3,
+            approved: 2,
+            done: 2,
+            skipped: 0,
+            failed: 0,
+            rateLimited: 0,
+            byAction: [{ action: "archive", done: 2 }, { action: "unsubscribe", done: 0 }],
+            undoable: true,
+          }),
+          action_undo: () => ({ outcome: "done", restored: 2, skipped: [], failed: 0, groups: [] }),
+        } as never,
+      },
+    );
+    expect(await slot.findByText("Applied 2 of 3")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(slot.getByRole("button", { name: "Undo" }));
+    });
+    expect(callsTo(slot as never, "action_undo")[0]?.input).toEqual({ undoId: "batch-1" });
+    expect(await slot.findByText("Undone")).toBeTruthy();
   });
 });

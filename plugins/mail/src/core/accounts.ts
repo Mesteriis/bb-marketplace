@@ -266,6 +266,7 @@ export function toPublicAccount(stored: StoredAccount): Account {
     lastError: stored.lastError,
     authFailed: stored.authFailed,
     smtpConfigured: stored.smtp !== null,
+    snoozeFolder: stored.snoozeFolder,
   };
 }
 

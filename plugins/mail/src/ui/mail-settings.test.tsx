@@ -254,3 +254,53 @@ describe("MailSettings: templates", () => {
     expect(props.onDeleteTemplate).toHaveBeenCalledWith("tpl-1");
   });
 });
+
+describe("MailSettings: Inbox (slice 3e)", () => {
+  const RULES = [
+    { id: "rule-1", kind: "address" as const, value: "promo@shop.example.com", createdAt: "2026-11-15T09:00:00.000Z" },
+    { id: "rule-2", kind: "domain" as const, value: "spam.example.net", createdAt: "2026-11-14T09:00:00.000Z" },
+  ];
+
+  it("has no Inbox tab without the ports", () => {
+    mount();
+    expect(screen.queryByRole("tab", { name: "Inbox" })).toBeNull();
+  });
+
+  it("lists blocked senders with kind and date; Unblock asks first and says Spam stays", async () => {
+    const onUnblock = vi.fn(async () => undefined);
+    mount({ section: "inbox", blockRules: RULES, onUnblock, onChangeSnoozeFolder: vi.fn() });
+    const list = within(screen.getByRole("list", { name: "Blocked senders" }));
+    expect(list.getAllByRole("listitem").map((li) => li.getAttribute("aria-label"))).toEqual([
+      "promo@shop.example.com",
+      "spam.example.net",
+    ]);
+    expect(within(list.getByRole("listitem", { name: "spam.example.net" })).getByText("Domain")).toBeTruthy();
+    expect(screen.getByText(/Mail already in Spam stays there\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Unblock promo@shop.example.com" }));
+    expect(onUnblock).not.toHaveBeenCalled();
+    const confirm = within(screen.getByRole("alertdialog", { name: "Unblock promo@shop.example.com" }));
+    expect(confirm.getByText(/Mail already in Spam stays there/)).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(confirm.getByRole("button", { name: "Unblock" }));
+    });
+    expect(onUnblock).toHaveBeenCalledWith("rule-1");
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
+  it("shows each account's snoozed folder with Change…", () => {
+    const onChangeSnoozeFolder = vi.fn();
+    mount({
+      section: "inbox",
+      accounts: [{ ...account, snoozeFolder: "Snoozed" }, { ...account, id: "acc-2", email: "two@example.org", displayName: null }],
+      blockRules: [],
+      onUnblock: vi.fn(async () => undefined),
+      onChangeSnoozeFolder,
+    });
+    expect(screen.getByText("No blocked senders. Block one from a message's toolbar.")).toBeTruthy();
+    const folders = within(screen.getByRole("list", { name: "Snoozed folders" }));
+    expect(within(folders.getByRole("listitem", { name: "Owner Example" })).getByText("Snoozed")).toBeTruthy();
+    expect(within(folders.getByRole("listitem", { name: "two@example.org" })).getByText("None yet; the first snooze asks")).toBeTruthy();
+    fireEvent.click(folders.getByRole("button", { name: "Change the snoozed folder of two@example.org" }));
+    expect(onChangeSnoozeFolder).toHaveBeenCalledWith("acc-2");
+  });
+});

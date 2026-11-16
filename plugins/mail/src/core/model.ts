@@ -61,6 +61,8 @@ export const accountSchema = z.object({
   authFailed: z.boolean(),
   /** The account has an SMTP server, so it can send. */
   smtpConfigured: z.boolean(),
+  /** The folder snoozed mail waits in (slice 3e), for Mail settings; null until there is one. */
+  snoozeFolder: z.string().nullable().optional(),
 });
 export type Account = z.infer<typeof accountSchema>;
 
