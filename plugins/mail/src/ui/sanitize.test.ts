@@ -7,6 +7,8 @@ import {
   EMAIL_CSP,
   EMAIL_CSP_REMOTE_IMAGES,
   isAllowedLinkUrl,
+  markQuotes,
+  QUOTE_ELEMENTS_MAX,
   sanitizeEmailHtml,
 } from "./sanitize.ts";
 
@@ -407,6 +409,44 @@ describe("slice 3h: quotes, own marks and dark mail", () => {
     const result = sanitizeEmailHtml('<blockquote type="cite">Forwarded text only</blockquote>', { remoteImages: false });
     expect(result.quotes).toBe(0);
     expect(result.html).toContain('<body><blockquote type="cite">Forwarded text only</blockquote></body>');
+  });
+
+  it("marks the attribution above a blockquote past empty siblings, in one pass", () => {
+    const doc = body("<p>Reply</p><p>On Mon, Ada wrote:</p><div></div><blockquote></blockquote><blockquote>old</blockquote>");
+    expect(markQuotes(doc.body)).toBe(3);
+    expect(Array.from(doc.querySelectorAll("[data-mk-quote]")).map((e) => e.textContent)).toEqual(["On Mon, Ada wrote:", "", "old"]);
+  });
+
+  it("marks only the outermost of nested quotes", () => {
+    const doc = body('<p>Reply</p><div class="gmail_quote">On Mon, Ada wrote:<blockquote type="cite">old<blockquote type="cite">older</blockquote></blockquote></div>');
+    expect(markQuotes(doc.body)).toBe(1);
+    expect(doc.querySelector("div.gmail_quote")?.hasAttribute("data-mk-quote")).toBe(true);
+  });
+
+  it("marks nothing above QUOTE_ELEMENTS_MAX quote elements (everything shows)", () => {
+    const doc = body("<p>Reply</p>" + '<blockquote type="cite">a</blockquote>'.repeat(QUOTE_ELEMENTS_MAX + 1));
+    expect(markQuotes(doc.body)).toBe(0);
+    expect(doc.querySelector("[data-mk-quote]")).toBeNull();
+    const fewer = body("<p>Reply</p>" + '<blockquote type="cite">a</blockquote>'.repeat(QUOTE_ELEMENTS_MAX));
+    expect(markQuotes(fewer.body)).toBe(QUOTE_ELEMENTS_MAX);
+  });
+
+  it("stays fast on 20,000 sibling blockquotes (one call)", () => {
+    const cite = body("<p>Reply</p>" + '<blockquote type="cite">a</blockquote>'.repeat(20_000));
+    const empty = body("<p>Reply</p>" + "<blockquote></blockquote>".repeat(20_000));
+    const started = performance.now();
+    markQuotes(cite.body);
+    markQuotes(empty.body);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  it("reads dark support fast from 200,000 characters of unclosed meta tags (one call)", () => {
+    const started = performance.now();
+    expect(declaresDarkSupport("<meta ".repeat(40_000))).toBe(false);
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(declaresDarkSupport("<meta " + "x".repeat(2_000) + '<meta name="color-scheme" content="dark">')).toBe(true);
+    expect(declaresDarkSupport('<META\nname="color-scheme"\ncontent="light dark"/>')).toBe(true);
+    expect(declaresDarkSupport('<metadata name="color-scheme" content="dark">')).toBe(false);
   });
 
   it("reads dark support from the raw HTML", () => {

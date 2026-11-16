@@ -107,6 +107,8 @@ const OWN_DATA_PREFIX = "data-mk-";
 
 /** Characters of raw HTML read for the dark-support check. */
 export const DARK_SCAN_CHARS = 200_000;
+/** Characters of one `<meta>` tag read by the dark-support check; longer tags are skipped. */
+const META_TAG_CHARS = 1_000;
 
 /**
  * Whether a mail says it has its own dark colors (spec resolution 14): a
@@ -116,13 +118,18 @@ export const DARK_SCAN_CHARS = 200_000;
  */
 export function declaresDarkSupport(rawHtml: string): boolean {
   const text = rawHtml.slice(0, DARK_SCAN_CHARS);
-  const metas = text.match(/<meta\b[^>]*>/gi) ?? [];
-  for (const meta of metas) {
+  const lower = text.toLowerCase();
+  // indexOf and a bounded window per tag: a regex over unclosed `<meta` tags is quadratic.
+  for (let at = lower.indexOf("<meta"); at !== -1; at = lower.indexOf("<meta", at + 5)) {
+    if (/[\w-]/.test(lower[at + 5] ?? "")) continue;
+    const tag = text.slice(at, at + META_TAG_CHARS);
+    const end = tag.indexOf(">");
+    if (end === -1) continue;
+    const meta = tag.slice(0, end + 1);
     if (/name\s*=\s*["']?(?:color-scheme|supported-color-schemes)\b/i.test(meta) && /content\s*=\s*["'][^"']*\bdark\b/i.test(meta)) {
       return true;
     }
   }
-  const lower = text.toLowerCase();
   let from = 0;
   for (;;) {
     const open = lower.indexOf("<style", from);
@@ -144,37 +151,65 @@ function textOf(node: Node): string {
   return (node.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
-/** The element before `element` that holds text, skipping empty ones. */
-function previousWithText(element: Element): Element | null {
-  let at = element.previousElementSibling;
-  while (at !== null && textOf(at) === "") at = at.previousElementSibling;
-  return at;
+function hasText(node: Node): boolean {
+  return /\S/.test(node.textContent ?? "");
 }
+
+/** Quote elements (blockquotes and quote containers) above which nothing is marked and everything shows. */
+export const QUOTE_ELEMENTS_MAX = 300;
 
 /**
  * Marks quoted blocks of a sanitized body with `data-mk-quote` (slice 3h,
- * #54). Nothing is marked when everything would be (a forwarded message).
- * Returns how many blocks were marked.
+ * #54). Nothing is marked when everything would be (a forwarded message)
+ * or when the body has more than QUOTE_ELEMENTS_MAX quote elements.
+ * Returns how many blocks were marked. Linear in the body (times its
+ * depth): only the outermost candidates are kept, by a walk up from each.
  */
 export function markQuotes(body: HTMLElement): number {
-  const marked = new Set<Element>();
-  const mark = (element: Element) => {
-    if ([...marked].some((outer) => outer.contains(element))) return;
-    for (const inner of [...marked]) if (element.contains(inner)) marked.delete(inner);
-    marked.add(element);
-  };
-  for (const element of Array.from(body.querySelectorAll(QUOTE_SELECTORS))) mark(element);
+  const quoteElements = body.querySelectorAll(`${QUOTE_SELECTORS}, blockquote`).length;
+  if (quoteElements > QUOTE_ELEMENTS_MAX) return 0;
+  const candidates = new Set<Element>();
+  for (const element of Array.from(body.querySelectorAll(QUOTE_SELECTORS))) candidates.add(element);
   for (const id of QUOTE_FROM_HERE) {
     const start = body.querySelector(`[id="${id}"]`);
     if (start === null) continue;
-    for (let at: Element | null = start; at !== null; at = at.nextElementSibling) mark(at);
+    for (let at: Element | null = start; at !== null; at = at.nextElementSibling) candidates.add(at);
   }
-  for (const quote of Array.from(body.querySelectorAll("blockquote"))) {
-    const before = previousWithText(quote);
-    if (before !== null && isAttribution(textOf(before))) {
-      mark(quote);
-      mark(before);
+  // A blockquote after an attribution line: the nearest earlier sibling with
+  // text, tracked in one pass over each parent's children.
+  const parents = new Set<Element>();
+  for (const quote of Array.from(body.querySelectorAll("blockquote"))) if (quote.parentElement !== null) parents.add(quote.parentElement);
+  for (const parent of parents) {
+    // Siblings are read for text only when a blockquote follows them, each at most once.
+    let before: Element | null = null;
+    let unread: Element[] = [];
+    for (let child = parent.firstElementChild; child !== null; child = child.nextElementSibling) {
+      if (child.localName === "blockquote") {
+        for (let i = unread.length - 1; i >= 0; i--) {
+          if (hasText(unread[i]!)) {
+            before = unread[i]!;
+            break;
+          }
+        }
+        unread = [];
+        if (before !== null && isAttribution(textOf(before))) {
+          candidates.add(child);
+          candidates.add(before);
+        }
+      }
+      unread.push(child);
     }
+  }
+  const marked = new Set<Element>();
+  for (const element of candidates) {
+    let inside = false;
+    for (let up = element.parentElement; up !== null && up !== body; up = up.parentElement) {
+      if (candidates.has(up)) {
+        inside = true;
+        break;
+      }
+    }
+    if (!inside) marked.add(element);
   }
   if (marked.size === 0) return 0;
   // Nothing is hidden when the whole body would be.
@@ -426,17 +461,20 @@ function emailPurifier(): Purifier {
 export function sanitizeEmailHtml(html: string, options: SanitizeOptions): SanitizedEmail {
   run.remoteImages = options.remoteImages;
   run.blockedRemoteImages = false;
-  let body: string;
+  let body: HTMLElement;
   try {
+    // The body DOMPurify built (RETURN_DOM gives its <body>): quotes are
+    // marked on it and it is serialized once, never parsed again.
     body = emailPurifier().sanitize(html, {
       FORBID_TAGS: options.remoteImages ? [...FORBID_TAGS, ...REMOTE_MODE_FORBID_TAGS] : FORBID_TAGS,
       FORCE_BODY: true,
       ALLOW_UNKNOWN_PROTOCOLS: false,
-    });
+      RETURN_DOM: true,
+    }) as HTMLElement;
   } finally {
     run.remoteImages = false;
   }
-  const marked = markBody(body);
+  const quotes = markQuotes(body);
   const csp = options.remoteImages ? EMAIL_CSP_REMOTE_IMAGES : EMAIL_CSP;
   const darkStyle = options.dark === true ? DARK_SCHEME_STYLE + (options.darkSupported === true ? "" : DARK_ADAPT_STYLE) : "";
   return {
@@ -446,19 +484,10 @@ export function sanitizeEmailHtml(html: string, options: SanitizeOptions): Sanit
       `<meta http-equiv="x-dns-prefetch-control" content="off">` +
       `<meta name="referrer" content="no-referrer">` +
       `<style>${BASE_STYLE}${darkStyle}</style>` +
-      `</head><body>${marked.html}</body></html>`,
+      `</head><body>${body.innerHTML}</body></html>`,
     blockedRemoteImages: run.blockedRemoteImages,
-    quotes: marked.quotes,
+    quotes,
   };
-}
-
-/** Marks the quotes of a sanitized body string; the string is unchanged when there are none. */
-function markBody(body: string): { html: string; quotes: number } {
-  if (!/blockquote|gmail_quote|yahoo_quoted|divRplyFwdMsg|appendonsend/i.test(body)) return { html: body, quotes: 0 };
-  // Already sanitized; DOMParser runs no script and loads nothing for text/html.
-  const doc = new DOMParser().parseFromString(`<!doctype html><html><body>${body}</body></html>`, "text/html");
-  const quotes = markQuotes(doc.body);
-  return quotes === 0 ? { html: body, quotes: 0 } : { html: doc.body.innerHTML, quotes };
 }
 
 /**
