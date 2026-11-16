@@ -414,6 +414,11 @@ export function createSlice3hRpc(deps: Slice3hDeps) {
     return counted;
   }
 
+  /** Drops the cached counts of a saved search that was edited or deleted. */
+  function forgetCounts(id: string): void {
+    for (const key of [...savedCounts.keys()]) if (key.startsWith(`${id}\u0000`)) savedCounts.delete(key);
+  }
+
   function savedSearchesList(): { searches: SavedSearchView[] } {
     return {
       searches: store.listSavedSearches().map((row) => {
@@ -433,6 +438,7 @@ export function createSlice3hRpc(deps: Slice3hDeps) {
     );
     if (saved === "full") throw refuse("conflict", SAVED_SEARCHES_FULL_MESSAGE);
     if (saved === "not_found") throw refuse("not_found", SAVED_SEARCH_GONE_MESSAGE);
+    if (input.id !== undefined) forgetCounts(input.id);
     return saved;
   }
 
@@ -826,7 +832,10 @@ export function createSlice3hRpc(deps: Slice3hDeps) {
     historyForget,
     savedSearchesList,
     savedSearchSave,
-    savedSearchDelete: (input: { id: string }) => ({ ok: store.deleteSavedSearch(input.id) }),
+    savedSearchDelete: (input: { id: string }) => {
+      forgetCounts(input.id);
+      return { ok: store.deleteSavedSearch(input.id) };
+    },
     savedSearchMove: (input: { id: string; position: number }) => ({ ok: store.moveSavedSearch(input.id, input.position) }),
     folderCreate,
     folderRename,

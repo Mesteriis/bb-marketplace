@@ -8009,6 +8009,21 @@ describe("makosh-mail server: slice 3h", () => {
     expect(listed.messages).toHaveLength(2);
   });
 
+  it("an edited saved search counts again instead of reusing an old count", async () => {
+    const host = await load3h({
+      folders: ICLOUD_FOLDERS,
+      messages: [{ folder: "INBOX", message: makeFetchedMessage(1, { subject: "Invented INV-2041 ledger" }) }],
+    });
+    const { id } = (await call(host, "saved_search_save", { name: "Ledgers", query: "INV-2041", accountId: null })) as { id: string };
+    expect(await call(host, "saved_searches_list", {})).toMatchObject({ searches: [{ id, unread: 1 }] });
+    createSqliteStore(host.bb.storage.database()).upsertMessages("acc_1", "INBOX", [
+      makeFetchedMessage(2, { subject: "Invented INV-2041 second", messageId: "second@example.org" }),
+    ]);
+    await call(host, "saved_search_save", { id, name: "Ledgers", query: "ledger", accountId: null });
+    await call(host, "saved_search_save", { id, name: "Ledgers", query: "INV-2041", accountId: null });
+    expect(await call(host, "saved_searches_list", {})).toMatchObject({ searches: [{ id, unread: 2 }] });
+  });
+
   it("turning attachment text on indexes stored attachments, which only the owner's page search finds", async () => {
     const raw = rawMail({ attachment: { filename: "ledger.txt", mimeType: "text/plain", content: "Invented ledger Quokkaline totals" } });
     const message = await storedFor(raw);
