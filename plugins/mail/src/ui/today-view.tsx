@@ -31,6 +31,23 @@ export interface TodayViewProps {
   /** Changes when the page should load again (mail changed). */
   refreshKey?: number;
   pollMs?: number;
+  /** Slice 3g: the Dev view; absent: no Dev line. */
+  onOpenDev?: () => void;
+  /** Slice 3g: the Inbox, where the Ready to start strip is; absent: no rules line. */
+  onReviewRules?: () => void;
+}
+
+/** "Dev: 2 CI failures in 1 repository \u00b7 1 alert firing", or null when nothing failed or fires. */
+export function devLine(dev: TodayData["dev"] | undefined): string | null {
+  if (dev === undefined) return null;
+  const parts: string[] = [];
+  if (dev.ciFailed > 0) {
+    parts.push(
+      `${dev.ciFailed} CI ${dev.ciFailed === 1 ? "failure" : "failures"} in ${dev.repos} ${dev.repos === 1 ? "repository" : "repositories"}`,
+    );
+  }
+  if (dev.alertsFiring > 0) parts.push(`${dev.alertsFiring} ${dev.alertsFiring === 1 ? "alert" : "alerts"} firing`);
+  return parts.length === 0 ? null : `Dev: ${parts.join(" \u00b7 ")}`;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -100,6 +117,24 @@ export function TodayView(props: TodayViewProps) {
           </span>
         ) : null}
       </div>
+      {props.onOpenDev !== undefined && devLine(data.dev) !== null ? (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="min-w-0 flex-1 text-foreground">{devLine(data.dev)}</span>
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={props.onOpenDev}>
+            Open Dev
+          </Button>
+        </div>
+      ) : null}
+      {props.onReviewRules !== undefined && (data.rulesReady ?? 0) > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="min-w-0 flex-1 text-foreground">
+            {data.rulesReady === 1 ? "1 rule thread is ready to start" : `${data.rulesReady} rule threads are ready to start`}
+          </span>
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={props.onReviewRules}>
+            Review
+          </Button>
+        </div>
+      ) : null}
       {digest.state.status === "running" ? (
         <p role="status" className="text-xs text-muted-foreground">
           {"Summarizing the conversations\u2026"}

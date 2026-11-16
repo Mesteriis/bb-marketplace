@@ -51,6 +51,7 @@ import { AskPanel, ASK_QUESTION_MAX } from "./ask-panel.tsx";
 import { CategoryChip, type Category } from "./category-chips.tsx";
 import { RemindDialog, ReminderStrip } from "./reminder-strip.tsx";
 import { useBbDialogs, type MailBbPorts } from "./bb-dialogs.tsx";
+import { RuleStrip } from "./rule-strip.tsx";
 import { SummaryBlock } from "./summary-block.tsx";
 import { TasksDialog, type TaskPick } from "./tasks-dialog.tsx";
 import { SnoozeMenu } from "./snooze-menu.tsx";
@@ -934,7 +935,12 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
             />
           ) : null}
           {!searching && props.listFilter !== undefined && props.onListFilter !== undefined ? (
-            <QuickFilters filter={props.listFilter} onChange={props.onListFilter} categories={ai?.categoriesOn === true} />
+            <QuickFilters
+              filter={props.listFilter}
+              onChange={props.onListFilter}
+              categories={ai?.categoriesOn === true}
+              dev={props.bb?.devFilter === true}
+            />
           ) : null}
           {!searching && ai !== undefined && ai.categoriesOn && list.threads.length > 0 ? (
             <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-3 py-1">
@@ -969,6 +975,14 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               }}
               onSnooze={ai.onReminderSnooze}
               onDismiss={ai.onReminderDismiss}
+            />
+          ) : null}
+          {!searching && props.bb?.ruleRuns !== undefined && model.use === "inbox" ? (
+            <RuleStrip
+              runs={props.bb.ruleRuns}
+              onReview={bbUi.reviewRun}
+              onDismiss={(run) => props.bb?.onDismissRun?.(run)}
+              onPauseAll={() => props.bb?.onPauseRules?.()}
             />
           ) : null}
           {model.use === "sent" && !searching ? (

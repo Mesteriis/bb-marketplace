@@ -123,6 +123,23 @@ describe("Today and Tasks pages (slice 3f)", () => {
     expect(parsePageSubPath(pageSubPath("today"))).toBe("today");
     expect(parsePageSubPath(pageSubPath("tasks"))).toBe("tasks");
     for (const other of ["", "today/x", "Tasks", "v/all/inbox", "t/a/b"]) expect(parsePageSubPath(other)).toBeNull();
+  });
+
+  it("parses and builds Dev and Projects (slice 3g)", async () => {
+    const { pageSubPath, parsePageSubPath, projectSubPath, parseProjectSubPath } = await import("./routes.ts");
+    expect(pageSubPath("dev")).toBe("dev");
+    expect(parsePageSubPath("dev")).toBe("dev");
+    expect(pageSubPath("projects")).toBe("p");
+    expect(parsePageSubPath("p")).toBe("projects");
+    const host = (path: string) => path.split("/").map(encodeURIComponent).join("/");
+    expect(projectSubPath("proj/1")).toBe("p/proj%2F1");
+    expect(parseProjectSubPath(host(projectSubPath("proj/1")))).toBe("proj/1");
+    expect(parsePageSubPath(host(projectSubPath("p-api")))).toBe("projects");
+    expect(parseProjectSubPath("p")).toBeNull();
+    for (const other of ["p/a/b", "dev/x", "Dev"]) {
+      expect(parseProjectSubPath(other)).toBeNull();
+      expect(parsePageSubPath(other)).toBeNull();
+    }
     expect(parseViewSubPath("today")).toBeNull();
     expect(parseThreadSubPath("tasks")).toBeNull();
   });

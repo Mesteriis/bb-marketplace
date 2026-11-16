@@ -21,4 +21,11 @@ describe("dayNoticePlan", () => {
     expect(bare.title).toBe("No reply from bo@example.org");
     expect(bare.open).toEqual({ page: "today" });
   });
+
+  it("a rule notice names the rule and counts its threads, with no mail text (slice 3g)", () => {
+    expect(dayNoticePlan({ kind: "rule", ruleName: "CI failures", count: 1 }).title).toBe("Rule CI failures: a thread is ready");
+    const plan = dayNoticePlan({ kind: "rule", ruleName: "CI failures", count: 3 });
+    expect(plan.title).toBe("Rule CI failures: 3 threads are ready");
+    expect(plan.open).toEqual({ page: "today" });
+  });
 });

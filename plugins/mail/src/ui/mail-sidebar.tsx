@@ -45,7 +45,14 @@ export interface MailSidebarState {
   /** Sends not done yet, of the accounts in scope. */
   outbox: readonly OutboxRow[];
   /** Slice 3f: the Today and Tasks entries with their counts (null while unknown), and the one open. */
-  pages?: { today: number | null; tasks: number | null; current: "today" | "tasks" | null };
+  pages?: {
+    today: number | null;
+    tasks: number | null;
+    current: "today" | "tasks" | "dev" | "projects" | null;
+    /** Slice 3g: Dev (CI failures of the last day) and Projects; absent: not shown. */
+    dev?: number | null;
+    projects?: boolean;
+  };
 }
 
 export interface MailSidebarProps {
@@ -57,8 +64,8 @@ export interface MailSidebarProps {
   onSelectView: (view: MailView) => void;
   /** The gear in the rail footer: Mail settings (sending addresses, signatures, templates). */
   onOpenSettings?: () => void;
-  /** Today or Tasks (slice 3f). */
-  onSelectPage?: (page: "today" | "tasks") => void;
+  /** Today or Tasks (slice 3f), Dev or Projects (slice 3g). */
+  onSelectPage?: (page: "today" | "tasks" | "dev" | "projects") => void;
 }
 
 /** The Today and Tasks entries (slice 3f). */
@@ -67,11 +74,13 @@ function PageRows({
   onSelect,
 }: {
   pages: NonNullable<MailSidebarState["pages"]>;
-  onSelect: (page: "today" | "tasks") => void;
+  onSelect: (page: "today" | "tasks" | "dev" | "projects") => void;
 }) {
-  const rows = [
-    { page: "today" as const, label: "Today", icon: "Sun", count: pages.today, unit: "need a reply" },
-    { page: "tasks" as const, label: "Tasks", icon: "ListChecks", count: pages.tasks, unit: "open" },
+  const rows: { page: "today" | "tasks" | "dev" | "projects"; label: string; icon: string; count: number | null; unit: string }[] = [
+    { page: "today", label: "Today", icon: "Sun", count: pages.today, unit: "need a reply" },
+    { page: "tasks", label: "Tasks", icon: "ListChecks", count: pages.tasks, unit: "open" },
+    ...(pages.dev !== undefined ? [{ page: "dev" as const, label: "Dev", icon: "GitBranch", count: pages.dev, unit: "CI failures today" }] : []),
+    ...(pages.projects === true ? [{ page: "projects" as const, label: "Projects", icon: "Folder", count: null, unit: "" }] : []),
   ];
   return (
     <ul aria-label="Today and tasks" className="flex flex-col gap-px px-1.5 pb-1">

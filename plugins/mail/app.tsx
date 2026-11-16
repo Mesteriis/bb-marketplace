@@ -14,6 +14,9 @@ import {
   experimental_Diff,
   experimental_saveFile,
   experimental_SourceCode,
+  experimental_InfoSection,
+  experimental_THREAD_ACTION_GROUPS,
+  experimental_THREAD_INFO_SECTION_GROUPS,
   experimental_useQuestionFormHost,
   UrlLink,
   useBbContext,
@@ -23,6 +26,8 @@ import {
   useRpc,
   useSettings,
   type ExperimentalBadge,
+  type ExperimentalThreadInfoProps,
+  type PluginMessageActionContext,
   type PluginNavPanelProps,
   type PluginPendingInteractionProps,
   type PluginTimelineRendererProps,
@@ -86,6 +91,8 @@ import {
   parseViewSubPath,
   pageSubPath,
   parsePageSubPath,
+  parseProjectSubPath,
+  projectSubPath,
   type MailPageName,
   threadSubPath,
   viewSubPath,
@@ -126,6 +133,11 @@ import { DAY_NOTICE_TOAST_MS, dayNoticePlan } from "./src/ui/day-notices.ts";
 import { TasksView } from "./src/ui/tasks-view.tsx";
 import type { MailBbPorts } from "./src/ui/bb-dialogs.tsx";
 import type { BbCall, CodeRenderers } from "./src/ui/bb-ports.ts";
+import type { BbSettingsValues } from "./src/ui/bb-integration-settings.tsx";
+import { DevView } from "./src/ui/dev-view.tsx";
+import { ProjectsView } from "./src/ui/projects-view.tsx";
+import { ThreadMailSection } from "./src/ui/thread-mail-section.tsx";
+import type { RuleRunView } from "./src/core/contract.ts";
 
 // The channel name is checked against the core constant without importing it
 // at runtime: a value import of the core would bundle its zod schemas.
@@ -133,6 +145,7 @@ const MAIL_CHANGED_CHANNEL: typeof MailChangedChannel = "mail-changed";
 /** BB's highlighter and diff viewer, injected into src/ui as render props (slice 3g, spec resolution 6). */
 const HostSourceCode = experimental_SourceCode;
 const HostDiff = experimental_Diff;
+const HostInfoSection = experimental_InfoSection;
 const OUTBOX_CHANGED_CHANNEL: typeof OutboxChangedChannel = "outbox-changed";
 const NEW_MAIL_CHANNEL: typeof NewMailChannel = "mail-new";
 const DAY_NOTICE_CHANNEL: typeof DayNoticeChannel = "mail-day";
@@ -2274,6 +2287,22 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   // ---- Slice 3f: plugin settings the page reads, and Mail settings' AI tabs ----
 
   const pluginSettings = useSettings().values;
+  /** Slice 3g: the owner RPCs of the BB integration, typed for src/ui. */
+  const bbCall = useCallback<BbCall>(
+    (method, input) => rpc.call(method as never, input as never) as never,
+    [rpc],
+  );
+  const bbSettings = useMemo<BbSettingsValues>(
+    () => ({
+      attachmentFolder: typeof pluginSettings?.attachmentFolder === "string" ? pluginSettings.attachmentFolder : "mail-attachments",
+      patchFolder: typeof pluginSettings?.patchFolder === "string" ? pluginSettings.patchFolder : "mail-patches",
+      taskTarget:
+        pluginSettings?.taskTarget === "taskboard" || pluginSettings?.taskTarget === "local" ? pluginSettings.taskTarget : "auto",
+      devNotifications: pluginSettings?.devNotifications !== false,
+    }),
+    [pluginSettings?.attachmentFolder, pluginSettings?.devNotifications, pluginSettings?.patchFolder, pluginSettings?.taskTarget],
+  );
+  const mailRulesOn = pluginSettings?.mailRules === true;
   const categoriesOn = pluginSettings?.mailCategories === true;
   const reminderDaysSetting = (() => {
     const days = pluginSettings?.replyReminderDays;
@@ -2359,6 +2388,14 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       }}
       onChangeSnoozeFolder={changeSnoozeFolder}
       ai={settingsAi}
+      bb={{
+        call: bbCall,
+        values: bbSettings,
+        mailRules: mailRulesOn,
+        notify: (text, action) => {
+          toast(text, action !== undefined ? { action: { label: action.label, onClick: action.run } } : undefined);
+        },
+      }}
     />
   );
 
@@ -2555,13 +2592,18 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   // ---- Slice 3f: the Today and Tasks pages ----
 
   const shownPage = parsePageSubPath(subPath);
-  const [pageCounts, setPageCounts] = useState<{ today: number | null; tasks: number | null }>({ today: null, tasks: null });
+  const [pageCounts, setPageCounts] = useState<{ today: number | null; tasks: number | null; dev: number | null }>({
+    today: null,
+    tasks: null,
+    dev: null,
+  });
   const [pageRefresh, setPageRefresh] = useState(0);
   const loadPageCounts = useCallback(async () => {
     const [today, tasks] = await Promise.allSettled([rpc.call("today_get", {}), rpc.call("tasks_list", { done: false })]);
     setPageCounts({
       today: today.status === "fulfilled" ? today.value.needsReply.length : null,
       tasks: tasks.status === "fulfilled" ? tasks.value.tasks.length : null,
+      dev: today.status === "fulfilled" ? (today.value.dev?.ciFailed ?? null) : null,
     });
   }, [rpc]);
   useEffect(() => {
@@ -2585,6 +2627,27 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     [navigate, setListFilter],
   );
   const loadToday = useCallback(() => rpc.call("today_get", {}), [rpc]);
+  const loadDev = useCallback((cursor: string | null) => rpc.call("dev_digest_get", { cursor }), [rpc]);
+  /** Mark read or Archive a Dev group: 3a's message action over its messages, with Undo. */
+  const devAction = useCallback(
+    async (group: { messageIds: string[] }, action: "mark_read" | "archive") => {
+      if (group.messageIds.length === 0) return;
+      const undoId = crypto.randomUUID();
+      const result = await rpc.call("message_action", { messageIds: group.messageIds.slice(0, 200), action, role: "inbox", undoId });
+      for (const error of new Set(result.groups.map((g) => g.error).filter((e): e is string => e !== null))) toast.error(error);
+      if (result.undoable) recordUndo(undoId, action, group.messageIds.length, null, true);
+      refreshAfterChange();
+    },
+    [recordUndo, refreshAfterChange, rpc],
+  );
+  const loadProjectLists = useCallback(async () => {
+    const [projects, bindings] = await Promise.all([rpc.call("projects_list", {}), rpc.call("bindings_list", {})]);
+    return { projects: projects.projects, bindings: bindings.bindings };
+  }, [rpc]);
+  const loadProjectMail = useCallback(
+    (projectId: string, cursor: string | null) => rpc.call("project_mail", { projectId, cursor }),
+    [rpc],
+  );
   const loadTasks = useCallback(
     (done: boolean, cursor: string | null) => rpc.call("tasks_list", { done, cursor }),
     [rpc],
@@ -2614,6 +2677,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           pageChanged();
         }}
         {...(categoriesOn ? { onShowCategory: showCategory } : {})}
+        {...(bbSettings.devNotifications ? { onOpenDev: () => navigate.toPluginPanel("mail", { subPath: pageSubPath("dev") }) } : {})}
+        onReviewRules={() => navigate.toPluginPanel("mail", { subPath: viewSubPath(latest.current.view) })}
         refreshKey={pageRefresh}
       />
     ) : shownPage === "tasks" ? (
@@ -2632,15 +2697,30 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         }}
         refreshKey={pageRefresh}
       />
+    ) : shownPage === "dev" ? (
+      <DevView
+        load={loadDev}
+        onAction={devAction}
+        onOpenProject={(projectId) => navigate.toPluginPanel("mail", { subPath: projectSubPath(projectId) })}
+        refreshKey={pageRefresh}
+      />
+    ) : shownPage === "projects" ? (
+      <ProjectsView
+        projectId={parseProjectSubPath(subPath)}
+        loadProjects={loadProjectLists}
+        loadMail={loadProjectMail}
+        onSelectProject={(projectId) =>
+          navigate.toPluginPanel("mail", { subPath: projectId === null ? pageSubPath("projects") : projectSubPath(projectId) })
+        }
+        onOpen={mailAi.onOpenConversation}
+        onOpenInBb={(projectId) => navigate.toProject(projectId)}
+        refreshKey={pageRefresh}
+      />
     ) : undefined;
 
   // ---- Slice 3g: the BB integration ----
 
   const bbContext = useBbContext();
-  const bbCall = useCallback<BbCall>(
-    (method, input) => rpc.call(method as never, input as never) as never,
-    [rpc],
-  );
   const codeRenderers = useMemo<CodeRenderers>(
     () => ({
       renderCode: (content, path) => <HostSourceCode content={content} path={path} overflow="wrap" />,
@@ -2653,10 +2733,45 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     }),
     [copy],
   );
-  const attachmentFolder =
-    typeof pluginSettings?.attachmentFolder === "string" && pluginSettings.attachmentFolder !== ""
-      ? pluginSettings.attachmentFolder
-      : "mail-attachments";
+  const attachmentFolder = bbSettings.attachmentFolder !== "" ? bbSettings.attachmentFolder : "mail-attachments";
+  const [ruleRuns, setRuleRuns] = useState<RuleRunView[]>([]);
+  const loadRuleRuns = useCallback(async () => {
+    try {
+      const { runs } = await rpc.call("rule_runs_list", {});
+      setRuleRuns(runs.filter((run) => run.state === "ready" || run.state === "capped" || run.state === "failed"));
+    } catch {
+      // The strip keeps what it showed.
+    }
+  }, [rpc]);
+  useEffect(() => {
+    if (status?.vaultReady !== true || !mailRulesOn) {
+      setRuleRuns([]);
+      return;
+    }
+    void loadRuleRuns();
+  }, [loadRuleRuns, mailRulesOn, status?.vaultReady]);
+  useDebouncedRealtime(DAY_NOTICE_CHANNEL, () => {
+    if (mailRulesOn) void loadRuleRuns();
+  });
+  const pauseRules = useCallback(() => {
+    rpc
+      .call("rules_pause", {})
+      .then(({ paused }) => {
+        void loadRuleRuns();
+        toast(paused === 1 ? "Paused 1 rule" : `Paused ${paused} rules`, {
+          action: {
+            label: "Undo",
+            onClick: () => {
+              rpc
+                .call("rules_pause", { undo: true })
+                .then(() => void loadRuleRuns())
+                .catch((error: unknown) => toast.error(`Could not undo: ${messageOf(error)}`));
+            },
+          },
+        });
+      })
+      .catch((error: unknown) => toast.error(`Could not pause the rules: ${messageOf(error)}`));
+  }, [loadRuleRuns, rpc]);
   const mailBb = useMemo<MailBbPorts>(
     () => ({
       call: bbCall,
@@ -2668,14 +2783,43 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       },
       notifyError: (text) => toast.error(text),
       onOpenThread: (bbThreadId) => navigate.toThread(bbThreadId),
-      onOpenProject: (projectId) => navigate.toProject(projectId),
+      onOpenProject: (projectId) => navigate.toPluginPanel("mail", { subPath: projectSubPath(projectId) }),
       onEditInComposer: (projectId, prompt) => navigate.toCompose({ projectId, initialPrompt: prompt, focusPrompt: true }),
       onChanged: () => {
         const open = openThreadId.current;
         if (open !== null) void loadThread(open, null);
+        if (mailRulesOn) void loadRuleRuns();
       },
+      onOpenDev: () => navigate.toPluginPanel("mail", { subPath: pageSubPath("dev") }),
+      devFilter: bbSettings.devNotifications,
+      ...(mailRulesOn
+        ? {
+            ruleRuns,
+            onDismissRun: (run: RuleRunView) => {
+              rpc
+                .call("rule_run_dismiss", { id: run.id })
+                .then(() => void loadRuleRuns())
+                .catch((error: unknown) => toast.error(`Could not dismiss: ${messageOf(error)}`));
+            },
+            onPauseRules: pauseRules,
+          }
+        : {}),
     }),
-    [attachmentFolder, bbCall, bbContext.projectId, bbContext.threadId, codeRenderers, loadThread, navigate],
+    [
+      attachmentFolder,
+      bbCall,
+      bbContext.projectId,
+      bbContext.threadId,
+      bbSettings.devNotifications,
+      codeRenderers,
+      loadRuleRuns,
+      loadThread,
+      mailRulesOn,
+      navigate,
+      pauseRules,
+      rpc,
+      ruleRuns,
+    ],
   );
 
   // ---- The sidebar's rail ----
@@ -2698,10 +2842,16 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
             foldersError: scoped?.error ?? null,
             view,
             outbox: outboxInScope,
-            pages: { ...pageCounts, current: shownPage },
+            pages: {
+              today: pageCounts.today,
+              tasks: pageCounts.tasks,
+              current: shownPage,
+              ...(bbSettings.devNotifications ? { dev: pageCounts.dev } : {}),
+              projects: true,
+            },
           },
     // currentViewKey stands for view, which is a new object each render.
-    [status, unified, account, folders, scoped, currentViewKey, outboxInScope, pageCounts, shownPage],
+    [status, unified, account, folders, scoped, currentViewKey, outboxInScope, pageCounts, shownPage, bbSettings.devNotifications],
   );
   /** Changes when a pick in the sidebar should bring focus to the page. */
   const [focusRequest, setFocusRequest] = useState(0);
@@ -3262,6 +3412,81 @@ function AgentTriageTimelineRow({ payload }: PluginTimelineRendererProps) {
 // loading the bundle. navPanel adds a page to the left sidebar, routed at
 // /plugins/makosh-mail/mail; while it is open, BB's sidebar shows the mail
 // rail instead of the thread list.
+// ---- Slice 3g: BB surfaces (Email the result, Email this, the Mail Info section) ----
+
+type Navigate3g = ReturnType<typeof useBbNavigate>;
+
+/**
+ * The RPC client and navigation the thread menu's useData publishes (BB
+ * calls it once for the whole app); the message action, which gets neither,
+ * reads them from here.
+ */
+const bbBridge: { rpc: ReturnType<typeof useRpc<typeof rpcContract>> | null; navigate: Navigate3g | null } = {
+  rpc: null,
+  navigate: null,
+};
+
+function useBbBridge(): typeof bbBridge {
+  const rpc = useRpc<typeof rpcContract>();
+  let navigate: Navigate3g | null = null;
+  try {
+    navigate = useBbNavigate();
+  } catch {
+    navigate = null;
+  }
+  bbBridge.rpc = rpc;
+  bbBridge.navigate = navigate;
+  return bbBridge;
+}
+
+/** A thread's result or one assistant message as a Mail draft (never sent), then Mail opens it. */
+async function emailFromBb(
+  bridge: typeof bbBridge,
+  bbThreadId: string,
+  source: { kind: "output" } | { kind: "message"; text: string },
+): Promise<void> {
+  const { rpc, navigate } = bridge;
+  if (rpc === null) {
+    toast.error("Open Mail once, then try again");
+    return;
+  }
+  try {
+    const { draftId, reply } = await rpc.call("draft_from_bb", { bbThreadId, source });
+    toast.success(reply ? "Reply draft ready in Mail" : "Draft ready in Mail");
+    navigate?.toPluginPanel("mail", { subPath: draftSubPath(draftId) });
+  } catch (error) {
+    toast.error(`Could not make the draft: ${messageOf(error)}`);
+  }
+}
+
+/** Email this: assistant messages only; the selected text when there is one. */
+function emailMessageRun(context: Pick<PluginMessageActionContext, "threadId" | "message" | "selectedText">): Promise<void> | void {
+  if (context.message.role !== "assistant") return;
+  const selected = context.selectedText?.trim() ?? "";
+  const text = selected !== "" ? selected : context.message.text;
+  if (text.trim() === "") return;
+  return emailFromBb(bbBridge, context.threadId, { kind: "message", text: text.slice(0, 100_000) });
+}
+
+/** The Mail section of a BB thread's Info tab: shown only when the project has bound or origin mail. */
+function ThreadMailInfo({ threadId, projectId }: ExperimentalThreadInfoProps) {
+  const rpc = useRpc<typeof rpcContract>();
+  const navigate = useBbNavigate();
+  const load = useCallback(() => rpc.call("bb_thread_mail", { projectId, bbThreadId: threadId }), [projectId, rpc, threadId]);
+  return (
+    <ThreadMailSection
+      load={load}
+      onOpen={(accountId, mailThreadId) => navigate.toPluginPanel("mail", { subPath: threadSubPath(accountId, mailThreadId) })}
+      onShowAll={() => navigate.toPluginPanel("mail", { subPath: projectSubPath(projectId) })}
+      frame={(content, total) => (
+        <HostInfoSection label="Mail" count={total}>
+          {content}
+        </HostInfoSection>
+      )}
+    />
+  );
+}
+
 export default definePluginApp((app) => {
   app.slots.navPanel({
     id: "mail",
@@ -3279,4 +3504,24 @@ export default definePluginApp((app) => {
   // The inbox-actions card mail_triage opens (rendererId "agent-triage"), and its settled row.
   app.slots.pendingInteraction({ id: "agent-triage", component: AgentTriageInteraction });
   app.slots.experimental_timelineRenderer({ kind: "makosh-mail/agent-triage", component: AgentTriageTimelineRow });
+  // Slice 3g (spec resolution 18): a thread's result or one assistant message as a Mail draft.
+  app.slots.experimental_threadAction({
+    id: "email-result",
+    title: "Email the result",
+    icon: "Mail",
+    group: experimental_THREAD_ACTION_GROUPS.organize,
+    placement: "menu",
+    useData: useBbBridge,
+    item: ({ thread, data }) => ({
+      label: "Email the result",
+      icon: "Mail",
+      run: () => emailFromBb(data, thread.id, { kind: "output" }),
+    }),
+  });
+  app.slots.messageAction({ id: "email-message", title: "Email this", icon: "Mail", run: emailMessageRun });
+  app.slots.experimental_threadInfoSection({
+    id: "mail",
+    group: experimental_THREAD_INFO_SECTION_GROUPS.related,
+    component: ThreadMailInfo,
+  });
 });

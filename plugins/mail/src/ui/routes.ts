@@ -84,15 +84,29 @@ export function parseDraftSubPath(subPath: string): string | null {
   return decodeTwice(segments[1]!);
 }
 
-/** The Today and Tasks pages of the rail (slice 3f). */
-export type MailPageName = "today" | "tasks";
+/** The Today and Tasks pages of the rail (slice 3f), Dev and Projects (slice 3g). */
+export type MailPageName = "today" | "tasks" | "dev" | "projects";
 
-/** The subPath of the Today or Tasks page. */
+/** The subPath of a rail page; Projects is `p` (one project is `p/<projectId>`). */
 export function pageSubPath(page: MailPageName): string {
-  return page;
+  return page === "projects" ? "p" : page;
 }
 
-/** The Today or Tasks page a panel subPath names; null for anything else. */
+/** The rail page a panel subPath names; null for anything else. */
 export function parsePageSubPath(subPath: string): MailPageName | null {
-  return subPath === "today" || subPath === "tasks" ? subPath : null;
+  if (subPath === "today" || subPath === "tasks" || subPath === "dev") return subPath;
+  if (subPath === "p" || parseProjectSubPath(subPath) !== null) return "projects";
+  return null;
+}
+
+/** The subPath, as unencoded segments for `toPluginPanel`, of one project's mail (slice 3g). */
+export function projectSubPath(projectId: string): string {
+  return `p/${encodeURIComponent(projectId)}`;
+}
+
+/** The project a panel subPath (as the host passes it) names; null for anything else. */
+export function parseProjectSubPath(subPath: string): string | null {
+  const segments = subPath.split("/");
+  if (segments.length !== 2 || segments[0] !== "p") return null;
+  return decodeTwice(segments[1]!);
 }

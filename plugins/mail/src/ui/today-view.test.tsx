@@ -4,7 +4,7 @@ import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TodayView as TodayData } from "../core/contract.ts";
 import type { ThreadSummary } from "../core/model.ts";
-import { TodayView } from "./today-view.tsx";
+import { devLine, TodayView } from "./today-view.tsx";
 import { BASE, HOSTILE, fakePorts } from "./testing/ai-fixtures.ts";
 
 installTestPluginRuntime();
@@ -112,5 +112,19 @@ describe("TodayView", () => {
     expect((screen.getByRole("button", { name: "Summarize" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "14 notifications" })).toBeNull();
     expect(screen.getByText("14 notifications")).toBeTruthy();
+  });
+
+  it("shows the Dev line and the rule threads ready (slice 3g)", async () => {
+    expect(devLine({ ciFailed: 0, repos: 0, alertsFiring: 0 })).toBeNull();
+    expect(devLine({ ciFailed: 2, repos: 1, alertsFiring: 1 })).toBe("Dev: 2 CI failures in 1 repository \u00b7 1 alert firing");
+    const onOpenDev = vi.fn();
+    const onReviewRules = vi.fn();
+    mount({ load: vi.fn(async () => ({ ...DATA, dev: { ciFailed: 1, repos: 1, alertsFiring: 0 }, rulesReady: 2 })), onOpenDev, onReviewRules });
+    expect(await screen.findByText("Dev: 1 CI failure in 1 repository")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open Dev" }));
+    expect(onOpenDev).toHaveBeenCalled();
+    expect(screen.getByText("2 rule threads are ready to start")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(onReviewRules).toHaveBeenCalled();
   });
 });

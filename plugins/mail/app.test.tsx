@@ -665,7 +665,8 @@ describe("Mail folders", () => {
     expect(rail.getByRole("button", { name: /Inbox/ }).getAttribute("aria-current")).toBe("page");
     // "[Gmail]" holds only system folders; "Projects" holds one of the owner's.
     expect(rail.queryByText("[Gmail]")).toBeNull();
-    expect(rail.getByText("Projects").closest("button")).toBeNull();
+    // The folder named Projects is a heading, not a button (the rail's own Projects entry is, slice 3g).
+    expect(rail.getAllByText("Projects").find((el) => el.tagName === "LI")?.closest("button")).toBeNull();
     expect(rail.getByRole("button", { name: /Alpha/ })).toBeTruthy();
     expect(callsTo(slot, "folders_list")[0]?.input).toEqual({ accountId: "acc-1" });
     expect(callsTo(slot, "threads_list")[0]?.input).toMatchObject({
@@ -4540,5 +4541,119 @@ describe("BB integration in the reading pane (slice 3g)", () => {
     );
     fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
     expect(await slot.findByRole("figure", { name: "Code (sh)" })).toBeTruthy();
+  });
+});
+
+describe("Slice 3g: views, BB surfaces and settings", () => {
+  function renderWith(rpc: Record<string, unknown>, settings: Record<string, string | number | boolean> = {}, subPath = "") {
+    return renderSlot({ component: MailWithSidebar }, { subPath }, {
+      rpc: rpc as never,
+      settings,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+  }
+  const GROUP = {
+    source: "github",
+    repo: "github.com/example-org/demo",
+    counts: { ci: 1, pr: 0, mr: 0, issue: 0, review: 0, release: 0, security: 0, alert: 0, other: 0 },
+    ciFailed: 1,
+    latestFailure: null,
+    unread: 1,
+    total: 1,
+    latestDate: null,
+    messageIds: ["m-1"],
+    projectId: null,
+    projectName: null,
+  };
+
+  it("registers Email the result in BB's organize group, Email this and the Mail Info section", () => {
+    const action = app.threadActions.find((a) => a.id === "email-result")!;
+    expect(action.title).toBe("Email the result");
+    expect(action.group).toBe("2_organize");
+    expect(action.placement).toBe("menu");
+    expect(app.messageActions.map((a) => a.id)).toContain("email-message");
+    expect(app.threadInfoSections.map((s) => s.id)).toContain("mail");
+  });
+
+  it("Email this ignores user messages", async () => {
+    const run = app.messageActions.find((a) => a.id === "email-message")!.run;
+    await run({ threadId: "bbt-1", message: { id: "x", threadId: "bbt-1", role: "user", text: "hello", sourceSeqEnd: 1, experimental_messageSeq: 1 } } as never);
+    expect(toasts.error).toEqual([]);
+    expect(toasts.success).toEqual([]);
+  });
+
+  it("g n opens Dev; Mark read acts on the group's messages with Undo", async () => {
+    const slot = renderWith(
+      mailRpc({
+        dev_digest_get: () => ({ groups: [GROUP], next: null }),
+        message_action: () => ({ groups: [{ accountId: "acc-1", folder: "INBOX", ids: ["m-1"], error: null }], undoable: true }),
+      }),
+    );
+    await slot.findByRole("button", { name: /Quarterly plan/ });
+    press(pageRoot(slot), { key: "g", code: "KeyG" });
+    press(pageRoot(slot), { key: "n", code: "KeyN" });
+    await waitFor(() =>
+      expect(slot.inspection.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "mail", options: { subPath: "dev" } }),
+    );
+    expect(await slot.findByText("github.com/example-org/demo")).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Mark read" }));
+    await waitFor(() => expect(callsTo(slot, "message_action")).toHaveLength(1));
+    expect(callsTo(slot, "message_action")[0]?.input).toMatchObject({ messageIds: ["m-1"], action: "mark_read", role: "inbox" });
+    await waitFor(() => expect(toasts.log.some((t) => t.options?.action?.label === "Undo")).toBe(true));
+  });
+
+  it("Hide dev notifications filters the list with notDev", async () => {
+    const slot = renderWith(mailRpc());
+    fireEvent.click(await slot.findByRole("button", { name: "Hide dev notifications" }));
+    await waitFor(() => expect(callsTo(slot, "threads_list").at(-1)?.input).toMatchObject({ filter: { notDev: true } }));
+  });
+
+  it("with dev notifications off there is no Hide dev filter and no Dev entry", async () => {
+    const slot = renderWith(mailRpc(), { devNotifications: false });
+    await slot.findByRole("button", { name: /Quarterly plan/ });
+    expect(slot.queryByRole("button", { name: "Hide dev notifications" })).toBeNull();
+    expect(slot.queryByRole("button", { name: "Dev" })).toBeNull();
+  });
+
+  it("with mail rules on, the Inbox shows Ready to start; Review opens New thread with the rule's template", async () => {
+    const run = {
+      id: "run-1",
+      ruleId: "r-1",
+      ruleName: "CI failures",
+      accountId: "acc-1",
+      messageId: "m-new",
+      threadId: "th-a",
+      state: "ready",
+      bbThreadId: null,
+      subject: "Run failed",
+      createdAt: "2026-11-16T08:00:00.000Z",
+    };
+    const slot = renderWith(
+      mailRpc({
+        rule_runs_list: () => ({ runs: [run], next: null }),
+        rules_list: () => ({
+          rules: [{ id: "r-1", name: "CI failures", enabled: true, match: {}, projectId: "p-api", projectName: "api", template: "Find the test", mode: "prepare", createdAt: "x", updatedAt: "x" }],
+        }),
+        projects_list: () => ({ projects: [{ id: "p-api", name: "api", kind: "local", hasTree: true, repo: null }] }),
+        bb_thread_prepare: () => ({ prompt: "P", title: "T", hidden: 0, leftOut: 0, permissionMode: null }),
+      }),
+      { mailRules: true },
+    );
+    const strip = await slot.findByRole("region", { name: "Ready to start" });
+    fireEvent.click(within(strip).getByRole("button", { name: "Review" }));
+    await slot.findByTestId("bb-thread-prompt");
+    expect(callsTo(slot, "bb_thread_prepare")[0]?.input).toEqual({ messageId: "m-new", include: "message", projectId: "p-api", instruction: "Find the test" });
+  });
+
+  it("Mail settings show BB integration and Rules", async () => {
+    const slot = renderWith(mailRpc({ bindings_list: () => ({ bindings: [] }), identities_list: () => ({ identities: [] }), templates_list: () => ({ templates: [] }) }), {
+      attachmentFolder: "inbox-files",
+    });
+    await slot.findByRole("button", { name: /Quarterly plan/ });
+    fireEvent.click(slot.getByRole("button", { name: /Mail settings|Settings/ }));
+    fireEvent.click(await slot.findByRole("tab", { name: "BB integration" }));
+    expect(await slot.findByText("Attachments saved to a project go to inbox-files/")).toBeTruthy();
+    fireEvent.click(slot.getByRole("tab", { name: "Rules" }));
+    expect(slot.getByText("Off: no rule runs.")).toBeTruthy();
   });
 });

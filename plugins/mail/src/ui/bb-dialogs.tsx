@@ -3,7 +3,7 @@
 // Make a task, Save to project, Review the patch). Toasts and navigation go
 // through the ports, so src/ui stays host-free.
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { ProjectListItem } from "../core/contract.ts";
+import type { ProjectListItem, RuleRunView } from "../core/contract.ts";
 import type { MessageHeader, ThreadDetail } from "../core/model.ts";
 import { BbThreadDialog, type BbThreadRequest } from "./bb-thread-dialog.tsx";
 import { errorText, type BbCall, type CodeRenderers } from "./bb-ports.ts";
@@ -30,10 +30,18 @@ export interface MailBbPorts {
   onChanged: () => void;
   /** The Dev view (g n). */
   onOpenDev?: () => void;
+  /** devNotifications is on: the list offers Hide dev notifications. */
+  devFilter?: boolean;
+  /** Rule runs ready to start, capped or failed (the Ready to start strip); absent: no strip. */
+  ruleRuns?: readonly RuleRunView[];
+  onDismissRun?: (run: RuleRunView) => void;
+  onPauseRules?: () => void;
 }
 
 export interface BbDialogs {
   reading: ReadingBb | undefined;
+  /** Review on a rule run: New thread with the rule's project and template. */
+  reviewRun: (run: RuleRunView) => void;
   openThread: (request: BbThreadRequest) => void;
   newThreadFor: (message: MessageHeader) => void;
   makeTaskFor: (message: MessageHeader) => void;
@@ -198,5 +206,30 @@ export function useBbDialogs(bb: MailBbPorts | undefined, detail: ThreadDetail |
       </>
     );
 
-  return { reading, openThread: setThread, newThreadFor, makeTaskFor, dialogs };
+  const reviewRun = useCallback(
+    (run: RuleRunView) => {
+      if (bb === undefined) return;
+      bb.call("rules_list", {}).then(
+        ({ rules }) => {
+          const rule = rules.find((r) => r.id === run.ruleId);
+          if (rule === undefined) {
+            bb.notifyError("The rule of this run was deleted");
+            return;
+          }
+          setThread({
+            messageId: run.messageId,
+            projectId: rule.projectId,
+            instruction: rule.template,
+            ruleRunId: run.id,
+            inAiScope: true,
+            hasAttachments: false,
+          });
+        },
+        (error: unknown) => bb.notifyError(errorText(error, "The rules could not be read")),
+      );
+    },
+    [bb],
+  );
+
+  return { reading, reviewRun, openThread: setThread, newThreadFor, makeTaskFor, dialogs };
 }

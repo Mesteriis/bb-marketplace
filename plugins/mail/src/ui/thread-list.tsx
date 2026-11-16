@@ -63,7 +63,7 @@ export function formatUntil(iso: string | null, now: Date = new Date()): string 
 }
 
 /** The quick filters of a list (slice 3e); `keep` is the page's, not a toggle. */
-export type ListFilter = { unread?: true; flagged?: true; attachments?: true; category?: Category };
+export type ListFilter = { unread?: true; flagged?: true; attachments?: true; category?: Category; notDev?: true };
 
 export const LIST_FILTERS: readonly { key: "unread" | "flagged" | "attachments"; label: string }[] = [
   { key: "unread", label: "Unread" },
@@ -73,7 +73,9 @@ export const LIST_FILTERS: readonly { key: "unread" | "flagged" | "attachments";
 
 /** Whether any toggle is on. */
 export function filterActive(filter: ListFilter): boolean {
-  return filter.unread === true || filter.flagged === true || filter.attachments === true || filter.category !== undefined;
+  return (
+    filter.unread === true || filter.flagged === true || filter.attachments === true || filter.category !== undefined || filter.notDev === true
+  );
 }
 
 /** The empty list's text under the toggles that are on. */
@@ -93,11 +95,14 @@ export function QuickFilters({
   filter,
   onChange,
   categories = false,
+  dev = false,
 }: {
   filter: ListFilter;
   onChange: (next: ListFilter) => void;
   /** Slice 3f: the category filters, with categories on. */
   categories?: boolean;
+  /** Slice 3g: Hide dev notifications, with devNotifications on. */
+  dev?: boolean;
 }) {
   return (
     <div role="group" aria-label="Quick filters" className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-3 py-1">
@@ -121,6 +126,22 @@ export function QuickFilters({
           </Button>
         );
       })}
+      {dev ? (
+        <Button
+          variant={filter.notDev === true ? "secondary" : "ghost"}
+          size="sm"
+          className={cn("h-6 px-2 text-xs", filter.notDev !== true && "text-muted-foreground")}
+          aria-pressed={filter.notDev === true}
+          onClick={() => {
+            const next: ListFilter = { ...filter };
+            if (next.notDev === true) delete next.notDev;
+            else next.notDev = true;
+            onChange(next);
+          }}
+        >
+          Hide dev notifications
+        </Button>
+      ) : null}
       {categories ? (
         <CategoryFilters
           value={filter.category}

@@ -31,11 +31,23 @@ import { ComposeToolbar, type ToolId } from "./compose-toolbar.tsx";
 import { accountLabel } from "./folder-list.tsx";
 import { editorDocEmpty, SignatureEditor } from "./signature-editor.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { BbIntegrationSettings, type BbSettingsValues } from "./bb-integration-settings.tsx";
+import { RulesSettings } from "./rules-settings.tsx";
+import type { BbCall } from "./bb-ports.ts";
 
 export type TemplateView = { id: string; name: string; doc: EditorDoc; updatedAt: string };
 export type SuggestionView = { address: string; count: number; lastDate: string };
 export type IdentityKey = { accountId: string; address: string };
-export type SettingsSection = "addresses" | "templates" | "inbox" | "ai_access" | "activity" | "ai";
+export type SettingsSection = "addresses" | "templates" | "inbox" | "ai_access" | "activity" | "ai" | "bb" | "rules";
+
+/** Mail settings' BB tabs (slice 3g). */
+export interface SettingsBbPorts {
+  call: BbCall;
+  /** The plugin settings as BB has them now. */
+  values: BbSettingsValues;
+  mailRules: boolean;
+  notify: (text: string, action?: { label: string; run: () => void }) => void;
+}
 
 /** Mail settings' AI tabs (slice 3f). */
 export interface SettingsAiPorts {
@@ -91,6 +103,8 @@ export interface MailSettingsProps {
   onChangeSnoozeFolder?: (accountId: string) => void;
   /** AI access, Agent activity and AI features (slice 3f); absent: none of those tabs. */
   ai?: SettingsAiPorts;
+  /** BB integration and Rules (slice 3g); absent: neither tab. */
+  bb?: SettingsBbPorts;
 }
 
 function messageOf(error: unknown, fallback: string): string {
@@ -172,6 +186,12 @@ export function MailSettings(props: MailSettingsProps) {
                     ["ai", "AI features"],
                   ] as const)
                 : []),
+              ...(props.bb !== undefined
+                ? ([
+                    ["bb", "BB integration"],
+                    ["rules", "Rules"],
+                  ] as const)
+                : []),
             ] as const
           ).map(([id, label]) => (
             <button
@@ -209,6 +229,10 @@ export function MailSettings(props: MailSettingsProps) {
             <AgentActivity {...props.ai.activity} />
           ) : section === "ai" && props.ai !== undefined ? (
             <AiFeaturesSection ai={props.ai} />
+          ) : section === "bb" && props.bb !== undefined ? (
+            <BbIntegrationSettings values={props.bb.values} call={props.bb.call} hint={PLUGIN_SETTINGS_HINT} />
+          ) : section === "rules" && props.bb !== undefined ? (
+            <RulesSettings on={props.bb.mailRules} call={props.bb.call} notify={props.bb.notify} hint={PLUGIN_SETTINGS_HINT} />
           ) : section === "inbox" && props.onUnblock !== undefined ? (
             <InboxSection
               accounts={accounts}
