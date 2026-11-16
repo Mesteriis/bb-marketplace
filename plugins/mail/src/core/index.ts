@@ -32,6 +32,7 @@ export * from "./agent-propose.ts";
 export * from "./agent-proposals.ts";
 export * from "./translate.ts";
 export * from "./unsubscribe.ts";
+export * from "./sender-check.ts";
 export * from "./blocking.ts";
 export * from "./notify.ts";
 export * from "./idle-policy.ts";

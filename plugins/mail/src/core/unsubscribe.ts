@@ -259,8 +259,14 @@ function matchesTrace(name: string, patterns: readonly string[]): boolean {
   });
 }
 
-/** Removes RFC 5322 comments (nested parentheses) outside quoted strings. */
-function stripComments(text: string): string {
+/**
+ * Removes RFC 5322 comments (nested parentheses) outside quoted strings.
+ * Quoted strings are tracked inside comments too (part A resolution 4.4),
+ * so a quoted local part holding `)` cannot close a comment early and smuggle
+ * text out of it. `balanced` is false when the text ends inside a quote or a
+ * comment.
+ */
+function stripComments(text: string): { text: string; balanced: boolean } {
   let out = "";
   let depth = 0;
   let quoted = false;
@@ -269,9 +275,9 @@ function stripComments(text: string): string {
     if (ch === "\\" && (quoted || depth > 0)) {
       if (depth === 0) out += ch + (text[i + 1] ?? "");
       i += 1;
-    } else if (depth === 0 && ch === '"') {
+    } else if (ch === '"') {
       quoted = !quoted;
-      out += ch;
+      if (depth === 0) out += ch;
     } else if (!quoted && ch === "(") {
       depth += 1;
     } else if (!quoted && ch === ")" && depth > 0) {
@@ -280,10 +286,101 @@ function stripComments(text: string): string {
       out += ch;
     }
   }
-  return out;
+  return { text: out, balanced: !quoted && depth === 0 };
+}
+
+/** Splits at `;` outside quoted strings (part A resolution 4.4). */
+function splitEntries(text: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i] ?? "";
+    if (quoted && ch === "\\") {
+      current += ch + (text[i + 1] ?? "");
+      i += 1;
+      continue;
+    }
+    if (ch === '"') quoted = !quoted;
+    if (ch === ";" && !quoted) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+  return parts;
 }
 
 const unquote = (value: string) => (value.startsWith('"') && value.endsWith('"') && value.length >= 2 ? value.slice(1, -1) : value);
+
+/** Longest Authentication-Results value read; the rest is cut and the result marked malformed (slice 3i). */
+export const AUTH_RESULTS_VALUE_MAX = 4 * 1024;
+/** Most method entries read from one Authentication-Results value. */
+export const AUTH_RESULTS_ENTRIES_MAX = 20;
+
+/** One `spf`, `dkim` or `dmarc` entry of an Authentication-Results header, property values as written. */
+export type AuthEntry = {
+  method: "spf" | "dkim" | "dmarc";
+  /** Lower case. */
+  result: string;
+  smtpMailfrom: string | null;
+  headerFrom: string | null;
+  headerD: string | null;
+  headerI: string | null;
+  headerS: string | null;
+  headerB: string | null;
+};
+
+export type AuthResults = {
+  /** Lower case. */
+  authservId: string;
+  entries: AuthEntry[];
+  /** Cut at a bound, or a quote or comment left open: never enough to claim a sender is fine. */
+  malformed: boolean;
+};
+
+const AUTH_METHODS = new Set<AuthEntry["method"]>(["spf", "dkim", "dmarc"]);
+
+/**
+ * The method entries of one Authentication-Results value (RFC 8601), bounded
+ * before any regular expression runs. Unknown methods are skipped; null
+ * without an authserv-id.
+ */
+export function parseAuthResults(value: string): AuthResults | null {
+  let malformed = value.length > AUTH_RESULTS_VALUE_MAX;
+  const stripped = stripComments(value.slice(0, AUTH_RESULTS_VALUE_MAX));
+  if (!stripped.balanced) malformed = true;
+  const parts = splitEntries(stripped.text);
+  const authservId = (parts[0] ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  if (authservId === "") return null;
+  const entries: AuthEntry[] = [];
+  for (const part of parts.slice(1)) {
+    if (entries.length >= AUTH_RESULTS_ENTRIES_MAX) {
+      malformed = true;
+      break;
+    }
+    const pairs = [...part.matchAll(/([A-Za-z0-9._-]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^\s;]+)/g)].map((m) => ({
+      name: (m[1] ?? "").toLowerCase(),
+      value: unquote(m[2] ?? ""),
+    }));
+    const first = pairs[0];
+    if (first === undefined || !AUTH_METHODS.has(first.name as AuthEntry["method"])) continue;
+    const prop = (name: string) => pairs.slice(1).find((p) => p.name === name)?.value ?? null;
+    entries.push({
+      method: first.name as AuthEntry["method"],
+      result: first.value.toLowerCase(),
+      smtpMailfrom: prop("smtp.mailfrom"),
+      headerFrom: prop("header.from"),
+      headerD: prop("header.d"),
+      headerI: prop("header.i"),
+      headerS: prop("header.s"),
+      headerB: prop("header.b"),
+    });
+  }
+  return { authservId, entries, malformed };
+}
 
 type DkimResult = {
   result: string;
@@ -293,32 +390,54 @@ type DkimResult = {
   b: string | null;
 };
 
-type AuthResults = { authservId: string; dkim: DkimResult[] };
-
-function parseAuthResults(value: string): AuthResults | null {
-  const parts = stripComments(value).split(";");
-  const authservId = (parts[0] ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
-  if (authservId === "") return null;
-  const dkim: DkimResult[] = [];
-  for (const part of parts.slice(1)) {
-    const pairs = [...part.matchAll(/([A-Za-z0-9._-]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^\s;]+)/g)].map((m) => ({
-      name: (m[1] ?? "").toLowerCase(),
-      value: unquote(m[2] ?? ""),
-    }));
-    const first = pairs[0];
-    if (first === undefined || first.name !== "dkim") continue;
-    const prop = (name: string) => pairs.slice(1).find((p) => p.name === name)?.value ?? null;
-    const d = prop("header.d");
-    const i = prop("header.i");
-    const iDomain = i !== null && i.includes("@") ? i.slice(i.lastIndexOf("@") + 1) : null;
-    dkim.push({
-      result: first.value.toLowerCase(),
-      signer: asciiDomain(d ?? iDomain),
-      selector: prop("header.s")?.toLowerCase() ?? null,
-      b: prop("header.b")?.replace(/\s+/g, "") ?? null,
+/** The DKIM view 3e's one-click trust reads. */
+function dkimResults(results: AuthResults): DkimResult[] {
+  return results.entries
+    .filter((entry) => entry.method === "dkim")
+    .map((entry) => {
+      const i = entry.headerI;
+      const iDomain = i !== null && i.includes("@") ? i.slice(i.lastIndexOf("@") + 1) : null;
+      return {
+        result: entry.result,
+        signer: asciiDomain(entry.headerD ?? iDomain),
+        selector: entry.headerS?.toLowerCase() ?? null,
+        b: entry.headerB?.replace(/\s+/g, "") ?? null,
+      };
     });
-  }
-  return { authservId, dkim };
+}
+
+/**
+ * The Authentication-Results headers that count for a preset (3e's rule,
+ * shared with the slice-3i sender check): only trusted authserv-ids, only
+ * inside the provider's top trace block and above the topmost
+ * DKIM-Signature, in message order (the provider's own comes first).
+ * `elsewhere`: a trusted id also appears further down. Null when the preset
+ * trusts no id.
+ */
+export function trustedAuthResults(
+  headers: HeaderLine[],
+  preset: AccountPreset,
+): { counted: AuthResults[]; elsewhere: boolean } | null {
+  const trusted = TRUSTED_AUTHSERV[preset].map((id) => id.toLowerCase());
+  if (trusted.length === 0) return null;
+
+  const patterns = PROVIDER_TRACE_HEADERS[preset];
+  let blockEnd = headers.findIndex((line) => !matchesTrace(keyOf(line), patterns));
+  if (blockEnd === -1) blockEnd = headers.length;
+  let dkimTop = headers.findIndex((line) => keyOf(line) === "dkim-signature");
+  if (dkimTop === -1) dkimTop = headers.length;
+  const limit = Math.min(blockEnd, dkimTop);
+
+  const counted: AuthResults[] = [];
+  let elsewhere = false;
+  headers.forEach((line, index) => {
+    if (keyOf(line) !== "authentication-results") return;
+    const parsed = parseAuthResults(line.value);
+    if (parsed === null || !trusted.includes(parsed.authservId)) return;
+    if (index < limit) counted.push(parsed);
+    else elsewhere = true;
+  });
+  return { counted, elsewhere };
 }
 
 type Signature = { d: string | null; s: string | null; b: string; h: string[] };
@@ -362,29 +481,13 @@ export function trustOf(
   fromDomain: string | null,
   httpsHost: string | null,
 ): UnsubscribeTrust {
-  const trusted = TRUSTED_AUTHSERV[preset].map((id) => id.toLowerCase());
-  if (trusted.length === 0) return "untrusted_provider";
-
-  const patterns = PROVIDER_TRACE_HEADERS[preset];
-  let blockEnd = headers.findIndex((line) => !matchesTrace(keyOf(line), patterns));
-  if (blockEnd === -1) blockEnd = headers.length;
-  let dkimTop = headers.findIndex((line) => keyOf(line) === "dkim-signature");
-  if (dkimTop === -1) dkimTop = headers.length;
-  const limit = Math.min(blockEnd, dkimTop);
-
-  const counted: AuthResults[] = [];
-  let trustedElsewhere = false;
-  headers.forEach((line, index) => {
-    if (keyOf(line) !== "authentication-results") return;
-    const parsed = parseAuthResults(line.value);
-    if (parsed === null || !trusted.includes(parsed.authservId)) return;
-    if (index < limit) counted.push(parsed);
-    else trustedElsewhere = true;
-  });
-  if (counted.length === 0) return trustedElsewhere ? "untrusted_provider" : "no_dkim";
+  const found = trustedAuthResults(headers, preset);
+  if (found === null) return "untrusted_provider";
+  const counted = found.counted;
+  if (counted.length === 0) return found.elsewhere ? "untrusted_provider" : "no_dkim";
 
   const signatures = linesNamed(headers, "dkim-signature").map((line) => parseSignature(line.value));
-  const results = counted.flatMap((ar) => ar.dkim);
+  const results = counted.flatMap(dkimResults);
   const passes = results.filter((r) => r.result === "pass");
   // Any other answer (fail, neutral, temperror, permerror, policy, none) is a
   // conflict for the signature it names; one naming none contradicts every
