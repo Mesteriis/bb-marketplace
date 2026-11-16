@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-makosh-remote-hub",
   "version": "0.1.0",
-  "description": "Experimental SSH/RDP connection manager. Stage 1: Rust helper lifecycle and verified echo IPC over a versioned stdio protocol.",
+  "description": "Experimental SSH/RDP connection manager. Stage 2a: one real SSH session in the embedded xterm terminal, a Rust PTY helper, and a versioned stdio/binary-WebSocket transport.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -28,7 +28,7 @@
   },
   "bb": {
     "name": "Remote Hub [Experimental]",
-    "description": "Experimental SSH/RDP connection manager. Stage 1: Rust helper lifecycle and verified echo IPC over a versioned stdio protocol.",
+    "description": "Experimental SSH/RDP connection manager. Stage 2a: one real SSH session in the embedded xterm terminal, a Rust PTY helper, and a versioned stdio/binary-WebSocket transport.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

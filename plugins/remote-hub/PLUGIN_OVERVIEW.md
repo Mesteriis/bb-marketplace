@@ -1,24 +1,24 @@
-Remote Hub is an experimental SSH/RDP connection manager for BB. This stage
-ships the scaffold: a Rust supervision helper and the verified stdio protocol
-it speaks with the plugin.
+Remote Hub is an experimental SSH/RDP connection manager for BB. Stage 2a
+ships one real SSH session in the embedded xterm terminal, plus the echo console
+and the Rust PTY helper from stage 1.
 
 ## What you get
 
 - A Remote Hub page with a live helper status line (version, pid, platform,
   open sessions) and an echo console.
-- The helper opens a real PTY per echo session (/bin/cat) and streams output
-  back as binary frames with sequence numbers.
-- Closing a session, closing the helper stdin, or SIGTERM tears down every
-  child process the helper owns.
+- An SSH page: connect form (host, user, port), a real /usr/bin/ssh session on
+  a helper-owned PTY, xterm.js rendering, resize, and a binary WebSocket with
+  attach/detach and a bounded scrollback snapshot on re-attach.
+- The helper owns every session; detaching a view never ends it. Session end is
+  reported with the exit code/signal/reason, and the helper enforces the same
+  ssh argv policy as the TypeScript builder.
 
 ## Honest limits
 
-No SSH or RDP, no saved profiles, no credentials, no agent tools and no CLI
-yet. They arrive in the following stages; nothing here pretends they work.
-
-The helper binary is not committed under bin/. It must be built with
-npm run build:helper, which needs a Rust toolchain for aarch64-apple-darwin;
-until then the tab reports helper_missing with the expected path.
+No saved profiles, no credentials, no RDP, no agent tools and no CLI yet. The
+plugin has not been exercised inside a live BB server. The helper binary is not
+committed under bin/; build it with npm run build:helper (Rust toolchain for
+aarch64-apple-darwin).
 
 ## Source
 

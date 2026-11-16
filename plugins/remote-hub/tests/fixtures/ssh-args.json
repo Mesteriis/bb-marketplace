@@ -27,6 +27,16 @@
       "error": null
     },
     {
+      "name": "path-with-space",
+      "target": {
+        "host": "example.com",
+        "configFile": "/tmp/my config",
+        "extraOptions": []
+      },
+      "argv": ["ssh", "-tt", "-F", "/tmp/my config", "--", "example.com"],
+      "error": null
+    },
+    {
       "name": "no-user-port",
       "target": {
         "host": "example.com",

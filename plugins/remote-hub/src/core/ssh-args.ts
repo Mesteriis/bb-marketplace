@@ -54,7 +54,9 @@ function assertToken(value: string, field: string): void {
 
 function assertAbsolutePath(value: string, field: string): void {
   if (!value.startsWith("/")) invalid("invalid_" + field, field + " must be an absolute path");
-  if (SHELL_METACHARS.test(value)) invalid("invalid_" + field, field + " contains a disallowed character");
+  // Paths are separate argv entries, never interpolated into a shell string,
+  // so spaces are safe; only control characters are rejected.
+  if (/[\x00-\x1f]/.test(value)) invalid("invalid_" + field, field + " contains a control character");
 }
 
 /** Reject a single raw option; throws code ssh_option_rejected. */

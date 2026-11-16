@@ -808,7 +808,7 @@
     {
       "id": "makosh-remote-hub",
       "displayName": "Remote Hub [Experimental]",
-      "description": "Experimental SSH/RDP connection manager. Stage 1: Rust helper lifecycle and verified echo IPC over a versioned stdio protocol.",
+      "description": "Experimental SSH/RDP connection manager. Stage 2a: one real SSH session in the embedded xterm terminal, a Rust PTY helper, and a versioned stdio/binary-WebSocket transport.",
       "icon": {
         "url": "./plugins/remote-hub/assets/icon.svg"
       },

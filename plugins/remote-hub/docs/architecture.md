@@ -42,8 +42,8 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   and sequence number. The SDK offers a binary-capable WebSocket —
   `bb.http.experimental_websocket` (bb-plugin-sdk.d.ts:20484) whose
   `ExperimentalPluginWebSocket.send` accepts `string | Uint8Array`
-  (:20446-20448). Verified in declarations; not wired in this stage (echo output
-  returns through the RPC response today).
+  (:20446-20448). Verified in declarations; wired in stage 2a through the
+  /attach WebSocket route.
 - The BB terminal API: `bb.sdk.terminals` (`PluginBbSdk.terminals`,
   bb-plugin-sdk.d.ts:19377) is a `TerminalsArea` (:18802) with
   `create/input/resize/output/list/close/rename/restart`.
@@ -66,8 +66,9 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   EPIPE or any non-transient stdout error as fatal shutdown. `session.close`
   drains up to 512 KiB plus one 64 KiB read (the 256 KiB pending-output bound
   plus a final read), and drops the rest. The remaining limit is the single shared stdout
-  pipe: a stalled reader stalls every session, which stage 2 will revisit with
-  a per-session binary WebSocket.
+  pipe. Output is streamed per session over the plugin's own binary WebSocket;
+  per-session credit flow control keeps one stalled consumer from stalling
+  another.
 - openpty retry: `openpty` is retried a bounded 8 times on transient
   errnos (EAGAIN/EINTR/ENXIO, positive or negative); the observed failure is a
   transient errno -6 (-ENXIO) from plain `openpty` on macOS under parallel
@@ -85,20 +86,30 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   the client (`session.credit {sessionId, bytes}`); the helper never has more
   than the granted window of un-acked output in flight and stops reading that
   PTY when the window is exhausted. Echo sessions start with an unlimited
-  window; SSH sessions start at zero and are driven by the attach socket.
+  window; SSH sessions start at zero. The adapter owns one 256 KiB credit
+  window per attached socket: it grants the initial window on attach and
+  replenishes exactly the bytes it forwards to the renderer, so a bounded
+  window is always in flight while attached and nothing is granted while
+  detached (src/core/credit.ts).
 - Attach/detach semantics: one WebSocket per attached view, bound to a single
   session handle by a single-use attach token; closing the socket detaches the
   view but the session keeps running in the helper. Re-attach sends a bounded
   scrollback snapshot (last 1 MiB, owned by the TS adapter) before live bytes.
+- SSH config trust: without an explicit configFile the user's real ~/.ssh/config
+  applies, including any StrictHostKeyChecking there. configFile, identityFile
+  and knownHostsFile are provided by the RPC caller and passed as separate argv
+  entries; paths may contain spaces (only control characters are rejected).
 - Binary WebSocket facts (bb-plugin-sdk.d.ts:20446-20484):
   `bb.http.experimental_websocket(path, handler, { auth })` registers a route in
   the `/http/` namespace; a GET upgrades only with `Upgrade: websocket`.
   `ExperimentalPluginWebSocket.send(data: string | Uint8Array)` is binary-capable
   and `onMessage` receives `string | Uint8Array`. `PluginHttpAuthMode` is
-  `"local" | "none" | "token"`; the SDK gives no per-connection origin or
-  session-scope check, so Remote Hub adds its own single-use attach token and
-  per-session binding on top. Auth and origin checks are not exercised in a
-  live BB server in this stage.
+  `"local" | "none" | "token"`. The default auth mode is "local": Origin/Host
+  must be a local BB app origin (bb-plugin-sdk.d.ts:20487-20491), and
+  experimental_websocket (bb-plugin-sdk.d.ts:20500-20503) says its auth modes
+  are identical to HTTP routes. Remote Hub relies on that default and adds its
+  own single-use attach token plus per-session binding on top. Auth and origin
+  checks are not exercised in a live BB server in this stage.
 - RDP image frames: not in this stage; nothing is claimed about them yet.
 
 ## 4. Where metadata, secrets, keys and trust records live
