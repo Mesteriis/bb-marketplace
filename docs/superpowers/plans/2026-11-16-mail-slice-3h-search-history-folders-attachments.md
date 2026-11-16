@@ -650,3 +650,19 @@ Recorded by batch F (2026-11-16).
 - **Viewer and PDF**: `PdfEngine` and `PdfUnavailable` are declared in `src/ui/pdf-view.tsx` and implemented in `src/adapters/bb/pdf-page.ts`. Each opened PDF gets its own probed worker, terminated on close. The worker text import is in `src/adapters/bb/pdf-worker-source.ts` (typed by `pdf-worker-text.d.ts`), so tests replace it. `PDFJS_LICENSE` is kept by being a property of the engine.
 - **Core:** `isAttribution` moved from `ai-input.ts` to `quotes.ts` (re-exported), so the page bundle does not pull `ai-input.ts` and zod. `grep -c ZodError dist/app.js` stays 0.
 - **Build** (batch F end): `dist/app.js` 2 692 361 bytes; `napi-rs`: app 1, server 0; `skia`: 0 in both.
+
+## Review fixes
+
+Recorded after the slice 3h review (2026-11-16).
+
+- **Quotes:** `markQuotes` keeps the outermost candidates by a walk up from each (O(depth)), reads siblings for an attribution in one pass per parent, and marks nothing when the body has more than `QUOTE_ELEMENTS_MAX` (300) quote elements: everything shows then. Quotes are marked on the body DOMPurify returns (`RETURN_DOM`), so the sanitized HTML is not parsed a second time.
+- **Dark support:** `declaresDarkSupport` finds `<meta` with `indexOf` and reads at most 1,000 characters per tag (a regex over unclosed tags was quadratic).
+- **History steps (deviation from spec "Older mail"):** `history_since` is never derived from header dates. A step with more than 500 new messages, or one stopped by Cancel or the time budget, leaves `history_since` where it was; the next step runs the same range and skips the stored uids. A stopped step is not an empty step.
+- **Conversation loads** store their rows with `kept = 'search'`: outside `[history_since, window)` they expire after `serverSearchKeepDays` unless opened, back in the window, or covered by a history step (which turns them into history).
+- **Gmail labels:** `setGmLabels` stores the server's labels on every copy of the message (account and dedup key); `labels_change` reads its before-state from the All Mail copy.
+- **Attachment text:** the daily raw budget is charged only after a fetch succeeded; an account that answers `RetryLater` is skipped for the rest of the round and the round keeps picking from the others. The candidate query excludes Spam and Trash (`NOT_JUNK_OR_TRASH`).
+- **PDF:** the engine cancels the previous `RenderTask` before drawing on the document's canvas again (the cancelled render resolves quietly) and draws a page above 16 megapixels at a lower scale. `pdf-view.tsx` is unchanged.
+- **Relative dates** before 1970 are a `bad_value` note; subtracting months or years clamps the day to the target month.
+- **Viewer:** stored `text` and `calendar` parts carry no charset, so their NUL-free bytes sniff as text and are served with `charsetOf`.
+- **Folders:** `rehomeFolder` rewrites `messages.move_pending` too (rewriting was a one-line change, so rename does not refuse for queued moves into a child); the schema-scan test covers `move_pending`. A Gmail label is deleted with a plain DELETE only when the delete connection advertises `X-GM-EXT-1`, else the STATUS check applies. A `\Noselect` folder is deleted without STATUS.
+- **Saved searches:** cached unread counts of an edited or deleted search are dropped.
