@@ -296,4 +296,59 @@ describe("TranslateJobs", () => {
       "translation job-2 failed (auth)",
     ]);
   });
+
+  it("the model sees placeholders only; the polled and stored translation is restored; the map is dropped at every end", async () => {
+    const CODE = "482913";
+    const secretId = idOf(3);
+    store.upsertMessages("acc_1", "INBOX", [
+      makeFetchedMessage(4, { subject: "Invented sign-in", bodyText: `Your verification code is ${CODE}.` }),
+    ]);
+    const withCode = idOf(4);
+    const jobId = await startJob(withCode);
+    const call = translator.calls[0]!;
+    expect(call.request.input).not.toContain(CODE);
+    const placeholder = /\[hidden one-time code 1 [a-z0-9]{4}\]/.exec(call.request.input)![0];
+    expect(jobs.holdsRestore(jobId)).toBe(true);
+    // A placeholder split across deltas is held back until it closes.
+    call.onText("Ваш код ");
+    call.onText(placeholder.slice(0, 10));
+    expect(jobs.poll(jobId, 0)!.text).toBe("Ваш код ");
+    call.onText(`${placeholder.slice(10)}. [hidden token 9 zzzz] стоит как есть`);
+    expect(jobs.poll(jobId, 0)!.text).toBe(`Ваш код ${CODE}. [hidden token 9 zzzz] стоит как есть`);
+    call.resolve("complete");
+    await jobs.settled(jobId);
+    expect(jobs.holdsRestore(jobId)).toBe(false);
+    expect(store.getTranslation(withCode, "ru")!.text).toBe(`Ваш код ${CODE}. [hidden token 9 zzzz] стоит как есть`);
+    expect(lines.join("\n")).not.toContain(CODE);
+
+    // Cancelled, failed and swept jobs drop it too.
+    const cancelled = await startJob(secretId);
+    expect(jobs.holdsRestore(cancelled)).toBe(true);
+    jobs.cancel(cancelled);
+    expect(jobs.holdsRestore(cancelled)).toBe(false);
+    const failed = await startJob(idOf(2));
+    translator.calls.at(-1)!.reject(new TranslateError("auth"));
+    await jobs.settled(failed);
+    expect(jobs.holdsRestore(failed)).toBe(false);
+    const swept = await startJob(idOf(1));
+    advance(JOB_IDLE_MS);
+    jobs.sweep();
+    expect(jobs.holdsRestore(swept)).toBe(false);
+  });
+
+  it("a translation cached under prompt version 1 is refreshed on the next click", async () => {
+    const source = translationSource("Invented quince", { text: BODY, html: null }).text;
+    store.putTranslation({
+      messageId,
+      targetLanguage: "ru",
+      providerId: "p",
+      model: "m",
+      text: "старый",
+      truncated: false,
+      sourceSha256: await sourceHash(source, "ru", 1),
+      createdAt: clock.now().toISOString(),
+    });
+    expect(PROMPT_VERSION).toBe(2);
+    expect(await jobs.start(messageId, "ru", SETTINGS)).toHaveProperty("jobId");
+  });
 });
