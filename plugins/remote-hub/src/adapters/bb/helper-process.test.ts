@@ -221,7 +221,6 @@ describe("helper-process (lifecycle)", () => {
                   sessionId: 1,
                   cols: 80,
                   rows: 24,
-                  pid: 99999,
                   kind: "echo",
                 }),
               ),

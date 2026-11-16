@@ -1,8 +1,8 @@
 // Host-free SSH connect form and session view. Real states only: connecting,
-// running, closed, error. The terminal is rendered by SshTerminal.
+// running, detached, closed (with exit status), error.
 import { useCallback, useState } from "react";
 import type { SessionHandle, SshTarget } from "../core/rpc.ts";
-import { SshTerminal } from "./ssh-terminal.tsx";
+import { SshTerminal, type SshExitInfo, type SshTerminalState } from "./ssh-terminal.tsx";
 
 export interface SshAttach {
   token: string;
@@ -15,6 +15,8 @@ export interface SshPageProps {
   onClose: (handle: SessionHandle) => Promise<void>;
 }
 
+type PageState = "idle" | "connecting" | "running" | "detached" | "closed" | "error";
+
 export function SshPage(props: SshPageProps) {
   const { onSshOpen, onAttach, onClose } = props;
   const [host, setHost] = useState("");
@@ -22,16 +24,25 @@ export function SshPage(props: SshPageProps) {
   const [port, setPort] = useState("");
   const [handle, setHandle] = useState<SessionHandle | null>(null);
   const [attach, setAttach] = useState<SshAttach | null>(null);
-  const [state, setState] = useState<"idle" | "connecting" | "running" | "closed" | "error">("idle");
+  const [target, setTarget] = useState<SshTarget | null>(null);
+  const [state, setState] = useState<PageState>("idle");
+  const [exit, setExit] = useState<SshExitInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const onTerminalState = useCallback((next: SshTerminalState, info?: SshExitInfo) => {
+    setState(next);
+    if (info !== undefined) setExit(info);
+  }, []);
 
   const connect = useCallback(async () => {
     if (host.length === 0) return;
     setState("connecting");
     setError(null);
+    setExit(null);
     try {
-      const target: SshTarget = { host, user: user || undefined, port: port ? Number(port) : undefined, extraOptions: [] };
-      const h = await onSshOpen(target);
+      const t: SshTarget = { host, user: user || undefined, port: port ? Number(port) : undefined, extraOptions: [] };
+      setTarget(t);
+      const h = await onSshOpen(t);
       setHandle(h);
       const a = await onAttach(h);
       setAttach(a);
@@ -43,10 +54,11 @@ export function SshPage(props: SshPageProps) {
 
   const disconnect = useCallback(async () => {
     if (handle === null) return;
-    setState("connecting");
     try {
       await onClose(handle);
       setState("closed");
+      setExit({ exitCode: null, signal: null, reason: "killed_by_close" });
+      setAttach(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -55,21 +67,20 @@ export function SshPage(props: SshPageProps) {
   const reattach = useCallback(async () => {
     if (handle === null) return;
     try {
+      setState("connecting");
       const a = await onAttach(handle);
       setAttach(a);
-      setState("running");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [handle, onAttach]);
 
   return (
-    <div style={{ padding: 16, fontFamily: "monospace" }}>
-      <h2>SSH session</h2>
-      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+    <div className="rh-page">
+      <div className="rh-form">
         <input placeholder="host" value={host} onChange={(e) => setHost(e.target.value)} />
         <input placeholder="user" value={user} onChange={(e) => setUser(e.target.value)} />
-        <input placeholder="port" value={port} onChange={(e) => setPort(e.target.value)} style={{ width: 80 }} />
+        <input placeholder="port" value={port} onChange={(e) => setPort(e.target.value)} className="rh-port" />
         <button onClick={() => void connect()} disabled={host.length === 0 || state === "connecting"}>
           Connect
         </button>
@@ -78,17 +89,35 @@ export function SshPage(props: SshPageProps) {
             <button onClick={() => void disconnect()} disabled={state === "connecting"}>
               Disconnect
             </button>
-            <button onClick={() => void reattach()} disabled={attach === null}>
+            <button onClick={() => void reattach()} disabled={attach === null || state === "connecting"}>
               Reattach
             </button>
           </>
         )}
       </div>
-      <p data-testid="ssh-state">state: {state}</p>
-      {error !== null && <p style={{ color: "#e06c75" }}>{error}</p>}
+      <div className="rh-header">
+        {target !== null && (
+          <span>
+            target: <strong>{target.user ? target.user + "@" : ""}{target.host}{target.port ? ":" + target.port : ""}</strong>
+          </span>
+        )}
+        <span data-testid="ssh-state">
+          state: <strong>{state}</strong>
+        </span>
+        {state === "closed" && exit !== null && (
+          <span data-testid="ssh-exit">
+            {exit.exitCode !== null
+              ? "exit " + exit.exitCode
+              : exit.signal !== null
+                ? "signal " + exit.signal
+                : exit.reason}
+          </span>
+        )}
+      </div>
+      {error !== null && <p className="rh-error">{error}</p>}
       {attach !== null && (
-        <div style={{ height: 320, border: "1px solid #333" }}>
-          <SshTerminal wsUrl={attach.wsUrl} token={attach.token} onStateChange={setState} />
+        <div className="rh-terminal-wrap">
+          <SshTerminal wsUrl={attach.wsUrl} token={attach.token} onStateChange={onTerminalState} />
         </div>
       )}
     </div>

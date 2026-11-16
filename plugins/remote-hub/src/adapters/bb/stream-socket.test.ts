@@ -74,8 +74,8 @@ describe("stream-socket control validation (V6)", () => {
       const { service, handlers } = makeHarness();
       const socket = makeSocket();
       await handlers.onOpen(socket);
-      service.sessionCredit.mockClear();
-      service.sessionResize.mockClear();
+      (service.sessionCredit as unknown as { mockClear(): void }).mockClear();
+      (service.sessionResize as unknown as { mockClear(): void }).mockClear();
       handlers.onMessage(socket, payload);
       expect(service.sessionCredit).not.toHaveBeenCalled();
       expect(service.sessionResize).not.toHaveBeenCalled();

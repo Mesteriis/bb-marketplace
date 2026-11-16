@@ -1,0 +1,78 @@
+/* Remote Hub SSH view. Scoped under the plugin surface; colors use bb theme
+   tokens with a dark fallback so the view is legible even outside a themed bb. */
+.rh-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 8px;
+  padding: 12px;
+  box-sizing: border-box;
+  color: var(--ink, #c9d1d9);
+  background: var(--canvas, #0d1117);
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+
+.rh-form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rh-form input {
+  background: var(--surface-recessed-solid, #161b22);
+  color: var(--ink, #c9d1d9);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font: inherit;
+}
+
+.rh-form input.rh-port {
+  width: 80px;
+}
+
+.rh-form button {
+  background: var(--foreground, #c9d1d9);
+  color: var(--canvas, #0d1117);
+  border: 0;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.rh-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.rh-header {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-header strong {
+  color: var(--ink, #c9d1d9);
+}
+
+.rh-error {
+  color: var(--destructive, #e06c75);
+  margin: 0;
+}
+
+.rh-terminal-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.rh-terminal {
+  height: 100%;
+  width: 100%;
+}
