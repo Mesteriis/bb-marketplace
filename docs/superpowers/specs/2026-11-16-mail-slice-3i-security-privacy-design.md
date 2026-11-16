@@ -1171,3 +1171,38 @@ in part B's resolutions ("Interactions with part A") and bind this part too.
     Verified by the builder check: `db.pragma("secure_delete = ON")` is
     callable on the SDK handle and reads back 1 (better-sqlite3 in the
     plugin's `node_modules`, SQLite 3.53.2).
+
+## Resolutions after the review
+
+The slice review (after the build) changed three behaviours of this part.
+These override the sections and resolutions above where they differ.
+
+1. **An anomaly is a failed check (review findings 1 and 9).** Replaces
+   resolution 4.5's "`unchecked`" and the "never `ok`" rule for a
+   malformed header. A check is `failed` (with `decidedBy: null`) when From
+   holds more than one sender, when the provider's header could not be read
+   in full (a value over 64 KB, more than 20 DKIM entries, or a quote or
+   comment left open), or when every DMARC entry names a domain other than
+   the From domain (an entry naming none decides nothing). `failed` is
+   chosen over a separate flag so that one state drives every effect
+   already keyed to it: no dev class (sync, backfill query, refresh), no
+   rule match, no alert, no automatic images, the agent marker and the
+   strip. The strip's summary names the anomaly ("more than one sender in
+   From", "the provider's results could not be read in full", "the
+   provider's DMARC result names another domain"). `readStoredCheck`
+   applies the same rule to a check stored before the review. Reading
+   itself changed with it: SPF and DMARC entries are read past the DKIM cap
+   and through the whole value (up to 64 KB, in linear time); an
+   unbalanced value is read a second time with comments taken out whole and
+   every non-`pass` answer of that reading counts too.
+2. **A stored check is cut, never dropped (finding 3).** Replaces "over
+   2 KB, not stored". `fitSenderCheck` removes Details' extras until the
+   JSON fits `SENDER_CHECK_MAX_BYTES`: DMARC for other domains, then DKIM
+   entries (not aligned first), then the domains, then the authserv-id.
+   The state, basis and `decidedBy` always stay, so a failure is stored and
+   its dev class cleared like any other.
+3. **Details does not count a result the sender wrote under its own
+   headers (finding 12).** `message_source` judges the whole raw header
+   block: the first header outside the kept names stays as an empty marker,
+   so the provider's top block ends where it really does. Sync and the
+   refresh still see only the fields they fetch (unchanged).

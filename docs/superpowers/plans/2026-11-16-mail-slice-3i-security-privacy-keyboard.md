@@ -374,3 +374,67 @@ Deviations from the text above, and why. Later batches build on these.
 - **Tests changed on purpose**: "Always show allows the sender, then shows the images" uses a judged (`unchecked`) sender; "Spam moves the folder's messages…" now expects the next conversation to open; "the message star toggles that message only" opens the stack first (two earlier read messages).
 - **Not covered by an app test**: the citation chip into the stack (the boundary rule is in `conversation-stack.test.ts`; `cite` expands before highlighting, unchanged).
 - **For Batch G**: README needs the status line, the dialog rule, trackers (and the style-hidden limit), the images "not loaded automatically" reasons, Check again, the stack, frame key forwarding, Shift+Cmd+D and the B5 action list (Archive, Delete, Spam, Not spam, Move, snooze, drag to a folder). The sheet's "Send (in the composer)" row now has `mac: [SHIFT, CMD, "D"]` (12 chords). Pin `MIGRATIONS.slice(0, 15)`.
+
+## Review fixes
+
+The slice review (findings 1-13) after Batch G. Each real finding got a
+failing regression test first, then the fix. Behaviour changes 1, 3 and 9
+are also recorded in part A's "Resolutions after the review".
+
+- **1, 9 (anomalies drive nothing).** `senderCheckOf` makes more than one
+  sender in From, a malformed trusted header and DMARC only for another
+  (named) domain `failed` with `decidedBy: null`; `senderCheckSummary` names
+  the anomaly; `readStoredCheck` upgrades older stored checks the same way.
+  One state keeps every effect path (dev class at sync, backfill and
+  refresh, rules, alerts, `autoImagesAllowed`, `failedSenderIds`, the strip
+  and the agent line) without a new stored field or contract change.
+  Tests changed on purpose: two From lines/mailboxes and DMARC for another
+  domain now expect `failed`; the 4 KB / 20-entry bound tests now expect
+  the 64 KB bound and 20 kept DKIM entries with DMARC read past them.
+- **1, 2, 7 (reading).** `parseAuthResults` reads up to 64 KB
+  (`AUTH_RESULTS_VALUE_MAX`), keeps at most 20 DKIM entries
+  (`AUTH_RESULTS_ENTRIES_MAX`, more marks malformed) and every SPF/DMARC
+  entry; pairs come from a linear tokenizer (no unanchored `+`). An
+  unbalanced value is read again with the pre-4.4 comment rule and that
+  reading's non-`pass` entries are added (a pass seen only there never
+  counts). `trustedAuthResults` reads the authserv-id first
+  (`authservIdOf`, first kilobyte) and skips untrusted or misplaced headers
+  unparsed, parses at most 8 in the top block (`AUTH_RESULTS_COUNTED_MAX`)
+  and reports the rest as `more` (counted in `alsoPresent`; `trustOf`
+  returns `not_covered` when there are more). Timing test: 120 hostile
+  lines, one call, under 250 ms (was about 1 s).
+- **3 (size).** `fitSenderCheck(check, max)` in `sender-check.ts`; the
+  store and the fake serialize through it, so a check is never dropped and
+  `writeSenderCheck` always writes (and clears a failed row's dev class).
+- **4 (deceptive text).** `hostInText` removes `\p{Cf}` (and U+034F) and
+  trims punctuation, symbols (arrows) and spaces around the text; a word
+  starting with `http(s)://` or `www.` counts anywhere in the text. A bare
+  host still counts only as the whole text: "Download report.pdf" or
+  "Visit example.com today" must not open the dialog (the existing test
+  keeps the latter).
+- **5 (controls).** An unwrapped target holding a `\p{Cc}`, `\p{Cf}`,
+  `\p{Z}` or space character is refused (the wrapper stays). Agent text now
+  removes controls after `cleanUrlsInText`.
+- **6.** `taskText` cleans the excerpt's links before redaction (controls
+  removed after); `bb-rpc.ts` `alertOfStored` cleans the body before
+  `alertOf` (alert card links, incident title and prompts).
+- **8.** `writeSenderCheck` (SQLite and fake) never replaces a stored
+  encrypted kind with a non-encrypted one while the body is already NULL.
+- **10.** The successor's `then` re-arms `destructiveGuard.ran()`.
+- **11.** `onKeyUp` ends the held run without opening when released in a
+  typing target; a `window` `blur` listener (bubble phase) clears it.
+- **12.** `fromRaw` judges the whole raw block with an empty marker for the
+  first header outside the kept names (`judgedLines(lines, whole)`), so the
+  top block ends where it really does; the refresh's partial fetch cannot
+  and keeps the old filter. Smallest fix: no gateway change (the sync-time
+  block was not live-verified with extra Gmail headers), Details only.
+- **13.** The frame clears the status line on unmount when it last
+  reported a link. `reopenByUndo` is capped at 20 and `checkRequested` at
+  2 000 (`src/ui/bounded.ts`), and ids are dropped once every one was
+  refreshed. The dead `outbox` option of `senderCheckOf` is removed: no
+  path prepares an outbox copy; it reaches the store through the Sent
+  folder's sync, which the folder role exempts. `orgDomain` takes three
+  labels under a short list of shared hosting suffixes (`github.io`,
+  `onmicrosoft.com`, `sharepoint.com`, ...): it only makes alignment, the
+  link dialog and the Reply-To/lookalike checks stricter for tenants, so it
+  is safer than documenting the gap alone; README states the limit.

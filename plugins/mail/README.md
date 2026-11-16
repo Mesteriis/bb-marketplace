@@ -883,8 +883,11 @@ probe, and nothing written to your mail server.
 - **Failed** means DMARC failed for the From domain, or there was no DMARC
   answer and SPF failed with no DKIM pass aligned with From. Only the
   topmost trusted result counts and a fail is never cancelled by a pass; a
-  result a sender wrote lower in the headers is ignored. Two senders in From
-  are never a pass.
+  result a sender wrote lower in the headers is ignored. The check also
+  fails, saying why, when From holds more than one sender, when the
+  provider's result could not be read in full (a value over 64 KB, more than
+  20 DKIM results, or a quote or comment left open), or when every DMARC
+  result names a domain other than the one in From.
 - **No trust badge.** Mail shows warnings only. A pass appears only in
   **Details**, in the provider's words ("Authenticity (from mx.google.com):
   SPF pass … · DMARC pass"); nothing in the list or the header says a
@@ -903,9 +906,15 @@ probe, and nothing written to your mail server.
   account's queue). Nothing is checked in bulk; stacked and collapsed
   messages wait until you expand them.
 - **Limits.** The registrable-domain rule is a heuristic, not the public
-  suffix list. A provider that does not strip a forged result carrying its
-  own id from incoming mail would be believed (RFC 8601 says it must strip
-  it).
+  suffix list: the last two labels, three under a country second level
+  (`example.co.uk`), and three under a short list of shared hosting suffixes
+  whose tenants are separate (`github.io`, `onmicrosoft.com`,
+  `sharepoint.com` and a few more); a shared suffix not on that list counts
+  as one organization. A provider that does not strip a forged result
+  carrying its own id from incoming mail would be believed (RFC 8601 says it
+  must strip it). **Details** reads the whole header block, so there a
+  result the sender wrote under its own headers never counts; the sync and
+  the older-mail check see only the header fields they fetch.
 
 ### Sender warnings
 
@@ -948,9 +957,11 @@ element is not found (Mail does no layout).
   `/url?q=`, Outlook SafeLinks and Facebook `l.php` wrappers are unwrapped
   to the address they carry (one level, read from the URL, never fetched).
   The setting `cleanLinks` ("Remove tracking from links I open", on) turns
-  removal and unwrapping off; the checks below stay. Links handed to agents
-  and BB are always cleaned, so an agent that opens one does not confirm a
-  tracked open.
+  removal and unwrapping off; the checks below stay. A wrapper whose target
+  would decode to a control, bidi or space character stays wrapped. Links
+  handed to agents and BB (message text, task excerpts, alert links) are
+  always cleaned, so an agent that opens one does not confirm a tracked
+  open.
 - **Status line.** Pointing at or focusing a link shows where it goes at the
   bottom of the reading pane: "→ https://shop.example.com/sale (3 tracking
   parameters removed)", or "→ via tracking redirect at
@@ -958,7 +969,10 @@ element is not found (Mail does no layout).
   newsletter click host (Mail never follows the redirect to find out).
 - **The dialog.** A link opens only after a dialog when its text names one
   site but it opens another ("This link says www.example.com but opens
-  example.net."), when its host mixes alphabets, or when it looks like one
+  example.net."; invisible characters and the punctuation or arrows around
+  the text do not hide it, and a word starting with `https://` or `www.`
+  counts anywhere in the text, while a bare name like `report.pdf` counts
+  only as the whole text), when its host mixes alphabets, or when it looks like one
   of your own domains or a domain a sender warning in the open conversation
   names. A known tracking redirect and a host that is only in
   punycode (`xn--`) open without a dialog; the status line shows them. A

@@ -11,7 +11,9 @@ All notable changes to Makosh Mail are recorded here. The format follows
 - Security and privacy (slice 3i, part A). A sender check from the
   provider's own `Authentication-Results` (trusted ids only: Gmail; iCloud
   "Not checked" until its id is pinned live; the topmost trusted header,
-  worst result per method, DMARC for the From domain only), shown as a
+  worst result per method, DMARC for the From domain only; more than one
+  sender in From, a result that cannot be read in full or DMARC only for
+  another domain counts as failed), shown as a
   "Sender not verified" strip and, for a pass, only in **Details** with
   **Check again**; never a "verified" badge. Warnings for a foreign
   Reply-To (also in **Before you send**), a lookalike of a domain you write
