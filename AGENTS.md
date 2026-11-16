@@ -1,6 +1,6 @@
 # Instructions for coding agents
 
-This repository holds the Makosh plugins for BB. Each plugin is a
+This repository holds the Mesteriis BB marketplace, including Makosh and independent upstream plugins. Each plugin is a
 self-contained package under `plugins/<name>/`. Read
 [docs/architecture.md](docs/architecture.md) before changing a plugin.
 
@@ -38,3 +38,7 @@ Run plugin commands from the plugin directory, for example `plugins/mail`:
 - Push, tag, or publish anything. A release tag is permanent.
 - Install, update, or remove plugins in the maintainer's running BB.
 - Open a pull request against `get-bb/marketplace`.
+
+## Imported plugins
+
+`subtrees.json` identifies imported packages. Follow their own package instructions and architecture; the Makosh `src/core` and `src/ui` host-boundary rule applies to the owned Makosh packages. Preserve original branding, licenses and notices. See `docs/subtree-maintenance.md` for fork/upstream synchronization.

@@ -1,0 +1,21 @@
+{
+  "name": "bb-plugin-ru",
+  "version": "0.2.0",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "bb": ">=0.49",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Русский язык",
+    "description": "Перевод навигации, меню и настроек BB на русский.",
+    "branding": {
+      "icon": "Globe"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": []
+  }
+}

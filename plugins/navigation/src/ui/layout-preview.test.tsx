@@ -1,0 +1,3 @@
+// @vitest-environment jsdom
+import React from 'react';import {it,expect} from 'vitest';import {render,screen,fireEvent} from '@testing-library/react';import {LayoutPreview} from './layout-preview';
+it('previews destinations and Home without real host navigation',()=>{render(<LayoutPreview nodes={[{kind:'item',id:'m',itemId:'mail',hidden:false}]} labels={{mail:'Почта'}} icon={()=> <span>Иконка почты</span>}/>);expect(screen.getByText('Иконка почты')).toBeTruthy();fireEvent.click(screen.getByRole('button',{name:'Почта'}));expect(screen.getByRole('status').textContent).toContain('Почта');fireEvent.click(screen.getByRole('button',{name:'Главная'}));expect(screen.getByRole('status').textContent).toContain('Главная');});

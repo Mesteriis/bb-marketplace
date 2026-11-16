@@ -1,0 +1,91 @@
+import { catalogContracts } from "../catalog/contract.ts";
+import { catalogHandlers } from "../catalog/rpc.ts";
+import { documentContracts } from "../documents/model.ts";
+import { documentHandlers } from "../documents/server.ts";
+import { defineCli, defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
+import { openPublisher } from "../catalog/publish.ts";
+import { openCatalog } from "../catalog/store.ts";
+import { hostContract } from "../host-contract.ts";
+import { add } from "./command/add.ts";
+import { catalogCommand } from "./command/catalog.ts";
+import { editCommands } from "./command/edit.ts";
+import { importCommand } from "./command/import.ts";
+import { list } from "./command/list.ts";
+import { preview } from "./command/preview.ts";
+import { publishCommand, publishFindings } from "./command/publish.ts";
+import { remove } from "./command/remove.ts";
+import { openStore, type AgentInstructionsContext } from "./lib/store.ts";
+import { rules, rulesContract } from "./rpc/rules.ts";
+import { saveRules, saveRulesContract } from "./rpc/save-rules.ts";
+import { targets, targetsContract } from "./rpc/targets.ts";
+
+import { promptContract, promptHandlers } from "../prompts/server/server.ts";
+
+export const contract = defineRpcContract({
+  ...documentContracts,
+  ...catalogContracts,
+  plugins: promptContract.plugins,
+  file: promptContract.file,
+  save: promptContract.save,
+  rules: rulesContract,
+  saveRules: saveRulesContract,
+  targets: targetsContract,
+});
+
+export default async function plugin(bb: BbPluginApi): Promise<void> {
+  const ctx: AgentInstructionsContext = Object.freeze({ bb, store: openStore(bb) });
+  const { store } = ctx;
+  const prompts = promptHandlers(bb);
+  const catalog = openCatalog(bb);
+  const catalogCtx = Object.freeze({
+    ...ctx,
+    catalog,
+    host: bb.hosts.experimental_client({ contract: hostContract }),
+    publisher: openPublisher(bb, catalog),
+  });
+  const catalogRpc = catalogHandlers(catalogCtx);
+  bb.rpc.register(contract, {
+    ...documentHandlers(bb),
+    ...catalogRpc,
+    plugins: prompts.plugins,
+    file: prompts.file,
+    save: prompts.save,
+    rules: () => rules(ctx),
+    saveRules: (input) => saveRules(ctx, input),
+    targets: () => targets(ctx),
+  });
+  bb.cli.register(
+    defineCli({
+      name: "agent-instructions",
+      summary: "CLI for the agent-instructions plugin",
+      commands: {
+        list: list(ctx),
+        add: add(ctx),
+        remove: remove(ctx),
+        preview: preview(ctx),
+        import: importCommand(catalogCtx),
+        catalog: catalogCommand(catalogCtx),
+        publish: publishCommand(catalogCtx),
+        ...editCommands(catalogCtx, catalogRpc),
+      },
+    }),
+  );
+
+  await store.load();
+  // Converges whatever an earlier run left, including one stopped mid-publish.
+  void catalogCtx.publisher
+    .run()
+    .then((report) => publishFindings(report, store.state().rules))
+    .then(
+      ({ problems, warnings }) =>
+        [...problems, ...warnings].forEach((finding) => bb.log.warn(`publish: ${finding}`)),
+      (error: unknown) =>
+        bb.log.error(`publishing the catalog failed: ${(error as Error).message}`),
+    );
+  // `configure`, unlike `contributeInstructions`, sees the host, provider,
+  // and model a thread resolves with, which is what rules match on.
+  bb.agents.configure((session) => {
+    const instructions = store.resolve(session.thread.id, session);
+    return { tools: [], skills: [], ...(instructions === null ? {} : { instructions }) };
+  });
+}

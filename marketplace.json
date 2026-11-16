@@ -1,28 +1,875 @@
 {
   "$schema": "https://getbb.app/schemas/marketplace.schema.json",
   "schemaVersion": 1,
-  "name": "makosh",
-  "displayName": "Makosh",
-  "description": "Plugins of the Makosh family for BB.",
+  "name": "mesteriis",
+  "displayName": "Mesteriis BB Marketplace",
+  "description": "Mesteriis plugin collection: independent upstream forks and Makosh packages.",
   "plugins": [
+    {
+      "id": "account-pool-balanced",
+      "displayName": "OXI Account Pool",
+      "description": "Balance provider accounts, track quotas and switch to reserve accounts for BB agents.",
+      "icon": "Layers",
+      "author": {
+        "name": "OXI-717",
+        "github": "OXI-717",
+        "url": "https://github.com/OXI-717"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/account-pool-balanced",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "action-topbar",
+      "displayName": "Action Topbar",
+      "description": "Mirror open thread-panel tabs in a compact topbar with a searchable + launcher.",
+      "icon": {
+        "url": "./plugins/action-topbar/assets/icon.svg"
+      },
+      "author": {
+        "name": "MateoCerquetella",
+        "github": "MateoCerquetella",
+        "url": "https://github.com/MateoCerquetella"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/action-topbar",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "agent-icons",
+      "displayName": "Agent Icons",
+      "description": "Give each BB agent provider its own icon and colour: built-in glyphs or your own SVG sets, synced across devices.",
+      "icon": {
+        "url": "./plugins/agent-icons/assets/agent-icons.svg"
+      },
+      "author": {
+        "name": "ponomr",
+        "github": "ponomr",
+        "url": "https://github.com/ponomr"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/agent-icons",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "agent-instructions",
+      "displayName": "Agent instructions",
+      "description": "Manage global and project instructions, skills, references, and plugin prompts.",
+      "icon": {
+        "url": "./plugins/agent-instructions/assets/icon.svg"
+      },
+      "author": {
+        "name": "smsunarto",
+        "github": "smsunarto",
+        "url": "https://github.com/smsunarto"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/agent-instructions",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "agent-plugins",
+      "displayName": "Agent Plugins",
+      "description": "Install Agent Plugins (skills + MCP) once; flow to every provider.",
+      "icon": "Puzzle",
+      "author": {
+        "name": "patleeman",
+        "github": "patleeman",
+        "url": "https://github.com/patleeman"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/agent-plugins",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "agent-traces",
+      "displayName": "Agent Traces",
+      "description": "See where an agent's time goes: a waterfall of every turn's commands, tool calls, and subagents.",
+      "icon": {
+        "url": "./plugins/agent-traces/assets/agent-traces.svg"
+      },
+      "author": {
+        "name": "charpeni",
+        "github": "charpeni",
+        "url": "https://github.com/charpeni"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/agent-traces",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "agentation",
+      "displayName": "Agentation",
+      "description": "Point at any part of the bb UI — including plugin surfaces — and turn it into structured AFS 1.1 feedback that bb agents can read, answer, and resolve.",
+      "icon": {
+        "url": "./plugins/agentation/assets/icon.svg"
+      },
+      "author": {
+        "name": "smsunarto",
+        "github": "smsunarto",
+        "url": "https://github.com/smsunarto"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/agentation",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "ai-usage",
+      "displayName": "AI Usage",
+      "description": "Shows your team's Claude Code, Codex and Grok subscriptions: what is left of each limit, when it runs out, who used it, and what it costs. Installs ai-usage on this machine when it is missing.",
+      "icon": {
+        "url": "./plugins/ai-usage/icons/ai-usage.svg"
+      },
+      "author": {
+        "name": "neoromantic",
+        "github": "neoromantic",
+        "url": "https://github.com/neoromantic"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/ai-usage",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "android-emulator",
+      "displayName": "Android Emulator",
+      "description": "See and control Android emulators on your bb hosts from a thread panel, with agent commands for the same device.",
+      "icon": "Smartphone",
+      "author": {
+        "name": "nicolay-i",
+        "github": "nicolay-i",
+        "url": "https://github.com/nicolay-i"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/android-emulator",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "animation",
+      "displayName": "Animation",
+      "description": "Play technical diagrams as a sequence of beats, then export a looping HTML page.",
+      "icon": {
+        "url": "./plugins/animation/assets/icon.svg"
+      },
+      "author": {
+        "name": "MacHatter1",
+        "github": "MacHatter1",
+        "url": "https://github.com/MacHatter1"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/animation",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "app-preview",
+      "displayName": "App Preview",
+      "description": "Detect the app in a thread worktree, launch the detected start recipe, and list, share, or kill listening ports on this machine. Start may install dependencies and run repository scripts. Share exposes a port over BB Connect. Kill sends SIGTERM/SIGKILL. A setting chooses whether you open the in-app browser yourself, or agents open it when the app is ready.",
+      "icon": "Play",
+      "author": {
+        "name": "hungv47",
+        "github": "hungv47",
+        "url": "https://github.com/hungv47"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/app-preview",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "at-plugin",
+      "displayName": "Plugin Finder",
+      "description": "Mention installed and Community plugins in bb conversations.",
+      "icon": "Target",
+      "author": {
+        "name": "brsbl",
+        "github": "brsbl",
+        "url": "https://github.com/brsbl"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/at-plugin",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "automation-groups",
+      "displayName": "Autopilots",
+      "description": "Organize scheduled work into folders and control groups together.",
+      "icon": "Folder",
+      "author": {
+        "name": "dmitriikapustin",
+        "github": "dmitriikapustin",
+        "url": "https://github.com/dmitriikapustin"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/automation-groups",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "autorouter",
+      "displayName": "Autorouter",
+      "description": "Route new threads by task difficulty, live provider quota, and benchmark cost.",
+      "icon": "Workflow",
+      "author": {
+        "name": "jjcm",
+        "github": "jjcm",
+        "url": "https://github.com/jjcm"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/autorouter",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "bb-github-pr-dashboard",
+      "displayName": "GitHub PR Dashboard",
+      "description": "Track your GitHub PRs and review requests in one tab: why each is stuck, changed files, replies, and alerts.",
+      "icon": "GitPullRequest",
+      "author": {
+        "name": "ahsan7162",
+        "github": "ahsan7162",
+        "url": "https://github.com/ahsan7162"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/bb-github-pr-dashboard",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "beautiful-chat",
+      "displayName": "Beautiful Chat",
+      "description": "Restyles BB's chat — composer, messages, work rows, loading states — in BeautifulUI's design language, using your active theme's colors.",
+      "icon": {
+        "url": "./plugins/beautiful-chat/assets/icon.svg"
+      },
+      "author": {
+        "name": "diip3sh",
+        "github": "diip3sh",
+        "url": "https://github.com/diip3sh"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/beautiful-chat",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "chat-sidebar",
+      "displayName": "Chat Sidebar",
+      "description": "Read your threads like a messenger: one row per task with live status, an Attention folder, project tabs, and search.",
+      "icon": {
+        "url": "./plugins/chat-sidebar/assets/icon.svg"
+      },
+      "author": {
+        "name": "seoperin",
+        "github": "seoperin",
+        "url": "https://github.com/seoperin"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/chat-sidebar",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "codex-realtime",
+      "displayName": "ChatGPT Realtime Connection",
+      "description": "Run Voice Mode on your ChatGPT subscription instead of an OpenAI API key, using the sign-in `codex login` already keeps on this Mac.",
+      "icon": "Mic",
+      "author": {
+        "name": "gpambrozio",
+        "github": "gpambrozio",
+        "url": "https://github.com/gpambrozio"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/codex-realtime",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "context-health",
+      "displayName": "Context Health",
+      "description": "Inspect thread context usage, skills, instructions and conversation content.",
+      "icon": {
+        "url": "./plugins/context-health/assets/context-health.svg"
+      },
+      "author": {
+        "name": "MacHatter1",
+        "github": "MacHatter1",
+        "url": "https://github.com/MacHatter1"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/context-health",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "copy-session-id",
+      "displayName": "Copy Session ID",
+      "description": "Add Copy session ID to thread context menus in the left sidebar.",
+      "icon": "Copy",
+      "author": {
+        "name": "patleeman",
+        "github": "patleeman",
+        "url": "https://github.com/patleeman"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/copy-session-id",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "cua-driver",
+      "displayName": "Computer Use",
+      "description": "Gives bb agents desktop and browser control, powered by Cua Driver from Cua AI, with per-provider routing.",
+      "icon": {
+        "url": "./plugins/cua-driver/icons/cua.svg"
+      },
+      "author": {
+        "name": "juanbermudez",
+        "github": "juanbermudez",
+        "url": "https://github.com/juanbermudez"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/cua-driver",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "desktop-browser-agent",
+      "displayName": "Desktop & Browser Agent",
+      "description": "Computer use for bb agents: desktop apps and browser windows through Cua Driver from Cua AI, and your own Chrome, Edge or Brave tabs through a browser extension, with per-provider routing.",
+      "icon": {
+        "url": "./plugins/desktop-browser-agent/icons/desktop-browser-agent.svg"
+      },
+      "author": {
+        "name": "qwadrox",
+        "github": "qwadrox",
+        "url": "https://github.com/qwadrox"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/desktop-browser-agent",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "dev-bar",
+      "displayName": "Dev Bar",
+      "description": "A status bar that starts, stops, and restarts a checkout's dev services, and stops them when its last thread is archived or deleted.",
+      "icon": "Server",
+      "author": {
+        "name": "danielbachhuber",
+        "github": "danielbachhuber",
+        "url": "https://github.com/danielbachhuber"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/dev-bar",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "dev-servers",
+      "displayName": "Dev Servers",
+      "description": "Supervise persistent machine servers and discover thread dev servers.",
+      "icon": "ServerStack01",
+      "author": {
+        "name": "darknoon",
+        "github": "darknoon",
+        "url": "https://github.com/darknoon"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/dev-servers",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "dictation-shortcuts",
+      "displayName": "Dictation Shortcuts",
+      "description": "Hold Space to dictate with BB native voice input; Enter finishes, Escape cancels, with button and modifier hints.",
+      "icon": {
+        "url": "./plugins/dictation-shortcuts/assets/icon.svg"
+      },
+      "author": {
+        "name": "architawr",
+        "github": "architawr",
+        "url": "https://github.com/architawr"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/dictation-shortcuts",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "diff-review",
+      "displayName": "Diff Review",
+      "description": "Comment on a thread's changes line by line, then send the comments to its agent, which fixes the code and answers each one.",
+      "icon": "FileDiff",
+      "author": {
+        "name": "gpambrozio",
+        "github": "gpambrozio",
+        "url": "https://github.com/gpambrozio"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/diff-review",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "docker",
+      "displayName": "Docker",
+      "description": "Manage containers, images, volumes, and networks from the bb sidebar.",
+      "icon": "Container",
+      "author": {
+        "name": "grikomsn",
+        "github": "grikomsn",
+        "url": "https://github.com/grikomsn"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/docker",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "dockside",
+      "displayName": "Dockside",
+      "description": "Project-first threads, inline agents, and mobile active-thread navigation.",
+      "icon": {
+        "url": "./plugins/dockside/assets/icon.svg"
+      },
+      "author": {
+        "name": "MateoCerquetella",
+        "github": "MateoCerquetella",
+        "url": "https://github.com/MateoCerquetella"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/dockside",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "file-gateway",
+      "displayName": "File Gateway",
+      "description": "Browse BB machines and FTP/SFTP sites, add remote file mentions to chats, and let agents read or download the right file.",
+      "icon": {
+        "url": "./plugins/file-gateway/assets/icon.svg"
+      },
+      "author": {
+        "name": "VKirill",
+        "github": "VKirill",
+        "url": "https://github.com/VKirill"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/file-gateway",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "firstmate-crew",
+      "displayName": "FirstMate Crew",
+      "description": "Hand one agent your to-do list and it runs a crew of worker threads, each in its own git worktree, until the work lands.",
+      "icon": "Ship",
+      "author": {
+        "name": "gpambrozio",
+        "github": "gpambrozio",
+        "url": "https://github.com/gpambrozio"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/firstmate-crew",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "genui",
+      "displayName": "Generative UI",
+      "description": "Lets agents answer with interactive UI rendered inline in chat.",
+      "icon": {
+        "url": "./plugins/genui/assets/icon.svg"
+      },
+      "author": {
+        "name": "smsunarto",
+        "github": "smsunarto",
+        "url": "https://github.com/smsunarto"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/genui",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "gh-copilot",
+      "displayName": "GitHub Copilot",
+      "description": "Adds GitHub Copilot CLI to bb as an ACP coding-agent provider.",
+      "icon": {
+        "url": "./plugins/gh-copilot/assets/logo.svg"
+      },
+      "author": {
+        "name": "ai-ecoverse",
+        "github": "ai-ecoverse",
+        "url": "https://github.com/ai-ecoverse"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/gh-copilot",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "gigaam",
+      "displayName": "GigaAM Voice Input",
+      "description": "Offline Russian voice input powered by GigaAM v3. Installs and runs the model on your own machine; CPU only, no API keys.",
+      "icon": {
+        "url": "./plugins/gigaam/assets/icon.svg"
+      },
+      "author": {
+        "name": "AiXenix",
+        "github": "AiXenix",
+        "url": "https://github.com/AiXenix"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/gigaam",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "git-history",
+      "displayName": "Git History",
+      "description": "Browse the complete Git history of a project from a bb right panel.",
+      "icon": "FolderGit",
+      "author": {
+        "name": "yusuf8834",
+        "github": "yusuf8834",
+        "url": "https://github.com/yusuf8834"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/git-history",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "gitea",
+      "displayName": "Gitea",
+      "description": "Gitea issues and pull requests inside BB, backed by the Gitea tea CLI.",
+      "icon": {
+        "url": "./plugins/gitea/icons/teacup.svg"
+      },
+      "author": {
+        "name": "Nick-Motion",
+        "github": "Nick-Motion",
+        "url": "https://github.com/Nick-Motion"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/gitea",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "github-actions",
+      "displayName": "GitHub Actions",
+      "description": "Live GitHub Actions runs for your projects: start any workflow with inputs, watch job logs, rerun failures, hand them to an agent, or send them to BB threads.",
+      "icon": "Workflow",
+      "author": {
+        "name": "pers0na2dev",
+        "github": "pers0na2dev",
+        "url": "https://github.com/pers0na2dev"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/github-actions",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "gtd-sidebar",
+      "displayName": "GTD Sidebar",
+      "description": "An action-oriented sidebar that groups threads by who can act next.",
+      "icon": {
+        "url": "./plugins/gtd-sidebar/assets/icon.svg"
+      },
+      "author": {
+        "name": "smsunarto",
+        "github": "smsunarto",
+        "url": "https://github.com/smsunarto"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/gtd-sidebar",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "handoff",
+      "displayName": "Handoff",
+      "description": "Move a session between agents and machines, in both directions — hand off a bb thread to another provider (and optionally another enrolled machine, carrying uncommitted work), or adopt an outside Claude Code / Codex / Gemini CLI / OpenCode / Pi session, local or remote, as a bb thread.",
+      "icon": {
+        "url": "./plugins/handoff/assets/icon.svg"
+      },
+      "author": {
+        "name": "vburojevic",
+        "github": "vburojevic",
+        "url": "https://github.com/vburojevic"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/handoff",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "hooks",
+      "displayName": "Hooks",
+      "description": "Run your own shell commands or webhooks on thread events, and gate message dispatch with custom policy.",
+      "icon": {
+        "url": "./plugins/hooks/assets/icon.svg"
+      },
+      "author": {
+        "name": "MacHatter1",
+        "github": "MacHatter1",
+        "url": "https://github.com/MacHatter1"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/hooks",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "hotspot",
+      "displayName": "Hotspot",
+      "description": "Records when your Mac runs hot and names the BB thread that caused it.",
+      "icon": {
+        "url": "./plugins/hotspot/assets/icon.svg"
+      },
+      "author": {
+        "name": "Hazihell",
+        "github": "Hazihell",
+        "url": "https://github.com/Hazihell"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/hotspot",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "image-preview",
+      "displayName": "Image Preview",
+      "description": "Turn chat images into compact previews with an accessible click-to-expand lightbox.",
+      "icon": "Image",
+      "author": {
+        "name": "Dwite",
+        "github": "Dwite",
+        "url": "https://github.com/Dwite"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/image-preview",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "impromptu-ui",
+      "displayName": "Impromptu UI",
+      "description": "Turns your agent's walls of text into interfaces you can click.",
+      "icon": "GridView",
+      "author": {
+        "name": "danielbachhuber",
+        "github": "danielbachhuber",
+        "url": "https://github.com/danielbachhuber"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/impromptu-ui",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "inline-review",
+      "displayName": "Inline Review",
+      "description": "Review exact assistant passages and send one clear feedback batch to the same thread.",
+      "icon": "MessageSquare",
+      "author": {
+        "name": "rdanhau",
+        "github": "rdanhau",
+        "url": "https://github.com/rdanhau"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/inline-review",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "kodaforge",
+      "displayName": "KodaForge",
+      "description": "Edit, run and debug your project inside BB, with agent chat, threads and workflows open beside the code. A Monaco code editor with tabs, split editors, quick open (⌘P), find in files, and search and replace with a preview. Language servers (LSP) for Python and TypeScript give completion, go to definition, find references, rename and a Problems panel. Debug Python with breakpoints, pick the Python environment (venv, uv, Poetry, conda), run Makefile and npm tasks, and work in split terminals that survive restarts. Source control stages, diffs, commits, stashes, pulls and pushes with git. The Agent Network maps the agents and MCP servers working on your project, and in App mode the agents, tools, MCP servers, models and skills your code builds. Install the language servers (pyright or basedpyright, typescript-language-server) and debugpy yourself.",
+      "icon": {
+        "url": "./plugins/kodaforge/assets/icon.svg"
+      },
+      "author": {
+        "name": "Kodaks94",
+        "github": "Kodaks94",
+        "url": "https://github.com/Kodaks94"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/kodaforge",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "launchd-jobs",
+      "displayName": "Scheduled Jobs",
+      "description": "Run shell commands on your Mac on a cron schedule or a fixed interval, as launchd jobs that keep running while bb is closed. macOS only.",
+      "icon": "TimeSchedule",
+      "author": {
+        "name": "gpambrozio",
+        "github": "gpambrozio",
+        "url": "https://github.com/gpambrozio"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/launchd-jobs",
+          "ref": "main"
+        }
+      }
+    },
     {
       "id": "makosh-mail",
       "displayName": "Makosh Mail [Experimental]",
       "description": "Reads, snoozes, sends and translates iCloud, Gmail and IMAP mail; AI summaries, Ask, tasks and Today on click; agent access scoped, logged.",
       "icon": {
-        "url": "./icons/makosh-mail.svg"
+        "url": "./plugins/mail/assets/icon.svg"
       },
-      "tags": [
-        "email",
-        "inbox",
-        "imap",
-        "folders",
-        "spam",
-        "icloud",
-        "gmail",
-        "agent-tools",
-        "mentions"
-      ],
       "author": {
         "name": "Mesteriis",
         "github": "Mesteriis",
@@ -30,10 +877,495 @@
       },
       "source": {
         "git": {
-          "url": "https://github.com/Mesteriis/makosh-bb.git",
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
           "subdir": "plugins/mail",
-          "range": "^0.1.0",
-          "tagPrefix": "mail/"
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "makosh-ai",
+      "displayName": "Makosh AI [Experimental]",
+      "description": "Streams Claude Messages and Codex Responses to BB plugins through the existing Account Pooler.",
+      "icon": "Sparkles",
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/makosh-ai",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "markdown-editor",
+      "displayName": "Markdown Editor",
+      "description": "Edit markdown files in the tab bb opens them in, preview the result, and save with Cmd+S without overwriting an agent's edits.",
+      "icon": "EditFile",
+      "author": {
+        "name": "danielbachhuber",
+        "github": "danielbachhuber",
+        "url": "https://github.com/danielbachhuber"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/markdown-editor",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "mcp-hub",
+      "displayName": "MCP Hub",
+      "description": "One host-level and project-level source of truth for MCP servers, materialized into Kimi Code, Claude Code, OpenCode, Cursor and Codex.",
+      "icon": {
+        "url": "./plugins/mcp-hub/assets/mcp.svg"
+      },
+      "author": {
+        "name": "fgbm",
+        "github": "fgbm",
+        "url": "https://github.com/fgbm"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/mcp-hub",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "memory-explorer",
+      "displayName": "Memory Explorer",
+      "description": "See what your agents remember: BB memory as a searchable table and a zoomable link graph, with a detail drawer for each memory.",
+      "icon": "Brain",
+      "author": {
+        "name": "d-asensio",
+        "github": "d-asensio",
+        "url": "https://github.com/d-asensio"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/memory-explorer",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "model-pricing",
+      "displayName": "Model Pricing",
+      "description": "Compare what every AI model costs per million tokens, across Anthropic, OpenAI, Fireworks AI, Ollama Cloud and OpenRouter, in one table.",
+      "icon": "ChartColumn",
+      "author": {
+        "name": "gpambrozio",
+        "github": "gpambrozio",
+        "url": "https://github.com/gpambrozio"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/model-pricing",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "next-prompt",
+      "displayName": "Next Prompt",
+      "description": "Suggests the next prompt you are likely to type after each finished turn.",
+      "icon": "CornerDownRight",
+      "author": {
+        "name": "CrazyCoder",
+        "github": "CrazyCoder",
+        "url": "https://github.com/CrazyCoder"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/next-prompt",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "next-step",
+      "displayName": "Следующий шаг",
+      "description": "Подсказка следующего сообщения после ответа Codex. Tab — принять, Esc — скрыть.",
+      "icon": "Sparkles",
+      "author": {
+        "name": "rutracker152",
+        "github": "rutracker152",
+        "url": "https://github.com/rutracker152"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/next-step",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "notifications-pro",
+      "displayName": "Notifications Pro",
+      "description": "Desktop OS notifications, Dock badge, and an in-app notification center for thread attention and assigned tasks.",
+      "icon": {
+        "url": "./plugins/notifications-pro/assets/icon.svg"
+      },
+      "author": {
+        "name": "kr3t3n",
+        "github": "kr3t3n",
+        "url": "https://github.com/kr3t3n"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/notifications-pro",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "plan-progress",
+      "displayName": "Plan Progress",
+      "description": "Live progress bars above the message box: the agent plans stages and steps, and the bar fills as it works.",
+      "icon": "ListTodo",
+      "author": {
+        "name": "mrsu-smirnov",
+        "github": "mrsu-smirnov",
+        "url": "https://github.com/mrsu-smirnov"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/plan-progress",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "plannotator",
+      "displayName": "Plannotator",
+      "description": "Review plans in Plannotator inside BB and send decisions to agents as new thread messages.",
+      "icon": "ClipboardCheck",
+      "author": {
+        "name": "patleeman",
+        "github": "patleeman",
+        "url": "https://github.com/patleeman"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/plannotator",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "plugin-updates",
+      "displayName": "Plugin Updates",
+      "description": "Shows which plugins have updates, including releases outside their version range, and installs them.",
+      "icon": {
+        "url": "./plugins/plugin-updates/icons/update.svg"
+      },
+      "author": {
+        "name": "frankieshakes",
+        "github": "frankieshakes",
+        "url": "https://github.com/frankieshakes"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/plugin-updates",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "project-instructions",
+      "displayName": "Project Instructions",
+      "description": "Per-project agent instructions, stored in bb rather than in your repository.",
+      "icon": "FileText",
+      "author": {
+        "name": "Hazihell",
+        "github": "Hazihell",
+        "url": "https://github.com/Hazihell"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/project-instructions",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "prompt-shaper",
+      "displayName": "Prompt Improver",
+      "description": "Adds an Improve prompt action to the composer that sends your rough draft to a hidden helper agent, which follows your editable rewrite instructions to rewrite it into a clear, complete prompt and returns it in place for review before you send.",
+      "icon": "AiContentGenerator01",
+      "author": {
+        "name": "brsbl",
+        "github": "brsbl",
+        "url": "https://github.com/brsbl"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/prompt-shaper",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "read-aloud",
+      "displayName": "Read Aloud",
+      "description": "Speak any chat message with streaming neural TTS, with pause and stop.",
+      "icon": {
+        "url": "./plugins/read-aloud/assets/speaker.svg"
+      },
+      "author": {
+        "name": "csells",
+        "github": "csells",
+        "url": "https://github.com/csells"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/read-aloud",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "read-aloud-local",
+      "displayName": "Read Aloud",
+      "description": "Speak any chat message with streaming neural TTS, with pause and stop.",
+      "icon": {
+        "url": "./plugins/read-aloud-local/assets/speaker.svg"
+      },
+      "author": {
+        "name": "csells",
+        "github": "csells",
+        "url": "https://github.com/csells"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/read-aloud-local",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "ru",
+      "displayName": "Русский язык",
+      "description": "Перевод навигации, меню и настроек BB на русский.",
+      "icon": "Globe",
+      "author": {
+        "name": "nick8cyber",
+        "github": "nick8cyber",
+        "url": "https://github.com/nick8cyber"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/ru",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "scott-secrets",
+      "displayName": "Secrets",
+      "description": "Request credentials into dotenv files, and run approved sudo commands without retyping the password.",
+      "icon": "Lock",
+      "author": {
+        "name": "smsunarto",
+        "github": "smsunarto",
+        "url": "https://github.com/smsunarto"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/scott-secrets",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "session-history",
+      "displayName": "Session History",
+      "description": "Browse past Claude, Codex and Qwen sessions with their original titles, and continue conversations directly in BB.",
+      "icon": "Clock",
+      "author": {
+        "name": "neonick",
+        "github": "neonick",
+        "url": "https://github.com/neonick"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/session-history",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "makosh-sidebar",
+      "displayName": "Makosh Sidebar [Experimental]",
+      "description": "Project tree with a configurable root, recent activity sorting, reversible hiding, and running threads visible in collapsed groups.",
+      "icon": "FolderGit",
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/sidebar",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "skills",
+      "displayName": "Skills",
+      "description": "See every skill a thread's agent can use, where each one comes from and what it says, and add one to the chat from the panel or composer.",
+      "icon": "Zap",
+      "author": {
+        "name": "gpambrozio",
+        "github": "gpambrozio",
+        "url": "https://github.com/gpambrozio"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/skills",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "skills-sync",
+      "displayName": "Skills Sync",
+      "description": "Sync installed agent skills against upstream git repositories, showing what is new, deprecated, cleanly updatable, and locally modified.",
+      "icon": "RefreshCw",
+      "author": {
+        "name": "Hazihell",
+        "github": "Hazihell",
+        "url": "https://github.com/Hazihell"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/skills-sync",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "source-control",
+      "displayName": "Source Control",
+      "description": "Each thread's branch and pull request as one Change: checkout state from its host, pull request state from GitHub.",
+      "icon": {
+        "url": "./plugins/source-control/assets/icon.svg"
+      },
+      "author": {
+        "name": "smsunarto",
+        "github": "smsunarto",
+        "url": "https://github.com/smsunarto"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/source-control",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "specs",
+      "displayName": "Specs",
+      "description": "Spec documents any project can read, annotate, discuss, and update.",
+      "icon": {
+        "url": "./plugins/specs/assets/icon.svg"
+      },
+      "author": {
+        "name": "peteabu",
+        "github": "peteabu",
+        "url": "https://github.com/peteabu"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/specs",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "sql",
+      "displayName": "SQL",
+      "description": "Postgres in bb: browse all databases, schema-aware completion, controlled write/DDL (Agent write / Allow DDL on by default for new connections).",
+      "icon": "Layers",
+      "author": {
+        "name": "yazydzhi",
+        "github": "yazydzhi",
+        "url": "https://github.com/yazydzhi"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/sql",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "steel-browser",
+      "displayName": "BB Surf",
+      "description": "Operate self-hosted Steel browser sessions from BB.",
+      "icon": {
+        "url": "./plugins/steel-browser/assets/nav-icon.svg"
+      },
+      "author": {
+        "name": "MateoCerquetella",
+        "github": "MateoCerquetella",
+        "url": "https://github.com/MateoCerquetella"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/steel-browser",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "subagents",
+      "displayName": "Subagents",
+      "description": "Inspect native subagents and child threads that belong to the current chat.",
+      "icon": {
+        "url": "./plugins/subagents/assets/subagents.svg"
+      },
+      "author": {
+        "name": "imyeskela",
+        "github": "imyeskela",
+        "url": "https://github.com/imyeskela"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/subagents",
+          "ref": "main"
         }
       }
     },
@@ -41,11 +1373,9 @@
       "id": "makosh-taskboard",
       "displayName": "Makosh Taskboard [Experimental]",
       "description": "Local task CRUD plus Jira Cloud and Server/Data Center boards in one focused List and Kanban view.",
-      "tags": [
-        "tasks",
-        "kanban",
-        "jira"
-      ],
+      "icon": {
+        "url": "./plugins/taskboard/assets/icon.svg"
+      },
       "author": {
         "name": "Mesteriis",
         "github": "Mesteriis",
@@ -53,10 +1383,349 @@
       },
       "source": {
         "git": {
-          "url": "https://github.com/Mesteriis/makosh-bb.git",
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
           "subdir": "plugins/taskboard",
-          "range": "^0.1.0",
-          "tagPrefix": "taskboard/"
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "team",
+      "displayName": "Team",
+      "description": "Agent teams with a shared task tracker, reusable roles, safe session handoffs, review gates and finite execution budgets.",
+      "icon": {
+        "url": "./plugins/team/assets/team.svg"
+      },
+      "author": {
+        "name": "kirei4ik",
+        "github": "kirei4ik",
+        "url": "https://github.com/kirei4ik"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/team",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "makosh-telegram",
+      "displayName": "Makosh Telegram [Experimental]",
+      "description": "Sign in with a QR code, read chats, and send text in BB through TDLib on macOS. Agent requests require approval.",
+      "icon": "MessagesSquare",
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/telegram",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "terminal-jobs",
+      "displayName": "Terminal jobs",
+      "description": "Runs durable terminal jobs and sends completion notices.",
+      "icon": "Terminal",
+      "author": {
+        "name": "ryanbbrown",
+        "github": "ryanbbrown",
+        "url": "https://github.com/ryanbbrown"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/terminal-jobs",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "terminals",
+      "displayName": "Terminals",
+      "description": "Open shells in tabs on any machine connected to bb, in its home folder, and find them still running when you come back.",
+      "icon": "Terminal",
+      "author": {
+        "name": "gpambrozio",
+        "github": "gpambrozio",
+        "url": "https://github.com/gpambrozio"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/terminals",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "thread-images",
+      "displayName": "Thread Images",
+      "description": "Shows the images an agent opens: in the chat and in a gallery in the thread context card.",
+      "icon": {
+        "url": "./plugins/thread-images/assets/icon.svg"
+      },
+      "author": {
+        "name": "kartollikaa",
+        "github": "kartollikaa",
+        "url": "https://github.com/kartollikaa"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/thread-images",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "tokenomics",
+      "displayName": "Tokenomics",
+      "description": "See what your threads cost in tokens and time, how each turn compared with Claude's forecast, and whether your limits will last.",
+      "icon": {
+        "url": "./plugins/tokenomics/icons/tokenomics.svg"
+      },
+      "author": {
+        "name": "danielbachhuber",
+        "github": "danielbachhuber",
+        "url": "https://github.com/danielbachhuber"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/tokenomics",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "tree-sidebar",
+      "displayName": "Tree Sidebar",
+      "description": "A sidebar that nests threads under their projects, laid out the way the projects sit on disk.",
+      "icon": "FolderGit",
+      "author": {
+        "name": "chadbailey59",
+        "github": "chadbailey59",
+        "url": "https://github.com/chadbailey59"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/tree-sidebar",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "tree-sidebar-local",
+      "displayName": "Tree Sidebar",
+      "description": "A sidebar that nests threads under their projects, laid out the way the projects sit on disk.",
+      "icon": "FolderGit",
+      "author": {
+        "name": "chadbailey59",
+        "github": "chadbailey59",
+        "url": "https://github.com/chadbailey59"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/tree-sidebar-local",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "ultragoal",
+      "displayName": "UltraGoal",
+      "description": "Provider-neutral durable UltraGoals for Codex, Cursor, OpenCode, Claude Code, and Pi, with scheduled workers, verification, and defect remediation.",
+      "icon": {
+        "url": "./plugins/ultragoal/assets/icon.svg"
+      },
+      "author": {
+        "name": "braedonsaunders",
+        "github": "braedonsaunders",
+        "url": "https://github.com/braedonsaunders"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/ultragoal",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "unified-inbox",
+      "displayName": "Unified Inbox",
+      "description": "One inbox for Gmail, WhatsApp, Messages, and LinkedIn on this machine.",
+      "icon": {
+        "url": "./plugins/unified-inbox/assets/inbox.svg"
+      },
+      "author": {
+        "name": "robertsinke",
+        "github": "robertsinke",
+        "url": "https://github.com/robertsinke"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/unified-inbox",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "visual-workflows",
+      "displayName": "Visual Workflows",
+      "description": "Design visual agent workflows with independent step profiles and inspect every run.",
+      "icon": "Workflow",
+      "author": {
+        "name": "dmitriikapustin",
+        "github": "dmitriikapustin",
+        "url": "https://github.com/dmitriikapustin"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/visual-workflows",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "voice-mode",
+      "displayName": "Voice Mode",
+      "description": "Start a hands-free voice chat from an empty composer. The voice model hands work to the thread's agent and tells you when it's done; talk over it any time to interrupt.",
+      "icon": {
+        "url": "./plugins/voice-mode/assets/icon.svg"
+      },
+      "author": {
+        "name": "steveafrost",
+        "github": "steveafrost",
+        "url": "https://github.com/steveafrost"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/voice-mode",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "wiki",
+      "displayName": "Wiki",
+      "description": "Search and write a personal wiki of Markdown notes from BB threads.",
+      "icon": {
+        "url": "./plugins/wiki/icon.svg"
+      },
+      "author": {
+        "name": "himynameisjonas",
+        "github": "himynameisjonas",
+        "url": "https://github.com/himynameisjonas"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/wiki",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "wikilinks",
+      "displayName": "Obsidian at Home",
+      "description": "Edit Markdown notes in BB with wikilinks, recursive previews, contextual backlinks, and queryable thinking trails.",
+      "icon": {
+        "url": "./plugins/wikilinks/assets/icon.svg"
+      },
+      "author": {
+        "name": "classicrob",
+        "github": "classicrob",
+        "url": "https://github.com/classicrob"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/wikilinks",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "workspaces",
+      "displayName": "Workspaces",
+      "description": "Group related repositories and launch isolated multi-repo threads.",
+      "icon": "Layers",
+      "author": {
+        "name": "wishcreator",
+        "github": "wishcreator",
+        "url": "https://github.com/wishcreator"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/workspaces",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "worktree-ports",
+      "displayName": "Worktree Ports",
+      "description": "Live listening ports per worktree, with one click to open them.",
+      "icon": "ElectricPlugs",
+      "author": {
+        "name": "to-infinity-labs",
+        "github": "to-infinity-labs",
+        "url": "https://github.com/to-infinity-labs"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/worktree-ports",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "meetings",
+      "displayName": "Meetings",
+      "description": "Record Zoom, Google Meet, Telemost and Jitsi with local transcription, summary templates, action items and MCP.",
+      "icon": "Puzzle",
+      "author": {
+        "name": "AiXenix",
+        "github": "AiXenix",
+        "url": "https://github.com/AiXenix"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/meetings",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "makosh-navigation",
+      "displayName": "Makosh Navigation",
+      "description": "Customizable BB navigation with nested groups, icons, separators and a settings editor with autosave.",
+      "icon": "Layers",
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/navigation",
+          "ref": "main"
         }
       }
     }

@@ -1,0 +1,164 @@
+# Changelog
+
+All notable changes to Animation are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
+[Semantic Versioning](https://semver.org/).
+
+## Unreleased
+
+## 0.3.0 - 2026-10-01
+
+### Added
+
+- Looks: `stage.look` sets a scene's palette, type, corners, backdrop and
+  arrival style by name. There are ten: `slate`, `blueprint`, `paper`, `neon`,
+  `terminal`, `daylight`, `chalk`, `ink`, `sunset` and `mint`. `stage.theme`
+  still overrides single colours on top of a look.
+- Icons: a node takes an `icon` from a built-in set of 24.
+- Actors: `"variant": "actor"` draws a node as a circle holding its icon, for
+  the people and devices in a story.
+- Layouts for a hub and a ring in the skill, alongside the row and two rows.
+- A README hero capture of the Animation editor, with playback controls and
+  the step strip, using the shipped retry sample.
+- Design notes for style: a scene with no look gets one suggested from its title,
+  boxes with no icons get one suggested each, people are suggested as actors,
+  and a row of boxes whose edges form a hub or a loop gets the positions for
+  that shape.
+- `samples/lookup.scene.json`, a hub-layout scene in the `paper` look.
+
+### Changed
+
+- The exported page's caption uses the look's heading type.
+- Many edges between one pair of boxes close up so they stay on the boxes'
+  facing sides, and edge labels that would sit on top of each other slide
+  apart along their lines.
+- A vertical edge may carry text wider than its gap, since the text runs
+  sideways.
+- Repository documentation follows the nine-step authoring recipe and
+  explains look suggestions, theme overrides, duration checks and format
+  compatibility.
+- README gallery screenshots are captured in BB's Animation editor using
+  fictional sample data.
+
+### Fixed
+
+- Every scene looked the same: dark slate, mono type, a row of cards.
+- An actor's edges attach to its circle, which sits at the centre of its box,
+  so they meet the drawing and run level with the cards beside it.
+
+## 0.2.0 - 2026-09-30
+
+### Added
+
+- Captions are shown as narration under the stage in the chat embed and the
+  exported page, not only in the editor. The export also shows a progress line.
+- Built-in motion: a part rises into place when it stops being hidden, the
+  parts one step changes start a beat apart in reading order, and active nodes
+  glow.
+- `focus` on a step zooms the stage to the parts it names, and glides there
+  from the previous framing. It applies to its own step only.
+- Edges route themselves. An edge that would cross another box arcs round it,
+  over the row going forwards and under it coming back, and two edges between
+  the same pair run in parallel lanes. Before, every edge was one straight
+  line, so these drew through boxes or on top of each other.
+- An edge is hidden while either of its ends is hidden, and an edge that a
+  step lights is not drawn until that step. Give it `"state": "idle"` to show
+  it from the start.
+- `"size": "title"` on a label draws it as the scene's heading.
+- A chat embed with no `height` takes the scene's own shape.
+- Design notes from `bb animation validate` and `animation_validate`, and a
+  badge in the editor. They cover clipped rows, text too wide for its box,
+  overlapping or off-stage parts, edges through boxes, unknown states, captions
+  shown too briefly, busy steps, steps where the picture stands still, loud
+  starts, busy or empty endings, rows that read as a status, traffic flowing
+  into a box that stays unlit, nothing revealed over time, a camera that never
+  moves and a focus that cuts off a lit edge. Each note gives the value to set. Notes
+  never fail validation.
+- `animation_validate` takes `targetSeconds`, and `bb animation validate` takes
+  `--seconds`, to check the scene against the length that was asked for.
+- `samples/retry.scene.json`, a reference scene that follows the recipe.
+
+### Changed
+
+- The bundled skill opens with an eight-step recipe, layout grids for two,
+  three and four boxes, and a duration table. Its worked example is the new
+  reference scene. The recipe was tuned by having Haiku 4.5 and Gemini 3.8
+  Flash author scenes from it and fixing what they got wrong.
+- Step durations in the starter and the cache-aside sample are long enough to
+  read their captions, and the skill's pacing advice now follows the caption's
+  word count.
+
+## 0.1.2 - 2026-09-30
+
+### Fixed
+
+- Agents wrote chat embeds as `::scene{file="…",height=640}`, which BB shows
+  as plain text because directive attributes are separated by spaces. The
+  skill and README now show a directive with a height, and `animation_validate`
+  and `animation_export_html` return the exact line to paste.
+
+## 0.1.1 - 2026-09-29
+
+### Added
+
+- README logo, changelog and `.gitattributes`, following the house layout for
+  BB plugin repos.
+
+### Fixed
+
+- Workspace and thread-storage paths that climb out with `..` are refused.
+  **New animation** checks its path too, and POSIX paths now compare case
+  sensitively.
+- The editor no longer loses an edit made while a save is in flight, and two
+  overlapping saves no longer conflict with each other.
+- A change on disk is no longer loaded mid-drag, or over an edit made while
+  the read was in flight, so it can no longer be silently reverted.
+- Undo after **Reload** no longer restores the version from before the reload.
+- After a conflict, **Keep mine** overwrites the version on disk. Before, the
+  only way out was **Reload**, which discarded your changes.
+- **Export HTML** stops if the save before it fails, instead of exporting the
+  stale file and reporting success.
+- Theme values, vars and sub-parts the parser cannot use are kept on save,
+  where they were written, instead of being deleted. A `stage` that is not an
+  object now blocks saving.
+- The HTML sanitiser checks inline styles after character references decode,
+  and refuses CSS escapes and `image-set()`-style functions that fetch. Theme
+  colours refuse those functions too.
+- A `{{constructor}}` placeholder no longer crashes the renderer.
+- Export only overwrites an earlier Animation export. It refuses any other file
+  at the output path, including the scene itself. The editor, CLI and agent
+  tool now share one export path.
+- `htmlFile` paths using `..` resolve within the workspace for host files, and
+  within the directory the CLI ran in outside a workspace.
+- Chat embeds no longer re-read the file on every render. They show parse
+  errors and failed reads instead of a blank stage or endless loading, and
+  update once per step (paused off-screen) instead of on every frame.
+- Keyboard shortcuts keep working after you click the stage or a transport
+  button.
+- A cancelled touch or pen drag no longer saves a new step time.
+- The editor fits narrow panels. Before, its widest row stretched the layout
+  and pushed **Reload**, **Keep mine** and **Export HTML** off-screen.
+
+### Changed
+
+- The README now covers install, surfaces, CLI, agent tools, safety and
+  development in the house layout.
+- `package.json` has a top-level `description`, and the licence names
+  MacHatter1 alongside the Nimbalyst notice.
+
+## 0.1.0 - 2026-09-16
+
+### Added
+
+- Animation editor for `*.scene.json` files: stage on top, step strip below,
+  with play, scrub, drag-to-retime, undo and redo.
+- `.anim.json` documents from Nimbalyst Animation open in the same editor.
+- Click a part on the stage to quote its current state into chat.
+- HTML export to one self-contained page that loops, from the editor,
+  `bb animation export`, or the `animation_export_html` agent tool.
+- `bb animation new`, `validate` and `export`, each with `--json`.
+- `animation_validate` agent tool and a bundled `animation` skill.
+- Inline chat preview with `::scene{file="…"}` (`::animation` still works).
+- New animation panel in a thread's Actions, a command palette action and a
+  composer **Embed scene** item.
+- A Using Animation page under BB Settings.
