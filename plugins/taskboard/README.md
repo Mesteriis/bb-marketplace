@@ -99,3 +99,20 @@ and retries never duplicate threads, transitions or worklogs.
 [MIT](./LICENSE), adapted from the MIT-licensed Taskboard plugin by Mateo
 Cerquetella (upstream commit 0ae0d539b3a46c1ffb158e119a7e3c23060f9a5b); see
 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+
+## Direct time tracking and agent access
+
+Open any task and choose **Log time** to enter duration in seconds and a comment,
+then Confirm. This works independently of development runs and does not move the
+task. Jira tasks submit a Cloud/Server worklog; local tasks store time locally.
+**Refresh worklog history** shows entries recorded through Taskboard (it does not
+import pre-existing Jira worklogs). Failed/unknown submissions use the same safe
+retry and owner-reconciliation controls as completion time entries.
+
+Agents have `boards_list`, `tasks_list`, `worklog_prepare`, `worklog_submit`,
+`worklogs_list`, and `time_entries_by_task`. Prepare requires a stable unique
+`entryId`; reuse it on retries and inspect uncertain results instead of creating
+another entry. Submit only time the owner authorized. Preparing writes a draft;
+submitting records the time. No development thread is required.
+
+The read-only `jira_worklogs_list` RPC verifies worklogs on the connected Jira issue directly (including records created outside Taskboard).

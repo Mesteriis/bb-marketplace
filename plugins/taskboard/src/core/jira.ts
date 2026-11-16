@@ -100,6 +100,9 @@ async function requestJson(auth: JiraAuth, suffix: string, init: RequestInit, fe
   if (response.status === 404) {
     throw new DomainError("not_found", "Not found on the Jira server");
   }
+  if (response.status === 400 || response.status === 422) {
+    throw new DomainError("invalid", "Jira rejected the request (HTTP " + response.status + ")");
+  }
   if (!response.ok) {
     throw new DomainError("http", "Request failed (HTTP " + response.status + ")");
   }
@@ -276,6 +279,7 @@ export interface JiraClient {
   listIssues(jql: string, options?: { maxResults?: number }): Promise<JiraIssuePage>;
   getTransitions(issueKey: string): Promise<JiraTransitionView[]>;
   transition(issueKey: string, transitionId: string): Promise<void>;
+  listWorklogs(issueKey: string): Promise<{ id: string; durationSeconds: number; comment: string }[]>;
   submitWorklog(input: JiraWorklogInput): Promise<{ id: string }>;
 }
 
@@ -352,6 +356,21 @@ export function createJiraClient(auth: JiraAuth, fetchFn: FetchLike = fetch): Ji
         },
         fetchFn,
       );
+    },
+    async listWorklogs(issueKey) {
+      const out: { id: string; durationSeconds: number; comment: string }[] = [];
+      let startAt = 0;
+      for (;;) {
+        const raw = await requestJson(auth, "/issue/" + encodeURIComponent(issueKey) + "/worklog?startAt=" + startAt + "&maxResults=100", {}, fetchFn) as Record<string, unknown>;
+        if (!raw || !Array.isArray(raw.worklogs) || typeof raw.total !== "number") throw new DomainError("http", "Unexpected Jira worklog response");
+        for (const item of raw.worklogs) {
+          if (!item || typeof item.id !== "string" || typeof item.timeSpentSeconds !== "number") throw new DomainError("http", "Invalid Jira worklog record");
+          out.push({ id: bounded(item.id, 200, ""), durationSeconds: item.timeSpentSeconds, comment: boundedText(typeof item.comment === "string" ? item.comment : descriptionText(item.comment), 4000) });
+        }
+        startAt += raw.worklogs.length;
+        if (startAt >= raw.total) return out;
+        if (raw.worklogs.length === 0) throw new DomainError("http", "Jira worklog pagination made no progress");
+      }
     },
     async submitWorklog(input) {
       const body: Record<string, unknown> = { timeSpentSeconds: input.timeSpentSeconds, started: jiraTimestamp(input.startedAtIso) };

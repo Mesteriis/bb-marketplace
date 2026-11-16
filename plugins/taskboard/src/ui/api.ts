@@ -3,6 +3,8 @@
 import type { BoardView, Column, Connection, ConnectionCreateInput, ConnectionUpdateInput, JiraTransition, Task, TaskRun, TimeEntry, WorklogRecord } from "../core/index.ts";
 
 export interface TaskboardApi {
+  prepareWorklog?(input: { taskId: string; durationSeconds: number; comment: string }): Promise<TimeEntry>;
+  listWorklogs?(taskId: string): Promise<WorklogRecord[]>;
   listBoards(): Promise<BoardView[]>;
   listConnections(): Promise<Connection[]>;
   listTasks(boardId: string): Promise<{ columns: Column[]; tasks: Task[] }>;

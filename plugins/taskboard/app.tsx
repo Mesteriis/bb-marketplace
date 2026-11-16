@@ -46,6 +46,8 @@ function TaskboardPanel(_props: PluginNavPanelProps) {
     listRuns: (taskId) => rpc.call("run_list", { taskId }).then((result) => result.runs),
     completeRun: (input) => rpc.call("run_complete", input).then((result) => result.timeEntry),
     updateTimeEntry: (input) => rpc.call("time_entry_update", input).then((result) => result.timeEntry),
+    prepareWorklog: (input) => rpc.call("worklog_prepare", input).then((result) => result.timeEntry),
+    listWorklogs: (taskId) => rpc.call("worklogs_list", { taskId }).then((result) => result.worklogs),
     submitTimeEntry: (input) => rpc.call("time_entry_submit", input).then((result) => result.worklog),
     listPendingTimeEntries: () => rpc.call("time_entries_pending", {}).then((result) => result.entries),
     listTimeEntriesByTask: (taskId) => rpc.call("time_entries_by_task", { taskId }).then((result) => result.entries),

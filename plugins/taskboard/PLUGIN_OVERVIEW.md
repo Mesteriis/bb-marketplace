@@ -58,3 +58,15 @@ the issue key.
 
 Requires BB 0.49 or later. MIT licensed; adapted from MateoCerquetella's
 MIT Taskboard plugin (upstream commit 0ae0d539b3a46c1ffb158e119a7e3c23060f9a5b).
+
+## Direct time tracking and agent access
+
+**Log time** on any task accepts seconds and a comment, without a development
+run or status change. Confirm writes to Jira Cloud/Server or local storage.
+**Refresh worklog history** lists entries recorded through Taskboard, not
+pre-existing Jira worklogs. Failed and unknown results retain recovery controls.
+
+Agents get `boards_list`, `tasks_list`, `worklog_prepare`, `worklog_submit`,
+`worklogs_list` and `time_entries_by_task`. Preparation saves a draft using a
+stable unique entryId; submission records authorized time. Reuse that ID for
+retries; never blindly retry an unknown Jira result.

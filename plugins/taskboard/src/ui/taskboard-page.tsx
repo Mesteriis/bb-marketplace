@@ -552,6 +552,7 @@ export function TaskboardPage({ api, notify = noNotify, openThread }: TaskboardP
             onCancelRun={() => void onCancelRun()}
             onRetryTime={() => void onRetryTime()}
             onResolveTime={() => void onResolveTime()}
+            onPreparedTimeEntry={(entry) => { setAutoOpenedEntryId(entry.id); setTimeEntry(entry); }}
             onOpenTimeEntry={() => { if (pendingEntry !== null) setTimeEntry(pendingEntry); }}
             onClose={() => setDetailsTaskId(null)}
           />
@@ -582,6 +583,7 @@ export function TaskboardPage({ api, notify = noNotify, openThread }: TaskboardP
             onCancelRun={() => void onCancelRun()}
             onRetryTime={() => void onRetryTime()}
             onResolveTime={() => void onResolveTime()}
+            onPreparedTimeEntry={(entry) => { setAutoOpenedEntryId(entry.id); setTimeEntry(entry); }}
             onOpenTimeEntry={() => { if (pendingEntry !== null) setTimeEntry(pendingEntry); }}
             onClose={() => setDetailsTaskId(null)}
           />

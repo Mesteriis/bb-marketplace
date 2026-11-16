@@ -1,5 +1,6 @@
 // The RPC wire contract: plain zod schemas. server.ts wraps them for BB RPC;
 // another host wraps the same schemas for its own transport.
+import { prepareWorklogSchema } from "./manual-worklogs.ts";
 import { z } from "zod";
 import { taskRunSchema, timeEntrySchema, worklogSchema } from "./lifecycle.ts";
 import {
@@ -106,6 +107,10 @@ export const rpcSchemas = {
     input: z.object({ runId: idSchema, deliveredSummary: z.string().max(4000).optional() }).strict(),
     output: z.object({ timeEntry: timeEntrySchema }).strict(),
   },
+  worklog_prepare: {
+    input: prepareWorklogSchema,
+    output: z.object({ timeEntry: timeEntrySchema }).strict(),
+  },
   time_entry_update: {
     input: z.object({ entryId: idSchema, durationSeconds: z.number().int().min(1).max(31_536_000), comment: z.string().max(4000) }).strict(),
     output: z.object({ timeEntry: timeEntrySchema }).strict(),
@@ -117,6 +122,10 @@ export const rpcSchemas = {
   time_entries_pending: {
     input: z.object({}).strict(),
     output: z.object({ entries: z.array(timeEntrySchema) }).strict(),
+  },
+  jira_worklogs_list: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z.object({ worklogs: z.array(z.object({ id: z.string(), durationSeconds: z.number(), comment: z.string() })) }).strict(),
   },
   worklogs_list: {
     input: z.object({ taskId: idSchema }).strict(),

@@ -1256,7 +1256,7 @@
     {
       "id": "makosh-taskboard",
       "displayName": "Makosh Taskboard [Experimental]",
-      "description": "Local tasks and your assigned Jira issues across projects, with List/Kanban boards, development threads and time tracking.",
+      "description": "Local and assigned Jira tasks across projects, with development threads, manual worklogs and agent time-tracking tools.",
       "icon": {
         "url": "./plugins/taskboard/assets/icon.svg"
       },

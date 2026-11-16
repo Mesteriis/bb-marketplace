@@ -7,3 +7,5 @@ export * from "./connections.ts";
 export * from "./sync.ts";
 export * from "./lifecycle.ts";
 export * from "./contract.ts";
+
+export * from "./manual-worklogs.ts";

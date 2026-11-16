@@ -31,3 +31,16 @@ When a task is taken into work, its thread gets a scoped `finish_work` tool.
 Call it with a summary of what was delivered; it transitions the task and
 creates a pending time entry for the owner to confirm. Idle or failed turns
 never complete a task.
+
+## Log time without a development run
+
+Use `boards_list` and `tasks_list` to find a task's internal ID. Use
+`worklog_prepare` with taskId, a unique entryId, durationSeconds and comment.
+Reuse that entryId for retries. When the owner authorizes recording the time,
+call `worklog_submit` with entryId, durationSeconds and comment. Preparation only
+saves a draft; submit sends the worklog to Jira (or stores it locally).
+
+Inspect `time_entries_by_task` before retrying. Never resend an unknown result
+with a new ID: it may already exist in Jira. Ask the owner to reconcile through
+Taskboard. `worklogs_list` shows work recorded through this plugin, not all Jira
+history. `finish_work` remains specific to development completion.

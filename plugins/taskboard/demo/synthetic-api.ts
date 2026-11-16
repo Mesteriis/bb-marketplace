@@ -2,6 +2,7 @@
 // canned Jira fetch. The real src/ui runs against this, so pointer and
 // keyboard flows exercise the actual logic (no UI mock). Dev-only.
 import {
+  prepareWorklog,
   applyTransition,
   createBoard,
   createConnection,
@@ -127,6 +128,8 @@ export async function buildDemoApi(): Promise<TaskboardApi> {
     listRuns: (taskId) => Promise.resolve(listRunsForTask(taskId, lifecycleDeps)),
     completeRun: (input) => completeRun(input, lifecycleDeps),
     updateTimeEntry: (input) => Promise.resolve(updateTimeEntry(input, lifecycleDeps)),
+    prepareWorklog: (input) => Promise.resolve(prepareWorklog(input, lifecycleDeps)),
+    listWorklogs: (taskId) => Promise.resolve(lifecycleDeps.lifecycle.listWorklogsForTask(taskId)),
     submitTimeEntry: (input) => submitTimeEntry(input, lifecycleDeps),
     listPendingTimeEntries: () => Promise.resolve(listPendingTimeEntries(lifecycleDeps)),
     listTimeEntriesByTask: (taskId) => Promise.resolve(lifecycleDeps.lifecycle.listTimeEntriesByTask(taskId)),

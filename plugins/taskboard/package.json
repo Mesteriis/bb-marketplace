@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-makosh-taskboard",
   "version": "0.1.0",
-  "description": "Local tasks and your assigned Jira issues across projects, with List/Kanban boards, development threads and time tracking.",
+  "description": "Local and assigned Jira tasks across projects, with development threads, manual worklogs and agent time-tracking tools.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -29,7 +29,7 @@
   },
   "bb": {
     "name": "Makosh Taskboard [Experimental]",
-    "description": "Local tasks and your assigned Jira issues across projects, with List/Kanban boards, development threads and time tracking.",
+    "description": "Local and assigned Jira tasks across projects, with development threads, manual worklogs and agent time-tracking tools.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

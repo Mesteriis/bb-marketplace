@@ -1,3 +1,4 @@
+import { TaskWorklogs } from "./task-worklogs.tsx";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -29,6 +30,7 @@ interface TaskDetailsProps {
   onRetryTime: () => void;
   onResolveTime: () => void;
   onOpenTimeEntry: () => void;
+  onPreparedTimeEntry?: (entry: TimeEntry) => void;
 }
 
 export function TaskDetails({
@@ -55,6 +57,7 @@ export function TaskDetails({
   onRetryTime,
   onResolveTime,
   onOpenTimeEntry,
+  onPreparedTimeEntry,
 }: TaskDetailsProps) {
   const [transitions, setTransitions] = useState<JiraTransition[]>([]);
   const [transitionsLoading, setTransitionsLoading] = useState(false);
@@ -142,6 +145,7 @@ export function TaskDetails({
         </div>
 
         <div className="flex flex-col gap-2 border-t border-border pt-3">
+          {onPreparedTimeEntry && <TaskWorklogs key={task.id} taskId={task.id} api={api} notify={notify} onPrepared={onPreparedTimeEntry} />}
           <span className="text-xs font-medium text-muted-foreground">Work</span>
           {run !== null ? (
             <div className="flex flex-wrap items-center gap-2">
