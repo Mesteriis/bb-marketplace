@@ -205,6 +205,22 @@ describe("matchShortcut", () => {
   });
 });
 
+describe("slice 3h keys", () => {
+  it("g f goes to Files and l opens Labels, by the physical key; f alone still forwards", () => {
+    expect(matchShortcut(key({ key: "f", code: "KeyF" }), true)).toEqual({ kind: "go", target: "files" });
+    expect(matchShortcut(key({ key: "\u0430", code: "KeyF" }), true)).toEqual({ kind: "go", target: "files" });
+    expect(matchShortcut(key({ key: "f", code: "KeyF" }), false)).toEqual({ kind: "forward" });
+    expect(matchShortcut(key({ key: "l", code: "KeyL" }), false)).toEqual({ kind: "labels" });
+    expect(matchShortcut(key({ key: "\u0434", code: "KeyL" }), false)).toEqual({ kind: "labels" });
+    const input = document.createElement("input");
+    document.body.append(input);
+    expect(matchShortcut(key({ key: "l", code: "KeyL", target: input }), false)).toBeNull();
+    input.remove();
+    const labels = SHORTCUT_SHEET.flatMap((section) => section.entries.map((entry) => entry.keys.join(" ")));
+    expect(labels).toEqual(expect.arrayContaining(["g f", "l"]));
+  });
+});
+
 describe("isTypingTarget", () => {
   it("is true in fields, editable content and dialogs", () => {
     const input = document.createElement("input");

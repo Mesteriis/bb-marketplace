@@ -1,11 +1,16 @@
 // The left column: conversations (or search hits) as dense rows, unread in
-// bold, and the quick filters above them (slice 3e).
-import type { MailAddress, MessageSummary, ThreadSummary } from "../core/index.ts";
+// bold, and the quick filters above them (slice 3e). Slice 3h: rows drag
+// onto rail folders, message rows carry Gmail label chips and the "from the
+// server" mark, and a folder's end offers Load more days.
+import type { DragEvent, ReactNode } from "react";
+import type { AttachmentMatch, MailAddress, MessageSummary, ThreadSummary } from "../core/index.ts";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { CategoryFilters, RowCategory, categoryLabel, type Category } from "./category-chips.tsx";
+import { dragLabel, writeMovePayload } from "./drag-move.ts";
+import { LabelChips } from "./label-chips.tsx";
 
 export const NO_SUBJECT = "(no subject)";
 
@@ -199,6 +204,15 @@ interface RowProps {
   /** Checkbox and star; absent for search hits. */
   check?: { checked: boolean; anyChecked: boolean; onToggle: (range: boolean) => void };
   star?: { flagged: boolean; onToggle: () => void };
+  /** Slice 3h: Gmail label chips (message rows). */
+  labels?: readonly string[];
+  /** Slice 3h: a server search hit kept outside the window. */
+  fromServer?: boolean;
+  /** Slice 3h: attachment-text matches of a search hit. */
+  matches?: readonly AttachmentMatch[];
+  /** Slice 3h: the row drags onto rail folders. */
+  onDragStart?: (event: DragEvent<HTMLElement>) => void;
+  onDragEnd?: () => void;
 }
 
 function Row({
@@ -217,10 +231,18 @@ function Row({
   onSelect,
   check,
   star,
+  labels = [],
+  fromServer = false,
+  matches = [],
+  onDragStart,
+  onDragEnd,
 }: RowProps) {
   const label = subjectOrPlaceholder(subject);
   return (
     <li
+      {...(onDragStart !== undefined
+        ? { draggable: true, onDragStart, onDragEnd, "aria-describedby": DRAG_HINT_ID }
+        : {})}
       className={cn(
         "group flex items-start border-b border-border transition-colors hover:bg-state-hover",
         focused && "bg-state-hover",
@@ -283,6 +305,24 @@ function Row({
           {label}
         </span>
         <span className="truncate pl-3.5 text-xs text-muted-foreground">{snippet}</span>
+        {labels.length > 0 || fromServer ? (
+          <span className="flex min-w-0 items-center gap-1 pl-3.5">
+            {fromServer ? (
+              <span className="shrink-0 text-xs text-muted-foreground">
+                <Icon name="Server" fallback="Mail" className="mr-0.5 inline size-3" aria-hidden />
+                from the server
+              </span>
+            ) : null}
+            <LabelChips labels={labels} />
+          </span>
+        ) : null}
+        {matches.map((match, index) => (
+          <span key={index} className="truncate pl-3.5 text-xs text-muted-foreground">
+            {"in "}
+            <span className="italic text-foreground">{match.filename ?? "an attachment"}</span>
+            {`: \u2026 ${match.excerpt} \u2026`}
+          </span>
+        ))}
         {snoozedUntil !== null ? (
           <span className="flex items-center gap-1 pl-3.5 text-xs text-muted-foreground">
             <Icon name="Clock" fallback="Info" className="size-3" aria-hidden />
@@ -331,6 +371,35 @@ export interface ThreadListProps {
   focusedId: string | null;
   /** Slice 3f: category chips on the rows (categories on). */
   categories?: boolean;
+  /** Slice 3h: rows drag onto rail folders; absent: not draggable. */
+  drag?: ListDrag;
+  /** Slice 3h: the end of a folder (Load more days); shown after the rows when nothing more is listed. */
+  footer?: ReactNode;
+}
+
+/** Slice 3h: dragging rows from the list. */
+export interface ListDrag {
+  /** This page load's id (drag-move.ts). */
+  pageId: string;
+  /** A drag started with these conversations (the selection when the row is in it). */
+  onStart: (threadIds: string[]) => void;
+  onEnd: () => void;
+}
+
+/** The hint screen readers get on draggable rows; `v` moves without a mouse. */
+export const DRAG_HINT_ID = "makosh-mail-drag-hint";
+
+function DragHint() {
+  return (
+    <span id={DRAG_HINT_ID} className="sr-only">
+      Drag onto a folder to move, or press v to move
+    </span>
+  );
+}
+
+/** The conversations a drag of `rowId` carries: the selection when the row is in it. */
+export function dragTargets(rowId: string, checked: ReadonlySet<string>): string[] {
+  return checked.has(rowId) ? [...checked] : [rowId];
 }
 
 export function ThreadList({
@@ -347,9 +416,12 @@ export function ThreadList({
   onToggleFlag,
   focusedId,
   categories = false,
+  drag,
+  footer = null,
 }: ThreadListProps) {
   return (
     <div className="flex flex-col">
+      {drag !== undefined ? <DragHint /> : null}
       <ul aria-label="Conversations">
         {threads.map((thread) => (
           <Row
@@ -373,6 +445,16 @@ export function ThreadList({
               onToggle: (range) => onToggleChecked(thread.id, range),
             }}
             star={{ flagged: thread.flagged, onToggle: () => onToggleFlag(thread.id) }}
+            {...(drag !== undefined
+              ? {
+                  onDragStart: (event: DragEvent<HTMLElement>) => {
+                    const ids = dragTargets(thread.id, checked);
+                    writeMovePayload(event.dataTransfer, drag.pageId, ids);
+                    drag.onStart(ids);
+                  },
+                  onDragEnd: drag.onEnd,
+                }
+              : {})}
           />
         ))}
       </ul>
@@ -388,7 +470,9 @@ export function ThreadList({
             {loadingMore ? "Loading…" : "Load more"}
           </Button>
         </div>
-      ) : null}
+      ) : (
+        footer
+      )}
     </div>
   );
 }
@@ -399,11 +483,30 @@ export interface SearchResultListProps {
   marker: (accountId: string) => string | null;
   onSelect: (hit: MessageSummary) => void;
   focusedId: string | null;
+  /** Slice 3h: hits a server search brought in. */
+  serverIds?: ReadonlySet<string>;
+  /** Slice 3h: attachment-text matches by message. */
+  matches?: readonly AttachmentMatch[];
+  /** Slice 3h: the list's name (Search results, or Messages when a folder is not grouped). */
+  label?: string;
+  /** Slice 3h: Load more. */
+  more?: { loading: boolean; onMore: () => void } | null;
 }
 
-export function SearchResultList({ hits, selectedThreadId, marker, onSelect, focusedId }: SearchResultListProps) {
+export function SearchResultList({
+  hits,
+  selectedThreadId,
+  marker,
+  onSelect,
+  focusedId,
+  serverIds,
+  matches = [],
+  label = "Search results",
+  more = null,
+}: SearchResultListProps) {
   return (
-    <ul aria-label="Search results">
+    <div className="flex flex-col">
+    <ul aria-label={label}>
       {hits.map((hit) => (
         <Row
           key={hit.id}
@@ -417,8 +520,73 @@ export function SearchResultList({ hits, selectedThreadId, marker, onSelect, foc
           snippet={hit.snippet}
           marker={marker(hit.accountId)}
           onSelect={() => onSelect(hit)}
+          labels={hit.labels ?? []}
+          fromServer={serverIds?.has(hit.id) === true || hit.kept === "search"}
+          matches={matches.filter((m) => m.messageId === hit.id)}
         />
       ))}
     </ul>
+      {more !== null ? (
+        <div className="p-3">
+          <Button variant="outline" size="sm" className="w-full" disabled={more.loading} onClick={more.onMore}>
+            {more.loading ? "Loading\u2026" : "Load more"}
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Slice 3h: older mail of one folder (history_load). */
+export type HistoryState =
+  | { kind: "idle"; since: string | null; note: string | null }
+  | { kind: "running"; fetched: number; total: number }
+  | { kind: "failed"; error: string };
+
+function formatDay(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+/** The end of a folder's list: "Showing mail since ... - Load 30 more days", progress with Stop. */
+export function HistoryStrip({
+  state,
+  stepDays,
+  onLoad,
+  onStop,
+}: {
+  state: HistoryState;
+  stepDays: number;
+  onLoad: () => void;
+  onStop: () => void;
+}) {
+  if (state.kind === "running") {
+    return (
+      <div role="status" className="flex flex-wrap items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
+        <span>{state.total > 0 ? `Loading\u2026 ${state.fetched} of ~${state.total}` : "Loading\u2026"}</span>
+        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onStop}>
+          Stop
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1 px-3 py-3 text-xs text-muted-foreground">
+      {state.kind === "failed" ? (
+        <p role="alert" className="text-destructive">
+          {state.error}
+        </p>
+      ) : null}
+      {state.kind === "idle" && state.note !== null ? <p>{state.note}</p> : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <span>
+          {state.kind === "idle" && state.since !== null ? `Showing mail since ${formatDay(state.since)}` : "Older mail stays on the server"}
+        </span>
+        <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={onLoad}>
+          {`Load ${stepDays} more days`}
+        </Button>
+      </div>
+    </div>
   );
 }

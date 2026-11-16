@@ -84,8 +84,8 @@ export function parseDraftSubPath(subPath: string): string | null {
   return decodeTwice(segments[1]!);
 }
 
-/** The Today and Tasks pages of the rail (slice 3f), Dev and Projects (slice 3g). */
-export type MailPageName = "today" | "tasks" | "dev" | "projects";
+/** The Today and Tasks pages of the rail (slice 3f), Dev and Projects (slice 3g), Files (slice 3h). */
+export type MailPageName = "today" | "tasks" | "dev" | "projects" | "files";
 
 /** The subPath of a rail page; Projects is `p` (one project is `p/<projectId>`). */
 export function pageSubPath(page: MailPageName): string {
@@ -94,7 +94,7 @@ export function pageSubPath(page: MailPageName): string {
 
 /** The rail page a panel subPath names; null for anything else. */
 export function parsePageSubPath(subPath: string): MailPageName | null {
-  if (subPath === "today" || subPath === "tasks" || subPath === "dev") return subPath;
+  if (subPath === "today" || subPath === "tasks" || subPath === "dev" || subPath === "files") return subPath;
   if (subPath === "p" || parseProjectSubPath(subPath) !== null) return "projects";
   return null;
 }
@@ -108,5 +108,17 @@ export function projectSubPath(projectId: string): string {
 export function parseProjectSubPath(subPath: string): string | null {
   const segments = subPath.split("/");
   if (segments.length !== 2 || segments[0] !== "p") return null;
+  return decodeTwice(segments[1]!);
+}
+
+/** The subPath, as an unencoded segment for `toPluginPanel`, of a saved search (slice 3h). */
+export function savedSearchSubPath(savedSearchId: string): string {
+  return `s/${encodeURIComponent(savedSearchId)}`;
+}
+
+/** The saved search a panel subPath (as the host passes it) names; null for anything else. */
+export function parseSavedSearchSubPath(subPath: string): string | null {
+  const segments = subPath.split("/");
+  if (segments.length !== 2 || segments[0] !== "s") return null;
   return decodeTwice(segments[1]!);
 }

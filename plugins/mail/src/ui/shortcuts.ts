@@ -4,8 +4,8 @@
 // its own root element only, so nothing fires while another BB page is shown.
 import { useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
-/** Where `g` then a letter goes. "all" is the All accounts view, "dev" the Dev view (slice 3g). */
-export type GoTarget = "inbox" | "sent" | "drafts" | "trash" | "all" | "dev";
+/** Where `g` then a letter goes. "all" is the All accounts view, "dev" the Dev view (slice 3g), "files" the Files view (slice 3h). */
+export type GoTarget = "inbox" | "sent" | "drafts" | "trash" | "all" | "dev" | "files";
 
 export type ShortcutCommand =
   | { kind: "next" }
@@ -33,6 +33,7 @@ export type ShortcutCommand =
   | { kind: "find_tasks" }
   | { kind: "new_bb_thread" }
   | { kind: "make_task" }
+  | { kind: "labels" }
   | { kind: "go"; target: GoTarget };
 
 /** How long `g` waits for its second key. */
@@ -89,6 +90,7 @@ const GO_KEYS: Record<string, GoTarget> = {
   KeyT: "trash",
   KeyA: "all",
   KeyN: "dev",
+  KeyF: "files",
 };
 
 /** `#`, `!`, `?`: the character, else the key that types it on a US layout. */
@@ -174,6 +176,9 @@ function matchKey(event: KeyLike, afterG: boolean): KeyMatch {
     // b: snooze (slice 3e), as in Gmail.
     case "KeyB":
       return { kind: "snooze" };
+    // l: Labels... (slice 3h), as in Gmail.
+    case "KeyL":
+      return { kind: "labels" };
     case "KeyG":
       return { kind: "g" };
     default:
@@ -253,6 +258,7 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
       { keys: ["g", "t"], label: "Go to Trash" },
       { keys: ["g", "a"], label: "Go to All accounts" },
       { keys: ["g", "n"], label: "Go to Dev" },
+      { keys: ["g", "f"], label: "Go to Files" },
       { keys: ["?"], label: "Show keyboard shortcuts" },
     ],
   },
@@ -268,6 +274,7 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
       { keys: ["Shift", "i"], label: "Mark read" },
       { keys: ["v"], label: "Move to…" },
       { keys: ["b"], label: "Snooze" },
+      { keys: ["l"], label: "Labels (Gmail)" },
       { keys: ["t"], label: "Translate, or show the original" },
       { keys: ["Shift", "s"], label: "Summarize the conversation (AI)" },
       { keys: ["Shift", "t"], label: "Find tasks in the conversation (AI)" },

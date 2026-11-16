@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { useEffect, useMemo, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1324,10 +1324,16 @@ describe("All accounts", () => {
       "Archive",
       "Trash",
     ]);
+    // Slice 3h: each folder also has its options button.
+    const named = (list: ReturnType<typeof within>) =>
+      list
+        .getAllByRole("button")
+        .filter((b: HTMLElement) => b.getAttribute("aria-label") !== "Folder options")
+        .map((b: HTMLElement) => b.textContent);
     const first = within(rail.getByRole("list", { name: "owner@example.org" }));
-    expect(first.getAllByRole("button").map((b) => b.textContent)).toEqual(["Work"]);
+    expect(named(first)).toEqual(["Work"]);
     const second = within(rail.getByRole("list", { name: "me@work.example.org" }));
-    expect(second.getAllByRole("button").map((b) => b.textContent)).toEqual(["All Mail", "Clients"]);
+    expect(named(second)).toEqual(["All Mail", "Clients"]);
   });
 
   it("switches between roles and an account's own folder", async () => {
@@ -4658,5 +4664,267 @@ describe("Slice 3g: views, BB surfaces and settings", () => {
     expect(await slot.findByText("Attachments saved to a project go to inbox-files/")).toBeTruthy();
     fireEvent.click(slot.getByRole("tab", { name: "Rules" }));
     expect(slot.getByText("Off: no rule runs.")).toBeTruthy();
+  });
+});
+
+describe("Slice 3h: search, saved searches, folders, labels, drag and Files", () => {
+  function renderWith(rpc: Record<string, unknown>, settings: Record<string, string | number | boolean> = {}, subPath = "") {
+    return renderSlot({ component: MailWithSidebar }, { subPath }, {
+      rpc: rpc as never,
+      settings,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+  }
+  const gmailAccount: Account = { ...account, preset: "gmail" };
+  const hit = message({ id: "m-new", labels: ["Travel"] });
+  async function searchFor(slot: ReturnType<typeof render>, query: string) {
+    fireEvent.change(await slot.findByLabelText("Search mail"), { target: { value: query } });
+    fireEvent.submit(slot.getByRole("search"));
+  }
+
+  it("asks for attachment text only with the setting on, shows notes, excerpts and pages", async () => {
+    const slot = renderWith(
+      folderRpc({
+        search: ({ cursor }: { cursor?: string | null }) =>
+          cursor == null
+            ? {
+                hits: [hit],
+                nextCursor: "c1",
+                notes: [{ kind: "bad_value", term: "larger:abc" }],
+                attachmentMatches: [{ messageId: "m-new", filename: "report.pdf", excerpt: "quarterly totals" }],
+              }
+            : { hits: [message({ id: "m-old", subject: "Older one" })], nextCursor: null, notes: [], attachmentMatches: [] },
+      }),
+      { indexAttachmentText: true },
+    );
+    await searchFor(slot, "plan larger:abc");
+    expect(await slot.findByText("larger:abc \u2014 not understood (sizes look like 10K or 2M)")).toBeTruthy();
+    expect(callsTo(slot, "search")[0]?.input).toMatchObject({ query: "plan larger:abc", attachments: true });
+    const results = within(slot.getByRole("list", { name: "Search results" }));
+    expect(results.getByText("report.pdf")).toBeTruthy();
+    expect(results.getByText("Travel")).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(callsTo(slot, "search")[1]?.input).toMatchObject({ cursor: "c1", attachments: true }));
+    expect(await slot.findByText("Older one")).toBeTruthy();
+  });
+
+  it("never asks for attachment text with the setting off", async () => {
+    const slot = renderWith(folderRpc({ search: () => ({ hits: [hit], nextCursor: null, notes: [], attachmentMatches: [] }) }));
+    await searchFor(slot, "plan");
+    await slot.findByRole("list", { name: "Search results" });
+    expect(callsTo(slot, "search")[0]?.input).not.toHaveProperty("attachments");
+  });
+
+  it("searches on the server: progress, Cancel, and hits marked from the server", async () => {
+    let state: "running" | "cancelled" = "running";
+    let found: string[] = [];
+    const slot = renderWith(
+      folderRpc({
+        search: () => ({ hits: found.length > 0 ? [hit, message({ id: "m-srv", subject: "Old invoice" })] : [hit], nextCursor: null, notes: [], attachmentMatches: [] }),
+        server_search_start: () => ({ jobId: "job-1", localOnly: [] }),
+        server_job_poll: () => ({
+          state,
+          accounts: [{ accountId: "acc-1", searched: 4, total: 23, fetched: found.length, found: found.length, skipped: 0, partial: false, reason: state === "cancelled" ? "cancelled" : null }],
+          messageIds: found,
+          moreAvailable: false,
+        }),
+        server_job_cancel: () => {
+          state = "cancelled";
+          return { ok: true };
+        },
+      }),
+    );
+    await searchFor(slot, "invoice");
+    await slot.findByRole("list", { name: "Search results" });
+    found = ["m-srv"];
+    fireEvent.click(slot.getByRole("button", { name: "Search on the server" }));
+    const strip = await slot.findByRole("status", { name: "Server search" });
+    await waitFor(() => expect(strip.textContent).toContain("owner@example.org: 4 of 23 folders\u2026"));
+    await waitFor(() => expect(slot.getByText("Old invoice")).toBeTruthy());
+    const row = slot.getByText("Old invoice").closest("li")!;
+    expect(within(row).getByText("from the server")).toBeTruthy();
+    fireEvent.click(within(strip).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(callsTo(slot, "server_job_cancel")[0]?.input).toEqual({ jobId: "job-1" }));
+    await waitFor(() => expect(slot.getByRole("status", { name: "Server search" }).textContent).toContain("Stopped"), { timeout: 3000 });
+  });
+
+  it("shows a refused server search", async () => {
+    const slot = renderWith(
+      folderRpc({
+        search: () => ({ hits: [hit], nextCursor: null, notes: [], attachmentMatches: [] }),
+        server_search_start: () => {
+          throw new Error("Nothing to search on the server for this query");
+        },
+      }),
+    );
+    await searchFor(slot, "invoice");
+    fireEvent.click(await slot.findByRole("button", { name: "Search on the server" }));
+    expect((await slot.findByText("Nothing to search on the server for this query")).getAttribute("role")).toBe("alert");
+  });
+
+  it("saves a search and opens it from the rail; a deleted one says so", async () => {
+    let searches: { id: string; name: string; query: string; accountId: string | null; unread: number; capped: boolean }[] = [
+      { id: "ss-1", name: "Invoices", query: "subject:invoice", accountId: null, unread: 3, capped: false },
+    ];
+    const slot = renderWith(
+      folderRpc({
+        search: () => ({ hits: [hit], nextCursor: null, notes: [], attachmentMatches: [] }),
+        saved_searches_list: () => ({ searches }),
+        saved_search_save: () => {
+          searches = [...searches, { id: "ss-2", name: "plan", query: "plan", accountId: "acc-1", unread: 0, capped: false }];
+          return { id: "ss-2" };
+        },
+      }),
+    );
+    await searchFor(slot, "plan");
+    fireEvent.click(await slot.findByRole("button", { name: "Save search" }));
+    fireEvent.click(within(await slot.findByRole("dialog")).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(callsTo(slot, "saved_search_save")[0]?.input).toEqual({ name: "plan", query: "plan", accountId: "acc-1" }));
+    fireEvent.click(await folderRail(slot).findByRole("button", { name: "Invoices 3 unread" }));
+    await waitFor(() => expect(callsTo(slot, "search").at(-1)?.input).toMatchObject({ query: "subject:invoice" }));
+    expect(await slot.findByText(/subject:invoice/)).toBeTruthy();
+
+    const gone = renderWith(folderRpc({ saved_searches_list: () => ({ searches: [] }) }), {}, "s/ss-9");
+    expect(await gone.findAllByText("This saved search was deleted")).toBeTruthy();
+  });
+
+  it("Files lists attachments and opens a file's message", async () => {
+    const file = {
+      messageId: "m-new",
+      partId: "2",
+      filename: "invoice.pdf",
+      kind: "pdf",
+      mimeType: "application/pdf",
+      size: 4096,
+      date: "2026-11-10T08:00:00.000Z",
+      from: { name: "Ada Example", address: "ada@example.org" },
+      accountId: "acc-1",
+      threadId: "th-a",
+    };
+    const slot = renderWith(folderRpc({ files_list: () => ({ files: [file], nextCursor: null }) }), {}, "files");
+    expect(await slot.findByText("invoice.pdf")).toBeTruthy();
+    expect(callsTo(slot, "files_list")[0]?.input).toEqual({ cursor: null, limit: 50 });
+    fireEvent.click(slot.getByRole("button", { name: "Open the message of invoice.pdf" }));
+    expect(await slot.findByRole("heading", { name: "Quarterly plan" })).toBeTruthy();
+  });
+
+  it("g f goes to Files", async () => {
+    const slot = renderWith(folderRpc({ files_list: () => ({ files: [], nextCursor: null }) }));
+    await slot.findByRole("button", { name: /Quarterly plan/ });
+    key({ key: "g", code: "KeyG" });
+    key({ key: "f", code: "KeyF" });
+    expect(await slot.findByText("No files here.")).toBeTruthy();
+  });
+
+  it("deletes a non-empty folder through the move step", async () => {
+    const slot = renderWith(
+      folderRpc({
+        folder_delete_check: () => ({ messages: 41, children: 0, gmailLabel: false, refusal: null }),
+        folder_delete: () => ({ ok: true, moved: 41 }),
+      }),
+    );
+    const rail = folderRail(slot);
+    const alpha = (await rail.findByRole("button", { name: /^Alpha/ })).closest("li")!;
+    fireEvent.click(within(alpha).getByRole("button", { name: "Folder options" }));
+    fireEvent.click(within(await slot.findByRole("dialog")).getByRole("button", { name: "Delete\u2026" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Move 41 to Trash, then delete" }));
+    await waitFor(() =>
+      expect(callsTo(slot, "folder_delete")[0]?.input).toEqual({ accountId: "acc-1", path: "Projects/Alpha", moveToTrash: true, expectedMessages: 41 }),
+    );
+    await waitFor(() => expect(toasts.plain).toContain("Moved 41 messages to Trash and deleted Alpha"));
+  });
+
+  it("drag: a foreign page id moves nothing, Trash means Delete, 201 messages are refused", async () => {
+    const big = { ...threadB, messageCount: 199 };
+    const slot = renderWith(folderRpc({ threads_list: () => ({ threads: [threadA, big], nextCursor: null }), message_action: () => movedTo("INBOX", "[Gmail]/Trash") }));
+    const row = (await slot.findByRole("button", { name: /Quarterly plan/ })).closest("li")!;
+    const data = new Map<string, string>();
+    const dataTransfer = {
+      setData: (type: string, value: string) => data.set(type, value),
+      getData: (type: string) => data.get(type) ?? "",
+      get types() {
+        return [...data.keys()];
+      },
+      dropEffect: "none",
+      effectAllowed: "all",
+    };
+    const fire = (target: Element, make: (el: Element) => Event) => {
+      const event = make(target);
+      Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+      fireEvent(target, event);
+    };
+    fire(row, createEvent.dragStart);
+    const payload = JSON.parse(data.get("application/x-makosh-mail-move")!);
+    expect(payload).toMatchObject({ v: 1, threadIds: ["th-a"] });
+    const trash = folderRail(slot).getByRole("button", { name: /^Trash/ }).closest("li")!;
+
+    data.set("application/x-makosh-mail-move", JSON.stringify({ ...payload, pageId: "another-page" }));
+    fire(trash, createEvent.drop);
+    expect(callsTo(slot, "message_action")).toHaveLength(0);
+
+    data.set("application/x-makosh-mail-move", JSON.stringify(payload));
+    fire(trash, createEvent.drop);
+    await waitFor(() => expect(callsTo(slot, "message_action")[0]?.input).toMatchObject({ action: "delete" }));
+
+    data.set("application/x-makosh-mail-move", JSON.stringify({ ...payload, threadIds: ["th-a", "th-b"] }));
+    fire(trash, createEvent.drop);
+    await waitFor(() => expect(toasts.error).toContain("Move up to 200 at a time"));
+    expect(callsTo(slot, "message_action")).toHaveLength(1);
+  });
+
+  it("l opens Labels for a Gmail conversation and records an undo", async () => {
+    const gmailDetail: ThreadDetail = {
+      ...detailA,
+      messages: detailA.messages.map((m) => ({ ...m, labels: ["Travel"] })),
+    };
+    const slot = renderWith(
+      mailRpc({
+        status_get: () => status({ accounts: [gmailAccount] }),
+        thread_get: () => gmailDetail,
+        labels_list: () => ({ labels: [{ name: "Travel", path: "Travel" }, { name: "Receipts", path: "Receipts" }, { name: "\\Inbox", path: null }] }),
+        labels_change: () => ({ changed: 2 }),
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    key({ key: "l", code: "KeyL" });
+    const dialog = await slot.findByRole("dialog");
+    fireEvent.click(await within(dialog).findByRole("checkbox", { name: "Receipts" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply" }));
+    await waitFor(() =>
+      expect(callsTo(slot, "labels_change")[0]?.input).toMatchObject({ messageIds: ["m-old", "m-new"], add: ["Receipts"], remove: [] }),
+    );
+    await waitFor(() => expect(toasts.plain).toContain("Labels changed"));
+  });
+
+  it("a folder set to one row per message lists messages", async () => {
+    globalThis.localStorage?.setItem("makosh-mail.ungroupedFolders", JSON.stringify(["acc-1\nINBOX"]));
+    try {
+      const slot = renderWith(folderRpc({ messages_list: () => ({ messages: [message({ id: "m-new", subject: "Single one" })], nextCursor: null }) }));
+      expect(await slot.findByRole("list", { name: "Messages" })).toBeTruthy();
+      expect(callsTo(slot, "messages_list")[0]?.input).toMatchObject({ scope: { kind: "account", accountId: "acc-1", folder: "INBOX" } });
+    } finally {
+      globalThis.localStorage?.removeItem("makosh-mail.ungroupedFolders");
+    }
+  });
+
+  it("loads 30 more days at the end of a folder and says when there is nothing older", async () => {
+    const slot = renderWith(
+      folderRpc({
+        history_load: () => ({ jobId: "h-1" }),
+        server_job_poll: () => ({
+          state: "done",
+          accounts: [{ accountId: "acc-1", searched: 1, total: 1, fetched: 0, found: 0, skipped: 0, partial: false, reason: null }],
+          messageIds: [],
+          moreAvailable: false,
+          historySince: "2026-09-17T00:00:00.000Z",
+          emptySteps: 3,
+        }),
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: "Load 30 more days" }));
+    await waitFor(() => expect(callsTo(slot, "history_load")[0]?.input).toEqual({ accountId: "acc-1", folder: "INBOX" }));
+    expect(await slot.findByText("No older mail on the server in this folder")).toBeTruthy();
+    expect(slot.getByText(/Showing mail since/)).toBeTruthy();
   });
 });

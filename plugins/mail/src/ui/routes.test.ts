@@ -144,3 +144,22 @@ describe("Today and Tasks pages (slice 3f)", () => {
     expect(parseThreadSubPath("tasks")).toBeNull();
   });
 });
+
+describe("Files and saved searches (slice 3h)", () => {
+  it("parses and builds files", async () => {
+    const { pageSubPath, parsePageSubPath } = await import("./routes.ts");
+    expect(pageSubPath("files")).toBe("files");
+    expect(parsePageSubPath("files")).toBe("files");
+    for (const other of ["files/x", "Files", "file"]) expect(parsePageSubPath(other)).toBeNull();
+  });
+
+  it("parses and builds s/<id> through the host's encoding", async () => {
+    const { parsePageSubPath, parseSavedSearchSubPath, parseViewSubPath, savedSearchSubPath } = await import("./routes.ts");
+    expect(savedSearchSubPath("ss-1")).toBe("s/ss-1");
+    expect(parseSavedSearchSubPath("s/ss-1")).toBe("ss-1");
+    expect(parseSavedSearchSubPath(hostEncode(savedSearchSubPath("a/b c")))).toBe("a/b c");
+    for (const other of ["", "s", "s/", "s/a/b", "x/ss-1", "files"]) expect(parseSavedSearchSubPath(other)).toBeNull();
+    expect(parsePageSubPath("s/ss-1")).toBeNull();
+    expect(parseViewSubPath("s/ss-1")).toBeNull();
+  });
+});

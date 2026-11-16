@@ -27,6 +27,7 @@ import { AlertCard } from "./alert-card.tsx";
 import { DevLinksStrip } from "./dev-links-strip.tsx";
 import { PatchCard } from "./patch-dialog.tsx";
 import { ProjectChip, type AlwaysChoice } from "./project-chip.tsx";
+import { LabelChips } from "./label-chips.tsx";
 
 export type BodyState =
   | { status: "loading" }
@@ -85,6 +86,11 @@ export interface ReadingPaneProps {
   ai?: ReadingAi;
   /** Slice 3g: New thread, Make a task, the project, links, patches, alerts and saves; absent: none of them. */
   bb?: ReadingBb;
+  /** Slice 3h: a folder not grouped by conversation shows the opened message alone. */
+  onlyMessageId?: string | null;
+  onShowConversation?: () => void;
+  /** Slice 3h: Labels... for a Gmail conversation (l); absent: not offered. */
+  onLabels?: () => void;
 }
 
 /** The reading pane's part of the BB integration (slice 3g). */
@@ -433,6 +439,7 @@ function MessageItem({
           <span className="truncate text-xs text-muted-foreground">
             {expanded ? recipients(message) : message.snippet}
           </span>
+          {(message.labels ?? []).length > 0 ? <LabelChips labels={message.labels} max={8} /> : null}
         </button>
         <Button
           variant="ghost"
@@ -591,6 +598,7 @@ export function ReadingPane(props: ReadingPaneProps) {
   }
 
   const { thread, messages } = detail;
+  const single = props.onlyMessageId != null ? (messages.find((m) => m.id === props.onlyMessageId) ?? null) : null;
   const inFolder = messages.some(props.inView);
   const handed = messageToHand(messages, expandedIds);
   const handedDraft = handed !== null && props.isDraft(handed);
@@ -681,6 +689,12 @@ export function ReadingPane(props: ReadingPaneProps) {
               </Button>
             ) : null}
           </>
+        ) : null}
+        {inFolder && props.onLabels !== undefined ? (
+          <Button variant="ghost" size="sm" disabled={props.actionPending} aria-keyshortcuts="L" onClick={props.onLabels}>
+            <Icon name="Tag" fallback="Folder" aria-hidden />
+            {"Labels\u2026"}
+          </Button>
         ) : null}
         {inbox !== undefined && blockable !== null ? (
           <Button variant="ghost" size="sm" disabled={props.actionPending} onClick={() => inbox.onBlock(blockable)}>
@@ -778,7 +792,14 @@ export function ReadingPane(props: ReadingPaneProps) {
         ) : null}
       </div>
       {props.ai?.summary ?? null}
-      {messages.map((message) => {
+      {single !== null && messages.length > 1 && props.onShowConversation !== undefined ? (
+        <div>
+          <Button variant="outline" size="sm" className="h-7 px-2" onClick={props.onShowConversation}>
+            {`Show conversation (${messages.length})`}
+          </Button>
+        </div>
+      ) : null}
+      {(single !== null ? [single] : messages).map((message) => {
         const sender = message.from.address.trim().toLowerCase();
         return (
           <MessageItem

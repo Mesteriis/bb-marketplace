@@ -1,10 +1,13 @@
 // The folder rail, drawn in BB's sidebar on the Mail page: system folders
 // first (the store's order), then the owner's folders, with unread counts.
-import { useId, useState } from "react";
+// Slice 3h: each folder has a menu, unsubscribed folders sit under More
+// folders, and folders take dropped conversations (drag-move.ts).
+import { useId, useState, type DragEvent } from "react";
 import type { Account, Folder, RoleCount, SpecialUse } from "../core/index.ts";
 import { ROLE_NAMES, roleFolders } from "../core/actions.ts";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
+import { carriesMove, MOVE_TYPE } from "./drag-move.ts";
 
 /** The account chooser's value for All accounts. */
 export const ALL_ACCOUNTS = "__all_accounts__";
@@ -78,6 +81,31 @@ export interface FolderRailProps extends FolderListProps {
   error: string | null;
   /** Outbox rows that need the owner, shown on Sent. */
   sentAttention?: number;
+  /** Slice 3h: folder menus and drop targets; absent: neither. */
+  extras?: RailExtras;
+}
+
+/** Slice 3h: what the rail's folders offer beyond opening. */
+export interface RailExtras {
+  /** The folder's menu (new subfolder, rename, subscribed, delete, ...). */
+  onMenu?: (folder: Folder) => void;
+  /** Drops of conversations dragged from this page's list. */
+  drop?: {
+    /** Whether the folder takes the drag in progress (its account's folders only). */
+    accepts: (folder: Folder) => boolean;
+    /** The raw payload of the private type; the page checks it. */
+    onDrop: (folder: Folder, raw: string) => void;
+    /** All accounts: a drop on merged Trash, Spam or Archive runs that role's action. */
+    onRoleDrop?: (role: RoleName, raw: string) => void;
+  };
+}
+
+/** The merged roles a drop goes to: their action is the same for every account. */
+const DROP_ROLES: ReadonlySet<string> = new Set(["trash", "junk", "archive"]);
+
+/** The owner's folders that are not subscribed: listed under More folders. */
+export function unsubscribedFolders(folders: readonly Folder[]): Folder[] {
+  return folders.filter((f) => !f.subscribed && f.specialUse === null && f.selectable);
 }
 
 function RailButton({
@@ -88,6 +116,9 @@ function RailButton({
   indent,
   onSelect,
   attention = 0,
+  dimmed = false,
+  onMenu,
+  drop,
 }: {
   icon: string;
   name: string;
@@ -97,17 +128,52 @@ function RailButton({
   onSelect: () => void;
   /** Outbox rows that need the owner (Sent only). */
   attention?: number;
+  /** Slice 3h: an unsubscribed folder under More folders. */
+  dimmed?: boolean;
+  onMenu?: () => void;
+  drop?: { accepts: () => boolean; onDrop: (raw: string) => void };
 }) {
+  const [over, setOver] = useState<"yes" | "no" | null>(null);
+  const dragOver = (event: DragEvent<HTMLLIElement>) => {
+    if (drop === undefined || !carriesMove(event.dataTransfer?.types)) return;
+    if (drop.accepts()) {
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      setOver("yes");
+    } else {
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
+      setOver("no");
+    }
+  };
   return (
-    <li>
+    <li
+      className="group relative flex items-center"
+      {...(drop !== undefined
+        ? {
+            onDragOver: dragOver,
+            onDragEnter: dragOver,
+            onDragLeave: () => setOver(null),
+            onDrop: (event: DragEvent<HTMLLIElement>) => {
+              setOver(null);
+              if (!carriesMove(event.dataTransfer?.types) || !drop.accepts()) return;
+              event.preventDefault();
+              drop.onDrop(event.dataTransfer.getData(MOVE_TYPE));
+            },
+          }
+        : {})}
+      title={over === "no" ? "Not allowed: another account" : undefined}
+    >
       <button
         type="button"
         onClick={onSelect}
         aria-current={selected ? "page" : undefined}
         style={{ paddingLeft: `${0.5 + indent * 0.75}rem` }}
         className={cn(
-          "flex h-7 w-full items-center gap-2 rounded-md pr-2 text-left text-sm text-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+          "flex h-7 w-full min-w-0 items-center gap-2 rounded-md pr-2 text-left text-sm text-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
           selected && "bg-state-active hover:bg-state-active",
+          dimmed && "text-muted-foreground",
+          over === "yes" && "bg-state-active ring-1 ring-inset ring-ring",
+          over === "no" && "cursor-not-allowed opacity-60",
         )}
       >
         <Icon name={icon} className="size-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -125,6 +191,17 @@ function RailButton({
           </span>
         ) : null}
       </button>
+      {onMenu !== undefined ? (
+        <button
+          type="button"
+          aria-label="Folder options"
+          title={`${name} options`}
+          onClick={onMenu}
+          className="absolute right-0.5 flex size-6 shrink-0 items-center justify-center rounded-md bg-background text-muted-foreground opacity-0 transition-opacity hover:bg-state-hover focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
+        >
+          <Icon name="MoreHorizontal" fallback="Info" className="size-4" aria-hidden />
+        </button>
+      ) : null}
     </li>
   );
 }
@@ -134,16 +211,38 @@ function FolderRowsList({
   isSelected,
   onSelect,
   sentAttention = 0,
+  extras,
 }: {
   folders: readonly Folder[];
   isSelected: (folder: Folder) => boolean;
   onSelect: (folder: Folder) => void;
   sentAttention?: number;
+  extras?: RailExtras;
 }) {
   const firstSent = folders.find((f) => f.specialUse === "sent" && f.selectable)?.path ?? null;
+  const hidden = new Set(extras !== undefined ? unsubscribedFolders(folders) : []);
+  const shown = folders.filter((f) => !hidden.has(f));
+  const [more, setMore] = useState(false);
+  const button = (folder: Folder, depth: number, dimmed: boolean) => (
+    <RailButton
+      key={folder.path}
+      icon={folderIcon(folder.specialUse)}
+      name={folder.name}
+      unread={folder.unreadCount}
+      selected={isSelected(folder)}
+      indent={depth}
+      onSelect={() => onSelect(folder)}
+      attention={folder.path === firstSent ? sentAttention : 0}
+      dimmed={dimmed}
+      {...(extras?.onMenu !== undefined ? { onMenu: () => extras.onMenu!(folder) } : {})}
+      {...(extras?.drop !== undefined
+        ? { drop: { accepts: () => extras.drop!.accepts(folder), onDrop: (raw: string) => extras.drop!.onDrop(folder, raw) } }
+        : {})}
+    />
+  );
   return (
     <>
-      {folderRows(folders).map((row) => {
+      {folderRows(shown).map((row) => {
         const { folder, depth } = row;
         if (row.kind === "group") {
           return (
@@ -156,30 +255,36 @@ function FolderRowsList({
             </li>
           );
         }
-        return (
-          <RailButton
-            key={folder.path}
-            icon={folderIcon(folder.specialUse)}
-            name={folder.name}
-            unread={folder.unreadCount}
-            selected={isSelected(folder)}
-            indent={depth}
-            onSelect={() => onSelect(folder)}
-            attention={folder.path === firstSent ? sentAttention : 0}
-          />
-        );
+        return button(folder, depth, false);
       })}
+      {hidden.size > 0 ? (
+        <>
+          <li>
+            <button
+              type="button"
+              aria-expanded={more || [...hidden].some(isSelected)}
+              onClick={() => setMore((open) => !open)}
+              className="flex h-7 w-full items-center gap-1 rounded-md px-2 text-left text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+            >
+              <Chevron open={more || [...hidden].some(isSelected)} />
+              {`More folders (${hidden.size})`}
+            </button>
+          </li>
+          {more || [...hidden].some(isSelected) ? [...hidden].map((folder) => button(folder, 1, true)) : null}
+        </>
+      ) : null}
     </>
   );
 }
 
-export function FolderList({ folders, selectedPath, onSelect, error, sentAttention }: FolderRailProps) {
+export function FolderList({ folders, selectedPath, onSelect, error, sentAttention, extras }: FolderRailProps) {
   if (folders.length === 0) return <RailHint error={error} />;
   return (
     <ul className="flex flex-col gap-px px-1.5 py-1">
       <FolderRowsList
         folders={folders}
         sentAttention={sentAttention}
+        {...(extras !== undefined ? { extras } : {})}
         isSelected={(folder) => folder.path === selectedPath}
         onSelect={(folder) => onSelect(folder.path)}
       />
@@ -250,6 +355,10 @@ export interface UnifiedRailProps {
   error: string | null;
   /** Outbox rows that need the owner, shown on Sent. */
   sentAttention?: number;
+  /** Slice 3h: folder menus and drop targets of the accounts' own folders. */
+  extras?: RailExtras;
+  /** Slice 3h: an account's menu (New folder...). */
+  onAccountMenu?: (account: Account) => void;
 }
 
 /** Where the rail remembers which accounts the owner collapsed. */
@@ -307,6 +416,8 @@ function AccountGroup({
   onToggle,
   view,
   onSelect,
+  extras,
+  onMenu,
 }: {
   account: Account;
   own: readonly Folder[];
@@ -314,12 +425,15 @@ function AccountGroup({
   onToggle: () => void;
   view: MailView;
   onSelect: (view: MailView) => void;
+  extras?: RailExtras;
+  onMenu?: () => void;
 }) {
   const listId = useId();
   const label = accountLabel(account);
   const unread = own.reduce((sum, f) => sum + f.unreadCount, 0);
   return (
     <div className="px-1.5 py-1">
+      <div className="group flex items-center">
       <button
         type="button"
         aria-expanded={open}
@@ -336,6 +450,18 @@ function AccountGroup({
           </span>
         ) : null}
       </button>
+      {onMenu !== undefined ? (
+        <button
+          type="button"
+          aria-label="Account options"
+          title={`${label} options`}
+          onClick={onMenu}
+          className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-state-hover focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
+        >
+          <Icon name="MoreHorizontal" fallback="Info" className="size-4" aria-hidden />
+        </button>
+      ) : null}
+      </div>
       {open ? (
         <ul id={listId} aria-label={label} className="flex flex-col gap-px pt-0.5">
           <FolderRowsList
@@ -344,6 +470,7 @@ function AccountGroup({
               view.kind === "folder" && view.accountId === account.id && view.path === folder.path
             }
             onSelect={(folder) => onSelect({ kind: "folder", accountId: account.id, path: folder.path })}
+            {...(extras !== undefined ? { extras } : {})}
           />
         </ul>
       ) : null}
@@ -356,7 +483,7 @@ function AccountGroup({
  * name, in a group the owner can collapse (remembered on this device). The
  * group holding the open folder stays open.
  */
-export function UnifiedRail({ roles, folders, accounts, view, onSelect, error, sentAttention = 0 }: UnifiedRailProps) {
+export function UnifiedRail({ roles, folders, accounts, view, onSelect, error, sentAttention = 0, extras, onAccountMenu }: UnifiedRailProps) {
   const shownRoles = roles.filter((r): r is RoleCount & { role: RoleName } => r.role !== "all");
   const [collapsed, setCollapsed] = useState(() => readCollapsedAccounts(pageStorage()));
   const toggle = (accountId: string) => {
@@ -382,6 +509,9 @@ export function UnifiedRail({ roles, folders, accounts, view, onSelect, error, s
             indent={0}
             onSelect={() => onSelect({ kind: "role", role })}
             attention={role === "sent" ? sentAttention : 0}
+            {...(extras?.drop?.onRoleDrop !== undefined && DROP_ROLES.has(role)
+              ? { drop: { accepts: () => true, onDrop: (raw: string) => extras.drop!.onRoleDrop!(role, raw) } }
+              : {})}
           />
         ))}
       </ul>
@@ -398,6 +528,8 @@ export function UnifiedRail({ roles, folders, accounts, view, onSelect, error, s
             onToggle={() => toggle(account.id)}
             view={view}
             onSelect={onSelect}
+            {...(extras !== undefined ? { extras } : {})}
+            {...(onAccountMenu !== undefined ? { onMenu: () => onAccountMenu(account) } : {})}
           />
         );
       })}

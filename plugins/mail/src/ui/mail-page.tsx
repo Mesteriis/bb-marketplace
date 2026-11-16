@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import type {
   Account,
+  AttachmentMatch,
   AttachmentMeta,
   DraftView,
   Folder,
@@ -13,6 +14,8 @@ import type {
   MessageSummary,
   NewAccountInput,
   OutboxRow,
+  SearchField,
+  SearchNote,
   SpecialUse,
   StatusView,
   ThreadDetail,
@@ -84,11 +87,16 @@ import {
   filterActive,
   FilteredEmpty,
   formatListDate,
+  HistoryStrip,
   QuickFilters,
   SearchResultList,
   ThreadList,
+  type HistoryState,
   type ListFilter,
 } from "./thread-list.tsx";
+import { SearchHelpButton, SearchNotes } from "./search-help.tsx";
+import { ServerSearchStrip, type ServerJobView } from "./server-search-strip.tsx";
+import { SAVED_SEARCH_GONE_TEXT } from "./saved-searches.tsx";
 
 export { ALL_ACCOUNTS };
 
@@ -98,6 +106,8 @@ export interface ThreadListState {
   loading: boolean;
   loadingMore: boolean;
   error: string | null;
+  /** Slice 3h: the folder is not grouped by conversation: one row per message (messages_list). */
+  messages?: MessageSummary[];
 }
 
 export interface SearchState {
@@ -106,6 +116,51 @@ export interface SearchState {
   hits: MessageSummary[];
   loading: boolean;
   error: string | null;
+  /** Slice 3h: why words of the query stayed text. */
+  notes?: SearchNote[];
+  /** Slice 3h: hits inside attachments (the owner's search with attachment text on). */
+  attachmentMatches?: AttachmentMatch[];
+  /** Slice 3h: the next page's cursor. */
+  nextCursor?: string | null;
+  loadingMore?: boolean;
+}
+
+/** Slice 3h: the page's server search. */
+export interface ServerSearchState {
+  /** The query it ran for; the strip shows only while that query is the search. */
+  query: string;
+  job: ServerJobView | null;
+  localOnly: readonly SearchField[];
+  /** Hits it brought into Mail. */
+  ids: ReadonlySet<string>;
+  error: string | null;
+}
+
+/** Search, older mail, saved searches, labels, drag and Files (slice 3h). */
+export interface MailSlice3hPorts {
+  /** This page load's drag id (drag-move.ts). */
+  pageId: string;
+  onOpenFiles: () => void;
+  /** Save search: the page's dialog, with the query. */
+  onSaveSearch: (query: string) => void;
+  server: ServerSearchState | null;
+  onServerSearch: (query: string) => void;
+  onServerCancel: () => void;
+  onServerMore: () => void;
+  onSearchMore: () => void;
+  /** An open saved search: its header with Edit, or the deleted note. */
+  savedSearch: { name: string; query: string; onEdit: () => void } | "missing" | null;
+  /** Older mail of the folder viewed; null for a role view. */
+  history: HistoryState | null;
+  historyStepDays: number;
+  onLoadHistory: () => void;
+  onStopHistory: () => void;
+  /** A drag of these conversations started (their accounts), or ended (null). */
+  onDragAccounts: (accountIds: string[] | null) => void;
+  /** Labels... (l) for conversations: Gmail accounts only. */
+  onLabels: (threadIds: string[]) => void;
+  /** Whether an account is Gmail (labels apply). */
+  gmail: (accountId: string) => boolean;
 }
 
 export interface ReadingState {
@@ -273,6 +328,8 @@ export interface MailPageProps {
   page?: ReactNode;
   /** Slice 3g: the BB integration; absent: none of it. */
   bb?: MailBbPorts;
+  /** Slice 3h: search, older mail, saved searches, labels, drag and Files; absent: none of it. */
+  slice3h?: MailSlice3hPorts;
 }
 
 function PageFrame({ children }: { children: ReactNode }) {
@@ -421,7 +478,7 @@ function viewModel(props: MailPageProps & { status: StatusView }): ViewModel {
 }
 
 /** The view `g` then a letter goes to; null when there is none. */
-function goView(props: MailPageProps, model: ViewModel, target: Exclude<GoTarget, "all" | "dev">): MailView | null {
+function goView(props: MailPageProps, model: ViewModel, target: Exclude<GoTarget, "all" | "dev" | "files">): MailView | null {
   const role: RoleName = target;
   if (props.unified) return { kind: "role", role };
   const account = props.account;
@@ -454,6 +511,8 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const [asked, setAsked] = useState<{ question: string; serial: number } | null>(null);
   const [highlight, setHighlight] = useState<{ messageId: string; serial: number } | null>(null);
   const [remindMessage, setRemindMessage] = useState<string | null>(null);
+  /** Slice 3h: the message opened from a folder that is not grouped; it shows alone. */
+  const [singleMessage, setSingleMessage] = useState<string | null>(null);
   // A composer that closed while focused leaves no focus behind.
   const composerId = props.composer?.draft.id ?? null;
   useEffect(() => {
@@ -511,7 +570,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     if (focusLost()) restoreFocus(new Event("close"));
   };
 
-  const rowIds = searching ? search.hits.map((h) => h.id) : list.threads.map((t) => t.id);
+  /** Slice 3h: a folder that is not grouped lists messages, as search does. */
+  const messageRows = searching ? search.hits : (list.messages ?? null);
+  const rowIds = messageRows !== null ? messageRows.map((h) => h.id) : list.threads.map((t) => t.id);
   const rowKey = rowIds.join("\n");
 
   // An action took the cursor row off the list: the next row (else the previous) takes the cursor.
@@ -598,7 +659,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       const messages = reading.detail?.messages ?? [];
       return messages.some(model.inView) ? [reading.threadId] : [];
     }
-    if (!searching && focusedId !== null && rowIds.includes(focusedId)) return [focusedId];
+    if (messageRows === null && focusedId !== null && rowIds.includes(focusedId)) return [focusedId];
     return [];
   };
   /** Runs `action` on `ids` when it applies to every account among them. */
@@ -617,11 +678,15 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   };
 
   const openRow = (id: string) => {
-    if (searching) {
-      const hit = search.hits.find((h) => h.id === id);
-      if (hit !== undefined) props.onSelectThread(hit.threadId, hit.id, hit.accountId);
+    if (messageRows !== null) {
+      const hit = messageRows.find((h) => h.id === id);
+      if (hit !== undefined) {
+        setSingleMessage(!searching ? hit.id : null);
+        props.onSelectThread(hit.threadId, hit.id, hit.accountId);
+      }
       return;
     }
+    setSingleMessage(null);
     const thread = list.threads.find((t) => t.id === id);
     if (thread !== undefined) props.onSelectThread(thread.id, null, thread.accountId);
   };
@@ -759,7 +824,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         return;
       case "select":
         // In one column an open conversation hides the list: x does nothing there.
-        if (!(threadOpen && !wide) && !searching && focusedId !== null && rowIds.includes(focusedId)) toggleChecked(focusedId, false);
+        if (!(threadOpen && !wide) && messageRows === null && focusedId !== null && rowIds.includes(focusedId)) toggleChecked(focusedId, false);
         return;
       case "archive":
         return runIfAllowed(targets(), "archive");
@@ -797,6 +862,14 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         if (message !== null) bbUi.makeTaskFor(message);
         return;
       }
+      case "labels": {
+        const ids = targets();
+        const s3 = props.slice3h;
+        if (s3 === undefined || ids.length === 0) return;
+        const accounts = new Set(ids.map(accountOfThread));
+        if ([...accounts].every((id) => id !== null && s3.gmail(id))) s3.onLabels(ids);
+        return;
+      }
       case "sheet":
         rememberOpener();
         setSheetOpen(true);
@@ -804,6 +877,10 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       case "go": {
         if (command.target === "dev") {
           props.bb?.onOpenDev?.();
+          return;
+        }
+        if (command.target === "files") {
+          props.slice3h?.onOpenFiles();
           return;
         }
         if (command.target === "all") {
@@ -1003,6 +1080,11 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               onClose={() => setAsked(null)}
             />
           ) : null}
+          {!searching && props.slice3h?.savedSearch === "missing" ? (
+            <p role="status" className="border-b border-border px-3 py-2 text-sm text-muted-foreground">
+              {SAVED_SEARCH_GONE_TEXT}
+            </p>
+          ) : null}
           <ListColumn
             {...props}
             focusedId={focusedId}
@@ -1038,6 +1120,11 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               detail={reading.detail}
               loading={reading.loading}
               error={reading.error}
+              onlyMessageId={list.messages !== undefined && !searching ? singleMessage : null}
+              onShowConversation={() => setSingleMessage(null)}
+              {...(props.slice3h !== undefined && openAccount !== null && props.slice3h.gmail(openAccount) && reading.threadId !== null
+                ? { onLabels: () => props.slice3h?.onLabels([reading.threadId!]) }
+                : {})}
               expandedIds={reading.expandedIds}
               bodies={reading.bodies}
               onToggleMessage={props.onToggleMessage}
@@ -1264,20 +1351,126 @@ function ListColumn(
   const { status, list, search, reading } = props;
   const emailOf = (accountId: string) => status.accounts.find((a) => a.id === accountId)?.email ?? null;
 
+  const s3 = props.slice3h;
   if (search.query !== "") {
+    const server = s3?.server ?? null;
+    const serverHere = server !== null && server.query === search.query ? server : null;
+    let results: ReactNode;
     if (search.error !== null) {
-      return <ListMessage role="alert" text={search.error} />;
+      results = <ListMessage role="alert" text={search.error} />;
+    } else if (search.loading && search.hits.length === 0) {
+      results = <ListMessage text="Searching\u2026" />;
+    } else if (search.hits.length === 0) {
+      results = <NoSearchResults query={search.query} />;
+    } else {
+      results = (
+        <SearchResultList
+          hits={search.hits}
+          selectedThreadId={reading.threadId}
+          marker={props.marker}
+          onSelect={(hit) => props.onOpenRow(hit.id)}
+          focusedId={props.focusedId}
+          {...(serverHere !== null ? { serverIds: serverHere.ids } : {})}
+          matches={search.attachmentMatches ?? []}
+          more={
+            s3 !== undefined && (search.nextCursor ?? null) !== null
+              ? { loading: search.loadingMore === true, onMore: s3.onSearchMore }
+              : null
+          }
+        />
+      );
     }
-    if (search.loading && search.hits.length === 0) return <ListMessage text="Searching…" />;
-    if (search.hits.length === 0) return <NoSearchResults query={search.query} />;
+    if (s3 === undefined) return results;
+    const saved = s3.savedSearch;
     return (
-      <SearchResultList
-        hits={search.hits}
-        selectedThreadId={reading.threadId}
-        marker={props.marker}
-        onSelect={(hit) => props.onOpenRow(hit.id)}
-        focusedId={props.focusedId}
-      />
+      <>
+        {saved === "missing" ? (
+          <p role="status" className="border-b border-border px-3 py-2 text-sm text-muted-foreground">
+            {SAVED_SEARCH_GONE_TEXT}
+          </p>
+        ) : saved !== null ? (
+          <div className="flex min-w-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+            <span className="min-w-0 flex-1 truncate">
+              <span className="font-medium text-foreground">{saved.name}</span>
+              {` \u00b7 ${saved.query}`}
+            </span>
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={saved.onEdit}>
+              Edit
+            </Button>
+          </div>
+        ) : null}
+        <SearchNotes notes={search.notes ?? []} />
+        <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-1 text-xs text-muted-foreground">
+          <span className="mr-1">
+            {search.loading ? "Searching\u2026" : `${search.hits.length}${(search.nextCursor ?? null) !== null ? "+" : ""} in Mail`}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-xs"
+            disabled={serverHere?.job?.state === "running"}
+            onClick={() => s3.onServerSearch(search.query)}
+          >
+            Search on the server
+          </Button>
+          {saved === null ? (
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => s3.onSaveSearch(search.query)}>
+              Save search
+            </Button>
+          ) : null}
+        </div>
+        {serverHere !== null && serverHere.error !== null ? (
+          <p role="alert" className="border-b border-border px-3 py-1 text-xs text-destructive">
+            {serverHere.error}
+          </p>
+        ) : null}
+        {serverHere !== null && serverHere.job !== null ? (
+          <ServerSearchStrip
+            job={serverHere.job}
+            query={search.query}
+            localOnly={serverHere.localOnly}
+            accountName={(id) => {
+              const account = status.accounts.find((a) => a.id === id);
+              return account === undefined ? "Account" : accountLabel(account);
+            }}
+            shownFromServer={search.hits.filter((h) => serverHere.ids.has(h.id)).length}
+            onCancel={s3.onServerCancel}
+            onMore={s3.onServerMore}
+          />
+        ) : null}
+        {results}
+      </>
+    );
+  }
+
+  const history =
+    s3 !== undefined && s3.history !== null ? (
+      <HistoryStrip state={s3.history} stepDays={s3.historyStepDays} onLoad={s3.onLoadHistory} onStop={s3.onStopHistory} />
+    ) : null;
+  if (list.messages !== undefined) {
+    if (list.error !== null && list.messages.length === 0) return <ListMessage role="alert" text={list.error} />;
+    if (list.loading && list.messages.length === 0) return <ListMessage text="Loading mail\u2026" />;
+    if (list.messages.length === 0) {
+      return (
+        <>
+          <EmptyFolder name={props.emptyName} />
+          {history}
+        </>
+      );
+    }
+    return (
+      <>
+        <SearchResultList
+          label="Messages"
+          hits={list.messages}
+          selectedThreadId={reading.threadId}
+          marker={props.marker}
+          onSelect={(hit) => props.onOpenRow(hit.id)}
+          focusedId={props.focusedId}
+          more={list.nextCursor !== null ? { loading: list.loadingMore, onMore: props.onLoadMore } : null}
+        />
+        {list.nextCursor === null ? history : null}
+      </>
     );
   }
 
@@ -1296,7 +1489,12 @@ function ListColumn(
     if (clean && (props.syncing || shown.some((a) => a.lastSyncAt === null))) {
       return <SyncingState />;
     }
-    return <EmptyFolder name={props.emptyName} />;
+    return (
+      <>
+        <EmptyFolder name={props.emptyName} />
+        {history}
+      </>
+    );
   }
   return (
     <ThreadList
@@ -1313,6 +1511,19 @@ function ListColumn(
       onToggleFlag={props.onToggleThreadFlag}
       focusedId={props.focusedId}
       categories={props.ai?.categoriesOn === true}
+      footer={history}
+      {...(s3 !== undefined
+        ? {
+            drag: {
+              pageId: s3.pageId,
+              onStart: (ids: string[]) =>
+                s3.onDragAccounts([
+                  ...new Set(ids.map((id) => list.threads.find((t) => t.id === id)?.accountId).filter((a): a is string => a !== undefined)),
+                ]),
+              onEnd: () => s3.onDragAccounts(null),
+            },
+          }
+        : {})}
     />
   );
 }
@@ -1406,7 +1617,7 @@ function MailHeader(
           ref={props.searchRef}
           type="search"
           aria-label={asking ? "Ask about your mail" : "Search mail"}
-          placeholder={asking ? "Ask about your mail (AI)" : "Search mail — from:, subject:, is:unread"}
+          placeholder={asking ? "Ask about your mail (AI)" : "Search mail \u2014 from:, has:attachment, -in:trash"}
           value={draft}
           maxLength={asking ? ASK_QUESTION_MAX : 500}
           onChange={(event) => setDraft(event.target.value)}
@@ -1417,6 +1628,7 @@ function MailHeader(
             Clear
           </Button>
         ) : null}
+        {props.slice3h !== undefined && !asking ? <SearchHelpButton /> : null}
       </form>
 
       <span className="text-xs text-muted-foreground">{syncLabel(shown, props.syncing)}</span>

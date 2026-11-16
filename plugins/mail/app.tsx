@@ -92,7 +92,9 @@ import {
   pageSubPath,
   parsePageSubPath,
   parseProjectSubPath,
+  parseSavedSearchSubPath,
   projectSubPath,
+  savedSearchSubPath,
   type MailPageName,
   threadSubPath,
   viewSubPath,
@@ -137,6 +139,25 @@ import type { BbSettingsValues } from "./src/ui/bb-integration-settings.tsx";
 import { DevView } from "./src/ui/dev-view.tsx";
 import { ProjectsView } from "./src/ui/projects-view.tsx";
 import { ThreadMailSection } from "./src/ui/thread-mail-section.tsx";
+import type { RpcOut } from "./src/core/contract.ts";
+import type { SavedSearchView } from "./src/core/model.ts";
+// history.ts has no imports: nothing else reaches the bundle.
+import { emptyStepsNote } from "./src/core/history.ts";
+import type { MailSlice3hPorts, ServerSearchState } from "./src/ui/mail-page.tsx";
+import type { RailCommand } from "./src/ui/mail-sidebar.tsx";
+import type { HistoryState } from "./src/ui/thread-list.tsx";
+import { dropAction, dropRefusal, readMovePayload } from "./src/ui/drag-move.ts";
+import { SaveSearchDialog, type SavedSearchEdit } from "./src/ui/saved-searches.tsx";
+import {
+  DeleteFolderDialog,
+  FolderNameDialog,
+  type DeleteCheck,
+  type DeleteRequest,
+  type FolderNameRequest,
+} from "./src/ui/folder-dialogs.tsx";
+import { HistoryForgetDialog, type ForgetRequest } from "./src/ui/history-forget-dialog.tsx";
+import { LabelsDialog, type LabelsRequest } from "./src/ui/labels-dialog.tsx";
+import { FILES_PAGE, FilesView, type FilesFilter } from "./src/ui/files-view.tsx";
 import type { RuleRunView } from "./src/core/contract.ts";
 
 // The channel name is checked against the core constant without importing it
@@ -173,6 +194,38 @@ const COLLECT_CONCURRENCY = 6;
 const REFRESH_DEBOUNCE_MS = 250;
 /** A steady stream of events still refreshes at least this often. */
 const REFRESH_MAX_WAIT_MS = 2_000;
+
+/** Slice 3h: this page load's id; a drag carries it, and only it is accepted (drag-move.ts). */
+const PAGE_ID = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `p${Date.now()}${Math.random()}`;
+/** Slice 3h: how often a server, history or conversation job is polled. */
+const JOB_POLL_MS = 800;
+/** Slice 3h: saved search counts follow mail-changed at most this often. */
+const SAVED_REFRESH_MS = 30_000;
+/** Slice 3h: where the page keeps the folders shown one message per row. */
+const UNGROUPED_KEY = "makosh-mail.ungroupedFolders";
+
+/** The grouping key of a view: an account's folder, or a merged role ('*'). */
+function groupingKey(view: MailView): string {
+  return view.kind === "folder" ? `${view.accountId}\n${view.path}` : `*\n${view.role}`;
+}
+
+function readUngrouped(): Set<string> {
+  try {
+    const raw = globalThis.localStorage?.getItem(UNGROUPED_KEY) ?? null;
+    const parsed: unknown = raw === null ? [] : JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeUngrouped(keys: ReadonlySet<string>): void {
+  try {
+    globalThis.localStorage?.setItem(UNGROUPED_KEY, JSON.stringify([...keys]));
+  } catch {
+    // Private mode or a full quota: the choice lasts until the page closes.
+  }
+}
 
 const EMPTY_LIST: ThreadListState = {
   threads: [],
@@ -377,7 +430,8 @@ type PageCommand =
   | { kind: "view"; view: MailView }
   | { kind: "settings" }
   | { kind: "thread"; link: ThreadLink }
-  | { kind: "page"; page: MailPageName };
+  | { kind: "page"; page: MailPageName }
+  | { kind: "rail"; command: RailCommand };
 
 /**
  * What the Mail page and its sidebar share while both are mounted (they are
@@ -482,7 +536,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       subPath,
       serial: route.current.serial + 1,
       view:
-        parseThreadSubPath(subPath) !== null || parseDraftSubPath(subPath) !== null
+        parseThreadSubPath(subPath) !== null || parseDraftSubPath(subPath) !== null || parseSavedSearchSubPath(subPath) !== null
           ? route.current.view
           : parseViewSubPath(subPath),
     };
@@ -553,6 +607,13 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
    */
   const wantedLink = useRef<ThreadLink | null>(null);
   const requests = useRef({ list: 0, search: 0, thread: 0, folders: 0, details: 0 });
+  /** Slice 3h: indexAttachmentText, read by the page's own search. */
+  const searchAttachments = useRef(false);
+  /** Slice 3h: folders the owner set to one row per message (this device; folder_prefs_set keeps the server's copy). */
+  const [ungrouped, setUngrouped] = useState<ReadonlySet<string>>(() => readUngrouped());
+  const ungroupedRef = useRef(ungrouped);
+  ungroupedRef.current = ungrouped;
+  const isGrouped = useCallback((forView: MailView) => !ungroupedRef.current.has(groupingKey(forView)), []);
   const pendingRef = useRef(false);
   /**
    * The page's own last undoable action (spec resolution 4): `z` undoes
@@ -587,6 +648,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
    */
   const loadList = useCallback(
     async (forView: MailView, mode: "reset" | "refresh" | "more") => {
+      if (!isGrouped(forView)) return loadMessages(forView, mode);
       const token = ++requests.current.list;
       const current = latest.current.list;
       const wanted = mode === "refresh" ? Math.max(current.threads.length, PAGE_SIZE) : PAGE_SIZE;
@@ -641,6 +703,47 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     [rpc],
   );
 
+  /** Slice 3h: a folder that is not grouped by conversation lists its messages (messages_list). */
+  const loadMessages = useCallback(
+    async (forView: MailView, mode: "reset" | "refresh" | "more") => {
+      const token = ++requests.current.list;
+      const current = latest.current.list;
+      const shownBefore = current.messages ?? [];
+      const wanted = mode === "refresh" ? Math.max(shownBefore.length, PAGE_SIZE) : PAGE_SIZE;
+      setList((prev) =>
+        mode === "reset" ? { ...EMPTY_LIST, messages: [], loading: true } : mode === "more" ? { ...prev, loadingMore: true } : prev,
+      );
+      try {
+        const messages: NonNullable<ThreadListState["messages"]> = [];
+        let cursor = mode === "more" ? current.nextCursor : null;
+        do {
+          const flags = filtersRef.current.get(viewKey(forView)) ?? NO_FILTER;
+          const page = await rpc.call("messages_list", {
+            scope: scopeOf(forView),
+            cursor,
+            limit: Math.min(wanted - messages.length, MAX_PAGE),
+            ...(filterActive(flags) ? { filter: flags } : {}),
+          });
+          if (token !== requests.current.list) return;
+          messages.push(...page.messages);
+          cursor = page.nextCursor;
+        } while (cursor !== null && messages.length < wanted);
+        setList((prev) => ({
+          threads: [],
+          messages: mode === "more" ? [...(prev.messages ?? []), ...messages] : messages,
+          nextCursor: cursor,
+          loading: false,
+          loadingMore: false,
+          error: null,
+        }));
+      } catch (error) {
+        if (token !== requests.current.list) return;
+        setList((prev) => ({ ...prev, messages: prev.messages ?? [], loading: false, loadingMore: false, error: messageOf(error) }));
+      }
+    },
+    [rpc],
+  );
+
   /**
    * A failed load keeps the folders already on screen (or none), says why in
    * the rail and toasts once until a load succeeds; the list still shows the inbox.
@@ -687,9 +790,23 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         error: null,
       }));
       try {
-        const { hits } = await rpc.call("search", { query, accountId: forAccount, limit: SEARCH_LIMIT });
+        // Slice 3h: only this page's own search reads attachment text, and only with the setting on.
+        const page = await rpc.call("search", {
+          query,
+          accountId: forAccount,
+          limit: SEARCH_LIMIT,
+          ...(searchAttachments.current ? { attachments: true } : {}),
+        });
         if (token !== requests.current.search) return;
-        setSearch({ query, hits, loading: false, error: null });
+        setSearch({
+          query,
+          hits: page.hits,
+          loading: false,
+          error: null,
+          notes: page.notes ?? [],
+          attachmentMatches: page.attachmentMatches ?? [],
+          nextCursor: page.nextCursor ?? null,
+        });
       } catch (error) {
         if (token !== requests.current.search) return;
         setSearch({ query, hits: [], loading: false, error: messageOf(error) });
@@ -697,6 +814,36 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     },
     [rpc],
   );
+
+  /** Slice 3h: the next page of the search shown. */
+  const searchMore = useCallback(async () => {
+    const current = latest.current.search;
+    const cursor = current.nextCursor ?? null;
+    if (current.query === "" || cursor === null || current.loadingMore === true) return;
+    const token = requests.current.search;
+    setSearch((prev) => ({ ...prev, loadingMore: true }));
+    try {
+      const page = await rpc.call("search", {
+        query: current.query,
+        accountId: latest.current.searchAccount,
+        limit: SEARCH_LIMIT,
+        cursor,
+        ...(searchAttachments.current ? { attachments: true } : {}),
+      });
+      if (token !== requests.current.search) return;
+      setSearch((prev) => ({
+        ...prev,
+        hits: [...prev.hits, ...page.hits.filter((hit) => !prev.hits.some((h) => h.id === hit.id))],
+        attachmentMatches: [...(prev.attachmentMatches ?? []), ...(page.attachmentMatches ?? [])],
+        nextCursor: page.nextCursor ?? null,
+        loadingMore: false,
+      }));
+    } catch (error) {
+      if (token !== requests.current.search) return;
+      setSearch((prev) => ({ ...prev, loadingMore: false }));
+      toast.error(`Could not load more results: ${messageOf(error)}`);
+    }
+  }, [rpc]);
 
   const loadBody = useCallback(
     async (messageId: string) => {
@@ -934,7 +1081,11 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       wantedLink.current = null;
       if (currentSearch.query !== "") void runSearch("", forAccount);
       // From the Today or Tasks page, the view the page sits on opens too.
-      if (!sameView(next, current) || parsePageSubPath(latest.current.subPath) !== null) {
+      if (
+        !sameView(next, current) ||
+        parsePageSubPath(latest.current.subPath) !== null ||
+        parseSavedSearchSubPath(latest.current.subPath) !== null
+      ) {
         navigate.toPluginPanel("mail", { subPath: viewSubPath(next) });
       }
     },
@@ -2822,6 +2973,603 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     ],
   );
 
+  // ---- Slice 3h: search, older mail, saved searches, folders, labels, drag and Files ----
+
+  searchAttachments.current = pluginSettings?.indexAttachmentText === true;
+  const historyStepDays = (() => {
+    const days = pluginSettings?.historyStepDays;
+    return typeof days === "number" && Number.isInteger(days) && days >= 7 && days <= 365 ? days : 30;
+  })();
+  const gmailIds = useMemo(() => new Set(accounts.filter((a) => a.preset === "gmail").map((a) => a.id)), [accounts]);
+  const accountName = useCallback(
+    (accountId: string) => {
+      const found = accounts.find((a) => a.id === accountId);
+      return found === undefined ? "Account" : (found.displayName?.trim() || found.email);
+    },
+    [accounts],
+  );
+  /** Polls a server job until it settles; returns a stop function. */
+  const pollJob = useCallback(
+    (jobId: string, onPoll: (poll: RpcOut<"server_job_poll">) => void, onFail: (error: string) => void) => {
+      let stopped = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const tick = async () => {
+        if (stopped) return;
+        try {
+          const poll = await rpc.call("server_job_poll", { jobId });
+          if (stopped) return;
+          onPoll(poll);
+          if (poll.state === "running") timer = setTimeout(() => void tick(), JOB_POLL_MS);
+        } catch (error) {
+          if (!stopped) onFail(messageOf(error));
+        }
+      };
+      void tick();
+      return () => {
+        stopped = true;
+        if (timer !== null) clearTimeout(timer);
+      };
+    },
+    [rpc],
+  );
+  const stopPolls = useRef(new Map<string, () => void>());
+  useEffect(() => () => {
+    for (const stop of stopPolls.current.values()) stop();
+    stopPolls.current.clear();
+  }, []);
+  const watchJob = useCallback(
+    (slot: string, jobId: string, onPoll: (poll: RpcOut<"server_job_poll">) => void, onFail: (error: string) => void) => {
+      stopPolls.current.get(slot)?.();
+      stopPolls.current.set(slot, pollJob(jobId, onPoll, onFail));
+    },
+    [pollJob],
+  );
+
+  // Server search (#35): its hits are stored as kept rows, so the local search shows them.
+  const [serverSearch, setServerSearch] = useState<(ServerSearchState & { jobId: string | null }) | null>(null);
+  const serverSearchRef = useRef(serverSearch);
+  serverSearchRef.current = serverSearch;
+  const followServerJob = useCallback(
+    (query: string, jobId: string) => {
+      watchJob(
+        "server",
+        jobId,
+        (poll) => {
+          const before = serverSearchRef.current;
+          if (before === null || before.jobId !== jobId) return;
+          const known = before.ids;
+          const fresh = poll.messageIds.filter((id) => !known.has(id));
+          setServerSearch({ ...before, job: poll, ids: fresh.length > 0 ? new Set([...known, ...fresh]) : known });
+          if (fresh.length > 0 || poll.state !== "running") {
+            const current = latest.current;
+            if (current.search.query === query) void runSearch(query, current.searchAccount);
+          }
+        },
+        (error) => setServerSearch((prev) => (prev !== null && prev.jobId === jobId ? { ...prev, error } : prev)),
+      );
+    },
+    [runSearch, watchJob],
+  );
+  const startServerSearch = useCallback(
+    async (query: string) => {
+      setServerSearch({ query, job: null, localOnly: [], ids: new Set(), error: null, jobId: null });
+      try {
+        const started = await rpc.call("server_search_start", { query, accountId: latest.current.searchAccount });
+        setServerSearch({ query, job: null, localOnly: started.localOnly, ids: new Set(), error: null, jobId: started.jobId });
+        serverSearchRef.current = { query, job: null, localOnly: started.localOnly, ids: new Set(), error: null, jobId: started.jobId };
+        followServerJob(query, started.jobId);
+      } catch (error) {
+        setServerSearch({ query, job: null, localOnly: [], ids: new Set(), error: messageOf(error), jobId: null });
+      }
+    },
+    [followServerJob, rpc],
+  );
+  const cancelServerSearch = useCallback(async () => {
+    const jobId = serverSearchRef.current?.jobId ?? null;
+    if (jobId === null) return;
+    try {
+      await rpc.call("server_job_cancel", { jobId });
+    } catch (error) {
+      toast.error(`Could not stop the search: ${messageOf(error)}`);
+    }
+  }, [rpc]);
+  const moreFromServer = useCallback(async () => {
+    const current = serverSearchRef.current;
+    if (current === null || current.jobId === null) return;
+    try {
+      const { ok } = await rpc.call("server_search_more", { jobId: current.jobId });
+      if (!ok) {
+        toast("Nothing more on the server");
+        return;
+      }
+      followServerJob(current.query, current.jobId);
+    } catch (error) {
+      toast.error(`Could not search further: ${messageOf(error)}`);
+    }
+  }, [followServerJob, rpc]);
+
+  // Saved searches (#63).
+  const [savedSearches, setSavedSearches] = useState<SavedSearchView[] | null>(null);
+  const savedLoadedAt = useRef(0);
+  const loadSavedSearches = useCallback(async () => {
+    savedLoadedAt.current = Date.now();
+    try {
+      setSavedSearches((await rpc.call("saved_searches_list", {})).searches);
+    } catch {
+      setSavedSearches((prev) => prev ?? []);
+    }
+  }, [rpc]);
+  useEffect(() => {
+    if (status?.vaultReady !== true || accountIds === "") return;
+    void loadSavedSearches();
+  }, [accountIds, loadSavedSearches, status?.vaultReady]);
+  useDebouncedRealtime(MAIL_CHANGED_CHANNEL, () => {
+    // Counts follow new mail at most once per 30 seconds.
+    if (Date.now() - savedLoadedAt.current >= SAVED_REFRESH_MS) void loadSavedSearches();
+  });
+  const savedRouteId = parseSavedSearchSubPath(subPath);
+  const savedRoute = savedRouteId === null || savedSearches === null ? null : (savedSearches.find((s) => s.id === savedRouteId) ?? "missing");
+  const appliedSaved = useRef<string | null>(null);
+  useEffect(() => {
+    if (savedRoute === null || savedRoute === "missing" || status?.vaultReady !== true) {
+      if (savedRouteId === null) appliedSaved.current = null;
+      return;
+    }
+    const key = `${savedRoute.id}\n${savedRoute.query}`;
+    if (appliedSaved.current === key) return;
+    appliedSaved.current = key;
+    void runSearch(savedRoute.query, savedRoute.accountId ?? latest.current.searchAccount);
+  }, [savedRoute, savedRouteId, runSearch, status?.vaultReady]);
+  const [savedEdit, setSavedEdit] = useState<SavedSearchEdit | null>(null);
+  const saveSavedSearch = useCallback(
+    async (input: { id?: string; name: string; query: string; accountId: string | null }) => {
+      const { id } = await rpc.call("saved_search_save", input);
+      setSavedEdit(null);
+      await loadSavedSearches();
+      if (input.id === undefined) toast(`Saved \u201c${input.name}\u201d`);
+      if (latest.current.subPath === savedSearchSubPath(id)) {
+        appliedSaved.current = null;
+      }
+    },
+    [loadSavedSearches, rpc],
+  );
+  const savedCommand = useCallback(
+    async (kind: "saved_rename" | "saved_edit" | "saved_delete" | "saved_up" | "saved_down", id: string) => {
+      const list = savedSearches ?? [];
+      const at = list.findIndex((s) => s.id === id);
+      const search = list[at];
+      if (search === undefined) return;
+      if (kind === "saved_rename" || kind === "saved_edit") {
+        setSavedEdit({ kind: kind === "saved_rename" ? "rename" : "edit", search });
+        return;
+      }
+      try {
+        if (kind === "saved_delete") {
+          await rpc.call("saved_search_delete", { id });
+          toast(`Deleted \u201c${search.name}\u201d`);
+        } else {
+          await rpc.call("saved_search_move", { id, position: Math.max(0, Math.min(list.length - 1, at + (kind === "saved_up" ? -1 : 1))) });
+        }
+      } catch (error) {
+        toast.error(messageOf(error));
+      }
+      void loadSavedSearches();
+    },
+    [loadSavedSearches, rpc, savedSearches],
+  );
+  const onSearchQuery = useCallback(
+    (query: string) => {
+      if (query === "" && parseSavedSearchSubPath(latest.current.subPath) !== null) {
+        navigate.toPluginPanel("mail", { subPath: viewSubPath(latest.current.view) });
+      }
+      void runSearch(query, latest.current.searchAccount);
+    },
+    [navigate, runSearch],
+  );
+
+  // Older mail (#34) of the folder viewed.
+  const [history, setHistory] = useState<{ key: string; state: HistoryState; jobId: string | null } | null>(null);
+  const historyKey = view.kind === "folder" ? viewKey(view) : null;
+  const historyHere = history !== null && history.key === historyKey ? history.state : { kind: "idle" as const, since: null, note: null };
+  const loadHistory = useCallback(async () => {
+    const current = latest.current.view;
+    if (current.kind !== "folder") return;
+    const key = viewKey(current);
+    setHistory({ key, state: { kind: "running", fetched: 0, total: 0 }, jobId: null });
+    try {
+      const { jobId } = await rpc.call("history_load", { accountId: current.accountId, folder: current.path });
+      setHistory({ key, state: { kind: "running", fetched: 0, total: 0 }, jobId });
+      watchJob(
+        "history",
+        jobId,
+        (poll) => {
+          const row = poll.accounts[0];
+          if (poll.state === "running") {
+            setHistory({ key, state: { kind: "running", fetched: row?.fetched ?? 0, total: row?.found ?? 0 }, jobId });
+            return;
+          }
+          const failed = poll.state === "failed" || row?.reason === "connection_failed" || row?.reason === "password_needed";
+          setHistory({
+            key,
+            jobId: null,
+            state: failed
+              ? { kind: "failed", error: row?.reason === "password_needed" ? "The account needs its password again" : "Older mail could not be loaded" }
+              : { kind: "idle", since: poll.historySince ?? null, note: emptyStepsNote(poll.emptySteps ?? 0) },
+          });
+          if (viewKey(latest.current.view) === key) void loadList(latest.current.view, "refresh");
+        },
+        (error) => setHistory({ key, state: { kind: "failed", error }, jobId: null }),
+      );
+    } catch (error) {
+      setHistory({ key, state: { kind: "failed", error: messageOf(error) }, jobId: null });
+    }
+  }, [loadList, rpc, watchJob]);
+  const stopHistory = useCallback(async () => {
+    const jobId = history?.jobId ?? null;
+    if (jobId === null) return;
+    try {
+      await rpc.call("server_job_cancel", { jobId });
+    } catch (error) {
+      toast.error(`Could not stop: ${messageOf(error)}`);
+    }
+  }, [history?.jobId, rpc]);
+  const [forget, setForget] = useState<{ request: ForgetRequest; count: number | null; error: string | null } | null>(null);
+  const askForget = useCallback(
+    async (accountId: string, path: string) => {
+      const name = latest.current.folders?.find((f) => f.accountId === accountId && f.path === path)?.name ?? path;
+      const request = { accountId, folder: path, name };
+      setForget({ request, count: null, error: null });
+      try {
+        const { count } = await rpc.call("history_forget_check", { accountId, folder: path });
+        setForget((prev) => (prev?.request === request ? { ...prev, count } : prev));
+      } catch (error) {
+        setForget((prev) => (prev?.request === request ? { ...prev, error: messageOf(error) } : prev));
+      }
+    },
+    [rpc],
+  );
+
+  // Folder management (#49).
+  const [folderName, setFolderName] = useState<FolderNameRequest | null>(null);
+  const [folderDelete, setFolderDelete] = useState<{ request: DeleteRequest; check: DeleteCheck | null; error: string | null } | null>(null);
+  const reloadFolders = useCallback(() => {
+    const key = latest.current.scopeKey;
+    if (key !== null) void loadFolders(key);
+  }, [loadFolders]);
+  const foldersOfAccount = (accountId: string) => (latest.current.folders ?? []).filter((f) => f.accountId === accountId);
+  const childNames = (accountId: string, parent: string | null) =>
+    foldersOfAccount(accountId)
+      .filter((f) =>
+        parent === null
+          ? !f.path.includes("/") && !f.path.includes(".")
+          : f.path.startsWith(`${parent}/`) || f.path.startsWith(`${parent}.`),
+      )
+      .map((f) => f.name);
+  const createFolder = useCallback(
+    async (accountId: string, parent: string | null, name: string) => {
+      const { path } = await rpc.call("folder_create", { accountId, parent, name });
+      setFolderName(null);
+      toast(`Created ${name}`);
+      reloadFolders();
+      void path;
+    },
+    [reloadFolders, rpc],
+  );
+  const renameFolder = useCallback(
+    async (accountId: string, from: string, name: string) => {
+      const { path } = await rpc.call("folder_rename", { accountId, path: from, name });
+      setFolderName(null);
+      toast(`Renamed to ${name}`);
+      reloadFolders();
+      const current = latest.current.view;
+      if (current.kind === "folder" && current.accountId === accountId && current.path === from) {
+        navigate.toPluginPanel("mail", { subPath: viewSubPath({ kind: "folder", accountId, path }) });
+      }
+    },
+    [navigate, reloadFolders, rpc],
+  );
+  const askDelete = useCallback(
+    async (accountId: string, path: string) => {
+      const name = latest.current.folders?.find((f) => f.accountId === accountId && f.path === path)?.name ?? path;
+      const request = { accountId, path, name };
+      setFolderDelete({ request, check: null, error: null });
+      try {
+        const check = await rpc.call("folder_delete_check", { accountId, path });
+        setFolderDelete((prev) => (prev?.request === request ? { ...prev, check } : prev));
+      } catch (error) {
+        setFolderDelete((prev) => (prev?.request === request ? { ...prev, error: messageOf(error) } : prev));
+      }
+    },
+    [rpc],
+  );
+  const deleteFolder = useCallback(
+    async (request: DeleteRequest, input: { moveToTrash: boolean; expectedMessages: number }) => {
+      const { ok, moved } = await rpc.call("folder_delete", { accountId: request.accountId, path: request.path, ...input });
+      if (!ok) throw new Error("The folder was not deleted");
+      setFolderDelete(null);
+      toast(moved > 0 ? `Moved ${plural(moved, "message", "messages")} to Trash and deleted ${request.name}` : `Deleted ${request.name}`);
+      reloadFolders();
+      const current = latest.current.view;
+      if (current.kind === "folder" && current.accountId === request.accountId && current.path === request.path) {
+        navigate.toPluginPanel("mail", { subPath: "" });
+      }
+    },
+    [navigate, reloadFolders, rpc],
+  );
+  const setSubscribed = useCallback(
+    async (accountId: string, path: string, subscribed: boolean) => {
+      try {
+        await rpc.call("folder_subscribe", { accountId, path, subscribed });
+        reloadFolders();
+      } catch (error) {
+        toast.error(messageOf(error));
+      }
+    },
+    [reloadFolders, rpc],
+  );
+  const setGrouping = useCallback(
+    (accountId: string, path: string, grouping: boolean) => {
+      const key = groupingKey({ kind: "folder", accountId, path });
+      const next = new Set(ungroupedRef.current);
+      if (grouping) next.delete(key);
+      else next.add(key);
+      ungroupedRef.current = next;
+      setUngrouped(next);
+      writeUngrouped(next);
+      rpc.call("folder_prefs_set", { accountId, path, grouping }).catch(() => {});
+      const current = latest.current.view;
+      if (groupingKey(current) === key) void loadList(current, "reset");
+    },
+    [loadList, rpc],
+  );
+
+  // Gmail labels (#79).
+  const [labelsAsk, setLabelsAsk] = useState<{
+    request: LabelsRequest;
+    accountId: string;
+    messageIds: string[];
+    labels: { name: string; path: string | null }[] | null;
+    error: string | null;
+  } | null>(null);
+  const openLabels = useCallback(
+    async (threadIds: string[]) => {
+      const snapshot = latest.current.reading;
+      const ctx: ViewContext = { view: latest.current.view, folders: latest.current.folders };
+      const messages: MessageHeader[] = [];
+      try {
+        for (const threadId of threadIds.slice(0, ACTION_CHUNK)) {
+          const accountOf =
+            latest.current.list.threads.find((t) => t.id === threadId)?.accountId ??
+            (snapshot.detail?.thread.id === threadId ? snapshot.detail.thread.accountId : null);
+          const detail =
+            snapshot.detail !== null && snapshot.detail.thread.id === threadId
+              ? snapshot.detail
+              : await rpc.call("thread_get", { threadId, folder: folderIn(ctx, accountOf) });
+          messages.push(...detail.messages);
+        }
+      } catch (error) {
+        toast.error(messageOf(error));
+        return;
+      }
+      const accountIds = new Set(messages.map((m) => m.accountId));
+      const accountId = messages[0]?.accountId;
+      if (accountId === undefined || accountIds.size !== 1 || !gmailIds.has(accountId)) {
+        toast.error("Labels are for one Gmail account at a time");
+        return;
+      }
+      const byDedup = messages.slice(0, ACTION_CHUNK);
+      const request: LabelsRequest = { count: byDedup.length, current: byDedup.map((m) => m.labels) };
+      setLabelsAsk({ request, accountId, messageIds: byDedup.map((m) => m.id), labels: null, error: null });
+      try {
+        const { labels } = await rpc.call("labels_list", { accountId });
+        setLabelsAsk((prev) => (prev?.request === request ? { ...prev, labels } : prev));
+      } catch (error) {
+        setLabelsAsk((prev) => (prev?.request === request ? { ...prev, error: messageOf(error) } : prev));
+      }
+    },
+    [gmailIds, rpc],
+  );
+  const applyLabels = useCallback(
+    async (change: { add: string[]; remove: string[] }) => {
+      const ask = labelsAsk;
+      if (ask === null) return;
+      const undoId = crypto.randomUUID();
+      const { changed } = await rpc.call("labels_change", { messageIds: ask.messageIds, ...change, undoId });
+      setLabelsAsk(null);
+      if (changed > 0) recordUndo(undoId, "labels", changed, null, true);
+      else toast("No label changed");
+      refreshAfterChange();
+      const open = latest.current.reading.threadId;
+      if (open !== null) void loadThread(open, null);
+    },
+    [labelsAsk, loadThread, recordUndo, refreshAfterChange, rpc],
+  );
+
+  // Drag to folders (#88).
+  const [dragAccounts, setDragAccounts] = useState<string[] | null>(null);
+  const dropThreads = useCallback(
+    (raw: string, target: { accountId: string | null; action: MessageAction; destination?: string; name: string }) => {
+      setDragAccounts(null);
+      const ids = readMovePayload(raw, PAGE_ID);
+      if (ids === null) return;
+      const threads = latest.current.list.threads.filter((t) => ids.includes(t.id));
+      if (threads.length === 0) return;
+      const refusal = dropRefusal(threads.reduce((sum, t) => sum + t.messageCount, 0));
+      if (refusal !== null) {
+        toast.error(refusal);
+        return;
+      }
+      if (target.accountId !== null && threads.some((t) => t.accountId !== target.accountId)) {
+        toast.error("Move mail between folders of one account at a time");
+        return;
+      }
+      const current = latest.current.view;
+      if (target.action === "move" && current.kind === "folder" && current.path === target.destination && current.accountId === target.accountId) return;
+      void threadsAction(
+        threads.map((t) => t.id),
+        target.action,
+        target.destination,
+      );
+    },
+    [threadsAction],
+  );
+
+  const railCommand = useCallback(
+    (command: RailCommand) => {
+      switch (command.kind) {
+        case "folder_new": {
+          const accountId = command.accountId;
+          const parent = command.parent === null ? null : (foldersOfAccount(accountId).find((f) => f.path === command.parent) ?? null);
+          setFolderName({
+            kind: "create",
+            accountId,
+            accountLabel: accountName(accountId),
+            parent: parent === null ? null : { path: parent.path, name: parent.name },
+            siblings: childNames(accountId, command.parent),
+          });
+          return;
+        }
+        case "folder_rename": {
+          const folder = foldersOfAccount(command.accountId).find((f) => f.path === command.path);
+          if (folder === undefined) return;
+          const cut = Math.max(folder.path.lastIndexOf("/"), folder.path.lastIndexOf("."));
+          setFolderName({
+            kind: "rename",
+            accountId: command.accountId,
+            path: folder.path,
+            name: folder.name,
+            siblings: childNames(command.accountId, cut > 0 ? folder.path.slice(0, cut) : null),
+          });
+          return;
+        }
+        case "folder_delete":
+          void askDelete(command.accountId, command.path);
+          return;
+        case "folder_subscribe":
+          void setSubscribed(command.accountId, command.path, command.subscribed);
+          return;
+        case "folder_grouping":
+          setGrouping(command.accountId, command.path, command.grouping);
+          return;
+        case "history_forget":
+          void askForget(command.accountId, command.path);
+          return;
+        case "saved_open":
+          navigate.toPluginPanel("mail", { subPath: savedSearchSubPath(command.id) });
+          return;
+        case "drop": {
+          const folder = foldersOfAccount(command.accountId).find((f) => f.path === command.path);
+          if (folder === undefined) return;
+          dropThreads(command.raw, { accountId: command.accountId, ...dropAction(folder), name: folder.name });
+          return;
+        }
+        case "drop_role":
+          dropThreads(command.raw, {
+            accountId: null,
+            action: command.role === "trash" ? "delete" : command.role === "junk" ? "spam" : "archive",
+            name: command.role,
+          });
+          return;
+        default:
+          void savedCommand(command.kind, command.id);
+      }
+    },
+    // foldersOfAccount and childNames read latest.current.
+    [accountName, askDelete, askForget, dropThreads, navigate, savedCommand, setGrouping, setSubscribed],
+  );
+
+  // Files (#85).
+  const loadFiles = useCallback(
+    (filter: FilesFilter, cursor: string | null) => rpc.call("files_list", { ...filter, cursor, limit: FILES_PAGE }),
+    [rpc],
+  );
+  const downloadPart = useCallback(
+    async (messageId: string, partId: string) => {
+      const request = { kind: "attachment", messageId, partId } as const;
+      try {
+        const ticket = await rpc.call("download_ticket", request);
+        if ((await saveTicket(ticket)) === "started") return;
+        anchorDownload(await rpc.call("download_ticket", request));
+      } catch (error) {
+        toast.error(`Could not download: ${messageOf(error)}`);
+      }
+    },
+    [rpc],
+  );
+  const [filesFilter, setFilesFilter] = useState<{ filter: FilesFilter; serial: number }>({ filter: {}, serial: 0 });
+  const filesContent =
+    shownPage === "files" ? (
+      <FilesView
+        key={filesFilter.serial}
+        accounts={accounts}
+        load={loadFiles}
+        initial={filesFilter.filter}
+        viewable={() => false}
+        onView={() => {}}
+        onDownload={(file) => void downloadPart(file.messageId, file.partId)}
+        onOpenMessage={(file) => navigate.toPluginPanel("mail", { subPath: threadSubPath(file.accountId, file.threadId) })}
+      />
+    ) : undefined;
+  const shownContent = pageContent ?? filesContent;
+
+  const slice3hPorts: MailSlice3hPorts = {
+    pageId: PAGE_ID,
+    onOpenFiles: () => navigate.toPluginPanel("mail", { subPath: pageSubPath("files") }),
+    onSaveSearch: (query) => setSavedEdit({ kind: "save", query, accountId: searchAccount }),
+    server: serverSearch,
+    onServerSearch: (query) => void startServerSearch(query),
+    onServerCancel: () => void cancelServerSearch(),
+    onServerMore: () => void moreFromServer(),
+    onSearchMore: () => void searchMore(),
+    savedSearch:
+      savedRoute === null
+        ? null
+        : savedRoute === "missing"
+          ? "missing"
+          : { name: savedRoute.name, query: savedRoute.query, onEdit: () => setSavedEdit({ kind: "edit", search: savedRoute }) },
+    history: historyKey === null ? null : historyHere,
+    historyStepDays,
+    onLoadHistory: () => void loadHistory(),
+    onStopHistory: () => void stopHistory(),
+    onDragAccounts: setDragAccounts,
+    onLabels: (threadIds) => void openLabels(threadIds),
+    gmail: (accountId) => gmailIds.has(accountId),
+  };
+  const slice3hDialogs = (
+    <>
+      <SaveSearchDialog request={savedEdit} onSave={saveSavedSearch} onCancel={() => setSavedEdit(null)} />
+      <FolderNameDialog request={folderName} onCreate={createFolder} onRename={renameFolder} onCancel={() => setFolderName(null)} />
+      <DeleteFolderDialog
+        request={folderDelete?.request ?? null}
+        check={folderDelete?.check ?? null}
+        checkError={folderDelete?.error ?? null}
+        onDelete={(input) => (folderDelete === null ? Promise.resolve() : deleteFolder(folderDelete.request, input))}
+        onCancel={() => setFolderDelete(null)}
+      />
+      <HistoryForgetDialog
+        request={forget?.request ?? null}
+        count={forget?.count ?? null}
+        error={forget?.error ?? null}
+        onConfirm={async () => {
+          if (forget === null) return;
+          const { removed } = await rpc.call("history_forget", { accountId: forget.request.accountId, folder: forget.request.folder });
+          setForget(null);
+          toast(`Removed ${plural(removed, "older message", "older messages")} from Mail`);
+          setHistory(null);
+          refreshAfterChange();
+        }}
+        onCancel={() => setForget(null)}
+      />
+      <LabelsDialog
+        request={labelsAsk?.request ?? null}
+        labels={labelsAsk?.labels ?? null}
+        loadError={labelsAsk?.error ?? null}
+        onApply={applyLabels}
+        onCancel={() => setLabelsAsk(null)}
+      />
+    </>
+  );
+
   // ---- The sidebar's rail ----
 
   const outboxInScope = useMemo(
@@ -2848,10 +3596,15 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
               current: shownPage,
               ...(bbSettings.devNotifications ? { dev: pageCounts.dev } : {}),
               projects: true,
+              files: true,
             },
+            saved: { searches: savedSearches ?? [], currentId: savedRouteId },
+            grouped: (accountId: string, path: string) => !ungrouped.has(groupingKey({ kind: "folder", accountId, path })),
+            dragAccounts,
+            gmailAccounts: [...gmailIds],
           },
     // currentViewKey stands for view, which is a new object each render.
-    [status, unified, account, folders, scoped, currentViewKey, outboxInScope, pageCounts, shownPage, bbSettings.devNotifications],
+    [status, unified, account, folders, scoped, currentViewKey, outboxInScope, pageCounts, shownPage, bbSettings.devNotifications, savedSearches, savedRouteId, ungrouped, dragAccounts, gmailIds],
   );
   /** Changes when a pick in the sidebar should bring focus to the page. */
   const [focusRequest, setFocusRequest] = useState(0);
@@ -2877,6 +3630,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         return;
       case "page":
         navigate.toPluginPanel("mail", { subPath: pageSubPath(command.page) });
+        return;
+      case "rail":
+        railCommand(command.command);
         return;
     }
   };
@@ -2911,7 +3667,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         if (scopeKey !== null) void loadList(view, "more");
       }}
       search={search}
-      onSearch={(query) => void runSearch(query, searchAccount)}
+      onSearch={onSearchQuery}
       syncing={syncing}
       onSync={() => void sync()}
       reading={reading}
@@ -2969,7 +3725,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       inbox={inboxPorts}
       ai={mailAi}
       bb={mailBb}
-      {...(pageContent !== undefined ? { page: pageContent } : {})}
+      slice3h={slice3hPorts}
+      {...(shownContent !== undefined ? { page: shownContent } : {})}
     />
     <UnsubscribeDialog
       request={unsubscribeAsk === null ? null : { info: unsubscribeAsk.info, method: unsubscribeAsk.method }}
@@ -3018,6 +3775,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onSaved={translateSettingsSaved}
     />
     {settingsDialog}
+    {slice3hDialogs}
     </>
   );
 }
@@ -3252,6 +4010,11 @@ function MailFolderSidebar(_props: PluginNavPanelProps) {
       }}
       onSelectPage={(page) => {
         if (!mailPageLink.send({ kind: "page", page })) navigate.toPluginPanel("mail", { subPath: pageSubPath(page) });
+      }}
+      onRailCommand={(command) => {
+        if (!mailPageLink.send({ kind: "rail", command }) && command.kind === "saved_open") {
+          navigate.toPluginPanel("mail", { subPath: savedSearchSubPath(command.id) });
+        }
       }}
     />
   );
