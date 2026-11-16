@@ -370,6 +370,7 @@ enum IncomingFrame {
 struct FrameReader {
     buf: Vec<u8>,
     eof: bool,
+    read_total: u64,
 }
 
 impl FrameReader {
@@ -377,6 +378,7 @@ impl FrameReader {
         FrameReader {
             buf: Vec::new(),
             eof: false,
+            read_total: 0,
         }
     }
 
@@ -409,7 +411,12 @@ impl FrameReader {
                 return Ok(());
             }
             self.buf.extend_from_slice(&chunk[..n as usize]);
+            self.read_total += n as u64;
         }
+    }
+
+    fn read_total(&self) -> u64 {
+        self.read_total
     }
 
     fn is_full(&self) -> bool {
@@ -545,6 +552,8 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
     let mut handshaken = false;
     let mut last_total = usize::MAX;
     let mut stalled = 0u32;
+    #[cfg(feature = "test-hooks")]
+    let mut reported_stdin_blocked = false;
 
     loop {
         if SHUTDOWN.load(Ordering::Relaxed) {
@@ -565,6 +574,11 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         // seen, stdin is dropped from the poll set entirely so a lingering
         // POLLHUP cannot make poll return at once.
         let want_stdin = !reader.eof && outbox.len() + OUTBOX_RESERVE <= OUTBOX_CAP;
+        #[cfg(feature = "test-hooks")]
+        if !want_stdin && !reported_stdin_blocked && !reader.eof {
+            reported_stdin_blocked = true;
+            eprintln!("helper-stdin-blocked bytes={}", reader.read_total());
+        }
         let mut stdin_idx: Option<usize> = None;
         if !reader.eof {
             stdin_idx = Some(fds.len());
@@ -682,6 +696,11 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
             let hung_up = revents & (libc::POLLHUP | libc::POLLERR) != 0;
             let read_now = (want_stdin && revents & libc::POLLIN != 0) || hung_up;
             if !reader.eof && read_now {
+                // The peer hung up but the ingress is still full: no more bytes
+                // can be read, so treat it as EOF.
+                if hung_up && reader.is_full() {
+                    reader.mark_eof();
+                }
                 if let Err(e) = reader.fill(0) {
                     outbox.extend(protocol::encode_response(&Response::Error {
                         id: None,
@@ -690,11 +709,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                     }));
                     SHUTDOWN.store(true, Ordering::SeqCst);
                 }
-                // The peer hung up but the ingress is still full: no more bytes
-                // can be read, so treat it as EOF.
-                if hung_up && reader.is_full() {
-                    reader.mark_eof();
-                }
+
             }
         }
         while outbox.len() + OUTBOX_RESERVE <= OUTBOX_CAP {

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -1159,37 +1160,59 @@ fn a1_unparseable_control_body_is_non_fatal() {
 // A3: reach the hung_up && ingress-full path and prove no spin.
 #[test]
 fn a3_ingress_full_hangup_does_not_spin() {
-    let Helper {
-        mut child,
-        mut stdin,
-        mut stdout,
-        ..
-    } = start();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_remote-hub-helper"));
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn helper");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let helper_pid = child.id();
+
     send_req(&mut stdin, &Request::Hello {
         protocol: PROTOCOL_VERSION,
     });
-    match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
-        Response::HelloAck { .. } => {}
-        other => panic!("expected hello_ack, got {other:?}"),
-    }
-    let helper_pid = child.id();
+    let _ = read_frame_io(&mut stdout); // hello_ack
 
-    // Non-blocking stdin so the writer stops when the helper is full.
+    // Capture the helper's stderr so the test can observe when it stops reading
+    // stdin because the outbox is full (test-hooks marker).
+    let seen = Arc::new(Mutex::new(String::new()));
+    let seen2 = seen.clone();
+    let reader = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match stderr.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    seen2
+                        .lock()
+                        .unwrap()
+                        .push_str(&String::from_utf8_lossy(&buf[..n]));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Non-blocking stdin, but the writer retries on EAGAIN until the main
+    // thread observes the outbox-full marker and stops it.
     unsafe {
         let fd = stdin.as_raw_fd();
         let flags = libc::fcntl(fd, libc::F_GETFL);
         libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
     }
-
-    // The writer attempts 5 MiB of ping frames and must block before writing
-    // them all: the helper's bounded ingress/outbox applies backpressure. The
-    // previous "> 64 KiB" lower bound sat near the OS pipe buffer size and was
-    // flaky under parallel load, so assert the backpressure property directly.
-    const TOTAL_TO_WRITE: usize = 5 * 1024 * 1024;
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop2 = stop.clone();
     let writer = std::thread::spawn(move || {
         let mut id = 0u64;
         let mut total = 0usize;
-        while total < TOTAL_TO_WRITE {
+        loop {
+            if stop2.load(Ordering::Relaxed) {
+                break;
+            }
             let frame = encode_request(&Request::Ping { id });
             match stdin.write(&frame) {
                 Ok(n) => {
@@ -1199,19 +1222,40 @@ fn a3_ingress_full_hangup_does_not_spin() {
                         break;
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
                 Err(e) => panic!("stdin write: {e}"),
             }
         }
-        // stdin drops here, closing the helper's stdin.
         total
     });
-    let written = writer.join().expect("writer joined");
+
+    // The helper must consume more than OUTBOX_CAP - OUTBOX_RESERVE (3 670 016)
+    // bytes before it stops reading stdin; otherwise the guarded path never runs.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut blocked_bytes = 0u64;
+    while Instant::now() < deadline {
+        let text = seen.lock().unwrap().clone();
+        if let Some(line) = text
+            .lines()
+            .find(|l| l.starts_with("helper-stdin-blocked bytes="))
+        {
+            blocked_bytes = line
+                .trim_start_matches("helper-stdin-blocked bytes=")
+                .parse()
+                .unwrap_or(0);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert!(
-        written < TOTAL_TO_WRITE,
-        "writer wrote all {TOTAL_TO_WRITE} bytes without backpressure"
+        blocked_bytes > 3_670_016,
+        "helper consumed only {blocked_bytes} bytes before blocking; precondition not reached"
     );
-    assert!(written > 0, "writer wrote nothing");
+
+    stop.store(true, Ordering::Relaxed);
+    let _written = writer.join().expect("writer joined");
 
     let t0 = cpu_seconds(helper_pid);
     std::thread::sleep(Duration::from_secs(2));
@@ -1227,6 +1271,7 @@ fn a3_ingress_full_hangup_does_not_spin() {
             Err(_) => break,
         }
     }
+    reader.join().expect("stderr reader joined");
     let status = wait_timeout(&mut child, Duration::from_secs(5)).expect("helper did not exit");
     assert_eq!(status.code(), Some(0));
 }
