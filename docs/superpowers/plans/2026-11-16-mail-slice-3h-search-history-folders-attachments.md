@@ -610,3 +610,7 @@ Run on 2026-11-16 by batch A, Node v24.20.0, `bb plugin build` with BB's toolcha
   - The plugin cannot rewrite the bundle, because `bb plugin build` takes no esbuild plugins.
   - **This differs from spec resolution 21's literal wording.** It needs owner acceptance. Task 12's check becomes: `dist/server.js` = 0; `dist/app.js` = exactly 1, and that one is pdf.js's `NodeCanvasFactory` literal; `grep -ci skia dist/*.js` = 0.
 - **License header:** `legalComments: "none"` drops pdf.js's `@licstart` header from the inlined library. The embedded worker string keeps its own header. **For Task 11:** `pdf-page.ts` keeps pdf.js's license header as a string constant that the bundle retains (for example, exported and referenced), so the bundle carries it as the notice says.
+
+**Session lead decisions on the Task 0 follow-ups (2026-11-16).**
+- The single inert `napi-rs` string in `dist/app.js` (pdf.js's Node-only `NodeCanvasFactory`) is accepted. Task 12's check stands: `dist/server.js` 0, `dist/app.js` exactly 1, `skia` 0.
+- Because the worker's V8 heap limit does not bound buffer memory, PDFs get a lower file cap for text extraction: **5 MB** (`ATTACHMENT_TEXT_CAPS.pdfFile` in `src/core/attachment-text.ts`, defined in Task 2). Other attachment types keep the general 10 MB cap. Task 8 enforces it.
