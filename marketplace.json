@@ -1692,6 +1692,42 @@
           "ref": "main"
         }
       }
+    },
+    {
+      "id": "meetings",
+      "displayName": "Meetings",
+      "description": "Record Zoom, Google Meet, Telemost and Jitsi with local transcription, summary templates, action items and MCP.",
+      "icon": "Puzzle",
+      "author": {
+        "name": "AiXenix",
+        "github": "AiXenix",
+        "url": "https://github.com/AiXenix"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/meetings",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "id": "makosh-navigation",
+      "displayName": "Makosh Navigation",
+      "description": "Customizable BB navigation with nested groups, icons, separators and a settings editor with autosave.",
+      "icon": "Layers",
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/navigation",
+          "ref": "main"
+        }
+      }
     }
   ]
 }

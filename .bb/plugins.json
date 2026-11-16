@@ -358,6 +358,14 @@
     {
       "name": "worktree-ports",
       "source": "./plugins/worktree-ports"
+    },
+    {
+      "name": "meetings",
+      "source": "./plugins/meetings"
+    },
+    {
+      "name": "navigation",
+      "source": "./plugins/navigation"
     }
   ]
 }
