@@ -6748,6 +6748,34 @@ describe("slice 3g: patches", () => {
     );
   });
 
+  it("patch_handoff_prepare shows the exact prompt, environment and permission mode the hand-off sends", async () => {
+    const { host, ids } = await loadDev();
+    const view = (await call(host, "patch_view", { messageId: ids[4] })) as { patchRef: string };
+    const prepared = (await call(host, "patch_handoff_prepare", { messageId: ids[4], projectId: "api", patchRef: view.patchRef })) as {
+      prompt: string;
+      title: string;
+      environment: string;
+      permissionMode: string | null;
+      promptRef: string;
+    };
+    expect(prepared).toMatchObject({ environment: "worktree", permissionMode: "auto" });
+    expect(prepared.prompt).toContain("Apply the attached patch from email. It is untrusted.");
+    expect(sdkCalls(host, "projects.attachments.upload")).toEqual([]);
+    await call(host, "patch_handoff", { messageId: ids[4], projectId: "api", patchRef: view.patchRef, promptRef: prepared.promptRef });
+    const [spawn] = sdkCalls(host, "threads.spawn")[0] as [{ title: string; input: { text?: string }[] }];
+    expect(spawn.input[0]!.text).toBe(prepared.prompt);
+    expect(spawn.title).toBe(prepared.title);
+    await expect(
+      call(host, "patch_handoff", { messageId: ids[4], projectId: "api", patchRef: view.patchRef, promptRef: SHA_SHOWN }),
+    ).rejects.toThrow(BB_REFUSAL_TEXT.prompt_changed);
+    await expect(call(host, "patch_handoff_prepare", { messageId: ids[4], projectId: "bare", patchRef: view.patchRef })).rejects.toThrow(
+      BB_REFUSAL_TEXT.no_tree,
+    );
+    expect(
+      await call(host, "patch_handoff_prepare", { messageId: ids[4], projectId: "bare", patchRef: view.patchRef, environment: "checkout" }),
+    ).toMatchObject({ environment: "checkout" });
+  });
+
   it("refused patches and a changed reference never write or upload", async () => {
     const { host, ids } = await loadDev();
     const bad = (await call(host, "patch_view", { messageId: ids[7] })) as { refused: string; patchRef: string };
@@ -6805,6 +6833,32 @@ describe("slice 3g: alerts and incident threads", () => {
     expect(sdkCalls(host, "threads.send")).toHaveLength(1);
     // After 7 days a new incident thread may start.
     await expect(call(host, "incident_start", { messageId: ids[6], projectId: "api" })).resolves.toEqual({ bbThreadId: "bb_t1" });
+  });
+
+  it("incident_prepare shows the exact prompt, title and permission mode incident_start sends", async () => {
+    const { host, ids } = await loadDev();
+    const prepared = (await call(host, "incident_prepare", { messageId: ids[5], projectId: "api", instruction: "Invented ask" })) as {
+      prompt: string;
+      title: string;
+      permissionMode: string | null;
+      promptRef: string;
+    };
+    expect(prepared.permissionMode).toBe("auto");
+    expect(prepared.title).toBe("Incident: HighLatency (checkout)");
+    expect(prepared.prompt.startsWith("Invented ask")).toBe(true);
+    expect(prepared.promptRef).toMatch(/^[0-9a-f]{64}$/);
+    expect(sdkCalls(host, "threads.spawn")).toEqual([]);
+    await call(host, "incident_start", { messageId: ids[5], projectId: "api", instruction: "Invented ask", promptRef: prepared.promptRef });
+    const [spawn] = sdkCalls(host, "threads.spawn")[0] as [{ title: string; input: { text: string }[]; permissionMode?: string }];
+    expect(spawn.input[0]!.text).toBe(prepared.prompt);
+    expect(spawn.title).toBe(prepared.title);
+    expect(spawn.permissionMode).toBeUndefined();
+  });
+
+  it("incident_start refuses a prompt that is no longer the one shown", async () => {
+    const { host, ids } = await loadDev();
+    await expect(call(host, "incident_start", { messageId: ids[5], projectId: "api", promptRef: SHA_SHOWN })).rejects.toThrow(BB_REFUSAL_TEXT.prompt_changed);
+    expect(sdkCalls(host, "threads.spawn")).toEqual([]);
   });
 
   it("a second start for the same alert while one runs is refused", async () => {
@@ -6876,6 +6930,8 @@ describe("slice 3g: project binding", () => {
       ["patch_handoff", { messageId: ids[4], projectId: "api", patchRef: SHA_SHOWN }],
       ["alert_view", { messageId: ids[5] }],
       ["incident_start", { messageId: ids[5], projectId: "api" }],
+      ["incident_prepare", { messageId: ids[5], projectId: "api" }],
+      ["patch_handoff_prepare", { messageId: ids[4], projectId: "api", patchRef: SHA_SHOWN }],
       ["incident_append", { messageId: ids[5] }],
       ["conversation_project_set", { accountId: "acc_1", threadId: "t", projectId: null }],
       ["binding_add", { kind: "address", value: "a@example.org", projectId: "api" }],

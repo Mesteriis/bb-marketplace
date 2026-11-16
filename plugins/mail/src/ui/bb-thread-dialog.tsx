@@ -267,3 +267,32 @@ function ThreadBody({ request, call, onStarted, onEditInComposer, onClose }: BbT
     </>
   );
 }
+
+/**
+ * A prepared thread as Start sends it (incident and patch dialogs, review
+ * C5): the prompt, the title and the permission lines.
+ */
+export function PreparedPrompt({
+  prepared,
+  testId,
+}: {
+  prepared: { prompt: string; title: string; permissionMode: "accept-edits" | "auto" | "full" | null; hidden: number };
+  testId: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <pre
+        data-testid={testId}
+        className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted p-2 font-mono text-xs text-foreground"
+      >
+        {prepared.prompt}
+      </pre>
+      <p className="text-xs text-muted-foreground">{`Thread title: ${prepared.title}`}</p>
+      {[...permissionText(prepared.permissionMode), ...previewNotes({ hidden: prepared.hidden, leftOut: 0 })].map((line) => (
+        <p key={line} className="text-xs text-muted-foreground">
+          {line}
+        </p>
+      ))}
+    </div>
+  );
+}

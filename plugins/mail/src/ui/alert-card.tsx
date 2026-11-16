@@ -4,11 +4,12 @@
 // alert offers Add to incident thread. Every text comes from the server,
 // redacted, and shows as plain text.
 import { useEffect, useState } from "react";
-import type { AlertViewResult } from "../core/contract.ts";
+import type { AlertViewResult, IncidentPrepareOutput } from "../core/contract.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { BB_TEXT, errorText, useProjects, type BbCall } from "./bb-ports.ts";
+import { PreparedPrompt } from "./bb-thread-dialog.tsx";
 import { ProjectSelect } from "./project-chip.tsx";
 
 export interface AlertCardProps {
@@ -112,11 +113,12 @@ export function AlertCard(props: AlertCardProps) {
       {picking && incident === null ? (
         <IncidentPicker
           call={call}
+          messageId={messageId}
           projectId={props.projectId}
           busy={busy}
-          onStart={(projectId) =>
+          onStart={(projectId, promptRef) =>
             void run(async () => {
-              const { bbThreadId } = await call("incident_start", { messageId, projectId });
+              const { bbThreadId } = await call("incident_start", { messageId, projectId, promptRef });
               setPicking(false);
               props.onStarted(bbThreadId);
             })
@@ -132,17 +134,60 @@ export function AlertCard(props: AlertCardProps) {
   );
 }
 
-function IncidentPicker({ call, projectId: initial, busy, onStart }: { call: BbCall; projectId: string | null; busy: boolean; onStart: (projectId: string) => void }) {
+type Prepared = { status: "loading" } | { status: "ready"; value: IncidentPrepareOutput } | { status: "error"; error: string };
+
+/** The project, then the exact prompt and permission mode the thread starts with; Start sends that prompt. */
+function IncidentPicker({
+  call,
+  messageId,
+  projectId: initial,
+  busy,
+  onStart,
+}: {
+  call: BbCall;
+  messageId: string;
+  projectId: string | null;
+  busy: boolean;
+  onStart: (projectId: string, promptRef: string) => void;
+}) {
   const { projects } = useProjects(call);
   const [projectId, setProjectId] = useState<string | null>(initial);
+  const [prepared, setPrepared] = useState<Prepared | null>(null);
+  useEffect(() => {
+    if (projectId === null) return;
+    let live = true;
+    setPrepared({ status: "loading" });
+    call("incident_prepare", { messageId, projectId }).then(
+      (value) => {
+        if (live) setPrepared({ status: "ready", value });
+      },
+      (error: unknown) => {
+        if (live) setPrepared({ status: "error", error: errorText(error, "The prompt could not be prepared") });
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [call, messageId, projectId]);
+  const ready = prepared?.status === "ready" ? prepared.value : null;
   return (
-    <div className="flex flex-wrap items-end gap-2">
-      <div className="min-w-48 flex-1">
-        <ProjectSelect label="Project" projects={projects} value={projectId} onChange={setProjectId} />
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="min-w-48 flex-1">
+          <ProjectSelect label="Project" projects={projects} value={projectId} onChange={setProjectId} />
+        </div>
+        <Button
+          size="sm"
+          className="h-8 px-2"
+          disabled={busy || projectId === null || ready === null}
+          onClick={() => projectId !== null && ready !== null && onStart(projectId, ready.promptRef)}
+        >
+          Start incident thread
+        </Button>
       </div>
-      <Button size="sm" className="h-8 px-2" disabled={busy || projectId === null} onClick={() => projectId !== null && onStart(projectId)}>
-        Start incident thread
-      </Button>
+      {prepared?.status === "loading" ? <p role="status" className="text-muted-foreground">{"Preparing the prompt\u2026"}</p> : null}
+      {prepared?.status === "error" ? <p role="alert" className="text-destructive">{prepared.error}</p> : null}
+      {ready !== null ? <PreparedPrompt prepared={ready} testId="incident-prompt" /> : null}
     </div>
   );
 }

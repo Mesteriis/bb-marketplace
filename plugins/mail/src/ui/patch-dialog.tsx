@@ -5,7 +5,7 @@
 // project; Apply with an agent uploads it to a new thread in a fresh
 // worktree. Mail never applies a patch itself.
 import { useEffect, useState } from "react";
-import type { PatchViewOutput } from "../core/contract.ts";
+import type { PatchHandoffPrepareOutput, PatchViewOutput } from "../core/contract.ts";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
 import { BB_TEXT, errorText, useProjects, type BbCall, type CodeRenderers } from "./bb-ports.ts";
+import { PreparedPrompt } from "./bb-thread-dialog.tsx";
 import { DiffView } from "./code-blocks.tsx";
 import { ProjectSelect } from "./project-chip.tsx";
 import { stopEscape } from "./shortcuts.ts";
@@ -83,6 +84,8 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
   const [savedPath, setSavedPath] = useState<string | null>(null);
   /** The worktree was refused: the checkout is offered with a warning. */
   const [offerCheckout, setOfferCheckout] = useState(false);
+  /** The hand-off as it would be sent (patch_handoff_prepare); Start sends exactly this prompt. */
+  const [prepared, setPrepared] = useState<PatchHandoffPrepareOutput | null>(null);
   const project = projects?.find((p) => p.id === projectId) ?? null;
 
   useEffect(() => {
@@ -118,8 +121,31 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
       setBusy(false);
     }
   };
-  const handOff = async (environment: "worktree" | "checkout") => {
+  /** Apply with an agent: shows the prompt, environment and permission mode first. */
+  const prepareHandOff = async (environment: "worktree" | "checkout") => {
     if (view === null || projectId === null) return;
+    setBusy(true);
+    setProblem(null);
+    setPrepared(null);
+    try {
+      setPrepared(
+        await call("patch_handoff_prepare", {
+          ...base(),
+          projectId,
+          patchRef: view.patchRef,
+          ...(environment === "checkout" ? { environment } : {}),
+        }),
+      );
+    } catch (error) {
+      const text = errorText(error, "The patch could not be handed to an agent");
+      if (environment === "worktree" && text === BB_TEXT.no_tree) setOfferCheckout(true);
+      else setProblem(text);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const handOff = async () => {
+    if (view === null || projectId === null || prepared === null) return;
     setBusy(true);
     setProblem(null);
     try {
@@ -127,14 +153,13 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
         ...base(),
         projectId,
         patchRef: view.patchRef,
-        ...(environment === "checkout" ? { environment } : {}),
+        ...(prepared.environment === "checkout" ? { environment: "checkout" as const } : {}),
+        promptRef: prepared.promptRef,
       });
       onHandedOff(result.bbThreadId, result.environment);
       onClose();
     } catch (error) {
-      const text = errorText(error, "The patch could not be handed to an agent");
-      if (environment === "worktree" && text === BB_TEXT.no_tree) setOfferCheckout(true);
-      else setProblem(text);
+      setProblem(errorText(error, "The patch could not be handed to an agent"));
     } finally {
       setBusy(false);
     }
@@ -195,18 +220,31 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
           </ul>
           {refused === null ? (
             <>
-              <ProjectSelect label="Project" projects={projects} value={projectId} onChange={(id) => { setProjectId(id); setOfferCheckout(false); }} />
+              <ProjectSelect label="Project" projects={projects} value={projectId} onChange={(id) => { setProjectId(id); setOfferCheckout(false); setPrepared(null); }} />
               {!request.inAiScope ? <p className="text-xs text-muted-foreground">{BB_TEXT.out_of_scope}</p> : null}
               {savedPath !== null ? <p role="status" className="text-xs text-muted-foreground">{`Saved as ${savedPath}`}</p> : null}
               {offerCheckout ? (
                 <div role="alert" className="flex flex-col gap-2 rounded-md border border-border p-2 text-sm">
                   <p>{CHECKOUT_WARNING}</p>
                   <div>
-                    <Button variant="destructive" size="sm" className="h-7 px-2" disabled={busy} onClick={() => void handOff("checkout")}>
+                    <Button variant="destructive" size="sm" className="h-7 px-2" disabled={busy} onClick={() => void prepareHandOff("checkout")}>
                       Apply in my checkout
                     </Button>
                   </div>
                 </div>
+              ) : null}
+              {prepared !== null ? (
+                <section aria-label="Agent thread" className="flex flex-col gap-2 rounded-md border border-border p-2">
+                  <p className="text-xs text-muted-foreground">
+                    {prepared.environment === "worktree" ? "Runs in a new worktree" : "Runs in your checkout"}
+                  </p>
+                  <PreparedPrompt prepared={prepared} testId="patch-prompt" />
+                  <div>
+                    <Button size="sm" className="h-7 px-2" disabled={busy || !request.inAiScope} onClick={() => void handOff()}>
+                      Start agent thread
+                    </Button>
+                  </div>
+                </section>
               ) : null}
             </>
           ) : null}
@@ -229,7 +267,7 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
               </Button>
             </span>
             <span title={request.inAiScope ? undefined : BB_TEXT.out_of_scope} className="inline-flex">
-              <Button size="sm" disabled={busy || projectId === null || !request.inAiScope} onClick={() => void handOff("worktree")}>
+              <Button size="sm" disabled={busy || projectId === null || !request.inAiScope} onClick={() => void prepareHandOff("worktree")}>
                 Apply with an agent
               </Button>
             </span>

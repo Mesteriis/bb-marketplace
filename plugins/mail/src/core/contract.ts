@@ -183,6 +183,7 @@ export const BB_REFUSAL_TEXT = {
   not_available: "Not available yet",
   save_disabled: "Saving attachments into a project is turned off in this version: BB could not confirm the file stays inside the project",
   no_result: "This thread has no result yet",
+  prompt_changed: "The prompt changed; review it again",
 } as const;
 
 /** The owner's instruction for a BB thread. */
@@ -193,6 +194,23 @@ const bbPathInput = z.string().min(1).max(1_024).refine(noLineBreaks, NO_LINE_BR
 const folderInput = z.string().max(240).refine(noLineBreaks, NO_LINE_BREAKS);
 const shaInput = z.string().regex(/^[0-9a-f]{64}$/);
 const permissionModeSchema = z.enum(["accept-edits", "auto", "full"]);
+/** What a Start would send, shown before it (incident and patch dialogs). */
+const preparedThreadSchema = z.object({
+  prompt: z.string(),
+  title: z.string(),
+  hidden: z.number().int().min(0),
+  /** The project's default; null: none set ("project default"). */
+  permissionMode: permissionModeSchema.nullable(),
+  /** SHA-256 of the title and prompt; Start passes it back. */
+  promptRef: z.string(),
+});
+const patchHandoffInput = z.object({
+  messageId: idInput,
+  partId: idInput.optional(),
+  projectId: idInput,
+  patchRef: shaInput,
+  environment: z.enum(["worktree", "checkout"]).optional(),
+});
 const bbFileEntrySchema = z.object({ name: z.string(), path: z.string() });
 const includeSchema = z.enum(["message", "conversation"]);
 const bbThreadInput = z.object({
@@ -1162,14 +1180,14 @@ export const rpcSchemas = {
     output: z.object({ path: z.string() }),
   },
   /** `environment: "checkout"` only when the owner chose it after a worktree refusal. */
+  /** The exact prompt, title, environment and permission mode patch_handoff would use; nothing is uploaded. */
+  patch_handoff_prepare: {
+    input: patchHandoffInput,
+    output: preparedThreadSchema.extend({ environment: z.enum(["worktree", "checkout"]) }),
+  },
+  /** promptRef: the prepared prompt's reference; a different prompt now refuses prompt_changed. */
   patch_handoff: {
-    input: z.object({
-      messageId: idInput,
-      partId: idInput.optional(),
-      projectId: idInput,
-      patchRef: shaInput,
-      environment: z.enum(["worktree", "checkout"]).optional(),
-    }),
+    input: patchHandoffInput.extend({ promptRef: shaInput.optional() }),
     output: z.object({ bbThreadId: z.string(), environment: z.enum(["worktree", "checkout"]) }),
   },
   alert_view: {
@@ -1179,8 +1197,14 @@ export const rpcSchemas = {
       incident: z.object({ bbThreadId: z.string(), title: z.string().nullable(), canAppend: z.boolean() }).nullable(),
     }),
   },
-  incident_start: {
+  /** The exact prompt, title and permission mode incident_start would use; nothing starts. */
+  incident_prepare: {
     input: z.object({ messageId: idInput, projectId: idInput, instruction: instructionInput.optional() }),
+    output: preparedThreadSchema,
+  },
+  /** promptRef: the prepared prompt's reference; a different prompt now refuses prompt_changed. */
+  incident_start: {
+    input: z.object({ messageId: idInput, projectId: idInput, instruction: instructionInput.optional(), promptRef: shaInput.optional() }),
     output: z.object({ bbThreadId: z.string() }),
   },
   incident_append: {
@@ -1310,6 +1334,8 @@ export type RuleInput = z.input<typeof ruleInputSchema>;
 export type BbThreadPrepareOutput = Out<"bb_thread_prepare">;
 export type TaskTargetsOutput = Out<"task_targets">;
 export type PatchViewOutput = Out<"patch_view">;
+export type IncidentPrepareOutput = Out<"incident_prepare">;
+export type PatchHandoffPrepareOutput = Out<"patch_handoff_prepare">;
 export type AlertViewResult = Out<"alert_view">;
 export type ProjectListItem = Out<"projects_list">["projects"][number];
 

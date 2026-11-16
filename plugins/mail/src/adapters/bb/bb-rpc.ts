@@ -227,6 +227,11 @@ function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+/** A prepared thread's reference: SHA-256 of its title and prompt (incident and patch dialogs). */
+export function promptRefOf(title: string, prompt: string): string {
+  return createHash("sha256").update(JSON.stringify([title, prompt])).digest("hex");
+}
+
 function partBytes(content: ArrayBuffer | Uint8Array | string): Uint8Array | null {
   if (content instanceof Uint8Array) return content;
   if (content instanceof ArrayBuffer) return new Uint8Array(content);
@@ -1315,13 +1320,16 @@ export function createBbRpc(deps: BbRpcDeps) {
    * attachment, never written into the tree, in a fresh managed worktree;
    * the checkout only when the owner chose it after a worktree refusal.
    */
-  async function patchHandoff(input: {
+  type PatchHandoffInput = {
     messageId: string;
     partId?: string | undefined;
     projectId: string;
     patchRef: string;
     environment?: "worktree" | "checkout" | undefined;
-  }) {
+  };
+
+  /** What patch_handoff would send: the checked patch, the prompt, the title and where it runs. */
+  async function patchHandoffPlan(input: PatchHandoffInput) {
     const header = message(input.messageId);
     if (!header.inAiScope) {
       deps.agentLog({ actor: "owner_bb", tool: "patch_handoff", outcome: "refused_scope", messageIds: [header.id] });
@@ -1331,8 +1339,33 @@ export function createBbRpc(deps: BbRpcDeps) {
     const where: "worktree" | "checkout" = input.environment === "checkout" ? "checkout" : "worktree";
     if (where === "worktree" && project.tree === null) throw refuse("conflict", BB_REFUSAL_TEXT.no_tree);
     const patch = await checkedPatch(header, input.partId, input.patchRef);
+    const prompt = patchPrompt(patch.parsed.commitMessage);
+    const title = threadTitle(header.subject, "Apply patch");
+    return { header, project, where, patch, prompt, title, promptRef: promptRefOf(title, prompt.text) };
+  }
+
+  async function patchHandoffPrepare(input: PatchHandoffInput) {
+    const plan = await patchHandoffPlan(input);
+    return {
+      prompt: plan.prompt.text,
+      title: plan.title,
+      hidden: plan.prompt.hidden,
+      environment: plan.where,
+      permissionMode: await permissionMode(plan.project.id),
+      promptRef: plan.promptRef,
+    };
+  }
+
+  /**
+   * Hands a patch to an agent (resolution 10): uploaded as a thread
+   * attachment, never written into the tree, in a fresh managed worktree;
+   * the checkout only when the owner chose it after a worktree refusal.
+   * With promptRef, only the prompt the owner was shown is sent.
+   */
+  async function patchHandoff(input: PatchHandoffInput & { promptRef?: string | undefined }) {
+    const { header, project, where, patch, prompt, title, promptRef } = await patchHandoffPlan(input);
+    if (input.promptRef !== undefined && input.promptRef !== promptRef) throw refuse("conflict", BB_REFUSAL_TEXT.prompt_changed);
     return starts.run(header.id, async () => {
-      const prompt = patchPrompt(patch.parsed.commitMessage);
       let bbThreadId: string;
       try {
         const item = await threads.uploadAttachment(project.id, patch.bytes, patchFileName(header.date, header.agentSubject), "text/x-patch");
@@ -1340,7 +1373,7 @@ export function createBbRpc(deps: BbRpcDeps) {
           await threads.spawn({
             projectId: project.id,
             environment: where === "checkout" || project.tree === null ? projectDefaultEnvironment() : worktreeEnvironment(project.tree),
-            title: threadTitle(header.subject, "Apply patch"),
+            title,
             prompt: prompt.text,
             extraInput: [item],
             pluginMetadata: metadataFor({ accountId: header.accountId, messageId: header.id, threadId: header.threadId, kind: "patch" }),
@@ -1409,22 +1442,44 @@ export function createBbRpc(deps: BbRpcDeps) {
     return header;
   }
 
-  async function incidentStart(input: { messageId: string; projectId: string; instruction?: string | undefined }) {
+  type IncidentInput = { messageId: string; projectId: string; instruction?: string | undefined };
+
+  /** What incident_start would send: the alert, the prompt and the title. */
+  async function incidentPlan(input: IncidentInput, method: string) {
     const header = scopedAlertMessage(input.messageId);
     const alert = await alertOfMessage(header);
     if (alert === null) throw refuse("invalid", NOT_ALERT_TEXT);
-    const project = await projectOf(input.projectId, "incident_start");
+    const project = await projectOf(input.projectId, method);
+    let text;
+    try {
+      text = incidentPrompt(alert.parts, bbMessage(store, header), input.instruction);
+    } catch (error) {
+      throw bbRefusal(error, deps.log, method);
+    }
+    const title = incidentTitle(alert.parts);
+    return { header, alert, project, text, title, promptRef: promptRefOf(title, text.text) };
+  }
+
+  async function incidentPrepare(input: IncidentInput) {
+    const plan = await incidentPlan(input, "incident_prepare");
+    return {
+      prompt: plan.text.text,
+      title: plan.title,
+      hidden: plan.text.hidden,
+      // The thread runs in the project's default environment with its default mode: shown, never raised.
+      permissionMode: await permissionMode(plan.project.id),
+      promptRef: plan.promptRef,
+    };
+  }
+
+  async function incidentStart(input: IncidentInput & { promptRef?: string | undefined }) {
+    const { header, alert, project, text, title, promptRef } = await incidentPlan(input, "incident_start");
+    if (input.promptRef !== undefined && input.promptRef !== promptRef) throw refuse("conflict", BB_REFUSAL_TEXT.prompt_changed);
     return starts.run(`incident:${alert.ref}`, async () => {
       const open = store.incidentFor(alert.ref);
       if (open !== null && appendable(open, clock.now())) {
         const thread = await incidentThread(open.bbThreadId);
         if (thread !== null && (thread === "unknown" || !thread.archived)) throw refuse("conflict", INCIDENT_OPEN_TEXT);
-      }
-      let text;
-      try {
-        text = incidentPrompt(alert.parts, bbMessage(store, header), input.instruction);
-      } catch (error) {
-        throw bbRefusal(error, deps.log, "incident_start");
       }
       let bbThreadId: string;
       try {
@@ -1432,7 +1487,7 @@ export function createBbRpc(deps: BbRpcDeps) {
           await threads.spawn({
             projectId: project.id,
             environment: projectDefaultEnvironment(),
-            title: incidentTitle(alert.parts),
+            title,
             prompt: text.text,
             pluginMetadata: metadataFor({ accountId: header.accountId, messageId: header.id, threadId: header.threadId, kind: "incident" }),
           })
@@ -1675,8 +1730,10 @@ export function createBbRpc(deps: BbRpcDeps) {
     patchView,
     patchSave,
     patchHandoff,
+    patchHandoffPrepare,
     alertView,
     incidentStart,
+    incidentPrepare,
     incidentAppend,
     conversationProjectSet,
     bindingAdd,

@@ -21,9 +21,13 @@ const ALERT: NonNullable<AlertViewResult["alert"]> = {
   alertRef: "c".repeat(64),
 };
 
+const PROMPT = "Investigate this alert and report what you find.\n\nUntrusted <b>email</b>";
+const PROMPT_REF = "d".repeat(64);
+
 function mount(view: AlertViewResult, handlers: BbHandlers = {}, inAiScope = true) {
   const fake = fakeCall({
     alert_view: () => view,
+    incident_prepare: () => ({ prompt: PROMPT, title: "Incident: HighErrorRate (api)", hidden: 1, permissionMode: "full", promptRef: PROMPT_REF }),
     incident_start: () => ({ bbThreadId: "bbt-5" }),
     incident_append: () => ({ bbThreadId: "bbt-5" }),
     ...handlers,
@@ -42,9 +46,14 @@ describe("AlertCard", () => {
     expect(onOpenLink).toHaveBeenCalledWith("https://grafana.example.com/d/abc");
     fireEvent.click(screen.getByRole("button", { name: "Open incident thread\u2026" }));
     await waitFor(() => expect((screen.getByRole("button", { name: "Start incident thread" }) as HTMLButtonElement).disabled).toBe(false));
+    // The exact prompt and the project's permission mode are shown before Start (review C5).
+    expect(screen.getByTestId("incident-prompt").textContent).toBe(PROMPT);
+    expect(screen.getByText("Runs with full permissions")).toBeTruthy();
+    expect(screen.getByText("The agent can run commands without asking")).toBeTruthy();
+    expect(to("incident_prepare")[0]).toEqual({ messageId: "m-1", projectId: "p-api" });
     fireEvent.click(screen.getByRole("button", { name: "Start incident thread" }));
     await waitFor(() => expect(onStarted).toHaveBeenCalledWith("bbt-5"));
-    expect(to("incident_start")[0]).toEqual({ messageId: "m-1", projectId: "p-api" });
+    expect(to("incident_start")[0]).toEqual({ messageId: "m-1", projectId: "p-api", promptRef: PROMPT_REF });
   });
 
   it("an open incident offers Open and Add to incident thread", async () => {

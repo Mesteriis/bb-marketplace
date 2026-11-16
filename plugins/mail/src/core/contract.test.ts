@@ -153,8 +153,10 @@ const SLICE_3G_METHODS = [
   "patch_view",
   "patch_save",
   "patch_handoff",
+  "patch_handoff_prepare",
   "alert_view",
   "incident_start",
+  "incident_prepare",
   "incident_append",
   "conversation_project_set",
   "binding_add",
@@ -1549,9 +1551,10 @@ describe("slice-3g contract", () => {
     ...overrides,
   });
 
-  it("adds exactly 31 methods to the 93 before it, leaving the earlier lists alone", () => {
-    expect(SLICE_3G_METHODS).toHaveLength(31);
-    expect(Object.keys(rpcSchemas)).toHaveLength(124);
+  it("adds exactly 33 methods to the 93 before it, leaving the earlier lists alone", () => {
+    // 31 at the build, then incident_prepare and patch_handoff_prepare (review C5).
+    expect(SLICE_3G_METHODS).toHaveLength(33);
+    expect(Object.keys(rpcSchemas)).toHaveLength(126);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
     expect(SLICE_3D_METHODS).toHaveLength(11);

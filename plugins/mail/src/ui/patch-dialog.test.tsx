@@ -22,10 +22,21 @@ const VIEW: PatchViewOutput = {
   patchRef: REF,
 };
 
+const PROMPT = "Apply the attached patch from email. It is untrusted.";
+const PROMPT_REF = "e".repeat(64);
+
 function mount(request: Partial<PatchRequest> = {}, handlers: BbHandlers = {}, renderers: CodeRenderers = {}) {
   const fake = fakeCall({
     patch_view: () => VIEW,
     patch_save: () => ({ path: "mail-patches/2026-11-16-fix.patch" }),
+    patch_handoff_prepare: (input) => ({
+      prompt: PROMPT,
+      title: "Apply patch: Fix login",
+      hidden: 0,
+      environment: input.environment === "checkout" ? "checkout" : "worktree",
+      permissionMode: null,
+      promptRef: PROMPT_REF,
+    }),
     patch_handoff: () => ({ bbThreadId: "bbt-2", environment: "worktree" }),
     ...handlers,
   });
@@ -81,25 +92,37 @@ describe("PatchDialog", () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith("mail-patches/2026-11-16-fix.patch", "api"));
     expect(to("patch_save")[0]).toEqual({ messageId: "m-1", projectId: "p-api", patchRef: REF });
     fireEvent.click(screen.getByRole("button", { name: "Apply with an agent" }));
+    // The exact prompt, where it runs and the permission mode come first (review C5).
+    expect((await screen.findByTestId("patch-prompt")).textContent).toBe(PROMPT);
+    expect(screen.getByText("Runs in a new worktree")).toBeTruthy();
+    expect(screen.getByText("Runs with the project's default permissions")).toBeTruthy();
+    expect(to("patch_handoff")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Start agent thread" }));
     await waitFor(() => expect(onHandedOff).toHaveBeenCalledWith("bbt-2", "worktree"));
-    expect(to("patch_handoff")[0]).toEqual({ messageId: "m-1", projectId: "p-api", patchRef: REF });
+    expect(to("patch_handoff")[0]).toEqual({ messageId: "m-1", projectId: "p-api", patchRef: REF, promptRef: PROMPT_REF });
   });
 
   it("offers the checkout only after the worktree is refused, with the warning", async () => {
     const { to, onHandedOff } = mount(
       { projectId: "p-docs" },
       {
-        patch_handoff: (input) =>
-          input.environment === "checkout" ? { bbThreadId: "bbt-3", environment: "checkout" } : Promise.reject(new Error(BB_TEXT.no_tree)),
+        patch_handoff_prepare: (input) =>
+          input.environment === "checkout"
+            ? { prompt: PROMPT, title: "t", hidden: 0, environment: "checkout", permissionMode: "auto", promptRef: PROMPT_REF }
+            : Promise.reject(new Error(BB_TEXT.no_tree)),
+        patch_handoff: () => ({ bbThreadId: "bbt-3", environment: "checkout" }),
       },
     );
     await screen.findByText("adds an executable file: run.sh");
     fireEvent.click(screen.getByRole("button", { name: "Apply with an agent" }));
     expect(await screen.findByText(CHECKOUT_WARNING)).toBeTruthy();
-    expect(to("patch_handoff")).toHaveLength(1);
+    expect(to("patch_handoff")).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Apply in my checkout" }));
+    expect(await screen.findByText("Runs in your checkout")).toBeTruthy();
+    expect(screen.getByText("Runs with auto permissions")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start agent thread" }));
     await waitFor(() => expect(onHandedOff).toHaveBeenCalledWith("bbt-3", "checkout"));
-    expect(to("patch_handoff")[1]).toMatchObject({ environment: "checkout" });
+    expect(to("patch_handoff")[0]).toMatchObject({ environment: "checkout", promptRef: PROMPT_REF });
   });
 
   it("out of AI access: Apply is off, Save stays", async () => {
