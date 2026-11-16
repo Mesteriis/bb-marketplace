@@ -2392,7 +2392,11 @@ export class InMemoryMailStore implements MailStore {
   }
 
   createReminder(row: NewReminder): { created: true } | { full: true } {
-    const live = [...this.state.reminders.values()].filter((r) => r.state === "queued" || r.state === "waiting" || r.state === "due");
+    // A queued reminder whose send failed is not live until a retry queues it again.
+    const failed = (r: ReminderRecord) => r.outboxId !== null && this.state.outbox.get(r.outboxId)?.record.state === "failed";
+    const live = [...this.state.reminders.values()].filter(
+      (r) => (r.state === "queued" && !failed(r)) || r.state === "waiting" || r.state === "due",
+    );
     if (live.length >= REMINDERS_LIVE_MAX) return { full: true };
     this.state.reminders.set(row.id, { ...row, updatedAt: row.createdAt, notifiedAt: null });
     return { created: true };
@@ -2510,7 +2514,7 @@ export class InMemoryMailStore implements MailStore {
     }
     const answered = before(ANSWERED_KEEP_DAYS);
     for (const [id, row] of [...this.state.reminders]) {
-      if (row.state !== "answered" || row.updatedAt >= answered) continue;
+      if ((row.state !== "answered" && row.state !== "dismissed") || row.updatedAt >= answered) continue;
       this.state.reminders.delete(id);
       removed++;
     }

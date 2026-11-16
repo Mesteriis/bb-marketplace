@@ -4536,6 +4536,18 @@ describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
       expect(s.createReminder(reminderRow({ id: "r_room" }))).toEqual({ created: true });
     });
 
+    it("a queued reminder of a permanently failed send does not count toward the live cap", () => {
+      s.createDraft(newDraft({ id: "d_f" }));
+      s.queueOutbox(newOutbox({ id: "out_f", draftId: "d_f", sendAfter: later(1) }), 1);
+      s.transitionOutbox("out_f", ["queued"], "failed", { errorKind: "auth" });
+      s.createReminder(reminderRow({ id: "r_failed", outboxId: "out_f" }));
+      for (let i = 1; i < REMINDERS_LIVE_MAX; i++) s.createReminder(reminderRow({ id: `r_x${i}`, outboxId: null, state: "waiting" }));
+      expect(s.createReminder(reminderRow({ id: "r_room", outboxId: null, state: "waiting" }))).toEqual({ created: true });
+      expect(s.createReminder(reminderRow({ id: "r_over", outboxId: null, state: "waiting" }))).toEqual({ full: true });
+      // A retry makes it live again; it is still there to bind.
+      expect(s.getReminder("r_failed")).toMatchObject({ state: "queued", outboxId: "out_f" });
+    });
+
     it("lists by state and due time and updates fields", () => {
       s.createReminder(reminderRow({ id: "r_a", outboxId: null, state: "waiting", dueAt: later(3000), sentAt: T0 }));
       s.createReminder(reminderRow({ id: "r_b", outboxId: null, state: "waiting", dueAt: later(1000), sentAt: T0 }));
@@ -4654,10 +4666,12 @@ describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
       s.createReminder(reminderRow({ id: "r_old", outboxId: null, state: "answered", createdAt: daysAgo(31) }));
       s.createReminder(reminderRow({ id: "r_new", outboxId: null, state: "answered", createdAt: daysAgo(1) }));
       s.createReminder(reminderRow({ id: "r_live", outboxId: null, state: "waiting", createdAt: daysAgo(90) }));
+      s.createReminder(reminderRow({ id: "r_dismissed_old", outboxId: null, state: "dismissed", createdAt: daysAgo(31) }));
+      s.createReminder(reminderRow({ id: "r_dismissed_new", outboxId: null, state: "dismissed", createdAt: daysAgo(1) }));
       s.appendAgentLog(logInput({ at: daysAgo(91) }));
       s.appendAgentLog(logInput({ at: daysAgo(1) }));
 
-      expect(s.purgeDaily(now)).toBe(7);
+      expect(s.purgeDaily(now)).toBe(8);
 
       expect(s.categoriesOf([kept]).get(kept)).toEqual({ category: "bills", source: "owner", suggestion: "personal" });
       expect(s.getAiResult("summary", s.getMessage(kept)!.threadId)).not.toBeNull();
@@ -4668,6 +4682,8 @@ describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
       expect(s.getReminder("r_old")).toBeNull();
       expect(s.getReminder("r_new")).not.toBeNull();
       expect(s.getReminder("r_live")).not.toBeNull();
+      expect(s.getReminder("r_dismissed_old")).toBeNull();
+      expect(s.getReminder("r_dismissed_new")).not.toBeNull();
       expect(s.listAgentLog({ limit: 10 }).entries).toHaveLength(1);
       expect(s.purgeDaily(now)).toBe(0);
     });

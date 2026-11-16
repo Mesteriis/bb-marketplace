@@ -7,6 +7,7 @@ import { toastName } from "./notify.ts";
 
 export const REMINDER_DAYS = { min: 1, max: 30 } as const;
 export const REMINDERS_LIVE_MAX = 500;
+/** Answered and dismissed reminders are purged this many days after their last change. */
 export const ANSWERED_KEEP_DAYS = 30;
 /**
  * How far before the send a referencing reply may be dated: the sender's or

@@ -4731,7 +4731,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return atomic(() => {
         const live = db
           .prepare<[], { n: number }>(
-            "SELECT count(*) AS n FROM reply_reminders WHERE state IN ('queued', 'waiting', 'due')",
+            // A queued reminder whose send failed is not live until a retry queues it again.
+            `SELECT count(*) AS n FROM reply_reminders r WHERE r.state IN ('waiting', 'due')
+               OR (r.state = 'queued' AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.id = r.outbox_id AND o.state = 'failed'))`,
           )
           .get()!.n;
         if (live >= REMINDERS_LIVE_MAX) return { full: true as const };
@@ -4861,7 +4863,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         removed += db.prepare("DELETE FROM digests WHERE built_at < ?").run(before(DAY_ROWS_KEEP_DAYS)).changes;
         removed += db.prepare("DELETE FROM reply_dismissals WHERE dismissed_at < ?").run(before(DAY_ROWS_KEEP_DAYS)).changes;
         removed += db
-          .prepare("DELETE FROM reply_reminders WHERE state = 'answered' AND updated_at < ?")
+          .prepare("DELETE FROM reply_reminders WHERE state IN ('answered', 'dismissed') AND updated_at < ?")
           .run(before(ANSWERED_KEEP_DAYS)).changes;
         removed += store.purgeAgentLog(before(AGENT_LOG_KEEP_DAYS), AGENT_LOG_ROWS_MAX);
         return removed;
