@@ -3402,6 +3402,13 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       attachment_text_clear: owner3h("attachment_text_clear", () => s3.attachmentTextClear()),
       related_messages: owner3h("related_messages", (input) => s3.relatedMessages(input)),
       sender_card: owner3h("sender_card", (input) => s3.senderCard(input)),
+      // Slice 3i: the contract is in (plan Task 3); the header fetch and the
+      // store write come with the server work (plan Task 7). Until then it
+      // refuses plugin callers and refreshes nothing.
+      sender_check_refresh: async (_input, context) => {
+        refusePluginCaller(context);
+        throw refuse("conflict", "Checking senders again is not available yet");
+      },
     },
     { experimental_discoverable: false },
   );

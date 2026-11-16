@@ -10,6 +10,7 @@
 import { parseAddress, toAsciiDomain } from "./compose-address.ts";
 import { revealHidden } from "./agent-propose.ts";
 import type { AccountPreset } from "./model.ts";
+import { RECEIPT_HEADERS } from "./receipts.ts";
 
 /** One header of a message: lower-case key, unfolded value, in message order. */
 export type HeaderLine = { key: string; value: string };
@@ -95,6 +96,19 @@ export const UNSUBSCRIBE_HEADER_FIELDS: readonly string[] = (() => {
     return true;
   });
 })();
+
+/**
+ * Slice 3i: the fields the old-row sender check fetches (BODY.PEEK). The
+ * judged block is filtered back to the unsubscribe names first
+ * (resolution 16), so sync-time and open-time verdicts agree; Reply-To,
+ * Content-Type and the receipt headers fill the other stored columns.
+ */
+export const SECURITY_HEADER_FIELDS: readonly string[] = [
+  ...UNSUBSCRIBE_HEADER_FIELDS,
+  "Reply-To",
+  "Content-Type",
+  ...RECEIPT_HEADERS,
+];
 
 // ---------------------------------------------------------------------------
 // Parsing

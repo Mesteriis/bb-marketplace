@@ -505,6 +505,10 @@ export const rpcSchemas = {
       uid: z.number().int(),
       folder: z.string(),
       accountEmail: z.string(),
+      /** Slice 3i: the provider's results for Details, fixed-format lines (sender-check.ts authenticityLines). */
+      authenticity: z
+        .object({ authserv: z.string().nullable(), lines: z.array(z.string()) })
+        .default({ authserv: null, lines: [] }),
     }),
   },
   /**
@@ -1508,6 +1512,15 @@ export const rpcSchemas = {
     input: z.object({ address: addressInput, accountId: idInput.nullable() }),
     output: senderCardSchema,
   },
+  /**
+   * Slice 3i: judge the sender check of these messages from a read-only
+   * header fetch (BODY.PEEK), one session per folder. Without `force` only
+   * rows still `unknown` are written; `force` is Details' Check again.
+   */
+  sender_check_refresh: {
+    input: z.object({ messageIds: z.array(idInput).min(1).max(50), force: z.boolean().optional() }),
+    output: z.object({ refreshed: z.number().int().min(0), failed: z.number().int().min(0) }),
+  },
 } as const;
 
 /** The 28 owner-only methods slice 3h adds. */
@@ -1541,6 +1554,9 @@ export const SLICE_3H_METHODS = [
   "related_messages",
   "sender_card",
 ] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The owner-only method slice 3i adds. */
+export const SLICE_3I_METHODS = ["sender_check_refresh"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** Realtime channel the server publishes on when stored mail changes. */
 export const MAIL_CHANGED_CHANNEL = "mail-changed";

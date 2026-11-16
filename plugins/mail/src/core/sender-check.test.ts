@@ -9,7 +9,14 @@ import {
   type SenderCheck,
 } from "./sender-check.ts";
 import type { MailAddress, SpecialUse } from "./model.ts";
-import { parseAuthResults, trustedAuthResults, type HeaderLine } from "./unsubscribe.ts";
+import { RECEIPT_HEADERS } from "./receipts.ts";
+import {
+  SECURITY_HEADER_FIELDS,
+  UNSUBSCRIBE_HEADER_FIELDS,
+  parseAuthResults,
+  trustedAuthResults,
+  type HeaderLine,
+} from "./unsubscribe.ts";
 
 // All fixtures are synthetic, hand-written in Gmail's format: made-up domains,
 // selectors and addresses on example.com / example.org / example.net.
@@ -322,5 +329,14 @@ describe("summary and Details lines", () => {
     ]);
     expect(authenticityLines(check(message([]), "other"))).toEqual(["Not checked: Mail does not read this server's results"]);
     expect(authenticityLines(readStoredCheck(null, "gmail"))).toEqual(["Not checked yet"]);
+  });
+});
+
+describe("SECURITY_HEADER_FIELDS", () => {
+  it("asks for the unsubscribe fields plus Reply-To, Content-Type and the receipt headers", () => {
+    const lower = SECURITY_HEADER_FIELDS.map((name) => name.toLowerCase());
+    for (const name of UNSUBSCRIBE_HEADER_FIELDS) expect(lower).toContain(name.toLowerCase());
+    for (const name of ["reply-to", "content-type", ...RECEIPT_HEADERS.map((header) => header.toLowerCase())]) expect(lower).toContain(name);
+    expect(new Set(lower).size).toBe(lower.length);
   });
 });

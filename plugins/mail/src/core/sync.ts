@@ -31,7 +31,7 @@
 // window), deleting what left the server. A reset also looks for `opened`
 // rows and clears history_since. Gmail sessions report X-GM-LABELS, which
 // are stored at every fetch and refreshed in the flag pass.
-import type { AccountPreset, FetchedMessage, FlagChange, FlagIntent, Folder, RemoteFolder } from "./model.ts";
+import type { AccountPreset, FetchedMessage, FlagChange, FlagIntent, Folder, RemoteFolder, SpecialUse } from "./model.ts";
 import {
   ImapAuthError,
   type ChangeNotifier,
@@ -137,6 +137,12 @@ export type PrepareContext = {
   classifyDev: boolean;
   /** The project remotes' hosts the classifier vouches for. */
   devHosts: ReadonlySet<string>;
+  /**
+   * Slice 3i: the role of the folder being judged (not a `Folder`'s own
+   * field): Sent and Drafts copies are not sender-checked. Optional until
+   * every caller passes it (plan Task 5).
+   */
+  folderRole?: SpecialUse | null;
 };
 
 /** What one folder's sync needs beyond the session: how to judge headers, and where new Inbox rows go. */

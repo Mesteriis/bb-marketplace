@@ -3,6 +3,8 @@ import type { OutgoingAddress } from "./compose-address.ts";
 import { composeDocInputSchema, type ComposeDoc } from "./compose-doc.ts";
 import type { SignatureDoc } from "./compose-signature.ts";
 import type { HeaderLine, UnsubscribeInfo } from "./unsubscribe.ts";
+import type { MailCrypto } from "./mail-crypto.ts";
+import type { SenderCheck } from "./sender-check.ts";
 import { LOG_ACTORS, LOG_OUTCOMES, LOG_TOOLS } from "./agent-log.ts";
 import { DEV_KINDS, DEV_SOURCES, DEV_STATES, type DevClass } from "./dev-notify.ts";
 import { DEV_LINK_KINDS } from "./dev-links.ts";
@@ -253,6 +255,27 @@ export const messageSummarySchema = z.object({
 });
 export type MessageSummary = z.infer<typeof messageSummarySchema>;
 
+/** Slice 3i: the sender check as the header shows it; `summary` is Mail's fixed text, null for ok. */
+export const senderCheckViewSchema = z.object({
+  state: z.enum(["ok", "failed", "unchecked", "unknown"]),
+  summary: z.string().nullable(),
+});
+export type SenderCheckView = z.infer<typeof senderCheckViewSchema>;
+
+/** Slice 3i: one disguise warning (core sender-disguise.ts); domains and addresses in ASCII. */
+export const disguiseWarningSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("reply_to_elsewhere"), addresses: z.array(z.string()) }),
+  z.object({ kind: z.literal("lookalike"), domain: z.string(), like: z.string() }),
+  z.object({ kind: z.literal("mixed_script"), domain: z.string() }),
+  z.object({ kind: z.literal("name_shows_address"), shown: z.string(), actual: z.string() }),
+]);
+
+/** Slice 3i: signed or encrypted mail, recognised only (core mail-crypto.ts); `opaque` for S/MIME signed-data. */
+export const mailCryptoSchema = z.object({
+  kind: z.enum(["pgp_signed", "pgp_encrypted", "smime_signed", "smime_encrypted"]),
+  opaque: z.boolean(),
+});
+
 export const messageHeaderSchema = messageSummarySchema.extend({
   to: z.array(mailAddressSchema),
   cc: z.array(mailAddressSchema),
@@ -273,8 +296,20 @@ export const messageHeaderSchema = messageSummarySchema.extend({
   alert: z.boolean(),
   /** Slice 3g: what this message was handed to in BB. */
   bbLinks: z.array(bbLinkViewSchema),
+  /** Slice 3i: the stored sender check; `unknown` until judged. Defaults keep older fixtures parsing. */
+  senderCheck: senderCheckViewSchema.default({ state: "unknown", summary: null }),
+  /** Slice 3i: disguise warnings computed when the thread is read, at most four. */
+  warnings: z.array(disguiseWarningSchema).default([]),
+  /** Slice 3i: the sender asked for a read receipt (never sent). */
+  receiptRequested: z.boolean().default(false),
+  /** Slice 3i: signed or encrypted, recognised only; null for ordinary mail. */
+  crypto: mailCryptoSchema.nullable().default(null),
 });
-export type MessageHeader = z.infer<typeof messageHeaderSchema>;
+/** The parsed header with every slice-3i field present (what the page receives). */
+export type MessageHeaderView = z.infer<typeof messageHeaderSchema>;
+/** Slice 3i's four fields have defaults, so a header built in code may leave them out (older fixtures, fakes). */
+export type MessageHeader = Omit<MessageHeaderView, SliceThreeIHeaderFields> & Partial<Pick<MessageHeaderView, SliceThreeIHeaderFields>>;
+type SliceThreeIHeaderFields = "senderCheck" | "warnings" | "receiptRequested" | "crypto";
 
 /** The four local categories (slice 3f). */
 export const categorySchema = z.enum(["bills", "notifications", "personal", "newsletters"]);
@@ -310,7 +345,8 @@ export const threadDetailSchema = z.object({
   /** Slice 3g: a project the conversation's dev links or repo map to, when none is bound; never bound by itself. */
   projectSuggestion: z.object({ id: z.string(), name: z.string(), repo: z.string().nullable() }).nullable(),
 });
-export type ThreadDetail = z.infer<typeof threadDetailSchema>;
+/** Messages typed as MessageHeader, so code-built details may leave out slice 3i's defaulted fields. */
+export type ThreadDetail = Omit<z.infer<typeof threadDetailSchema>, "messages"> & { messages: MessageHeader[] };
 
 export const messageBodySchema = z.object({
   messageId: z.string(),
@@ -318,7 +354,11 @@ export const messageBodySchema = z.object({
   /** `cid:` references already replaced by `data:` URIs. */
   html: z.string().nullable(),
   htmlTruncated: z.boolean(),
-  /** The owner allowed remote images from this sender. */
+  /**
+   * Remote images load by themselves: the owner allowed this sender and, from
+   * slice 3i, the sender check lets them (`autoImagesAllowed`: not failed or
+   * unknown, no lookalike or name-shows-address warning).
+   */
   remoteImagesAllowed: z.boolean(),
   /** Slice 3g: the texts of the HTML body's <pre> blocks (empty for plain mail). */
   codeBlocks: z.array(z.string()),
@@ -429,6 +469,18 @@ export type FetchedMessage = {
    * order. Absent when the fetch did not read headers.
    */
   devHeaders?: HeaderLine[];
+  /**
+   * Slice 3i: a read-receipt header is present (receipts.ts). Read from the
+   * parsed headers, kept apart from `unsubscribeHeaders` (resolution 16).
+   * Absent when the fetch did not read headers.
+   */
+  receiptRequested?: boolean;
+  /** Slice 3i: the top Content-Type as written; null without one. Absent when the fetch did not read headers. */
+  contentType?: string | null;
+  /** Slice 3i: the sender check sync judged. Absent: the store leaves the stored check alone. */
+  senderCheck?: SenderCheck;
+  /** Slice 3i: signed or encrypted, as sync judged it (null: neither). Absent: left alone. */
+  crypto?: MailCrypto | null;
   /**
    * Slice 3g: the dev class sync judged (null = not a dev notification).
    * Absent: not classified (classification off, or Spam and Trash).
