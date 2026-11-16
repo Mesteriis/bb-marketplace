@@ -130,6 +130,24 @@ describe("day clock", () => {
     expect(takeDayNotice(store, at(10, 6))).toBeNull();
   });
 
+  it("a snoozed reminder is announced again when it comes due a second time", () => {
+    reminder("r-due");
+    settings = { ...settings, morningDigest: false };
+    clock.set(at(10, 0));
+    const tick = dayClock().tick;
+    tick();
+    expect(published).toEqual(["token-1"]);
+    expect(takeDayNotice(store, at(10, 1))).toMatchObject({ kind: "reminder", reminder: { id: "r-due" } });
+    // The owner snoozes it for a day (as reminder_snooze does): waiting again, a new due time, unshown.
+    store.updateReminder("r-due", { state: "waiting", days: 1, dueAt: at(10, 0, 14).toISOString(), notifiedAt: null }, at(10, 2).toISOString());
+    clock.set(at(10, 0, 14));
+    tick();
+    expect(store.getReminder("r-due")!.state).toBe("due");
+    expect(published).toEqual(["token-1", "token-2"]);
+    tick();
+    expect(published).toEqual(["token-1", "token-2"]);
+  });
+
   it("publishes tokens only and logs no address or subject", () => {
     reminder("r-due");
     clock.set(at(10, 0));

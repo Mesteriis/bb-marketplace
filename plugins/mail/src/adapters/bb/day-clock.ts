@@ -191,8 +191,8 @@ export type DayNotice = { kind: "digest"; day: string; replyCount: number } | { 
 
 /**
  * Tokens for announced notices, in memory. Each notice (today's digest, a
- * due reminder) is announced once per process; the token only wakes the
- * windows, which then ask for the oldest unshown notice.
+ * reminder at one due time) is announced once per process; the token only
+ * wakes the windows, which then ask for the oldest unshown notice.
  */
 export class DayNoticeBook {
   private readonly announced = new Set<string>();
@@ -319,7 +319,8 @@ export function createDayClock(deps: DayClockDeps): DayClock {
     }
     for (const reminder of store.listReminders({ states: ["due"], dueBefore: nowIso, limit: REMINDERS_LIVE_MAX })) {
       if (reminder.notifiedAt !== null) continue;
-      const token = deps.book.announce(`reminder:${reminder.id}`);
+      // Keyed by the due time too: a snoozed reminder that comes due again is a new notice.
+      const token = deps.book.announce(`reminder:${reminder.id}:${reminder.dueAt}`);
       if (token !== null) deps.publish(token);
     }
   }
