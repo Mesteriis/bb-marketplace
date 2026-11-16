@@ -418,9 +418,10 @@ export function renderMessageForAgentCounted(
   }
   lines.push(`Message id: ${header.id}`);
   // Links are cleaned before redaction (resolution 15): an agent that fetches one must not confirm a tracked open.
+  // Controls are removed after the cleaning (slice 3i review), so nothing it decodes can bring one back.
   const text = isEncrypted(header.crypto?.kind)
     ? ENCRYPTED_PLACEHOLDER
-    : tally.add(redactSecrets(cleanUrlsInText(removeControls(bodyText(body))), { context: header.subject }));
+    : tally.add(redactSecrets(removeControls(cleanUrlsInText(bodyText(body))), { context: header.subject }));
   const note = hiddenNote(tally.counts);
   if (note !== null) lines.push(`${note} Ask the owner to read them in Makosh Mail if you need them.`);
   const rest = `${lines.join("\n")}\n\n${text}`;

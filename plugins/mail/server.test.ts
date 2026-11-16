@@ -6917,6 +6917,22 @@ describe("slice 3g: alerts and incident threads", () => {
     await expect(call(host, "incident_start", { messageId: ids[6], projectId: "api" })).resolves.toEqual({ bbThreadId: "bb_t1" });
   });
 
+  it("cleans tracking from the alert's links and labels before they reach the card or BB (slice 3i review)", async () => {
+    const { host, ids } = await loadDev();
+    host.bb.storage
+      .database()
+      .prepare("UPDATE messages SET body_text = ? WHERE id = ?")
+      .run(
+        "Labels:\n - service = checkout\n - env = prod\nPanel: https://grafana.example.org/d/abc?orgId=1&utm_source=alert&mc_eid=x9\n",
+        ids[5],
+      );
+    const view = (await call(host, "alert_view", { messageId: ids[5] })) as { alert: { links: string[] } };
+    expect(view.alert.links).toEqual(["https://grafana.example.org/d/abc?orgId=1"]);
+    const prepared = (await call(host, "incident_prepare", { messageId: ids[5], projectId: "api" })) as { prompt: string };
+    expect(prepared.prompt).toContain("https://grafana.example.org/d/abc?orgId=1");
+    expect(prepared.prompt).not.toMatch(/utm_|mc_eid/);
+  });
+
   it("incident_prepare shows the exact prompt, title and permission mode incident_start sends", async () => {
     const { host, ids } = await loadDev();
     const prepared = (await call(host, "incident_prepare", { messageId: ids[5], projectId: "api", instruction: "Invented ask" })) as {

@@ -221,6 +221,16 @@ describe("taskText", () => {
     expect(owner.hidden).toBe(1);
   });
 
+  it("cleans tracking from links in the excerpt (slice 3i review)", () => {
+    const out = taskText({
+      ...base,
+      excerpt: { header: header(), body: body("Open https://shop.example.com/p?id=1&utm_source=nl&mc_eid=abc123 now") },
+      target: "taskboard",
+    });
+    expect(out.description).toContain("https://shop.example.com/p?id=1 now");
+    expect(out.description).not.toMatch(/utm_|mc_eid/);
+  });
+
   it("limits the title to 500 for Taskboard and 120 for a local task", () => {
     const long = { ...base, subject: "s".repeat(900) };
     expect(taskText({ ...long, target: "taskboard" }).title).toHaveLength(TASK_TITLE_MAX);

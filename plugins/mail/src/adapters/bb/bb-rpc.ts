@@ -38,6 +38,7 @@ import {
   PATCH_MAX_BYTES,
   alertFingerprint,
   alertOf,
+  cleanUrlsInText,
   bodyPlainText,
   devLinks,
   incidentPrompt,
@@ -311,6 +312,15 @@ export const REPEAT_HOLD_MS = 5_000;
  * scheme cleanLink refuses) is kept as the classifier gave it; duplicates
  * after cleaning are dropped.
  */
+/**
+ * The alert of a stored monitoring message, read from the body with tracking
+ * removed from its links first (slice 3i review): the card shows those links
+ * and the incident title and prompts reach BB, as dev links do.
+ */
+function alertOfStored(store: MailStore, header: MessageHeader): AlertParts | null {
+  return alertOf({ devClass: header.dev, subject: header.subject, text: cleanUrlsInText(bodyPlainText(store.getBody(header.id))) });
+}
+
 function cleanedDevLinks(links: readonly DevLink[]): DevLink[] {
   const seen = new Set<string>();
   const out: DevLink[] = [];
@@ -583,7 +593,7 @@ async function runRule(
     if (tree === null) state = "ready";
   }
   if (state === "starting" && alertClass(rule) && header.dev !== null && header.dev.source === "monitoring") {
-    const parts = alertOf({ devClass: header.dev, subject: header.subject, text: bodyPlainText(store.getBody(header.id)) });
+    const parts = alertOfStored(store, header);
     if (parts !== null) {
       alert = { parts, ref: await alertFingerprint(parts) };
       const open = store.incidentFor(alert.ref);
@@ -1559,7 +1569,7 @@ export function createBbRpc(deps: BbRpcDeps) {
 
   async function alertOfMessage(header: MessageHeader): Promise<{ parts: AlertParts; ref: string } | null> {
     if (header.dev === null || header.dev.source !== "monitoring") return null;
-    const parts = alertOf({ devClass: header.dev, subject: header.subject, text: bodyPlainText(store.getBody(header.id)) });
+    const parts = alertOfStored(store, header);
     return parts === null ? null : { parts, ref: await alertFingerprint(parts) };
   }
 

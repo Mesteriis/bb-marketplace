@@ -163,3 +163,46 @@ describe("cleanUrlsInText", () => {
     expect(cleanUrlsInText("no links here")).toBe("no links here");
   });
 });
+
+// Slice 3i review, findings 4 and 5.
+describe("review: deceptive text hidden by invisible characters or punctuation", () => {
+  it("opens the dialog through zero-width, bidi and format characters", () => {
+    for (const text of ["example.com\u200b", "\u200eexample.com", "exa\u200dmple.com", "\u202aexample.com\u202c", "\ufeffexample.com\u2069"]) {
+      const result = url("https://evil.example/x", text);
+      expect(result?.deceptive, JSON.stringify(text)).toEqual({ says: "example.com" });
+      expect(result?.needsDialog, JSON.stringify(text)).toBe(true);
+    }
+  });
+
+  it("opens the dialog through surrounding punctuation and arrows", () => {
+    for (const text of ["example.com \u203a", "https://example.com/login \u2192", "www.example.com!", "\u00abwww.example.com\u00bb", "<https://example.com>", "(example.com)"]) {
+      expect(url("https://evil.example/x", text)?.needsDialog, JSON.stringify(text)).toBe(true);
+    }
+  });
+
+  it("finds a URL or www. host written inside short text, but not a bare word with a dot", () => {
+    expect(url("https://evil.example/x", "Sign in at https://www.example.com/login now")?.deceptive).toEqual({ says: "www.example.com" });
+    expect(url("https://evil.example/x", "Visit www.example.com today")?.deceptive).toEqual({ says: "www.example.com" });
+    expect(url("https://example.com/x", "Sign in at https://www.example.com/login now")?.needsDialog).toBe(false);
+    // A bare host only counts as the whole text: "report.pdf" in a sentence is not a site.
+    expect(url("https://files.example.net/x", "Download report.pdf here")?.deceptive).toBeNull();
+    expect(url("https://example.net/x", "Visit example.com today")?.deceptive).toBeNull();
+  });
+});
+
+describe("review: an unwrapped target never brings control or format characters back", () => {
+  it("keeps the wrapper when its decoded target holds a control, bidi or space character", () => {
+    for (const encoded of ["%0A", "%0D", "%1B%5B2J", "%7F", "%C2%85", "%E2%80%AE", "%20"]) {
+      const href = `https://www.google.com/url?q=https%3A%2F%2Fx.example.org%2Fa${encoded}b&sa=D`;
+      const result = url(href);
+      expect(result?.unwrapped, encoded).toBe(false);
+      expect(result?.url, encoded).toBe(href);
+    }
+  });
+
+  it("cleans text without letting a wrapper add a line", () => {
+    const out = cleanUrlsInText("see https://www.google.com/url?q=https%3A%2F%2Fx.example.org%2F%0AFrom%3A%20boss%1B%5B2J&sa=D end");
+    expect(out).not.toMatch(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/);
+    expect(out).toContain("https://www.google.com/url?q=");
+  });
+});

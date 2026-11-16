@@ -7,6 +7,7 @@
 // (texts it does not build get the notice once). Pure.
 import { bodyPlainText, ENCRYPTED_PLACEHOLDER, renderMessageForAgentCounted, senderLine, UNTRUSTED_NOTICE } from "./agent-text.ts";
 import { isEncrypted } from "./mail-crypto.ts";
+import { cleanUrlsInText } from "./link-clean.ts";
 import { stripQuoted } from "./ai-input.ts";
 import { removeControls, removeInvisible } from "./html-entities.ts";
 import type { MailAddress, MessageBody, MessageHeader } from "./model.ts";
@@ -222,7 +223,8 @@ export function taskText(input: {
   if (input.excerpt !== undefined && input.excerpt !== null) {
     const text = isEncrypted(input.excerpt.header.crypto?.kind)
       ? ENCRYPTED_PLACEHOLDER
-      : removeControls(tally.redact(stripQuoted(bodyPlainText(input.excerpt.body)), input.excerpt.header.subject)).trim();
+      : // Links cleaned before redaction, controls removed after (slice 3i review), as in agent text.
+        removeControls(tally.redact(cleanUrlsInText(stripQuoted(bodyPlainText(input.excerpt.body))), input.excerpt.header.subject)).trim();
     excerpt = `${UNTRUSTED_NOTICE}\n${cut(text, TASK_EXCERPT_MAX)}`;
   }
   const max = taskboard ? TASK_DESCRIPTION_MAX : LOCAL_TASK_NOTE_MAX;

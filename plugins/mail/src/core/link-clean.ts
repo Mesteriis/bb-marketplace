@@ -107,6 +107,9 @@ function isGoogleHost(host: string): boolean {
   return false;
 }
 
+/** C0, DEL and C1 controls, format characters (zero-width, bidi) and any space. */
+const UNSAFE_IN_TARGET = /[\p{Cc}\p{Cf}\p{Z}\s]/u;
+
 /** The target a known wrapper carries, when it is http(s); exact wrapper hosts only (resolution 12). */
 function wrappedTarget(href: string, url: URL): string | null {
   const host = url.hostname;
@@ -117,7 +120,10 @@ function wrappedTarget(href: string, url: URL): string | null {
   if (raw === null) return null;
   const target = decode(raw);
   if (target === null || target.length > HREF_MAX) return null;
-  return isHttp(parseUrl(target)) ? target.trim() : null;
+  // Percent-encoded controls, format characters (bidi) or spaces never come back
+  // decoded into agent text or an href: the wrapper stays (slice 3i review).
+  if (UNSAFE_IN_TARGET.test(target)) return null;
+  return isHttp(parseUrl(target)) ? target : null;
 }
 
 function unusualHostOf(host: string): CleanLink["unusualHost"] {
@@ -127,17 +133,45 @@ function unusualHostOf(host: string): CleanLink["unusualHost"] {
   return null;
 }
 
-// The whole text must be a URL or a bare host, not a sentence holding one.
+// A URL or a bare host, the whole of the (trimmed) text or of one word.
 const URL_LIKE = /^(?:https?:\/\/)?((?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,62})?\.)+\p{L}[\p{L}\p{N}-]{1,62})\.?(?::\d{1,5})?(?:[/?#]\S*)?$/iu;
+/** Format characters: zero-width, bidi marks, embeddings and isolates, BOM, soft hyphen. */
+const FORMAT_CHARS = /\p{Cf}/gu;
+/** What may surround a URL in link text without being part of it: punctuation, symbols (arrows), spaces, controls. */
+const EDGE = /^[\p{P}\p{S}\p{Z}\p{Cc}\s]$/u;
+const SCHEME_OR_WWW = /^(?:https?:\/\/|www\.)/i;
 
-/** The host the visible text names, in ASCII; null when the text is not a URL or bare host. */
+/** The text without the punctuation, arrows and spaces around it (code point by code point, linear). */
+function trimEdges(text: string): string {
+  const chars = [...text];
+  let start = 0;
+  let end = chars.length;
+  while (start < end && EDGE.test(chars[start] ?? "")) start += 1;
+  while (end > start && EDGE.test(chars[end - 1] ?? "")) end -= 1;
+  return chars.slice(start, end).join("");
+}
+
+/**
+ * The host the visible text names, in ASCII; null when it names none. Slice
+ * 3i review: format characters are taken out first and the punctuation,
+ * arrows and spaces around the text do not hide it (`example.com \u203a`); a
+ * word that starts with `http(s)://` or `www.` counts anywhere in the text.
+ * A bare host counts only as the whole text, so "Download report.pdf" names
+ * no site.
+ */
 function hostInText(text: string | null): string | null {
   if (text === null) return null;
-  const trimmed = text.trim();
-  if (trimmed === "" || trimmed.length > TEXT_MAX) return null;
-  const match = URL_LIKE.exec(trimmed);
-  if (match === null) return null;
-  return asciiDomainOf(match[1] ?? null);
+  const shown = trimEdges(text.replace(FORMAT_CHARS, "").replace(/[\u034f]/g, ""));
+  if (shown === "" || shown.length > TEXT_MAX) return null;
+  const whole = URL_LIKE.exec(shown);
+  if (whole !== null) return asciiDomainOf(whole[1] ?? null);
+  for (const word of shown.split(/\s+/)) {
+    const token = trimEdges(word);
+    if (!SCHEME_OR_WWW.test(token)) continue;
+    const match = URL_LIKE.exec(token);
+    if (match !== null) return asciiDomainOf(match[1] ?? null);
+  }
+  return null;
 }
 
 /**
