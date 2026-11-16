@@ -1511,3 +1511,131 @@ fn v9_normal_exit_is_not_misread_as_orphan() {
         assert_eq!(sig, None);
     }
 }
+
+// V8: closing a session whose direct child was already reaped must not leak
+// the PTY master fd (it used to, only the killed_by_close path closed it).
+#[test]
+fn v8_close_of_reaped_session_does_not_leak_master() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_remote-hub-helper"));
+    command
+        .args(["--echo-command", "/usr/bin/true"])
+        .env("REMOTE_HUB_KEEP_FINISHED", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn helper");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let helper_pid = child.id();
+
+    let seen = Arc::new(Mutex::new(String::new()));
+    let seen2 = seen.clone();
+    let reader = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match stderr.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    seen2
+                        .lock()
+                        .unwrap()
+                        .push_str(&String::from_utf8_lossy(&buf[..n]));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+    });
+
+    send_req(&mut stdin, &Request::Hello {
+        protocol: PROTOCOL_VERSION,
+    });
+    let _ = read_frame_io(&mut stdout); // hello_ack
+    let before = child_fds(helper_pid);
+
+    for i in 0..50u64 {
+        send_req(&mut stdin, &Request::OpenEcho {
+            id: 100 + i,
+            cols: 80,
+            rows: 24,
+        });
+        let (sid, pid) = match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+            Response::SessionOpened {
+                session_id, pid, ..
+            } => (session_id, pid),
+            other => panic!("expected session.opened, got {other:?}"),
+        };
+
+        let marker = format!("helper-reaped pid={pid}");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let text = seen.lock().unwrap().clone();
+            if text.contains(&marker) || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            seen.lock().unwrap().contains(&marker),
+            "child {pid} was not reaped"
+        );
+
+        send_req(&mut stdin, &Request::SessionClose {
+            id: 200 + i,
+            session_id: sid,
+        });
+        loop {
+            let (kind, payload) = read_frame_io(&mut stdout);
+            if kind == FRAME_KIND_CONTROL {
+                if let Response::SessionClosed { session_id, .. } =
+                    decode_response(&payload).unwrap()
+                {
+                    assert_eq!(session_id, sid);
+                    break;
+                }
+            }
+        }
+    }
+
+    let after = child_fds(helper_pid);
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "helper fd count changed: before {before:?} after {after:?}"
+    );
+
+    drop(stdin);
+    drop(stdout);
+    let status = wait_timeout(&mut child, Duration::from_secs(5)).expect("helper did not exit");
+    assert_eq!(status.code(), Some(0));
+    reader.join().expect("stderr reader joined");
+}
+
+// V8: closing during the linger grace must still tear down the descendant
+// process group (the direct child has already exited and been reaped).
+#[test]
+fn v8_close_during_linger_reaps_descendants() {
+    let mut h = start_with_args(&["--echo-command", "/bin/sh", "-c", "sleep 300 & exit 0"]);
+    h.hello();
+    let (sid, pid) = h.open();
+    std::thread::sleep(Duration::from_millis(50));
+
+    h.send(&Request::SessionClose {
+        id: 1,
+        session_id: sid,
+    });
+    h.read_until_closed(sid);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut group_alive = true;
+    while Instant::now() < deadline {
+        let r = unsafe { libc::kill(-(pid as libc::pid_t), 0) };
+        if r != 0 {
+            group_alive = false;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!group_alive, "process group {pid} still alive after close");
+}

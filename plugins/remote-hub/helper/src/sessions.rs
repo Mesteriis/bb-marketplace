@@ -760,6 +760,14 @@ impl SessionManager {
             all.chunks(READ_CHUNK).map(|c| c.to_vec()).collect()
         };
         let (code, sig, reason) = if session.child_exited {
+            // A reaped direct child may still have descendants holding the PTY
+            // open. Close the master on this path too (it leaked before) and
+            // reap the remaining process group without signalling the already
+            // reaped direct child pid.
+            if !session.pty_done {
+                kill_process_group(session.child);
+            }
+            unsafe { libc::close(session.master) };
             (
                 session.exit_code,
                 session.signal,
