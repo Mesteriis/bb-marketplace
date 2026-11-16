@@ -520,7 +520,8 @@ const SCAN_STARTS = 20;
 
 /**
  * The JSON object of a model answer: a fenced block first, else the first
- * balanced top-level {...} that parses (string-aware scan). Null when none.
+ * balanced top-level {...} that parses (string-aware scan; an unbalanced or
+ * unparsable brace moves on to the next one, up to SCAN_STARTS). Null when none.
  */
 export function extractJson(output: string): Record<string, unknown> | null {
   const block = fenced(output);
@@ -533,8 +534,8 @@ export function extractJson(output: string): Record<string, unknown> | null {
     const start = output.indexOf("{", from);
     if (start === -1) return null;
     const end = balancedEnd(output, start);
-    if (end === -1) return null;
-    const parsed = parseObject(output.slice(start, end));
+    // An unbalanced brace ("use { as a set") may precede the answer: try the next one.
+    const parsed = end === -1 ? null : parseObject(output.slice(start, end));
     if (parsed !== null) return parsed;
     from = start + 1;
   }

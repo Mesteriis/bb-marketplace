@@ -232,6 +232,12 @@ describe("extractJson", () => {
     expect(extractJson('{not json} then {"a":{"b":{"c":1}}}')).toEqual({ a: { b: { c: 1 } } });
   });
 
+  it("skips an unbalanced first brace and reads the next object", () => {
+    expect(extractJson('Use { as a set. Answer: {"a":1}')).toEqual({ a: 1 });
+    expect(extractJson('{ "{" {"b":2}')).toEqual({ b: 2 });
+    expect(extractJson("{ never closed")).toBeNull();
+  });
+
   it("answers null for no object or a non-object top level", () => {
     expect(extractJson("no json here")).toBeNull();
     expect(extractJson("[1,2]")).toBeNull();
