@@ -27,15 +27,19 @@ export function SshTerminal(props: SshTerminalProps) {
     const container = containerRef.current;
     if (container === null) return;
     let disposed = false;
+    let errored = false;
 
+    // xterm 5.5 parses colours through a canvas, so CSS var() strings fail;
+    // resolve the theme tokens here and pass real colour strings.
+    const computed = getComputedStyle(container);
+    const bg = computed.getPropertyValue("--canvas").trim() || "#0d1117";
+    const fg = computed.getPropertyValue("--ink").trim() || "#c9d1d9";
+    const fontTerminal = computed.getPropertyValue("--font-terminal").trim() || "monospace";
     const terminal = new Terminal({
       cursorBlink: true,
       fontSize: 13,
-      fontFamily: "var(--font-terminal, monospace)",
-      theme: {
-        background: "var(--canvas, #0d1117)",
-        foreground: "var(--ink, #c9d1d9)",
-      },
+      fontFamily: fontTerminal,
+      theme: { background: bg, foreground: fg },
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -88,26 +92,34 @@ export function SshTerminal(props: SshTerminalProps) {
         }
         return;
       }
-      terminal.write(new Uint8Array(event.data));
+      const bytes = new Uint8Array(event.data);
+      terminal.write(bytes, () => {
+        if (!disposed && socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "ack", bytes: bytes.byteLength }));
+        }
+      });
     };
 
     socket.onclose = (event: { code: number }) => {
-      if (disposed) return;
+      if (disposed || errored) return;
       if (event.code === 4000) {
         // Session ended; the closed control frame already reported the status.
         return;
       }
-      if (event.code === 1000) {
+      if (event.code === 4410) {
+        // Helper exited / session not found: the session is gone.
+        props.onStateChange?.("closed", { exitCode: null, signal: null, reason: "helper_exited" });
+      } else if (event.code === 1000) {
         props.onStateChange?.("detached");
       } else {
-        // Unexpected socket loss is a detach, not a session close: the helper
-        // still owns the session.
+        // Unexpected socket loss is a detach, not a session close.
         props.onStateChange?.("detached");
       }
     };
 
     socket.onerror = () => {
       if (disposed) return;
+      errored = true;
       props.onStateChange?.("error");
     };
 

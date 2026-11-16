@@ -325,6 +325,18 @@ describe("helper-process (lifecycle)", () => {
     expect(hp.drain(echoHandle.sessionId).output).toBe("echo-token");
   });
 
+  // The production service must never expose a free-form spawn method
+  // (program/argv/env); V4 closed that on the Rust side and this guards the TS
+  // interface from reopening it.
+  it("production service exposes no free-form open method", async () => {
+    const spawns: FakeChild[] = [];
+    const service = createRemoteHubService({
+      startHelper: () => HelperProcess.spawn("bin", fakeSpawnWithHello(spawns)),
+    });
+    expect(Object.keys(service)).not.toContain("sshOpenSpec");
+    expect("sshOpenSpec" in service).toBe(false);
+  });
+
   // R4 + S7(a): a dead helper is marked, rejects immediately, and a new start
   // sends only hello.
   it("marks a dead helper and starts a fresh one without replaying input", async () => {

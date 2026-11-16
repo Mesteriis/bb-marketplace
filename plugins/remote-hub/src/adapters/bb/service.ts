@@ -3,6 +3,7 @@
 // RPC surface wraps. Host-free of the BB SDK (only the adapter), so it is
 // unit-testable with an injected startHelper factory.
 import { AttachTokens, ATTACH_TOKEN_TTL_MS, type Clock } from "../../core/attach.ts";
+import { createCreditWindow } from "../../core/credit.ts";
 import { buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
 import { HelperProcess, HelperStatus, HelperRuntimeError } from "./helper-process.ts";
 import type { SessionHandle } from "../../core/rpc.ts";
@@ -37,6 +38,13 @@ export interface RemoteHubService {
   sessionAttach(handle: SessionHandle): string;
   consumeAttachToken(token: string): { sessionId: number; generation: string } | null;
   sessionScrollback(handle: SessionHandle): Promise<Uint8Array>;
+  attachStream(handle: SessionHandle): {
+    snapshot: Uint8Array;
+    subscribe: (cb: (data: Uint8Array) => void) => () => void;
+  };
+  creditAttach(handle: SessionHandle, attachId: string): { grant: number; isOwner: boolean };
+  creditDetach(handle: SessionHandle, attachId: string): void;
+  creditAck(handle: SessionHandle, attachId: string, bytes: number): number;
   subscribeSession(handle: SessionHandle, cb: (data: Uint8Array) => void): () => void;
   subscribeSessionEnd(
     handle: SessionHandle,
@@ -58,6 +66,8 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   let starting: Promise<HelperProcess> | null = null;
   const sessions = new Map<string, SessionInfo>();
   const listeners = new Map<string, Set<(data: Uint8Array) => void>>();
+  const credits = new Map<string, ReturnType<typeof createCreditWindow>>();
+  const creditOwners = new Map<string, string>();
   const sessionEndListeners = new Map<string, Set<(info: { exitCode: number | null; signal: number | null; reason: string }) => void>>();
   const attachTokens = new AttachTokens(ATTACH_TOKEN_TTL_MS, deps.clock);
   const helperExitCallbacks = new Set<() => void>();
@@ -95,6 +105,12 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
               }
               for (const key of Array.from(listeners.keys())) {
                 if (key.startsWith(generation + ":")) listeners.delete(key);
+              }
+              for (const key of Array.from(credits.keys())) {
+                if (key.startsWith(generation + ":")) credits.delete(key);
+              }
+              for (const key of Array.from(creditOwners.keys())) {
+                if (key.startsWith(generation + ":")) creditOwners.delete(key);
               }
               attachTokens.revokeGeneration(generation);
               for (const cb of helperExitCallbacks) cb();
@@ -219,6 +235,66 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       requireGeneration(handle);
       const process = await start();
       return process.scrollbackSnapshot(handle.sessionId);
+    },
+    attachStream(handle) {
+      requireGeneration(handle);
+      const process = helper!;
+      // Snapshot and subscription are established synchronously (no await), so
+      // no output can slip between the two: bytes are either in the snapshot or
+      // buffered for the live tail, never both and never missing.
+      const snapshot = process.scrollbackSnapshot(handle.sessionId);
+      const key = keyOf(handle);
+      let set = listeners.get(key);
+      if (set === undefined) {
+        set = new Set();
+        listeners.set(key, set);
+      }
+      const buffer: Uint8Array[] = [];
+      let live: ((data: Uint8Array) => void) | null = null;
+      const buffered = (data: Uint8Array): void => {
+        if (live !== null) live(data);
+        else buffer.push(data);
+      };
+      set.add(buffered);
+      return {
+        snapshot,
+        subscribe(cb) {
+          live = cb;
+          for (const data of buffer) cb(data);
+          buffer.length = 0;
+          return () => {
+            set.delete(buffered);
+            if (set.size === 0) listeners.delete(key);
+          };
+        },
+      };
+    },
+    creditAttach(handle, attachId) {
+      requireGeneration(handle);
+      const key = keyOf(handle);
+      let window = credits.get(key);
+      if (window === undefined) {
+        window = createCreditWindow();
+        credits.set(key, window);
+      }
+      const owner = creditOwners.get(key);
+      if (owner === undefined) {
+        creditOwners.set(key, attachId);
+        return { grant: window.attach(), isOwner: true };
+      }
+      return { grant: 0, isOwner: false };
+    },
+    creditDetach(handle, attachId) {
+      const key = keyOf(handle);
+      if (creditOwners.get(key) === attachId) {
+        creditOwners.delete(key);
+        credits.get(key)?.detach();
+      }
+    },
+    creditAck(handle, attachId, bytes) {
+      const key = keyOf(handle);
+      if (creditOwners.get(key) !== attachId) return 0;
+      return credits.get(key)?.ack(bytes) ?? 0;
     },
     subscribeSession(handle, cb) {
       requireGeneration(handle);

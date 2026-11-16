@@ -1,10 +1,9 @@
 // Thin SDK-facing WebSocket route: one socket per attached view, bound to a
-// single session handle by a single-use attach token. Token, scrollback and
-// credit-window logic live in host-free modules; this file wires the SDK's
-// experimental_websocket to those callbacks.
+// single session handle by a single-use attach token. The service owns the
+// snapshot/live handoff and the per-session credit window; this file only
+// wires the SDK's experimental_websocket to those callbacks.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { createCreditController } from "../../core/credit.ts";
 import type { SessionHandle } from "../../core/rpc.ts";
 import type { RemoteHubService } from "./service.ts";
 
@@ -23,7 +22,7 @@ const controlSchema = z.discriminatedUnion("type", [
     rows: z.number().int().min(1).max(1000),
   }),
   z.object({
-    type: z.literal("credit"),
+    type: z.literal("ack"),
     bytes: z.number().int().min(1).max(2_147_483_647),
   }),
   z.object({ type: z.literal("detach") }),
@@ -37,27 +36,30 @@ function safeJson(text: string): unknown {
   }
 }
 
-function isClosed(socket: { readyState: number }): boolean {
-  return socket.readyState !== 1;
+function isOpen(socket: { readyState: number }): boolean {
+  return socket.readyState === 1;
 }
 
 export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): void {
   bb.http.experimental_websocket("/attach", ({ url }) => {
-    const token = url.searchParams.get("attach") ?? "";
-    const binding = deps.service.consumeAttachToken(token); // single-use, 30 s TTL
+    const attachId = url.searchParams.get("attach") ?? "";
+    const binding = deps.service.consumeAttachToken(attachId); // single-use, 30 s TTL
     let attached = false;
     let handle: SessionHandle | null = null;
     let unsubscribe: (() => void) | null = null;
     let offExit: (() => void) | null = null;
     let offEnd: (() => void) | null = null;
-    const credit = createCreditController();
 
-    const replyError = (socket: { send: (data: string) => void }, code: string): void => {
+    const guardSend = (socket: { send: (data: string | Uint8Array) => void }, data: string | Uint8Array): void => {
       try {
-        socket.send(JSON.stringify({ type: "error", code }));
+        socket.send(data);
       } catch {
-        // socket already gone
+        // renderer gone
       }
+    };
+
+    const replyError = (socket: { send: (data: string | Uint8Array) => void }, code: string): void => {
+      guardSend(socket, JSON.stringify({ type: "error", code }));
     };
 
     const closeStale = (socket: { close: (code?: number, reason?: string) => void }): void => {
@@ -75,25 +77,42 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
           return;
         }
         handle = { generation: binding.generation, sessionId: binding.sessionId };
+
+        // If the session ended while no view was attached, report the stored
+        // exit status and close, rather than failing with 4410.
+        const record = deps.service
+          .sessionList()
+          .find((s) => s.generation === handle!.generation && s.sessionId === handle!.sessionId);
+        if (record !== undefined && record.state === "closed") {
+          guardSend(
+            socket,
+            JSON.stringify({
+              type: "closed",
+              exitCode: record.exitCode,
+              signal: record.signal,
+              reason: record.reason ?? "exited",
+            }),
+          );
+          socket.close(WS_SESSION_ENDED, "session ended");
+          return;
+        }
+
         attached = true;
 
-        // Subscribe before any await (V7): a close in the await window must not
-        // leave a subscription behind.
+        // Snapshot + subscribe are established synchronously by the service:
+        // no output can slip between snapshot and live tail.
+        let stream: { subscribe: (cb: (data: Uint8Array) => void) => () => void };
         try {
-          unsubscribe = deps.service.subscribeSession(handle, (data) => {
-            try {
-              socket.send(data);
-            } catch {
-              return;
-            }
-            const replenish = credit.consumed(data.byteLength);
-            if (replenish > 0) {
-              deps.service.sessionCredit(handle!, replenish).catch(() => {});
-            }
-          });
+          const attachedStream = deps.service.attachStream(handle);
+          if (attachedStream.snapshot.byteLength > 0) {
+            guardSend(socket, attachedStream.snapshot);
+          }
+          stream = attachedStream;
+          unsubscribe = stream.subscribe((data) => guardSend(socket, data));
           offExit = deps.service.onHelperExit(() => socket.close(WS_GENERATION_STALE, "helper exited"));
           offEnd = deps.service.subscribeSessionEnd(handle, (info) => {
-            socket.send(
+            guardSend(
+              socket,
               JSON.stringify({
                 type: "closed",
                 exitCode: info.exitCode,
@@ -107,32 +126,17 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
           closeStale(socket);
           return;
         }
+        if (!attached || !isOpen(socket)) return;
 
-        // Initial credit grant so a fresh SSH session can actually produce
-        // output; the renderer replenishes through the consumed() calls above.
-        const grant = credit.attach();
-        try {
-          await deps.service.sessionCredit(handle, grant);
-        } catch {
-          closeStale(socket);
-          return;
+        // One bounded window per session; the owner grants it and later acks
+        // replenish it. Replay/snapshot bytes are never acked.
+        const credit = deps.service.creditAttach(handle, attachId);
+        if (credit.grant > 0) {
+          await deps.service.sessionCredit(handle, credit.grant).catch(() => {
+            closeStale(socket);
+          });
         }
-        if (!attached || isClosed(socket)) return;
-
-        // Re-attach: bounded 1 MiB scrollback snapshot before live bytes.
-        const snapshot = await deps.service.sessionScrollback(handle).catch(() => null);
-        if (snapshot === null || !attached || isClosed(socket)) return;
-        if (snapshot.byteLength > 0) {
-          try {
-            socket.send(snapshot);
-          } catch {
-            return;
-          }
-          const replenish = credit.consumed(snapshot.byteLength);
-          if (replenish > 0) {
-            deps.service.sessionCredit(handle, replenish).catch(() => {});
-          }
-        }
+        if (!attached || !isOpen(socket)) return;
       },
       onMessage(socket, data) {
         if (!attached || handle === null) return;
@@ -151,12 +155,16 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
                 closeStale(socket);
               });
               break;
-            case "credit":
-              deps.service.sessionCredit(handle, msg.bytes).catch(() => {
-                replyError(socket, "session_not_found");
-                closeStale(socket);
-              });
+            case "ack": {
+              const replenish = deps.service.creditAck(handle, attachId, msg.bytes);
+              if (replenish > 0) {
+                deps.service.sessionCredit(handle, replenish).catch(() => {
+                  replyError(socket, "session_not_found");
+                  closeStale(socket);
+                });
+              }
               break;
+            }
             case "detach":
               socket.close(1000, "detach");
               break;
@@ -170,14 +178,14 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
       },
       onClose() {
         attached = false;
-        credit.detach();
+        if (handle !== null) deps.service.creditDetach(handle, attachId);
         if (unsubscribe !== null) unsubscribe();
         if (offExit !== null) offExit();
         if (offEnd !== null) offEnd();
       },
       onError() {
         attached = false;
-        credit.detach();
+        if (handle !== null) deps.service.creditDetach(handle, attachId);
         if (unsubscribe !== null) unsubscribe();
         if (offExit !== null) offExit();
         if (offEnd !== null) offEnd();

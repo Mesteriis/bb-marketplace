@@ -71,6 +71,7 @@ export function SshPage(props: SshPageProps) {
       const a = await onAttach(handle);
       setAttach(a);
     } catch (e) {
+      setState("error");
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [handle, onAttach]);
