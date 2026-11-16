@@ -44,7 +44,7 @@ import { daysText } from "./reminder-strip.tsx";
 import { ComposeToolbar } from "./compose-toolbar.tsx";
 import { accountLabel } from "./folder-list.tsx";
 import { chipText, MAX_CHIP_LENGTH, MIN_CHIP_LENGTH, RecipientInput, addChips, splitTyped } from "./recipient-input.tsx";
-import { stopEscape } from "./shortcuts.ts";
+import { isMacPlatform, stopEscape } from "./shortcuts.ts";
 import { sendCheckText, type TemplateView } from "./mail-settings.tsx";
 import { PresendDialog } from "./presend-dialog.tsx";
 import { BbFilePicker, type FilePickRequest } from "./bb-file-picker.tsx";
@@ -93,6 +93,8 @@ export interface ComposerPorts {
 }
 
 export interface ComposerProps {
+  /** Slice 3i: Apple Mail's Shift+Command+D sends; absent: read from the platform. */
+  mac?: boolean;
   draft: DraftView;
   accounts: readonly Account[];
   ports: ComposerPorts;
@@ -762,6 +764,21 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
     // Keys in a portal (the From list, a dialog) are theirs.
     if (!(event.target instanceof Node) || !rootRef.current?.contains(event.target)) return;
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      void send();
+      return;
+    }
+    // Slice 3i (part B resolution 9): Apple Mail's Shift+Command+D, by the physical key, through the same pre-send.
+    if (
+      (props.mac ?? isMacPlatform()) &&
+      event.metaKey &&
+      event.shiftKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      event.code === "KeyD" &&
+      !event.nativeEvent.isComposing
+    ) {
       event.preventDefault();
       event.stopPropagation();
       void send();

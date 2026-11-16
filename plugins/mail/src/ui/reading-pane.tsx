@@ -4,7 +4,7 @@
 // messages show sender, date and snippet; an expanded one shows its body.
 // The toolbar acts on the conversation's messages in the folder (or role)
 // being viewed; each message has its own flag, Details and downloads.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type {
   AttachmentMeta,
   AttachmentView,
@@ -22,7 +22,8 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { LoadingState } from "./empty-states.tsx";
 import { MessageFrame } from "./message-frame.tsx";
-import { addressLabel, formatFullDate, formatUntil, subjectOrPlaceholder } from "./thread-list.tsx";
+import { addressLabel, formatFullDate, formatListDate, formatUntil, subjectOrPlaceholder } from "./thread-list.tsx";
+import { splitConversation, stackSummary } from "./conversation-stack.ts";
 import { UNSUBSCRIBE_HIDDEN_HINT, preferredMethod } from "./unsubscribe-dialog.tsx";
 import { projectName, type BbCall, type CodeRenderers } from "./bb-ports.ts";
 import { AlertCard } from "./alert-card.tsx";
@@ -118,6 +119,10 @@ export interface ReadingSlice3h {
   cleanLinks?: boolean;
   /** Expand all / Collapse all (`;`): null until used on this conversation. */
   quotesAll: boolean | null;
+  /** Slice 3i: the earlier-messages stack is open (page state beside quotesAll); absent: closed. */
+  stackOpen?: boolean;
+  /** Slice 3i: the owner opened the stack. */
+  onStackOpen?: () => void;
   onExpandAll: () => void;
   onCollapseAll: () => void;
   /** Print... one message, or the conversation (Shift+P). */
@@ -495,6 +500,8 @@ function MessageItem({
           type="button"
           onClick={onToggle}
           aria-expanded={expanded}
+          // Slice 3i: Down/Up here move between message headers and the stack.
+          data-mail-message-toggle=""
           className="flex min-w-0 flex-1 flex-col gap-0.5 rounded-md text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <span className="flex min-w-0 items-baseline gap-2">
@@ -699,6 +706,29 @@ export function ReadingPane(props: ReadingPaneProps) {
   const [hover, setHover] = useState<{ thread: string | null; link: LinkHover | null }>({ thread: null, link: null });
   const hovered = hover.thread === threadKey ? hover.link : null;
   const onLinkHover = (link: LinkHover | null) => setHover({ thread: threadKey, link });
+  // Slice 3i (part B resolution 7): the messages that never hide in the stack,
+  // fixed on the first render of each conversation (before it turns read).
+  const [anchors, setAnchors] = useState<{ thread: string | null; ids: ReadonlySet<string> }>({ thread: null, ids: new Set() });
+  const anchorIds =
+    threadKey !== null && anchors.thread === threadKey ? anchors.ids : detail !== null ? anchorsOf(detail.messages, expandedIds) : NO_IDS;
+  useEffect(() => {
+    if (detail !== null && threadKey !== null && anchors.thread !== threadKey) setAnchors({ thread: threadKey, ids: anchorIds });
+  }, [threadKey, detail]);
+  const stackListId = useId();
+  // After the stack opens, focus goes to the first message it revealed.
+  const focusAfterOpen = useRef<string | null>(null);
+  useEffect(() => {
+    const id = focusAfterOpen.current;
+    if (id === null || typeof document === "undefined") return;
+    // The render that opens the stack may come after another one.
+    for (const element of Array.from(document.querySelectorAll<HTMLElement>("[data-message-id]"))) {
+      if (element.dataset.messageId === id) {
+        focusAfterOpen.current = null;
+        element.querySelector<HTMLElement>("[data-mail-message-toggle]")?.focus();
+        return;
+      }
+    }
+  });
   const own = switched.thread === threadKey ? switched : noSwitches(threadKey);
   const viewOf = (message: MessageHeader): MessageView | undefined => {
     if (r3 === undefined) return undefined;
@@ -761,6 +791,13 @@ export function ReadingPane(props: ReadingPaneProps) {
   const already = unsubscribe?.already ?? null;
   const canUnsubscribe =
     preferredMethod(unsubscribe) !== null && (already === null || !SETTLED_UNSUBSCRIBE.has(already.state));
+  // Slice 3i: earlier messages wait in one closed stack; the single-message view has none.
+  const { stacked, shown } =
+    single !== null
+      ? { stacked: [] as MessageHeader[], shown: [single] }
+      : r3 === undefined
+        ? { stacked: [] as MessageHeader[], shown: messages }
+        : splitConversation(messages, { anchorIds, expandedIds, open: r3.stackOpen === true });
   return (
     <div className="box-border flex w-full min-w-0 flex-col gap-3 px-4 pb-6 pt-2">
       {props.hideToolbar !== true ? (
@@ -979,7 +1016,18 @@ export function ReadingPane(props: ReadingPaneProps) {
           </Button>
         </div>
       ) : null}
-      {(single !== null ? [single] : messages).map((message) => {
+      {stacked.length > 0 ? (
+        <StackButton
+          messages={stacked}
+          controls={stackListId}
+          onOpen={() => {
+            focusAfterOpen.current = stacked[0]!.id;
+            r3?.onStackOpen?.();
+          }}
+        />
+      ) : null}
+      <div id={stackListId} className="flex flex-col gap-3">
+      {shown.map((message) => {
         const sender = message.from.address.trim().toLowerCase();
         // Slice 3i (part A resolution 5): an always-show sender's images wait for a clean check.
         const held = imagesHeldReason(message);
@@ -1015,10 +1063,55 @@ export function ReadingPane(props: ReadingPaneProps) {
           />
         );
       })}
+      </div>
       {r3 !== undefined && messages.length > 0 ? (
         <RelatedMail messageId={messages.at(-1)!.id} load={r3.related.load} onOpen={r3.related.onOpen} />
       ) : null}
       <LinkStatusLine hover={hovered} cleanLinks={r3?.cleanLinks !== false} />
+    </div>
+  );
+}
+
+const NO_IDS: ReadonlySet<string> = new Set();
+
+/** The newest message, the expanded ones (the opened message) and every unread one. */
+function anchorsOf(messages: readonly MessageHeader[], expandedIds: ReadonlySet<string>): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const message of messages) if (!message.isRead || expandedIds.has(message.id)) ids.add(message.id);
+  const newest = messages.at(-1);
+  if (newest !== undefined) ids.add(newest.id);
+  return ids;
+}
+
+/** "Nov 1 \u2013 Nov 3", or one date. */
+function dateRange(from: string | null, to: string | null): string {
+  const a = formatListDate(from);
+  const b = formatListDate(to);
+  return a === b || b === "" ? a : a === "" ? b : `${a} \u2013 ${b}`;
+}
+
+/**
+ * The closed stack of earlier messages (slice 3i, B8): one control, styled
+ * as a card with two offset edges behind it. Enter, Space or a click opens it.
+ */
+function StackButton({ messages, controls, onOpen }: { messages: readonly MessageHeader[]; controls: string; onOpen: () => void }) {
+  const summary = stackSummary(messages);
+  const line = [summary.senders, dateRange(summary.from, summary.to), summary.warned ? "sender warning" : ""].filter((part) => part !== "").join(" \u00b7 ");
+  return (
+    <div className="relative pb-2">
+      <span aria-hidden className="absolute inset-x-3 bottom-0 h-3 rounded-b-lg border border-border bg-card" />
+      <span aria-hidden className="absolute inset-x-1.5 bottom-1 h-3 rounded-b-lg border border-border bg-card" />
+      <button
+        type="button"
+        data-mail-stack=""
+        aria-expanded={false}
+        aria-controls={controls}
+        onClick={onOpen}
+        className="relative flex w-full flex-col gap-0.5 rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        <span className="text-sm text-foreground">{summary.count === 1 ? "1 earlier message" : `${summary.count} earlier messages`}</span>
+        <span className="truncate text-xs text-muted-foreground">{line}</span>
+      </button>
     </div>
   );
 }

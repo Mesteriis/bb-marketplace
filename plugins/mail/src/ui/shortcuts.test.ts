@@ -586,6 +586,8 @@ describe("slice 3i part B: Apple Mail keys", () => {
         `${String.fromCharCode(0x2303)}${cmd}M`,
         `${cmd}Z`,
         `${cmd}${String.fromCharCode(0x232b)}`,
+        // Slice 3i: the composer's Shift+Command+D.
+        `${String.fromCharCode(0x21e7)}${cmd}D`,
       ].sort(),
     );
   });

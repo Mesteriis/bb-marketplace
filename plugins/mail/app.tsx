@@ -645,6 +645,14 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const lastUndo = useRef<{ id: string; moving: boolean } | null>(null);
   /** The undo result waiting for the reverse moves to show in the lists. */
   const movingBack = useRef<{ text: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  /**
+   * Slice 3i (part B resolution 6): conversations the page advanced away from
+   * after a removing action, by undo id, so an undo (`z` or a toast's own
+   * Undo) can reopen them. `advancedTo` is what opened instead (null: none).
+   */
+  const reopenByUndo = useRef(new Map<string, { threadId: string; accountId: string | null; advancedTo: string | null }>());
+  /** An undo is waiting for its conversation's row to come back; any open or close meanwhile cancels it. */
+  const pendingReopen = useRef<{ threadId: string; accountId: string | null; openNow: string | null; until: number } | null>(null);
   /** Stars being changed by the owner: a list refresh meanwhile keeps these values. */
   const flagIntents = useRef(new Map<string, boolean>());
   const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1236,6 +1244,15 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         // Failed copy groups stay undoable under the same id; anything else is spent.
         if (lastUndo.current?.id === undoId && result.failed === 0) lastUndo.current = null;
         const text = undoResultText(result);
+        const reopen = reopenByUndo.current.get(undoId);
+        reopenByUndo.current.delete(undoId);
+        if (result.outcome === "done" && result.restored > 0 && reopen !== undefined) {
+          // Only while the owner is still on what the action opened (or nothing).
+          const openNow = openThreadId.current;
+          if (openNow === reopen.advancedTo || openNow === null) {
+            pendingReopen.current = { threadId: reopen.threadId, accountId: reopen.accountId, openNow, until: Date.now() + MOVING_BACK_MAX_MS };
+          }
+        }
         if (result.outcome === "done" && moving && result.restored > 0) {
           if (movingBack.current !== null) clearTimeout(movingBack.current.timer);
           toast("Moving back…", { id: UNDO_TOAST_ID, duration: Number.POSITIVE_INFINITY });
@@ -1280,12 +1297,47 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   );
 
   /**
+   * Slice 3i (part B B5): the open conversation is done. The next one opens
+   * (`then`, from the page) only while it is still the one the action started
+   * on; otherwise, or with nothing to open, it closes as before. An advance is
+   * recorded under the undo id so an undo can reopen it.
+   */
+  const advanceOrClose = useCallback(
+    (open: string, startedOn: string | null, then: (() => void) | null | undefined, undoId: string | null) => {
+      if (then == null || open !== startedOn) {
+        closeThread();
+        return;
+      }
+      const accountId = openAccount.current;
+      then();
+      if (undoId !== null) reopenByUndo.current.set(undoId, { threadId: open, accountId, advancedTo: openThreadId.current });
+    },
+    [closeThread],
+  );
+
+  // Slice 3i (part B resolution 6): an undone conversation reopens once its
+  // row is back in the list, within MOVING_BACK_MAX_MS, unless the owner
+  // opened or closed a conversation meanwhile.
+  useEffect(() => {
+    const want = pendingReopen.current;
+    if (want === null) return;
+    if (Date.now() > want.until || openThreadId.current !== want.openNow) {
+      pendingReopen.current = null;
+      return;
+    }
+    const row = list.threads.find((t) => t.id === want.threadId);
+    if (row === undefined) return;
+    pendingReopen.current = null;
+    selectThread(row.id, null, want.accountId ?? row.accountId);
+  }, [list.threads, selectThread]);
+
+  /**
    * An action on conversations' messages in the view: the selection bar, the
    * reading pane toolbar and the hotkeys. Failed conversations stay selected;
    * one toast per distinct error.
    */
   const threadsAction = useCallback(
-    async (threadIds: string[], action: MessageAction, destination?: string) => {
+    async (threadIds: string[], action: MessageAction, destination?: string, then?: (() => void) | null) => {
       if (threadIds.length === 0 || pendingRef.current) return;
       pendingRef.current = true;
       setActionPending(true);
@@ -1330,7 +1382,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         if (moving) {
           setList((prev) => ({ ...prev, threads: prev.threads.filter((t) => !done.has(t.id)) }));
           const open = latest.current.reading.threadId;
-          if (open !== null && done.has(open)) closeThread();
+          if (open !== null && done.has(open)) advanceOrClose(open, snapshot.threadId, then, undoable ? undoId : null);
         } else {
           const flagged = action === "flag" ? true : action === "unflag" ? false : null;
           setList((prev) => ({
@@ -1365,7 +1417,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         setActionPending(false);
       }
     },
-    [closeThread, collect, recordUndo, refreshAfterChange, sendAction],
+    [advanceOrClose, collect, recordUndo, refreshAfterChange, sendAction],
   );
 
   /** Sets a list row's star, and the open conversation's messages to match. */
@@ -2145,7 +2197,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const askFolders = useAccountFolders(folderAsk?.pending[0]?.accountId ?? null);
 
   const snoozeThreads = useCallback(
-    async (threadIds: string[], until: string) => {
+    async (threadIds: string[], until: string, then?: (() => void) | null) => {
       if (threadIds.length === 0 || pendingRef.current) return;
       pendingRef.current = true;
       setActionPending(true);
@@ -2188,7 +2240,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           setSelection((prev) => ([...prev].some((id) => done.has(id)) ? new Set([...prev].filter((id) => !done.has(id))) : prev));
           setList((prev) => ({ ...prev, threads: prev.threads.filter((t) => !done.has(t.id)) }));
           const open = latest.current.reading.threadId;
-          if (open !== null && done.has(open)) closeThread();
+          if (open !== null && done.has(open)) advanceOrClose(open, snapshot.threadId, then, undoable ? undoId : null);
           refreshAfterChange();
         }
         if (needs.size > 0) {
@@ -2204,7 +2256,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         setActionPending(false);
       }
     },
-    [closeThread, collect, recordUndo, refreshAfterChange, rpc],
+    [advanceOrClose, collect, recordUndo, refreshAfterChange, rpc],
   );
 
   /** One account's folder is settled: the next account, or the snooze again. */
@@ -2278,7 +2330,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       unsubscribe,
       onUnsubscribe: (message) => askUnsubscribe(message),
       onArchiveList: (message) => void archiveList(message),
-      onSnooze: (threadIds, until) => void snoozeThreads(threadIds, until),
+      onSnooze: (threadIds, until, then) => void snoozeThreads(threadIds, until, then),
       onReturnNow: (threadId) => void returnNow(threadId),
       loadBlockCheck: (messageId) => rpc.call("block_check", { messageId }),
       onBlock: (messageId, choice) => void blockSender(messageId, choice),
@@ -3536,9 +3588,17 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
 
   // Drag to folders (#88).
   const [dragAccounts, setDragAccounts] = useState<string[] | null>(null);
+  // Slice 3i (part B resolution 5): the page's successor for the dragged open conversation.
+  const dragAdvance = useRef<(() => void) | null>(null);
+  const onDragAccounts = useCallback((accountIds: string[] | null, advance?: (() => void) | null) => {
+    setDragAccounts(accountIds);
+    dragAdvance.current = accountIds === null ? null : (advance ?? null);
+  }, []);
   const dropThreads = useCallback(
     (raw: string, target: { accountId: string | null; action: MessageAction; destination?: string; name: string }) => {
       setDragAccounts(null);
+      const advance = dragAdvance.current;
+      dragAdvance.current = null;
       const ids = readMovePayload(raw, PAGE_ID);
       if (ids === null) return;
       const threads = latest.current.list.threads.filter((t) => ids.includes(t.id));
@@ -3558,6 +3618,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         threads.map((t) => t.id),
         target.action,
         target.destination,
+        advance,
       );
     },
     [threadsAction],
@@ -3763,7 +3824,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     historyStepDays,
     onLoadHistory: () => void loadHistory(),
     onStopHistory: () => void stopHistory(),
-    onDragAccounts: setDragAccounts,
+    onDragAccounts,
     onLabels: (threadIds) => void openLabels(threadIds),
     gmail: (accountId) => gmailIds.has(accountId),
     reading: {
@@ -3947,7 +4008,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onHandToAgent={(message) => void handToAgent(message)}
       selection={selection}
       onSelectionChange={setSelection}
-      onThreadsAction={(ids, action, destination) => void threadsAction(ids, action, destination)}
+      onThreadsAction={(ids, action, destination, then) => void threadsAction(ids, action, destination, then)}
       actionPending={actionPending}
       onToggleThreadFlag={(threadId) => void toggleThreadFlag(threadId)}
       onToggleMessageFlag={(message) => void toggleMessageFlag(message)}

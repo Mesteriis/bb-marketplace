@@ -225,6 +225,29 @@ describe("Composer", () => {
     expect(ports.send).toHaveBeenCalledTimes(1);
   });
 
+  it("slice 3i: Shift+Command+D sends on a Mac, through the same path, and not elsewhere", async () => {
+    const mac = mount({ mac: true });
+    addRecipient();
+    fireEvent.keyDown(subject(), { key: "\u0432", code: "KeyD", metaKey: true, shiftKey: true });
+    await waitFor(() => expect(mac.onSent).toHaveBeenCalled());
+    expect(mac.ports.send).toHaveBeenCalledTimes(1);
+    cleanup();
+
+    const pc = mount({ mac: false });
+    addRecipient();
+    fireEvent.keyDown(subject(), { key: "D", code: "KeyD", metaKey: true, shiftKey: true });
+    fireEvent.keyDown(subject(), { key: "D", code: "KeyD", ctrlKey: true, shiftKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(pc.ports.send).not.toHaveBeenCalled();
+    cleanup();
+
+    const extra = mount({ mac: true });
+    addRecipient();
+    fireEvent.keyDown(subject(), { key: "D", code: "KeyD", metaKey: true, shiftKey: true, altKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(extra.ports.send).not.toHaveBeenCalled();
+  });
+
   it("closes on Escape when nothing changed, dropping an untouched new draft", async () => {
     const outer = vi.fn();
     const ports = fakePorts();

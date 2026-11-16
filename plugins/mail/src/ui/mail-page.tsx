@@ -171,7 +171,7 @@ export interface MailSlice3hPorts {
   /** Whether an account is Gmail (labels apply). */
   gmail: (accountId: string) => boolean;
   /** Reading (Task 11): viewer, quotes, plain text, dark mail, sender card, related mail and print. */
-  reading?: Omit<ReadingSlice3h, "quotesAll" | "onExpandAll" | "onCollapseAll" | "onSender"> & {
+  reading?: Omit<ReadingSlice3h, "quotesAll" | "onExpandAll" | "onCollapseAll" | "onSender" | "stackOpen" | "onStackOpen"> & {
     loadSenderCard: (address: string, accountId: string | null) => Promise<SenderCard>;
   };
 }
@@ -553,6 +553,8 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const [senderFor, setSenderFor] = useState<{ message: MessageHeader; card: SenderCard | null; error: string | null } | null>(null);
   /** Slice 3h: Expand all / Collapse all of the open conversation (quotes follow). */
   const [quotesAll, setQuotesAll] = useState<{ threadId: string; shown: boolean } | null>(null);
+  // Slice 3i (part B resolution 7): the earlier-messages stack's open state, beside quotesAll.
+  const [stackOpen, setStackOpen] = useState<{ threadId: string; open: boolean } | null>(null);
   // A composer that closed while focused leaves no focus behind.
   const composerId = props.composer?.draft.id ?? null;
   useEffect(() => {
@@ -933,7 +935,31 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       if (open !== wanted) props.onToggleMessage(message.id);
     }
     setQuotesAll({ threadId: reading.threadId, shown: expand });
+    setStackOpen({ threadId: reading.threadId, open: expand });
   };
+  // Slice 3i: a finished "Load the whole conversation" that brought older
+  // messages opens the stack (the owner asked to see them). The count is
+  // taken when the job starts and compared at the first thread load after it ends.
+  const conversationState = props.slice3h?.reading?.conversation.state ?? "idle";
+  const loadStart = useRef<{ threadId: string; count: number; detail: ThreadDetail | null } | null>(null);
+  useEffect(() => {
+    const start = loadStart.current;
+    if (start !== null && start.threadId !== reading.threadId) loadStart.current = null;
+    if (conversationState === "running" && reading.threadId !== null && reading.detail !== null) {
+      if (loadStart.current === null) loadStart.current = { threadId: reading.threadId, count: reading.detail.messages.length, detail: null };
+      return;
+    }
+    const current = loadStart.current;
+    if (current === null || conversationState !== "done" || reading.detail === null) return;
+    // The first detail seen after the job ended is the one before the reload; wait for the next.
+    if (current.detail === null) {
+      current.detail = reading.detail;
+      return;
+    }
+    if (current.detail === reading.detail) return;
+    loadStart.current = null;
+    if (reading.detail.messages.length > current.count) setStackOpen({ threadId: current.threadId, open: true });
+  }, [conversationState, reading.detail, reading.threadId]);
   const openSender = (message: MessageHeader) => {
     const port = props.slice3h?.reading;
     if (port === undefined) return;
@@ -954,6 +980,10 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           quotesAll: quotesAll !== null && quotesAll.threadId === reading.threadId ? quotesAll.shown : null,
           onExpandAll: () => expandAll(true),
           onCollapseAll: () => expandAll(false),
+          stackOpen: stackOpen !== null && stackOpen.threadId === reading.threadId && stackOpen.open,
+          onStackOpen: () => {
+            if (reading.threadId !== null) setStackOpen({ threadId: reading.threadId, open: true });
+          },
         };
   const summaryShown = summaryFor !== null && summaryFor.threadId === reading.threadId && openDetail !== null && ai !== undefined;
 

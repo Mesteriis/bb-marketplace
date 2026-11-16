@@ -479,7 +479,7 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
       { keys: ["r"], label: "Reply", mac: [CMD, "R"] },
       { keys: ["a"], label: "Reply all", mac: [SHIFT, CMD, "R"] },
       { keys: ["f"], label: "Forward", mac: [SHIFT, CMD, "F"] },
-      { keys: ["Cmd/Ctrl", "Enter"], label: "Send (in the composer)" },
+      { keys: ["Cmd/Ctrl", "Enter"], label: "Send (in the composer)", mac: [SHIFT, CMD, "D"] },
       { keys: ["Esc"], label: "Close the composer" },
     ],
   },

@@ -11,6 +11,7 @@ import { declaresDarkSupport, htmlToPlainText, isAllowedLinkUrl, sanitizeEmailHt
 import type { CodeRenderers } from "./bb-ports.ts";
 import { BodyParts, HtmlCodeBlocks } from "./code-blocks.tsx";
 import type { LinkHover } from "./link-status.tsx";
+import { isTypingTarget } from "./shortcuts.ts";
 
 /** Slice 3h: the fold of quoted text, in a plain body and under an HTML frame. */
 export const SHOW_QUOTES_TEXT = "\u00b7\u00b7\u00b7 Show quoted text";
@@ -117,6 +118,39 @@ function QuoteToggle({ shown, onToggle }: { shown: boolean; onToggle: () => void
 function closestAnchor(target: EventTarget | null): Element | null {
   const node = target as { closest?: (selector: string) => Element | null } | null;
   return typeof node?.closest === "function" ? node.closest("a, area") : null;
+}
+
+/**
+ * Keys the frame keeps (part B resolution 8): Enter, Space and Tab activate a
+ * link or move focus there, and the arrows, Page Up/Down, Home and End
+ * scroll; forwarded, Enter would also open the list's cursor row.
+ */
+const FRAME_KEYS = new Set(["Enter", " ", "Spacebar", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End"]);
+
+/**
+ * A copy of a key pressed in the frame, dispatched on the `<iframe>` with the
+ * parent realm's KeyboardEvent so it bubbles to the page's own handler (and
+ * to BB's, like any page key). Key fields only; nothing of the mail is read.
+ * Returns false when the copy was prevented.
+ */
+export function forwardFrameKey(frame: HTMLIFrameElement, event: KeyboardEvent): boolean {
+  if (event.isComposing || event.key === "Process" || event.keyCode === 229) return true;
+  if (FRAME_KEYS.has(event.key) || isTypingTarget(event.target)) return true;
+  const View = frame.ownerDocument.defaultView;
+  if (View === null) return true;
+  const copy = new View.KeyboardEvent("keydown", {
+    key: event.key,
+    code: event.code,
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+    repeat: event.repeat,
+    isComposing: event.isComposing,
+    bubbles: true,
+    cancelable: true,
+  });
+  return frame.dispatchEvent(copy);
 }
 
 /** Longest visible link text passed on; cleanLink reads at most 300 characters. */
@@ -376,8 +410,15 @@ function HtmlFrame({
       if (next !== anchor) hoverRef.current?.(null);
     };
 
+    // Slice 3i (part B B10): letters, Backspace and chords pressed in the
+    // message reach the page's hotkeys.
+    const onKey = (event: KeyboardEvent) => {
+      if (!forwardFrameKey(frame, event)) event.preventDefault();
+    };
+
     doc.addEventListener("click", onClick);
     doc.addEventListener("auxclick", onClick);
+    doc.addEventListener("keydown", onKey);
     doc.addEventListener("mouseover", onOver);
     doc.addEventListener("focusin", onOver);
     doc.addEventListener("mouseout", onOut);
@@ -393,6 +434,7 @@ function HtmlFrame({
     detachRef.current = () => {
       doc.removeEventListener("click", onClick);
       doc.removeEventListener("auxclick", onClick);
+      doc.removeEventListener("keydown", onKey);
       doc.removeEventListener("mouseover", onOver);
       doc.removeEventListener("focusin", onOver);
       doc.removeEventListener("mouseout", onOut);

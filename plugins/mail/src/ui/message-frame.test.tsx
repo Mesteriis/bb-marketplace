@@ -134,7 +134,7 @@ describe("MessageFrame slice 3i", () => {
     fireEvent.load(iframe);
     fireEvent.load(iframe);
     expect(onLinkHover).toHaveBeenLastCalledWith(null);
-    for (const type of ["click", "auxclick", "mouseover", "mouseout", "focusin", "focusout"]) expect(live.get(type)).toBe(1);
+    for (const type of ["click", "auxclick", "keydown", "mouseover", "mouseout", "focusin", "focusout"]) expect(live.get(type)).toBe(1);
   });
 
   it("counts trackers: allowed mode says how many were blocked", () => {
@@ -167,5 +167,55 @@ describe("MessageFrame slice 3i", () => {
     unmount();
     frame({ body: body({ html }), cleanLinks: false });
     expect(screen.getByTitle("Message from Ada").getAttribute("srcdoc")).toContain("utm_source");
+  });
+});
+
+describe("MessageFrame slice 3i part B: key forwarding", () => {
+  function loadedFrame() {
+    frame({ body: body({ html: "<p>x</p>" }) });
+    const iframe = screen.getByTitle("Message from Ada") as HTMLIFrameElement;
+    fireEvent.load(iframe);
+    const doc = iframe.contentDocument!;
+    doc.body.innerHTML = '<p id="p">text</p><a id="a" href="https://example.org/">link</a><div id="e" contenteditable="true"></div>';
+    const seen: KeyboardEvent[] = [];
+    iframe.addEventListener("keydown", (event) => seen.push(event));
+    const press = (id: string, init: KeyboardEventInit & { keyCode?: number }) => {
+      const win = doc.defaultView as Window & typeof globalThis;
+      const event = new win.KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+      if (init.keyCode !== undefined) Object.defineProperty(event, "keyCode", { value: init.keyCode });
+      doc.getElementById(id)!.dispatchEvent(event);
+      return event;
+    };
+    return { iframe, seen, press };
+  }
+
+  it("forwards letters, Backspace and chords to the page as a copy on the iframe", () => {
+    const { iframe, seen, press } = loadedFrame();
+    press("p", { key: "e", code: "KeyE" });
+    press("p", { key: "Backspace", code: "Backspace" });
+    press("p", { key: "r", code: "KeyR", metaKey: true, shiftKey: true });
+    expect(seen.map((event) => [event.key, event.code, event.metaKey, event.shiftKey])).toEqual([
+      ["e", "KeyE", false, false],
+      ["Backspace", "Backspace", false, false],
+      ["r", "KeyR", true, true],
+    ]);
+    expect(seen[0]!.target).toBe(iframe);
+    expect(seen[0]).toBeInstanceOf(window.KeyboardEvent);
+  });
+
+  it("keeps Enter, Space, Tab, arrows, paging keys, IME and keys typed into a field", () => {
+    const { seen, press } = loadedFrame();
+    for (const key of ["Enter", " ", "Tab", "ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End"]) press("a", { key });
+    press("p", { key: "e", isComposing: true });
+    press("p", { key: "Process" });
+    press("p", { key: "e", keyCode: 229 });
+    press("e", { key: "e", code: "KeyE" });
+    expect(seen).toEqual([]);
+  });
+
+  it("a prevented copy prevents the original", () => {
+    const { iframe, press } = loadedFrame();
+    iframe.addEventListener("keydown", (event) => event.preventDefault());
+    expect(press("p", { key: "e", code: "KeyE" }).defaultPrevented).toBe(true);
   });
 });
