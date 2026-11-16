@@ -100,6 +100,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         }
 
         attached = true;
+        const grant = deps.service.creditAttach(handle!, attachId);
         let stream: { subscribe: (cb: (data: Uint8Array) => void) => () => void };
         try {
           const attachedStream = deps.service.attachStream(handle);
@@ -124,8 +125,6 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
           return;
         }
         if (!attached || !isOpen(socket)) return;
-
-        const grant = deps.service.creditAttach(handle!, attachId);
         if (grant > 0) {
           await deps.service.sessionCredit(handle!, grant).catch(() => closeStale(socket));
         }

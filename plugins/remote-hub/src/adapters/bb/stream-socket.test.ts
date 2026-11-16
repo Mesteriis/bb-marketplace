@@ -93,12 +93,12 @@ describe("stream-socket control validation (V6)", () => {
 
 describe("stream-socket snapshot/live ordering (W3)", () => {
   it("sends snapshot marker, snapshot, live marker, then the buffered tail", async () => {
-    const sink: { cb: ((data: Uint8Array) => void) | null } = { cb: null };
     const { handlers } = makeHarness({
       attachStream: vi.fn().mockReturnValue({
         snapshot: new Uint8Array([65]),
+        // A buffered tail is flushed synchronously when subscribe is called.
         subscribe: vi.fn((cb: (data: Uint8Array) => void) => {
-          sink.cb = cb;
+          cb(new Uint8Array([66]));
           return () => {};
         }),
       }),
@@ -108,7 +108,6 @@ describe("stream-socket snapshot/live ordering (W3)", () => {
     expect(socket.sent[0]).toBe(JSON.stringify({ type: "snapshot", bytes: 1 }));
     expect(socket.sent[1]).toEqual(new Uint8Array([65]));
     expect(socket.sent[2]).toBe(JSON.stringify({ type: "live" }));
-    sink.cb?.(new Uint8Array([66]));
     expect(socket.sent[3]).toEqual(new Uint8Array([66]));
   });
 });

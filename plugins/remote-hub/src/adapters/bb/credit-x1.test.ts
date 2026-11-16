@@ -233,9 +233,8 @@ describe("credit window X1 (real service + real socket)", () => {
     await flush();
     await flush();
 
-    expect(helper.creditFrames.map((f) => f.bytes)).toContain(262_144);
-    const granted = helper.creditFrames.reduce((s, f) => s + f.bytes, 0);
-    expect(granted - 262_144).toBeLessThanOrEqual(262_144);
+    // A's initial window, then B's promoted ack grant.
+    expect(helper.creditFrames.map((f) => f.bytes)).toEqual([262_144, 262_144]);
   });
 
   it("scenario 6: acking snapshot bytes grants nothing", async () => {
