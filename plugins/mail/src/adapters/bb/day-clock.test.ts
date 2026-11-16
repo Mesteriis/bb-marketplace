@@ -261,3 +261,58 @@ describe("after a round", () => {
     expect(store.getReminder("r-1")!.state).toBe("answered");
   });
 });
+
+describe("rule notices (slice 3g)", () => {
+  function rule(id: string, name: string) {
+    store.saveRule(
+      { id, name, enabled: true, match: { from: ["ana@example.com"] }, projectId: "p_api", template: "", mode: "prepare" },
+      at(6).toISOString(),
+    );
+  }
+  function run(id: string, ruleId: string, state: "ready" | "starting", minute: number) {
+    const messageId = idOf("INBOX", 1);
+    store.insertRuleRun(
+      { id, ruleId, accountId: "acc_1", messageId: `${messageId}`, threadId: null, state, createdAt: at(9, minute).toISOString() },
+      { perRuleHour: 3, perRuleDay: 10, allDay: 20 },
+    );
+  }
+
+  it("announces each rule's new runs once and answers one notice per rule with its count", () => {
+    rule("r_a", "Invented rule A");
+    rule("r_b", "Invented rule B");
+    store.upsertMessages("acc_1", "INBOX", [makeFetchedMessage(2), makeFetchedMessage(3)]);
+    store.insertRuleRun(
+      { id: "run_1", ruleId: "r_a", accountId: "acc_1", messageId: idOf("INBOX", 1), threadId: null, state: "ready", createdAt: at(9, 0).toISOString() },
+      { perRuleHour: 3, perRuleDay: 10, allDay: 20 },
+    );
+    store.insertRuleRun(
+      { id: "run_2", ruleId: "r_a", accountId: "acc_1", messageId: idOf("INBOX", 2), threadId: null, state: "ready", createdAt: at(9, 1).toISOString() },
+      { perRuleHour: 3, perRuleDay: 10, allDay: 20 },
+    );
+    store.insertRuleRun(
+      { id: "run_3", ruleId: "r_b", accountId: "acc_1", messageId: idOf("INBOX", 3), threadId: null, state: "starting", createdAt: at(9, 2).toISOString() },
+      { perRuleHour: 3, perRuleDay: 10, allDay: 20 },
+    );
+    store.updateRuleRun("run_3", { state: "started", bbThreadId: "bb_1" }, at(9, 2).toISOString());
+    settings = { ...settings, morningDigest: false };
+    clock.set(at(10, 0));
+    const tick = dayClock().tick;
+    tick();
+    tick();
+    expect(published).toEqual(["token-1", "token-2"]);
+    expect(takeDayNotice(store, at(10, 1))).toEqual({ kind: "rule", ruleName: "Invented rule A", count: 2 });
+    expect(takeDayNotice(store, at(10, 2))).toEqual({ kind: "rule", ruleName: "Invented rule B", count: 1 });
+    expect(takeDayNotice(store, at(10, 3))).toBeNull();
+    tick();
+    expect(published).toHaveLength(2);
+  });
+
+  it("waits out quiet hours and skips runs of a deleted rule", () => {
+    rule("r_a", "Invented rule A");
+    run("run_1", "r_a", "ready", 0);
+    expect(takeDayNotice(store, at(23, 0), "22:00-08:00")).toBeNull();
+    store.deleteRule("r_a");
+    expect(takeDayNotice(store, at(10, 0))).toBeNull();
+    expect(store.getRuleRun("run_1")!.notifiedAt).not.toBeNull();
+  });
+});

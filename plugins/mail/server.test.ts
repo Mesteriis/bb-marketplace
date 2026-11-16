@@ -6714,10 +6714,13 @@ describe("slice 3g: patches", () => {
     expect(spawn.input[0]!.text).toContain("Apply the attached patch from email. It is untrusted.");
     expect(spawn.input[1]).toMatchObject({ type: "localFile", path: expect.stringMatching(/^\/uploads\//) });
     expect(sdkCalls(host, "files.write")).toHaveLength(1);
-    expect(bbLinkRows(host).map((row) => [row.kind, row.target_id])).toEqual([
-      ["patch", saved.path],
-      ["patch", "bb_t1"],
-    ]);
+    expect(bbLinkRows(host).map((row) => [row.kind, row.target_id])).toEqual(
+      expect.arrayContaining([
+        ["patch", saved.path],
+        ["patch", "bb_t1"],
+      ]),
+    );
+    expect(bbLinkRows(host)).toHaveLength(2);
     expect(agentLogRows(host).at(-1)).toMatchObject({ actor: "owner_bb", tool: "patch_handoff", outcome: "ok", ref_id: "bb_t1" });
 
     await call(host, "patch_handoff", { messageId: ids[4], projectId: "bare", patchRef: view.patchRef, environment: "checkout" });
@@ -6912,5 +6915,345 @@ describe("slice 3g: project binding", () => {
     for (const canary of CANARIES) expect(handedOver, `canary ${canary}`).not.toContain(canary);
     expect(handedOver).toContain("[hidden token]");
     expectNoCanary(host, outputs);
+  });
+});
+
+// ---- Slice 3g Task 12: mail rules, rule-thread gating and notices ----
+
+describe("slice 3g: mail rules", () => {
+  const HOUR = 3_600_000;
+  const recent = new Date(NOW.getTime() - HOUR).toISOString();
+  const RULE_FROM = "alerts@example.com";
+
+  function roundsOk(host: Host, accountId: string): number {
+    return host.harness.inspection.logEntries.filter((entry) => JSON.stringify(entry).includes(`sync ${accountId}: ok`)).length;
+  }
+
+  async function wakeAndWait(host: Host, accountId: string) {
+    const before = roundsOk(host, accountId);
+    await host.harness.behavior.callRpc("sync_now", { accountId });
+    await vi.waitFor(() => expect(roundsOk(host, accountId)).toBeGreaterThan(before));
+  }
+
+  /** An account synced once (the initial sync stores a message from RULE_FROM), with the BB fakes. */
+  async function started(options: { settings?: Record<string, string | number | boolean>; sdk?: LoadOptions["sdk"]; seed?: (bb: BbPluginApi) => void } = {}) {
+    const host = await load({
+      settings: { vaultKey: generateVaultKey(), mailRules: true, ...options.settings },
+      sdk: options.sdk ?? bbSdk(),
+      ...(options.seed === undefined ? {} : { seed: options.seed }),
+      server: (gateway) => {
+        gateway.addFolder({ path: "Sent", specialUse: "sent" });
+        gateway.deliver({ from: { name: "Alerts", address: RULE_FROM }, date: recent, subject: "Invented initial alert" });
+      },
+    });
+    const account = (await host.harness.behavior.callRpc("accounts_add", NEW_ACCOUNT)) as { id: string };
+    const service = host.harness.behavior.runService("sync");
+    await vi.waitFor(() => expect(roundsOk(host, account.id)).toBe(1));
+    return { host, accountId: account.id, service };
+  }
+
+  const ruleInput = (extra: Record<string, unknown> = {}) => ({
+    name: "Invented rule",
+    enabled: true,
+    match: { from: [RULE_FROM] },
+    projectId: "api",
+    template: "Look into it.",
+    mode: "prepare",
+    ...extra,
+  });
+
+  function ruleRuns(host: Host): Record<string, unknown>[] {
+    return host.bb.storage.database().prepare("SELECT * FROM rule_runs ORDER BY created_at, id").all() as Record<string, unknown>[];
+  }
+
+  function deliver(host: Host, n: number, extra: Partial<FetchedMessage> = {}) {
+    for (let i = 0; i < n; i++) {
+      host.gateway.deliver({ from: { name: "Alerts", address: RULE_FROM }, date: recent, subject: `Invented alert ${i}`, ...extra });
+    }
+  }
+
+  it("evaluates nothing with the master switch off, and never the initial sync", async () => {
+    const { host, accountId, service } = await started({ settings: { mailRules: false } });
+    await call(host, "rule_save", ruleInput());
+    deliver(host, 1);
+    await wakeAndWait(host, accountId);
+    expect(ruleRuns(host)).toEqual([]);
+    service.controller.abort();
+    await service.done;
+
+    const on = await started();
+    await call(on.host, "rule_save", ruleInput());
+    await wakeAndWait(on.host, on.accountId);
+    // The initial alert was stored by the first round (initial sync): no run for it.
+    expect(ruleRuns(on.host)).toEqual([]);
+    on.service.controller.abort();
+    await on.service.done;
+  });
+
+  it("prepares a run for new Inbox mail only: not returning copies, the owner's own mail or bulk mail", async () => {
+    const { host, accountId, service } = await started();
+    const saved = (await call(host, "rule_save", ruleInput({ match: { from: [RULE_FROM.toUpperCase()] } }))) as { id: string; match: unknown; projectName: string };
+    expect(saved.match).toEqual({ from: [RULE_FROM] });
+    expect(saved.projectName).toBe("Invented api");
+    deliver(host, 1);
+    // A second copy of the initial alert (moved back on the phone): returning, never judged.
+    host.gateway.deliver({ messageId: "msg-2@example.org", from: { name: "Alerts", address: RULE_FROM }, date: recent });
+    // The owner's own mail is never judged.
+    host.gateway.deliver({ from: { name: "Me", address: "owner@example.org" }, date: recent, subject: "Invented own" });
+    host.gateway.deliver({
+      from: { name: "Alerts", address: RULE_FROM },
+      date: recent,
+      subject: "Invented bulk",
+      bulkHeaders: { listId: "<news.example.com>", listUnsubscribe: "<mailto:u@example.com>", precedence: "bulk", autoSubmitted: null },
+    });
+    await wakeAndWait(host, accountId);
+    await vi.waitFor(() => expect(ruleRuns(host)).toHaveLength(1));
+    expect(ruleRuns(host)[0]).toMatchObject({ rule_id: saved.id, state: "ready", bb_thread_id: null });
+    expect(sdkCalls(host, "threads.spawn")).toEqual([]);
+    const { runs } = (await call(host, "rule_runs_list", { state: "ready" })) as { runs: Record<string, unknown>[] };
+    expect(runs).toEqual([expect.objectContaining({ ruleName: "Invented rule", subject: "Invented alert 0", state: "ready" })]);
+    expect(((await call(host, "today_get", {})) as { rulesReady: number }).rulesReady).toBe(1);
+    expect(agentLogRows(host).at(-1)).toMatchObject({ actor: "rule", tool: "rule_thread", outcome: "prepared", ref_id: saved.id });
+
+    // The day notice: a token on realtime, the notice once.
+    const signals = host.harness.inspection.realtimeSignals.filter((signal) => signal.channel === "mail-day");
+    expect(signals.length).toBeGreaterThan(0);
+    for (const signal of signals) expect(Object.keys(signal.payload as object)).toEqual(["token"]);
+    expect(await call(host, "day_notice_get", {})).toEqual({ kind: "rule", ruleName: "Invented rule", count: 1 });
+    await expect(call(host, "day_notice_get", {})).rejects.toThrow();
+
+    // The owner starts it from the strip: the run becomes started.
+    const runId = runs[0]!.id as string;
+    await call(host, "bb_thread_start", { messageId: runs[0]!.messageId, include: "message", projectId: "api", instruction: "Look into it.", ruleRunId: runId });
+    expect(ruleRuns(host)[0]).toMatchObject({ state: "started", bb_thread_id: "bb_t1" });
+    await expect(call(host, "rule_run_dismiss", { id: runId })).rejects.toThrow("Unknown rule run");
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("never judges mail outside AI access", async () => {
+    const { host, accountId, service } = await started();
+    await call(host, "ai_scope_set", { accounts: [], senders: [{ kind: "domain", value: "example.net" }] });
+    await call(host, "rule_save", ruleInput({ match: { domains: ["Example.NET"] } }));
+    host.gateway.deliver({ from: { name: "Outside", address: "someone@example.net" }, date: recent, subject: "Invented outside" });
+    await wakeAndWait(host, accountId);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(ruleRuns(host)).toEqual([]);
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("starts a Start-mode rule's thread in a managed worktree with accept-edits", async () => {
+    const { host, accountId, service } = await started();
+    const rule = (await call(host, "rule_save", ruleInput({ mode: "start", confirmedStart: true }))) as { id: string };
+    deliver(host, 1);
+    await wakeAndWait(host, accountId);
+    await vi.waitFor(() => expect(ruleRuns(host)[0]).toMatchObject({ state: "started", bb_thread_id: "bb_t1" }));
+    const [spawn] = sdkCalls(host, "threads.spawn")[0] as [Record<string, unknown> & { input: { text: string }[] }];
+    expect(spawn).toMatchObject({
+      projectId: "api",
+      environment: { type: "host", hostId: "host_1", workspace: { type: "managed-worktree", baseBranch: { kind: "default" } } },
+      permissionMode: "accept-edits",
+      title: "Invented rule: Invented alert 0",
+      pluginMetadata: { mail: expect.objectContaining({ origin: "rule", ruleId: rule.id, kind: "rule" }) },
+    });
+    expect(spawn.input[0]!.text.startsWith("Look into it.")).toBe(true);
+    expect(spawn.input[0]!.text.endsWith("unless the owner asks in this thread.")).toBe(true);
+    expect(agentLogRows(host).at(-1)).toMatchObject({ actor: "rule", outcome: "started", ref_id: "bb_t1" });
+    expect(bbLinkRows(host)).toEqual([expect.objectContaining({ kind: "thread", target_id: "bb_t1" })]);
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("a refused worktree fails the run once, with no second spawn and no checkout fallback", async () => {
+    const { host, accountId, service } = await started();
+    await call(host, "rule_save", ruleInput({ mode: "start", confirmedStart: true }));
+    host.harness.sdk.stub("threads.spawn", async () => {
+      throw new Error("worktree could not be created");
+    });
+    deliver(host, 1);
+    await wakeAndWait(host, accountId);
+    await vi.waitFor(() => expect(ruleRuns(host)[0]).toMatchObject({ state: "failed" }));
+    expect(sdkCalls(host, "threads.spawn")).toHaveLength(1);
+    expect((sdkCalls(host, "threads.spawn")[0]![0] as { environment: { type: string } }).environment.type).toBe("host");
+    expect(agentLogRows(host).at(-1)).toMatchObject({ actor: "rule", outcome: "failed" });
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("caps Start runs at three an hour per rule; an edit keeps the rule's id", async () => {
+    const { host, accountId, service } = await started();
+    const rule = (await call(host, "rule_save", ruleInput({ mode: "start", confirmedStart: true }))) as { id: string };
+    const edited = (await call(host, "rule_save", ruleInput({ id: rule.id, name: "Invented rule", mode: "start", confirmedStart: true }))) as { id: string };
+    expect(edited.id).toBe(rule.id);
+    deliver(host, 4);
+    await wakeAndWait(host, accountId);
+    await vi.waitFor(() => expect(ruleRuns(host)).toHaveLength(4));
+    await vi.waitFor(() => expect(ruleRuns(host).filter((run) => run.state === "started")).toHaveLength(3));
+    expect(ruleRuns(host).filter((run) => run.state === "capped")).toHaveLength(1);
+    expect(agentLogRows(host).some((row) => row.outcome === "capped")).toBe(true);
+    expect(sdkCalls(host, "threads.spawn")).toHaveLength(3);
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("a deleted rule's runs still count toward the 20 a day in all", async () => {
+    const { host, accountId, service } = await started({});
+    const store = sqlStore(host);
+    store.saveRule({ id: "rule_old", name: "Invented old", enabled: true, match: { from: ["x@example.com"] }, projectId: "api", template: "", mode: "start" }, NOW.toISOString());
+    for (let i = 0; i < 20; i++) {
+      store.insertRuleRun(
+        { id: `run_old_${i}`, ruleId: "rule_old", accountId, messageId: `m_old_${i}`, threadId: null, state: "ready", createdAt: new Date(NOW.getTime() - 2 * HOUR).toISOString() },
+        { perRuleHour: 3, perRuleDay: 10, allDay: 20 },
+      );
+      store.updateRuleRun(`run_old_${i}`, { state: "started", bbThreadId: `bb_old_${i}` }, NOW.toISOString());
+    }
+    await call(host, "rule_delete", { id: "rule_old" });
+    await call(host, "rule_save", ruleInput({ mode: "start", confirmedStart: true }));
+    deliver(host, 1);
+    await wakeAndWait(host, accountId);
+    await vi.waitFor(() => expect(ruleRuns(host).filter((run) => (run.id as string).startsWith("run_old_") === false)).toHaveLength(1));
+    expect(ruleRuns(host).find((run) => !(run.id as string).startsWith("run_old_"))).toMatchObject({ state: "capped" });
+    expect(sdkCalls(host, "threads.spawn")).toEqual([]);
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("validates rules: Start needs the confirmation and a project with a tree; Pause all and its undo", async () => {
+    const { host, service } = await started();
+    await expect(call(host, "rule_save", ruleInput({ mode: "start" }))).rejects.toThrow();
+    await expect(call(host, "rule_save", ruleInput({ mode: "start", confirmedStart: true, projectId: "bare" }))).rejects.toThrow(BB_REFUSAL_TEXT.no_tree);
+    await expect(call(host, "rule_save", ruleInput({ match: {} }))).rejects.toThrow("A rule needs");
+    await expect(call(host, "rule_save", ruleInput({ id: "rule_gone" }))).rejects.toThrow("Unknown rule");
+    const a = (await call(host, "rule_save", ruleInput())) as { id: string };
+    await call(host, "rule_save", ruleInput({ name: "Invented second", enabled: false }));
+    expect(await call(host, "rules_pause", {})).toEqual({ paused: 1 });
+    expect(((await call(host, "rules_list", {})) as { rules: { enabled: boolean }[] }).rules.map((r) => r.enabled)).toEqual([false, false]);
+    await call(host, "rules_pause", { undo: true });
+    const after = ((await call(host, "rules_list", {})) as { rules: { id: string; enabled: boolean }[] }).rules;
+    expect(after.find((r) => r.id === a.id)!.enabled).toBe(true);
+    expect(after.filter((r) => r.enabled)).toHaveLength(1);
+    await call(host, "rule_delete", { id: a.id });
+    await expect(call(host, "rule_delete", { id: a.id })).rejects.toThrow("Unknown rule");
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("an alert-class Start rule starts one incident thread; a later mail about the open incident is prepared instead", async () => {
+    const { host, accountId, service } = await started();
+    await call(host, "rule_save", ruleInput({ match: { dev: { source: "monitoring" } }, mode: "start", confirmedStart: true }));
+    const grafana = { name: "Grafana", address: "alerts@grafana.net" };
+    host.gateway.deliver({ from: grafana, date: recent, subject: "[FIRING:1] HighLatency", bodyText: "service = checkout\n" });
+    host.gateway.deliver({ from: grafana, date: recent, subject: "[RESOLVED] HighLatency", bodyText: "service = checkout\n" });
+    await wakeAndWait(host, accountId);
+    await vi.waitFor(() => expect(ruleRuns(host)).toHaveLength(2));
+    await vi.waitFor(() => expect(ruleRuns(host).map((run) => run.state).sort()).toEqual(["ready", "started"]));
+    expect(sdkCalls(host, "threads.spawn")).toHaveLength(1);
+    expect((sdkCalls(host, "threads.spawn")[0]![0] as { pluginMetadata: { mail: { kind: string } } }).pluginMetadata.mail.kind).toBe("incident");
+    expect(bbLinkRows(host)).toEqual([expect.objectContaining({ kind: "incident", target_id: "bb_t1" })]);
+    expect(host.bb.storage.database().prepare("SELECT bb_thread_id FROM incident_threads").all()).toEqual([{ bb_thread_id: "bb_t1" }]);
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("a starting run left from before a restart becomes failed", async () => {
+    const host = await load({
+      settings: { vaultKey: generateVaultKey(), mailRules: true },
+      sdk: bbSdk(),
+      seed: (bb) => {
+        seedMail(bb, { folders: ICLOUD_FOLDERS, messages: [{ folder: "INBOX", message: makeFetchedMessage(1) }] });
+        const store = createSqliteStore(bb.storage.database());
+        store.saveRule({ id: "rule_a", name: "Invented", enabled: true, match: { from: ["x@example.com"] }, projectId: "api", template: "", mode: "start" }, NOW.toISOString());
+        const messageId = (bb.storage.database().prepare("SELECT id FROM messages").get() as { id: string }).id;
+        store.insertRuleRun(
+          { id: "run_old", ruleId: "rule_a", accountId: "acc_1", messageId, threadId: null, state: "starting", createdAt: new Date(NOW.getTime() - 11 * 60_000).toISOString() },
+          { perRuleHour: 3, perRuleDay: 10, allDay: 20 },
+        );
+      },
+    });
+    const service = host.harness.behavior.runService("sync");
+    await vi.waitFor(() => expect(ruleRuns(host)[0]).toMatchObject({ state: "failed" }));
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("a rule thread gets no mail: configure, every tool and the CLI go by Mail's own rows, never by metadata", async () => {
+    const { host, accountId, service } = await started({ settings: { agentTools: true, agentPropose: true, agentTriage: true } });
+    await call(host, "rule_save", ruleInput({ mode: "start", confirmedStart: true }));
+    deliver(host, 1);
+    await wakeAndWait(host, accountId);
+    await vi.waitFor(() => expect(ruleRuns(host)[0]).toMatchObject({ state: "started", bb_thread_id: "bb_t1" }));
+
+    const ruleThread = await host.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "bb_t1" } }));
+    expect(ruleThread.tools).toEqual([]);
+    expect(ruleThread.skills).toEqual([]);
+    const forged = await host.harness.behavior.resolveAgentConfiguration(
+      makePluginAgentConfigurationContext({ thread: { id: "bb_normal" }, pluginMetadata: { mail: { v: 1, origin: "rule", ruleId: "rule_x" } } }),
+    );
+    expect(forged.tools.length).toBeGreaterThan(0);
+    expect(forged.skills).toEqual(["mail"]);
+
+    for (const { name } of host.harness.inspection.registrations.agentTools) {
+      const params: Record<string, unknown> =
+        {
+          mail_search: { query: "Invented" },
+          mail_contacts: { query: "Invented" },
+          mail_read: { messageId: "m_x" },
+          mail_propose: { kind: "reply", sourceMessageId: "m_x", body: "Invented" },
+          mail_triage: { items: [{ messageId: "m_x", action: "archive" }] },
+        }[name] ?? {};
+      const result = await host.harness.behavior.callAgentTool(name, params, { threadId: "bb_t1" }).catch((error: unknown) => String(error));
+      expect(toolText(result as never), name).toContain("Mail is not available in threads started by a mail rule");
+    }
+    for (const command of [["accounts"], ["search", "Invented"], ["read", "m_x"], ["sync"], ["remove", accountId]]) {
+      const result = await host.harness.behavior.runCli(command, { threadId: "bb_t1" });
+      expect(result.exitCode, command.join(" ")).not.toBe(0);
+      expect(result.stderr).toContain("Mail is not available in threads started by a mail rule");
+    }
+    expect((await host.harness.behavior.runCli(["accounts"], { threadId: "bb_normal" })).exitCode).toBe(0);
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("every rule method refuses another plugin", async () => {
+    const { host, service } = await started();
+    const inputs: [string, unknown][] = [
+      ["rules_list", {}],
+      ["rule_save", ruleInput()],
+      ["rule_delete", { id: "rule_x" }],
+      ["rules_pause", {}],
+      ["rule_runs_list", {}],
+      ["rule_run_dismiss", { id: "run_x" }],
+    ];
+    for (const [method, input] of inputs) {
+      await expect(host.harness.behavior.callRpc(method, input, asPluginCaller), method).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    }
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("the canary test: rule Start and a Prepared run started by the owner hand over no secret", async () => {
+    const { host, accountId, service } = await started();
+    await call(host, "rule_save", ruleInput({ name: "Invented start", mode: "start", confirmedStart: true, match: { subjectWords: ["login"] } }));
+    await call(host, "rule_save", ruleInput({ name: "Invented prepare", match: { subjectWords: ["invented"] } }));
+    const token = CANARY.bodyToken;
+    host.gateway.deliver({
+      from: { name: `Ivy password: ${CANARY.fromName}`, address: "ivy@example.com" },
+      date: recent,
+      subject: `Invented login code ${CANARY.subject}`,
+      bodyText: `Hello. Your token ${token} and card ${CANARY.bodyCard} thanks`,
+    });
+    await wakeAndWait(host, accountId);
+    await vi.waitFor(() => expect(ruleRuns(host).map((run) => run.state).sort()).toEqual(["ready", "started"]));
+    const ready = ruleRuns(host).find((run) => run.state === "ready")!;
+    await call(host, "bb_thread_start", { messageId: ready.message_id, include: "message", projectId: "api", ruleRunId: ready.id });
+    const handedOver = JSON.stringify(sdkCalls(host, "threads.spawn"));
+    expect(sdkCalls(host, "threads.spawn")).toHaveLength(2);
+    for (const canary of CANARIES) expect(handedOver, `canary ${canary}`).not.toContain(canary);
+    expect(handedOver).toContain("[hidden token]");
+    const notice = await call(host, "day_notice_get", {}).catch(() => null);
+    expectNoCanary(host, [JSON.stringify(notice)]);
+    service.controller.abort();
+    await service.done;
   });
 });

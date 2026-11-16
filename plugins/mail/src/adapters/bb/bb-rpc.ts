@@ -19,6 +19,15 @@ import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
 import {
   BB_REFUSAL_TEXT,
   BINDINGS_MAX,
+  RULE_CAPS,
+  RULES_MAX,
+  alertClass,
+  isBulkRow,
+  mailRuleMatches,
+  ownAddresses,
+  ruleCandidates,
+  rulePrompt,
+  validateRule,
   DEV_KINDS,
   INCIDENT_APPEND_DAYS,
   PATCH_FILES_MAX,
@@ -72,6 +81,11 @@ import {
   type BbLinkRow,
   type BbMessage,
   type DevGroupRow,
+  type Rule,
+  type RuleMatch,
+  type RuleRecord,
+  type RuleRunRecord,
+  type RuleRunState,
   type IncidentRow,
   type ProjectRemote,
   type BbPermissionMode,
@@ -130,6 +144,11 @@ export const BINDING_INVALID_TEXT: Record<BindingKind, string> = {
 export const BINDINGS_FULL_TEXT = "You have the most binding rules Makosh Mail keeps (500); remove some first";
 export const UNKNOWN_BINDING_TEXT = "Unknown binding rule";
 export const REMOVED_PROJECT_NAME = "Removed project";
+export const RULE_THREAD_MESSAGE = "Mail is not available in threads started by a mail rule";
+export const RULES_FULL_TEXT = `You have the most mail rules Makosh Mail keeps (${RULES_MAX}); remove some first`;
+export const UNKNOWN_RULE_TEXT = "Unknown rule";
+/** Starting runs older than this at start-up never got their thread: they become failed. */
+export const STALE_START_MS = 10 * 60 * 1000;
 
 /** One attachment saved into a project: at most this many bytes. */
 export const SAVE_PART_MAX_BYTES = 25 * 1024 * 1024;
@@ -147,6 +166,7 @@ const DEV_DIGEST_DAYS = 7;
 /** Today's dev line reads at most this many groups. */
 const TODAY_DEV_GROUPS = 1_000;
 const PROJECT_MAIL_PAGE = 50;
+const RULE_RUNS_PAGE = 50;
 const INFO_THREADS = 5;
 /** bb_thread_mail's total counts at most this many conversations. */
 const INFO_TOTAL_MAX = 500;
@@ -368,6 +388,193 @@ function devCounts(counts: DevGroupRow["counts"]): Record<(typeof DEV_KINDS)[num
 /** An incident thread still takes updates (7 days since its last). */
 function appendable(row: IncidentRow, now: Date): boolean {
   return now.getTime() - Date.parse(row.lastAt) <= INCIDENT_APPEND_DAYS * DAY_MS;
+}
+
+/** A rule's match as stored: addresses, domains (ASCII), the List-Id, words and the repo in lower case. */
+export function normalizeRuleMatch(match: RuleMatch): RuleMatch {
+  const out: RuleMatch = {};
+  if (match.from !== undefined && match.from.length > 0) out.from = match.from.map((address) => address.trim().toLowerCase());
+  if (match.domains !== undefined && match.domains.length > 0) {
+    out.domains = match.domains.map((domain) => {
+      const plain = domain.trim().replace(/^@/, "").toLowerCase();
+      return domainToASCII(plain) || plain;
+    });
+  }
+  if (match.list !== undefined && match.list !== null && match.list.trim() !== "") out.list = normalizeListId(match.list) ?? match.list.trim().toLowerCase();
+  if (match.subjectWords !== undefined && match.subjectWords.length > 0) out.subjectWords = match.subjectWords.map((word) => word.trim().toLowerCase());
+  if (match.dev !== undefined && match.dev !== null) {
+    const dev: NonNullable<RuleMatch["dev"]> = {};
+    if (match.dev.source !== undefined) dev.source = match.dev.source;
+    if (match.dev.kind !== undefined) dev.kind = match.dev.kind;
+    if (match.dev.state !== undefined) dev.state = match.dev.state;
+    if (match.dev.repo !== undefined) dev.repo = match.dev.repo.trim().toLowerCase();
+    out.dev = dev;
+  }
+  if (match.accounts !== undefined && match.accounts.length > 0) out.accounts = [...match.accounts];
+  return out;
+}
+
+/** What rule evaluation needs (afterRoundRules). */
+export type RuleDeps = {
+  store: MailStore;
+  clock: Clock;
+  newId: () => string;
+  projects: ProjectDirectory;
+  threads: BbThreads;
+  agentLog: (input: LogEntryInput) => number | null;
+  log: (line: string) => void;
+  /** The owner's mailRules setting. */
+  mailRules: () => boolean;
+  /** A run was prepared or started: the day clock announces it. */
+  notify: () => void;
+};
+
+/**
+ * Mail rules after an ok round (spec "Mail rules", resolutions 1, 3 and 13):
+ * only with mailRules on; only newInbox minus returning (never backfill,
+ * an initial sync or a reset); each row inside the AI access scope, not from
+ * the owner, bulk only for dev or list rules; one run per rule and message.
+ * Prepare-mode runs become ready. Start-mode runs are inserted as starting
+ * with the caps in one transaction, then spawn in a managed worktree with
+ * accept-edits (never the checkout); alert-class rules with an open incident
+ * become ready ("Add to incident thread") instead. Logs ids and codes only.
+ */
+export async function afterRoundRules(
+  deps: RuleDeps,
+  accountId: string,
+  outcome: { newInbox: readonly string[]; returning: readonly string[] },
+): Promise<void> {
+  if (!deps.mailRules()) return;
+  const { store } = deps;
+  const rules = store.listRules().filter((rule) => rule.enabled);
+  if (rules.length === 0) return;
+  const ids = ruleCandidates(outcome);
+  if (ids.length === 0) return;
+  const nowIso = deps.clock.now().toISOString();
+  const rows = new Map(store.notifyRows(ids, nowIso).map((row) => [row.id, row]));
+  const listIds = store.listIds(ids);
+  const own = new Set(ownAddresses(store).map((address) => address.trim().toLowerCase()));
+  let projects: ProjectInfo[] | null | undefined;
+  const projectList = async () => {
+    if (projects === undefined) {
+      try {
+        projects = await deps.projects.list();
+      } catch {
+        projects = null;
+      }
+    }
+    return projects;
+  };
+  for (const id of ids) {
+    const header = store.scopedMessage(id);
+    const row = rows.get(id);
+    // A row a block rule just queued to Spam is not judged.
+    if (header === null || row === undefined || header.accountId !== accountId || row.movePending !== null) continue;
+    if (own.has(header.from.address.trim().toLowerCase())) continue;
+    const ruleRow = {
+      accountId,
+      fromAddress: header.from.address,
+      listId: listIds.get(id) ?? null,
+      subject: header.subject,
+      dev: header.dev,
+      bulk: isBulkRow(row.bulk, row.fromAddress),
+    };
+    for (const rule of rules) {
+      if (!mailRuleMatches(rule, ruleRow)) continue;
+      try {
+        await runRule(deps, rule, header, projectList);
+      } catch (error) {
+        deps.log(`rule ${rule.id}: failed (${errorKind(error)})`);
+      }
+    }
+  }
+}
+
+async function runRule(
+  deps: RuleDeps,
+  rule: Rule,
+  header: MessageHeader,
+  projectList: () => Promise<ProjectInfo[] | null>,
+): Promise<void> {
+  const { store } = deps;
+  const nowIso = () => deps.clock.now().toISOString();
+  const runId = `run_${deps.newId()}`;
+  let state: "starting" | "ready" = rule.mode === "start" ? "starting" : "ready";
+  let tree: WorkingTree | null = null;
+  let alert: { parts: AlertParts; ref: string } | null = null;
+  if (state === "starting") {
+    // A project without a tree (or BB not answering) cannot start: the run waits for the owner.
+    tree = (await projectList())?.find((project) => project.id === rule.projectId)?.tree ?? null;
+    if (tree === null) state = "ready";
+  }
+  if (state === "starting" && alertClass(rule) && header.dev !== null && header.dev.source === "monitoring") {
+    const parts = alertOf({ devClass: header.dev, subject: header.subject, text: bodyPlainText(store.getBody(header.id)) });
+    if (parts !== null) {
+      alert = { parts, ref: await alertFingerprint(parts) };
+      const open = store.incidentFor(alert.ref);
+      // An open incident takes the mail as an update the owner adds ("Add to incident thread").
+      if (open !== null && appendable(open, deps.clock.now())) state = "ready";
+    }
+  }
+  const inserted = store.insertRuleRun(
+    { id: runId, ruleId: rule.id, accountId: header.accountId, messageId: header.id, threadId: header.threadId, state, createdAt: nowIso() },
+    RULE_CAPS,
+  );
+  if (inserted === "duplicate") return;
+  if (inserted === "capped") {
+    deps.agentLog({ actor: "rule", tool: "rule_thread", outcome: "capped", messageIds: [header.id], refId: rule.id });
+    return;
+  }
+  if (state === "ready") {
+    deps.agentLog({ actor: "rule", tool: "rule_thread", outcome: "prepared", messageIds: [header.id], refId: rule.id });
+    deps.notify();
+    return;
+  }
+  let bbThreadId: string;
+  let hidden = 0;
+  try {
+    const text = rulePrompt(rule, bbMessage(store, header));
+    hidden = text.hidden;
+    bbThreadId = (
+      await deps.threads.spawn({
+        projectId: rule.projectId,
+        environment: worktreeEnvironment(tree!),
+        title: threadTitle(header.subject, rule.name),
+        prompt: text.text,
+        pluginMetadata: metadataFor({
+          accountId: header.accountId,
+          messageId: header.id,
+          threadId: header.threadId,
+          kind: alert === null ? "rule" : "incident",
+          origin: "rule",
+          ruleId: rule.id,
+        }),
+        permissionMode: "accept-edits",
+      })
+    ).threadId;
+  } catch (error) {
+    // Never a second spawn and never the checkout: the owner may start it from the strip.
+    store.updateRuleRun(runId, { state: "failed" }, nowIso());
+    deps.agentLog({ actor: "rule", tool: "rule_thread", outcome: "failed", messageIds: [header.id], refId: rule.id });
+    deps.log(`rule ${rule.id}: thread not started (${errorKind(error)})`);
+    return;
+  }
+  const at = nowIso();
+  store.updateRuleRun(runId, { state: "started", bbThreadId }, at);
+  if (alert !== null) store.putIncident({ fingerprint: alert.ref, bbThreadId, projectId: rule.projectId, createdAt: at, lastAt: at });
+  store.addBbLink({
+    id: `bbl_${deps.newId()}`,
+    accountId: header.accountId,
+    messageId: header.id,
+    threadId: header.threadId,
+    kind: alert === null ? "thread" : "incident",
+    targetId: bbThreadId,
+    projectId: rule.projectId,
+    extra: null,
+    createdAt: at,
+  });
+  deps.agentLog({ actor: "rule", tool: "rule_thread", outcome: "started", messageIds: [header.id], count: 1, hiddenCount: hidden, refId: bbThreadId });
+  deps.notify();
 }
 
 export function createBbRpc(deps: BbRpcDeps) {
@@ -1309,7 +1516,132 @@ export function createBbRpc(deps: BbRpcDeps) {
     return { bound, origin, total };
   }
 
+
+  // ---- Mail rules (Task 12) ----
+
+  let lastPaused: string[] | null = null;
+
+  function ruleView(rule: RuleRecord, list: ProjectInfo[] | null) {
+    return {
+      id: rule.id,
+      name: rule.name,
+      enabled: rule.enabled,
+      match: rule.match,
+      projectId: rule.projectId,
+      projectName: list?.find((project) => project.id === rule.projectId)?.name ?? null,
+      template: rule.template,
+      mode: rule.mode,
+      createdAt: rule.createdAt,
+      updatedAt: rule.updatedAt,
+    };
+  }
+
+  async function rulesList() {
+    const list = await listOrNull();
+    return { rules: store.listRules().map((rule) => ruleView(rule, list)) };
+  }
+
+  async function ruleSave(input: {
+    id?: string | undefined;
+    name: string;
+    enabled: boolean;
+    match: RuleMatch;
+    projectId: string;
+    template: string;
+    mode: "prepare" | "start";
+    confirmedStart?: boolean | undefined;
+  }) {
+    const match = normalizeRuleMatch(input.match);
+    const name = input.name.trim();
+    const checked = validateRule({
+      name,
+      match,
+      template: input.template,
+      mode: input.mode,
+      projectId: input.projectId,
+      ...(input.confirmedStart === undefined ? {} : { confirmedStart: input.confirmedStart }),
+    });
+    if (!checked.ok) throw refuse("invalid", checked.reason);
+    if (input.id !== undefined && !store.listRules().some((rule) => rule.id === input.id)) throw refuse("not_found", UNKNOWN_RULE_TEXT);
+    const project = await projectOf(input.projectId, "rule_save");
+    // Start runs only in a managed worktree of the project's checkout (resolution 1).
+    if (input.mode === "start" && project.tree === null) throw refuse("conflict", BB_REFUSAL_TEXT.no_tree);
+    const saved = store.saveRule(
+      {
+        id: input.id ?? `rule_${deps.newId()}`,
+        name,
+        enabled: input.enabled,
+        match,
+        projectId: input.projectId,
+        template: input.template,
+        mode: input.mode,
+      },
+      nowIso(),
+    );
+    if ("full" in saved) throw refuse("conflict", RULES_FULL_TEXT);
+    return ruleView(saved.rule, await listOrNull());
+  }
+
+  function ruleDelete(input: { id: string }) {
+    // Its runs stay until the 30-day purge, so the caps still count them.
+    if (!store.deleteRule(input.id)) throw refuse("not_found", UNKNOWN_RULE_TEXT);
+    return { ok: true as const };
+  }
+
+  /** Pause all: disables every rule and remembers them; `undo` enables that set again. */
+  function rulesPause(input: { undo?: boolean | undefined }) {
+    if (input.undo === true) {
+      const ids = lastPaused ?? [];
+      lastPaused = null;
+      store.resumeRules(ids, nowIso());
+      return { paused: 0 };
+    }
+    const ids = store.pauseRules(nowIso());
+    lastPaused = ids;
+    return { paused: ids.length };
+  }
+
+  function ruleRunView(run: RuleRunRecord, names: ReadonlyMap<string, string>) {
+    return {
+      id: run.id,
+      ruleId: run.ruleId,
+      ruleName: names.get(run.ruleId) ?? null,
+      accountId: run.accountId,
+      messageId: run.messageId,
+      threadId: run.threadId,
+      state: run.state,
+      bbThreadId: run.bbThreadId,
+      subject: store.getMessage(run.messageId)?.subject ?? "",
+      createdAt: run.createdAt,
+    };
+  }
+
+  function ruleRunsList(input: { state?: RuleRunState | undefined; cursor?: string | null | undefined }) {
+    const page = store.listRuleRuns({ ...(input.state === undefined ? {} : { state: input.state }), cursor: input.cursor ?? null, limit: RULE_RUNS_PAGE });
+    const names = new Map(store.listRules().map((rule) => [rule.id, rule.name]));
+    return { runs: page.runs.map((run) => ruleRunView(run, names)), next: page.next };
+  }
+
+  function ruleRunDismiss(input: { id: string }) {
+    const run = store.getRuleRun(input.id);
+    if (run === null || (run.state !== "ready" && run.state !== "failed" && run.state !== "capped")) throw refuse("not_found", UNKNOWN_RULE_RUN_TEXT);
+    store.updateRuleRun(run.id, { state: "dismissed" }, nowIso());
+    return { ok: true as const };
+  }
+
+  /** Today's "ready to start" count. */
+  function rulesReady(): number {
+    return store.listRuleRuns({ state: "ready", limit: 500 }).runs.length;
+  }
+
   return {
+    rulesList,
+    ruleSave,
+    ruleDelete,
+    rulesPause,
+    ruleRunsList,
+    ruleRunDismiss,
+    rulesReady,
     devDigest,
     todayDev,
     threadDetail,

@@ -28,6 +28,7 @@ import {
   type MailStore,
   type ReminderRecord,
   type ReplyCandidate,
+  type RuleRunRecord,
   type SinceCounts,
   type SyncOutcome,
 } from "../../core/index.ts";
@@ -190,7 +191,42 @@ export function afterRoundAi(deps: AfterRoundAiDeps, accountId: string, outcome:
 // ---------------------------------------------------------------------------
 
 /** What a window shows: today's digest counts, or one due reminder. */
-export type DayNotice = { kind: "digest"; day: string; replyCount: number } | { kind: "reminder"; reminder: ReminderRecord };
+export type DayNotice =
+  | { kind: "digest"; day: string; replyCount: number }
+  | { kind: "reminder"; reminder: ReminderRecord }
+  | { kind: "rule"; ruleName: string; count: number };
+
+/** Rule runs looked at for a notice. */
+const RULE_NOTICE_RUNS = 200;
+
+/** Prepared (ready) and started rule runs not shown in a notice yet, oldest first. */
+function unnotifiedRuns(store: MailStore): RuleRunRecord[] {
+  return (["ready", "started"] as const)
+    .flatMap((state) => store.listRuleRuns({ state, limit: RULE_NOTICE_RUNS }).runs)
+    .filter((run) => run.notifiedAt === null)
+    .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+}
+
+/**
+ * A rule notice (slice 3g): the rule of the oldest unshown prepared or
+ * started run, with how many of its runs are new; those runs are marked
+ * shown. Runs of a deleted rule are marked shown without a notice.
+ */
+function takeRuleNotice(store: MailStore, nowIso: string): DayNotice | null {
+  const runs = unnotifiedRuns(store);
+  if (runs.length === 0) return null;
+  const rules = new Map(store.listRules().map((rule) => [rule.id, rule]));
+  const done = new Set<string>();
+  for (const run of runs) {
+    if (done.has(run.ruleId)) continue;
+    done.add(run.ruleId);
+    const ofRule = runs.filter((other) => other.ruleId === run.ruleId);
+    for (const other of ofRule) store.updateRuleRun(other.id, { notifiedAt: nowIso }, nowIso);
+    const rule = rules.get(run.ruleId);
+    if (rule !== undefined) return { kind: "rule", ruleName: rule.name, count: ofRule.length };
+  }
+  return null;
+}
 
 /**
  * Tokens for announced notices, in memory. Each notice (today's digest, a
@@ -243,7 +279,7 @@ export function takeDayNotice(store: MailStore, now: Date, quietHours = ""): Day
   if (reminder !== undefined && store.updateReminder(reminder.id, { notifiedAt: nowIso }, nowIso)) {
     return { kind: "reminder", reminder };
   }
-  return null;
+  return takeRuleNotice(store, nowIso);
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +376,14 @@ export function createDayClock(deps: DayClockDeps): DayClock {
       if (reminder.notifiedAt !== null) continue;
       // Keyed by the due time too: a snoozed reminder that comes due again is a new notice.
       const token = deps.book.announce(`reminder:${reminder.id}:${reminder.dueAt}`);
+      if (token !== null) deps.publish(token);
+    }
+    // Rule runs prepared or started since the last notice (slice 3g): one
+    // announcement per rule and newest run, so a burst wakes the windows once.
+    const newest = new Map<string, string>();
+    for (const run of unnotifiedRuns(store)) newest.set(run.ruleId, run.id);
+    for (const [ruleId, runId] of newest) {
+      const token = deps.book.announce(`rule:${ruleId}:${runId}`);
       if (token !== null) deps.publish(token);
     }
   }

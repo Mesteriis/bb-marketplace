@@ -67,7 +67,15 @@ import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
 import { createProjectDirectory } from "./src/adapters/bb/bb-projects.ts";
 import { createBbThreads } from "./src/adapters/bb/bb-threads.ts";
 import { createTaskboardTarget } from "./src/adapters/bb/taskboard-target.ts";
-import { bbRefusal, createBbRpc, type BbSettings } from "./src/adapters/bb/bb-rpc.ts";
+import {
+  RULE_THREAD_MESSAGE,
+  STALE_START_MS,
+  afterRoundRules,
+  bbRefusal,
+  createBbRpc,
+  type BbSettings,
+  type RuleDeps,
+} from "./src/adapters/bb/bb-rpc.ts";
 import { describeStructure, headerLines, readHeaders } from "./src/core/headers.ts";
 import {
   IdentityRefusal,
@@ -196,6 +204,7 @@ import {
   renderSearchHitsCounted,
   type LogEntryInput,
   type LogOutcome,
+  type LogTool,
   resolveActionDestination,
   resolveMoveDestination,
   roleFolders,
@@ -275,7 +284,6 @@ import {
   type TriageItemRecord,
   type TriageRowState,
   type TriageView,
-  BB_REFUSAL_TEXT,
   projectFolder,
   scanHtml,
   type BbThreads,
@@ -542,6 +550,12 @@ function defineSettings(bb: BbPluginApi) {
       label: "Recognise GitHub, GitLab, CI and monitoring mail (Dev view)",
       description: "Judged on this computer when mail arrives; nothing is sent anywhere.",
       default: true,
+    },
+    mailRules: {
+      type: "boolean",
+      label: "Run my mail rules on new Inbox mail",
+      description: "Rules you make prepare agent threads (or start them, if you chose that for a rule), within fixed limits.",
+      default: false,
     },
     attachmentFolder: {
       type: "string",
@@ -1081,6 +1095,23 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       bb.log.warn(`AI scope load failed (${errorKind(error)})`);
     }
     const agentLog = createAgentLog(store, clock, (line) => bb.log.warn(line));
+    // Slice 3g: BB projects, threads and Taskboard, over bb.sdk only.
+    const projectDirectory = createProjectDirectory(bb.sdk, { now: () => clock.now().getTime() });
+    const bbThreads = createBbThreads(bb.sdk);
+    const taskTarget = createTaskboardTarget(bb.sdk);
+    /**
+     * A BB thread started by a mail rule (spec resolution 4): decided by
+     * Mail's own rule_runs rows, never by thread metadata. A failed lookup
+     * counts as a rule thread, so no mail is offered.
+     */
+    const isRuleThread = (threadId: string): boolean => {
+      try {
+        return store.ruleRunByBbThread(threadId) !== null;
+      } catch (error) {
+        bb.log.warn(`rule thread lookup failed (${errorKind(error)})`);
+        return true;
+      }
+    };
     const gateway =
       overrides.gateway ?? createImapflowGateway({ logger: (line) => bb.log.warn(line) });
     const publishChanged = (accountId: string | null) =>
@@ -1145,6 +1176,10 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
           afterRound(newMailDeps, accountId, outcome, only);
           // Category rules and reply reminders over the round's new rows (slice 3f).
           afterRoundAi({ store, clock, categoriesOn: () => current.mailCategories, log: (line) => bb.log.info(line) }, accountId, outcome);
+          // Mail rules over the round's genuinely new Inbox rows (slice 3g); a spawn runs after this returns.
+          void afterRoundRules(ruleDeps, accountId, outcome).catch((error: unknown) => {
+            bb.log.warn(`rules ${accountId}: failed (${errorKind(error)})`);
+          });
           idle.firstRoundOk(accountId);
         },
         onRoundEnd: (accountId) => {
@@ -1327,10 +1362,28 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       isReady: () => vault !== null,
       log: (line) => bb.log.info(line),
     });
-    const purgeDaily = () => {
+    const ruleDeps: RuleDeps = {
+      store,
+      clock,
+      newId: randomUUID,
+      projects: projectDirectory,
+      threads: bbThreads,
+      agentLog: agentLog.log,
+      log: (line) => bb.log.info(line),
+      mailRules: () => current.mailRules,
+      notify: () => dayClock.tick(),
+    };
+    const purgeDaily = async () => {
       purgeProposals();
+      // Bindings to projects BB no longer has go after 30 days; unknown when BB does not answer.
+      let known: string[] | null = null;
       try {
-        const purged = store.purgeDaily(clock.now().toISOString());
+        known = (await projectDirectory.list()).map((project) => project.id);
+      } catch {
+        known = null;
+      }
+      try {
+        const purged = store.purgeDaily(clock.now().toISOString(), known);
         if (purged > 0) bb.log.info(`daily purge removed ${purged} rows`);
       } catch (error) {
         bb.log.warn(`daily purge failed (${errorKind(error)})`);
@@ -1339,8 +1392,17 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
 
     bb.background.service("sync", {
       start: async (signal) => {
-        purgeDaily();
-        const daily = setInterval(purgeDaily, PURGE_INTERVAL_MS);
+        // A rule run that was starting when the plugin stopped never got its thread (resolution 13).
+        try {
+          const now = clock.now();
+          const failed = store.failStaleStarts(new Date(now.getTime() - STALE_START_MS).toISOString(), now.toISOString());
+          if (failed > 0) bb.log.info(`rules: ${failed} stale starts failed`);
+        } catch (error) {
+          bb.log.warn(`rule start recovery failed (${errorKind(error)})`);
+        }
+        // Not awaited: the purge asks BB for its projects, and the loops must not wait for that.
+        void purgeDaily();
+        const daily = setInterval(() => void purgeDaily(), PURGE_INTERVAL_MS);
         const sweep = setInterval(() => {
           jobs.sweep();
           aiJobs.sweep();
@@ -1377,10 +1439,6 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     });
 
     const tickets = new TicketBook<DownloadRequest>(clock);
-    // Slice 3g: BB projects, threads and Taskboard, over bb.sdk only.
-    const projectDirectory = createProjectDirectory(bb.sdk, { now: () => clock.now().getTime() });
-    const bbThreads = createBbThreads(bb.sdk);
-    const taskTarget = createTaskboardTarget(bb.sdk);
     const rpcDeps: RpcDeps = {
       projects: projectDirectory,
       bbThreads,
@@ -1439,7 +1497,9 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     };
     registerRpc(bb, rpcDeps);
     registerDownloadRoute(bb, store, rawDeps, tickets);
-    registerAgentSurfaces(bb, store, {
+    // Every agent tool refuses inside a rule thread, by the thread it runs in (spec resolution 4).
+    const agentBb = gateRuleThreads(bb, isRuleThread, agentLog.log);
+    registerAgentSurfaces(agentBb, store, {
       agentTools: () => current.agentTools,
       agentPropose: () => current.agentPropose,
       agentTriage: () => current.agentTriage,
@@ -1448,9 +1508,11 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       notQueued,
       agentLog: agentLog.log,
       agentLogUpdate: agentLog.update,
+      isRuleThread,
     });
-    registerTriageTools(bb, rpcDeps);
+    registerTriageTools(agentBb, rpcDeps);
     registerCli(bb, store, {
+      isRuleThread,
       loop,
       accountDeps,
       publishChanged,
@@ -2392,12 +2454,6 @@ async function unsubscribeOnce(
   return { outcome: "queued", reason: null, outboxId: queued.outboxId };
 }
 
-/** A 3g method not wired yet: plugin callers refused first, then `conflict`. */
-async function notYet3g(_input: unknown, context: ExperimentalPluginRpcHandlerContext): Promise<never> {
-  refusePluginCaller(context);
-  throw refuse("conflict", BB_REFUSAL_TEXT.not_available);
-}
-
 function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const { store, accountDeps, composeDeps, publishChanged } = deps;
   const log = (line: string) => bb.log.warn(line);
@@ -2463,7 +2519,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     log,
     ...(deps.saveToProjectEnabled === undefined ? {} : { saveEnabled: deps.saveToProjectEnabled }),
   });
-  const day = createDayRpc(deps, ai.withCategories, { dev: () => bbRpc.todayDev() });
+  const day = createDayRpc(deps, ai.withCategories, { dev: () => bbRpc.todayDev(), rulesReady: () => bbRpc.rulesReady() });
   /** A slice 3g owner method: plugin callers refused first; BB failures as fixed texts. */
   function ownerBb<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
@@ -3038,7 +3094,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       ai_scope_set: owner("ai_scope_set", (input) => day.setScope(input)),
       agent_log_list: owner("agent_log_list", (input) => day.logList(input)),
       agent_log_clear: owner("agent_log_clear", () => ({ removed: store.clearAgentLog() })),
-      // Slice 3g (owner only, like every compose method). Task 12 wires the rules; until then they refuse.
+      // Slice 3g (owner only, like every compose method).
       projects_list: ownerBb("projects_list", () => bbRpc.projectsList()),
       bb_thread_prepare: ownerBb("bb_thread_prepare", (input) => bbRpc.threadPrepare(input)),
       bb_thread_start: ownerBb("bb_thread_start", (input) => bbRpc.threadStart(input)),
@@ -3064,12 +3120,12 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       bindings_list: ownerBb("bindings_list", () => bbRpc.bindingsList()),
       project_mail: ownerBb("project_mail", (input) => bbRpc.projectMail(input)),
       bb_thread_mail: ownerBb("bb_thread_mail", (input) => bbRpc.bbThreadMail(input)),
-      rules_list: notYet3g,
-      rule_save: notYet3g,
-      rule_delete: notYet3g,
-      rules_pause: notYet3g,
-      rule_runs_list: notYet3g,
-      rule_run_dismiss: notYet3g,
+      rules_list: ownerBb("rules_list", () => bbRpc.rulesList()),
+      rule_save: ownerBb("rule_save", (input) => bbRpc.ruleSave(input)),
+      rule_delete: ownerBb("rule_delete", (input) => bbRpc.ruleDelete(input)),
+      rules_pause: ownerBb("rules_pause", (input) => bbRpc.rulesPause(input)),
+      rule_runs_list: ownerBb("rule_runs_list", (input) => bbRpc.ruleRunsList(input)),
+      rule_run_dismiss: ownerBb("rule_run_dismiss", (input) => bbRpc.ruleRunDismiss(input)),
     },
     { experimental_discoverable: false },
   );
@@ -3199,7 +3255,48 @@ type AgentSurfaceDeps = {
   notQueued: Map<string, NotQueuedReason>;
   agentLog: AgentLog;
   agentLogUpdate: AgentLogUpdate;
+  /** A BB thread started by a mail rule (slice 3g): it gets no mail tools and no skill. */
+  isRuleThread: (threadId: string) => boolean;
 };
+
+/** Each agent tool's agent-log name. */
+const TOOL_LOG_NAMES: Partial<Record<string, LogTool>> = {
+  mail_search: "search",
+  mail_read: "read",
+  [CONTACTS_TOOL]: "contacts",
+  [INBOX_TOOL]: "inbox",
+  [PROPOSE_TOOL]: "propose",
+  [TEMPLATES_TOOL]: "templates",
+  [TRIAGE_TOOL]: "triage",
+};
+
+/**
+ * The bb tools register on (slice 3g, spec resolution 4): every tool's
+ * execute first checks the thread it runs in, so a configuration cached by a
+ * running session cannot widen a rule thread. The rule thread is told so,
+ * and the refusal is logged.
+ */
+function gateRuleThreads(bb: BbPluginApi, isRuleThread: (threadId: string) => boolean, agentLog: AgentLog): BbPluginApi {
+  type Definition = Parameters<BbPluginApi["agents"]["registerTool"]>[0];
+  type Execute = (params: unknown, ctx: { threadId: string }) => unknown;
+  const registerTool = (definition: Definition) => {
+    const execute = definition.execute as unknown as Execute;
+    const gated: Execute = (params, ctx) => {
+      if (isRuleThread(ctx.threadId)) {
+        agentLog({ actor: "agent", tool: TOOL_LOG_NAMES[definition.name] ?? "read", outcome: "refused_off", threadId: ctx.threadId });
+        return toolError(RULE_THREAD_MESSAGE);
+      }
+      return execute(params, ctx);
+    };
+    return bb.agents.registerTool({ ...definition, execute: gated } as unknown as Definition);
+  };
+  const bound = <T extends object>(target: T, key: string | symbol): unknown => {
+    const value = Reflect.get(target, key);
+    return typeof value === "function" ? value.bind(target) : value;
+  };
+  const agents = new Proxy(bb.agents, { get: (target, key) => (key === "registerTool" ? registerTool : bound(target, key)) });
+  return new Proxy(bb, { get: (target, key) => (key === "agents" ? agents : bound(target, key)) });
+}
 
 /** proposal_status's reason: a refused check is "changed"; a confirmed card that could not be queued says why. */
 function proposalReason(
@@ -3523,7 +3620,9 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
   });
   // mail_propose follows its own setting, independent of agentTools.
   // Inbox triage follows agentTriage (slice 3e): mail_inbox, mail_triage and mail_read.
-  bb.agents.configure(() => {
+  bb.agents.configure((context) => {
+    // A rule thread gets no mail tools and no skill, whatever its metadata says (spec resolution 4).
+    if (deps.isRuleThread(context.thread.id)) return { tools: [], skills: [] };
     const read = agentTools();
     const propose = deps.agentPropose();
     const triage = deps.agentTriage();
@@ -4718,7 +4817,7 @@ function aiScopeView(store: MailStore) {
 function createDayRpc(
   deps: RpcDeps,
   withCategories: (threads: ThreadSummary[], folder: string) => ThreadSummary[],
-  bb: { dev: () => { ciFailed: number; repos: number; alertsFiring: number } },
+  bb: { dev: () => { ciFailed: number; repos: number; alertsFiring: number }; rulesReady: () => number },
 ) {
   const { store } = deps;
   const clock = deps.composeDeps.clock;
@@ -4743,7 +4842,7 @@ function createDayRpc(
       since: { ...sinceCountsNow(store, since, deps.categoriesOn()), from: since },
       digestDay: store.getDigest(day)?.day ?? null,
       dev: bb.dev(),
-      rulesReady: 0,
+      rulesReady: bb.rulesReady(),
     };
   }
 
@@ -4809,6 +4908,7 @@ function createDayRpc(
     const taken = takeDayNotice(store, clock.now(), deps.quietHours());
     if (taken === null) throw refuse("not_found", NO_DAY_NOTICE_MESSAGE);
     if (taken.kind === "digest") return { kind: "digest" as const, replyCount: taken.replyCount };
+    if (taken.kind === "rule") return { kind: "rule" as const, ruleName: taken.ruleName, count: taken.count };
     const copy = sentCopy(store, taken.reminder);
     const to = copy?.to[0] ?? { name: null, address: "" };
     return {
@@ -4890,6 +4990,8 @@ function createDayRpc(
 const jsonOption = { json: { type: "boolean", description: "Emit machine-readable JSON" } } as const;
 
 type CliDeps = {
+  /** A BB thread started by a mail rule (slice 3g): the CLI answers no mail there. */
+  isRuleThread: (threadId: string) => boolean;
   loop: SyncLoop;
   accountDeps: AccountDeps;
   publishChanged: (accountId: string | null) => void;
@@ -4914,7 +5016,13 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
    * so this decides what agents are offered; it is not a barrier against an
    * agent with shell access to the BB server machine.
    */
+  const refuseRuleThread = (ctx: PluginCliContext) => {
+    if (ctx.threadId !== undefined && deps.isRuleThread(ctx.threadId)) {
+      throw new PluginCliError(RULE_THREAD_MESSAGE, { code: "rule_thread" });
+    }
+  };
   const requireMailAccess = (ctx: PluginCliContext) => {
+    refuseRuleThread(ctx);
     if (ctx.threadId !== undefined && !agentTools()) {
       throw new PluginCliError(AGENT_MAIL_OFF_MESSAGE, { code: "agent_mail_access_off" });
     }
@@ -5033,7 +5141,8 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
           summary: "Start a sync round now, for one account or all",
           positionals: [{ name: "accountId", description: "Only this account id" }],
           options: jsonOption,
-          run: ({ positionals, options }) => {
+          run: ({ positionals, options }, ctx) => {
+            refuseRuleThread(ctx);
             if (!deps.vaultReady()) {
               throw new PluginCliError(NEEDS_KEY_MESSAGE, { code: "vault_not_ready" });
             }
@@ -5057,6 +5166,7 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
           positionals: [{ name: "accountId", description: "Account id", required: true }],
           options: jsonOption,
           run: ({ positionals, options }, ctx) => {
+            refuseRuleThread(ctx);
             if (ctx.threadId !== undefined) {
               throw new PluginCliError(REMOVE_IN_THREAD_MESSAGE, { code: "owner_terminal_only" });
             }

@@ -4846,6 +4846,22 @@ describe.each(storeKinds)("slice-3g store semantics (%s)", (_kind, make) => {
       expect(s.listUnknown("acc_1", INBOX, null, 10)).toEqual([{ uid: 3 }]);
     });
 
+    it("reads List-Ids by message id for rule matching", () => {
+      s.upsertMessages("acc_1", INBOX, [1, 2, 3].map((uid) => makeFetchedMessage(uid)));
+      s.saveSyncState("acc_1", INBOX, { uidValidity: 7, lastUid: 3, syncedSince: T3G });
+      s.fillListIds("acc_1", INBOX, 7, [{ uid: 1, listId: "demo.example-org.github.com" }, { uid: 2, listId: "" }]);
+      const ids = s.listIds([idIn(INBOX, 1), idIn(INBOX, 2), idIn(INBOX, 3), "m_gone"]);
+      expect([...ids]).toEqual(
+        expect.arrayContaining([
+          [idIn(INBOX, 1), "demo.example-org.github.com"],
+          [idIn(INBOX, 2), ""],
+          [idIn(INBOX, 3), null],
+        ]),
+      );
+      expect(ids.size).toBe(3);
+      expect(s.listIds([]).size).toBe(0);
+    });
+
     it("upsert keeps the List-Id of read headers ('' when absent) and a judged dev class, never overwriting them", () => {
       const headers = { listId: "Demo <demo.example-org.github.com>", listUnsubscribe: null, precedence: null, autoSubmitted: null };
       s.upsertMessages("acc_1", INBOX, [

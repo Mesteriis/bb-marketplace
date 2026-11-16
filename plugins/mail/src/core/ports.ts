@@ -942,6 +942,8 @@ export interface MailStore {
    * only while the folder's stored UIDVALIDITY equals `uidValidity`.
    */
   fillListIds(accountId: string, folder: string, uidValidity: number, ids: { uid: number; listId: string }[]): number;
+  /** Each row's normalized List-Id ('' none, null unknown), for rule matching; ids not stored are left out. */
+  listIds(ids: string[]): Map<string, string | null>;
   /** Dev notifications dated at or after `sinceIso`, grouped by (source, repo), latest group first. */
   devGroups(opts: { sinceIso: string; accountId?: string | null; cursor?: string | null; limit: number }): {
     groups: DevGroupRow[];

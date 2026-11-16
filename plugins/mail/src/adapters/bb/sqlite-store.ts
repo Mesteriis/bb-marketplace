@@ -5272,6 +5272,18 @@ export function createSqliteStore(db: Database.Database): MailStore {
         .all(accountId, folder, belowUid, belowUid, limit);
     },
 
+    listIds(ids) {
+      const out = new Map<string, string | null>();
+      if (ids.length === 0) return out;
+      const rows = db
+        .prepare<[string], { id: string; list_id: string | null }>(
+          "SELECT id, list_id FROM messages WHERE id IN (SELECT value FROM json_each(?))",
+        )
+        .all(JSON.stringify(ids));
+      for (const row of rows) out.set(row.id, row.list_id);
+      return out;
+    },
+
     fillListIds(accountId, folder, uidValidity, ids) {
       if (ids.length === 0) return 0;
       return atomic(() => {

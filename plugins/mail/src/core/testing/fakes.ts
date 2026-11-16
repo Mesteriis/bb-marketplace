@@ -2578,6 +2578,15 @@ export class InMemoryMailStore implements MailStore {
       .map((uid) => ({ uid }));
   }
 
+  listIds(ids: string[]): Map<string, string | null> {
+    const out = new Map<string, string | null>();
+    for (const id of ids) {
+      const row = this.state.rows.find((r) => r.id === id);
+      if (row !== undefined) out.set(id, row.listId ?? null);
+    }
+    return out;
+  }
+
   fillListIds(accountId: string, folder: string, uidValidity: number, ids: { uid: number; listId: string }[]): number {
     if (this.state.syncStates.get(stateKey(accountId, folder))?.uidValidity !== uidValidity) return 0;
     let changed = 0;
