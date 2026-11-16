@@ -9,8 +9,10 @@
 //   rather than reject. A failed probe means download-only.
 // - getDocument gets bytes only: no cMapUrl, standardFontDataUrl or wasmUrl,
 //   no eval, no XFA, no system fonts, no streaming or auto-fetch.
-// - Pages render with annotations off; links are read from Link
-//   annotations and filtered by the view.
+// - Pages render with annotations off, one at a time per document (a new
+//   render cancels the previous RenderTask), on a canvas of at most
+//   CANVAS_PIXELS_MAX pixels; links are read from Link annotations and
+//   filtered by the view.
 // - pdf.js is imported lazily, so the library is evaluated only when a PDF
 //   opens.
 import type { PdfDocument, PdfEngine } from "../../ui/pdf-view.tsx";
@@ -40,6 +42,9 @@ export const PDF_OPTIONS = {
   useSystemFonts: false,
 } as const;
 
+/** The largest canvas drawn, in pixels; a bigger page is drawn at a lower scale. */
+export const CANVAS_PIXELS_MAX = 16 * 1024 * 1024;
+
 /** pdf.js's AnnotationMode.DISABLE. */
 export const ANNOTATION_MODE_DISABLE = 0;
 
@@ -54,9 +59,15 @@ export interface PdfLib {
 
 interface PdfJsPage {
   getViewport(params: { scale: number }): { width: number; height: number };
-  render(params: Record<string, unknown>): { promise: Promise<void> };
+  render(params: Record<string, unknown>): PdfRenderTask;
   getAnnotations(): Promise<{ subtype?: string; url?: string; unsafeUrl?: string }[]>;
   cleanup(): void;
+}
+
+/** pdf.js's RenderTask: cancel() rejects its promise with RenderingCancelledException. */
+interface PdfRenderTask {
+  promise: Promise<void>;
+  cancel(): void;
 }
 
 interface PdfJsDocument {
@@ -142,16 +153,40 @@ export function createPdfEngine(deps: PdfPageDeps): PdfEngine & { license: strin
         close();
         throw error;
       }
+      // One render at a time on the document's canvas: a new one cancels the
+      // previous task and waits for it to let go of the canvas.
+      let drawing: PdfRenderTask | null = null;
+      let latest = 0;
       const result: PdfDocument = {
         pages: doc.numPages,
         async render(n, canvas, scale) {
+          const mine = ++latest;
+          const previous = drawing;
+          drawing = null;
+          if (previous !== null) {
+            previous.cancel();
+            await previous.promise.catch(() => {});
+          }
           const page = await doc.getPage(n);
-          const viewport = page.getViewport({ scale });
+          if (mine !== latest) return;
+          let viewport = page.getViewport({ scale });
+          const pixels = viewport.width * viewport.height;
+          if (pixels > CANVAS_PIXELS_MAX) viewport = page.getViewport({ scale: scale * Math.sqrt(CANVAS_PIXELS_MAX / pixels) });
           canvas.width = Math.floor(viewport.width);
           canvas.height = Math.floor(viewport.height);
           const context = canvas.getContext("2d");
           if (context === null) throw new Error("No canvas");
-          await page.render({ canvas, canvasContext: context, viewport, annotationMode: ANNOTATION_MODE_DISABLE }).promise;
+          const task = page.render({ canvas, canvasContext: context, viewport, annotationMode: ANNOTATION_MODE_DISABLE });
+          drawing = task;
+          try {
+            await task.promise;
+          } catch (error) {
+            // Cancelled by a newer render: not a failure of this page.
+            if (mine !== latest) return;
+            throw error;
+          } finally {
+            if (drawing === task) drawing = null;
+          }
         },
         async links(n) {
           const page = await doc.getPage(n);

@@ -1,7 +1,16 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import { PdfUnavailable } from "../../ui/pdf-view.tsx";
-import { ANNOTATION_MODE_DISABLE, createPdfEngine, PDF_OPTIONS, PDFJS_LICENSE, probeWorker, type PdfLib, type PdfPageDeps } from "./pdf-page.ts";
+import {
+  ANNOTATION_MODE_DISABLE,
+  CANVAS_PIXELS_MAX,
+  createPdfEngine,
+  PDF_OPTIONS,
+  PDFJS_LICENSE,
+  probeWorker,
+  type PdfLib,
+  type PdfPageDeps,
+} from "./pdf-page.ts";
 
 /** A worker that answers (or fails, or stays silent) as told. */
 function fakeWorker(mode: "ready" | "error" | "silent") {
@@ -19,7 +28,7 @@ function fakeLib() {
     getViewport: ({ scale }: { scale: number }) => ({ width: 100 * scale, height: 200 * scale }),
     render: (params: Record<string, unknown>) => {
       calls.render.push(params);
-      return { promise: Promise.resolve() };
+      return { promise: Promise.resolve(), cancel: () => {} };
     },
     getAnnotations: async () => [
       { subtype: "Link", url: "https://example.org/a" },
@@ -78,6 +87,67 @@ describe("pdf-page engine", () => {
     expect(calls.render[0]).toMatchObject({ annotationMode: ANNOTATION_MODE_DISABLE });
     expect(canvas.width).toBe(200);
     expect(await doc.links(1)).toEqual(["https://example.org/a", "javascript:alert(1)"]);
+  });
+
+  it("cancels the previous render on the canvas before starting another; the cancelled one resolves quietly", async () => {
+    const { lib } = fakeLib();
+    const tasks: { cancelled: boolean; finish: () => void }[] = [];
+    const page = {
+      getViewport: ({ scale }: { scale: number }) => ({ width: 100 * scale, height: 200 * scale }),
+      render: () => {
+        let reject!: (error: Error) => void;
+        let resolve!: () => void;
+        const promise = new Promise<void>((ok, fail) => {
+          resolve = ok;
+          reject = fail;
+        });
+        const task = {
+          cancelled: false,
+          finish: () => resolve(),
+        };
+        tasks.push(task);
+        return {
+          promise,
+          cancel: () => {
+            task.cancelled = true;
+            reject(Object.assign(new Error("Rendering cancelled"), { name: "RenderingCancelledException" }));
+          },
+        };
+      },
+      getAnnotations: async () => [],
+      cleanup: () => {},
+    };
+    lib.getDocument = () => ({ promise: Promise.resolve({ numPages: 2, getPage: async () => page }), destroy: async () => {} });
+    const doc = await createPdfEngine(deps("ready", lib)).open(new Uint8Array([1]));
+    const canvas = document.createElement("canvas");
+    canvas.getContext = (() => ({})) as unknown as HTMLCanvasElement["getContext"];
+    const first = doc.render(1, canvas, 1);
+    await vi.waitFor(() => expect(tasks).toHaveLength(1));
+    const second = doc.render(2, canvas, 1);
+    await expect(first).resolves.toBeUndefined();
+    await vi.waitFor(() => expect(tasks).toHaveLength(2));
+    expect(tasks[0]!.cancelled).toBe(true);
+    tasks[1]!.finish();
+    await expect(second).resolves.toBeUndefined();
+    expect(tasks[1]!.cancelled).toBe(false);
+  });
+
+  it("caps the canvas at about 16 megapixels by lowering the scale", async () => {
+    const { lib } = fakeLib();
+    const page = {
+      getViewport: ({ scale }: { scale: number }) => ({ width: 2_000 * scale, height: 4_000 * scale }),
+      render: () => ({ promise: Promise.resolve(), cancel: () => {} }),
+      getAnnotations: async () => [],
+      cleanup: () => {},
+    };
+    lib.getDocument = () => ({ promise: Promise.resolve({ numPages: 1, getPage: async () => page }), destroy: async () => {} });
+    const doc = await createPdfEngine(deps("ready", lib)).open(new Uint8Array([1]));
+    const canvas = document.createElement("canvas");
+    canvas.getContext = (() => ({})) as unknown as HTMLCanvasElement["getContext"];
+    await doc.render(1, canvas, 4);
+    expect(canvas.width * canvas.height).toBeLessThanOrEqual(CANVAS_PIXELS_MAX);
+    expect(canvas.width * canvas.height).toBeGreaterThan(CANVAS_PIXELS_MAX * 0.99);
+    expect(canvas.height / canvas.width).toBeCloseTo(2, 2);
   });
 
   it.each(["error", "silent"] as const)("a worker that %s is download-only and pdf.js is never loaded", async (mode) => {
