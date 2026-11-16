@@ -16,6 +16,7 @@ import {
   renderSearchHitsCounted,
   bodyPlainText,
   plainBodyText,
+  scanHtml,
 } from "./agent-text.ts";
 
 function header(overrides: Partial<MessageHeader> = {}): MessageHeader {
@@ -489,5 +490,51 @@ describe("bodyPlainText (slice 3g)", () => {
     const sample = body({ text: null, html: "<div>a</div><div>b</div>" });
     expect(bodyPlainText(sample)).toBe(plainBodyText(sample));
     expect(renderMessageForAgent(header(), sample, 20_000)).toContain(bodyPlainText(sample));
+  });
+});
+
+describe("scanHtml (slice 3g)", () => {
+  const FIXTURES = [
+    "<p>Hello <b>there</b></p><pre>  code\n  more</pre><a href=\"https://example.org/x\">link</a>",
+    "<html><head><title>t</title></head><body><div>a</div><script>x()</script><p>b &amp; c</p></body></html>",
+    "<table><tr><td>1</td><td>2</td></tr></table><br>tail <a href='mailto:a@example.org'>a@example.org</a>",
+    "plain < not a tag & text",
+  ];
+
+  it("gives the same text htmlToText gives", () => {
+    for (const html of FIXTURES) expect(scanHtml(html).text).toBe(htmlToText(html));
+  });
+
+  it("collects <pre> inner text with line breaks, nested tags and entities decoded", () => {
+    const out = scanHtml("<p>x</p><pre class=\"c\">\nif (a &lt; b) {\n  <span>call</span>();\n}<br>end</pre><pre></pre><PRE>two</PRE>");
+    expect(out.preBlocks).toEqual(["if (a < b) {\n  call();\n}\nend", "two"]);
+  });
+
+  it("keeps an unclosed <pre> to the end", () => {
+    expect(scanHtml("<pre>open\nblock").preBlocks).toEqual(["open\nblock"]);
+  });
+
+  it("collects href values of <a> and <area> raw, for the caller to filter", () => {
+    const out = scanHtml(
+      "<a href=\"https://github.com/example-org/demo/pull/1\">PR</a><a href='/relative'>r</a>" +
+        "<a href=\"javascript:alert(1)\">j</a><area href=\"https://example.org/map\"><a name=\"x\">n</a>" +
+        "<a href=\"https://example.org/?a=1&amp;b=2\">q</a>",
+    );
+    expect(out.hrefs).toEqual([
+      "https://github.com/example-org/demo/pull/1",
+      "/relative",
+      "javascript:alert(1)",
+      "https://example.org/map",
+      "https://example.org/?a=1&b=2",
+    ]);
+  });
+
+  it("caps blocks at 50, their text at 200 000 characters and hrefs at 200", () => {
+    const many = "<pre>b</pre>".repeat(60) + "<a href=\"https://example.org/\">x</a>".repeat(250);
+    const out = scanHtml(many);
+    expect(out.preBlocks).toHaveLength(50);
+    expect(out.hrefs).toHaveLength(200);
+    const big = scanHtml(`<pre>${"x".repeat(150_000)}</pre><pre>${"y".repeat(150_000)}</pre>`);
+    expect(big.preBlocks.join("").length).toBeLessThanOrEqual(200_000);
   });
 });

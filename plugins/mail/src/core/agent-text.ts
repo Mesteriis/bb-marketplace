@@ -29,20 +29,93 @@ const CELL_ELEMENTS = new Set(["td", "th"]);
 type OpenLink = { href: string | null; start: TextMark };
 type TextMark = { index: number; length: number };
 
+/** Most <pre> blocks scanHtml keeps. */
+export const SCAN_PRE_BLOCKS_MAX = 50;
+/** Most characters of <pre> text scanHtml keeps, all blocks together. */
+export const SCAN_PRE_CHARS_MAX = 200_000;
+/** Most href values scanHtml keeps. */
+export const SCAN_HREFS_MAX = 200;
+
+/** One pass over HTML: its text, its <pre> blocks and the href values of <a> and <area> (raw, for the caller to filter). */
+export type HtmlScan = { text: string; preBlocks: string[]; hrefs: string[] };
+
+/** Collects <pre> inner text (line breaks kept) and hrefs beside the text buffer. */
+class ScanSide {
+  readonly preBlocks: string[] = [];
+  readonly hrefs: string[] = [];
+  private depth = 0;
+  private current: string[] = [];
+  private chars = 0;
+
+  text(raw: string): void {
+    if (this.depth > 0 && raw !== "") this.current.push(decodeHtmlEntities(raw));
+  }
+
+  tag(input: string, name: string, closing: boolean, lt: number, gt: number): void {
+    if (name === "pre") {
+      if (!closing) {
+        if (this.depth === 0) this.current = [];
+        this.depth++;
+      } else if (this.depth > 0) {
+        this.depth--;
+        if (this.depth === 0) this.finishBlock();
+      }
+    } else if (name === "br" && this.depth > 0) {
+      this.current.push("\n");
+    } else if (!closing && (name === "a" || name === "area") && this.hrefs.length < SCAN_HREFS_MAX) {
+      const href = hrefOf(input.slice(lt, gt));
+      if (href !== null) this.hrefs.push(href);
+    }
+  }
+
+  finish(): void {
+    if (this.depth > 0) this.finishBlock();
+    this.depth = 0;
+  }
+
+  private finishBlock(): void {
+    const block = removeControls(this.current.join("").replace(/\r\n?/g, "\n"))
+      .replace(/^\n/, "")
+      .trimEnd();
+    this.current = [];
+    if (block === "" || this.preBlocks.length >= SCAN_PRE_BLOCKS_MAX) return;
+    const room = SCAN_PRE_CHARS_MAX - this.chars;
+    if (room <= 0) return;
+    const kept = block.length > room ? block.slice(0, room) : block;
+    this.preBlocks.push(kept);
+    this.chars += kept.length;
+  }
+}
+
 /** Plain text of an HTML document, bounded to the first 200,000 characters. */
 export function htmlToText(html: string): string {
+  return scanHtml(html).text;
+}
+
+/**
+ * htmlToText's single forward scan, also collecting <pre> blocks and hrefs
+ * (slice 3g: code blocks and dev links of HTML mail; there is no DOM on the
+ * server). Bounded like htmlToText: 200,000 characters of input, 50 blocks,
+ * 200,000 characters of block text, 200 hrefs.
+ */
+export function scanHtml(html: string): HtmlScan {
   const capped = html.length > HTML_INPUT_CAP;
   const input = capped ? html.slice(0, HTML_INPUT_CAP) : html;
   const out = new TextBuffer();
+  const side = new ScanSide();
+  const text = (raw: string) => {
+    out.text(raw);
+    side.text(raw);
+  };
   const links: OpenLink[] = [];
   let i = 0;
   while (i < input.length) {
     const lt = input.indexOf("<", i);
     if (lt === -1) {
-      out.text(input.slice(i));
+      text(input.slice(i));
       break;
     }
-    out.text(input.slice(i, lt));
+    text(input.slice(i, lt));
     const next = input.charCodeAt(lt + 1);
     if (input.startsWith("<!--", lt)) {
       const end = input.indexOf("-->", lt + 4);
@@ -50,7 +123,7 @@ export function htmlToText(html: string): string {
       continue;
     }
     if (!(isAsciiLetter(next) || next === 0x2f /* / */ || next === 0x21 /* ! */ || next === 0x3f /* ? */)) {
-      out.text("<");
+      text("<");
       i = lt + 1;
       continue;
     }
@@ -63,10 +136,12 @@ export function htmlToText(html: string): string {
       i = skipDroppedElement(input, i, name);
       continue;
     }
+    side.tag(input, name, closing, lt, gt);
     handleTag(out, links, input, name, closing, lt, gt);
   }
-  const text = out.finish();
-  return capped ? `${text}${HTML_TRUNCATED_MARKER}` : text;
+  side.finish();
+  const plain = out.finish();
+  return { text: capped ? `${plain}${HTML_TRUNCATED_MARKER}` : plain, preBlocks: side.preBlocks, hrefs: side.hrefs };
 }
 
 function handleTag(
