@@ -126,7 +126,10 @@ import type {
   RuleRunState,
 } from "../ports.ts";
 import type { BbLinkRowKind } from "../model.ts";
-import type { AttachmentTextRow, FilesFilter, SavedSearchRow, SearchOptions, SenderStats } from "../ports.ts";
+import type { AttachmentTextRow, FilesFilter, SavedSearchRow, SearchOptions, SenderCheckRow, SenderStats } from "../ports.ts";
+import { SENDER_CHECK_MAX_BYTES } from "../ports.ts";
+import { firstNonBlankLine, isEncrypted, type MailCrypto } from "../mail-crypto.ts";
+import { orgDomain, type SenderCheck } from "../sender-check.ts";
 import { SERVER_SEARCH_CAPS, type ServerCriteria } from "../server-search.ts";
 import type { AttachmentMatch, FileRow, KeptState, SearchCondition, SearchCursor } from "../model.ts";
 import { excerptAround, type AttachmentCandidate } from "../attachment-text.ts";
@@ -175,6 +178,18 @@ export function makeStoredAccount(overrides: Partial<StoredAccount> = {}): Store
 }
 
 /** A fetched message as stored: Delivered-To lower case, distinct, at most 10 (as the SQLite upsert). */
+/** The stored sender check, or null over SENDER_CHECK_MAX_BYTES (as SQLite: not stored). */
+function fakeSenderCheckJson(check: SenderCheck): string | null {
+  const json = JSON.stringify(check);
+  return new TextEncoder().encode(json).length > SENDER_CHECK_MAX_BYTES ? null : json;
+}
+
+/** An encrypted body reaches no reader (slice 3i resolution 6). */
+function dropFakeBody(row: Row): void {
+  row.message.bodyText = null;
+  row.message.bodyHtml = null;
+}
+
 function storedMessage(message: FetchedMessage): FetchedMessage {
   const copy = structuredClone(message);
   if (copy.deliveredTo !== undefined) {
@@ -310,6 +325,12 @@ type Row = {
   keptAt: string | null;
   /** Slice 3h: X-GM-LABELS as the server sent them; null when not fetched. */
   gmLabels: string[] | null;
+  /** Slice 3i: the stored sender check JSON; undefined or null = not judged. */
+  senderCheckJson?: string | null;
+  /** Slice 3i: undefined or null = not known. */
+  receiptRequested?: boolean | null;
+  /** Slice 3i: signed or encrypted; undefined or null = neither, or not known. */
+  crypto?: MailCrypto | null;
 };
 
 type StoredSnooze = SnoozeRow & { createdAt: string; updatedAt: string };
@@ -671,6 +692,7 @@ export class InMemoryMailStore implements MailStore {
         const listId = listIdOf(message);
         if (listId !== undefined && (row.listId === undefined || row.listId === null)) row.listId = listId;
         if (message.dev !== undefined && row.dev === undefined) row.dev = message.dev === null ? null : { ...message.dev };
+        this.applySecurityFields(row, message);
         if (junk) this.markSpamSeen(row);
         // Slice 3h: never downgraded; a server hit covered by a history load becomes history.
         if (opts?.kept === "history" && row.kept === "search") {
@@ -707,6 +729,7 @@ export class InMemoryMailStore implements MailStore {
         keptAt: opts?.kept === undefined ? null : new Date().toISOString(),
         gmLabels: null,
       });
+      this.applySecurityFields(this.state.rows[this.state.rows.length - 1]!, message);
       if (junk) this.markSpamSeen(this.state.rows[this.state.rows.length - 1]!);
     }
     return { inserted, returning };
@@ -2586,6 +2609,8 @@ export class InMemoryMailStore implements MailStore {
     if (limit <= 0) return [];
     return this.state.rows
       .filter((r) => r.dev === undefined && !["junk", "trash"].includes(this.roleOf(r.accountId, r.folder) ?? ""))
+      // Slice 3i: a failed sender is never classified (resolution 2).
+      .filter((r) => r.senderCheckJson === undefined || r.senderCheckJson === null || JSON.parse(r.senderCheckJson).state !== "failed")
       .sort((a, b) => -oldestFirst(a, b))
       .slice(0, limit)
       .map((r) => ({ id: r.id, accountId: r.accountId, from: r.message.from.address, subject: r.message.subject }));
@@ -3443,6 +3468,7 @@ export class InMemoryMailStore implements MailStore {
     const out: AttachmentCandidate[] = [];
     for (const row of [...this.state.rows].sort((a, b) => oldestFirst(b, a))) {
       if (row.movePending !== null || row.kept === "search") continue;
+      if (isEncrypted(row.crypto?.kind)) continue;
       const use = this.roleOf(row.accountId, row.folder);
       if (use === "junk" || use === "trash") continue;
       for (const a of row.message.attachments) {
@@ -3498,6 +3524,88 @@ export class InMemoryMailStore implements MailStore {
     this.state.attachmentText.clear();
     return count;
   }
+  // Slice 3i ---------------------------------------------------------------
+
+  /** Writes what a fetch judged (absent fields leave the row alone), as SQLite's upsert. */
+  private applySecurityFields(row: Row, message: FetchedMessage): void {
+    if (message.senderCheck !== undefined) {
+      const json = fakeSenderCheckJson(message.senderCheck);
+      if (json !== null) row.senderCheckJson = json;
+      if (message.senderCheck.state === "failed") row.dev = null;
+    }
+    if (message.receiptRequested !== undefined) row.receiptRequested = message.receiptRequested;
+    if (message.crypto !== undefined) row.crypto = message.crypto === null ? null : { ...message.crypto };
+    if (isEncrypted(row.crypto?.kind)) dropFakeBody(row);
+  }
+
+  knownDomainList(limit: number): string[] {
+    if (limit <= 0) return [];
+    const own = [
+      ...this.listAccounts().map((account) => account.email),
+      ...this.state.identities.filter((row) => row.state === "active").map((row) => row.address),
+    ];
+    const sent = [...this.state.sentRecipients.entries()]
+      .sort((a, b) => (a[1] < b[1] ? 1 : a[1] > b[1] ? -1 : 0))
+      .map(([key]) => key.slice(key.indexOf("\u0000") + 1));
+    const rows = this.state.rows
+      .filter((row) => this.roleOf(row.accountId, row.folder) === "sent")
+      .sort((a, b) => -oldestFirst(a, b))
+      .flatMap((row) => [...row.message.to, ...row.message.cc].map((a) => a.address));
+    const out: string[] = [];
+    for (const address of [...own, ...sent, ...rows]) {
+      const at = address.lastIndexOf("@");
+      if (at === -1) continue;
+      const org = orgDomain(address.slice(at + 1));
+      if (!org.includes(".") || out.includes(org)) continue;
+      out.push(org);
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  senderCheckRows(ids: string[]): SenderCheckRow[] {
+    const wanted = new Set(ids);
+    return this.state.rows
+      .filter((row) => wanted.has(row.id))
+      .map((row) => ({
+        id: row.id,
+        accountId: row.accountId,
+        folder: row.folder,
+        uid: row.uid,
+        folderRole: this.roleOf(row.accountId, row.folder),
+        senderCheckJson: row.senderCheckJson ?? null,
+        receiptRequested: row.receiptRequested ?? null,
+        crypto: row.crypto === undefined || row.crypto === null ? null : { ...row.crypto },
+        from: { ...row.message.from },
+        replyTo: row.message.replyTo === undefined ? null : row.message.replyTo.map((a) => ({ ...a })),
+        listId: row.listId === undefined || row.listId === null || row.listId === "" ? null : row.listId,
+        bulk: row.bulk,
+        firstLine: firstNonBlankLine(row.message.bodyText?.slice(0, 4_096) ?? null),
+      }));
+  }
+
+  writeSenderCheck(
+    id: string,
+    input: { check: SenderCheck; receipt: boolean | null; crypto: MailCrypto | null; force: boolean; guard?: { uidValidity: number } },
+  ): boolean {
+    const json = fakeSenderCheckJson(input.check);
+    if (json === null) return false;
+    const row = this.state.rows.find((r) => r.id === id);
+    if (row === undefined) return false;
+    if (!input.force && row.senderCheckJson !== undefined && row.senderCheckJson !== null) return false;
+    if (input.guard !== undefined) {
+      if (row.uid === null || this.getSyncState(row.accountId, row.folder)?.uidValidity !== input.guard.uidValidity) return false;
+    }
+    row.senderCheckJson = json;
+    if (input.receipt !== null && (input.force || row.receiptRequested === undefined || row.receiptRequested === null)) {
+      row.receiptRequested = input.receipt;
+    }
+    if (input.force || row.crypto === undefined || row.crypto === null) row.crypto = input.crypto === null ? null : { ...input.crypto };
+    if (input.check.state === "failed") row.dev = null;
+    if (isEncrypted(row.crypto?.kind)) dropFakeBody(row);
+    return true;
+  }
+
 
   private liveAttachmentText(): AttachmentTextRow[] {
     const ids = new Set(this.state.rows.map((r) => r.id));

@@ -68,6 +68,8 @@ import type { DevClass, DevKind, DevSource } from "./dev-notify.ts";
 import type { ProjectInfo } from "./projects.ts";
 import type { Rule, RuleMode } from "./mail-rules.ts";
 import type { BbLinkRowKind } from "./model.ts";
+import type { MailCrypto } from "./mail-crypto.ts";
+import type { SenderCheck } from "./sender-check.ts";
 
 export interface ImapConfig {
   host: string;
@@ -1196,7 +1198,60 @@ export interface MailStore {
   retryAttachmentText(): number;
   /** Deletes every row; returns how many. */
   clearAttachmentText(): number;
+
+  // Slice 3i --------------------------------------------------------------
+
+  /**
+   * The organizational domains of the owner's identities (accounts and
+   * active aliases), of `sent_recipients` and of To/Cc in Sent-role rows:
+   * own first, then the most recently written to; deduplicated, at most
+   * `limit` (the known set of the lookalike check).
+   */
+  knownDomainList(limit: number): string[];
+  /** What the sender check and the header view read of these stored messages; unknown ids are left out. */
+  senderCheckRows(ids: string[]): SenderCheckRow[];
+  /**
+   * Stores a sender check (at most SENDER_CHECK_MAX_BYTES serialized, else
+   * nothing is written) where the row has none, or over it with `force`;
+   * fills `receipt` (null: not known) and `crypto` where NULL, or over them
+   * with `force`. In the same write a failed check clears the dev class to
+   * checked-none and an encrypted kind nulls the body (the FTS trigger
+   * forgets it). With `guard`, writes only while the folder's stored
+   * UIDVALIDITY equals it and the row is attached. True when it wrote.
+   */
+  writeSenderCheck(
+    id: string,
+    input: { check: SenderCheck; receipt: boolean | null; crypto: MailCrypto | null; force: boolean; guard?: { uidValidity: number } },
+  ): boolean;
 }
+
+/** Largest serialized sender check stored (part A "Data model"). */
+export const SENDER_CHECK_MAX_BYTES = 2 * 1024;
+
+/** Slice 3i: a stored message as the sender check and the header view read it. */
+export type SenderCheckRow = {
+  id: string;
+  accountId: string;
+  folder: string;
+  /** null while detached. */
+  uid: number | null;
+  /** The effective role of the folder the row sits in. */
+  folderRole: SpecialUse | null;
+  /** `messages.sender_check_json`: null when not judged (read through readStoredCheck). */
+  senderCheckJson: string | null;
+  /** null: not known. */
+  receiptRequested: boolean | null;
+  crypto: MailCrypto | null;
+  from: MailAddress;
+  /** null: not known (a row from before Reply-To was kept). */
+  replyTo: MailAddress[] | null;
+  /** The List-Id; null when none or not known. */
+  listId: string | null;
+  /** null: not known. */
+  bulk: boolean | null;
+  /** The first non-blank line of the stored text body (inline PGP armor); null without one. */
+  firstLine: string | null;
+};
 
 /** Store options of search (slice 3h adds cursor and attachments). */
 export type SearchOptions = {

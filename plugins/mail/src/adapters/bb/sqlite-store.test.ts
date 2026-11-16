@@ -33,7 +33,8 @@ import {
   makeFetchedMessage,
   makeStoredAccount,
 } from "../../core/testing/fakes.ts";
-import { MIGRATIONS, createSqliteStore } from "./sqlite-store.ts";
+import { MIGRATIONS, createSqliteStore, hardenDatabase } from "./sqlite-store.ts";
+import { senderCheckOf, type SenderCheck } from "../../core/sender-check.ts";
 
 const INBOX = "INBOX";
 const EPOCH = "1970-01-01T00:00:00.000Z";
@@ -3359,7 +3360,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(14);
+    expect(MIGRATIONS).toHaveLength(15);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -4007,7 +4008,7 @@ describe("slice-3f migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(14);
+    expect(MIGRATIONS).toHaveLength(15);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -4813,7 +4814,7 @@ describe("slice-3g migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(14);
+    expect(MIGRATIONS).toHaveLength(15);
     const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
     expect(runs).toEqual([
       { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
@@ -5398,7 +5399,7 @@ describe("slice-3h migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(14);
+    expect(MIGRATIONS).toHaveLength(15);
     const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
       part_id: string;
       kind: string;
@@ -6036,5 +6037,242 @@ describe.each(storeKinds)("slice-3h store semantics (%s)", (_kind, make) => {
     expect(s.getMessage(idOf(s, 1))!.labels).toEqual(["Plans"]);
     expect(s.accountLabels("acc_1")).toEqual(["\\Important", "Plans"]);
     expect(hitIds(s, "label:plans")).toEqual([idOf(s, 1)]);
+  });
+});
+
+// ---- Slice 3i ----
+
+/** A stored sender check of this state, built by the core from synthetic header lines. */
+function checkOf(state: "ok" | "failed" | "unchecked"): SenderCheck {
+  const results =
+    state === "ok" ? "dmarc=pass header.from=example.com" : state === "failed" ? "dmarc=fail header.from=example.com" : "spf=none";
+  return senderCheckOf(
+    [
+      { key: "received", value: "by mx.google.com" },
+      { key: "authentication-results", value: `mx.google.com; ${results}` },
+      { key: "from", value: "billing@example.com" },
+    ],
+    "gmail",
+    { name: null, address: "billing@example.com" },
+    { folderRole: "inbox" },
+  );
+}
+const FTS_BODY_WORD = "zebracrossing";
+
+describe("slice-3i migration (SQLite)", () => {
+  it("element 14 on a 3h database adds the three columns, NULL on old rows", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 14).forEach((statement) => old.exec(statement)))();
+    const legacy = createSqliteStore(old);
+    legacy.saveAccount(makeStoredAccount());
+    legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+
+    old.transaction(() => MIGRATIONS.slice(14).forEach((statement) => old.exec(statement)))();
+
+    expect(MIGRATIONS).toHaveLength(15);
+    const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
+    expect(columns).toEqual(expect.arrayContaining(["sender_check_json", "receipt_requested", "crypto"]));
+    expect(old.prepare("SELECT sender_check_json, receipt_requested, crypto FROM messages").all()).toEqual([
+      { sender_check_json: null, receipt_requested: null, crypto: null },
+    ]);
+    const migrated = createSqliteStore(old);
+    const [row] = migrated.senderCheckRows([idOf(migrated, 1)]);
+    expect(row).toMatchObject({ senderCheckJson: null, receiptRequested: null, crypto: null });
+  });
+
+  it("element 14 holds only the three ALTERs", () => {
+    const statements = (MIGRATIONS[14] ?? "")
+      .split(";")
+      .map((part) => part.replace(/--[^\n]*/g, "").trim())
+      .filter((part) => part !== "");
+    expect(statements).toEqual([
+      "ALTER TABLE messages ADD COLUMN sender_check_json TEXT",
+      "ALTER TABLE messages ADD COLUMN receipt_requested INTEGER",
+      "ALTER TABLE messages ADD COLUMN crypto TEXT",
+    ]);
+  });
+});
+
+describe("hardenDatabase (SQLite)", () => {
+  it("turns on secure_delete and the FTS5 secure-delete option of both indexes", () => {
+    expect(db.pragma("secure_delete", { simple: true })).toBe(0);
+    expect(hardenDatabase(db)).toEqual({ pragma: true, fts: true });
+    expect(db.pragma("secure_delete", { simple: true })).toBe(1);
+    for (const table of ["messages_fts", "attachment_text_fts"]) {
+      expect(db.prepare(`SELECT v FROM ${table}_config WHERE k = 'secure-delete'`).get(), table).toEqual({ v: 1 });
+    }
+    // Repeating it each load is harmless.
+    expect(hardenDatabase(db)).toEqual({ pragma: true, fts: true });
+  });
+
+  it("reports an FTS option it could not set without throwing", () => {
+    const bare = new Database(":memory:");
+    expect(hardenDatabase(bare)).toEqual({ pragma: true, fts: false });
+  });
+});
+
+describe("slice-3i store (SQLite)", () => {
+  beforeEach(() => {
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("Sent", "sent"), remoteFolder("Spam", "junk")]);
+  });
+
+  it("stores the check, receipt and crypto on upsert and leaves them alone when a fetch has none", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { senderCheck: checkOf("ok"), receiptRequested: true, crypto: { kind: "smime_signed", opaque: true } }),
+    ]);
+    const id = idOf(store, 1);
+    const [row] = store.senderCheckRows([id]);
+    expect(JSON.parse(row!.senderCheckJson!)).toEqual(checkOf("ok"));
+    expect(row).toMatchObject({ receiptRequested: true, crypto: { kind: "smime_signed", opaque: true }, folderRole: "inbox", uid: 1 });
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    expect(store.senderCheckRows([id])[0]).toMatchObject({ receiptRequested: true, crypto: { kind: "smime_signed", opaque: true } });
+    expect(store.senderCheckRows([id])[0]!.senderCheckJson).not.toBeNull();
+  });
+
+  it("does not store a check over 2 KB", () => {
+    const big = { ...checkOf("ok"), authserv: "x".repeat(2_100) };
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { senderCheck: big })]);
+    expect(store.senderCheckRows([idOf(store, 1)])[0]!.senderCheckJson).toBeNull();
+    expect(store.writeSenderCheck(idOf(store, 1), { check: big, receipt: null, crypto: null, force: true })).toBe(false);
+  });
+
+  it("stores a failed row's dev class as checked-none and keeps it out of devUnclassified", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { senderCheck: checkOf("failed"), dev: { source: "github", repo: null, kind: "ci", state: "failed", ref: null } }),
+      makeFetchedMessage(2, { senderCheck: checkOf("failed") }),
+      makeFetchedMessage(3),
+    ]);
+    expect(db.prepare("SELECT dev_source FROM messages WHERE id = ?").get(idOf(store, 1))).toEqual({ dev_source: "" });
+    expect(store.getMessage(idOf(store, 1))!.dev).toBeNull();
+    expect(store.devUnclassified(10).map((r) => r.id)).toEqual([idOf(store, 3)]);
+  });
+
+  it("writeSenderCheck writes only an unknown row unless forced, and clears the dev class of a row turned failed", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { dev: { source: "github", repo: null, kind: "ci", state: "failed", ref: null } }),
+    ]);
+    const id = idOf(store, 1);
+    expect(store.getMessage(id)!.dev).not.toBeNull();
+    expect(store.writeSenderCheck(id, { check: checkOf("ok"), receipt: false, crypto: null, force: false })).toBe(true);
+    expect(store.writeSenderCheck(id, { check: checkOf("failed"), receipt: true, crypto: null, force: false })).toBe(false);
+    expect(JSON.parse(store.senderCheckRows([id])[0]!.senderCheckJson!).state).toBe("ok");
+    expect(store.senderCheckRows([id])[0]!.receiptRequested).toBe(false);
+    expect(store.writeSenderCheck(id, { check: checkOf("failed"), receipt: true, crypto: null, force: true })).toBe(true);
+    expect(JSON.parse(store.senderCheckRows([id])[0]!.senderCheckJson!).state).toBe("failed");
+    expect(store.senderCheckRows([id])[0]!.receiptRequested).toBe(true);
+    expect(store.getMessage(id)!.dev).toBeNull();
+    expect(store.devUnclassified(10)).toEqual([]);
+    expect(store.writeSenderCheck("m_missing", { check: checkOf("ok"), receipt: null, crypto: null, force: true })).toBe(false);
+  });
+
+  it("writeSenderCheck holds to the folder's UIDVALIDITY when given one", () => {
+    store.saveSyncState("acc_1", INBOX, { uidValidity: 7, lastUid: 1, syncedSince: EPOCH });
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    const id = idOf(store, 1);
+    expect(store.writeSenderCheck(id, { check: checkOf("ok"), receipt: null, crypto: null, force: false, guard: { uidValidity: 8 } })).toBe(false);
+    expect(store.writeSenderCheck(id, { check: checkOf("ok"), receipt: null, crypto: null, force: false, guard: { uidValidity: 7 } })).toBe(true);
+  });
+
+  it("a refresh that finds an encrypted row nulls its body and the search index forgets it", () => {
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { bodyText: `Hello ${FTS_BODY_WORD} there`, bodyHtml: null })]);
+    const id = idOf(store, 1);
+    expect(store.search(parseQuery(FTS_BODY_WORD), null, 10).map((hit) => hit.id)).toEqual([id]);
+    expect(
+      store.writeSenderCheck(id, { check: checkOf("unchecked"), receipt: false, crypto: { kind: "pgp_encrypted", opaque: false }, force: false }),
+    ).toBe(true);
+    expect(db.prepare("SELECT body_text, body_html, snippet, crypto FROM messages WHERE id = ?").get(id)).toEqual({
+      body_text: null,
+      body_html: null,
+      snippet: "",
+      crypto: "pgp_encrypted",
+    });
+    expect(store.search(parseQuery(FTS_BODY_WORD), null, 10)).toEqual([]);
+  });
+
+  it("never stores the body of a message upserted as encrypted", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { bodyText: `Hi ${FTS_BODY_WORD}`, bodyHtml: "<p>x</p>", crypto: { kind: "smime_encrypted", opaque: false } }),
+    ]);
+    expect(db.prepare("SELECT body_text, body_html, snippet FROM messages").get()).toEqual({ body_text: null, body_html: null, snippet: "" });
+    expect(store.search(parseQuery(FTS_BODY_WORD), null, 10)).toEqual([]);
+    // A refetch that did not judge crypto keeps it out too.
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { bodyText: `Hi ${FTS_BODY_WORD}`, bodyHtml: null })]);
+    expect(db.prepare("SELECT body_text, snippet, crypto FROM messages").get()).toEqual({ body_text: null, snippet: "", crypto: "smime_encrypted" });
+    expect(store.search(parseQuery(FTS_BODY_WORD), null, 10)).toEqual([]);
+  });
+
+  it("keeps encrypted rows out of attachment text", () => {
+    const part = { partId: "2", filename: "notes.txt", mimeType: "text/plain", size: 10, isInline: false };
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { attachments: [part] }),
+      makeFetchedMessage(2, { attachments: [part], crypto: { kind: "pgp_encrypted", opaque: false } }),
+      makeFetchedMessage(3, { attachments: [part], crypto: { kind: "pgp_signed", opaque: false } }),
+    ]);
+    expect(store.attachmentTextCandidates(10).map((c) => c.messageId).sort()).toEqual([idOf(store, 1), idOf(store, 3)].sort());
+  });
+
+  it("reads what the sender check and header view need", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, {
+        from: { name: "Billing", address: "billing@example.com" },
+        replyTo: [{ name: null, address: "help@example.net" }],
+        bodyText: "\n\n  -----BEGIN PGP MESSAGE-----\nabc",
+      }),
+    ]);
+    store.upsertMessages("acc_1", "Sent", [makeFetchedMessage(1, { messageId: "s@example.org" })]);
+    const sentId = store.localFolderIndex("acc_1", "Sent", EPOCH)[0]!.id;
+    const rows = store.senderCheckRows([idOf(store, 1), sentId, "m_missing"]);
+    expect(rows).toHaveLength(2);
+    const inbox = rows.find((row) => row.id === idOf(store, 1))!;
+    expect(inbox).toMatchObject({
+      accountId: "acc_1",
+      folder: INBOX,
+      folderRole: "inbox",
+      from: { name: "Billing", address: "billing@example.com" },
+      replyTo: [{ name: null, address: "help@example.net" }],
+      firstLine: "-----BEGIN PGP MESSAGE-----",
+    });
+    expect(rows.find((row) => row.id === sentId)!.folderRole).toBe("sent");
+  });
+
+  it("knownDomainList joins own, sent-to and Sent-folder domains, deduplicated and capped", () => {
+    db.prepare("INSERT INTO sent_recipients (account_id, address, last_sent_at) VALUES (?, ?, ?)").run("acc_1", "a@news.example.net", EPOCH);
+    db.prepare("INSERT INTO sent_recipients (account_id, address, last_sent_at) VALUES (?, ?, ?)").run("acc_1", "b@example.net", EPOCH);
+    store.upsertMessages("acc_1", "Sent", [
+      makeFetchedMessage(1, { to: [{ name: null, address: "x@Partner.Example.com" }], cc: [{ name: null, address: "y@example.co.uk" }] }),
+    ]);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { to: [{ name: null, address: "z@inbound-only.example" }] })]);
+    const all = store.knownDomainList(5_000);
+    expect([...all].sort()).toEqual(["example.co.uk", "example.com", "example.net", "example.org"]);
+    expect(all[0]).toBe("example.org");
+    expect(store.knownDomainList(2)).toHaveLength(2);
+    expect(store.knownDomainList(0)).toEqual([]);
+  });
+});
+
+describe.each(storeKinds)("slice-3i store semantics (%s)", (_kind, make) => {
+  let s: MailStore;
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveFolders("acc_1", FOLDERS_3F);
+  });
+  const idIn = (folder: string, uid: number) => s.localFolderIndex("acc_1", folder, EPOCH).find((e) => e.uid === uid)!.id;
+
+  it("writes checks where unknown, forces on request and drops failed rows from dev backfill", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2, { senderCheck: checkOf("failed") })]);
+    expect(s.devUnclassified(10).map((r) => r.id)).toEqual([idIn(INBOX, 1)]);
+    expect(s.writeSenderCheck(idIn(INBOX, 1), { check: checkOf("ok"), receipt: true, crypto: null, force: false })).toBe(true);
+    expect(s.writeSenderCheck(idIn(INBOX, 1), { check: checkOf("failed"), receipt: null, crypto: null, force: false })).toBe(false);
+    expect(s.writeSenderCheck(idIn(INBOX, 1), { check: checkOf("failed"), receipt: null, crypto: null, force: true })).toBe(true);
+    expect(s.devUnclassified(10)).toEqual([]);
+    const [row] = s.senderCheckRows([idIn(INBOX, 1)]);
+    expect(row).toMatchObject({ receiptRequested: true, folderRole: "inbox" });
+    expect(JSON.parse(row!.senderCheckJson!).state).toBe("failed");
+  });
+
+  it("knows the domains the owner writes to and owns", () => {
+    s.upsertMessages("acc_1", "Sent", [makeFetchedMessage(1, { to: [{ name: null, address: "x@mail.example.com" }] })]);
+    expect([...s.knownDomainList(100)].sort()).toEqual(["example.com", "example.org"]);
   });
 });

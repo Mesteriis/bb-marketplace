@@ -112,7 +112,11 @@ import type {
   TriageBatchRecord,
   TriageItemRecord,
   UnsubscribeRecord,
+  SenderCheckRow,
 } from "../../core/ports.ts";
+import { SENDER_CHECK_MAX_BYTES } from "../../core/ports.ts";
+import { firstNonBlankLine, isEncrypted, type MailCrypto } from "../../core/mail-crypto.ts";
+import { orgDomain, type SenderCheck } from "../../core/sender-check.ts";
 import { matchesBlock, type BlockRule } from "../../core/blocking.ts";
 import { SNOOZES_MAX_PER_ACCOUNT, type SnoozeRow, type SnoozeState } from "../../core/snooze.ts";
 import type { TriageAction, TriageBatchState, TriageItemOutcome } from "../../core/triage.ts";
@@ -906,6 +910,14 @@ export const MIGRATIONS: string[] = [
   );
 
   ALTER TABLE folders ADD COLUMN subscribed INTEGER NOT NULL DEFAULT 1;
+  `,
+  // 14: slice 3i - the sender check (NULL = not judged), whether the sender
+  // asked for a read receipt (NULL = not known), and signed or encrypted mail
+  // as recognised (NULL = neither, or not known).
+  `
+  ALTER TABLE messages ADD COLUMN sender_check_json TEXT;
+  ALTER TABLE messages ADD COLUMN receipt_requested INTEGER;
+  ALTER TABLE messages ADD COLUMN crypto TEXT;
   `,
 ];
 
@@ -1723,6 +1735,61 @@ function unsubscribeJson(info: UnsubscribeInfo | null | undefined): string | nul
   return Buffer.byteLength(json, "utf8") > UNSUBSCRIBE_INFO_MAX_BYTES ? null : json;
 }
 
+/** The stored sender check, or null when it is over SENDER_CHECK_MAX_BYTES (slice 3i: not stored). */
+function senderCheckJson(check: SenderCheck): string | null {
+  const json = JSON.stringify(check);
+  return Buffer.byteLength(json, "utf8") > SENDER_CHECK_MAX_BYTES ? null : json;
+}
+
+/** `messages.crypto`: the kind, `smime_signed_opaque` for S/MIME signed-data; NULL for neither. */
+function cryptoColumn(crypto: MailCrypto | null): string | null {
+  if (crypto === null) return null;
+  return crypto.kind === "smime_signed" && crypto.opaque ? "smime_signed_opaque" : crypto.kind;
+}
+
+function cryptoOf(column: string | null): MailCrypto | null {
+  switch (column) {
+    case "pgp_signed":
+    case "pgp_encrypted":
+    case "smime_signed":
+    case "smime_encrypted":
+      return { kind: column, opaque: false };
+    case "smime_signed_opaque":
+      return { kind: "smime_signed", opaque: true };
+    default:
+      return null;
+  }
+}
+
+/** Kinds whose body is ciphertext, as stored (attachment text skips them). */
+const ENCRYPTED_KINDS_SQL = "('pgp_encrypted', 'smime_encrypted')";
+
+/**
+ * Slice 3i (part A resolution 8): overwrite what Mail deletes. `PRAGMA
+ * secure_delete` for the database file, then the FTS5 `secure-delete` option
+ * of both search indexes (SQLite 3.42+), each on its own so an older SQLite
+ * keeps the rest. Run once per load after migrate; the FTS option is kept in
+ * the index's config, so repeating it is harmless.
+ */
+export function hardenDatabase(db: Database.Database): { pragma: boolean; fts: boolean } {
+  let pragma = false;
+  try {
+    db.pragma("secure_delete = ON");
+    pragma = db.pragma("secure_delete", { simple: true }) === 1;
+  } catch {
+    pragma = false;
+  }
+  let fts = true;
+  for (const table of ["messages_fts", "attachment_text_fts"]) {
+    try {
+      db.prepare(`INSERT INTO ${table}(${table}, rank) VALUES ('secure-delete', 1)`).run();
+    } catch {
+      fts = false;
+    }
+  }
+  return { pragma, fts };
+}
+
 /**
  * The quick filters as one condition on a member row `m` (spec resolution
  * 20): every requested flag on the same row, or the kept thread's row.
@@ -2411,6 +2478,35 @@ export function createSqliteStore(db: Database.Database): MailStore {
     `UPDATE messages SET dev_source = @source, dev_repo = @repo, dev_kind = @kind, dev_state = @state, dev_ref = @ref
      WHERE id = @id AND dev_source IS NULL`,
   );
+  // Slice 3i: prepared on first use, as above.
+  const setSenderCheck = lazyPrepare("UPDATE messages SET sender_check_json = ? WHERE id = ?");
+  const setReceipt = lazyPrepare("UPDATE messages SET receipt_requested = ? WHERE id = ?");
+  const setCrypto = lazyPrepare("UPDATE messages SET crypto = ? WHERE id = ?");
+  /** A failed sender never drives a dev class: checked, not dev (part A resolution 2). */
+  const clearDev = lazyPrepare(
+    "UPDATE messages SET dev_source = '', dev_repo = NULL, dev_kind = NULL, dev_state = NULL, dev_ref = NULL WHERE id = ?",
+  );
+  const encryptedRow = lazyStatement<[string], { id: string }>(
+    `SELECT id FROM messages WHERE id = ? AND crypto IN ${ENCRYPTED_KINDS_SQL} AND (body_text IS NOT NULL OR body_html IS NOT NULL)`,
+  );
+  /** An encrypted body reaches no reader; the update trigger takes it out of messages_fts. */
+  const dropBody = lazyPrepare("UPDATE messages SET body_text = NULL, body_html = NULL, html_truncated = 0, snippet = '' WHERE id = ?");
+  let securityColumns: boolean | null = null;
+  /** Whether element 14's columns exist (checked once per store). */
+  const hasSecurityColumns = () =>
+    (securityColumns ??= (db.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).some((c) => c.name === "crypto"));
+  /** What a fetch judged for slice 3i; absent fields leave the stored values alone. */
+  function writeSecurityFields(id: string, message: FetchedMessage): void {
+    if (message.senderCheck !== undefined) {
+      const json = senderCheckJson(message.senderCheck);
+      if (json !== null) setSenderCheck.get().run(json, id);
+      if (message.senderCheck.state === "failed") clearDev.get().run(id);
+    }
+    if (message.receiptRequested !== undefined) setReceipt.get().run(message.receiptRequested ? 1 : 0, id);
+    if (message.crypto !== undefined) setCrypto.get().run(cryptoColumn(message.crypto), id);
+    // A refetch that did not judge crypto must not bring back a body already found encrypted.
+    else if (encryptedRow.get(id) !== undefined) dropBody.get().run(id);
+  }
   function lazyPrepare(sql: string): { get(): Database.Statement } {
     let statement: Database.Statement | null = null;
     return { get: () => (statement ??= db.prepare(sql)) };
@@ -3122,6 +3218,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         const junk = folderRole(accountId, folder) === "junk";
         for (const message of messages) {
           const html = message.bodyHtml;
+          const encrypted = isEncrypted(message.crypto?.kind);
           const params = {
             accountId,
             folder,
@@ -3137,10 +3234,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
             replyToJson: message.replyTo === undefined ? null : JSON.stringify(message.replyTo),
             subject: message.subject,
             date: normalizeDate(message.date),
-            snippet: snippetOf(message.bodyText, message.bodyHtml),
-            bodyText: message.bodyText,
-            bodyHtml: html !== null && html.length > HTML_CAP ? null : html,
-            htmlTruncated: html !== null && html.length > HTML_CAP ? 1 : 0,
+            // Slice 3i: an encrypted body is never stored (sync drops it first; this is the backstop).
+            snippet: encrypted ? "" : snippetOf(message.bodyText, message.bodyHtml),
+            bodyText: encrypted ? null : message.bodyText,
+            bodyHtml: encrypted || (html !== null && html.length > HTML_CAP) ? null : html,
+            htmlTruncated: !encrypted && html !== null && html.length > HTML_CAP ? 1 : 0,
             seen: message.seen ? 1 : 0,
             flagged: message.flagged ? 1 : 0,
             hasAttachments: message.attachments.some((a) => !a.isInline) ? 1 : 0,
@@ -3191,6 +3289,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
               ref: dev?.ref ?? null,
             });
           }
+          // Slice 3i: absent fields leave the stored values alone (a store on an
+          // older schema, as in the migration tests, has no such columns).
+          if (hasSecurityColumns()) writeSecurityFields(id, message);
           deleteAttachmentsOf.run(id);
           for (const a of message.attachments) {
             insertAttachment.run(id, a.partId, a.filename, a.mimeType, a.size, a.isInline ? 1 : 0);
@@ -6294,6 +6395,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
              ${SCOPE_ROLE} AS folder_use
            FROM attachments a JOIN messages m ON m.id = a.message_id
            WHERE a.is_inline = 0 AND a.kind IN ('text', 'pdf') AND m.move_pending IS NULL
+             AND (m.crypto IS NULL OR m.crypto NOT IN ${ENCRYPTED_KINDS_SQL})
              AND (m.kept IS NULL OR m.kept != 'search') AND ${NOT_JUNK_OR_TRASH}
              AND NOT EXISTS (SELECT 1 FROM attachment_text t WHERE t.message_id = a.message_id AND t.part_id = a.part_id)
            ORDER BY m.date IS NULL, m.date DESC, m.seq DESC, a.part_id
@@ -6334,6 +6436,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
           .prepare<[], { n: number }>(
             `SELECT count(*) AS n FROM attachments a JOIN messages m ON m.id = a.message_id
              WHERE a.is_inline = 0 AND a.kind IN ('text', 'pdf') AND m.move_pending IS NULL
+             AND (m.crypto IS NULL OR m.crypto NOT IN ${ENCRYPTED_KINDS_SQL})
                AND (m.kept IS NULL OR m.kept != 'search') AND ${NOT_JUNK_OR_TRASH}
                AND NOT EXISTS (SELECT 1 FROM attachment_text t WHERE t.message_id = a.message_id AND t.part_id = a.part_id)`,
           )
@@ -6353,6 +6456,124 @@ export function createSqliteStore(db: Database.Database): MailStore {
 
     clearAttachmentText() {
       return db.prepare("DELETE FROM attachment_text").run().changes;
+    },
+
+    // ---- Slice 3i --------------------------------------------------------
+
+    knownDomainList(limit) {
+      if (limit <= 0) return [];
+      // Own identities first, then the most recently written to; one query.
+      const rows = db
+        .prepare<[], { address: unknown }>(
+          `SELECT address FROM (
+             SELECT email AS address, 0 AS rank, '' AS at FROM accounts
+             UNION ALL
+             SELECT address, 0, '' FROM identities WHERE state = 'active'
+             UNION ALL
+             SELECT address, 1, last_sent_at FROM sent_recipients
+             UNION ALL
+             SELECT json_extract(j.value, '$.address'), 2, COALESCE(m.date, '')
+             FROM ${MESSAGES_WITH_FOLDER}, json_each(m.to_json) j
+             WHERE ${ROW_ROLE} = 'sent'
+             UNION ALL
+             SELECT json_extract(j.value, '$.address'), 2, COALESCE(m.date, '')
+             FROM ${MESSAGES_WITH_FOLDER}, json_each(m.cc_json) j
+             WHERE ${ROW_ROLE} = 'sent'
+           ) ORDER BY rank, at DESC`,
+        )
+        .iterate();
+      const out: string[] = [];
+      const seen = new Set<string>();
+      for (const row of rows) {
+        if (typeof row.address !== "string") continue;
+        const at = row.address.lastIndexOf("@");
+        if (at === -1) continue;
+        const org = orgDomain(row.address.slice(at + 1));
+        if (!org.includes(".") || seen.has(org)) continue;
+        seen.add(org);
+        out.push(org);
+        if (out.length >= limit) break;
+      }
+      return out;
+    },
+
+    senderCheckRows(ids) {
+      if (ids.length === 0) return [];
+      return db
+        .prepare<
+          [string],
+          {
+            id: string;
+            account_id: string;
+            folder: string;
+            uid: number | null;
+            role: SpecialUse | null;
+            sender_check_json: string | null;
+            receipt_requested: number | null;
+            crypto: string | null;
+            from_name: string | null;
+            from_address: string;
+            reply_to_json: string | null;
+            list_id: string | null;
+            bulk: number | null;
+            body_head: string | null;
+          }
+        >(
+          `SELECT m.id, m.account_id, m.folder, m.uid, ${ROW_ROLE} AS role, m.sender_check_json, m.receipt_requested,
+             m.crypto, m.from_name, m.from_address, m.reply_to_json, m.list_id, m.bulk, substr(m.body_text, 1, 4096) AS body_head
+           FROM ${MESSAGES_WITH_FOLDER} WHERE m.id IN (SELECT value FROM json_each(?))`,
+        )
+        .all(JSON.stringify(ids))
+        .map(
+          (row): SenderCheckRow => ({
+            id: row.id,
+            accountId: row.account_id,
+            folder: row.folder,
+            uid: row.uid,
+            folderRole: row.role ?? null,
+            senderCheckJson: row.sender_check_json,
+            receiptRequested: row.receipt_requested === null ? null : row.receipt_requested === 1,
+            crypto: cryptoOf(row.crypto),
+            from: { name: row.from_name, address: row.from_address },
+            replyTo: row.reply_to_json === null ? null : (JSON.parse(row.reply_to_json) as MailAddress[]),
+            listId: row.list_id === null || row.list_id === "" ? null : row.list_id,
+            bulk: row.bulk === null ? null : row.bulk === 1,
+            firstLine: firstNonBlankLine(row.body_head),
+          }),
+        );
+    },
+
+    writeSenderCheck(id, input) {
+      const json = senderCheckJson(input.check);
+      if (json === null) return false;
+      return atomic(() => {
+        const row = db
+          .prepare<[string], { account_id: string; folder: string; uid: number | null; sender_check_json: string | null; crypto: string | null }>(
+            "SELECT account_id, folder, uid, sender_check_json, crypto FROM messages WHERE id = ?",
+          )
+          .get(id);
+        if (row === undefined) return false;
+        if (!input.force && row.sender_check_json !== null) return false;
+        if (input.guard !== undefined) {
+          const state = db
+            .prepare<[string, string], { uid_validity: number }>(
+              "SELECT uid_validity FROM sync_state WHERE account_id = ? AND folder = ?",
+            )
+            .get(row.account_id, row.folder);
+          if (row.uid === null || state === undefined || state.uid_validity !== input.guard.uidValidity) return false;
+        }
+        setSenderCheck.get().run(json, id);
+        if (input.receipt !== null) {
+          const onlyUnknown = input.force ? "" : " AND receipt_requested IS NULL";
+          db.prepare(`UPDATE messages SET receipt_requested = ? WHERE id = ?${onlyUnknown}`).run(input.receipt ? 1 : 0, id);
+        }
+        const writeCrypto = input.force || row.crypto === null;
+        if (writeCrypto) setCrypto.get().run(cryptoColumn(input.crypto), id);
+        if (input.check.state === "failed") clearDev.get().run(id);
+        const crypto = writeCrypto ? input.crypto : cryptoOf(row.crypto);
+        if (isEncrypted(crypto?.kind)) dropBody.get().run(id);
+        return true;
+      });
     },
 
     // ---- Slice 3g --------------------------------------------------------
@@ -6386,6 +6607,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         .prepare<[number], { id: string; account_id: string; from_address: string; subject: string }>(
           `SELECT m.id, m.account_id, m.from_address, m.subject FROM ${MESSAGES_WITH_FOLDER}
            WHERE m.dev_source IS NULL AND COALESCE(${ROW_ROLE}, '') NOT IN ('junk', 'trash')
+             AND (m.sender_check_json IS NULL OR json_extract(m.sender_check_json, '$.state') <> 'failed')
            ORDER BY m.date IS NULL, m.date DESC, m.id DESC LIMIT ?`,
         )
         .all(limit)
