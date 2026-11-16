@@ -29,3 +29,4 @@ export type DecodeResult = {
 } | {
     kind: 'unsupported';
 };
+export interface NavigationBadge { count?: number; text?: string; label: string; tone?: 'critical'|'neutral'|'warning' }
