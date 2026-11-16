@@ -7,10 +7,11 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { isMacPlatform } from "./shortcuts.ts";
 
-/** "⌘" on Apple platforms, "Ctrl+" elsewhere. */
-export function modKeyLabel(platform: string = typeof navigator === "undefined" ? "" : navigator.platform): string {
-  return /mac|iphone|ipad|ipod/i.test(platform) ? "⌘" : "Ctrl+";
+/** "⌘" on Apple platforms, "Ctrl+" elsewhere (the platform rule is shortcuts.ts's isMacPlatform). */
+export function modKeyLabel(platform?: string): string {
+  return isMacPlatform(platform) ? "⌘" : "Ctrl+";
 }
 
 export type ToolId = "bold" | "italic" | "underline" | "bulletList" | "orderedList" | "link" | "blockquote" | "codeBlock" | "clear";

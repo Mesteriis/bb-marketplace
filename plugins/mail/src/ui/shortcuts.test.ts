@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   createDestructiveGuard,
   DESTRUCTIVE_GUARD_MS,
+  HOST_RESERVED,
+  isMacPlatform,
   isTypingTarget,
+  keyZone,
   matchShortcut,
   SHORTCUT_SHEET,
   type KeyLike,
@@ -358,5 +361,241 @@ describe("createDestructiveGuard", () => {
     const guard = createDestructiveGuard(clock().now);
     expect(guard.admit({ kind: "delete" })).toBe(true);
     expect(guard.admit({ kind: "delete" })).toBe(true);
+  });
+});
+
+describe("slice 3i part B: Apple Mail keys", () => {
+  const MAC = { mac: true };
+  const PC = { mac: false };
+  /** A Cyrillic letter, built at run time so no tool turns an escape into a raw character. */
+  const cyr = (code: number) => String.fromCharCode(code);
+  function inside(selector: string): { target: HTMLElement; remove: () => void } {
+    const outer = document.createElement("div");
+    const [name, value] = selector.replace(/^\[|\]$/g, "").split("=");
+    outer.setAttribute(name!, value === undefined ? "" : value.replace(/"/g, ""));
+    const target = document.createElement("button");
+    outer.append(target);
+    document.body.append(outer);
+    return { target, remove: () => outer.remove() };
+  }
+
+  it("arrows in the page zone are next/previous with arrow: true; j and k carry no arrow", () => {
+    expect(matchShortcut(key({ key: "ArrowDown", code: "ArrowDown" }), false)).toEqual({ kind: "next", arrow: true });
+    expect(matchShortcut(key({ key: "ArrowUp", code: "ArrowUp" }), false)).toEqual({ kind: "previous", arrow: true });
+    expect(matchShortcut(key({ key: "j", code: "KeyJ" }), false)).toEqual({ kind: "next" });
+    expect(matchShortcut(key({ key: "k", code: "KeyK" }), false)).toEqual({ kind: "previous" });
+  });
+
+  it("arrows on a message header or the stack move between messages; inside the reading zone they stay native", () => {
+    for (const selector of ["[data-mail-message-toggle]", "[data-mail-stack]"]) {
+      const { target, remove } = inside(selector);
+      expect(matchShortcut(key({ key: "ArrowDown", code: "ArrowDown", target }), false)).toEqual({ kind: "message_next" });
+      expect(matchShortcut(key({ key: "ArrowUp", code: "ArrowUp", target }), false)).toEqual({ kind: "message_previous" });
+      remove();
+    }
+    const reading = inside("[data-mail-reading]");
+    expect(matchShortcut(key({ key: "ArrowDown", code: "ArrowDown", target: reading.target }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "ArrowUp", code: "ArrowUp", target: reading.target }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "ArrowDown", code: "ArrowDown", shiftKey: true, target: reading.target }), false)).toBeNull();
+    // Letters still work in the reading zone.
+    expect(matchShortcut(key({ key: "j", code: "KeyJ", target: reading.target }), false)).toEqual({ kind: "next" });
+    reading.remove();
+  });
+
+  it("keyZone names the zone of a target", () => {
+    const header = inside("[data-mail-message-toggle]");
+    const reading = inside("[data-mail-reading]");
+    const input = document.createElement("input");
+    expect(keyZone(header.target)).toBe("header");
+    expect(keyZone(reading.target)).toBe("reading");
+    expect(keyZone(input)).toBe("typing");
+    expect(keyZone(document.body)).toBe("page");
+    expect(keyZone(null)).toBe("page");
+    header.remove();
+    reading.remove();
+  });
+
+  it("arrows inside an element that owns arrow keys are left to it", () => {
+    for (const role of ["tablist", "radiogroup", "slider", "spinbutton", "tree", "grid", "toolbar"]) {
+      const { target, remove } = inside(`[role="${role}"]`);
+      expect(matchShortcut(key({ key: "ArrowDown", code: "ArrowDown", target }), false)).toBeNull();
+      expect(matchShortcut(key({ key: "ArrowUp", code: "ArrowUp", shiftKey: true, target }), false)).toBeNull();
+      // Letters are not arrows: j still moves.
+      expect(matchShortcut(key({ key: "j", code: "KeyJ", target }), false)).toEqual({ kind: "next" });
+      remove();
+    }
+  });
+
+  it("Shift+arrows extend the selection", () => {
+    expect(matchShortcut(key({ key: "ArrowDown", code: "ArrowDown", shiftKey: true }), false)).toEqual({ kind: "select_down" });
+    expect(matchShortcut(key({ key: "ArrowUp", code: "ArrowUp", shiftKey: true }), false)).toEqual({ kind: "select_up" });
+  });
+
+  it("held arrows and Shift+arrows repeat; held Backspace, Delete and chords do not", () => {
+    expect(matchShortcut(key({ key: "ArrowDown", code: "ArrowDown", repeat: true }), false)).toEqual({ kind: "next", arrow: true });
+    expect(matchShortcut(key({ key: "ArrowDown", code: "ArrowDown", shiftKey: true, repeat: true }), false)).toEqual({ kind: "select_down" });
+    const header = inside("[data-mail-message-toggle]");
+    expect(matchShortcut(key({ key: "ArrowUp", code: "ArrowUp", repeat: true, target: header.target }), false)).toEqual({ kind: "message_previous" });
+    header.remove();
+    expect(matchShortcut(key({ key: "Backspace", code: "Backspace", repeat: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "Delete", code: "Delete", repeat: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "r", code: "KeyR", metaKey: true, repeat: true }), false, MAC)).toBeNull();
+    expect(matchShortcut(key({ key: "Backspace", code: "Backspace", metaKey: true, repeat: true }), false, MAC)).toBeNull();
+  });
+
+  it("Backspace and Delete delete, on every platform", () => {
+    expect(matchShortcut(key({ key: "Backspace", code: "Backspace" }), false)).toEqual({ kind: "delete" });
+    expect(matchShortcut(key({ key: "Delete", code: "Delete" }), false)).toEqual({ kind: "delete" });
+    expect(matchShortcut(key({ key: "Backspace", code: "Backspace" }), false, PC)).toEqual({ kind: "delete" });
+    // With Shift, Ctrl or Alt it is not ours.
+    expect(matchShortcut(key({ key: "Backspace", code: "Backspace", shiftKey: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "Backspace", code: "Backspace", ctrlKey: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "Delete", code: "Delete", altKey: true }), false, MAC)).toBeNull();
+  });
+
+  it("Backspace, Delete, arrows and chords never act in a field, the composer, a dialog, a textbox or a select's list", () => {
+    const input = document.createElement("input");
+    const textarea = document.createElement("textarea");
+    const editable = inside('[contenteditable="true"]');
+    const composer = inside("[data-mail-composer]");
+    const dialog = inside('[role="dialog"]');
+    const textbox = inside('[role="textbox"]');
+    const listbox = inside('[role="listbox"]');
+    const menu = inside('[role="menu"]');
+    const select = document.createElement("select");
+    document.body.append(input, textarea, select);
+    for (const target of [input, textarea, select, editable.target, composer.target, dialog.target, textbox.target, listbox.target, menu.target]) {
+      for (const platform of [MAC, PC]) {
+        expect(matchShortcut(key({ key: "Backspace", code: "Backspace", target }), false, platform)).toBeNull();
+        expect(matchShortcut(key({ key: "Delete", code: "Delete", target }), false, platform)).toBeNull();
+        expect(matchShortcut(key({ key: "ArrowDown", code: "ArrowDown", target }), false, platform)).toBeNull();
+        expect(matchShortcut(key({ key: "ArrowDown", code: "ArrowDown", shiftKey: true, target }), false, platform)).toBeNull();
+      }
+      expect(matchShortcut(key({ key: "r", code: "KeyR", metaKey: true, target }), false, MAC)).toBeNull();
+      expect(matchShortcut(key({ key: "Backspace", code: "Backspace", metaKey: true, target }), false, MAC)).toBeNull();
+      expect(matchShortcut(key({ key: "z", code: "KeyZ", metaKey: true, target }), false, MAC)).toBeNull();
+      expect(matchShortcut(key({ key: "a", code: "KeyA", metaKey: true, ctrlKey: true, target }), false, MAC)).toBeNull();
+    }
+    input.remove();
+    textarea.remove();
+    select.remove();
+    for (const holder of [editable, composer, dialog, textbox, listbox, menu]) holder.remove();
+  });
+
+  it("nothing acts during IME composition: isComposing, key Process, keyCode 229", () => {
+    for (const ime of [{ isComposing: true }, { key: "Process" }, { keyCode: 229 }]) {
+      expect(matchShortcut(key({ key: "Backspace", code: "Backspace", ...ime }), false, MAC)).toBeNull();
+      expect(matchShortcut(key({ key: "ArrowDown", code: "ArrowDown", ...ime }), false, MAC)).toBeNull();
+      expect(matchShortcut(key({ key: "j", code: "KeyJ", ...ime }), false, MAC)).toBeNull();
+      expect(matchShortcut(key({ key: "r", code: "KeyR", metaKey: true, ...ime }), false, MAC)).toBeNull();
+    }
+  });
+
+  it("Mac chords match the physical key on a Russian layout", () => {
+    const chords: [Partial<KeyLike>, ShortcutCommand][] = [
+      [{ key: cyr(0x043a), code: "KeyR", metaKey: true }, { kind: "reply" }],
+      [{ key: cyr(0x041a), code: "KeyR", metaKey: true, shiftKey: true }, { kind: "reply_all" }],
+      [{ key: cyr(0x0410), code: "KeyF", metaKey: true, shiftKey: true }, { kind: "forward" }],
+      [{ key: cyr(0x0424), code: "KeyA", metaKey: true, ctrlKey: true }, { kind: "archive" }],
+      [{ key: cyr(0x041e), code: "KeyJ", metaKey: true, shiftKey: true }, { kind: "spam" }],
+      [{ key: cyr(0x0413), code: "KeyU", metaKey: true, shiftKey: true }, { kind: "toggle_read" }],
+      [{ key: cyr(0x0414), code: "KeyL", metaKey: true, shiftKey: true }, { kind: "flag" }],
+      [{ key: cyr(0x0430), code: "KeyF", metaKey: true, altKey: true }, { kind: "search" }],
+      [{ key: cyr(0x044c), code: "KeyM", metaKey: true, ctrlKey: true }, { kind: "move" }],
+      [{ key: cyr(0x044f), code: "KeyZ", metaKey: true }, { kind: "undo" }],
+      [{ key: "Backspace", code: "Backspace", metaKey: true }, { kind: "delete" }],
+    ];
+    for (const [init, command] of chords) {
+      expect(matchShortcut(key(init), false, MAC)).toEqual(command);
+      // Not on Windows or Linux, and never with Ctrl in place of Command.
+      expect(matchShortcut(key(init), false, PC)).toBeNull();
+      expect(matchShortcut(key({ ...init, metaKey: false, ctrlKey: true }), false, MAC)).toBeNull();
+      expect(matchShortcut(key({ ...init, metaKey: false, ctrlKey: true }), false, PC)).toBeNull();
+    }
+  });
+
+  it("a chord with an extra modifier is not ours", () => {
+    expect(matchShortcut(key({ key: "r", code: "KeyR", metaKey: true, altKey: true }), false, MAC)).toBeNull();
+    expect(matchShortcut(key({ key: "r", code: "KeyR", metaKey: true, ctrlKey: true }), false, MAC)).toBeNull();
+    expect(matchShortcut(key({ key: "a", code: "KeyA", metaKey: true, ctrlKey: true, shiftKey: true }), false, MAC)).toBeNull();
+    expect(matchShortcut(key({ key: "z", code: "KeyZ", metaKey: true, shiftKey: true }), false, MAC)).toBeNull();
+    expect(matchShortcut(key({ key: "f", code: "KeyF", metaKey: true, altKey: true, shiftKey: true }), false, MAC)).toBeNull();
+    // A plain letter with Command is not the letter's Gmail command.
+    expect(matchShortcut(key({ key: "e", code: "KeyE", metaKey: true }), false, MAC)).toBeNull();
+    expect(matchShortcut(key({ key: "j", code: "KeyJ", metaKey: true }), false, MAC)).toBeNull();
+    expect(matchShortcut(key({ key: "ArrowDown", code: "ArrowDown", metaKey: true }), false, MAC)).toBeNull();
+  });
+
+  it("never takes a chord BB owns", () => {
+    expect(HOST_RESERVED.length).toBeGreaterThan(20);
+    for (const chord of HOST_RESERVED) {
+      const init = {
+        key: chord.code,
+        code: chord.code,
+        metaKey: chord.meta === true,
+        shiftKey: chord.shift === true,
+        ctrlKey: chord.ctrl === true,
+        altKey: chord.alt === true,
+      };
+      expect(matchShortcut(key(init), false, MAC), chord.keys.join("")).toBeNull();
+      expect(matchShortcut(key(init), false, PC), chord.keys.join("")).toBeNull();
+    }
+    const named = HOST_RESERVED.map((chord) => chord.keys.join(""));
+    // The owner's list: these never become Mail keys.
+    for (const code of ["KeyN", "KeyF", "KeyP", "KeyK", "KeyJ", "KeyW", "KeyT", "KeyO", "BracketLeft", "BracketRight"]) {
+      expect(HOST_RESERVED.some((chord) => chord.code === code && chord.meta === true && chord.shift !== true && chord.ctrl !== true && chord.alt !== true)).toBe(true);
+    }
+    for (const digit of ["1", "2", "3", "4", "5", "6", "7", "8", "9"]) {
+      expect(HOST_RESERVED.some((chord) => chord.code === `Digit${digit}` && chord.meta === true)).toBe(true);
+    }
+    expect(HOST_RESERVED.some((chord) => chord.code === "KeyN" && chord.meta === true && chord.shift === true)).toBe(true);
+    expect(HOST_RESERVED.some((chord) => chord.code === "KeyS" && chord.meta === true && chord.ctrl === true)).toBe(true);
+    expect(HOST_RESERVED.some((chord) => chord.code === "Escape")).toBe(true);
+    // No sheet entry offers a BB chord as an Apple key.
+    for (const entry of SHORTCUT_SHEET.flatMap((section) => section.entries)) {
+      if (entry.mac !== undefined) expect(named).not.toContain(entry.mac.join(""));
+    }
+  });
+
+  it("the sheet lists the arrows, Shift+arrows, Backspace/Delete and the Apple chords", () => {
+    const entries = SHORTCUT_SHEET.flatMap((section) => section.entries);
+    const byKeys = (keys: string) => entries.filter((entry) => entry.keys.join(" ") === keys).map((entry) => entry.label);
+    const down = String.fromCharCode(0x2193);
+    const up = String.fromCharCode(0x2191);
+    expect(byKeys(`${down} ${up}`).length).toBe(2);
+    expect(byKeys(`Shift ${down}`).length).toBe(1);
+    expect(byKeys(`Shift ${up}`).length).toBe(1);
+    expect(byKeys("Backspace Delete").length).toBe(1);
+    const cmd = String.fromCharCode(0x2318);
+    const macOf = (label: string) => entries.find((entry) => entry.label === label)?.mac?.join("");
+    expect(macOf("Reply")).toBe(`${cmd}R`);
+    expect(macOf("Undo the last action")).toBe(`${cmd}Z`);
+    expect(macOf("Archive")).toBe(`${String.fromCharCode(0x2303)}${cmd}A`);
+    // Every chord matchShortcut binds is on the sheet, and nothing else is.
+    const macChords = entries.flatMap((entry) => (entry.mac === undefined ? [] : [entry.mac.join("")]));
+    expect(macChords.sort()).toEqual(
+      [
+        `${cmd}R`,
+        `${String.fromCharCode(0x21e7)}${cmd}R`,
+        `${String.fromCharCode(0x21e7)}${cmd}F`,
+        `${String.fromCharCode(0x2303)}${cmd}A`,
+        `${String.fromCharCode(0x21e7)}${cmd}J`,
+        `${String.fromCharCode(0x21e7)}${cmd}U`,
+        `${String.fromCharCode(0x21e7)}${cmd}L`,
+        `${String.fromCharCode(0x2325)}${cmd}F`,
+        `${String.fromCharCode(0x2303)}${cmd}M`,
+        `${cmd}Z`,
+        `${cmd}${String.fromCharCode(0x232b)}`,
+      ].sort(),
+    );
+  });
+
+  it("isMacPlatform reads the platform name", () => {
+    expect(isMacPlatform("MacIntel")).toBe(true);
+    expect(isMacPlatform("macOS")).toBe(true);
+    expect(isMacPlatform("iPad")).toBe(true);
+    expect(isMacPlatform("Win32")).toBe(false);
+    expect(isMacPlatform("Linux x86_64")).toBe(false);
+    expect(typeof isMacPlatform()).toBe("boolean");
   });
 });
