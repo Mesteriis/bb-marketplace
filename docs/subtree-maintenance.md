@@ -39,8 +39,12 @@ Dependency directories, build output, credentials, databases, browser profiles a
 
 ## GitHub Actions
 
-`CI` validates all collection manifests and subtree provenance on each PR and push. It runs repository test scripts, then checks only plugin directories changed by that event. Changes to catalog metadata or CI alone do not fan out into 91 dependency installations. The stable `CI result` job fails when an applicable check fails; skipped package jobs are allowed only when catalog validation succeeded.
+`CI` validates all collection manifests and subtree provenance on each PR and push. It runs repository test scripts, then checks only plugin directories changed by that event. Changes to catalog metadata or CI alone do not fan out into 83 dependency installations. The stable `CI result` job fails when an applicable check fails; skipped package jobs are allowed only when catalog validation succeeded.
 
 Package jobs require their own npm lockfile, run the package's `check` script (or its available typecheck/test scripts), and use its own build recipe with pinned BB 0.49.0. Builds therefore retain plugin-specific preparation such as Unified Inbox's Baileys patch. Jobs have time limits and concurrency is capped at four. All workflows use read-only repository access except the tag release job. They never run privileged `pull_request_target` code.
 
 For an explicit full compatibility audit, dispatch `CI` with `full_audit=true`. This includes imported packages with unresolved upstream/platform requirements and can fail; those failures must be fixed in their maintained fork, not suppressed. Packages without tests do not gain test coverage merely by passing a build. Dependabot continues to propose Mail runtime/tooling updates and Actions updates, with a three-PR limit for Mail and no automatic TypeScript major proposals. Dependency PRs are reviewed and are not automatically merged.
+
+## Instruction ownership
+
+Agent instructions is the active instruction manager. Existing global and project instruction files remain authoritative in their scopes. Rules migrated from other instruction plugins are stored privately in BB, not in this public repository. Project Instructions has been removed; the bundled Custom Instructions plugin is disabled.

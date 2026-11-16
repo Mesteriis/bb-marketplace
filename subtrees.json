@@ -194,18 +194,6 @@
       "upstreamRemote": "upstream-beautiful-chat"
     },
     {
-      "id": "chat-sidebar",
-      "prefix": "plugins/chat-sidebar",
-      "upstream": "https://github.com/seoperin/bb-plugin-chat-sidebar.git",
-      "upstreamSubdir": ".",
-      "upstreamRevision": "0045b99c00fef75c92a1370b67343400d71b0eec",
-      "fork": "https://github.com/Mesteriis/bb-plugin-chat-sidebar.git",
-      "branch": "marketplace/chat-sidebar",
-      "commit": "9ee72de66ee2a3428c6b7b5c850280eb751499a0",
-      "remote": "plugin-chat-sidebar",
-      "upstreamRemote": "upstream-chat-sidebar"
-    },
-    {
       "id": "codex-realtime",
       "prefix": "plugins/codex-realtime",
       "upstream": "https://github.com/gpambrozio/bb-plugins.git",
@@ -266,18 +254,6 @@
       "upstreamRemote": "upstream-desktop-browser-agent"
     },
     {
-      "id": "dev-bar",
-      "prefix": "plugins/dev-bar",
-      "upstream": "https://github.com/danielbachhuber/bb-plugins.git",
-      "upstreamSubdir": "bb-plugin-dev-bar",
-      "upstreamRevision": "ca8bc0660b8bd06e68dc3a81eb2f9f1b78b95fb4",
-      "fork": "https://github.com/Mesteriis/danielbachhuber-bb-plugins.git",
-      "branch": "marketplace/dev-bar",
-      "commit": "2ef41d7efcd845812be635f7caaf3b18f8976015",
-      "remote": "plugin-dev-bar",
-      "upstreamRemote": "upstream-dev-bar"
-    },
-    {
       "id": "dev-servers",
       "prefix": "plugins/dev-servers",
       "upstream": "https://github.com/darknoon/bb-plugins.git",
@@ -324,18 +300,6 @@
       "commit": "91430d1b4a7458d5c27b6ca7408e29e39587d378",
       "remote": "plugin-docker",
       "upstreamRemote": "upstream-docker"
-    },
-    {
-      "id": "dockside",
-      "prefix": "plugins/dockside",
-      "upstream": "https://github.com/MateoCerquetella/bb-plugins.git",
-      "upstreamSubdir": "plugins/dockside",
-      "upstreamRevision": "e8736f3858d0a544b70573ddbc92db0291faed53",
-      "fork": "https://github.com/Mesteriis/mateocerquetella-bb-plugins.git",
-      "branch": "marketplace/dockside",
-      "commit": "95626621cadc72a36b32ebace7a6b2d2b0c066bd",
-      "remote": "plugin-dockside",
-      "upstreamRemote": "upstream-dockside"
     },
     {
       "id": "file-gateway",
@@ -432,18 +396,6 @@
       "commit": "15ad94c3c4e112bd6d0561a8cad3513ee95a2c89",
       "remote": "plugin-github-actions",
       "upstreamRemote": "upstream-github-actions"
-    },
-    {
-      "id": "gtd-sidebar",
-      "prefix": "plugins/gtd-sidebar",
-      "upstream": "https://github.com/smsunarto/bb-plugins.git",
-      "upstreamSubdir": "plugins/gtd-sidebar",
-      "upstreamRevision": "fc12842e87495f2a6370dbc0d21893e49b27a258",
-      "fork": "https://github.com/Mesteriis/smsunarto-bb-plugins.git",
-      "branch": "marketplace/gtd-sidebar",
-      "commit": "b07f580914fdd0fa4fde6dcb659e01d53af54b7c",
-      "remote": "plugin-gtd-sidebar",
-      "upstreamRemote": "upstream-gtd-sidebar"
     },
     {
       "id": "handoff",
@@ -674,18 +626,6 @@
       "upstreamRemote": "upstream-plugin-updates"
     },
     {
-      "id": "project-instructions",
-      "prefix": "plugins/project-instructions",
-      "upstream": "https://github.com/Hazihell/bb-plugin-project-instructions.git",
-      "upstreamSubdir": ".",
-      "upstreamRevision": "1fdc01b6d6afb88c717a64384288e2b7f2324869",
-      "fork": "https://github.com/Mesteriis/bb-plugin-project-instructions.git",
-      "branch": "marketplace/project-instructions",
-      "commit": "95c217fa9757a9050f392a96110448322a75fdbf",
-      "remote": "plugin-project-instructions",
-      "upstreamRemote": "upstream-project-instructions"
-    },
-    {
       "id": "prompt-shaper",
       "prefix": "plugins/prompt-shaper",
       "upstream": "https://github.com/brsbl/bb-plugins.git",
@@ -696,18 +636,6 @@
       "commit": "7d82bad251537cffed1adc131ec7d38d0fb9fa85",
       "remote": "plugin-prompt-shaper",
       "upstreamRemote": "upstream-prompt-shaper"
-    },
-    {
-      "id": "read-aloud",
-      "prefix": "plugins/read-aloud",
-      "upstream": "https://github.com/csells/bb-plugins.git",
-      "upstreamSubdir": "plugins/read-aloud",
-      "upstreamRevision": "074e0723fdefeeab4639efdd0c4cccca659683e8",
-      "fork": "https://github.com/Mesteriis/csells-bb-plugins.git",
-      "branch": "marketplace/read-aloud",
-      "commit": "2c4739388bb17059a3c7617b8ea5776c284305f6",
-      "remote": "plugin-read-aloud",
-      "upstreamRemote": "upstream-read-aloud"
     },
     {
       "id": "read-aloud-local",
@@ -900,30 +828,6 @@
       "commit": "c7430618def962b8e0c9bdfaf04bda9d98994105",
       "remote": "plugin-tokenomics",
       "upstreamRemote": "upstream-tokenomics"
-    },
-    {
-      "id": "tree-sidebar",
-      "prefix": "plugins/tree-sidebar",
-      "upstream": "https://github.com/chadbailey59/bb-plugin-tree-sidebar.git",
-      "upstreamSubdir": ".",
-      "upstreamRevision": "4a6e5b4d560f3cbe59c7016219791c65f7081757",
-      "fork": "https://github.com/Mesteriis/bb-plugin-tree-sidebar.git",
-      "branch": "marketplace/tree-sidebar",
-      "commit": "969667a0c0e1765a2aa07c6118ede275e3b66353",
-      "remote": "plugin-tree-sidebar",
-      "upstreamRemote": "upstream-tree-sidebar"
-    },
-    {
-      "id": "tree-sidebar-local",
-      "prefix": "plugins/tree-sidebar-local",
-      "upstream": "https://github.com/chadbailey59/bb-plugin-tree-sidebar.git",
-      "upstreamSubdir": ".",
-      "upstreamRevision": "4a6e5b4d560f3cbe59c7016219791c65f7081757",
-      "fork": "https://github.com/Mesteriis/bb-plugin-tree-sidebar.git",
-      "branch": "marketplace/tree-sidebar-local",
-      "commit": "af48331127651e81a9ddf6bf009c6d4f866d4c2f",
-      "remote": "plugin-tree-sidebar-local",
-      "upstreamRemote": "upstream-tree-sidebar-local"
     },
     {
       "id": "ultragoal",

@@ -68,10 +68,6 @@
       "source": "./plugins/beautiful-chat"
     },
     {
-      "name": "chat-sidebar",
-      "source": "./plugins/chat-sidebar"
-    },
-    {
       "name": "codex-realtime",
       "source": "./plugins/codex-realtime"
     },
@@ -92,10 +88,6 @@
       "source": "./plugins/desktop-browser-agent"
     },
     {
-      "name": "dev-bar",
-      "source": "./plugins/dev-bar"
-    },
-    {
       "name": "dev-servers",
       "source": "./plugins/dev-servers"
     },
@@ -110,10 +102,6 @@
     {
       "name": "docker",
       "source": "./plugins/docker"
-    },
-    {
-      "name": "dockside",
-      "source": "./plugins/dockside"
     },
     {
       "name": "file-gateway",
@@ -146,10 +134,6 @@
     {
       "name": "github-actions",
       "source": "./plugins/github-actions"
-    },
-    {
-      "name": "gtd-sidebar",
-      "source": "./plugins/gtd-sidebar"
     },
     {
       "name": "handoff",
@@ -232,16 +216,8 @@
       "source": "./plugins/plugin-updates"
     },
     {
-      "name": "project-instructions",
-      "source": "./plugins/project-instructions"
-    },
-    {
       "name": "prompt-shaper",
       "source": "./plugins/prompt-shaper"
-    },
-    {
-      "name": "read-aloud",
-      "source": "./plugins/read-aloud"
     },
     {
       "name": "read-aloud-local",
@@ -318,14 +294,6 @@
     {
       "name": "tokenomics",
       "source": "./plugins/tokenomics"
-    },
-    {
-      "name": "tree-sidebar",
-      "source": "./plugins/tree-sidebar"
-    },
-    {
-      "name": "tree-sidebar-local",
-      "source": "./plugins/tree-sidebar-local"
     },
     {
       "name": "ultragoal",
