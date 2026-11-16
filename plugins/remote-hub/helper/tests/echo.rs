@@ -1009,10 +1009,11 @@ fn t4_close_does_not_signal_reaped_child() {
         drop(got);
         std::thread::sleep(Duration::from_millis(10));
     }
+    let seen_text = seen.lock().unwrap().clone();
     assert!(
-        seen.lock().unwrap().contains(&reap_marker),
+        seen_text.contains(&reap_marker),
         "helper did not reap the child: {}",
-        seen.lock().unwrap()
+        seen_text
     );
 
     send_req(&mut stdin, &Request::SessionClose { id: 1, session_id: sid });
@@ -1495,4 +1496,18 @@ fn v1_env_values_reach_execve_intact() {
         .collect();
     lines.sort();
     assert_eq!(lines, vec!["A=alpha", "B=beta gamma", "C=\u{03b4}"]);
+}
+
+// V9: a normal child that exits while its slave closes must be reaped as a
+// normal exit, never SIGTERMed as an orphan or misreported as a signal.
+#[test]
+fn v9_normal_exit_is_not_misread_as_orphan() {
+    let mut h = start_with_args(&["--echo-command", "/bin/sh", "-c", "exit 7"]);
+    h.hello();
+    for _ in 0..200 {
+        let (sid, _pid) = h.open();
+        let (code, sig, _reason) = h.read_until_closed_status(sid);
+        assert_eq!(code, Some(7));
+        assert_eq!(sig, None);
+    }
 }

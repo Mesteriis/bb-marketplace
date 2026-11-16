@@ -616,6 +616,27 @@ impl SessionManager {
         Ok(n as usize)
     }
 
+    /// Reap one reaped child and update the matching session. Returns the
+    /// session id when a session claimed this child.
+    fn reap_one(&mut self, pid: libc::pid_t, status: libc::c_int) -> Option<u32> {
+        let (code, sig) = parse_status(status);
+        for session in self.sessions.values_mut() {
+            if session.child == pid && !session.child_exited {
+                session.child_exited = true;
+                session.exit_code = code;
+                session.signal = sig;
+                // ssh exits 255 for a closed interactive session; surface it
+                // as ssh_error rather than a normal exit.
+                session.close_reason = Some(close_reason_for(&session.kind, code));
+                session.child_exited_at = Some(Instant::now());
+                #[cfg(feature = "test-hooks")]
+                eprintln!("helper-reaped pid={pid}");
+                return Some(session.id);
+            }
+        }
+        None
+    }
+
     pub fn reap(&mut self) -> Vec<u32> {
         let mut newly = Vec::new();
         loop {
@@ -624,20 +645,35 @@ impl SessionManager {
             if r <= 0 {
                 break;
             }
-            let (code, sig) = parse_status(status);
-            for session in self.sessions.values_mut() {
-                if session.child == r && !session.child_exited {
-                    session.child_exited = true;
-                    session.exit_code = code;
-                    session.signal = sig;
-                    // ssh exits 255 for a closed interactive session; surface it
-                    // as ssh_error rather than a normal exit.
-                    session.close_reason = Some(close_reason_for(&session.kind, code));
-                    session.child_exited_at = Some(Instant::now());
-                    newly.push(session.id);
-                    #[cfg(feature = "test-hooks")]
-                    eprintln!("helper-reaped pid={r}");
+            if let Some(id) = self.reap_one(r, status) {
+                newly.push(id);
+            }
+        }
+        // V9: the kernel closes the slave before the child is a zombie, so a
+        // PTY that just reached EOF may not be reapable in the same instant. Wait
+        // a bounded 200 ms before remove_finished misreads the child as an orphan
+        // and SIGTERMs its process group.
+        let eof_unreaped: Vec<libc::pid_t> = self
+            .sessions
+            .values()
+            .filter(|s| s.pty_done && !s.child_exited)
+            .map(|s| s.child)
+            .collect();
+        for pid in eof_unreaped {
+            let deadline = Instant::now() + Duration::from_millis(200);
+            let mut status: libc::c_int = 0;
+            loop {
+                let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+                if r == pid {
+                    if let Some(id) = self.reap_one(pid, status) {
+                        newly.push(id);
+                    }
+                    break;
                 }
+                if r < 0 || Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
             }
         }
         newly
