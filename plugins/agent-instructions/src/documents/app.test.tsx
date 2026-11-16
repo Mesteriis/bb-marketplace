@@ -1,0 +1,271 @@
+import { installDom } from "@bb-plugins/testing";
+import { beforeEach, expect, test } from "bun:test";
+import { fileSchema } from "./model.ts";
+installDom();
+const { loadPluginApp, renderSlot } = await import("@get-bb/plugin-sdk/testing/app");
+const { fireEvent, act, waitFor } = await import("@testing-library/react");
+const { queryClient } = await import("../app/query.ts");
+const { resetDocumentDraftsForTest } = await import("./app.tsx");
+beforeEach(() => {
+  queryClient.clear();
+  resetDocumentDraftsForTest();
+});
+const metadata = {
+  globalProjectId: "p",
+  projects: [
+    {
+      id: "p",
+      name: "Project",
+      sources: [
+        {
+          id: "a",
+          hostId: "host",
+          hostName: "Host",
+          rootPath: "/a",
+          connected: true,
+          isDefault: true,
+        },
+        {
+          id: "b",
+          hostId: "host",
+          hostName: "Host",
+          rootPath: "/b",
+          connected: true,
+          isDefault: false,
+        },
+      ],
+    },
+  ],
+};
+async function page(source: string, rpc = {}) {
+  const app = await loadPluginApp(() => import("../app/app.tsx"));
+  return renderSlot(
+    app.navPanels[0]!,
+    { subPath: `projects/p/${source}/AGENTS.md` },
+    {
+      rpc: {
+        documentSources: () => metadata,
+        readDocument: (input: unknown) => ({
+          content: `Original ${fileSchema.parse(input).rootPath}`,
+          sha256: "base",
+          readOnly: null,
+        }),
+        ...rpc,
+      },
+    },
+  );
+}
+test("drafts stay attached to the selected checkout and survive switching", async () => {
+  const first = await page("a");
+  const input = await first.findByRole("textbox", { name: "AGENTS.md" }).then(sourceTextbox);
+  fireEvent.change(input, { target: { value: "Draft A" } });
+  first.unmount();
+  const second = await page("b");
+  expect(
+    (await second.findByRole("textbox", { name: "AGENTS.md" }).then(sourceTextbox)).getAttribute(
+      "readonly",
+    ),
+  ).toBeNull();
+  expect(sourceTextbox(second.getByRole("textbox", { name: "AGENTS.md" }))).toHaveProperty(
+    "value",
+    "Original /b",
+  );
+  second.unmount();
+  const again = await page("a");
+  expect(
+    await again.findByRole("textbox", { name: "AGENTS.md" }).then(sourceTextbox),
+  ).toHaveProperty("value", "Draft A");
+  again.unmount();
+});
+test("a conflicting save keeps the draft and offers an explicit reload", async () => {
+  const slot = await page("a", { saveDocument: () => ({ outcome: "conflict" }) });
+  fireEvent.change(await slot.findByRole("textbox", { name: "AGENTS.md" }).then(sourceTextbox), {
+    target: { value: "My draft" },
+  });
+  fireEvent.click(slot.getByRole("button", { name: /^Save$/ }));
+  await slot.findByText("File changed on disk. Your draft is kept.");
+  expect(sourceTextbox(slot.getByRole("textbox", { name: "AGENTS.md" }))).toHaveProperty(
+    "value",
+    "My draft",
+  );
+  slot.unmount();
+});
+test("late responses from another checkout never replace the selected file", async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const slow = await page("a", {
+    readDocument: async () => {
+      await pending;
+      return { content: "Late A", sha256: "a", readOnly: null };
+    },
+  });
+  slow.unmount();
+  const current = await page("b");
+  await current.findByRole("textbox", { name: "AGENTS.md" }).then(sourceTextbox);
+  await act(async () => release());
+  expect(sourceTextbox(current.getByRole("textbox", { name: "AGENTS.md" }))).toHaveProperty(
+    "value",
+    "Original /b",
+  );
+  current.unmount();
+});
+test("new file saves retain create-only CAS even if a refetch finds an external file", async () => {
+  let exists = false;
+  let saved: unknown;
+  const slot = await page("a", {
+    readDocument: () => ({
+      content: exists ? "Someone else" : "",
+      sha256: exists ? "external" : null,
+      readOnly: null,
+    }),
+    saveDocument: (input: unknown) => {
+      saved = input;
+      return { outcome: "conflict" };
+    },
+  });
+  fireEvent.change(await slot.findByRole("textbox", { name: "AGENTS.md" }).then(sourceTextbox), {
+    target: { value: "New file" },
+  });
+  exists = true;
+  await act(() => queryClient.invalidateQueries({ queryKey: ["readDocument"] }));
+  fireEvent.click(slot.getByRole("button", { name: /^Save$/ }));
+  await slot.findByText("File changed on disk. Your draft is kept.");
+  expect(saved).toMatchObject({ expectedSha256: null });
+  slot.unmount();
+});
+
+test("Machine and checkout links open that source", async () => {
+  const app = await loadPluginApp(() => import("../app/app.tsx"));
+  const slot = renderSlot(
+    app.navPanels[0]!,
+    { subPath: "projects/at/host/%2Fb/.dotfiles/.agents/instructions/shared.md" },
+    {
+      rpc: {
+        documentSources: () => metadata,
+        readDocument: (input: unknown) => ({
+          content: fileSchema.parse(input).rootPath,
+          sha256: "base",
+          readOnly: null,
+        }),
+      },
+    },
+  );
+  expect(
+    await slot
+      .findByRole("textbox", { name: ".dotfiles/.agents/instructions/shared.md" })
+      .then(sourceTextbox),
+  ).toHaveProperty("value", "/b");
+  slot.unmount();
+});
+
+test("disconnecting keeps a cached draft visible and disables saving", async () => {
+  const slot = await page("a");
+  fireEvent.change(await slot.findByRole("textbox", { name: "AGENTS.md" }).then(sourceTextbox), {
+    target: { value: "Keep me offline" },
+  });
+  const offline = structuredClone(metadata);
+  for (const p of offline.projects) for (const s of p.sources) s.connected = false;
+  await act(() => queryClient.setQueryData(queryKeyForSources, offline));
+  await slot.findByText(
+    "This machine is offline. Cached files remain available; reconnect to save.",
+  );
+  expect(sourceTextbox(slot.getByRole("textbox", { name: "AGENTS.md" }))).toHaveProperty(
+    "value",
+    "Keep me offline",
+  );
+  expect(slot.getByRole("button", { name: /^Save$/ })).toHaveProperty("disabled", true);
+  slot.unmount();
+});
+const queryKeyForSources = ["documentSources"];
+
+async function fileList(online = true, truncated = false) {
+  const app = await loadPluginApp(() => import("../app/app.tsx"));
+  const sidebar = app.navPanels[0]?.experimental_sidebar;
+  if (!sidebar) throw new Error("Sidebar missing");
+  const data = structuredClone(metadata);
+  for (const p of data.projects) for (const s of p.sources) s.connected = online;
+  return renderSlot(
+    { component: sidebar },
+    { subPath: "projects/p/a" },
+    {
+      rpc: {
+        documentSources: () => data,
+        documentFiles: () => ({
+          files: ["AGENTS.md", ".agents/skills/sample/references/checklist.md"],
+          warnings: [],
+          truncated,
+        }),
+      },
+    },
+  );
+}
+test("typing filters a complete cached list without extra host requests", async () => {
+  const slot = await fileList();
+  const row = (path: string) =>
+    slot.container
+      .querySelector("file-tree-container")
+      ?.shadowRoot?.querySelector(`[data-item-path="${path}"]`);
+  await waitFor(() => expect(row("AGENTS.md")).toBeTruthy());
+  fireEvent.change(
+    sourceTextbox(slot.getByRole("textbox", { name: "Find instruction or skill file" })),
+    {
+      target: { value: ".agents" },
+    },
+  );
+  await waitFor(() => expect(row(".agents/skills/sample/references/checklist.md")).toBeTruthy());
+  expect(row("AGENTS.md")).toBeNull();
+  expect(slot.rpcCalls.filter((c) => c.method === "documentFiles")).toHaveLength(1);
+  slot.unmount();
+});
+test("an offline source without cached files reports that state instead of loading", async () => {
+  const slot = await fileList(false);
+  await slot.findByText("This machine is offline and no file list is cached.");
+  expect(slot.queryByText("Loading files…")).toBeNull();
+  slot.unmount();
+});
+
+// These draft/save tests explicitly exercise the optional source mode.
+function sourceTextbox(element: HTMLElement): HTMLElement {
+  if (!element.matches(".tiptap")) return element;
+  const wrapper = element.closest(".bb-markdown-editor");
+  const button = [...(wrapper?.querySelectorAll("button") ?? [])].find(
+    (candidate) => candidate.textContent === "Markdown source",
+  );
+  if (!button) throw new Error("Markdown editor has no source control");
+  fireEvent.click(button);
+  const source = wrapper?.querySelector<HTMLElement>("textarea[data-markdown-source]");
+  if (!source) throw new Error("Source mode did not open");
+  return source;
+}
+
+test("skill documents show editable frontmatter above an immediately rich body", async () => {
+  const filePath = ".agents/skills/demo/SKILL.md";
+  const app = await loadPluginApp(() => import("../app/app.tsx"));
+  const slot = renderSlot(
+    app.navPanels[0]!,
+    { subPath: `projects/p/a/${filePath}` },
+    {
+      rpc: {
+        documentSources: () => metadata,
+        readDocument: () => ({
+          content: "---\nname: demo\n---\n\n# Instructions\n",
+          sha256: "base",
+          readOnly: null,
+        }),
+      },
+    },
+  );
+  const yaml = await slot.findByRole("textbox", { name: "Frontmatter" });
+  const body = slot.getByRole("textbox", { name: filePath });
+  expect(body.tagName).toBe("DIV");
+  expect(body.querySelector("h1")?.textContent).toBe("Instructions");
+  expect(yaml).toHaveProperty("value", "name: demo\n");
+  expect(slot.getByRole("button", { name: /^Save$/ })).toHaveProperty("disabled", true);
+  fireEvent.change(yaml, { target: { value: "name: [\n" } });
+  expect(slot.getByRole("textbox", { name: "Frontmatter" })).toHaveProperty("value", "name: [\n");
+  expect(slot.getByRole("textbox", { name: filePath })).toBe(body);
+  expect(slot.getByRole("button", { name: /^Save$/ })).toHaveProperty("disabled", false);
+  slot.unmount();
+});

@@ -1,0 +1,341 @@
+import { installDom } from "@bb-plugins/testing";
+import { beforeEach, expect, test } from "bun:test";
+import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
+import type { ComponentType } from "react";
+import { queryClient } from "../app/query.ts";
+import type { Plugin } from "../shared/schema.ts";
+
+installDom();
+const { fireEvent, within, waitFor } = await import("@testing-library/react");
+const { loadPluginApp, renderSlot } = await import("@get-bb/plugin-sdk/testing/app");
+
+beforeEach(() => queryClient.clear());
+
+const notes: Plugin = {
+  id: "notes",
+  name: "Notes",
+  status: "running",
+  readOnly: null,
+  tools: [
+    {
+      name: "notes_find",
+      live: "Find a note.",
+      file: "instructions/tools/notes_find.md",
+      drift: false,
+    },
+    { name: "notes_code", live: "Defined in code.", file: null, drift: false },
+  ],
+  files: [
+    {
+      path: "instructions/tools/notes_find.md",
+      kind: "tool-description",
+      tool: "notes_find",
+      chars: 12,
+    },
+  ],
+};
+
+const rpc = {
+  plugins: () => ({ plugins: [notes] }),
+  file: () => ({ content: "Find a note.", placeholders: [], maxChars: null }),
+};
+
+function loadApp() {
+  return loadPluginApp(() => import("../../app/app.tsx"));
+}
+
+async function registration() {
+  return (await loadApp()).navPanels[0]!;
+}
+
+async function page(subPath: string) {
+  return renderSlot(
+    await registration(),
+    { subPath: subPath ? `prompts/${subPath}` : "prompts" },
+    { rpc: rpc as never },
+  );
+}
+
+/** The left sidebar bb shows beside the page, ready for `renderSlot`. */
+async function pluginsTabRegistration() {
+  const sidebar = (await loadApp()).navPanels[0]?.experimental_sidebar;
+  if (!sidebar) throw new Error("Agent instructions declares no sidebar");
+  return { component: sidebar as ComponentType<PluginNavPanelProps> };
+}
+
+async function pluginsTab(subPath: string) {
+  return renderSlot(
+    await pluginsTabRegistration(),
+    { subPath: subPath ? `prompts/${subPath}` : "prompts" },
+    { rpc: rpc as never },
+  );
+}
+
+test("the plugin list lives in the page's left sidebar, not a panel tab", async () => {
+  const app = await loadApp();
+  const panel = app.navPanels[0]!;
+  expect(panel.path).toBe("instructions");
+  expect(panel.fixedTabs).toBeUndefined();
+  expect(panel.experimental_sidebar).toBeTypeOf("function");
+  expect(app.tabs).toEqual([]);
+});
+
+test("with nothing in the URL, the page points to the sidebar", async () => {
+  const slot = await page("");
+  expect(await slot.findByText("Pick a tool, prompt, or skill in the sidebar.")).toBeTruthy();
+  slot.lifecycle.unmount();
+});
+
+test("choosing in the sidebar puts the choice in the page's URL", async () => {
+  const tab = await pluginsTab("");
+  fireEvent.click(await tab.findByRole("button", { name: /Notes/ }));
+  expect(tab.navigateCalls).toEqual([
+    {
+      method: "toPluginPanel",
+      path: "instructions",
+      options: { subPath: "prompts/notes/file/instructions/tools/notes_find.md" },
+    },
+  ]);
+  tab.lifecycle.unmount();
+
+  const open = await pluginsTab("notes/file/instructions/tools/notes_find.md");
+  const code = await open.findByRole("button", { name: /notes_code/ });
+  expect(open.getByRole("button", { name: /notes_find/ }).getAttribute("aria-current")).toBe(
+    "true",
+  );
+  fireEvent.click(code);
+  expect(open.navigateCalls).toEqual([
+    {
+      method: "toPluginPanel",
+      path: "instructions",
+      options: { subPath: "prompts/notes/tool/notes_code" },
+    },
+  ]);
+  open.lifecycle.unmount();
+});
+
+test("names with spaces go to bb raw, which encodes the URL itself", async () => {
+  const spaced: Plugin = {
+    ...notes,
+    tools: [],
+    files: [{ path: "instructions/review notes.md", kind: "prompt", tool: null, chars: 12 }],
+  };
+  const slot = renderSlot(
+    await pluginsTabRegistration(),
+    { subPath: "prompts" },
+    { rpc: { ...rpc, plugins: () => ({ plugins: [spaced] }) } as never },
+  );
+  fireEvent.click(await slot.findByRole("button", { name: /Notes/ }));
+  expect(slot.navigateCalls).toEqual([
+    {
+      method: "toPluginPanel",
+      path: "instructions",
+      options: { subPath: "prompts/notes/file/instructions/review notes.md" },
+    },
+  ]);
+  slot.lifecycle.unmount();
+});
+
+test("the page opens what the URL names", async () => {
+  const code = await page("notes/tool/notes_code");
+  expect(await code.findByText("Defined in code.")).toBeTruthy();
+  code.lifecycle.unmount();
+
+  const file = await page("notes/file/instructions/tools/notes_find.md");
+  const editor = await file.findByLabelText("instructions/tools/notes_find.md").then(sourceTextbox);
+  expect((editor as HTMLTextAreaElement).value).toBe("Find a note.");
+  file.lifecycle.unmount();
+});
+
+test("an unsaved edit on the page is marked in the tab", async () => {
+  const path = "notes/file/instructions/tools/notes_find.md";
+  const file = await page(path);
+  const tab = await pluginsTab(path);
+  const row = await tab.findByRole("button", { name: /notes_find/ });
+  expect(within(row).queryByTitle("Unsaved")).toBeNull();
+
+  const editor = await file.findByLabelText("instructions/tools/notes_find.md").then(sourceTextbox);
+  fireEvent.change(editor, { target: { value: "Find a note by title." } });
+  expect(await within(row).findByTitle("Unsaved")).toBeTruthy();
+
+  fireEvent.click(file.getByRole("button", { name: "Revert" }));
+  expect(within(row).queryByTitle("Unsaved")).toBeNull();
+  tab.lifecycle.unmount();
+  file.lifecycle.unmount();
+});
+
+test("the sidebar offers every editor and only lists plugins on prompt routes", async () => {
+  const sidebar = await pluginsTabRegistration();
+  const global = renderSlot(sidebar, { subPath: "" }, { rpc: rpc as never });
+  expect(global.getByRole("button", { name: "Global" }).getAttribute("aria-pressed")).toBe("true");
+  expect(global.queryByRole("button", { name: /Notes/ })).toBeNull();
+  global.lifecycle.unmount();
+
+  const slot = await pluginsTab("");
+  await slot.findByRole("button", { name: /Notes/ });
+  expect(slot.getByRole("button", { name: "Plugin prompts" }).getAttribute("aria-pressed")).toBe(
+    "true",
+  );
+  fireEvent.click(slot.getByRole("button", { name: "Global" }));
+  expect(slot.navigateCalls.at(-1)).toEqual({
+    method: "toPluginPanel",
+    path: "instructions",
+    options: { subPath: "global" },
+  });
+  slot.lifecycle.unmount();
+});
+
+test("reference files allow whitespace-only edits", async () => {
+  const filePath = "skills/notes/references/data.csv";
+  const slot = renderSlot(
+    await registration(),
+    { subPath: `prompts/notes/file/${filePath}` },
+    {
+      rpc: {
+        plugins: () => ({
+          plugins: [
+            {
+              ...notes,
+              tools: [],
+              files: [{ path: filePath, kind: "reference", tool: null, chars: 12 }],
+            },
+          ],
+        }),
+        file: () => ({ content: "  alpha,one\n", placeholders: [], maxChars: null }),
+      },
+    },
+  );
+  fireEvent.change(await slot.findByRole("textbox", { name: filePath }).then(sourceTextbox), {
+    target: { value: "  alpha,one\n\n" },
+  });
+  expect(slot.getByRole("button", { name: "Save & reload" })).toHaveProperty("disabled", false);
+  slot.unmount();
+});
+
+test("references appear under their nearest skill and keep full-path navigation", async () => {
+  const files: Plugin["files"] = [
+    { path: "skills/review/SKILL.md", kind: "skill", tool: null, chars: 12 },
+    { path: "skills/review/references/guide.md", kind: "reference", tool: null, chars: 12 },
+    { path: "skills/review/advanced/SKILL.md", kind: "skill", tool: null, chars: 12 },
+    {
+      path: "skills/review/advanced/references/guide.md",
+      kind: "reference",
+      tool: null,
+      chars: 12,
+    },
+    { path: "skills/reviewer/SKILL.md", kind: "skill", tool: null, chars: 12 },
+    { path: "skills/reviewer/references/guide.md", kind: "reference", tool: null, chars: 12 },
+    { path: "skills/shared/guide.md", kind: "reference", tool: null, chars: 12 },
+  ];
+  const selected = "skills/review/advanced/references/guide.md";
+  const tabRegistration = await pluginsTabRegistration();
+  const tab = renderSlot(
+    tabRegistration,
+    { subPath: `prompts/notes/file/${selected}` },
+    { rpc: { ...rpc, plugins: () => ({ plugins: [{ ...notes, files }] }) } as never },
+  );
+  try {
+    const review = await tab.findByRole("group", { name: "review/SKILL.md" });
+    expect(review).toHaveProperty("open", false);
+    fireEvent.click(within(review).getByText("review"));
+    expect(review).toHaveProperty("open", true);
+    expect(
+      within(review)
+        .getAllByRole("button")
+        .map((row) => row.textContent),
+    ).toEqual(["SKILL.md", "references/guide.md"]);
+    const advanced = tab.getByRole("group", { name: "review/advanced/SKILL.md" });
+    expect(advanced).toHaveProperty("open", true);
+    fireEvent.click(within(advanced).getByText("review/advanced"));
+    expect(advanced).toHaveProperty("open", false);
+    const editor = renderSlot(
+      await registration(),
+      { subPath: `prompts/notes/file/${selected}` },
+      { rpc: { ...rpc, plugins: () => ({ plugins: [{ ...notes, files }] }) } as never },
+    );
+    try {
+      fireEvent.change(await editor.findByRole("textbox", { name: selected }).then(sourceTextbox), {
+        target: { value: "Updated reference draft" },
+      });
+      await waitFor(() =>
+        expect(within(advanced.querySelector("summary")!).getByTitle("Unsaved")).toBeTruthy(),
+      );
+      expect(advanced).toHaveProperty("open", false);
+      const Tab = tabRegistration.component;
+      tab.lifecycle.rerender(<Tab subPath="prompts/notes/file/skills/review/advanced/SKILL.md" />);
+      await waitFor(() => expect(advanced).toHaveProperty("open", true));
+    } finally {
+      editor.unmount();
+    }
+    fireEvent.click(within(advanced).getByText("review/advanced"));
+    expect(advanced).toHaveProperty("open", false);
+    fireEvent.click(within(advanced).getByText("review/advanced"));
+    const reference = within(advanced).getByRole("button", { name: "references/guide.md" });
+    expect(
+      within(advanced).getByRole("button", { name: "SKILL.md" }).getAttribute("aria-current"),
+    ).toBe("true");
+    fireEvent.click(reference);
+    expect(tab.navigateCalls.at(-1)).toMatchObject({
+      method: "toPluginPanel",
+      path: "instructions",
+      options: { subPath: `prompts/notes/file/${selected}` },
+    });
+    const reviewer = tab.getByRole("group", { name: "reviewer/SKILL.md" });
+    fireEvent.click(within(reviewer).getByText("reviewer"));
+    expect(within(reviewer).getAllByRole("button")).toHaveLength(2);
+    expect(tab.getByRole("button", { name: "shared/guide.md" })).toBeTruthy();
+    expect(tab.getAllByRole("button", { name: "references/guide.md" })).toHaveLength(3);
+  } finally {
+    tab.unmount();
+  }
+});
+
+// These draft/save tests explicitly exercise the optional source mode.
+function sourceTextbox(element: HTMLElement): HTMLElement {
+  if (!element.matches(".tiptap")) return element;
+  const wrapper = element.closest(".bb-markdown-editor");
+  const button = [...(wrapper?.querySelectorAll("button") ?? [])].find(
+    (candidate) => candidate.textContent === "Markdown source",
+  );
+  if (!button) throw new Error("Markdown editor has no source control");
+  fireEvent.click(button);
+  const source = wrapper?.querySelector<HTMLElement>("textarea[data-markdown-source]");
+  if (!source) throw new Error("Source mode did not open");
+  return source;
+}
+
+test("plugin skill frontmatter stays separate from its immediately rich body", async () => {
+  const filePath = "skills/notes/SKILL.md";
+  const slot = renderSlot(
+    await registration(),
+    { subPath: `prompts/notes/file/${filePath}` },
+    {
+      rpc: {
+        plugins: () => ({
+          plugins: [
+            {
+              ...notes,
+              tools: [],
+              files: [{ path: filePath, kind: "skill", tool: null, chars: 50 }],
+            },
+          ],
+        }),
+        file: () => ({
+          content: "---\nname: demo\n---\n\n# Instructions\n",
+          placeholders: [],
+          maxChars: null,
+        }),
+      },
+    },
+  );
+  const yaml = await slot.findByRole("textbox", { name: "Frontmatter" });
+  const body = slot.getByRole("textbox", { name: filePath });
+  expect(body.tagName).toBe("DIV");
+  expect(body.querySelector("h1")?.textContent).toBe("Instructions");
+  expect(slot.getByRole("button", { name: "Save & reload" })).toHaveProperty("disabled", true);
+  fireEvent.change(yaml, { target: { value: "name: [\n" } });
+  expect(slot.getByRole("textbox", { name: "Frontmatter" })).toHaveProperty("value", "name: [\n");
+  expect(slot.getByRole("textbox", { name: filePath })).toBe(body);
+  expect(slot.getByRole("button", { name: "Save & reload" })).toHaveProperty("disabled", false);
+  slot.unmount();
+});

@@ -1,6 +1,6 @@
 # Third-party notices
 
-This repository is MIT licensed (see [LICENSE](LICENSE)). The parts below come
+Original collection code is MIT licensed (see [LICENSE](LICENSE)). The parts below come
 from other projects and keep their own notices.
 
 Add an entry here in the same change that vendors or ports third-party code.
@@ -247,6 +247,60 @@ SOFTWARE.
    limitations under the License.
 ```
 
+## Fardgram
+
+The dark chat layout and chat row/avatar styles in Makosh Telegram are adapted
+from [Fardgram](https://github.com/amirrezamortazavifard/Fardgram/tree/4ccf7c5b32a78206779e0981af1743b86c399c11).
+The upstream MIT license is included in `plugins/telegram/licenses/Fardgram-MIT.txt`.
+
+## Tree Sidebar
+
+- Source: https://github.com/chadbailey59/bb-plugin-tree-sidebar
+- Ported from local Tree Sidebar 0.1.0 on 2026-11-15; upstream commit not recorded.
+- Path: `plugins/sidebar/src/core/tree.ts` (adapted domain types and activity ordering).
+
+MIT License
+
+Copyright (c) 2026 Chad Bailey
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## BB Surf / Steel Browser
+
+`plugins/steel-browser` is an independent BB plugin, without Makosh branding.
+Source: MateoCerquetella/bb-plugins at 0ae0d539b3a46c1ffb158e119a7e3c23060f9a5b,
+MIT; original notices and license are preserved in its directory.
+Local adaptation: registered BB host ID selection, tests and SDK compatibility.
+Steel engine is separate upstream software under Apache-2.0.
+
 ## Makosh Taskboard
 
 Adapted from Mateo Cerquetella Taskboard, MIT, revision `0ae0d539b3a46c1ffb158e119a7e3c23060f9a5b` of https://github.com/MateoCerquetella/bb-plugins/tree/main/plugins/taskboard. Paths: `plugins/taskboard/`. Full upstream license and vendored BB UI notices are preserved in `plugins/taskboard/LICENSE` and `plugins/taskboard/THIRD_PARTY_NOTICES.md`.
+
+## Independent BB plugin imports
+
+See [the import inventory](subtrees.json) for per-package upstream sources and migration scope. Original licenses, notices and branding are retained inside each independent package. These imports are separate from the Makosh application.
+
+## Unified Inbox
+
+`plugins/unified-inbox` is imported from https://github.com/robertsinke/bb-plugin-unified-inbox. Original license, third-party notices and branding are preserved in the package. It is independent of Makosh. See its `LOCAL_FORK.md` for the source revision.
+
+## Independent plugins imported with git subtree
+
+The source repository, directory, pinned revision, maintained fork and branch for every imported plugin are recorded in [subtrees.json](subtrees.json). Each plugin keeps its original package license and notices; the root MIT license does not relicense these packages. Root-level upstream notices are preserved under [licenses](licenses/). Local configuration, credentials and runtime data are excluded.
