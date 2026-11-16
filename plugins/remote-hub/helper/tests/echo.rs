@@ -1626,36 +1626,89 @@ fn v9_normal_exit_is_not_misread_as_orphan() {
 // still report its real exit status.
 #[test]
 fn w4_hup_does_not_block_the_loop() {
-    let mut h = start();
-    h.hello();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_remote-hub-helper"));
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn helper");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let helper_pid = child.id();
 
-    let mut ssh_sids = Vec::new();
-    for _ in 0..50 {
-        h.send(&Request::OpenSsh {
-            id: 1,
-            cols: 80,
-            rows: 24,
-            program: "/bin/sh".to_string(),
-            argv: vec![
-                "sh".to_string(),
-                "-c".to_string(),
-                "exec >/dev/null 2>&1 </dev/null; sleep 0.3; exit 7".to_string(),
-            ],
-            env: HashMap::new(),
-            cwd: None,
-        });
-        match h.read_response() {
-            Response::SessionOpened { session_id, .. } => ssh_sids.push(session_id),
-            other => panic!("expected session.opened, got {other:?}"),
+    send_req(&mut stdin, &Request::Hello {
+        protocol: PROTOCOL_VERSION,
+    });
+    let _ = read_frame_io(&mut stdout); // hello_ack
+
+    let seen = Arc::new(Mutex::new(String::new()));
+    let seen2 = seen.clone();
+    let reader = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match stderr.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    seen2
+                        .lock()
+                        .unwrap()
+                        .push_str(&String::from_utf8_lossy(&buf[..n]));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
         }
+    });
+
+    // 50 ssh-kind sessions whose child really closes its tty fds, then lives
+    // 300 ms and exits 7. Grant each a little credit so the EOF/HUP is observed.
+    let mut ssh_sids = Vec::new();
+    for i in 0..50u64 {
+        send_req(
+            &mut stdin,
+            &Request::OpenSsh {
+                id: 10 + i,
+                cols: 80,
+                rows: 24,
+                program: "/usr/bin/perl".to_string(),
+                argv: vec![
+                    "perl".to_string(),
+                    "-e".to_string(),
+                    "close STDIN; close STDOUT; close STDERR; select(undef,undef,undef,0.3); exit 7".to_string(),
+                ],
+                env: HashMap::new(),
+                cwd: None,
+            },
+        );
+        let sid = match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+            Response::SessionOpened { session_id, .. } => session_id,
+            other => panic!("expected session.opened, got {other:?}"),
+        };
+        send_req(
+            &mut stdin,
+            &Request::SessionCredit {
+                id: 200 + i,
+                session_id: sid,
+                bytes: 65_536,
+            },
+        );
+        match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+            Response::SessionCreditAck { .. } => {}
+            other => panic!("expected session.credit_ack, got {other:?}"),
+        }
+        ssh_sids.push(sid);
     }
 
-    h.send(&Request::OpenEcho {
-        id: 2,
-        cols: 80,
-        rows: 24,
-    });
-    let echo_sid = match h.read_response() {
+    send_req(
+        &mut stdin,
+        &Request::OpenEcho {
+            id: 400,
+            cols: 80,
+            rows: 24,
+        },
+    );
+    let echo_sid = match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
         Response::SessionOpened { session_id, .. } => session_id,
         other => panic!("expected session.opened, got {other:?}"),
     };
@@ -1667,16 +1720,19 @@ fn w4_hup_does_not_block_the_loop() {
     while Instant::now() < deadline {
         let line = format!("ping-{n}\n");
         let t0 = Instant::now();
-        h.send(&Request::SessionInput {
-            id: 100 + n,
-            session_id: echo_sid,
-            data: line,
-        });
+        send_req(
+            &mut stdin,
+            &Request::SessionInput {
+                id: 500 + n,
+                session_id: echo_sid,
+                data: line,
+            },
+        );
         let needle = format!("ping-{n}");
         let mut acked = false;
         let mut echoed = false;
         while !(acked && echoed) {
-            let (kind, payload) = h.read_frame();
+            let (kind, payload) = read_frame_io(&mut stdout);
             if kind == FRAME_KIND_CONTROL {
                 match decode_response(&payload).unwrap() {
                     Response::SessionInputAck { .. } => acked = true,
@@ -1708,14 +1764,29 @@ fn w4_hup_does_not_block_the_loop() {
         n += 1;
     }
 
+    // All 50 must have reported exit 7, and at least 40 EOF/HUP-before-reap
+    // events must have been observed (the precondition).
     for sid in ssh_sids {
         let (code, sig) = closed
             .get(&sid)
             .copied()
-            .unwrap_or_else(|| panic!("session {sid} never closed ({} total)", closed.len()));
+            .unwrap_or_else(|| panic!("session {sid} never closed"));
         assert_eq!(code, Some(7));
         assert_eq!(sig, None);
     }
+    let hup_count = seen
+        .lock()
+        .unwrap()
+        .lines()
+        .filter(|l| l.starts_with("helper-hup-before-reap"))
+        .count();
+    assert!(hup_count >= 40, "only {hup_count} hup-before-reap events observed");
+
+    drop(stdin);
+    let status = wait_timeout(&mut child, Duration::from_secs(5)).expect("helper did not exit");
+    assert_eq!(status.code(), Some(0));
+    let _ = helper_pid;
+    reader.join().expect("stderr reader joined");
 }
 
 // V8: closing a session whose direct child was already reaped must not leak

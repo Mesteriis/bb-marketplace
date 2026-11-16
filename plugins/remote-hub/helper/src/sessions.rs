@@ -23,6 +23,17 @@ pub const LINGER_GRACE: Duration = Duration::from_secs(2);
 /// treated as an orphan (checked on later event-loop iterations, never slept).
 pub const REAP_GRACE: Duration = Duration::from_millis(1000);
 
+#[cfg(feature = "test-hooks")]
+static HUP_BEFORE_REAP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn record_hup_before_reap() {
+    #[cfg(feature = "test-hooks")]
+    {
+        let n = HUP_BEFORE_REAP.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        eprintln!("helper-hup-before-reap count={n}");
+    }
+}
+
 /// A validated child spawn: built before fork, never through a shell.
 pub struct SpawnSpec {
     pub program: CString,
@@ -616,6 +627,9 @@ impl SessionManager {
         if n == 0 {
             session.pty_done = true;
             session.reap_deadline = Some(Instant::now() + REAP_GRACE);
+            if !session.child_exited {
+                record_hup_before_reap();
+            }
             return Ok(0);
         }
         session.pending_out.extend_from_slice(&buf[..n as usize]);
@@ -667,6 +681,9 @@ impl SessionManager {
             if !session.pty_done {
                 session.pty_done = true;
                 session.reap_deadline = Some(Instant::now() + REAP_GRACE);
+                if !session.child_exited {
+                    record_hup_before_reap();
+                }
             }
         }
     }
