@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { defineRpcContract, experimental_PluginRpcRefusal, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { HELPER_BIN_NAME, HelperProcess, HelperRuntimeError, HelperStartError } from "./src/adapters/bb/helper-process.ts";
 import { createRemoteHubService } from "./src/adapters/bb/service.ts";
+import { registerStreamSocket } from "./src/adapters/bb/stream-socket.ts";
 import { rpcSchemas } from "./src/core/rpc.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
@@ -61,6 +62,8 @@ export default function plugin(bb: BbPluginApi): void {
     session_attach: (input) =>
       withHelper(() => ({ token: service.sessionAttach({ generation: input.generation, sessionId: input.sessionId }) })),
   });
+
+  registerStreamSocket(bb, { service });
 
   bb.onDispose(() => {
     service.stop();

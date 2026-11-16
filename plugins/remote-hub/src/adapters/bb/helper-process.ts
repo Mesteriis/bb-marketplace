@@ -188,6 +188,7 @@ export class HelperProcess {
   private readonly inputSeq = new Map<number, number>();
   private readonly closedSessions = new Map<number, { exitCode: number | null; signal: number | null; reason: string }>();
   private readonly onSessionClosedCallbacks: Array<(sessionId: number, info: { exitCode: number | null; signal: number | null; reason: string }) => void> = [];
+  private readonly onSessionOutputCallbacks: Array<(sessionId: number, data: Uint8Array) => void> = [];
   private readonly onExitCallbacks: Array<() => void> = [];
   private buffer: Uint8Array = new Uint8Array(0);
   private _status: Omit<HelperStatus, "alive"> | null = null;
@@ -353,6 +354,7 @@ export class HelperProcess {
       this.scrollbacks.set(sessionId, scrollback);
     }
     scrollback.append(data);
+    for (const cb of this.onSessionOutputCallbacks) cb(sessionId, data);
     let state = this.streams.get(sessionId);
     if (state === undefined) {
       state = { decoder: new TextDecoder("utf-8"), parts: [], bytes: 0, truncated: false };
@@ -563,6 +565,10 @@ export class HelperProcess {
 
   onSessionClosed(cb: (sessionId: number, info: { exitCode: number | null; signal: number | null; reason: string }) => void): void {
     this.onSessionClosedCallbacks.push(cb);
+  }
+
+  onSessionOutput(cb: (sessionId: number, data: Uint8Array) => void): void {
+    this.onSessionOutputCallbacks.push(cb);
   }
 
   async close(handle: SessionHandle): Promise<{ exitCode: number | null; signal: number | null; reason: string }> {

@@ -36,6 +36,11 @@ export interface RemoteHubService {
   sessionClose(handle: SessionHandle): Promise<{ exitCode: number | null; signal: number | null; reason: string }>;
   sessionAttach(handle: SessionHandle): string;
   consumeAttachToken(token: string): { sessionId: number; generation: string } | null;
+  sessionScrollback(sessionId: number): Promise<Uint8Array>;
+  subscribeSession(sessionId: number, cb: (data: Uint8Array) => void): () => void;
+  sessionTerminalInput(sessionId: number, data: Uint8Array): void;
+  sessionResize(handle: SessionHandle, cols: number, rows: number): Promise<void>;
+  sessionCredit(handle: SessionHandle, bytes: number): Promise<void>;
   stop(): void;
 }
 
@@ -43,6 +48,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   let helper: HelperProcess | null = null;
   let starting: Promise<HelperProcess> | null = null;
   const sessions = new Map<number, SessionInfo>();
+  const listeners = new Map<number, Set<(data: Uint8Array) => void>>();
   const attachTokens = new AttachTokens(ATTACH_TOKEN_TTL_MS, deps.clock);
 
   const start = (): Promise<HelperProcess> => {
@@ -62,6 +68,12 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
               existing.exitCode = info.exitCode;
               existing.signal = info.signal;
               existing.reason = info.reason;
+            }
+          });
+          started.onSessionOutput((sessionId, data) => {
+            const set = listeners.get(sessionId);
+            if (set !== undefined) {
+              for (const cb of set) cb(data);
             }
           });
           return started;
@@ -151,6 +163,35 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     },
     consumeAttachToken(token) {
       return attachTokens.consume(token);
+    },
+    async sessionScrollback(sessionId) {
+      const process = await start();
+      return process.scrollbackSnapshot(sessionId);
+    },
+    subscribeSession(sessionId, cb) {
+      let set = listeners.get(sessionId);
+      if (set === undefined) {
+        set = new Set();
+        listeners.set(sessionId, set);
+      }
+      set.add(cb);
+      return () => {
+        set.delete(cb);
+      };
+    },
+    async sessionTerminalInput(sessionId, data) {
+      const process = await start();
+      process.writeInput(sessionId, data);
+    },
+    async sessionResize(handle, cols, rows) {
+      requireGeneration(handle);
+      const process = await start();
+      await process.resize(handle, cols, rows);
+    },
+    async sessionCredit(handle, bytes) {
+      requireGeneration(handle);
+      const process = await start();
+      await process.credit(handle, bytes);
     },
     stop() {
       if (helper !== null) helper.stop();
