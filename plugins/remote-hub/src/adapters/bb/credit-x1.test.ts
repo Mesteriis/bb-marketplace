@@ -273,6 +273,49 @@ describe("credit window X1 (real service + real socket)", () => {
     ]);
   });
 
+  it("scenario 9: reattach after everyone left tops the window back up", async () => {
+    const { helper, service, wire } = makeServiceAndSocket();
+    const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+    const a = makeSocket();
+    const ha = wire("ws://x/attach?attach=" + service.sessionAttach(handle));
+    await ha.onOpen(a);
+    helper.emitOutput(handle.sessionId, new Uint8Array(262_144).fill(65));
+    await flush();
+    await flush();
+    ha.onClose(); // A detaches without acking
+    const b = makeSocket();
+    const hb = wire("ws://x/attach?attach=" + service.sessionAttach(handle));
+    await hb.onOpen(b);
+    expect(helper.creditFrames.map((f) => f.bytes)).toEqual([262_144, 262_144]);
+    const granted = helper.creditFrames.reduce((s, f) => s + f.bytes, 0);
+    expect(granted - 262_144).toBe(262_144); // helper unconsumed credit
+    // B receives further output and its acks grant normally.
+    helper.emitOutput(handle.sessionId, new Uint8Array(100_000).fill(66));
+    ackLive(b, hb);
+    await flush();
+    await flush();
+    expect(helper.creditFrames.map((f) => f.bytes)).toEqual([262_144, 262_144, 100_000]);
+  });
+
+  it("scenario 10: reattach tops up only the never-acked remainder", async () => {
+    const { helper, service, wire } = makeServiceAndSocket();
+    const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+    const a = makeSocket();
+    const ha = wire("ws://x/attach?attach=" + service.sessionAttach(handle));
+    await ha.onOpen(a);
+    helper.emitOutput(handle.sessionId, new Uint8Array(100_000).fill(65));
+    ha.onMessage(a, JSON.stringify({ type: "ack", bytes: 40_000 })); // A acks 40000
+    await flush();
+    await flush();
+    ha.onClose(); // A detaches
+    const b = makeSocket();
+    const hb = wire("ws://x/attach?attach=" + service.sessionAttach(handle));
+    await hb.onOpen(b);
+    expect(helper.creditFrames.map((f) => f.bytes)).toEqual([262_144, 40_000, 60_000]);
+    const granted = helper.creditFrames.reduce((s, f) => s + f.bytes, 0);
+    expect(granted - 100_000).toBe(262_144);
+  });
+
   it("scenario 8: eviction deletes credit state (fake clock)", async () => {
     vi.useFakeTimers();
     try {

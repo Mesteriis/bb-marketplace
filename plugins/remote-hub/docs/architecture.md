@@ -94,8 +94,11 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   are never live and never acked. The invariant kept is
   granted - consumed + (owner.sentLive - owner.acked) <= 262144 while a view is
   attached. When the owner detaches, the oldest remaining view is promoted and
-  granted the remaining window. A renderer that never acks stalls its session
-  after 262144 bytes: that is intended backpressure.
+  granted the remaining window. When NO view is attached (first attach or a
+  reattach after every view left), the new view becomes owner and the helper's
+  unconsumed credit is topped back up to one window:
+  grant = max(0, 262144 - (granted - consumed)). A renderer that never acks
+  stalls its session after 262144 bytes: that is intended backpressure.
 - Attach/detach semantics: one WebSocket per attached view, bound to a single
   session handle by a single-use attach token; closing the socket detaches the
   view but the session keeps running in the helper. service.attachStream takes

@@ -52,11 +52,15 @@ export function createCreditState(): CreditState {
 
   return {
     attach(viewId) {
-      const isFirst = views.size === 0;
+      const wasEmpty = views.size === 0;
       views.set(viewId, { sentLive: 0, acked: 0 });
-      if (isFirst) {
+      if (wasEmpty) {
+        // First attach, or a reattach after every view left: this view becomes
+        // the owner and the helper's unconsumed credit is topped back up to one
+        // window. For the very first attach that is WINDOW; after a fully acked
+        // session it is 0.
         owner = viewId;
-        return granted === 0 ? addGrant(CREDIT_WINDOW_BYTES) : 0;
+        return addGrant(Math.max(0, CREDIT_WINDOW_BYTES - (granted - consumed)));
       }
       if (owner === null) owner = viewId;
       return 0;
