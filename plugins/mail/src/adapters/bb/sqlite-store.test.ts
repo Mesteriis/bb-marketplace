@@ -4171,6 +4171,23 @@ describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
       expect(s.scopedMessage(idIn(INBOX, 1))).toBeNull();
     });
 
+    it("new rows from an excluded sender close their conversation before any refresh (a round still running or failed)", () => {
+      s.setAiScope(aiScope([], { addresses: ["late@example.net"] }));
+      expect(s.scopedMessage(idIn(INBOX, 1))).not.toBeNull();
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(20, {
+          from: { name: "Late", address: "late@example.net" },
+          inReplyTo: "msg-1@example.org",
+          references: ["msg-1@example.org"],
+        }),
+      ]);
+      thread("acc_1");
+      expect(s.scopedMessage(idIn(INBOX, 1))).toBeNull();
+      expect(s.getMessage(idIn(INBOX, 1))!.inAiScope).toBe(false);
+      expect(ids(s.search(ALL_TEXT, "acc_1", 50, { scoped: true }))).not.toContain(idIn(INBOX, 1));
+      expect(s.inboxMessages("acc_1", { unreadOnly: false, limit: 50, scoped: true }).map((m) => m.id)).not.toContain(idIn(INBOX, 1));
+    });
+
     it("stores the scope rows and loads them back", () => {
       s.putAiScope(
         [

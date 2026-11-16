@@ -1557,8 +1557,20 @@ export function createSqliteStore(db: Database.Database): MailStore {
     `SELECT 1 AS one FROM messages c JOIN messages m ON m.account_id = c.account_id AND m.dedup_key = c.dedup_key
      WHERE c.id = ? AND ${IN_AI_SCOPE} LIMIT 1`,
   );
+  /**
+   * New rows or threads since the excluded conversations were built: the next
+   * scoped read rebuilds them first, so a conversation an excluded sender
+   * just joined is out before the round ends (or when it fails).
+   */
+  let excludedStale = false;
+  function freshScope(): void {
+    if (!excludedStale) return;
+    excludedStale = false;
+    rebuildExcludedThreads();
+  }
   /** Rebuilds the conversations holding mail of an excluded sender. */
   function rebuildExcludedThreads(): void {
+    excludedStale = false;
     excludedThreads = sendersExcluded()
       ? new Set(
           db
@@ -1794,7 +1806,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
       attachments: attachmentsOf.all(row.id).map(toAttachment),
       draftId: row.uid === null ? null : (draftByServerCopy.get(row.account_id, row.folder, row.uid)?.id ?? null),
       agentSubject: redactSecrets(row.subject).text,
-      inAiScope: anyCopyInScope.get(row.id) !== undefined,
+      inAiScope: (freshScope(), anyCopyInScope.get(row.id) !== undefined),
     };
   }
 
@@ -2053,6 +2065,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
     // Messages -------------------------------------------------------------
 
     upsertMessages(accountId, folder, messages: FetchedMessage[]) {
+      if (sendersExcluded()) excludedStale = true;
       return atomic(() => {
         const touched = new Set<string>();
         const inserted: string[] = [];
@@ -2369,6 +2382,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
     },
 
     assignThreads(accountId, threadOf) {
+      if (sendersExcluded()) excludedStale = true;
       return atomic(() => {
         const ids = db
           .prepare<[string], { id: string }>("SELECT id FROM messages WHERE account_id = ?")
@@ -2555,6 +2569,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
     },
 
     search(query: ParsedQuery, accountId, limit, opts) {
+      if (opts?.scoped === true) freshScope();
       const where: string[] = [];
       const params: unknown[] = [];
       let from = "FROM messages m";
@@ -3541,6 +3556,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
       const words = queryWords(query);
       if (words.length === 0 || limit <= 0) return [];
       const scoped = opts?.scoped === true;
+      if (scoped) freshScope();
       // The topic mask runs over redacted text (messageTextMask), so a secret never finds a contact.
       const rows = db
         .prepare<[{ words: string; scan: number }], ContactRow>(
@@ -4162,7 +4178,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
         params.push(accountId);
       }
       if (opts.unreadOnly) where.push("m.is_read = 0");
-      if (opts.scoped === true) where.push(IN_AI_SCOPE_OR_ALL_MAIL);
+      if (opts.scoped === true) {
+        freshScope();
+        where.push(IN_AI_SCOPE_OR_ALL_MAIL);
+      }
       params.push(opts.limit);
       const rows = db
         .prepare(
@@ -4358,6 +4377,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
     },
 
     scopedMessage(messageId) {
+      freshScope();
       const row = db
         .prepare<[{ id: string }], HeaderRow>(
           `SELECT ${SUMMARY_COLUMNS}, m.to_json, m.cc_json, m.uid

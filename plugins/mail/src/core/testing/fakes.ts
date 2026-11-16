@@ -426,6 +426,8 @@ export class InMemoryMailStore implements MailStore {
   /** The installed AI scope and its excluded conversations: memory only, as SQLite's. */
   private aiScope: AiScope = OPEN_AI_SCOPE;
   private excludedThreads: ReadonlySet<string> = new Set();
+  /** New rows or threads since the excluded conversations were built (rebuilt on the next scope read). */
+  private excludedStale = false;
 
   /** Runs fn; on a throw restores the state from before the call, like a rollback. */
   transaction<T>(fn: () => T): T {
@@ -546,6 +548,7 @@ export class InMemoryMailStore implements MailStore {
   // Messages ---------------------------------------------------------------
 
   upsertMessages(accountId: string, folder: string, messages: FetchedMessage[]): { inserted: string[]; returning: string[] } {
+    this.excludedStale = true;
     const inserted: string[] = [];
     const returning: string[] = [];
     const junk = this.roleOf(accountId, folder) === "junk";
@@ -764,6 +767,7 @@ export class InMemoryMailStore implements MailStore {
   }
 
   assignThreads(accountId: string, threadOf: Map<string, string>): void {
+    this.excludedStale = true;
     for (const row of this.state.rows) {
       if (row.accountId !== accountId) continue;
       row.threadId = threadOf.get(row.id) ?? `t_${row.id}`;
@@ -2078,6 +2082,10 @@ export class InMemoryMailStore implements MailStore {
 
   /** The row is inside the installed AI scope (the SQLite mail_ai_in_scope). */
   private inAiScope(row: Row): boolean {
+    if (this.excludedStale) {
+      this.excludedStale = false;
+      this.refreshExcludedThreads();
+    }
     return inAiScope(
       {
         accountId: row.accountId,
