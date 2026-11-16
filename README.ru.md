@@ -1,4 +1,8 @@
-# Макошь для BB
+# BB Marketplace
+
+Личный маркетплейс BB аккаунта [Mesteriis](https://github.com/Mesteriis). Сторонние плагины сохраняют исходные названия и лицензии. Плагины Макоши остаются отдельным семейством внутри коллекции.
+
+See [subtree maintenance](docs/subtree-maintenance.md) and [subtrees.json](subtrees.json).
 
 Плагины семейства «Макошь» для [BB](https://github.com/get-bb/bb), IDE для
 работы с агентами. Они приносят личные коммуникации в IDE: вы читаете и
@@ -27,23 +31,18 @@
 Из клона:
 
 ```sh
-git clone https://github.com/Mesteriis/makosh-bb.git
-cd makosh-bb/plugins/mail
+git clone https://github.com/Mesteriis/bb-marketplace.git
+cd bb-marketplace/plugins/mail
 npm install
 bb plugin install .
 ```
 
-Из релизного тега — когда появится первый:
+
+Или через этот маркетплейс:
 
 ```sh
-bb plugin install git:https://github.com/Mesteriis/makosh-bb.git@^0.1.0 --plugin mail --tag-prefix mail/
-```
-
-Или через маркетплейс «Макошь», где перечислены все плагины репозитория:
-
-```sh
-bb marketplace add git:github.com/Mesteriis/makosh-bb@main
-bb plugin install makosh-mail@makosh
+bb marketplace add git:github.com/Mesteriis/bb-marketplace@main
+bb plugin install makosh-mail@mesteriis
 ```
 
 Плагины BB выполняются с полным доверием. Читайте то, что устанавливаете.

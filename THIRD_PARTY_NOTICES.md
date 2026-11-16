@@ -1,6 +1,6 @@
 # Third-party notices
 
-This repository is MIT licensed (see [LICENSE](LICENSE)). The parts below come
+Original collection code is MIT licensed (see [LICENSE](LICENSE)). The parts below come
 from other projects and keep their own notices.
 
 Add an entry here in the same change that vendors or ports third-party code.
@@ -250,3 +250,7 @@ SOFTWARE.
 ## Makosh Taskboard
 
 Adapted from Mateo Cerquetella Taskboard, MIT, revision `0ae0d539b3a46c1ffb158e119a7e3c23060f9a5b` of https://github.com/MateoCerquetella/bb-plugins/tree/main/plugins/taskboard. Paths: `plugins/taskboard/`. Full upstream license and vendored BB UI notices are preserved in `plugins/taskboard/LICENSE` and `plugins/taskboard/THIRD_PARTY_NOTICES.md`.
+
+## Independent plugins imported with git subtree
+
+The source repository, directory, pinned revision, maintained fork and branch for every imported plugin are recorded in [subtrees.json](subtrees.json). Each plugin keeps its original package license and notices; the root MIT license does not relicense these packages. Root-level upstream notices are preserved under [licenses](licenses/). Local configuration, credentials and runtime data are excluded.
