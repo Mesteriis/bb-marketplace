@@ -28,6 +28,14 @@ export function dayNoticePlan(notice: DayNotice): DayNoticePlan {
       open: { page: "today" },
     };
   }
+  if (notice.kind === "rule") {
+    const count = notice.count;
+    return {
+      title: `Rule ${notice.ruleName}: ${count === 1 ? "a thread is ready" : `${count} threads are ready`}`,
+      description: "Review it in the Inbox.",
+      open: { page: "today" },
+    };
+  }
   const name = notice.name.trim();
   const address = notice.address.trim();
   const who = name !== "" ? name : address !== "" ? address : "the recipient";

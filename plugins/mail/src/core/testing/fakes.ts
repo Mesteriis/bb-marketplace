@@ -110,6 +110,7 @@ import type {
   TaskRecord,
 } from "../ports.ts";
 import { AI_RESULT_MAX_BYTES, TASKS_OPEN_MAX } from "../ports.ts";
+import type { BbLinkRow, BindingRow, DevGroupRow, DevUnclassifiedRow, IncidentRow, RuleRecord, RuleRunRecord } from "../ports.ts";
 import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiScope } from "../ai-scope.ts";
 import { AGENT_LOG_IDS_MAX, AGENT_LOG_KEEP_DAYS, AGENT_LOG_ROWS_MAX, type LogEntry, type LogOutcome } from "../agent-log.ts";
 import type { AiCategoryAnswer } from "../ai-input.ts";
@@ -852,7 +853,7 @@ export class InMemoryMailStore implements MailStore {
     const messages = this.onePerKey(rows, (r) => r.dedupKey, folder)
       .sort(oldestFirst)
       .map((r) => this.header(r));
-    return { thread, messages };
+    return { thread, messages, project: null, projectSuggestion: null };
   }
 
   getMessage(messageId: string): MessageHeader | null {
@@ -868,6 +869,7 @@ export class InMemoryMailStore implements MailStore {
       text: row.message.bodyText,
       html: row.message.bodyHtml,
       htmlTruncated: false,
+      codeBlocks: [],
       remoteImagesAllowed: this.isImageSenderAllowed(row.accountId, row.message.from.address),
     };
   }
@@ -1009,6 +1011,7 @@ export class InMemoryMailStore implements MailStore {
       sha256: string;
       data: Uint8Array;
       contentId?: string | null;
+      origin?: string | null;
     },
   ): ComposeAttachment {
     if (!this.state.drafts.has(draftId)) throw new Error("Draft not found");
@@ -1022,10 +1025,11 @@ export class InMemoryMailStore implements MailStore {
       sha256: input.sha256,
       data: input.data.slice(),
       contentId: input.contentId ?? null,
+      origin: input.origin ?? null,
       position: own.reduce((max, a) => Math.max(max, a.position), -1) + 1,
     };
     this.state.composeAttachments.push(stored);
-    return { id: stored.id, fileName: stored.fileName, mimeType: stored.mimeType, size: stored.size };
+    return { id: stored.id, fileName: stored.fileName, mimeType: stored.mimeType, size: stored.size, origin: stored.origin };
   }
 
   listAttachments(draftId: string): ComposeAttachment[] {
@@ -1034,6 +1038,7 @@ export class InMemoryMailStore implements MailStore {
       fileName: a.fileName,
       mimeType: a.mimeType,
       size: a.size,
+      origin: a.origin,
     }));
   }
 
@@ -1047,6 +1052,7 @@ export class InMemoryMailStore implements MailStore {
       size: a.size,
       sha256: a.sha256,
       contentId: a.contentId,
+      origin: a.origin,
       data: a.data.slice(),
     }));
   }
@@ -2188,7 +2194,7 @@ export class InMemoryMailStore implements MailStore {
     const open = [...this.state.tasks.values()].filter((t) => t.doneAt === null).length;
     if (open + rows.length > TASKS_OPEN_MAX) return { full: true };
     for (const row of rows) {
-      this.state.tasks.set(row.id, { ...row, doneAt: null, updatedAt: row.createdAt });
+      this.state.tasks.set(row.id, { ...row, note: row.note ?? null, doneAt: null, updatedAt: row.createdAt });
     }
     return { kept: rows.length };
   }
@@ -2482,6 +2488,36 @@ export class InMemoryMailStore implements MailStore {
     );
     return rows[rows.length - 1]?.threadId ?? null;
   }
+
+  // ---- Slice 3g (stubs until Task 7) ----
+  setDevClass(): number { return notYet(); }
+  devUnclassified(): DevUnclassifiedRow[] { return []; }
+  listUnknown(): { uid: number }[] { return []; }
+  fillListIds(): number { return notYet(); }
+  devGroups(): { groups: DevGroupRow[]; next: string | null } { return { groups: [], next: null }; }
+  addBbLink(): void { notYet(); }
+  listBbLinks(): BbLinkRow[] { return []; }
+  pruneBbLinks(): number { return notYet(); }
+  setConversationProject(): void { notYet(); }
+  conversationProject(): string | null { return null; }
+  addBinding(): { created: boolean } | { full: true } { return notYet(); }
+  removeBinding(): boolean { return notYet(); }
+  listBindings(): BindingRow[] { return []; }
+  projectThreads(): { threads: ThreadSummary[]; nextCursor: string | null } { return { threads: [], nextCursor: null }; }
+  putIncident(): void { notYet(); }
+  incidentFor(): IncidentRow | null { return null; }
+  touchIncident(): boolean { return notYet(); }
+  listRules(): RuleRecord[] { return []; }
+  saveRule(): { rule: RuleRecord } | { full: true } { return notYet(); }
+  deleteRule(): boolean { return notYet(); }
+  pauseRules(): string[] { return notYet(); }
+  resumeRules(): number { return notYet(); }
+  insertRuleRun(): "inserted" | "capped" | "duplicate" { return notYet(); }
+  updateRuleRun(): boolean { return notYet(); }
+  ruleRunByBbThread(): RuleRunRecord | null { return null; }
+  getRuleRun(): RuleRunRecord | null { return null; }
+  listRuleRuns(): { runs: RuleRunRecord[]; next: string | null } { return { runs: [], next: null }; }
+  failStaleStarts(): number { return notYet(); }
 
   purgeDaily(nowIso: string): number {
     const now = Date.parse(nowIso);
@@ -2805,6 +2841,11 @@ export class InMemoryMailStore implements MailStore {
       draftId: row.uid === null ? null : this.draftForServerCopy(row.accountId, row.folder, row.uid),
       agentSubject: redactSecrets(row.message.subject).text,
       inAiScope: this.anyCopyInScope(row),
+      devLinks: [],
+      dev: null,
+      patch: null,
+      alert: false,
+      bbLinks: [],
     };
   }
 
@@ -2841,6 +2882,7 @@ export class InMemoryMailStore implements MailStore {
       flagged: rows.some((r) => inScope(r) && r.isFlagged),
       snoozedUntil: this.snoozedUntil(rows.filter(inScope)),
       ...this.labelsOf(rows.filter((r) => inScope(r) && r.movePending === null)),
+      projectId: null,
     };
   }
 
@@ -3517,4 +3559,8 @@ export function composeHarness(options: { now?: string } = {}) {
     vaultReady: () => proposal.vaultOpen,
   };
   return Object.assign(harness, { ...deps, deps, drafts, sent, advance, sleeps, proposal, proposalDeps });
+}
+
+function notYet(): never {
+  throw new Error("Not available yet");
 }

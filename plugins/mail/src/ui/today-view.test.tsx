@@ -23,6 +23,7 @@ const THREAD: ThreadSummary = {
   snoozedUntil: null,
   category: null,
   categorySuggestion: null,
+  projectId: null,
 };
 
 const DATA: TodayData = {
@@ -41,10 +42,12 @@ const DATA: TodayData = {
     },
   ],
   tasksDue: [
-    { id: "task-1", accountId: "acc-1", messageId: "m-1", threadId: "th-1", title: "Sign the form", due: "2026-11-16", doneAt: null, createdAt: "2026-11-15T09:00:00.000Z" },
+    { id: "task-1", accountId: "acc-1", messageId: "m-1", threadId: "th-1", title: "Sign the form", due: "2026-11-16", doneAt: null, createdAt: "2026-11-15T09:00:00.000Z", note: null },
   ],
   since: { notifications: 14, newsletters: 9, bills: 0, bulk: 2, personal: 0, from: "2026-11-15T08:00:00.000Z" },
   digestDay: "2026-11-16",
+  dev: { ciFailed: 0, repos: 0, alertsFiring: 0 },
+  rulesReady: 0,
 };
 
 function mount(overrides: Partial<Parameters<typeof TodayView>[0]> = {}) {

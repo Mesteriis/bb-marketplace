@@ -17,6 +17,7 @@ const task = (id: string, due: string | null, overrides: Partial<TaskView> = {})
   due,
   doneAt: null,
   createdAt: `2026-11-1${id.length}T09:00:00.000Z`,
+  note: null,
   ...overrides,
 });
 

@@ -271,6 +271,7 @@ import {
   type TriageItemRecord,
   type TriageRowState,
   type TriageView,
+  BB_REFUSAL_TEXT,
 } from "./src/core/index.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
@@ -2318,6 +2319,12 @@ async function unsubscribeOnce(
   return { outcome: "queued", reason: null, outboxId: queued.outboxId };
 }
 
+/** A 3g method not wired yet: plugin callers refused first, then `conflict`. */
+async function notYet3g(_input: unknown, context: ExperimentalPluginRpcHandlerContext): Promise<never> {
+  refusePluginCaller(context);
+  throw refuse("conflict", BB_REFUSAL_TEXT.not_available);
+}
+
 function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const { store, accountDeps, composeDeps, publishChanged } = deps;
   const log = (line: string) => bb.log.warn(line);
@@ -2914,6 +2921,38 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       ai_scope_set: owner("ai_scope_set", (input) => day.setScope(input)),
       agent_log_list: owner("agent_log_list", (input) => day.logList(input)),
       agent_log_clear: owner("agent_log_clear", () => ({ removed: store.clearAgentLog() })),
+      // Slice 3g: wired in Tasks 10-12; until then every method refuses (plugin callers first).
+      projects_list: notYet3g,
+      bb_thread_prepare: notYet3g,
+      bb_thread_start: notYet3g,
+      task_targets: notYet3g,
+      task_from_mail: notYet3g,
+      attachment_save: notYet3g,
+      project_files: notYet3g,
+      project_folders: notYet3g,
+      thread_files: notYet3g,
+      bb_threads_recent: notYet3g,
+      compose_attach_bb: notYet3g,
+      draft_from_bb: notYet3g,
+      dev_digest_get: notYet3g,
+      patch_view: notYet3g,
+      patch_save: notYet3g,
+      patch_handoff: notYet3g,
+      alert_view: notYet3g,
+      incident_start: notYet3g,
+      incident_append: notYet3g,
+      conversation_project_set: notYet3g,
+      binding_add: notYet3g,
+      binding_remove: notYet3g,
+      bindings_list: notYet3g,
+      project_mail: notYet3g,
+      bb_thread_mail: notYet3g,
+      rules_list: notYet3g,
+      rule_save: notYet3g,
+      rule_delete: notYet3g,
+      rules_pause: notYet3g,
+      rule_runs_list: notYet3g,
+      rule_run_dismiss: notYet3g,
     },
     { experimental_discoverable: false },
   );
@@ -4155,6 +4194,7 @@ function taskView(task: TaskRecord) {
     due: task.due,
     doneAt: task.doneAt,
     createdAt: task.createdAt,
+    note: task.note,
   };
 }
 
@@ -4581,6 +4621,8 @@ function createDayRpc(deps: RpcDeps, withCategories: (threads: ThreadSummary[], 
       tasksDue,
       since: { ...sinceCountsNow(store, since, deps.categoriesOn()), from: since },
       digestDay: store.getDigest(day)?.day ?? null,
+      dev: { ciFailed: 0, repos: 0, alertsFiring: 0 },
+      rulesReady: 0,
     };
   }
 

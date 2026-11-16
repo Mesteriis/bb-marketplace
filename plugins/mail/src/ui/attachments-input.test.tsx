@@ -31,7 +31,7 @@ function recordingPort() {
     },
     finish: async (input) => {
       calls.push({ method: "finish", input });
-      return { id: "att-1", fileName: "report_.pdf", mimeType: "application/pdf", size: 3 };
+      return { id: "att-1", fileName: "report_.pdf", mimeType: "application/pdf", size: 3, origin: null };
     },
   };
   return { port, calls };
@@ -99,7 +99,7 @@ describe("attachment chips", () => {
     const onDismiss = vi.fn();
     render(
       <AttachmentChips
-        attachments={[{ id: "att-1", fileName: "plan.pdf", mimeType: "application/pdf", size: 2048 }]}
+        attachments={[{ id: "att-1", fileName: "plan.pdf", mimeType: "application/pdf", size: 2048, origin: null }]}
         uploads={[
           { key: "u1", fileName: "big.zip", size: 100, sent: 50, error: null },
           { key: "u2", fileName: "bad.exe", size: 10, sent: 0, error: "Upload refused" },

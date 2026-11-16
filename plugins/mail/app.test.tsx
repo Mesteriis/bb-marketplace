@@ -170,6 +170,7 @@ const threadA: ThreadSummary = {
   snoozedUntil: null,
   category: null,
   categorySuggestion: null,
+  projectId: null,
 };
 
 const threadB: ThreadSummary = {
@@ -185,6 +186,7 @@ const threadB: ThreadSummary = {
   snoozedUntil: null,
   category: null,
   categorySuggestion: null,
+  projectId: null,
 };
 
 function message(overrides: Partial<MessageHeader> & { id: string }): MessageHeader {
@@ -205,12 +207,19 @@ function message(overrides: Partial<MessageHeader> & { id: string }): MessageHea
     draftId: null,
     agentSubject: overrides.subject ?? "Quarterly plan",
     inAiScope: true,
+    devLinks: [],
+    dev: null,
+    patch: null,
+    alert: false,
+    bbLinks: [],
     ...overrides,
   };
 }
 
 const detailA: ThreadDetail = {
   thread: threadA,
+  project: null,
+  projectSuggestion: null,
   messages: [
     message({ id: "m-old", date: "2026-11-13T08:00:00.000Z", isRead: false, snippet: "First note" }),
     message({ id: "m-new", date: "2026-11-14T08:30:00.000Z", isRead: false, snippet: "Here is the draft" }),
@@ -356,6 +365,8 @@ describe("Mail page", () => {
   it("opening a conversation marks every unread message read", async () => {
     const detail: ThreadDetail = {
       thread: { ...threadA, messageCount: 3, unreadCount: 2 },
+      project: null,
+      projectSuggestion: null,
       messages: [
         message({ id: "m-1", date: "2026-11-12T08:00:00.000Z", isRead: false, snippet: "One" }),
         message({ id: "m-2", date: "2026-11-13T08:00:00.000Z", isRead: true, snippet: "Two" }),
@@ -574,6 +585,8 @@ const FOLDERS: Folder[] = [
 function detailIn(inFolder: string): ThreadDetail {
   return {
     thread: threadA,
+    project: null,
+    projectSuggestion: null,
     messages: [
       message({ id: "m-old", folder: inFolder, date: "2026-11-13T08:00:00.000Z", snippet: "First note" }),
       message({
@@ -918,6 +931,8 @@ describe("Refreshes and read marks", () => {
   it("a refresh that brings a new unread message into the open conversation does not mark it", async () => {
     let detail: ThreadDetail = {
       thread: threadA,
+      project: null,
+      projectSuggestion: null,
       messages: [message({ id: "m-1", isRead: true, snippet: "One" })],
     };
     const slot = render(mailRpc({ thread_get: () => detail }));
@@ -928,6 +943,8 @@ describe("Refreshes and read marks", () => {
 
     detail = {
       thread: threadA,
+      project: null,
+      projectSuggestion: null,
       messages: [...detail.messages, message({ id: "m-2", isRead: false, snippet: "Just arrived" })],
     };
     await slot.behavior.emitRealtime(MAIL_CHANGED_CHANNEL, { accountId: "acc-1" });
@@ -1227,6 +1244,8 @@ const threadW: ThreadSummary = {
 function detailOf(thread: ThreadSummary, folderPath: string, ids: string[]): ThreadDetail {
   return {
     thread,
+    project: null,
+    projectSuggestion: null,
     messages: ids.map((id, i) =>
       message({
         id,

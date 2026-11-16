@@ -4,6 +4,8 @@ import { composeDocInputSchema, type ComposeDoc } from "./compose-doc.ts";
 import type { SignatureDoc } from "./compose-signature.ts";
 import type { HeaderLine, UnsubscribeInfo } from "./unsubscribe.ts";
 import { LOG_ACTORS, LOG_OUTCOMES, LOG_TOOLS } from "./agent-log.ts";
+import { DEV_KINDS, DEV_SOURCES, DEV_STATES } from "./dev-notify.ts";
+import { DEV_LINK_KINDS } from "./dev-links.ts";
 
 /** Which server preset an account was set up with. */
 export const accountPresetSchema = z.enum(["icloud", "gmail", "other"]);
@@ -98,6 +100,52 @@ export const attachmentMetaSchema = z.object({
 });
 export type AttachmentMeta = z.infer<typeof attachmentMetaSchema>;
 
+/** A notification's local dev class (slice 3g, dev-notify.ts); `repo` "host/owner/repo" or a service. */
+export const devClassSchema = z.object({
+  source: z.enum(DEV_SOURCES),
+  repo: z.string().nullable(),
+  kind: z.enum(DEV_KINDS),
+  state: z.enum(DEV_STATES).nullable(),
+  ref: z.string().nullable(),
+});
+
+/** A repository by host and path (projects.ts RepoRef). */
+export const repoRefSchema = z.object({ host: z.string(), path: z.string() });
+
+/** One repository, PR, issue or CI link of a message (slice 3g, dev-links.ts); the text shown is the URL. */
+export const devLinkViewSchema = z.object({
+  url: z.string(),
+  kind: z.enum(DEV_LINK_KINDS),
+  repo: repoRefSchema.nullable(),
+  number: z.string().nullable(),
+  projectId: z.string().nullable(),
+});
+export type DevLinkView = z.infer<typeof devLinkViewSchema>;
+
+/**
+ * What a message was handed to in BB (slice 3g, `bb_links`): a thread, a
+ * Taskboard task, a file saved into a project, a patch hand-off or an
+ * incident thread. `targetId` is the BB thread id, the task id or the
+ * project-relative path; `title` the BB thread title when known.
+ */
+export const bbLinkKindSchema = z.enum(["thread", "taskboard_task", "project_file", "patch", "incident"]);
+export type BbLinkRowKind = z.infer<typeof bbLinkKindSchema>;
+export const bbLinkViewSchema = z.object({
+  kind: bbLinkKindSchema,
+  targetId: z.string(),
+  projectId: z.string().nullable(),
+  title: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type BbLinkView = z.infer<typeof bbLinkViewSchema>;
+
+/** A patch in a message: file count and line totals (slice 3g). */
+export const patchSummarySchema = z.object({
+  files: z.number().int().min(0),
+  added: z.number().int().min(0),
+  removed: z.number().int().min(0),
+});
+
 /** The role a folder plays, from its special-use flag or a name fallback. */
 export const specialUseSchema = z.enum([
   "inbox",
@@ -183,6 +231,16 @@ export const messageHeaderSchema = messageSummarySchema.extend({
   agentSubject: z.string(),
   /** Inside the AI access scope: AI buttons and Hand to agent are enabled. */
   inAiScope: z.boolean(),
+  /** Slice 3g: repository, PR, issue and CI links of the body (computed when read, not stored). */
+  devLinks: z.array(devLinkViewSchema),
+  /** Slice 3g: the local dev class, or null. */
+  dev: devClassSchema.nullable(),
+  /** Slice 3g: the patch the message carries, or null. */
+  patch: patchSummarySchema.nullable(),
+  /** Slice 3g: a monitoring alert (the card asks alert_view). */
+  alert: z.boolean(),
+  /** Slice 3g: what this message was handed to in BB. */
+  bbLinks: z.array(bbLinkViewSchema),
 });
 export type MessageHeader = z.infer<typeof messageHeaderSchema>;
 
@@ -206,6 +264,8 @@ export const threadSummarySchema = z.object({
   category: categorySchema.nullable(),
   /** The latest member row's suggestion (model, else local); null when none or categories are off. */
   categorySuggestion: categorySchema.nullable(),
+  /** Slice 3g: the conversation's project (the owner's binding, else the first matching binding rule); null when none. */
+  projectId: z.string().nullable(),
 });
 export type ThreadSummary = z.infer<typeof threadSummarySchema>;
 
@@ -213,6 +273,10 @@ export type ThreadSummary = z.infer<typeof threadSummarySchema>;
 export const threadDetailSchema = z.object({
   thread: threadSummarySchema,
   messages: z.array(messageHeaderSchema),
+  /** Slice 3g: the bound project; `source` owner (the chip) or rule (a binding rule). */
+  project: z.object({ id: z.string(), name: z.string(), source: z.enum(["owner", "rule"]) }).nullable(),
+  /** Slice 3g: a project the conversation's dev links or repo map to, when none is bound; never bound by itself. */
+  projectSuggestion: z.object({ id: z.string(), name: z.string(), repo: z.string().nullable() }).nullable(),
 });
 export type ThreadDetail = z.infer<typeof threadDetailSchema>;
 
@@ -224,6 +288,8 @@ export const messageBodySchema = z.object({
   htmlTruncated: z.boolean(),
   /** The owner allowed remote images from this sender. */
   remoteImagesAllowed: z.boolean(),
+  /** Slice 3g: the texts of the HTML body's <pre> blocks (empty for plain mail). */
+  codeBlocks: z.array(z.string()),
 });
 export type MessageBody = z.infer<typeof messageBodySchema>;
 
@@ -426,6 +492,8 @@ export const composeAttachmentSchema = z.object({
   fileName: z.string(),
   mimeType: z.string(),
   size: z.number().int(),
+  /** Slice 3g: `bb:project:<id>` or `bb:thread:<id>` for a file picked from BB; null for uploads. Never sent. */
+  origin: z.string().nullable(),
 });
 export type ComposeAttachment = z.infer<typeof composeAttachmentSchema>;
 
@@ -748,6 +816,10 @@ export const threadFilterSchema = z.object({
   keep: z.string().min(1).max(256).optional(),
   /** Slice 3f: a member row carries this label. */
   category: categorySchema.optional(),
+  /** Slice 3g: the latest member row is not a dev notification ("Hide dev notifications"). */
+  notDev: z.literal(true).optional(),
+  /** Slice 3g: the conversation's project is this one. */
+  projectId: z.string().min(1).max(256).optional(),
 });
 export type ThreadFilter = z.infer<typeof threadFilterSchema>;
 
@@ -961,6 +1033,8 @@ export const taskViewSchema = z.object({
   /** ISO 8601. */
   doneAt: z.string().nullable(),
   createdAt: z.string(),
+  /** Slice 3g: a task from mail kept locally holds its note (plain text, never sent). */
+  note: z.string().nullable(),
 });
 export type TaskView = z.infer<typeof taskViewSchema>;
 

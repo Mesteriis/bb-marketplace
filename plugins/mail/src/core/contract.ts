@@ -46,8 +46,11 @@ import {
   reminderViewSchema,
   taskViewSchema,
   draftModeSchema,
+  devClassSchema,
 } from "./model.ts";
 import { languageTagSchema } from "./translate.ts";
+import { DEV_KINDS, DEV_SOURCES, DEV_STATES } from "./dev-notify.ts";
+import { BINDING_KINDS, RULE_RUN_STATES } from "./ports.ts";
 
 /** An id, folder path or account id coming in from the page. */
 const idInput = z.string().min(1).max(256);
@@ -166,6 +169,156 @@ const actionGroupSchema = z.object({
   destination: z.string().nullable(),
   /** Why nothing was done for this group, or null. */
   error: z.string().nullable(),
+});
+
+
+// ---- Slice 3g: BB threads, tasks, project files, dev mail, patches, alerts, binding and rules ----
+
+/** Fixed texts of the 3g refusals (the SDK code is conflict or invalid; the text names the kind). */
+export const BB_REFUSAL_TEXT = {
+  out_of_scope: "Outside AI access (Mail settings)",
+  no_tree: "This project has no single local checkout",
+  confirm_needed: "This file name looks like it holds a secret; confirm to attach it",
+  in_flight: "Already starting a thread for this message",
+  not_available: "Not available yet",
+  save_disabled: "Saving attachments into a project is turned off in this version: BB could not confirm the file stays inside the project",
+  no_result: "This thread has no result yet",
+} as const;
+
+/** The owner's instruction for a BB thread. */
+const instructionInput = z.string().max(4_000);
+/** A project-relative path or a thread storage path coming in from the page. */
+const bbPathInput = z.string().min(1).max(1_024).refine(noLineBreaks, NO_LINE_BREAKS);
+/** A project-relative folder (projectFolder checks it again). */
+const folderInput = z.string().max(240).refine(noLineBreaks, NO_LINE_BREAKS);
+const shaInput = z.string().regex(/^[0-9a-f]{64}$/);
+const permissionModeSchema = z.enum(["accept-edits", "auto", "full"]);
+const bbFileEntrySchema = z.object({ name: z.string(), path: z.string() });
+const includeSchema = z.enum(["message", "conversation"]);
+const bbThreadInput = z.object({
+  messageId: idInput,
+  include: includeSchema,
+  projectId: idInput,
+  instruction: instructionInput.optional(),
+});
+
+/** One attachment saved into a project. */
+export const saveResultSchema = z.discriminatedUnion("outcome", [
+  z.object({ partId: z.string(), outcome: z.literal("saved"), path: z.string(), sizeBytes: z.number().int().min(0) }),
+  z.object({ partId: z.string(), outcome: z.literal("exists"), path: z.string(), currentSha: z.string() }),
+  z.object({ partId: z.string(), outcome: z.literal("failed"), reason: z.string().max(300) }),
+]);
+
+const devCountsSchema = z.object(Object.fromEntries(DEV_KINDS.map((kind) => [kind, z.number().int().min(0)])) as Record<(typeof DEV_KINDS)[number], z.ZodNumber>);
+
+/** One repository (or monitoring service) of the Dev view. */
+export const devGroupSchema = z.object({
+  source: z.enum(DEV_SOURCES),
+  repo: z.string().max(300).nullable(),
+  counts: devCountsSchema,
+  ciFailed: z.number().int().min(0),
+  latestFailure: z.object({ messageId: z.string(), subject: z.string().max(1_000), date: z.string().nullable() }).nullable(),
+  unread: z.number().int().min(0),
+  total: z.number().int().min(0),
+  latestDate: z.string().nullable(),
+  messageIds: z.array(z.string()).max(200),
+  projectId: z.string().nullable(),
+  projectName: z.string().max(300).nullable(),
+});
+
+export const patchFileSchema = z.object({
+  oldPath: z.string().max(4_096).nullable(),
+  newPath: z.string().max(4_096).nullable(),
+  added: z.number().int().min(0),
+  removed: z.number().int().min(0),
+  status: z.enum(["added", "deleted", "renamed", "copied", "modified"]),
+  binary: z.boolean(),
+  symlink: z.boolean(),
+  executable: z.boolean(),
+  patch: z.string(),
+});
+
+export const alertViewSchema = z.object({
+  source: z.string().max(200),
+  name: z.string().max(200),
+  state: z.enum(["firing", "resolved"]),
+  severity: z.string().max(200).nullable(),
+  service: z.string().max(200).nullable(),
+  environment: z.string().max(200).nullable(),
+  links: z.array(z.string().max(2_000)).max(5),
+  alertRef: z.string().max(64),
+});
+
+const bindingKindSchema = z.enum(BINDING_KINDS);
+export const bindingViewSchema = z.object({
+  kind: bindingKindSchema,
+  value: z.string().max(320),
+  projectId: z.string(),
+  projectName: z.string().max(300).nullable(),
+  /** The project is no longer in BB. */
+  removed: z.boolean(),
+  createdAt: z.string(),
+});
+
+const ruleDevMatchSchema = z.object({
+  source: z.enum(DEV_SOURCES).optional(),
+  repo: z.string().min(1).max(300).optional(),
+  kind: z.enum(DEV_KINDS).optional(),
+  state: z.enum(DEV_STATES).optional(),
+});
+const ruleMatchSchema = z.object({
+  from: z.array(addressInput.refine(noLineBreaks, NO_LINE_BREAKS)).max(20).optional(),
+  domains: z.array(z.string().min(1).max(253).refine(noLineBreaks, NO_LINE_BREAKS)).max(20).optional(),
+  list: z.string().max(200).refine(noLineBreaks, NO_LINE_BREAKS).nullable().optional(),
+  subjectWords: z.array(z.string().min(1).max(60).refine(noLineBreaks, NO_LINE_BREAKS)).max(10).optional(),
+  dev: ruleDevMatchSchema.nullable().optional(),
+  accounts: z.array(idInput).max(50).optional(),
+});
+const ruleModeSchema = z.enum(["prepare", "start"]);
+
+/** A rule from the settings form; `mode: "start"` only with the form's confirmation. */
+export const ruleInputSchema = z
+  .object({
+    id: idInput.optional(),
+    name: z.string().min(1).max(80).refine(noLineBreaks, NO_LINE_BREAKS),
+    enabled: z.boolean(),
+    match: ruleMatchSchema,
+    projectId: idInput,
+    template: z.string().max(4_000),
+    mode: ruleModeSchema,
+    confirmedStart: z.boolean().optional(),
+  })
+  .refine((rule) => rule.mode !== "start" || rule.confirmedStart === true, {
+    message: "Start mode needs the owner's confirmation",
+    path: ["confirmedStart"],
+  });
+
+export const ruleViewSchema = z.object({
+  id: z.string(),
+  name: z.string().max(80),
+  enabled: z.boolean(),
+  match: ruleMatchSchema,
+  projectId: z.string(),
+  projectName: z.string().max(300).nullable(),
+  template: z.string().max(4_000),
+  mode: ruleModeSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const ruleRunViewSchema = z.object({
+  id: z.string(),
+  ruleId: z.string(),
+  /** Null once the rule was deleted. */
+  ruleName: z.string().max(80).nullable(),
+  accountId: z.string(),
+  messageId: z.string(),
+  threadId: z.string().nullable(),
+  state: z.enum(RULE_RUN_STATES),
+  bbThreadId: z.string().nullable(),
+  /** The message's subject (owner UI), empty when the message is gone. */
+  subject: z.string().max(1_000),
+  createdAt: z.string(),
 });
 
 export const rpcSchemas = {
@@ -808,6 +961,14 @@ export const rpcSchemas = {
         from: z.string(),
       }),
       digestDay: z.string().nullable(),
+      /** Slice 3g: the last 24 hours of dev mail. */
+      dev: z.object({
+        ciFailed: z.number().int().min(0),
+        repos: z.number().int().min(0),
+        alertsFiring: z.number().int().min(0),
+      }),
+      /** Slice 3g: rule runs ready to start. */
+      rulesReady: z.number().int().min(0),
     }),
   },
   /** "No reply needed": by the conversation's latest message. */
@@ -844,6 +1005,8 @@ export const rpcSchemas = {
         accountId: z.string(),
         threadId: z.string().nullable(),
       }),
+      /** Slice 3g: prepared and started rule runs since the last notice. */
+      z.strictObject({ kind: z.literal("rule"), ruleName: z.string().max(80), count: z.number().int().min(1) }),
     ]),
   },
   ai_scope_get: {
@@ -870,6 +1033,216 @@ export const rpcSchemas = {
   agent_log_clear: {
     input: z.object({}),
     output: z.object({ removed: z.number().int().min(0) }),
+  },
+  // ---- Slice 3g ----
+  projects_list: {
+    input: z.object({}),
+    output: z.object({
+      projects: z.array(
+        z.object({ id: z.string(), name: z.string(), kind: z.string(), hasTree: z.boolean(), repo: z.string().nullable() }),
+      ),
+    }),
+  },
+  /** The exact prompt the thread would start with; refusals out_of_scope, not_found. */
+  bb_thread_prepare: {
+    input: bbThreadInput,
+    output: z.object({
+      prompt: z.string(),
+      title: z.string(),
+      hidden: z.number().int().min(0),
+      leftOut: z.number().int().min(0),
+      /** The project's default; null: none set ("project default"). */
+      permissionMode: permissionModeSchema.nullable(),
+    }),
+  },
+  /** Refusals out_of_scope, not_found, no_tree (saving), conflict (in flight), failed. */
+  bb_thread_start: {
+    input: bbThreadInput.extend({ saveAttachments: z.boolean().optional(), ruleRunId: idInput.optional() }),
+    output: z.object({ bbThreadId: z.string(), saved: z.array(saveResultSchema).optional() }),
+  },
+  task_targets: {
+    input: z.object({}),
+    output: z.object({
+      taskboard: z.object({ boards: z.array(z.object({ id: z.string(), name: z.string() })) }).nullable(),
+      /** Why Taskboard is not offered ("Taskboard did not answer"), null when it is. */
+      reason: z.string().max(300).nullable(),
+      lastBoardId: z.string().nullable(),
+      target: z.enum(["auto", "taskboard", "local"]),
+    }),
+  },
+  /** `unavailable`: Taskboard did not answer; the page offers the local task. */
+  task_from_mail: {
+    input: z.object({
+      messageId: idInput,
+      target: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("taskboard"), boardId: idInput }),
+        z.object({ kind: z.literal("local"), due: dayInput.nullable().optional() }),
+      ]),
+      title: z.string().min(1).max(500),
+      note: z.string().max(4_000).optional(),
+      excerpt: z.boolean(),
+    }),
+    output: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("taskboard"), taskId: z.string() }),
+      z.object({ kind: z.literal("local"), taskId: z.string() }),
+      z.object({ kind: z.literal("unavailable"), reason: z.string().max(300) }),
+    ]),
+  },
+  attachment_save: {
+    input: z.object({
+      messageId: idInput,
+      partIds: z.array(idInput).min(1).max(20),
+      projectId: idInput,
+      folder: folderInput.optional(),
+      onConflict: z.enum(["ask", "keep_both", "replace"]),
+      replaceSha: shaInput.optional(),
+    }),
+    output: z.object({ results: z.array(saveResultSchema) }),
+  },
+  project_files: {
+    input: z.object({ projectId: idInput, query: z.string().max(200), limit: z.number().int().min(1).max(50) }),
+    output: z.object({ files: z.array(bbFileEntrySchema), truncated: z.boolean() }),
+  },
+  project_folders: {
+    input: z.object({ projectId: idInput, query: z.string().max(200), limit: z.number().int().min(1).max(50) }),
+    output: z.object({ folders: z.array(bbFileEntrySchema), truncated: z.boolean() }),
+  },
+  thread_files: {
+    input: z.object({ bbThreadId: idInput, query: z.string().max(200).optional(), limit: z.number().int().min(1).max(50) }),
+    output: z.object({ files: z.array(bbFileEntrySchema), truncated: z.boolean() }),
+  },
+  bb_threads_recent: {
+    input: z.object({ projectId: idInput, limit: z.number().int().min(1).max(30) }),
+    output: z.object({ threads: z.array(z.object({ id: z.string(), title: z.string(), updatedAt: z.string().nullable() })) }),
+  },
+  /** Refusal confirm_needed for a secret-like name without `confirmed`. */
+  compose_attach_bb: {
+    input: z.object({
+      draftId: idInput,
+      source: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("project"), projectId: idInput, path: bbPathInput }),
+        z.object({ kind: z.literal("thread"), bbThreadId: idInput, path: bbPathInput }),
+      ]),
+      confirmed: z.boolean().optional(),
+    }),
+    output: composeAttachmentSchema,
+  },
+  /** A reply when Mail's own links tie the thread to a stored message, else a new draft. */
+  draft_from_bb: {
+    input: z.object({
+      bbThreadId: idInput,
+      source: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("output") }),
+        z.object({ kind: z.literal("message"), text: z.string().min(1).max(100_000) }),
+      ]),
+    }),
+    output: z.object({ draftId: z.string(), accountId: z.string(), reply: z.boolean() }),
+  },
+  dev_digest_get: {
+    input: z.object({
+      days: z.number().int().min(1).max(30).optional(),
+      accountId: idInput.optional(),
+      cursor: cursorInput.nullable().optional(),
+    }),
+    output: z.object({ groups: z.array(devGroupSchema), next: z.string().nullable() }),
+  },
+  patch_view: {
+    input: z.object({ messageId: idInput, partId: idInput.optional() }),
+    output: z.object({
+      files: z.array(patchFileSchema).max(200),
+      warnings: z.array(z.string().max(500)),
+      refused: z.string().max(500).nullable(),
+      commitMessage: z.string().nullable(),
+      patchRef: shaInput,
+    }),
+  },
+  patch_save: {
+    input: z.object({ messageId: idInput, partId: idInput.optional(), projectId: idInput, patchRef: shaInput }),
+    output: z.object({ path: z.string() }),
+  },
+  /** `environment: "checkout"` only when the owner chose it after a worktree refusal. */
+  patch_handoff: {
+    input: z.object({
+      messageId: idInput,
+      partId: idInput.optional(),
+      projectId: idInput,
+      patchRef: shaInput,
+      environment: z.enum(["worktree", "checkout"]).optional(),
+    }),
+    output: z.object({ bbThreadId: z.string(), environment: z.enum(["worktree", "checkout"]) }),
+  },
+  alert_view: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({
+      alert: alertViewSchema.nullable(),
+      incident: z.object({ bbThreadId: z.string(), title: z.string().nullable(), canAppend: z.boolean() }).nullable(),
+    }),
+  },
+  incident_start: {
+    input: z.object({ messageId: idInput, projectId: idInput, instruction: instructionInput.optional() }),
+    output: z.object({ bbThreadId: z.string() }),
+  },
+  incident_append: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({ bbThreadId: z.string() }),
+  },
+  conversation_project_set: {
+    input: z.object({ accountId: idInput, threadId: idInput, projectId: idInput.nullable() }),
+    output: okOutput,
+  },
+  binding_add: {
+    input: z.object({
+      kind: bindingKindSchema,
+      value: z.string().min(1).max(320).refine(noLineBreaks, NO_LINE_BREAKS),
+      projectId: idInput,
+    }),
+    output: okOutput,
+  },
+  binding_remove: {
+    input: z.object({ kind: bindingKindSchema, value: z.string().min(1).max(320).refine(noLineBreaks, NO_LINE_BREAKS) }),
+    output: okOutput,
+  },
+  bindings_list: {
+    input: z.object({}),
+    output: z.object({ bindings: z.array(bindingViewSchema) }),
+  },
+  project_mail: {
+    input: z.object({ projectId: idInput, cursor: cursorInput.nullable().optional() }),
+    output: z.object({ threads: z.array(threadSummarySchema), next: z.string().nullable() }),
+  },
+  /** The thread Info section: the project's latest bound conversations and those the thread came from. */
+  bb_thread_mail: {
+    input: z.object({ projectId: idInput, bbThreadId: idInput }),
+    output: z.object({
+      bound: z.array(threadSummarySchema).max(5),
+      origin: z.array(threadSummarySchema).max(5),
+      total: z.number().int().min(0),
+    }),
+  },
+  rules_list: {
+    input: z.object({}),
+    output: z.object({ rules: z.array(ruleViewSchema) }),
+  },
+  rule_save: {
+    input: ruleInputSchema,
+    output: ruleViewSchema,
+  },
+  rule_delete: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+  /** Disables every rule; `undo` enables the last paused set again. */
+  rules_pause: {
+    input: z.object({ undo: z.boolean().optional() }),
+    output: z.object({ paused: z.number().int().min(0) }),
+  },
+  rule_runs_list: {
+    input: z.object({ state: z.enum(RULE_RUN_STATES).optional(), cursor: cursorInput.nullable().optional() }),
+    output: z.object({ runs: z.array(ruleRunViewSchema), next: z.string().nullable() }),
+  },
+  rule_run_dismiss: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
   },
 } as const;
 
@@ -921,3 +1294,20 @@ export type TodayView = z.output<(typeof rpcSchemas)["today_get"]["output"]>;
 export type DayNotice = z.output<(typeof rpcSchemas)["day_notice_get"]["output"]>;
 /** What ai_scope_set takes. */
 export type AiScopeInput = z.input<(typeof rpcSchemas)["ai_scope_set"]["input"]>;
+
+// ---- Page-side types of the 3g methods ----
+
+type Out<M extends keyof typeof rpcSchemas> = z.output<(typeof rpcSchemas)[M]["output"]>;
+export type SaveResult = z.output<typeof saveResultSchema>;
+export type DevGroup = z.output<typeof devGroupSchema>;
+export type PatchFileView = z.output<typeof patchFileSchema>;
+export type AlertViewOutput = z.output<typeof alertViewSchema>;
+export type BindingView = z.output<typeof bindingViewSchema>;
+export type RuleView = z.output<typeof ruleViewSchema>;
+export type RuleRunView = z.output<typeof ruleRunViewSchema>;
+export type RuleInput = z.input<typeof ruleInputSchema>;
+export type BbThreadPrepareOutput = Out<"bb_thread_prepare">;
+export type TaskTargetsOutput = Out<"task_targets">;
+export type PatchViewOutput = Out<"patch_view">;
+export type AlertViewResult = Out<"alert_view">;
+export type ProjectListItem = Out<"projects_list">["projects"][number];

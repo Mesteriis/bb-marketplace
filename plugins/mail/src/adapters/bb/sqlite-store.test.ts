@@ -159,6 +159,7 @@ describe("createSqliteStore", () => {
       snoozedUntil: null,
       category: null,
       categorySuggestion: null,
+      projectId: null,
     });
     expect(detail.messages[1]).toEqual({
       id: second,
@@ -180,6 +181,11 @@ describe("createSqliteStore", () => {
       draftId: null,
       agentSubject: "Re: Invented plan",
       inAiScope: true,
+      devLinks: [],
+      dev: null,
+      patch: null,
+      alert: false,
+      bbLinks: [],
     });
     expect(store.threadingInputs("acc_1")).toContainEqual({
       id: second,
@@ -2085,7 +2091,7 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       s.createDraft(newDraft());
       const a = s.addAttachment("d_1", file([1, 2, 3], { fileName: "a.txt" }));
       const b = s.addAttachment("d_1", file([4], { fileName: "logo.png", contentId: "logo@example.org" }));
-      expect(a).toEqual({ id: expect.any(String), fileName: "a.txt", mimeType: "text/plain", size: 3 });
+      expect(a).toEqual({ id: expect.any(String), fileName: "a.txt", mimeType: "text/plain", size: 3, origin: null });
       expect(s.listAttachments("d_1")).toEqual([a, b]);
       expect(s.attachmentData("d_1")).toEqual([
         { ...a, sha256: "a".repeat(64), contentId: null, data: new Uint8Array([1, 2, 3]) },

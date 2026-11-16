@@ -40,6 +40,11 @@ function header(overrides: Partial<MessageHeader> = {}): MessageHeader {
     draftId: null,
     agentSubject: overrides.subject ?? "Invented subject",
     inAiScope: true,
+    devLinks: [],
+    dev: null,
+    patch: null,
+    alert: false,
+    bbLinks: [],
     ...overrides,
   };
 }
@@ -51,6 +56,7 @@ function body(overrides: Partial<MessageBody> = {}): MessageBody {
     html: null,
     htmlTruncated: false,
     remoteImagesAllowed: false,
+    codeBlocks: [],
     ...overrides,
   };
 }

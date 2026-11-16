@@ -67,7 +67,7 @@ function fakePorts() {
     upload: {
       begin: vi.fn(async () => ({ uploadId: "up-1" })),
       chunk: vi.fn(async () => ({ received: 0 })),
-      finish: vi.fn(async () => ({ id: "att-9", fileName: "shot.png", mimeType: "image/png", size: 4 })),
+      finish: vi.fn(async () => ({ id: "att-9", fileName: "shot.png", mimeType: "image/png", size: 4, origin: null })),
     },
     removeAttachment: vi.fn(async () => undefined),
     suggest: vi.fn(async () => []),

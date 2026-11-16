@@ -56,6 +56,10 @@ import type { Category, CategoryRule, CategorySource, PreviousLabel } from "./ca
 import type { AiCategoryAnswer } from "./ai-input.ts";
 import type { ReplyCandidate } from "./digest.ts";
 import type { ReminderState } from "./reminders.ts";
+import type { DevClass, DevKind, DevSource } from "./dev-notify.ts";
+import type { ProjectInfo } from "./projects.ts";
+import type { Rule, RuleMode } from "./mail-rules.ts";
+import type { BbLinkRowKind } from "./model.ts";
 
 export interface ImapConfig {
   host: string;
@@ -529,6 +533,8 @@ export interface MailStore {
       sha256: string;
       data: Uint8Array;
       contentId?: string | null;
+      /** Slice 3g: `bb:project:<id>` or `bb:thread:<id>`. */
+      origin?: string | null;
     },
   ): ComposeAttachment;
   /** In the order added. */
@@ -920,14 +926,244 @@ export interface MailStore {
   /** The thread of the account's stored copy with this Message-ID, or null. */
   sentCopyThread(accountId: string, rfcMessageId: string): string | null;
 
+  // ---- Slice 3g: dev classes, List-Id, BB links, project binding, incidents and mail rules ----
+
+  /** Writes each row's dev class; a null class marks the row checked (not a dev notification). */
+  setDevClass(rows: { id: string; dev: DevClass | null }[]): number;
+  /** Rows never classified, outside junk and trash folders, newest first. */
+  devUnclassified(limit: number): DevUnclassifiedRow[];
+  /**
+   * Attached rows of the folder whose List-Id is unknown (NULL), highest uid
+   * first, only uids below `belowUid` when given, at most `limit`.
+   */
+  listUnknown(accountId: string, folder: string, belowUid: number | null, limit: number): { uid: number }[];
+  /**
+   * Writes List-Ids by uid ('' = checked, none), only where still NULL and
+   * only while the folder's stored UIDVALIDITY equals `uidValidity`.
+   */
+  fillListIds(accountId: string, folder: string, uidValidity: number, ids: { uid: number; listId: string }[]): number;
+  /** Dev notifications dated at or after `sinceIso`, grouped by (source, repo), latest group first. */
+  devGroups(opts: { sinceIso: string; accountId?: string | null; cursor?: string | null; limit: number }): {
+    groups: DevGroupRow[];
+    next: string | null;
+  };
+  addBbLink(row: BbLinkRow): void;
+  listBbLinks(query: { messageIds: string[] } | { accountId: string; threadId: string } | { targetId: string }): BbLinkRow[];
+  /** Deletes the links of `kind` to these targets (a deleted BB thread). */
+  pruneBbLinks(kind: BbLinkRowKind, targetIds: string[]): number;
+  /** The owner's binding of a conversation; null removes it. */
+  setConversationProject(accountId: string, threadId: string, projectId: string | null, nowIso: string): void;
+  conversationProject(accountId: string, threadId: string): string | null;
+  /** Inserts or moves (kind, value) to `projectId`; `full` at BINDINGS_MAX. */
+  addBinding(row: BindingRow): { created: boolean } | { full: true };
+  removeBinding(kind: BindingKind, value: string): boolean;
+  listBindings(): BindingRow[];
+  /** Conversations whose project (owner binding, else the first matching rule) is `projectId`, newest first. */
+  projectThreads(projectId: string, opts: { cursor: string | null; limit: number }): {
+    threads: ThreadSummary[];
+    nextCursor: string | null;
+  };
+  putIncident(row: IncidentRow): void;
+  incidentFor(fingerprint: string): IncidentRow | null;
+  /** Sets `last_at`; false when there is no incident. */
+  touchIncident(fingerprint: string, nowIso: string): boolean;
+  listRules(): RuleRecord[];
+  /** Inserts or updates by id (an edit keeps the id and its run counts); `full` at RULES_MAX. */
+  saveRule(rule: Rule, nowIso: string): { rule: RuleRecord } | { full: true };
+  /** Deletes the rule; its runs stay until the 30-day purge (they keep counting). */
+  deleteRule(id: string): boolean;
+  /** Disables every enabled rule; returns their ids. */
+  pauseRules(nowIso: string): string[];
+  /** Enables these rules again. */
+  resumeRules(ids: string[], nowIso: string): number;
+  /**
+   * One transaction: `duplicate` when (rule, message) already has a run; for
+   * a `starting` row the caps are counted (starting and started runs: the
+   * rule in the last hour and day, every rule in the day, deleted rules'
+   * runs included, the rule in this conversation in 24 hours) and the row is
+   * stored `capped` when one is reached; otherwise inserted as given.
+   */
+  insertRuleRun(row: NewRuleRun, caps: RuleCaps): "inserted" | "capped" | "duplicate";
+  updateRuleRun(id: string, patch: { state?: RuleRunState; bbThreadId?: string | null; notifiedAt?: string | null }, nowIso: string): boolean;
+  /** The run (starting or started) whose BB thread this is: a rule thread. */
+  ruleRunByBbThread(bbThreadId: string): RuleRunRecord | null;
+  getRuleRun(id: string): RuleRunRecord | null;
+  /** Newest first; `state` keeps those in it. */
+  listRuleRuns(opts: { state?: RuleRunState; cursor?: string | null; limit: number }): { runs: RuleRunRecord[]; next: string | null };
+  /** `starting` runs created before `beforeIso` become `failed`; returns how many. */
+  failStaleStarts(beforeIso: string, nowIso: string): number;
+
   /**
    * The daily purge (slice 3f): labels and suggestions without a row of their
    * dedup key, ai_results of gone threads, digests and reply dismissals older
    * than 60 days, answered reminders older than ANSWERED_KEEP_DAYS, and the
-   * agent log by age and count.
+   * agent log by age and count. Slice 3g: conversation bindings of gone
+   * conversations, rule runs older than 30 days, incidents older than 90,
+   * ready runs older than 7 days become `expired`.
    */
   purgeDaily(nowIso: string): number;
 }
+
+// ---- Slice 3g store rows ----
+
+export type DevUnclassifiedRow = { id: string; accountId: string; from: string; subject: string };
+
+/** One dev group of the Dev view. */
+export type DevGroupRow = {
+  source: DevSource;
+  repo: string | null;
+  counts: Partial<Record<DevKind, number>>;
+  ciFailed: number;
+  latestFailure: { messageId: string; subject: string; date: string | null } | null;
+  unread: number;
+  total: number;
+  latestDate: string | null;
+  /** The group's message ids, newest first, at most 200 (for Mark read and Archive). */
+  messageIds: string[];
+};
+
+/** A `bb_links` row. `extra` holds a board id, a sha256 or a patchRef; no text. */
+export type BbLinkRow = {
+  id: string;
+  accountId: string;
+  messageId: string;
+  threadId: string | null;
+  kind: BbLinkRowKind;
+  targetId: string;
+  projectId: string | null;
+  extra: string | null;
+  createdAt: string;
+};
+
+export const BINDING_KINDS = ["address", "domain", "list", "repo"] as const;
+export type BindingKind = (typeof BINDING_KINDS)[number];
+/** Most binding rules. */
+export const BINDINGS_MAX = 500;
+/** A binding rule; `value` lower case, a domain in ASCII. */
+export type BindingRow = { kind: BindingKind; value: string; projectId: string; createdAt: string };
+
+/** An incident thread; `fingerprint` is the alert's internal fingerprint (alertRef in outputs). */
+export type IncidentRow = { fingerprint: string; bbThreadId: string; projectId: string; createdAt: string; lastAt: string };
+
+export type RuleRecord = Rule & { createdAt: string; updatedAt: string };
+
+export const RULE_RUN_STATES = ["starting", "ready", "started", "dismissed", "capped", "failed", "expired"] as const;
+export type RuleRunState = (typeof RULE_RUN_STATES)[number];
+
+export type NewRuleRun = {
+  id: string;
+  ruleId: string;
+  accountId: string;
+  messageId: string;
+  threadId: string | null;
+  /** `starting` (Start mode: caps checked) or `ready` (Prepare mode, or a Start run that cannot start). */
+  state: "starting" | "ready";
+  createdAt: string;
+};
+
+export type RuleRunRecord = {
+  id: string;
+  ruleId: string;
+  accountId: string;
+  messageId: string;
+  threadId: string | null;
+  state: RuleRunState;
+  bbThreadId: string | null;
+  notifiedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RuleCaps = { perRuleHour: number; perRuleDay: number; allDay: number };
+
+// ---- Slice 3g host ports: BB projects, files, threads and Taskboard ----
+
+/** A project's local checkout. */
+export type WorkingTree = { hostId: string; path: string };
+
+export type BbFileEntry = { name: string; path: string };
+
+/** A file read from BB: bytes, the host's type (untrusted) and size. */
+export type BbFileBytes = { bytes: Uint8Array; mimeType: string | null; sizeBytes: number };
+
+export type ProjectWriteResult =
+  | { outcome: "written"; sha256: string; sizeBytes: number }
+  | { outcome: "exists"; currentSha: string };
+
+/** Thrown by ProjectDirectory and BbThreads for a refused or failed call; `code` only, never a path. */
+export class BbPortError extends Error {
+  readonly code: "not_found" | "refused" | "failed" | "disabled";
+  constructor(code: "not_found" | "refused" | "failed" | "disabled", message = "BB refused the request") {
+    super(message);
+    this.name = "BbPortError";
+    this.code = code;
+  }
+}
+
+/** BB projects and the project working tree (adapter: bb.sdk.projects and bb.sdk.files). */
+export interface ProjectDirectory {
+  /** Every project with its remote and working tree; cached briefly by the adapter. */
+  list(): Promise<ProjectInfo[]>;
+  files(projectId: string, query: string, limit: number): Promise<{ files: BbFileEntry[]; truncated: boolean }>;
+  folders(projectId: string, query: string, limit: number): Promise<{ folders: BbFileEntry[]; truncated: boolean }>;
+  fileContent(projectId: string, path: string): Promise<BbFileBytes>;
+  /** The file's sha256 when it exists, null when not found; other errors throw. */
+  exists(tree: WorkingTree, relativePath: string): Promise<{ sha256: string } | null>;
+  /** Create-only unless `replaceSha` names the file's current sha256. */
+  write(tree: WorkingTree, relativePath: string, bytes: Uint8Array, opts: { replaceSha: string | null }): Promise<ProjectWriteResult>;
+}
+
+export type BbPermissionMode = "accept-edits" | "auto" | "full";
+
+export type BbEnvironment =
+  | { type: "project-default" }
+  | { type: "host"; hostId: string; workspace: { type: "managed-worktree"; baseBranch: { kind: "default" } } };
+
+/** An extra input item of a spawn: an uploaded attachment. */
+export type BbInputItem = { type: "localFile"; path: string; hostId?: string; name?: string; mimeType?: string };
+
+export type BbThreadInfo = {
+  id: string;
+  title: string | null;
+  projectId: string | null;
+  archived: boolean;
+  updatedAt: string | null;
+};
+
+export type BbSpawnArgs = {
+  projectId: string;
+  environment: BbEnvironment;
+  title: string;
+  prompt: string;
+  extraInput?: BbInputItem[];
+  pluginMetadata: Record<string, unknown>;
+  permissionMode?: BbPermissionMode;
+};
+
+/** BB agent threads (adapter: bb.sdk.threads and project attachments). */
+export interface BbThreads {
+  spawn(args: BbSpawnArgs): Promise<{ threadId: string }>;
+  /** Queued when the thread is running (never interrupts a turn). */
+  send(threadId: string, text: string): Promise<void>;
+  output(threadId: string): Promise<string | null>;
+  /** Existing, not deleted threads (archived ones marked). */
+  list(query: { threadIds: string[] } | { projectId: string; limit: number }): Promise<BbThreadInfo[]>;
+  storageFiles(threadId: string, query: string, limit: number): Promise<{ files: BbFileEntry[]; truncated: boolean }>;
+  /** A file inside the thread's storage root only. */
+  readStorageFile(threadId: string, path: string): Promise<BbFileBytes>;
+  uploadAttachment(projectId: string, bytes: Uint8Array, filename: string, mimeType: string): Promise<BbInputItem>;
+  /** The project's default permission mode, null when none is set. */
+  defaultPermissionMode(projectId: string): Promise<BbPermissionMode | null>;
+}
+
+/** Taskboard as a task target (adapter: bb.sdk.plugins.callRpc). Never throws. */
+export interface TaskTarget {
+  boards(): Promise<{ boards: { id: string; name: string }[] } | { unavailable: string }>;
+  create(boardId: string, title: string, description: string): Promise<{ taskId: string } | { refused: string } | { unavailable: string }>;
+}
+
+/** Re-exported for the adapters. */
+export type { RuleMode };
 
 /** A cached AI result (slice 3f): summaries only. */
 export type AiResultRecord = {
@@ -960,9 +1196,12 @@ export type NewTask = {
   due: string | null;
   /** ISO 8601. */
   createdAt: string;
+  /** Slice 3g: a task from mail kept locally holds its note; absent or null for 3f tasks. */
+  note?: string | null;
 };
 
-export type TaskRecord = Omit<NewTask, "messageId"> & {
+export type TaskRecord = Omit<NewTask, "messageId" | "note"> & {
+  note: string | null;
   /** Null once the message went away. */
   messageId: string | null;
   /** The message's thread, when it is stored. */

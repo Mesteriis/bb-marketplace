@@ -3,6 +3,7 @@ import type { z } from "zod";
 import { AI_KINDS } from "./ai-input.ts";
 import {
   AI_START_KINDS,
+  BB_REFUSAL_TEXT,
   DAY_NOTICE_CHANNEL,
   MAIL_CHANGED_CHANNEL,
   NEW_MAIL_CHANNEL,
@@ -27,6 +28,10 @@ import {
   messageActionSchema,
   messageHeaderSchema,
   messageSummarySchema,
+  messageBodySchema,
+  threadDetailSchema,
+  taskViewSchema,
+  composeAttachmentSchema,
   specialUseSchema,
   statusViewSchema,
   threadSummarySchema,
@@ -130,6 +135,41 @@ const SLICE_3F_METHODS = [
   "agent_log_clear",
 ] as const;
 
+/** The 31 owner-only methods slice 3g adds. */
+const SLICE_3G_METHODS = [
+  "projects_list",
+  "bb_thread_prepare",
+  "bb_thread_start",
+  "task_targets",
+  "task_from_mail",
+  "attachment_save",
+  "project_files",
+  "project_folders",
+  "thread_files",
+  "bb_threads_recent",
+  "compose_attach_bb",
+  "draft_from_bb",
+  "dev_digest_get",
+  "patch_view",
+  "patch_save",
+  "patch_handoff",
+  "alert_view",
+  "incident_start",
+  "incident_append",
+  "conversation_project_set",
+  "binding_add",
+  "binding_remove",
+  "bindings_list",
+  "project_mail",
+  "bb_thread_mail",
+  "rules_list",
+  "rule_save",
+  "rule_delete",
+  "rules_pause",
+  "rule_runs_list",
+  "rule_run_dismiss",
+] as const;
+
 /** Header-injection payloads every header field must refuse. */
 const LINE_BREAKS = ["x\r\nBcc: eve@example.net", "x\nBcc: eve@example.net", "x\rX", "x\u0000y"];
 
@@ -150,10 +190,11 @@ function keysOf(schema: z.ZodType): string[] {
 }
 
 describe("rpcSchemas", () => {
-  it("declares exactly the slice-1 methods plus the slice-2, 3a, 3b, 3c, 3d, 3e and 3f additions", () => {
+  it("declares exactly the slice-1 methods plus the slice-2, 3a, 3b, 3c, 3d, 3e, 3f and 3g additions", () => {
     expect(Object.keys(rpcSchemas).sort()).toEqual(
       [
         ...COMPOSE_METHODS,
+        ...SLICE_3G_METHODS,
         ...SLICE_3C_METHODS,
         ...SLICE_3D_METHODS,
         ...SLICE_3E_METHODS,
@@ -333,7 +374,7 @@ describe("rpcSchemas", () => {
     const body = { messageId: "m", text: null, html: null, htmlTruncated: false };
     expect(rpcSchemas.message_body.output.safeParse(body).success).toBe(false);
     expect(
-      rpcSchemas.message_body.output.safeParse({ ...body, remoteImagesAllowed: true }).success,
+      rpcSchemas.message_body.output.safeParse({ ...body, remoteImagesAllowed: true, codeBlocks: [] }).success,
     ).toBe(true);
   });
 
@@ -469,7 +510,7 @@ describe("slice-3b contract", () => {
 
   it("adds exactly 19 methods to the 17 before it", () => {
     expect(COMPOSE_METHODS).toHaveLength(19);
-    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS];
+    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(36);
   });
 
@@ -690,7 +731,7 @@ describe("slice-3b contract", () => {
       bcc: [],
       subject: "Re: Garden plans",
       doc: { type: "doc", content: [{ type: "paragraph" }] },
-      attachments: [{ id: "a_1", fileName: "plan.pdf", mimeType: "application/pdf", size: 1200 }],
+      attachments: [{ id: "a_1", fileName: "plan.pdf", mimeType: "application/pdf", size: 1200, origin: null }],
       revision: 1,
       serverCopy: "none",
       queued: false,
@@ -778,7 +819,7 @@ describe("slice-3c contract", () => {
 
   it("adds exactly 8 methods to the 36 before it", () => {
     expect(SLICE_3C_METHODS).toHaveLength(8);
-    const later: readonly string[] = [...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS];
+    const later: readonly string[] = [...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(44);
     expect(COMPOSE_METHODS).toHaveLength(19);
   });
@@ -1016,7 +1057,7 @@ describe("slice-3d contract", () => {
 
   it("adds exactly 11 methods to the 44 before it", () => {
     expect(SLICE_3D_METHODS).toHaveLength(11);
-    const later: readonly string[] = [...SLICE_3E_METHODS, ...SLICE_3F_METHODS];
+    const later: readonly string[] = [...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(55);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
@@ -1195,7 +1236,8 @@ describe("slice-3e contract", () => {
 
   it("adds exactly 14 methods to the 55 before it", () => {
     expect(SLICE_3E_METHODS).toHaveLength(14);
-    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3F_METHODS as readonly string[]).includes(m))).toHaveLength(69);
+    const later: readonly string[] = [...SLICE_3F_METHODS, ...SLICE_3G_METHODS];
+    expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(69);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
     expect(SLICE_3D_METHODS).toHaveLength(11);
@@ -1340,7 +1382,7 @@ describe("slice-3f contract", () => {
 
   it("adds exactly 24 methods to the 69 before it", () => {
     expect(SLICE_3F_METHODS).toHaveLength(24);
-    expect(Object.keys(rpcSchemas)).toHaveLength(93);
+    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3G_METHODS as readonly string[]).includes(m))).toHaveLength(93);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
     expect(SLICE_3D_METHODS).toHaveLength(11);
@@ -1488,5 +1530,156 @@ describe("slice-3f contract", () => {
     expect(dayNoticePayloadSchema.safeParse({ token: "abc", kind: "digest" }).success).toBe(false);
     expect(dayNoticePayloadSchema.safeParse({ token: "t".repeat(65) }).success).toBe(false);
     expect(dayNoticePayloadSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe("slice-3g contract", () => {
+  const parses = (method: keyof typeof rpcSchemas, input: unknown) =>
+    rpcSchemas[method].input.safeParse(input).success;
+  const outputs = (method: keyof typeof rpcSchemas, output: unknown) =>
+    rpcSchemas[method].output.safeParse(output).success;
+  const SHA = "c".repeat(64);
+  const rule = (overrides: Record<string, unknown> = {}) => ({
+    name: "CI failures",
+    enabled: true,
+    match: { dev: { source: "github", kind: "ci", state: "failed" } },
+    projectId: "p1",
+    template: "Find the failing test.",
+    mode: "prepare",
+    ...overrides,
+  });
+
+  it("adds exactly 31 methods to the 93 before it, leaving the earlier lists alone", () => {
+    expect(SLICE_3G_METHODS).toHaveLength(31);
+    expect(Object.keys(rpcSchemas)).toHaveLength(124);
+    expect(COMPOSE_METHODS).toHaveLength(19);
+    expect(SLICE_3C_METHODS).toHaveLength(8);
+    expect(SLICE_3D_METHODS).toHaveLength(11);
+    expect(SLICE_3E_METHODS).toHaveLength(14);
+    expect(SLICE_3F_METHODS).toHaveLength(24);
+  });
+
+  it("bounds the instruction, part ids and list limits", () => {
+    const thread = { messageId: "m", include: "message", projectId: "p" };
+    expect(parses("bb_thread_prepare", { ...thread, instruction: "x".repeat(4_000) })).toBe(true);
+    expect(parses("bb_thread_prepare", { ...thread, instruction: "x".repeat(4_001) })).toBe(false);
+    expect(parses("bb_thread_prepare", { ...thread, include: "folder" })).toBe(false);
+    expect(parses("bb_thread_start", { ...thread, saveAttachments: true, ruleRunId: "r1" })).toBe(true);
+    expect(parses("incident_start", { messageId: "m", projectId: "p", instruction: "x".repeat(4_001) })).toBe(false);
+    const save = { messageId: "m", projectId: "p", onConflict: "ask" };
+    expect(parses("attachment_save", { ...save, partIds: Array.from({ length: 20 }, (_, i) => `${i}`) })).toBe(true);
+    expect(parses("attachment_save", { ...save, partIds: Array.from({ length: 21 }, (_, i) => `${i}`) })).toBe(false);
+    expect(parses("attachment_save", { ...save, partIds: [] })).toBe(false);
+    expect(parses("attachment_save", { ...save, partIds: ["1"], folder: "a".repeat(240) })).toBe(true);
+    expect(parses("attachment_save", { ...save, partIds: ["1"], folder: "a".repeat(241) })).toBe(false);
+    expect(parses("attachment_save", { ...save, partIds: ["1"], onConflict: "overwrite" })).toBe(false);
+    expect(parses("attachment_save", { ...save, partIds: ["1"], onConflict: "replace", replaceSha: "nope" })).toBe(false);
+    expect(parses("project_files", { projectId: "p", query: "", limit: 50 })).toBe(true);
+    expect(parses("project_files", { projectId: "p", query: "", limit: 51 })).toBe(false);
+    expect(parses("project_folders", { projectId: "p", query: "q".repeat(201), limit: 5 })).toBe(false);
+    expect(parses("thread_files", { bbThreadId: "t", limit: 51 })).toBe(false);
+    expect(parses("bb_threads_recent", { projectId: "p", limit: 30 })).toBe(true);
+    expect(parses("bb_threads_recent", { projectId: "p", limit: 31 })).toBe(false);
+    expect(parses("dev_digest_get", { days: 31 })).toBe(false);
+    expect(parses("dev_digest_get", {})).toBe(true);
+  });
+
+  it("bounds the task title and note and checks the target", () => {
+    const task = { messageId: "m", target: { kind: "taskboard", boardId: "b" }, excerpt: true };
+    expect(parses("task_from_mail", { ...task, title: "t".repeat(500), note: "n".repeat(4_000) })).toBe(true);
+    expect(parses("task_from_mail", { ...task, title: "t".repeat(501) })).toBe(false);
+    expect(parses("task_from_mail", { ...task, title: "t", note: "n".repeat(4_001) })).toBe(false);
+    expect(parses("task_from_mail", { ...task, title: "" })).toBe(false);
+    expect(parses("task_from_mail", { ...task, title: "t", target: { kind: "local", due: "2026-11-20" } })).toBe(true);
+    expect(parses("task_from_mail", { ...task, title: "t", target: { kind: "jira" } })).toBe(false);
+    expect(outputs("task_from_mail", { kind: "unavailable", reason: "Taskboard did not answer" })).toBe(true);
+  });
+
+  it("bounds draft_from_bb's text and compose_attach_bb's sources", () => {
+    expect(parses("draft_from_bb", { bbThreadId: "t", source: { kind: "output" } })).toBe(true);
+    expect(parses("draft_from_bb", { bbThreadId: "t", source: { kind: "message", text: "x".repeat(100_000) } })).toBe(true);
+    expect(parses("draft_from_bb", { bbThreadId: "t", source: { kind: "message", text: "x".repeat(100_001) } })).toBe(false);
+    expect(parses("compose_attach_bb", { draftId: "d", source: { kind: "project", projectId: "p", path: "src/a.ts" } })).toBe(true);
+    expect(parses("compose_attach_bb", { draftId: "d", source: { kind: "thread", bbThreadId: "t", path: "out.md" }, confirmed: true })).toBe(true);
+    expect(parses("compose_attach_bb", { draftId: "d", source: { kind: "project", projectId: "p", path: "a\nb" } })).toBe(false);
+    expect(parses("compose_attach_bb", { draftId: "d", source: { kind: "host", path: "a" } })).toBe(false);
+  });
+
+  it("takes patch refs as sha256 hex and the checkout fallback only by name", () => {
+    const patch = { messageId: "m", projectId: "p", patchRef: SHA };
+    expect(parses("patch_save", patch)).toBe(true);
+    expect(parses("patch_save", { ...patch, patchRef: "C".repeat(64) })).toBe(false);
+    expect(parses("patch_handoff", { ...patch, environment: "checkout" })).toBe(true);
+    expect(parses("patch_handoff", { ...patch, environment: "host" })).toBe(false);
+  });
+
+  it("bounds rule names, templates and match lists, and needs the confirmation for start mode", () => {
+    expect(parses("rule_save", rule())).toBe(true);
+    expect(parses("rule_save", rule({ name: "n".repeat(80) }))).toBe(true);
+    expect(parses("rule_save", rule({ name: "n".repeat(81) }))).toBe(false);
+    expect(parses("rule_save", rule({ name: "a\nb" }))).toBe(false);
+    expect(parses("rule_save", rule({ template: "t".repeat(4_000) }))).toBe(true);
+    expect(parses("rule_save", rule({ template: "t".repeat(4_001) }))).toBe(false);
+    const addresses = (n: number) => Array.from({ length: n }, (_, i) => `a${i}@example.com`);
+    expect(parses("rule_save", rule({ match: { from: addresses(20) } }))).toBe(true);
+    expect(parses("rule_save", rule({ match: { from: addresses(21) } }))).toBe(false);
+    expect(parses("rule_save", rule({ match: { domains: Array.from({ length: 21 }, (_, i) => `d${i}.example.com`) } }))).toBe(false);
+    expect(parses("rule_save", rule({ match: { subjectWords: Array.from({ length: 11 }, (_, i) => `w${i}`) } }))).toBe(false);
+    expect(parses("rule_save", rule({ match: { accounts: Array.from({ length: 51 }, (_, i) => `a${i}`) } }))).toBe(false);
+    expect(parses("rule_save", rule({ match: { dev: { kind: "nope" } } }))).toBe(false);
+    expect(parses("rule_save", rule({ mode: "start" }))).toBe(false);
+    expect(parses("rule_save", rule({ mode: "start", confirmedStart: false }))).toBe(false);
+    expect(parses("rule_save", rule({ mode: "start", confirmedStart: true }))).toBe(true);
+    expect(parses("rules_pause", { undo: true })).toBe(true);
+    expect(parses("rule_runs_list", { state: "starting" })).toBe(true);
+    expect(parses("rule_runs_list", { state: "running" })).toBe(false);
+  });
+
+  it("bounds binding values and kinds", () => {
+    expect(parses("binding_add", { kind: "repo", value: "github.com/example-org/demo", projectId: "p" })).toBe(true);
+    expect(parses("binding_add", { kind: "folder", value: "x", projectId: "p" })).toBe(false);
+    expect(parses("binding_add", { kind: "domain", value: "x".repeat(321), projectId: "p" })).toBe(false);
+    expect(parses("binding_add", { kind: "address", value: "a@example.com\r\nX", projectId: "p" })).toBe(false);
+    expect(parses("conversation_project_set", { accountId: "a", threadId: "t", projectId: null })).toBe(true);
+  });
+
+  it("adds the rule day notice and refuses extra keys on it", () => {
+    expect(outputs("day_notice_get", { kind: "rule", ruleName: "CI failures", count: 2 })).toBe(true);
+    expect(outputs("day_notice_get", { kind: "rule", ruleName: "CI failures", count: 2, subject: "x" })).toBe(false);
+    expect(outputs("day_notice_get", { kind: "rule", ruleName: "CI failures", count: 0 })).toBe(false);
+  });
+
+  it("adds the 3g fields to the model and the Today view", () => {
+    expect(Object.keys(messageHeaderSchema.shape)).toEqual(
+      expect.arrayContaining(["devLinks", "dev", "patch", "alert", "bbLinks"]),
+    );
+    expect(Object.keys(threadSummarySchema.shape)).toEqual(expect.arrayContaining(["projectId"]));
+    expect(Object.keys(threadDetailSchema.shape)).toEqual(expect.arrayContaining(["project", "projectSuggestion"]));
+    expect(Object.keys(messageBodySchema.shape)).toEqual(expect.arrayContaining(["codeBlocks"]));
+    expect(Object.keys(taskViewSchema.shape)).toEqual(expect.arrayContaining(["note"]));
+    expect(Object.keys(composeAttachmentSchema.shape)).toEqual(expect.arrayContaining(["origin"]));
+    const list = { scope: { kind: "account", accountId: "a", folder: "INBOX" }, cursor: null, limit: 50 };
+    expect(parses("threads_list", { ...list, filter: { notDev: true, projectId: "p" } })).toBe(true);
+    expect(parses("threads_list", { ...list, filter: { notDev: false } })).toBe(false);
+    expect(Object.keys(rpcSchemas.today_get.output.shape)).toEqual(expect.arrayContaining(["dev", "rulesReady"]));
+  });
+
+  it("names every refusal kind with a fixed text", () => {
+    expect(Object.keys(BB_REFUSAL_TEXT)).toEqual(expect.arrayContaining(["out_of_scope", "no_tree", "confirm_needed", "in_flight"]));
+  });
+
+  it("puts no credential-like key in any new output; sensitiveName, alertRef, patchRef and permissionMode pass", () => {
+    for (const method of SLICE_3G_METHODS) {
+      const keys = keysOf(rpcSchemas[method].output);
+      expect(keys.length, method).toBeGreaterThan(0);
+      expect(keys.filter((key) => SECRET_KEY.test(key)), method).toEqual([]);
+    }
+    for (const key of ["sensitiveName", "alertRef", "patchRef", "permissionMode"]) expect(SECRET_KEY.test(key), key).toBe(false);
+    expect(keysOf(rpcSchemas.alert_view.output)).toContain("alertRef");
+    expect(keysOf(rpcSchemas.patch_view.output)).toContain("patchRef");
+    expect(keysOf(rpcSchemas.bb_thread_prepare.output)).toContain("permissionMode");
+    for (const schema of [messageHeaderSchema, threadDetailSchema, messageBodySchema, rpcSchemas.today_get.output]) {
+      expect(keysOf(schema).filter((key) => SECRET_KEY.test(key))).toEqual([]);
+    }
   });
 });

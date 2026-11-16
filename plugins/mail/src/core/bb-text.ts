@@ -96,6 +96,7 @@ export function quoteFreeBody(body: MessageBody | null): MessageBody | null {
     html: null,
     htmlTruncated: false,
     remoteImagesAllowed: false,
+    codeBlocks: [],
   };
 }
 

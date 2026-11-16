@@ -62,12 +62,17 @@ function header(overrides: Partial<MessageHeader> = {}): MessageHeader {
     draftId: null,
     agentSubject: "Invented subject",
     inAiScope: true,
+    devLinks: [],
+    dev: null,
+    patch: null,
+    alert: false,
+    bbLinks: [],
     ...overrides,
   };
 }
 
 function body(text: string | null, overrides: Partial<MessageBody> = {}): MessageBody {
-  return { messageId: "m_1", text, html: null, htmlTruncated: false, remoteImagesAllowed: false, ...overrides };
+  return { messageId: "m_1", text, html: null, htmlTruncated: false, remoteImagesAllowed: false, codeBlocks: [], ...overrides };
 }
 
 const QUOTED_EN = "Fresh reply line.\n\nOn Mon, 9 Nov 2026, Someone <someone@example.org> wrote:\n> Quoted old text ALPHA\n> more quoted";

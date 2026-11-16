@@ -1379,6 +1379,7 @@ function toTask(row: TaskRow): TaskRecord {
     threadId: row.message_id === null ? null : row.thread_id,
     doneAt: row.done_at,
     updatedAt: row.updated_at,
+    note: null,
   };
 }
 
@@ -1476,6 +1477,7 @@ function toThread(
     category: labels.category,
     // "none" is the model's answer, not a category.
     categorySuggestion: labels.suggestion === null || labels.suggestion === "none" ? null : labels.suggestion,
+    projectId: null,
   };
 }
 
@@ -1807,6 +1809,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
       draftId: row.uid === null ? null : (draftByServerCopy.get(row.account_id, row.folder, row.uid)?.id ?? null),
       agentSubject: redactSecrets(row.subject).text,
       inAiScope: (freshScope(), anyCopyInScope.get(row.id) !== undefined),
+      devLinks: [],
+      dev: null,
+      patch: null,
+      alert: false,
+      bbLinks: [],
     };
   }
 
@@ -2527,7 +2534,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
              WHERE m.thread_id = @threadId AND m.folder = @folder`,
           )
           .get({ threadId, folder })?.due ?? null;
-      return { thread: toThread(thread, flagged, snoozed), messages };
+      return { thread: toThread(thread, flagged, snoozed), messages, project: null, projectSuggestion: null };
     },
 
     getMessage(messageId) {
@@ -2564,6 +2571,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
             html: row.body_html,
             htmlTruncated: row.html_truncated === 1,
             remoteImagesAllowed: row.images_allowed === 1,
+            codeBlocks: [],
           }
         : null;
     },
@@ -3117,7 +3125,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
           contentId: input.contentId ?? null,
           data: Buffer.from(input.data),
         });
-        return { id, fileName: input.fileName, mimeType: input.mimeType, size: input.size };
+        return { id, fileName: input.fileName, mimeType: input.mimeType, size: input.size, origin: null };
       });
     },
 
@@ -3128,7 +3136,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
            ORDER BY position`,
         )
         .all(draftId)
-        .map((row) => ({ id: row.id, fileName: row.file_name, mimeType: row.mime_type, size: row.size }));
+        .map((row) => ({ id: row.id, fileName: row.file_name, mimeType: row.mime_type, size: row.size, origin: null }));
     },
 
     attachmentData(draftId) {
@@ -3146,6 +3154,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
           sha256: row.sha256,
           contentId: row.content_id,
           data: bytesOf(row.data),
+          origin: null,
         }));
     },
 
@@ -4869,7 +4878,41 @@ export function createSqliteStore(db: Database.Database): MailStore {
         return removed;
       });
     },
+
+    // ---- Slice 3g (stubs until migration element 11) ----
+    setDevClass: notYet,
+    devUnclassified: () => [],
+    listUnknown: () => [],
+    fillListIds: notYet,
+    devGroups: () => ({ groups: [], next: null }),
+    addBbLink: notYet,
+    listBbLinks: () => [],
+    pruneBbLinks: notYet,
+    setConversationProject: notYet,
+    conversationProject: () => null,
+    addBinding: notYet,
+    removeBinding: notYet,
+    listBindings: () => [],
+    projectThreads: () => ({ threads: [], nextCursor: null }),
+    putIncident: notYet,
+    incidentFor: () => null,
+    touchIncident: notYet,
+    listRules: () => [],
+    saveRule: notYet,
+    deleteRule: notYet,
+    pauseRules: notYet,
+    resumeRules: notYet,
+    insertRuleRun: notYet,
+    updateRuleRun: notYet,
+    ruleRunByBbThread: () => null,
+    getRuleRun: () => null,
+    listRuleRuns: () => ({ runs: [], next: null }),
+    failStaleStarts: notYet,
   };
   return store;
+}
+
+function notYet(): never {
+  throw new Error("Not available yet");
 }
 
