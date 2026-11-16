@@ -3288,6 +3288,32 @@ describe("slice-3e migration (SQLite)", () => {
     for (const object of objects) expect(object.sql).not.toMatch(/REFERENCES/i);
   });
 
+  it("element 9 namespaces stored list keys: id: for a List-Id, from: for a From fallback (review item 8)", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 9).forEach((s) => old.exec(s)))();
+    const legacy = createSqliteStore(old);
+    legacy.saveAccount(makeStoredAccount());
+    legacy.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { unsubscribe: INFO }),
+      makeFetchedMessage(2, { unsubscribe: { ...INFO, listKey: "news@example.com" } }),
+      makeFetchedMessage(3),
+    ]);
+    legacy.putUnsubscribe({ accountId: "acc_1", listKey: "weekly.example.com", method: "one_click", state: "done", outboxId: null, requestedAt: T0 });
+    legacy.putUnsubscribe({ accountId: "acc_1", listKey: "news@example.com", method: "mailto", state: "sent", outboxId: null, requestedAt: T0 });
+    const ids = [1, 2, 3].map((uid) => idOf(legacy, uid));
+
+    old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
+
+    expect(MIGRATIONS).toHaveLength(10);
+    const migrated = createSqliteStore(old);
+    expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
+    expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
+    expect(migrated.getUnsubscribeInfo(ids[2]!)).toBeNull();
+    expect(migrated.getUnsubscribe("acc_1", "id:weekly.example.com")).toMatchObject({ state: "done" });
+    expect(migrated.getUnsubscribe("acc_1", "from:news@example.com")).toMatchObject({ state: "sent" });
+    expect(migrated.getUnsubscribe("acc_1", "weekly.example.com")).toBeNull();
+  });
+
   it("saveAccount and setSnoozeFolder store the snooze folder", () => {
     store.saveAccount(makeStoredAccount({ snoozeFolder: "Snoozed" }));
     expect(store.getAccount("acc_1")!.snoozeFolder).toBe("Snoozed");

@@ -188,6 +188,7 @@ import {
   blockCandidates,
   blockRefusal,
   SNOOZES_MAX_PER_ACCOUNT,
+  sameList,
   snoozeFallbackName,
   snoozeFolderName,
   validUntil,
@@ -2445,9 +2446,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         if (message === null) throw refuse("not_found", "Unknown message");
         const info = store.getUnsubscribeInfo(messageId);
         if (info === null) throw refuse("conflict", UNSUBSCRIBE_NOT_OFFERED_MESSAGE);
+        const clicked = { listKey: info.listKey, fromAddress: message.from.address };
         const ids = store
           .inboxMessages(message.accountId, { unreadOnly: false, limit: UNSUBSCRIBE_ARCHIVE_MAX })
-          .filter((row) => row.unsubscribe?.listKey === info.listKey)
+          .filter((row) => row.unsubscribe !== null && sameList(clicked, { listKey: row.unsubscribe.listKey, fromAddress: row.from.address }))
           .map((row) => row.id);
         if (ids.length === 0) return { groups: [], undoable: false };
         const { groups, undo } = runMessageAction(deps, { messageIds: ids, action: "archive", role: "inbox" });

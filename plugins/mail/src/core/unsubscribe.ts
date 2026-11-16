@@ -451,7 +451,8 @@ export function unsubscribeInfoOf(
     ? "not_covered"
     : trustOf(headers, preset, domainOfAddress(from.address), httpsHost);
   const info: UnsubscribeInfo = {
-    listKey: id !== null && id !== "" ? id : from.address.trim().toLowerCase(),
+    // Namespaced (review item 8): a List-Id never names a From-fallback list.
+    listKey: id !== null && id !== "" ? `${LIST_KEY_ID}${id}` : `${LIST_KEY_FROM}${from.address.trim().toLowerCase()}`,
     listName,
     https: parsed.https,
     oneClick: parsed.oneClick && !parsed.repeated && !truncated,
@@ -460,6 +461,25 @@ export function unsubscribeInfoOf(
   };
   if (new TextEncoder().encode(JSON.stringify(info)).length > UNSUBSCRIBE_INFO_MAX_BYTES) return null;
   return info;
+}
+
+/** A list key from List-Id; the other kind is the From fallback. */
+export const LIST_KEY_ID = "id:";
+export const LIST_KEY_FROM = "from:";
+
+/**
+ * Whether two stored messages belong to the same list for "Archive all from
+ * this list" (review item 8): the same key, and for anything but a List-Id
+ * key (a From fallback, or a key stored before the namespaces) the same From
+ * address too, so a list named after an address covers only mail from it.
+ */
+export function sameList(
+  a: { listKey: string; fromAddress: string },
+  b: { listKey: string; fromAddress: string },
+): boolean {
+  if (a.listKey !== b.listKey) return false;
+  if (a.listKey.startsWith(LIST_KEY_ID)) return true;
+  return a.fromAddress.trim().toLowerCase() === b.fromAddress.trim().toLowerCase();
 }
 
 export type OfferedMethods = {
