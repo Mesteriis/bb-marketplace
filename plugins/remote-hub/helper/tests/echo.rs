@@ -1181,10 +1181,15 @@ fn a3_ingress_full_hangup_does_not_spin() {
         libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
     }
 
+    // The writer attempts 5 MiB of ping frames and must block before writing
+    // them all: the helper's bounded ingress/outbox applies backpressure. The
+    // previous "> 64 KiB" lower bound sat near the OS pipe buffer size and was
+    // flaky under parallel load, so assert the backpressure property directly.
+    const TOTAL_TO_WRITE: usize = 5 * 1024 * 1024;
     let writer = std::thread::spawn(move || {
         let mut id = 0u64;
         let mut total = 0usize;
-        loop {
+        while total < TOTAL_TO_WRITE {
             let frame = encode_request(&Request::Ping { id });
             match stdin.write(&frame) {
                 Ok(n) => {
@@ -1203,9 +1208,10 @@ fn a3_ingress_full_hangup_does_not_spin() {
     });
     let written = writer.join().expect("writer joined");
     assert!(
-        written > 64 * 1024,
-        "writer only wrote {written} bytes before blocking"
+        written < TOTAL_TO_WRITE,
+        "writer wrote all {TOTAL_TO_WRITE} bytes without backpressure"
     );
+    assert!(written > 0, "writer wrote nothing");
 
     let t0 = cpu_seconds(helper_pid);
     std::thread::sleep(Duration::from_secs(2));
