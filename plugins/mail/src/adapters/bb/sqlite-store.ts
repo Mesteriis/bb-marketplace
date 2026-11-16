@@ -6249,8 +6249,13 @@ export function createSqliteStore(db: Database.Database): MailStore {
 
     setGmLabels(accountId, folder, entries) {
       atomic(() => {
-        const update = db.prepare("UPDATE messages SET gm_labels = ? WHERE account_id = ? AND folder = ? AND uid = ?");
-        for (const entry of entries) update.run(JSON.stringify(entry.labels), accountId, folder, entry.uid);
+        // Labels belong to the message, not the folder: every copy (same dedup key) takes them.
+        const update = db.prepare(
+          `UPDATE messages SET gm_labels = @labels
+           WHERE account_id = @accountId AND dedup_key IN (
+             SELECT dedup_key FROM messages WHERE account_id = @accountId AND folder = @folder AND uid = @uid)`,
+        );
+        for (const entry of entries) update.run({ labels: JSON.stringify(entry.labels), accountId, folder, uid: entry.uid });
       });
     },
 

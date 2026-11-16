@@ -3425,7 +3425,9 @@ export class InMemoryMailStore implements MailStore {
   setGmLabels(accountId: string, folder: string, entries: readonly { uid: number; labels: string[] }[]): void {
     for (const entry of entries) {
       const row = this.state.rows.find((r) => r.accountId === accountId && r.folder === folder && r.uid === entry.uid);
-      if (row !== undefined) row.gmLabels = [...entry.labels];
+      if (row === undefined) continue;
+      // Every copy of the message (same dedup key) takes the labels, as in SQLite.
+      for (const copy of this.state.rows) if (copy.accountId === accountId && copy.dedupKey === row.dedupKey) copy.gmLabels = [...entry.labels];
     }
   }
 

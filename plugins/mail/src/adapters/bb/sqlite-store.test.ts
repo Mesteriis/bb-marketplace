@@ -5499,6 +5499,19 @@ describe("slice-3h search (SQLite)", () => {
     expect(store.accountLabels("acc_1")).toEqual(["\\Inbox", "Receipts"]);
   });
 
+  it("stores a message's Gmail labels on every copy of it", () => {
+    const shared = { messageId: "every@example.org", gmMsgId: "1789000000000000301", size: 10 };
+    store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("[Gmail]/All Mail", "all")]);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, shared), makeFetchedMessage(2)]);
+    store.upsertMessages("acc_1", "[Gmail]/All Mail", [makeFetchedMessage(5, shared)]);
+    store.setGmLabels("acc_1", INBOX, [{ uid: 1, labels: ["\\Inbox", "Receipts"] }]);
+    store.setGmLabels("acc_1", "[Gmail]/All Mail", [{ uid: 5, labels: ["\\Inbox"] }]);
+    // The change stored on All Mail reaches the Inbox copy: chips and the next change's deltas.
+    expect(store.getMessage(idOf(store, 1))!.labels).toEqual([]);
+    expect(store.gmLabels([idOf(store, 1)]).get(idOf(store, 1))).toEqual(["\\Inbox"]);
+    expect(store.gmLabels([idOf(store, 2)]).get(idOf(store, 2))).toEqual([]);
+  });
+
   it("finds a message's copy in a folder by dedup key, with its uid", () => {
     const shared = { messageId: "copy@example.org", gmMsgId: "21", size: 10 };
     store.saveFolders("acc_1", [remoteFolder(INBOX, "inbox"), remoteFolder("[Gmail]/All Mail", "all")]);

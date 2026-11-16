@@ -1910,6 +1910,17 @@ describe("slice 3h: kept rows, history check and Gmail labels", () => {
     expect(store.gmLabels([first]).get(first)).toEqual(["\\Inbox", "Travel"]);
   });
 
+  it("the fake store keeps a message's Gmail labels on every copy, as SQLite does", () => {
+    const store = new InMemoryMailStore();
+    const shared = { messageId: "every@example.org", gmMsgId: "1789000000000000301", size: 10 };
+    store.upsertMessages(ACCOUNT_ID, INBOX, [makeFetchedMessage(1, shared)]);
+    store.upsertMessages(ACCOUNT_ID, "[Gmail]/All Mail", [makeFetchedMessage(5, shared)]);
+    store.setGmLabels(ACCOUNT_ID, INBOX, [{ uid: 1, labels: ["\\Inbox", "Receipts"] }]);
+    store.setGmLabels(ACCOUNT_ID, "[Gmail]/All Mail", [{ uid: 5, labels: ["\\Inbox"] }]);
+    const inboxCopy = idByUid(store, INBOX, 1);
+    expect(store.gmLabels([inboxCopy]).get(inboxCopy)).toEqual(["\\Inbox"]);
+  });
+
   it("stores no labels off Gmail", async () => {
     const box = mailbox(1);
     box.messages[0]!.gmLabels = ["Receipts"];

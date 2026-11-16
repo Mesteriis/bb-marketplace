@@ -1176,7 +1176,7 @@ export interface MailStore {
 
   /** X-GM-LABELS as stored, per message id (empty when not fetched). */
   gmLabels(messageIds: readonly string[]): Map<string, string[]>;
-  /** Stores the labels the server reported for these uids of one folder. */
+  /** Stores the labels the server reported for these uids of one folder, on every copy of each message. */
   setGmLabels(accountId: string, folder: string, entries: readonly { uid: number; labels: string[] }[]): void;
   /**
    * Per message id: its copy in `folder` (same account and dedup key) with

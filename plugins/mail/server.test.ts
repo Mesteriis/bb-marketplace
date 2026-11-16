@@ -7857,6 +7857,37 @@ describe("makosh-mail server: slice 3h", () => {
     expect(await call(host, "action_undo", { undoId: UNDO_A })).toMatchObject({ outcome: "nothing" });
   });
 
+  it("labels change reads the before-state from All Mail and stores the server's labels on every copy", async () => {
+    const shared = { messageId: "stale@example.org", gmMsgId: "4243", size: 120, subject: "Invented stale chips" };
+    const host = await load3h({
+      preset: "gmail",
+      folders: GMAIL_FOLDERS,
+      messages: [
+        { folder: "INBOX", message: makeFetchedMessage(1, shared) },
+        { folder: "[Gmail]/All Mail", message: makeFetchedMessage(5, shared) },
+      ],
+      seed: (bb) => {
+        const db = bb.storage.database();
+        // A stale Inbox copy: it still says Receipts, which All Mail (the server) no longer has.
+        db.prepare("UPDATE messages SET gm_labels = ? WHERE folder = 'INBOX' AND uid = 1").run(JSON.stringify(["\\Inbox", "Receipts"]));
+        db.prepare("UPDATE messages SET gm_labels = ? WHERE folder = '[Gmail]/All Mail' AND uid = 5").run(JSON.stringify(["\\Inbox"]));
+      },
+      server: (gateway) => {
+        gateway.gmail = true;
+        gateway.mailboxes.get("[Gmail]/All Mail")!.uidNext = 5;
+        gateway.deliver({ ...shared, gmLabels: ["\\Inbox"] }, "[Gmail]/All Mail");
+      },
+    });
+    const messageId = messageIdAt(host, "INBOX", 1);
+    expect(await call(host, "labels_change", { messageIds: [messageId], add: ["Receipts"], remove: [] })).toEqual({ changed: 1 });
+    const stores = host.gateway.sessions.flatMap((session) => (session.readOnly ? [] : session.calls.filter((c) => c.method === "setLabels")));
+    expect(stores).toMatchObject([{ uids: [5], labels: { add: ["Receipts"], remove: [] } }]);
+    const labelsOf = (folder: string) =>
+      JSON.parse((host.bb.storage.database().prepare("SELECT gm_labels FROM messages WHERE folder = ?").get(folder) as { gm_labels: string }).gm_labels);
+    expect(labelsOf("INBOX")).toEqual(["\\Inbox", "Receipts"]);
+    expect(labelsOf("[Gmail]/All Mail")).toEqual(["\\Inbox", "Receipts"]);
+  });
+
   it("view tickets: sniffed per kind, a mismatch is 409, SVG not viewable, caps, single use", async () => {
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
     const ticketFor = async (attachment: { filename: string; mimeType: string; content: string | Uint8Array }, overrides: Partial<FetchedMessage> = {}) => {

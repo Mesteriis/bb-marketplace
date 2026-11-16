@@ -641,7 +641,10 @@ export function createSlice3hRpc(deps: Slice3hDeps) {
       const allMail = allMailOf(accountId);
       const copies = store.copiesIn(allMail.path, ids);
       if (ids.some((id) => copies.get(id)?.uid == null)) throw refuse("conflict", LABELS_NOT_SYNCED_MESSAGE);
-      const deltas = labelDeltas(store.gmLabels(ids), add, remove);
+      // The before-state is the All Mail copy's (the one the STORE changes).
+      const stored = store.gmLabels(ids.map((id) => copies.get(id)!.id));
+      const before = new Map(ids.map((id) => [id, stored.get(copies.get(id)!.id) ?? []] as const));
+      const deltas = labelDeltas(before, add, remove);
       if (deltas.length === 0) continue;
       const uids = [...new Set(deltas.map((delta) => copies.get(delta.messageId)!.uid!))];
       await write(accountId, "labels", async (config) => {
