@@ -4449,6 +4449,26 @@ describe("inbox triage: snooze (slice 3e)", () => {
     expect(sqlStore(host).getSyncState("acc_1", "Work")).toMatchObject({ uidValidity: 1, lastUid: 0 });
   });
 
+  it("snooze_folder_use refuses another folder while snoozes are live in the current one (review item 7)", async () => {
+    const host = await loadTriage({
+      folders: [...ICLOUD_TRIAGE_FOLDERS, { path: "Later" }],
+      messages: [{ folder: "INBOX", uid: 1 }, { folder: "INBOX", uid: 2 }],
+    });
+    sqlStore(host).setSnoozeFolder("acc_1", "Work");
+    await snooze(host, [messageIdAt(host, "INBOX", 1), messageIdAt(host, "INBOX", 2)]);
+    await expect(call(host, "snooze_folder_use", { accountId: "acc_1", path: "Later" })).rejects.toMatchObject({
+      code: "conflict",
+      message: expect.stringContaining("2 snoozed messages are still in the snooze folder; return them before you change it"),
+    });
+    expect(sqlStore(host).getAccount("acc_1")!.snoozeFolder).toBe("Work");
+    expect(sqlStore(host).listSnoozes("acc_1", { limit: 10 })).toHaveLength(2);
+    // The same folder again is fine, and with no live snooze the folder can change.
+    expect(await call(host, "snooze_folder_use", { accountId: "acc_1", path: "Work" })).toEqual({ ok: true });
+    sqlStore(host).deleteSnoozes([messageIdAt(host, "INBOX", 1), messageIdAt(host, "INBOX", 2)]);
+    expect(await call(host, "snooze_folder_use", { accountId: "acc_1", path: "Later" })).toEqual({ ok: true });
+    expect(sqlStore(host).getAccount("acc_1")!.snoozeFolder).toBe("Later");
+  });
+
   it("refuses mail outside the Inbox and a time out of range", async () => {
     const host = await loadTriage({ messages: [{ folder: "INBOX", uid: 1 }, { folder: "Sent", uid: 1, from: "owner@example.org" }] });
     sqlStore(host).setSnoozeFolder("acc_1", "Work");

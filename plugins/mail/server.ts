@@ -187,6 +187,7 @@ import {
   ImapAuthError,
   blockCandidates,
   blockRefusal,
+  SNOOZES_MAX_PER_ACCOUNT,
   snoozeFallbackName,
   snoozeFolderName,
   validUntil,
@@ -1582,6 +1583,10 @@ export const SNOOZE_TIME_MESSAGE = "Pick a time from 5 minutes to a year from no
 export const SNOOZE_FULL_MESSAGE = "This account has too many snoozed messages";
 export const SNOOZE_CREATE_REFUSED_MESSAGE = "The server refused to create the folder; choose an existing one";
 export const SNOOZE_FOLDER_REFUSED_MESSAGE = "Snoozed mail needs a folder of its own, not a system folder";
+/** snooze_folder_use while snoozes are live (review item 7): fixed text and the count. */
+export function snoozeFolderBusyMessage(count: number): string {
+  return `${count === 1 ? "1 snoozed message is" : `${count} snoozed messages are`} still in the snooze folder; return them before you change it`;
+}
 export const BLOCK_PUBLIC_DOMAIN_MESSAGE = "This is a public mail domain; block the address instead";
 export const BLOCK_FULL_MESSAGE = "You have blocked the most senders Makosh Mail keeps; unblock some first";
 /** Folders that never hold snoozed mail (snooze_folder_use). */
@@ -2478,6 +2483,12 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         if (folder === undefined) throw refuse("not_found", "Unknown folder");
         const use = effectiveSpecialUse(folder.path, folder.specialUse);
         if (!folder.selectable || (use !== null && SNOOZE_REFUSED_USES.has(use))) throw refuse("invalid", SNOOZE_FOLDER_REFUSED_MESSAGE);
+        // Live snoozes would be dropped by the clock once the folder changed
+        // (review item 7): the folder stays until they are back.
+        if (store.getAccount(accountId)!.snoozeFolder !== path) {
+          const live = store.listSnoozes(accountId, { limit: SNOOZES_MAX_PER_ACCOUNT }).length;
+          if (live > 0) throw refuse("conflict", snoozeFolderBusyMessage(live));
+        }
         store.setSnoozeFolder(accountId, path);
         publishChanged(accountId);
         // A folder not synced yet gets its state first (review item 1); best effort.
