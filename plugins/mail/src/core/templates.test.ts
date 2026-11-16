@@ -110,6 +110,18 @@ describe("templateBlocks", () => {
 });
 
 describe("templatesForAgent", () => {
+  it("redacts each template before its cut (slice 3f)", () => {
+    const token = "ghp_" + "CanaryToken0123456789abcdefXYZ";
+    const plain = normalizeTemplate(doc(p(text(`My PIN: 4402 and ${token}`))));
+    const [entry] = templatesForAgent([{ name: "Secrets", doc: plain }]);
+    expect(entry!.text).not.toContain("4402");
+    expect(entry!.text).not.toContain("ghp_");
+    const straddling = normalizeTemplate(doc(p(text(`${"b ".repeat(995)}${token}`))));
+    const [cut] = templatesForAgent([{ name: "Long", doc: straddling }]);
+    expect(cut!.text).not.toContain("ghp_");
+    expect(cut!.text).not.toContain("Canary");
+  });
+
   it("cuts long texts with an ellipsis", () => {
     const long = normalizeTemplate(doc(p(text("b".repeat(3_000)))));
     const [entry] = templatesForAgent([{ name: "Long", doc: long }]);

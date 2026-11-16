@@ -3,6 +3,7 @@
 // Owner-written, so trusted as the owner's own text, but only ever rendered
 // through the document schema and renderDoc. Pure.
 import { ComposeError } from "./compose.ts";
+import { redactSecrets } from "./redact.ts";
 import {
   composeDocInputSchema,
   normalizeDoc,
@@ -92,7 +93,8 @@ export function templatesForAgent(rows: { name: string; doc: ComposeDoc }[]): { 
   const encoder = new TextEncoder();
   let bytes = 2; // the array's brackets
   for (const row of rows.slice(0, TEMPLATES_MAX)) {
-    const entry = { name: row.name, text: cut(templateText(row.doc)) };
+    // The owner's text can hold a code or a password: redacted whole, then cut (slice 3f).
+    const entry = { name: redactSecrets(row.name).text, text: cut(redactSecrets(templateText(row.doc)).text) };
     const size = encoder.encode(JSON.stringify(entry)).length + (out.length > 0 ? 1 : 0);
     if (bytes + size > MAIL_TEMPLATES_ANSWER_MAX_BYTES) break;
     bytes += size;

@@ -25,7 +25,7 @@ describe("constants", () => {
     expect(TRANSLATE_MAX_TOKENS).toBe(8_192);
     expect(TRANSLATION_CACHE_ROWS).toBe(5_000);
     expect(TRANSLATE_RATE_PER_HOUR).toBe(30);
-    expect(PROMPT_VERSION).toBe(1);
+    expect(PROMPT_VERSION).toBe(2);
   });
 });
 
@@ -34,7 +34,26 @@ describe("translationSource", () => {
     expect(translationSource("Garden plans", { text: "Hello,\nsee you.", html: "<p>ignored</p>" })).toEqual({
       text: "Subject: Garden plans\n\nHello,\nsee you.",
       truncated: false,
+      restore: null,
+      counts: { code: 0, credential: 0, token: 0, card: 0 },
     });
+  });
+
+  it("redacts the whole subject and body before the cut (slice 3f)", () => {
+    const token = "ghp_" + "CanaryToken0123456789abcdefXYZ";
+    const out = translationSource(`Your code 482913`, { text: `Key ${token}\npassword: Canary-Pass-77`, html: null });
+    expect(out.text).toBe("Subject: Your code [hidden one-time code]\n\nKey [hidden token]\npassword: [hidden password]");
+    expect(out.counts).toEqual({ code: 1, credential: 1, token: 1, card: 0 });
+    expect(out.restore).toBeNull();
+    const filler = "x ".repeat((TRANSLATE_INPUT_CHARS - 20) / 2);
+    const straddling = translationSource("S", { text: `${filler}${token}`, html: null });
+    expect(straddling.text).not.toContain("ghp_");
+  });
+
+  it("is restorable with a tag", () => {
+    const out = translationSource("Code 482913", { text: "Body", html: null }, { restore: true, tag: "ab12" });
+    expect(out.text).toBe("Subject: Code [hidden one-time code 1 ab12]\n\nBody");
+    expect(out.restore!.get("[hidden one-time code 1 ab12]")).toBe("482913");
   });
 
   it("has no header, folder or attachment fields beyond the subject", () => {
@@ -125,6 +144,11 @@ describe("sourceHash and cacheHit", () => {
     expect(await sourceHash("Subject: S\n\nBody", "ru")).toBe(base);
     expect(await sourceHash("Subject: S\n\nBody!", "ru")).not.toBe(base);
     expect(await sourceHash("Subject: S\n\nBody", "en")).not.toBe(base);
+  });
+
+  it("PROMPT_VERSION 2 changes the cache hash of the same source", async () => {
+    expect(await sourceHash("Body", "ru", 2)).not.toBe(await sourceHash("Body", "ru", 1));
+    expect(await sourceHash("Body", "ru")).toBe(await sourceHash("Body", "ru", 2));
   });
 
   it("changes with PROMPT_VERSION", async () => {

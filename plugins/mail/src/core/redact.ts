@@ -384,9 +384,17 @@ function mixedCase(text: string, start: number, end: number): boolean {
   return digit && lower && upper;
 }
 
+/** Hexadecimal with at least one digit and one letter (a hash, not "bbbb…" or a long number). */
 function allHex(text: string, start: number, end: number): boolean {
-  for (let i = start; i < end; i++) if (!isHex(text.charCodeAt(i))) return false;
-  return true;
+  let digit = false;
+  let letter = false;
+  for (let i = start; i < end; i++) {
+    const c = text.charCodeAt(i);
+    if (!isHex(c)) return false;
+    if (isDigit(c)) digit = true;
+    else letter = true;
+  }
+  return digit && letter;
 }
 
 /** The generic rule over one piece: 32+ mixed characters, or 32+ hexadecimal ones. */
@@ -906,10 +914,13 @@ export function newRestoreTag(
 /**
  * A stored snippet (cut at sync, so it can end inside a secret): redaction
  * with the subject as context, then a trailing run of 4+ digits or 16+ token
- * characters touching the end becomes a placeholder (digits: a code).
+ * characters touching the end becomes a placeholder (digits: a code). With
+ * `cutLength`, the tail rule applies only to a snippet that long (one that
+ * was cut); 0 applies it always.
  */
-export function maskSnippetTail(snippet: string, subject: string): Redaction {
+export function maskSnippetTail(snippet: string, subject: string, cutLength = 0): Redaction {
   const redacted = redactSecrets(snippet, { context: subject });
+  if (snippet.length < cutLength) return redacted;
   const text = redacted.text;
   let i = text.length;
   while (i > 0 && isDigit(text.charCodeAt(i - 1))) i--;

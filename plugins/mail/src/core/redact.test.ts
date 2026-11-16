@@ -115,6 +115,7 @@ describe("redactSecrets: tokens", () => {
     expect(hidden(`commit ${FAKE_HEX40}`)).toBe(`commit ${PLACEHOLDER.token}`);
     expect(hidden(`ref ${FAKE_HEX32}`)).toBe(`ref ${PLACEHOLDER.token}`);
     expect(hidden(`id ${FAKE_UUID}`)).toBe(`id ${PLACEHOLDER.token}`);
+    expect(hidden("b".repeat(40))).toBe("b".repeat(40));
     expect(hidden("sk-" + "AbCdEfGhIjKlMnOpQrStUv12")).toBe(PLACEHOLDER.token);
     expect(hidden("AKIA" + "ABCDEFGHIJKLMNOP")).toBe(PLACEHOLDER.token);
     expect(hidden("session Ab3dEf6hIj9lMn2pQr5tUv8xYz1bCd4fGh7")).toBe(`session ${PLACEHOLDER.token}`);
@@ -235,6 +236,11 @@ describe("maskSnippetTail", () => {
     expect(maskSnippetTail("Open the link AbCdEfGh12345678ij", "Hi").text).toBe(`Open the link ${PLACEHOLDER.token}`);
     expect(maskSnippetTail("Meet at noon on day 12", "Hi").text).toBe("Meet at noon on day 12");
     expect(maskSnippetTail("Open the link AbCdEfGh12345678ij", "Hi").counts.token).toBe(1);
+  });
+
+  it("with a cut length, masks the tail of a cut snippet only", () => {
+    expect(maskSnippetTail("Room 1234", "Hi", 200).text).toBe("Room 1234");
+    expect(maskSnippetTail(`${"a ".repeat(98)}x 1234`, "Hi", 200).text).toBe(`${"a ".repeat(98)}x ${PLACEHOLDER.code}`);
   });
 
   it("uses the subject as context", () => {
