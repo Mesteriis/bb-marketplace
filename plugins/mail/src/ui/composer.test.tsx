@@ -655,3 +655,103 @@ describe("Composer: identities, signatures, checks and templates (slice 3d)", ()
     expect(await screen.findByRole("combobox", { name: "Find a template" })).toBeTruthy();
   });
 });
+
+describe("Composer: Improve and reply reminders (slice 3f)", () => {
+  const text = (value: string) => ({ type: "text", text: value });
+  const DOC = {
+    type: "doc",
+    content: [
+      { type: "paragraph", content: [text("Hello Ada,")] },
+      { type: "paragraph", content: [text("I would like to send the plan today.")] },
+      { type: "blockquote", content: [{ type: "paragraph", content: [text("Made-up original")] }] },
+    ],
+  };
+  const DRAFT_RESULT = {
+    kind: "draft" as const,
+    provider: "provider-x",
+    model: "model-y",
+    cached: false,
+    stale: false,
+    notes: { hidden: 0, leftOut: 0, truncated: 0, unreadItems: 0 },
+    citations: [],
+    createdAt: "2026-11-16T08:00:00.000Z",
+    paragraphs: ["Hi Ada,", "Sending the plan today."],
+    unknown: 0,
+    missing: 0,
+  };
+  function improvePorts() {
+    return {
+      start: vi.fn(async () => ({ jobId: "job-1" })),
+      poll: vi.fn(async () => ({ state: "done" as const, result: DRAFT_RESULT })),
+      cancel: vi.fn(async () => ({ cancelled: true })),
+    };
+  }
+  type EditorLike = { getJSON: () => { content?: unknown[] }; commands: { insertContentAt: (at: number, text: string) => boolean } };
+  const editorOf = () => (document.querySelector(".ProseMirror") as unknown as { editor: EditorLike }).editor;
+
+  it("the reminder checkbox starts unticked and sends remindAfterDays when ticked", async () => {
+    const ports = fakePorts();
+    mount({ reminderDays: 4 }, ports);
+    addRecipient();
+    const box = screen.getByRole("checkbox", { name: "Remind me if no reply in 4 days" });
+    expect(box.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(ports.send).toHaveBeenCalledTimes(1));
+    expect(ports.send.mock.calls[0]![0]).not.toHaveProperty("remindAfterDays");
+    cleanup();
+    const again = fakePorts();
+    mount({ reminderDays: 4 }, again);
+    addRecipient();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Remind me if no reply in 4 days" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(again.send).toHaveBeenCalledTimes(1));
+    expect(again.send.mock.calls[0]![0]).toMatchObject({ remindAfterDays: 4 });
+  });
+
+  it("no reminder checkbox and no Improve without the slice 3f props", () => {
+    mount();
+    expect(screen.queryByRole("checkbox", { name: /Remind me/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Improve/ })).toBeNull();
+  });
+
+  it("Improve sends the owner's range of the saved revision; Apply replaces it and keeps the quote", async () => {
+    const jobs = improvePorts();
+    mount({ draft: draft({ doc: DOC }), improve: { jobs, disabledReason: null } });
+    fireEvent.click(screen.getByRole("button", { name: /Improve/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Shorter" }));
+    await waitFor(() => expect(jobs.start).toHaveBeenCalledTimes(1));
+    expect(jobs.start.mock.calls[0]).toEqual([
+      { kind: "draft", draftId: "draft-1", revision: 1, mode: "shorter", paragraphs: ["Hello Ada,", "I would like to send the plan today."] },
+    ]);
+    await screen.findByLabelText("Changes");
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(screen.queryByLabelText("Changes")).toBeNull());
+    const content = editorOf().getJSON().content!;
+    expect(content.slice(0, 2)).toEqual([
+      { type: "paragraph", content: [text("Hi Ada,")] },
+      { type: "paragraph", content: [text("Sending the plan today.")] },
+    ]);
+    expect(content[2]).toEqual(DOC.content[2]);
+  });
+
+  it("an edit while the AI worked refuses Apply", async () => {
+    const jobs = improvePorts();
+    mount({ draft: draft({ doc: DOC }), improve: { jobs, disabledReason: null } });
+    fireEvent.click(screen.getByRole("button", { name: /Improve/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Fix mistakes" }));
+    await screen.findByLabelText("Changes");
+    act(() => {
+      editorOf().commands.insertContentAt(1, "Dear ");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The draft changed while the AI worked. Improve it again.");
+    expect(JSON.stringify(editorOf().getJSON())).toContain("Dear Hello Ada,");
+  });
+
+  it("Improve is off with the reason without Makosh AI", () => {
+    mount({ improve: { jobs: improvePorts(), disabledReason: "AI features need the Makosh AI plugin" } });
+    const button = screen.getByRole("button", { name: /Improve/ }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.closest("span")?.getAttribute("title")).toBe("AI features need the Makosh AI plugin");
+  });
+});

@@ -7,6 +7,8 @@
 import { useEffect, useRef } from "react";
 import { EditorContent, useEditor, type Editor, type JSONContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { closeHistory } from "@tiptap/pm/history";
+import type { Node as PmNode } from "@tiptap/pm/model";
 import { cn } from "@/lib/utils";
 import { sanitizeEmailHtml } from "./sanitize.ts";
 import {
@@ -117,6 +119,94 @@ export function importHtml(editor: Editor, html: string, into: "quote" | "body",
     updateSelection: false,
   });
   editor.commands.setTextSelection(1);
+}
+
+// ---- Improve (slice 3f): the owner's own range ----
+
+/** Line breaks become "\n", tabs spaces; every other control character goes (as the server's normalizeDoc). */
+function cleanText(text: string): string {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .replace(/\t/g, " ")
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, "");
+}
+
+/** Every paragraph inside a block, in order: lists and quotes opened up. */
+function paragraphsIn(node: JSONContent): JSONContent[] {
+  if (node.type === "paragraph") return [node];
+  return (node.content ?? []).flatMap(paragraphsIn);
+}
+
+/**
+ * The owner's own text as Improve sends it, from the editor's document: the
+ * blocks before the first blockquote or signature, one string per paragraph
+ * with hardBreak lines joined by "\n", a list as one paragraph with its
+ * items as lines. The same rule as the server's ownerParagraphs over the
+ * saved draft (a test compares them), so the server can check the draft did
+ * not change. `hasMarks`: bold, italic, underline or a link in that range.
+ */
+export function ownerParagraphsOf(doc: JSONContent): { paragraphs: string[]; hasMarks: boolean } {
+  const paragraphs: string[] = [];
+  let hasMarks = false;
+  const inline = (node: JSONContent): string => {
+    if (node.type === "hardBreak") return "\n";
+    if (node.type === "text") {
+      if ((node.marks ?? []).length > 0) hasMarks = true;
+      return cleanText(node.text ?? "");
+    }
+    return (node.content ?? []).map(inline).join("");
+  };
+  const text = (paragraph: JSONContent) => (paragraph.content ?? []).map(inline).join("");
+  for (const block of doc.content ?? []) {
+    if (block.type === "blockquote" || block.type === "signature") break;
+    if (block.type === "paragraph") paragraphs.push(text(block));
+    else paragraphs.push(paragraphsIn(block).map(text).join("\n"));
+  }
+  return { paragraphs, hasMarks };
+}
+
+export interface OwnerRange {
+  /** Document positions of the range: from the start to the first quote or signature. */
+  from: number;
+  to: number;
+  paragraphs: string[];
+  hasMarks: boolean;
+}
+
+/** The owner's range of the composer's document now. */
+export function ownerRange(editor: Editor): OwnerRange {
+  const doc = editor.state.doc;
+  let to = doc.content.size;
+  let found = false;
+  doc.forEach((node: PmNode, offset: number) => {
+    if (found) return;
+    if (node.type.name === "blockquote" || node.type.name === "signature") {
+      to = offset;
+      found = true;
+    }
+  });
+  return { from: 0, to, ...ownerParagraphsOf(editor.getJSON()) };
+}
+
+/**
+ * Replaces the owner's range with `paragraphs` as plain paragraphs ("\n"
+ * becomes a hard break, no marks) in one transaction, so one Undo restores
+ * the text before. The quote and the signature after it are not touched.
+ */
+export function replaceOwnerRange(editor: Editor, paragraphs: readonly string[]): void {
+  const { state } = editor;
+  const { schema } = state;
+  const { to } = ownerRange(editor);
+  const nodes = (paragraphs.length > 0 ? paragraphs : [""]).map((paragraph) => {
+    const inline: PmNode[] = [];
+    paragraph.split("\n").forEach((line, index) => {
+      if (index > 0) inline.push(schema.nodes.hardBreak!.create());
+      if (line !== "") inline.push(schema.text(line));
+    });
+    return schema.nodes.paragraph!.create(null, inline);
+  });
+  const tr = closeHistory(state.tr.replaceWith(0, to, nodes));
+  editor.view.dispatch(tr);
 }
 
 /** Files of a paste or a drop; empty when it carries none. */

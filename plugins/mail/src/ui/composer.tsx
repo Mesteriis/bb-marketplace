@@ -36,7 +36,11 @@ import {
   type PendingUpload,
   type UploadPort,
 } from "./attachments-input.tsx";
-import { ComposeEditor, type EditorDoc } from "./compose-editor.tsx";
+import { ComposeEditor, ownerRange, replaceOwnerRange, type EditorDoc } from "./compose-editor.tsx";
+import { Checkbox } from "@/components/ui/checkbox";
+import type { AiJobPorts } from "./ai-job.ts";
+import { ImproveDialog, ImproveMenu, type DraftMode, type ImproveRequest } from "./improve-dialog.tsx";
+import { daysText } from "./reminder-strip.tsx";
 import { ComposeToolbar } from "./compose-toolbar.tsx";
 import { accountLabel } from "./folder-list.tsx";
 import { chipText, MAX_CHIP_LENGTH, MIN_CHIP_LENGTH, RecipientInput, addChips, splitTyped } from "./recipient-input.tsx";
@@ -72,7 +76,7 @@ export type ComposerSaveResult = { revision: number; originalKept?: true } | { c
 /** The RPC surface the composer needs, injected by the host adapter. */
 export interface ComposerPorts {
   save(input: ComposerSaveInput): Promise<ComposerSaveResult>;
-  send(input: { draftId: string; baseRevision: number; requestId: string }): Promise<{
+  send(input: { draftId: string; baseRevision: number; requestId: string; remindAfterDays?: number }): Promise<{
     outboxId: string;
     sendAfter: string;
   }>;
@@ -109,6 +113,10 @@ export interface ComposerProps {
   templates?: readonly TemplateView[];
   /** Manage templates… in the picker: opens Mail settings. */
   onManageTemplates?: () => void;
+  /** Improve (slice 3f): the AI ports and why it is off; absent: no Improve. */
+  improve?: { jobs: AiJobPorts; disabledReason: string | null };
+  /** replyReminderDays (slice 3f): the Remind checkbox beside Send; absent: none. */
+  reminderDays?: number;
 }
 
 /** One entry of the From list: an identity of an account that can send. */
@@ -291,6 +299,12 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   /** The owner edited the signature, so a From change kept it: Use <address>'s replaces it. */
   const [keptSignature, setKeptSignature] = useState<FromChoice | null>(null);
   const [presend, setPresend] = useState<PresendIssue[] | null>(null);
+  /** Slice 3f: Improve's menu and request, and the reply reminder beside Send. */
+  const [improveOpen, setImproveOpen] = useState(false);
+  const [improveRequest, setImproveRequest] = useState<ImproveRequest | null>(null);
+  const [remind, setRemind] = useState(false);
+  const remindRef = useRef(remind);
+  remindRef.current = remind;
   const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [to, setTo] = useState<Field>(() => fieldOf(draft.to));
@@ -509,7 +523,8 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         ? attempt.current.requestId
         : (props.newRequestId ?? (() => crypto.randomUUID()))();
     attempt.current = { revision: baseRevision, requestId };
-    const input = { draftId: draft.id, baseRevision, requestId };
+    const remindAfterDays = remindRef.current && props.reminderDays !== undefined ? props.reminderDays : undefined;
+    const input = { draftId: draft.id, baseRevision, requestId, ...(remindAfterDays !== undefined ? { remindAfterDays } : {}) };
     let outbox: { outboxId: string; sendAfter: string };
     try {
       outbox = await portsRef.current.send(input);
@@ -575,6 +590,40 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       }
       await queue(baseRevision);
     });
+  };
+
+  /**
+   * Improve: the draft is saved first, so the server reads what is on
+   * screen; then the owner's range goes with the saved revision.
+   */
+  const startImprove = async (mode: DraftMode, instruction?: string) => {
+    setImproveOpen(false);
+    if (editor === null || props.improve === undefined || conflictRef.current !== null) return;
+    if (dirty()) {
+      const outcome = await save(false);
+      if (outcome !== "saved") return;
+    }
+    const range = ownerRange(editor);
+    setImproveRequest({
+      input: {
+        kind: "draft",
+        draftId: draft.id,
+        revision: revision.current,
+        mode,
+        ...(instruction !== undefined ? { instruction } : {}),
+        paragraphs: range.paragraphs,
+      },
+      hasMarks: range.hasMarks,
+    });
+  };
+  /** Apply: only while the owner's range is still what was sent. */
+  const applyImprove = (paragraphs: string[]): boolean => {
+    const sent = improveRequest?.input.paragraphs;
+    if (editor === null || sent === undefined) return false;
+    const now = ownerRange(editor).paragraphs;
+    if (now.length !== sent.length || now.some((p, i) => p !== sent[i])) return false;
+    replaceOwnerRange(editor, paragraphs);
+    return true;
   };
 
   /** Before you send → Send anyway. */
@@ -918,7 +967,23 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           {...(props.templates !== undefined
             ? { onTemplates: () => setTemplatesOpen((open) => !open), templatesOpen }
             : {})}
+          {...(props.improve !== undefined
+            ? {
+                onImprove: () => setImproveOpen((open) => !open),
+                improveOpen,
+                improveDisabledReason: props.improve.disabledReason,
+              }
+            : {})}
         />
+        {improveOpen && props.improve !== undefined ? (
+          <ImproveMenu
+            onPick={(mode, instruction) => void startImprove(mode, instruction)}
+            onClose={() => {
+              setImproveOpen(false);
+              editor?.commands.focus();
+            }}
+          />
+        ) : null}
         {templatesOpen && props.templates !== undefined ? (
           <TemplatesPopover
             templates={props.templates}
@@ -970,6 +1035,16 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           {sending ? "Sending…" : "Send"}
         </Button>
         <AttachButton onAdd={addFiles} disabled={closing} />
+        {props.reminderDays !== undefined ? (
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Checkbox
+              aria-label={`Remind me if no reply in ${daysText(props.reminderDays)}`}
+              checked={remind}
+              onCheckedChange={(checked) => setRemind(checked === true)}
+            />
+            {`Remind me if no reply in ${daysText(props.reminderDays)}`}
+          </label>
+        ) : null}
         <SaveStateLine state={saveState} serverCopy={draft.serverCopy} />
         <span className="flex-1" />
         <Button
@@ -989,6 +1064,17 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         ) : null}
       </div>
 
+      {props.improve !== undefined ? (
+        <ImproveDialog
+          request={improveRequest}
+          ports={props.improve.jobs}
+          onApply={applyImprove}
+          onClose={() => {
+            setImproveRequest(null);
+            editor?.commands.focus();
+          }}
+        />
+      ) : null}
       <PresendDialog
         issues={presend}
         onFix={fix}

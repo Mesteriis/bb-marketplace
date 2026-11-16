@@ -811,6 +811,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         {...(props.identities !== undefined ? { identities: props.identities } : {})}
         {...(props.templates !== undefined ? { templates: props.templates } : {})}
         {...(props.onManageTemplates !== undefined ? { onManageTemplates: props.onManageTemplates } : {})}
+        {...(props.ai !== undefined
+          ? { improve: { jobs: props.ai.jobs, disabledReason: props.ai.disabledReason }, reminderDays: props.ai.reminderDays }
+          : {})}
       />
     ) : null;
   const docked = composer !== null && composer.dockThreadId !== null && composer.dockThreadId === reading.threadId;
