@@ -6292,7 +6292,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
              ${SCOPE_ROLE} AS folder_use
            FROM attachments a JOIN messages m ON m.id = a.message_id
            WHERE a.is_inline = 0 AND a.kind IN ('text', 'pdf') AND m.move_pending IS NULL
-             AND (m.kept IS NULL OR m.kept != 'search')
+             AND (m.kept IS NULL OR m.kept != 'search') AND ${NOT_JUNK_OR_TRASH}
              AND NOT EXISTS (SELECT 1 FROM attachment_text t WHERE t.message_id = a.message_id AND t.part_id = a.part_id)
            ORDER BY m.date IS NULL, m.date DESC, m.seq DESC, a.part_id
            LIMIT ?`,

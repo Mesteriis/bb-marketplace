@@ -1187,7 +1187,7 @@ export interface MailStore {
   /** Every label any stored message of the account carries, system labels included. */
   accountLabels(accountId: string): string[];
 
-  /** Attachments the indexer may still extract (no attachment_text row yet), with what the caps need. */
+  /** Attachments the indexer may still extract (no attachment_text row yet, not in Spam or Trash), with what the caps need. */
   attachmentTextCandidates(limit: number): AttachmentCandidate[];
   insertAttachmentText(row: AttachmentTextRow): void;
   attachmentTextStatus(): { indexed: number; skipped: number; failed: number; pending: number; totalChars: number };

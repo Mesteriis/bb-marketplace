@@ -34,7 +34,7 @@ const encode = (text: string) => new TextEncoder().encode(text);
 function seed(
   uid: number,
   parts: { filename: string; mimeType: string; bytes: Uint8Array; isInline?: boolean }[],
-  options: { folder?: string; size?: number; date?: string; kept?: "search" | "history" } = {},
+  options: { folder?: string; size?: number; date?: string; kept?: "search" | "history"; account?: string } = {},
 ): { id: string; parsed: ParsedPart[] } {
   const message = makeFetchedMessage(uid, {
     size: options.size ?? 1_000,
@@ -47,8 +47,11 @@ function seed(
       isInline: part.isInline ?? false,
     })),
   });
-  store.upsertMessages("acc_1", options.folder ?? "INBOX", [message], options.kept === undefined ? undefined : { kept: options.kept });
-  const id = (db.prepare("SELECT id FROM messages WHERE folder = ? AND uid = ?").get(options.folder ?? "INBOX", uid) as { id: string }).id;
+  const account = options.account ?? "acc_1";
+  store.upsertMessages(account, options.folder ?? "INBOX", [message], options.kept === undefined ? undefined : { kept: options.kept });
+  const id = (
+    db.prepare("SELECT id FROM messages WHERE account_id = ? AND folder = ? AND uid = ?").get(account, options.folder ?? "INBOX", uid) as { id: string }
+  ).id;
   return { id, parsed: parts.map((part) => ({ filename: part.filename, mimeType: part.mimeType, content: part.bytes })) };
 }
 
@@ -208,6 +211,64 @@ describe("attachment indexer", () => {
     const capped = harness();
     expect(await capped.indexer.runRound()).toMatchObject({ indexed: 0, full: true });
     expect(capped.fetched).toEqual([]);
+  });
+
+  it("an unreachable account is skipped for the rest of the round; the others keep indexing", async () => {
+    store.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org", username: "second@example.org" }));
+    store.saveFolders("acc_2", [folder("INBOX", "inbox")]);
+    const text = { filename: "t.txt", mimeType: "text/plain", bytes: encode("Invented") };
+    const unreachable: string[] = [];
+    for (let uid = 1; uid <= ATTACHMENT_TEXT_CAPS.perRound + 10; uid++) unreachable.push(seed(uid, [text], { date: "2026-11-15T09:00:00.000Z" }).id);
+    const parsedBy = new Map<string, ParsedPart[]>();
+    for (let uid = 1; uid <= 5; uid++) {
+      const entry = seed(uid, [text], { account: "acc_2", date: `2026-10-0${uid}T09:00:00.000Z` });
+      parsedBy.set(entry.id, entry.parsed);
+    }
+    const fetched: string[] = [];
+    const indexer = createAttachmentIndexer({
+      store,
+      clock,
+      fetchRaw: async (messageId) => {
+        fetched.push(messageId);
+        if (unreachable.includes(messageId)) throw new RetryLater();
+        return encode(messageId);
+      },
+      parse: async (raw) => ({ attachments: parsedBy.get(new TextDecoder().decode(raw)) ?? [] }),
+      extractPdf: null,
+    });
+    expect(await indexer.runRound()).toMatchObject({ indexed: 5 });
+    expect(fetched.filter((id) => unreachable.includes(id))).toHaveLength(1);
+    expect(rows().filter((r) => r.state === "indexed")).toHaveLength(5);
+  });
+
+  it("charges the daily budget only for fetches that succeeded", async () => {
+    store.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org", username: "second@example.org" }));
+    store.saveFolders("acc_2", [folder("INBOX", "inbox")]);
+    const text = { filename: "t.txt", mimeType: "text/plain", bytes: encode("Invented") };
+    const unreachable = [1, 2, 3].map((uid) => seed(uid, [text], { size: 24 * MB, date: "2026-11-15T09:00:00.000Z" }).id);
+    const parsedBy = new Map<string, ParsedPart[]>();
+    for (let uid = 1; uid <= 8; uid++) {
+      const entry = seed(uid, [text], { account: "acc_2", size: 24 * MB, date: `2026-10-0${uid}T09:00:00.000Z` });
+      parsedBy.set(entry.id, entry.parsed);
+    }
+    let reachable = false;
+    const fetched: string[] = [];
+    const indexer = createAttachmentIndexer({
+      store,
+      clock,
+      fetchRaw: async (messageId) => {
+        if (!reachable && unreachable.includes(messageId)) throw new RetryLater();
+        fetched.push(messageId);
+        return encode(messageId);
+      },
+      parse: async (raw) => ({ attachments: parsedBy.get(new TextDecoder().decode(raw)) ?? [] }),
+      extractPdf: null,
+    });
+    // 8 x 24 MB fit in 200 MB; the refused 3 x 24 MB were never fetched and cost nothing.
+    expect(await indexer.runRound()).toMatchObject({ indexed: 8 });
+    reachable = true;
+    await indexer.runRound();
+    expect(fetched).toHaveLength(8);
   });
 
   it("runs one round at a time", async () => {

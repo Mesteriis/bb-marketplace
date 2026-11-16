@@ -5761,6 +5761,18 @@ describe("slice-3h saved searches, prefs and attachment text (SQLite)", () => {
     expect(store.listSavedSearches()).toHaveLength(50);
   });
 
+  it("lists an Inbox attachment behind 1,001 newer pending ones in Spam", () => {
+    seedFolders(store);
+    const attachment = { partId: "2", filename: "a.txt", mimeType: "text/plain", size: 10, isInline: false };
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { date: "2026-01-01T00:00:00.000Z", attachments: [attachment] })]);
+    store.upsertMessages(
+      "acc_1",
+      "Junk",
+      Array.from({ length: 1_001 }, (_, i) => makeFetchedMessage(i + 1, { date: "2026-11-01T00:00:00.000Z", messageId: `junk-${i}@example.org`, attachments: [attachment] })),
+    );
+    expect(store.attachmentTextCandidates(1_000).map((c) => c.messageId)).toEqual([idOf(store, 1)]);
+  });
+
   it("deletes the account's saved searches, prefs and attachment text with it", () => {
     store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
     store.saveSavedSearch({ id: null, name: "Mine", query: "x", accountId: "acc_1", nowIso: T0 }, "s1");
@@ -5784,7 +5796,8 @@ describe("slice-3h saved searches, prefs and attachment text (SQLite)", () => {
       ["2", "text"],
       ["3", "pdf"],
     ]);
-    expect(store.attachmentTextCandidates(10).find((c) => c.folderUse === "junk")).toBeDefined();
+    // Spam and Trash are never candidates, so 1,000 pending parts there cannot starve the rest.
+    expect(store.attachmentTextCandidates(10).find((c) => c.folderUse === "junk")).toBeUndefined();
     store.insertAttachmentText({ messageId: id, partId: "2", state: "indexed", reason: null, body: "12345", extractedAt: T0 });
     store.insertAttachmentText({ messageId: id, partId: "3", state: "failed", reason: "timeout", body: "ignored", extractedAt: T0 });
     expect(store.attachmentTextStatus()).toEqual({ indexed: 1, skipped: 0, failed: 1, pending: 0, totalChars: 5 });

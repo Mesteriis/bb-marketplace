@@ -10,7 +10,10 @@
 //   per day). Parts over a cap get a `skipped/too_large` row so they do not
 //   stay pending.
 // - One guarded raw fetch (read-only, BODY.PEEK) per message, then the part
-//   by its index with the download route's name, type and size check.
+//   by its index with the download route's name, type and size check. The
+//   daily budget is charged only for a fetch that succeeded; an account that
+//   answers RetryLater is skipped for the rest of the round and the round
+//   keeps picking from the other accounts.
 // - Text is decoded with `decodeText` (UTF-8, else windows-1252: postal-mime
 //   does not report the part's charset); PDFs go through one worker at a time
 //   (pdf-text.ts). Without the PDF worker (`extractPdf: null`) PDFs get no
@@ -93,7 +96,7 @@ export interface AttachmentIndexer {
   running(): boolean;
 }
 
-/** Candidates read per round before the core picks; Spam and Trash rows are among them. */
+/** Candidates read per round before the core picks (the store leaves Spam and Trash out). */
 const CANDIDATE_SCAN = 1_000;
 
 function overCap(candidate: AttachmentCandidate): boolean {
@@ -145,56 +148,86 @@ export function createAttachmentIndexer(deps: AttachmentIndexerDeps): Attachment
     for (const candidate of scanned.filter(overCap)) {
       write({ messageId: candidate.messageId, partId: candidate.partId, state: "skipped", reason: "too_large", body: null });
     }
-    const { candidates } = indexCandidates(
-      scanned.filter((candidate) => !overCap(candidate)),
-      fetchedToday,
-    );
-    const byMessage = new Map<string, AttachmentCandidate[]>();
-    for (const candidate of candidates) byMessage.set(candidate.messageId, [...(byMessage.get(candidate.messageId) ?? []), candidate]);
-
-    for (const [messageId, parts] of byMessage) {
+    const pool = scanned.filter((candidate) => !overCap(candidate));
+    // Accounts that answered RetryLater are skipped for the rest of the round;
+    // their parts stay pending and the round picks from the other accounts.
+    const unreachable = new Set<string>();
+    const done = new Set<string>();
+    const accountOf = new Map<string, string | null>();
+    const headerOf = (messageId: string) => {
       const header = store.getMessage(messageId);
-      if (header === null) continue;
-      const failAll = () => {
-        for (const part of parts) write({ messageId, partId: part.partId, state: "failed", reason: "unreadable", body: null });
-      };
-      fetchedToday += parts[0]!.messageSize;
-      let parsed: { attachments: readonly ParsedPart[] };
-      try {
-        parsed = await deps.parse(await deps.fetchRaw(messageId));
-      } catch (error) {
-        if (error instanceof RetryLater) continue;
-        failAll();
-        continue;
+      accountOf.set(messageId, header?.accountId ?? null);
+      return header;
+    };
+    let partsLeft = ATTACHMENT_TEXT_CAPS.perRound;
+    pick: while (partsLeft > 0) {
+      const open = pool.filter((c) => !done.has(c.messageId) && !unreachable.has(accountOf.get(c.messageId) ?? ""));
+      const { candidates } = indexCandidates(open, fetchedToday);
+      if (candidates.length === 0) break;
+      const byMessage = new Map<string, AttachmentCandidate[]>();
+      for (const candidate of candidates.slice(0, partsLeft)) {
+        byMessage.set(candidate.messageId, [...(byMessage.get(candidate.messageId) ?? []), candidate]);
       }
-      for (const part of parts) {
-        const stored = header.attachments.find((a) => a.partId === part.partId);
-        const bytes = stored === undefined ? null : matchingPart(parsed.attachments, part.partId, stored);
-        if (bytes === null) {
-          write({ messageId, partId: part.partId, state: "failed", reason: "unreadable", body: null });
+      for (const [messageId, parts] of byMessage) {
+        done.add(messageId);
+        const header = headerOf(messageId);
+        if (header === null) continue;
+        if (unreachable.has(header.accountId)) continue;
+        partsLeft -= parts.length;
+        const failAll = () => {
+          for (const part of parts) write({ messageId, partId: part.partId, state: "failed", reason: "unreadable", body: null });
+        };
+        let raw: Uint8Array;
+        try {
+          raw = await deps.fetchRaw(messageId);
+        } catch (error) {
+          if (error instanceof RetryLater) {
+            // Nothing was fetched: no budget is charged and the part stays pending.
+            partsLeft += parts.length;
+            unreachable.add(header.accountId);
+            continue pick;
+          }
+          failAll();
           continue;
         }
-        let body: string;
-        if (part.kind === "pdf") {
-          const extracted = await deps.extractPdf!(bytes);
-          if ("skipped" in extracted) {
-            write({ messageId, partId: part.partId, state: "skipped", reason: "encrypted", body: null });
+        // Charged only once the fetch succeeded.
+        fetchedToday += parts[0]!.messageSize;
+        let parsed: { attachments: readonly ParsedPart[] };
+        try {
+          parsed = await deps.parse(raw);
+        } catch {
+          failAll();
+          continue;
+        }
+        for (const part of parts) {
+          const stored = header.attachments.find((a) => a.partId === part.partId);
+          const bytes = stored === undefined ? null : matchingPart(parsed.attachments, part.partId, stored);
+          if (bytes === null) {
+            write({ messageId, partId: part.partId, state: "failed", reason: "unreadable", body: null });
             continue;
           }
-          if ("failed" in extracted) {
-            write({ messageId, partId: part.partId, state: "failed", reason: extracted.failed, body: null });
-            continue;
+          let body: string;
+          if (part.kind === "pdf") {
+            const extracted = await deps.extractPdf!(bytes);
+            if ("skipped" in extracted) {
+              write({ messageId, partId: part.partId, state: "skipped", reason: "encrypted", body: null });
+              continue;
+            }
+            if ("failed" in extracted) {
+              write({ messageId, partId: part.partId, state: "failed", reason: extracted.failed, body: null });
+              continue;
+            }
+            body = extracted.text;
+          } else {
+            body = decodeText(bytes, charsetOf(bytes));
           }
-          body = extracted.text;
-        } else {
-          body = decodeText(bytes, charsetOf(bytes));
+          if (total + body.length > ATTACHMENT_TEXT_TOTAL_MAX) {
+            result.full = true;
+            return result;
+          }
+          write({ messageId, partId: part.partId, state: "indexed", reason: null, body });
+          total += body.length;
         }
-        if (total + body.length > ATTACHMENT_TEXT_TOTAL_MAX) {
-          result.full = true;
-          return result;
-        }
-        write({ messageId, partId: part.partId, state: "indexed", reason: null, body });
-        total += body.length;
       }
     }
     return result;

@@ -3441,6 +3441,8 @@ export class InMemoryMailStore implements MailStore {
     const out: AttachmentCandidate[] = [];
     for (const row of [...this.state.rows].sort((a, b) => oldestFirst(b, a))) {
       if (row.movePending !== null || row.kept === "search") continue;
+      const use = this.roleOf(row.accountId, row.folder);
+      if (use === "junk" || use === "trash") continue;
       for (const a of row.message.attachments) {
         const kind = fileKindOf(a.mimeType, a.filename);
         if (a.isInline || (kind !== "text" && kind !== "pdf")) continue;
