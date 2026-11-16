@@ -6131,13 +6131,6 @@ describe("slice-3i store (SQLite)", () => {
     expect(store.senderCheckRows([id])[0]!.senderCheckJson).not.toBeNull();
   });
 
-  it("does not store a check over 2 KB", () => {
-    const big = { ...checkOf("ok"), authserv: "x".repeat(2_100) };
-    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { senderCheck: big })]);
-    expect(store.senderCheckRows([idOf(store, 1)])[0]!.senderCheckJson).toBeNull();
-    expect(store.writeSenderCheck(idOf(store, 1), { check: big, receipt: null, crypto: null, force: true })).toBe(false);
-  });
-
   it("stores a failed row's dev class as checked-none and keeps it out of devUnclassified", () => {
     store.upsertMessages("acc_1", INBOX, [
       makeFetchedMessage(1, { senderCheck: checkOf("failed"), dev: { source: "github", repo: null, kind: "ci", state: "failed", ref: null } }),
@@ -6260,6 +6253,47 @@ describe.each(storeKinds)("slice-3i store semantics (%s)", (_kind, make) => {
     s.saveFolders("acc_1", FOLDERS_3F);
   });
   const idIn = (folder: string, uid: number) => s.localFolderIndex("acc_1", folder, EPOCH).find((e) => e.uid === uid)!.id;
+
+  // Slice 3i review, finding 3: a check over 2 KB is cut to fit, never dropped.
+  const longDomain = (i: number) => `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(50)}.s${i}.example.org`;
+  const bigFailed = (): SenderCheck => ({
+    ...checkOf("failed"),
+    spf: { result: "temperror", domain: longDomain(9) },
+    dkim: Array.from({ length: 5 }, (_, i) => ({ result: "temperror" as const, domain: longDomain(i), aligned: false })),
+    otherDmarc: Array.from({ length: 3 }, (_, i) => ({ result: "pass" as const, domain: longDomain(i + 5) })),
+  });
+  const storedBytes = (id: string) => new TextEncoder().encode(s.senderCheckRows([id])[0]!.senderCheckJson!).length;
+
+  it("shrinks a check over 2 KB to fit and keeps a failure, clearing the dev class", () => {
+    expect(new TextEncoder().encode(JSON.stringify(bigFailed())).length).toBeGreaterThan(2_048);
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { senderCheck: bigFailed(), dev: { source: "github", repo: null, kind: "ci", state: "failed", ref: null } }),
+      makeFetchedMessage(2, { dev: { source: "github", repo: null, kind: "ci", state: "failed", ref: null } }),
+    ]);
+    const first = idIn(INBOX, 1);
+    expect(JSON.parse(s.senderCheckRows([first])[0]!.senderCheckJson!)).toMatchObject({ state: "failed", decidedBy: "dmarc" });
+    expect(storedBytes(first)).toBeLessThanOrEqual(2_048);
+    expect(s.getMessage(first)!.dev).toBeNull();
+
+    const second = idIn(INBOX, 2);
+    expect(s.writeSenderCheck(second, { check: bigFailed(), receipt: null, crypto: null, force: false })).toBe(true);
+    expect(JSON.parse(s.senderCheckRows([second])[0]!.senderCheckJson!).state).toBe("failed");
+    expect(storedBytes(second)).toBeLessThanOrEqual(2_048);
+    expect(s.getMessage(second)!.dev).toBeNull();
+  });
+
+  it("a forced refresh never turns a stored encrypted kind back to none once the body is gone (finding 8)", () => {
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { bodyText: "-----BEGIN PGP MESSAGE-----", bodyHtml: null, crypto: { kind: "pgp_encrypted", opaque: false } }),
+      makeFetchedMessage(2, { crypto: { kind: "smime_signed", opaque: false } }),
+    ]);
+    // The refresh judges inline armor from the stored body's first line, which is NULL now.
+    expect(s.writeSenderCheck(idIn(INBOX, 1), { check: checkOf("unchecked"), receipt: false, crypto: null, force: true })).toBe(true);
+    expect(s.senderCheckRows([idIn(INBOX, 1)])[0]!.crypto).toEqual({ kind: "pgp_encrypted", opaque: false });
+    // Anything else is still overwritten with force.
+    expect(s.writeSenderCheck(idIn(INBOX, 2), { check: checkOf("unchecked"), receipt: false, crypto: null, force: true })).toBe(true);
+    expect(s.senderCheckRows([idIn(INBOX, 2)])[0]!.crypto).toBeNull();
+  });
 
   it("writes checks where unknown, forces on request and drops failed rows from dev backfill", () => {
     s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2, { senderCheck: checkOf("failed") })]);

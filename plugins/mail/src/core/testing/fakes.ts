@@ -129,7 +129,7 @@ import type { BbLinkRowKind } from "../model.ts";
 import type { AttachmentTextRow, FilesFilter, SavedSearchRow, SearchOptions, SenderCheckRow, SenderStats } from "../ports.ts";
 import { SENDER_CHECK_MAX_BYTES } from "../ports.ts";
 import { firstNonBlankLine, isEncrypted, type MailCrypto } from "../mail-crypto.ts";
-import { orgDomain, type SenderCheck } from "../sender-check.ts";
+import { fitSenderCheck, orgDomain, type SenderCheck } from "../sender-check.ts";
 import { SERVER_SEARCH_CAPS, type ServerCriteria } from "../server-search.ts";
 import type { AttachmentMatch, FileRow, KeptState, SearchCondition, SearchCursor } from "../model.ts";
 import { excerptAround, type AttachmentCandidate } from "../attachment-text.ts";
@@ -179,9 +179,8 @@ export function makeStoredAccount(overrides: Partial<StoredAccount> = {}): Store
 
 /** A fetched message as stored: Delivered-To lower case, distinct, at most 10 (as the SQLite upsert). */
 /** The stored sender check, or null over SENDER_CHECK_MAX_BYTES (as SQLite: not stored). */
-function fakeSenderCheckJson(check: SenderCheck): string | null {
-  const json = JSON.stringify(check);
-  return new TextEncoder().encode(json).length > SENDER_CHECK_MAX_BYTES ? null : json;
+function fakeSenderCheckJson(check: SenderCheck): string {
+  return JSON.stringify(fitSenderCheck(check, SENDER_CHECK_MAX_BYTES));
 }
 
 /** An encrypted body reaches no reader (slice 3i resolution 6). */
@@ -3529,8 +3528,7 @@ export class InMemoryMailStore implements MailStore {
   /** Writes what a fetch judged (absent fields leave the row alone), as SQLite's upsert. */
   private applySecurityFields(row: Row, message: FetchedMessage): void {
     if (message.senderCheck !== undefined) {
-      const json = fakeSenderCheckJson(message.senderCheck);
-      if (json !== null) row.senderCheckJson = json;
+      row.senderCheckJson = fakeSenderCheckJson(message.senderCheck);
       if (message.senderCheck.state === "failed") row.dev = null;
     }
     if (message.receiptRequested !== undefined) row.receiptRequested = message.receiptRequested;
@@ -3589,7 +3587,6 @@ export class InMemoryMailStore implements MailStore {
     input: { check: SenderCheck; receipt: boolean | null; crypto: MailCrypto | null; force: boolean; guard?: { uidValidity: number } },
   ): boolean {
     const json = fakeSenderCheckJson(input.check);
-    if (json === null) return false;
     const row = this.state.rows.find((r) => r.id === id);
     if (row === undefined) return false;
     if (!input.force && row.senderCheckJson !== undefined && row.senderCheckJson !== null) return false;
@@ -3600,7 +3597,11 @@ export class InMemoryMailStore implements MailStore {
     if (input.receipt !== null && (input.force || row.receiptRequested === undefined || row.receiptRequested === null)) {
       row.receiptRequested = input.receipt;
     }
-    if (input.force || row.crypto === undefined || row.crypto === null) row.crypto = input.crypto === null ? null : { ...input.crypto };
+    const noBody = row.message.bodyText === null && row.message.bodyHtml === null;
+    const keepEncrypted = isEncrypted(row.crypto?.kind) && noBody && !isEncrypted(input.crypto?.kind);
+    if ((input.force || row.crypto === undefined || row.crypto === null) && !keepEncrypted) {
+      row.crypto = input.crypto === null ? null : { ...input.crypto };
+    }
     if (input.check.state === "failed") row.dev = null;
     if (isEncrypted(row.crypto?.kind)) dropFakeBody(row);
     return true;

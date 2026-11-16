@@ -116,7 +116,7 @@ import type {
 } from "../../core/ports.ts";
 import { SENDER_CHECK_MAX_BYTES } from "../../core/ports.ts";
 import { firstNonBlankLine, isEncrypted, type MailCrypto } from "../../core/mail-crypto.ts";
-import { orgDomain, type SenderCheck } from "../../core/sender-check.ts";
+import { fitSenderCheck, orgDomain, type SenderCheck } from "../../core/sender-check.ts";
 import { matchesBlock, type BlockRule } from "../../core/blocking.ts";
 import { SNOOZES_MAX_PER_ACCOUNT, type SnoozeRow, type SnoozeState } from "../../core/snooze.ts";
 import type { TriageAction, TriageBatchState, TriageItemOutcome } from "../../core/triage.ts";
@@ -1735,10 +1735,9 @@ function unsubscribeJson(info: UnsubscribeInfo | null | undefined): string | nul
   return Buffer.byteLength(json, "utf8") > UNSUBSCRIBE_INFO_MAX_BYTES ? null : json;
 }
 
-/** The stored sender check, or null when it is over SENDER_CHECK_MAX_BYTES (slice 3i: not stored). */
-function senderCheckJson(check: SenderCheck): string | null {
-  const json = JSON.stringify(check);
-  return Buffer.byteLength(json, "utf8") > SENDER_CHECK_MAX_BYTES ? null : json;
+/** The stored sender check, cut to fit SENDER_CHECK_MAX_BYTES (slice 3i review: never dropped, a failure kept). */
+function senderCheckJson(check: SenderCheck): string {
+  return JSON.stringify(fitSenderCheck(check, SENDER_CHECK_MAX_BYTES));
 }
 
 /** `messages.crypto`: the kind, `smime_signed_opaque` for S/MIME signed-data; NULL for neither. */
@@ -2498,8 +2497,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
   /** What a fetch judged for slice 3i; absent fields leave the stored values alone. */
   function writeSecurityFields(id: string, message: FetchedMessage): void {
     if (message.senderCheck !== undefined) {
-      const json = senderCheckJson(message.senderCheck);
-      if (json !== null) setSenderCheck.get().run(json, id);
+      setSenderCheck.get().run(senderCheckJson(message.senderCheck), id);
       if (message.senderCheck.state === "failed") clearDev.get().run(id);
     }
     if (message.receiptRequested !== undefined) setReceipt.get().run(message.receiptRequested ? 1 : 0, id);
@@ -6545,11 +6543,14 @@ export function createSqliteStore(db: Database.Database): MailStore {
 
     writeSenderCheck(id, input) {
       const json = senderCheckJson(input.check);
-      if (json === null) return false;
       return atomic(() => {
         const row = db
-          .prepare<[string], { account_id: string; folder: string; uid: number | null; sender_check_json: string | null; crypto: string | null }>(
-            "SELECT account_id, folder, uid, sender_check_json, crypto FROM messages WHERE id = ?",
+          .prepare<
+            [string],
+            { account_id: string; folder: string; uid: number | null; sender_check_json: string | null; crypto: string | null; no_body: number }
+          >(
+            `SELECT account_id, folder, uid, sender_check_json, crypto, (body_text IS NULL AND body_html IS NULL) AS no_body
+             FROM messages WHERE id = ?`,
           )
           .get(id);
         if (row === undefined) return false;
@@ -6567,7 +6568,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
           const onlyUnknown = input.force ? "" : " AND receipt_requested IS NULL";
           db.prepare(`UPDATE messages SET receipt_requested = ? WHERE id = ?${onlyUnknown}`).run(input.receipt ? 1 : 0, id);
         }
-        const writeCrypto = input.force || row.crypto === null;
+        // Inline armor is judged from the stored body, gone once found encrypted:
+        // a stored encrypted kind is never taken back by a refresh that cannot see it (slice 3i review).
+        const keepEncrypted = isEncrypted(cryptoOf(row.crypto)?.kind) && row.no_body === 1 && !isEncrypted(input.crypto?.kind);
+        const writeCrypto = (input.force || row.crypto === null) && !keepEncrypted;
         if (writeCrypto) setCrypto.get().run(cryptoColumn(input.crypto), id);
         if (input.check.state === "failed") clearDev.get().run(id);
         const crypto = writeCrypto ? input.crypto : cryptoOf(row.crypto);

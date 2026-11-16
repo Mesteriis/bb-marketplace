@@ -1211,10 +1211,11 @@ export interface MailStore {
   /** What the sender check and the header view read of these stored messages; unknown ids are left out. */
   senderCheckRows(ids: string[]): SenderCheckRow[];
   /**
-   * Stores a sender check (at most SENDER_CHECK_MAX_BYTES serialized, else
-   * nothing is written) where the row has none, or over it with `force`;
-   * fills `receipt` (null: not known) and `crypto` where NULL, or over them
-   * with `force`. In the same write a failed check clears the dev class to
+   * Stores a sender check (cut to fit SENDER_CHECK_MAX_BYTES serialized by
+   * `fitSenderCheck`, never dropped) where the row has none, or over it with
+   * `force`; fills `receipt` (null: not known) and `crypto` where NULL, or
+   * over them with `force` (but never takes back an encrypted kind whose body
+   * is already gone). In the same write a failed check clears the dev class to
    * checked-none and an encrypted kind nulls the body (the FTS trigger
    * forgets it). With `guard`, writes only while the folder's stored
    * UIDVALIDITY equals it and the row is attached. True when it wrote.
