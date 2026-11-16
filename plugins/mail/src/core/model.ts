@@ -230,6 +230,14 @@ export const translateErrorKindSchema = z.enum([
   "cancelled",
 ]);
 
+/**
+ * Why an owner-click AI call failed (slice 3f): the translation kinds, plus
+ * unreadable (the answer did not parse), out_of_scope (outside AI access)
+ * and too_long (the answer was cut off at max_tokens, or a draft over the cap).
+ */
+export const aiErrorKindSchema = z.enum([...translateErrorKindSchema.options, "unreadable", "out_of_scope", "too_long"]);
+export type AiErrorKind = z.infer<typeof aiErrorKindSchema>;
+
 /** The translation gateway's state: "ok", why it cannot be used, or "unknown" while a check is still running. */
 export const translateGatewaySchema = z.union([z.literal("ok"), z.literal("unknown"), translateErrorKindSchema]);
 
