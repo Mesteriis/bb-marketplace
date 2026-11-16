@@ -2,8 +2,11 @@
 
 A [BB](https://github.com/get-bb/bb) plugin that brings mail into the IDE:
 your mailbox beside your threads, mail access for agents, a way to hand a
-message to an agent, emails an agent proposes for you to send, and machine
-translation of a message.
+message to an agent, emails an agent proposes for you to send, machine
+translation of a message, and AI on your click (summaries, Ask, tasks,
+categories, a Today view, reply reminders, Improve), with secrets hidden
+from every agent and model, an AI access scope and a local log of what
+agents did.
 
 **Status: experimental.** Plugin id: `makosh-mail`. It reads mail, and
 changes it on the server only when you click or press a key: read and unread,
@@ -64,7 +67,8 @@ out only when you press **Send** on its card in that agent's thread.
   again), and messages over 50 MB are refused. Files of types outside a short
   list of safe ones (HTML, SVG and scripts among them) are saved as generic
   binary files.
-- Hotkeys on the Mail page; `?` shows them all. `j` / `k` next and previous
+- Hotkeys on the Mail page; `?` shows them all. Slice 3f adds Shift+`s`
+  summarize and Shift+`t` find tasks. `j` / `k` next and previous
   conversation, `o` or Enter open, `u` back to the list, `/` search, `x`
   select, `e` archive, `#` delete, `!` spam, `s` flag or unflag, Shift+`u`
   mark unread, Shift+`i` mark read, `v` Move to…, `b` snooze, and `g` then `i`, `s`, `d`,
@@ -133,7 +137,8 @@ setting, generated on first load. Mail and credentials stay on the machine
 that runs the BB server.
 
 Not yet: creating or renaming folders (beyond the one snooze folder), Gmail
-API or OAuth, scheduled send and system notifications.
+API or OAuth, scheduled send, system notifications, and writing categories
+or reminders to the mail server.
 
 ## Writing and sending
 
@@ -461,8 +466,9 @@ but not filed.
 
 **Translate** in the reading pane (after Forward, key `t`) translates the
 message you have open. It needs the Makosh AI plugin; without it the button
-is disabled and says so. The first time, Translation settings ask which
-Makosh AI provider and model to use; nothing is chosen for you.
+is disabled and says so. The first time, **AI settings** (formerly
+Translation settings) ask which Makosh AI provider and model to use; nothing
+is chosen for you. The same provider and model serve every AI feature below.
 
 Translate sends the message's subject and plain text, never its attachments,
 images, addresses or other headers, to the provider you chose in Makosh AI.
@@ -477,11 +483,146 @@ the model refuses, the block says which, in fixed words.
 
 Translations are kept in the plugin's database per message and language, and
 show at once, marked "cached", the next time. **Clear translations** in
-Translation settings removes them all; they also go when the message or its
+AI settings removes them all; they also go when the message or its
 account is removed. Only you start a translation: there is no translate tool
 for agents, and `mail_read` does not include translations. The translate
 calls are open to an agent with shell access as described above (accepted,
 within 30 an hour).
+
+Since slice 3f the text sent for a translation is redacted like everything
+else (see below), and a message outside AI access is not translated. In the
+translation you read, the hidden values come back in place: the provider saw
+`[hidden one-time code]`, you see the code. The map that restores them lives
+only in the running job and is dropped when it ends.
+
+## Agents, AI and your secrets
+
+### Redaction
+
+Every text that reaches an agent or a model passes one redaction: the tools,
+the CLI in a thread, mentions, **Hand to agent**, translation and every AI
+feature below. One-time codes (also split, prefixed or on the next line),
+passwords and app passwords next to their labels, API keys and tokens
+(GitHub, GitLab, Stripe, Slack, AWS and Google keys, `sk-` keys, JWTs, PEM blocks, long hex and
+UUID tokens, secret-looking URL parameters such as `token=` or `code=`), and
+card numbers (Luhn-checked) and CVVs next to a card become placeholders:
+`[hidden one-time code]`, `[hidden password]`, `[hidden token]`, `[hidden
+card number]`. The whole field is redacted before any cut, so a secret on a
+limit is still hidden. Dates, times, amounts, phone numbers, years and email
+addresses stay. Agents are told the placeholders are deliberate and never to
+ask you to paste a hidden value into the thread; they cannot search for
+codes or tokens either (a search matches only text they could read).
+
+Redaction is a heuristic, not a guarantee. It removes the common shapes; a
+code written in words, split across lines in an unusual way, inside an image
+or in a format it does not know can pass. Images and attachments never
+reach any agent or model path.
+
+### AI access
+
+Mail settings → **AI access** sets what agents and AI features may read: per
+account **All folders**, **Chosen folders…** (a picker; a folder that no
+longer exists is shown as "not found" and shares nothing) or **None**. Spam
+and Trash are never shared. On Gmail a message is shared when any of its
+labels, or All Mail, is chosen. **Never share mail from** takes addresses
+and domains and covers the whole correspondence with them, the mail you sent
+them and every conversation they are in included. Outside the scope a message
+does not exist for agents: the tools, mentions, the CLI and contacts do not
+return or count it, an id of it answers as unknown, and **Hand to agent** and
+every AI button on it are disabled with "Outside AI access (Mail settings)".
+A change applies to agents at once.
+
+### Agent activity
+
+Mail settings → **Agent activity** is a local action log, always on: every
+agent tool call, mention, Hand to agent, CLI command in a thread and AI call
+you start writes one row (when, who, which tool, the outcome, how many
+items, how many values were hidden, the BB thread, the message ids, and for
+AI calls the provider and model setting). It never stores a query, question,
+instruction, subject, name, address, snippet, answer or error text; the view
+looks the messages up when you open it and marks those that left Makosh Mail.
+Rows are kept 90 days (at most 20 000). **Clear log** empties it. Commands in
+your own terminal, outside a BB thread, are neither logged nor scoped.
+
+### AI on your click
+
+Every AI feature runs only when you click, through Makosh AI (no plugin
+HTTP request), on mail inside AI access, redacted, and with a per-kind cap
+an hour (summaries 30, Ask 20, tasks 30, categories 10, Today 10, Improve
+30). The answer is shown as plain text, never HTML or links; the only
+interactive parts are the plugin's citation chips, which open the messages
+it sent. Nothing a model answers labels, keeps, sends or applies anything
+without your click. Every block says "AI · provider · model" and "AI can be
+wrong; check the cited messages".
+
+- **Summarize** (`Shift+S`): decisions, open questions and deadlines of the
+  open conversation with citations. A summary is kept and shown "cached";
+  when the conversation got new messages it says so and offers **Summarize
+  again**.
+- **Ask** (the **Search · Ask** switch above the list): the model turns your
+  question into searches, the plugin runs them locally over mail in AI
+  access, and the model answers from the excerpts with links to the cited
+  messages, or "Not found in your mail". Nothing is kept after you close it.
+- **Find tasks** (`Shift+T`): tasks and due dates found in the conversation,
+  each with the quote it came from; a quote that is not in the message is
+  flagged and left unticked. **Keep** saves the ticked ones to the **Tasks**
+  page in the rail (Done, Edit, Delete).
+- **Categories** (`mailCategories`, off): Bills, Notifications, Personal and
+  Newsletters as local labels only (nothing is written to the mail server).
+  Suggestions come from local rules, or from the model when you click
+  **Suggest categories** (at most 50 messages of the page); **Accept**,
+  **Change…**, **Always for this sender**, filters above the list and a
+  "Labelled N · Undo" toast.
+- **Today** (the rail): conversations that need a reply (**No reply
+  needed**), reply reminders that are due, tasks due and counts since
+  yesterday. With `morningDigest` on it is built once a day at `digestTime`
+  on the BB server's clock and announced by a toast outside quiet hours; a
+  window opened later still shows it once. **Summarize** on Today sends the
+  listed conversations to the model.
+- **Reply reminders**: **Remind me if no reply in N days** beside Send
+  (`replyReminderDays`, 3) or **Remind me…** on a Sent message. A reminder is
+  answered when a later message (not bulk, not automated) refers to the sent
+  one by In-Reply-To or References; otherwise it turns due, shows in the
+  **Waiting for a reply** strip atop the Inbox and in Today, with a toast.
+  A server that rewrites the Message-ID on send (some corporate relays)
+  leaves replies unmatched: the reminder then turns due and you dismiss it.
+- **Improve** in the composer (Fix mistakes, Shorter, More formal,
+  Friendlier, or a one-line instruction) rewrites your own text, the part
+  before the quote and the signature, after saving the draft. It shows a
+  word diff; **Apply** replaces that part in one step (one Undo) and only if
+  you did not change it meanwhile. Bold, italics, underline and links in
+  that part are dropped on Apply, and the dialog says so. Hidden values are
+  put back in what you apply; the dialog notes one the model changed or
+  dropped.
+
+### What goes to your AI provider
+
+Only on your click, only through Makosh AI, only mail in AI access, only
+redacted text framed as untrusted data:
+
+- Summarize: subjects, sender display names (the address when there is no
+  name), dates and bodies without quotes of the conversation, newest first
+  within a cap.
+- Ask: first your question alone; then the question and excerpts of up to 20
+  messages the local search found.
+- Find tasks: the conversation's messages (up to 10) as for Summarize.
+- Suggest categories: subject, sender and the first 300 characters of up to
+  50 messages.
+- Today's Summarize: the latest message of up to 30 conversations, 500
+  characters each.
+- Improve: your own text of the draft and your instruction.
+- Translation: the message's subject and text.
+
+Never: recipients' addresses, attachments, images, HTML, folder or account
+names. Text handed to an agent goes to that agent's model provider.
+
+### The shell limit
+
+AI access, redaction and the log bind every plugin surface for agents. They
+do not bind an agent with shell access to the BB server, which can call the
+Mail page's own methods (`ai_start`, `message_body`, `thread_get`, `search`
+among them) through `bb plugin rpc call`, as described above. This is the
+accepted limit of slices 3c to 3e, and the skill tells agents not to.
 
 ## Mail in the sidebar
 

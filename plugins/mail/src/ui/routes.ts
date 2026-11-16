@@ -83,3 +83,16 @@ export function parseDraftSubPath(subPath: string): string | null {
   if (segments.length !== 2 || segments[0] !== "d") return null;
   return decodeTwice(segments[1]!);
 }
+
+/** The Today and Tasks pages of the rail (slice 3f). */
+export type MailPageName = "today" | "tasks";
+
+/** The subPath of the Today or Tasks page. */
+export function pageSubPath(page: MailPageName): string {
+  return page;
+}
+
+/** The Today or Tasks page a panel subPath names; null for anything else. */
+export function parsePageSubPath(subPath: string): MailPageName | null {
+  return subPath === "today" || subPath === "tasks" ? subPath : null;
+}

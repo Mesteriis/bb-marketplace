@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-makosh-mail",
   "version": "0.1.0",
-  "description": "Reads, snoozes, blocks, sends and translates iCloud, Gmail and IMAP mail with Undo; agents propose mail and inbox actions to confirm.",
+  "description": "Reads, snoozes, sends and translates iCloud, Gmail and IMAP mail; AI summaries, Ask, tasks and Today on click; agent access scoped, logged.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,7 @@
   },
   "bb": {
     "name": "Makosh Mail [Experimental]",
-    "description": "Reads, snoozes, blocks, sends and translates iCloud, Gmail and IMAP mail with Undo; agents propose mail and inbox actions to confirm.",
+    "description": "Reads, snoozes, sends and translates iCloud, Gmail and IMAP mail; AI summaries, Ask, tasks and Today on click; agent access scoped, logged.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

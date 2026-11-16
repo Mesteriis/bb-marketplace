@@ -6,10 +6,14 @@
 // Add address. Every call is a host port; the texts it rejects with are the
 // server's fixed refusals, shown where they happened. Slice 3e adds the
 // Inbox tab: Blocked senders (Unblock asks first) and each account's
-// Snoozed folder with Change….
+// Snoozed folder with Change…. Slice 3f adds AI access, Agent activity
+// and AI features (categories, Today, reply reminders, AI settings).
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import type { Editor } from "@tiptap/react";
-import type { Account, BlockRuleView, IdentityView } from "../core/model.ts";
+import type { Account, BlockRuleView, CategoryRuleView, IdentityView } from "../core/model.ts";
+import { AiAccessSettings, type AiAccessSettingsProps } from "./ai-access-settings.tsx";
+import { AgentActivity, type AgentActivityProps } from "./agent-activity.tsx";
+import { categoryLabel } from "./category-chips.tsx";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -31,7 +35,25 @@ import { stopEscape } from "./shortcuts.ts";
 export type TemplateView = { id: string; name: string; doc: EditorDoc; updatedAt: string };
 export type SuggestionView = { address: string; count: number; lastDate: string };
 export type IdentityKey = { accountId: string; address: string };
-export type SettingsSection = "addresses" | "templates" | "inbox";
+export type SettingsSection = "addresses" | "templates" | "inbox" | "ai_access" | "activity" | "ai";
+
+/** Mail settings' AI tabs (slice 3f). */
+export interface SettingsAiPorts {
+  scope: Omit<AiAccessSettingsProps, "accounts">;
+  activity: AgentActivityProps;
+  /** The plugin settings as BB has them now. */
+  categoriesOn: boolean;
+  morningDigest: boolean;
+  digestTime: string;
+  reminderDays: number;
+  loadRules: () => Promise<CategoryRuleView[]>;
+  removeRule: (id: string) => Promise<void>;
+  /** AI settings: provider, model and translation (the former Translation settings). */
+  onOpenAiSettings: () => void;
+}
+
+/** Where the switches of plugin settings live: BB's own settings page. */
+export const PLUGIN_SETTINGS_HINT = "Change it in BB Settings \u2192 Plugins \u2192 Makosh Mail.";
 
 /** The template editor's tools: everything but the quote (templates cannot hold quotes). */
 export const TEMPLATE_TOOLS: readonly ToolId[] = [
@@ -66,6 +88,8 @@ export interface MailSettingsProps {
   onUnblock?: (id: string) => Promise<void>;
   /** Change… (or set up) an account's snooze folder. */
   onChangeSnoozeFolder?: (accountId: string) => void;
+  /** AI access, Agent activity and AI features (slice 3f); absent: none of those tabs. */
+  ai?: SettingsAiPorts;
 }
 
 function messageOf(error: unknown, fallback: string): string {
@@ -140,6 +164,13 @@ export function MailSettings(props: MailSettingsProps) {
               ["addresses", "Sending addresses"],
               ["templates", "Templates"],
               ...(props.onUnblock !== undefined ? ([["inbox", "Inbox"]] as const) : []),
+              ...(props.ai !== undefined
+                ? ([
+                    ["ai_access", "AI access"],
+                    ["activity", "Agent activity"],
+                    ["ai", "AI features"],
+                  ] as const)
+                : []),
             ] as const
           ).map(([id, label]) => (
             <button
@@ -171,6 +202,12 @@ export function MailSettings(props: MailSettingsProps) {
                 onSelectAccount={setAccountId}
               />
             )
+          ) : section === "ai_access" && props.ai !== undefined ? (
+            <AiAccessSettings accounts={accounts} {...props.ai.scope} />
+          ) : section === "activity" && props.ai !== undefined ? (
+            <AgentActivity {...props.ai.activity} />
+          ) : section === "ai" && props.ai !== undefined ? (
+            <AiFeaturesSection ai={props.ai} />
           ) : section === "inbox" && props.onUnblock !== undefined ? (
             <InboxSection
               accounts={accounts}
@@ -847,5 +884,90 @@ function TemplateEditor({
         </Button>
       </div>
     </form>
+  );
+}
+
+/** Categories, Today, reply reminders and AI settings (slice 3f). */
+function AiFeaturesSection({ ai }: { ai: SettingsAiPorts }) {
+  const [rules, setRules] = useState<CategoryRuleView[] | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const { loadRules } = ai;
+  useEffect(() => {
+    if (!ai.categoriesOn) return;
+    let live = true;
+    loadRules().then(
+      (found) => {
+        if (live) setRules(found);
+      },
+      () => {
+        if (live) setRules([]);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [ai.categoriesOn, loadRules]);
+  const remove = async (id: string) => {
+    try {
+      await ai.removeRule(id);
+      setRules((prev) => prev?.filter((rule) => rule.id !== id) ?? null);
+    } catch (error) {
+      setProblem(messageOf(error, "The rule could not be removed"));
+    }
+  };
+  return (
+    <div className="flex flex-col gap-4">
+      <section aria-label="Categories" className="flex flex-col gap-1">
+        <SectionHeading>Categories</SectionHeading>
+        <p className="text-sm text-foreground">{ai.categoriesOn ? "On: mail is sorted into local labels." : "Off."}</p>
+        <p className="text-xs text-muted-foreground">
+          Bills, Notifications, Personal and Newsletters live only in Makosh Mail; nothing is written to the mail server.{" "}
+          {PLUGIN_SETTINGS_HINT}
+        </p>
+        {ai.categoriesOn ? (
+          rules === null ? null : rules.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No sender rules. Always for this sender in a conversation adds one.</p>
+          ) : (
+            <ul aria-label="Category rules" className="flex flex-col gap-1">
+              {rules.map((rule) => (
+                <li key={rule.id} className="flex items-center gap-2 text-sm">
+                  <span className="min-w-0 flex-1 truncate text-foreground">{rule.value}</span>
+                  <span className="text-xs text-muted-foreground">{categoryLabel(rule.category)}</span>
+                  <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => void remove(rule.id)}>
+                    Remove
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )
+        ) : null}
+        {problem !== null ? (
+          <p role="alert" className="text-xs text-destructive">
+            {problem}
+          </p>
+        ) : null}
+      </section>
+      <section aria-label="Today" className="flex flex-col gap-1">
+        <SectionHeading>Today</SectionHeading>
+        <p className="text-sm text-foreground">
+          {ai.morningDigest ? `On: the Today digest is ready at ${ai.digestTime}.` : "Off: the Today view still works when you open it."}
+        </p>
+        <p className="text-xs text-muted-foreground">{PLUGIN_SETTINGS_HINT}</p>
+      </section>
+      <section aria-label="Reply reminders" className="flex flex-col gap-1">
+        <SectionHeading>Reply reminders</SectionHeading>
+        <p className="text-sm text-foreground">{`Remind me after ${ai.reminderDays === 1 ? "1 day" : `${ai.reminderDays} days`} by default.`}</p>
+        <p className="text-xs text-muted-foreground">
+          A reminder turns due when no message answering yours (by In-Reply-To or References) arrives in time. {PLUGIN_SETTINGS_HINT}
+        </p>
+      </section>
+      <section aria-label="AI settings" className="flex flex-col items-start gap-1">
+        <SectionHeading>AI settings</SectionHeading>
+        <p className="text-xs text-muted-foreground">The Makosh AI provider and model every AI feature and translation uses.</p>
+        <Button variant="outline" size="sm" onClick={ai.onOpenAiSettings}>
+          {"AI settings\u2026"}
+        </Button>
+      </section>
+    </div>
   );
 }

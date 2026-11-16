@@ -744,7 +744,7 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 9).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 11).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
       "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
@@ -758,6 +758,10 @@ describe("slice-2 migrations (SQLite)", () => {
       "b068f80717cecc2be2da1c37047e165dc457f94ce76a60dd90177b6544b76bfa",
       // Element 8 (slice 3e: unsubscribe, snooze, block, spam seen, triage).
       "309cd3824aec0944be980f7eb7ee1a7ae0b11f23c8f796fc425900f21f25e2f2",
+      // Element 9 (slice 3e review: namespaced unsubscribe list keys).
+      "3879e176864850515f3b6b28845843c8cd4bdbf96a05b268e21bbe086c89aa19",
+      // Element 10 (slice 3f: AI access, the agent log, AI results, tasks, categories, Today, reminders).
+      "7fb5168f63a78ec868ee8302d7f4b24f565b6c22a018ce01e6635857a52ecb2f",
     ]);
   });
 

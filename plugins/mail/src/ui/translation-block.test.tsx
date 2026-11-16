@@ -74,7 +74,7 @@ describe("TranslationBlock", () => {
   it("offers Translate again and settings when done", () => {
     const { onAgain, onSettings } = mount(state());
     fireEvent.click(screen.getByRole("button", { name: "Translate again" }));
-    fireEvent.click(screen.getByRole("button", { name: "Translation settings…" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI settings…" }));
     expect(onAgain).toHaveBeenCalled();
     expect(onSettings).toHaveBeenCalled();
   });
@@ -93,8 +93,8 @@ describe("TranslationBlock", () => {
   it.each([
     ["gateway_missing", "Translation needs the Makosh AI plugin."],
     ["pool_unavailable", "Makosh AI cannot reach Account Pooler right now."],
-    ["provider_unknown", "The translation provider 'provider-x' is not available in Makosh AI. Choose another in Translation settings."],
-    ["model_unknown", "The model 'model-y' is not available for 'provider-x'. Choose another in Translation settings."],
+    ["provider_unknown", "The translation provider 'provider-x' is not available in Makosh AI. Choose another in AI settings."],
+    ["model_unknown", "The model 'model-y' is not available for 'provider-x'. Choose another in AI settings."],
     ["auth", "The provider refused the request (sign-in). Try later or choose another provider."],
     ["quota", "The provider refused the request (quota). Try later or choose another provider."],
     ["refused", "The model declined to translate this message."],

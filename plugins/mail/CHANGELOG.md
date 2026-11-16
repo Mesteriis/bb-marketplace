@@ -8,6 +8,40 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Agents and AI (slice 3f). Redaction: every text that reaches an agent or
+  a model (tools, the CLI in a thread, mentions, Hand to agent, translation
+  and the AI features) has one-time codes, passwords, tokens and card
+  numbers replaced by `[hidden …]` placeholders, the whole field before any
+  cut. A heuristic, not a guarantee; the README lists what it covers.
+- **AI access** in Mail settings: per account all folders, chosen folders
+  or none (Spam and Trash never; Gmail by any label or All Mail) and
+  **Never share mail from** addresses and domains over the whole
+  correspondence. Out-of-scope mail does not exist for agents; Hand to agent
+  and the AI buttons say "Outside AI access (Mail settings)".
+- **Agent activity** in Mail settings: a local log of every agent tool call,
+  mention, Hand to agent, CLI command in a thread and AI call (ids, counts
+  and codes only; 90 days, at most 20 000 rows), with a thread filter and
+  Clear log. Commands in your own terminal are not logged.
+- On your click, through Makosh AI, capped per kind an hour: **Summarize**
+  (`Shift+S`) with citations, cached and marked stale after new mail;
+  **Ask** (the Search · Ask switch) with linked sources or "Not found in
+  your mail"; **Find tasks** (`Shift+T`) with an evidence check and **Keep**
+  into the rail's **Tasks** page; **Suggest categories**; **Today**'s
+  Summarize; **Improve** in the composer behind a word diff, applied in one
+  Undo step and only while your text is unchanged. Model output is plain
+  text; only the plugin's citation chips are links.
+- Categories (`mailCategories`, off): Bills, Notifications, Personal and
+  Newsletters as local labels with suggestions, Accept, Change…, Always for
+  this sender, filters and Undo. Nothing is written to the mail server.
+- **Today** in the rail: conversations that need a reply, due reminders,
+  tasks due and counts since yesterday; with `morningDigest` built once a
+  day at `digestTime` and announced by a toast outside quiet hours.
+- Reply reminders: **Remind me if no reply in N days** beside Send
+  (`replyReminderDays`) and **Remind me…** on Sent mail; answered by
+  In-Reply-To or References of a later message, else due in the **Waiting
+  for a reply** strip and Today, with a toast. A server that rewrites the
+  Message-ID leaves replies unmatched.
+
 - Inbox tools (slice 3e). Instant new mail: one read-only IMAP IDLE
   connection per account on the Inbox while BB runs (`instantMail`, on by
   default) starts an Inbox-only sync within seconds of a change.
@@ -184,6 +218,12 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Changed
 
+- Translation settings are now **AI settings**; `translateProvider` and
+  `translateModel` keep their keys with the labels "AI provider (Makosh AI)"
+  and "AI model". Translation sends redacted text and restores the hidden
+  values in what you read; out-of-scope mail is not translated.
+- The makosh-ai adapter reads `ai.v1.providers` in its real shape, keeps an
+  unavailable provider's reason and maps `<reason>:` refusals.
 - Server writes now also include one `CREATE` per account of the snooze
   folder on the owner's confirmation, and moves by snooze, its return, block
   rules and approved triage items. The one outbound web request is the

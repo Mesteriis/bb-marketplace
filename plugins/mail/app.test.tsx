@@ -4336,3 +4336,105 @@ describe("Slice 3f: the composer's Remind checkbox and Improve", () => {
     expect(callsTo(slot as never, "compose_send")[0]?.input).toMatchObject({ draftId: "d-1", remindAfterDays: 5 });
   });
 });
+
+describe("Slice 3f: Today, Tasks, Mail settings and day notices", () => {
+  function BadgeProbe() {
+    const badge = panel.experimental_useBadge!();
+    return <span data-testid="badge">{badge === null ? "none" : `${badge.count}`}</span>;
+  }
+  const renderBadge = (rpc: Record<string, unknown>) =>
+    renderSlot({ component: BadgeProbe }, {} as never, {
+      rpc: rpc as never,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+  const dayToasts = () => toasts.log.filter((t) => t.options?.id?.startsWith("makosh-mail-day-") === true);
+  const TODAY = {
+    needsReply: [threadA],
+    waiting: [],
+    tasksDue: [],
+    since: { notifications: 0, newsletters: 0, bills: 0, bulk: 0, personal: 0, from: "2026-11-15T08:00:00.000Z" },
+    digestDay: "2026-11-16",
+  };
+
+  it("one toast per notice across mount and event; Open goes to Today", async () => {
+    let waiting = [{ kind: "digest", replyCount: 2 }];
+    const slot = renderBadge(
+      mailRpc({
+        day_notice_get: () => {
+          const next = waiting.shift();
+          if (next === undefined) throw Object.assign(new Error("No notice is waiting"), { code: "not_found" });
+          return next;
+        },
+      }),
+    );
+    await waitFor(() => expect(dayToasts()).toHaveLength(1));
+    expect(callsTo(slot as never, "day_notice_get")[0]?.input).toEqual({});
+    const shown = dayToasts()[0]!;
+    expect(shown.text).toBe("Today: 2 conversations need a reply");
+    shown.options!.action!.onClick();
+    expect(slot.inspection.navigateCalls.at(-1)).toEqual({ method: "toPluginPanel", path: "mail", options: { subPath: "today" } });
+
+    waiting = [{ kind: "reminder", name: "Bo Example", address: "bo@example.org", accountId: "acc-1", threadId: "th-b" } as never];
+    await slot.behavior.emitRealtime("mail-day", { token: "day-1" });
+    await slot.behavior.emitRealtime("mail-day", { token: "day-1" });
+    await waitFor(() => expect(dayToasts()).toHaveLength(2));
+    expect(dayToasts()[1]!.text).toBe("No reply from Bo Example");
+    expect(callsTo(slot as never, "day_notice_get").filter((c) => (c.input as { token?: string }).token === "day-1")).toHaveLength(1);
+  });
+
+  it("a throwing day_notice_get keeps the badge", async () => {
+    const slot = renderBadge(
+      mailRpc({
+        day_notice_get: () => {
+          throw new Error("boom");
+        },
+      }),
+    );
+    await slot.behavior.emitRealtime("mail-day", { token: "day-2" });
+    await slot.behavior.emitRealtime("mail-day", { nothing: true });
+    await waitFor(() => expect(slot.getByTestId("badge").textContent).toBe("1"));
+    expect(dayToasts()).toHaveLength(0);
+  });
+
+  it("the rail shows Today and Tasks with counts; the Today page lists what needs a reply", async () => {
+    const slot = renderSlot({ component: MailWithSidebar }, { subPath: "today" }, {
+      rpc: mailRpc({
+        reminders_due: () => ({ reminders: [] }),
+        today_get: () => TODAY,
+        tasks_list: () => ({ tasks: [], next: null }),
+        reply_dismiss: () => ({ ok: true }),
+      }) as never,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+    const rail = await slot.findByRole("list", { name: "Today and tasks" });
+    await waitFor(() => expect(within(rail).getByRole("button", { name: /Today/ }).textContent).toContain("1"));
+    expect(within(rail).getByRole("button", { name: /Today/ }).getAttribute("aria-current")).toBe("page");
+    const needs = await slot.findByRole("region", { name: "Needs a reply" });
+    fireEvent.click(within(needs).getByRole("button", { name: "No reply needed" }));
+    await waitFor(() => expect(callsTo(slot as never, "reply_dismiss")[0]?.input).toEqual({ threadId: "th-a" }));
+    fireEvent.click(within(rail).getByRole("button", { name: /Tasks/ }));
+    expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ path: "mail", options: { subPath: "tasks" } });
+  });
+
+  it("Mail settings has AI access, Agent activity and AI features", async () => {
+    const slot = renderSlot({ component: MailWithSidebar }, { subPath: "" }, {
+      rpc: mailRpc({
+        reminders_due: () => ({ reminders: [] }),
+        identities_list: () => ({ identities: [] }),
+        templates_list: () => ({ templates: [] }),
+        block_list: () => ({ rules: [] }),
+        ai_scope_get: () => ({ accounts: [], senders: [] }),
+        agent_log_list: () => ({ entries: [], next: null }),
+      }) as never,
+      settings: { mailCategories: false, morningDigest: true, digestTime: "07:30" },
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "Mail settings" }));
+    fireEvent.click(await slot.findByRole("tab", { name: "AI access" }));
+    expect(await slot.findByText("Spam and Trash are never shared, whatever you choose here.")).toBeTruthy();
+    fireEvent.click(slot.getByRole("tab", { name: "Agent activity" }));
+    expect(await slot.findByText("Nothing yet.")).toBeTruthy();
+    fireEvent.click(slot.getByRole("tab", { name: "AI features" }));
+    expect(await slot.findByText("On: the Today digest is ready at 07:30.")).toBeTruthy();
+  });
+});
