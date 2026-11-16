@@ -212,6 +212,16 @@ fn parse_status(status: libc::c_int) -> (Option<i32>, Option<i32>) {
     }
 }
 
+/// ssh exits 255 for a closed interactive session; surface it as ssh_error
+/// rather than a normal exit, on every teardown path (reap and orphan).
+fn close_reason_for(kind: &str, code: Option<i32>) -> String {
+    if kind == "ssh" && code == Some(255) {
+        "ssh_error".to_string()
+    } else {
+        "exited".to_string()
+    }
+}
+
 impl SessionManager {
     pub fn new(echo_argv: Option<Vec<String>>) -> Self {
         let argv = echo_argv.map(|args| {
@@ -400,9 +410,17 @@ impl SessionManager {
             if libc::tcgetattr(slave, &mut tio) != 0 {
                 return Err(SessionError::Sys { step: "termios", errno: last_errno() });
             }
-            libc::cfmakeraw(&mut tio);
-            if libc::tcsetattr(slave, libc::TCSANOW, &tio) != 0 {
-                return Err(SessionError::Sys { step: "termios", errno: last_errno() });
+            // The echo console round-trips bytes exactly once, so it runs raw
+            // (no tty echo, no signal generation). SSH must start from a normal
+            // interactive termios: ssh saves it, enters raw mode locally, and
+            // forwards the saved modes to the remote PTY. A raw slave here would
+            // be forwarded and disable ISIG/ICANON/ECHO on the remote, breaking
+            // Ctrl+C and command echo in the remote session.
+            if kind == "echo" {
+                libc::cfmakeraw(&mut tio);
+                if libc::tcsetattr(slave, libc::TCSANOW, &tio) != 0 {
+                    return Err(SessionError::Sys { step: "termios", errno: last_errno() });
+                }
             }
         }
 
@@ -594,11 +612,7 @@ impl SessionManager {
                     session.signal = sig;
                     // ssh exits 255 for a closed interactive session; surface it
                     // as ssh_error rather than a normal exit.
-                    session.close_reason = Some(if session.kind == "ssh" && code == Some(255) {
-                        "ssh_error".to_string()
-                    } else {
-                        "exited".to_string()
-                    });
+                    session.close_reason = Some(close_reason_for(&session.kind, code));
                     session.child_exited_at = Some(Instant::now());
                     newly.push(session.id);
                     #[cfg(feature = "test-hooks")]
@@ -622,7 +636,7 @@ impl SessionManager {
                 session.child_exited = true;
                 session.exit_code = code;
                 session.signal = sig;
-                session.close_reason = Some("exited".to_string());
+                session.close_reason = Some(close_reason_for(&session.kind, code));
                 session.child_exited_at = Some(Instant::now());
             }
         }

@@ -10,14 +10,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use remote_hub_helper::protocol::{
-    decode_response, encode_request, Request, Response, FRAME_KIND_CONTROL, FRAME_KIND_STREAM,
-    PROTOCOL_VERSION,
+    decode_response, encode_request, encode_stream, Request, Response, FRAME_KIND_CONTROL,
+    FRAME_KIND_STREAM, PROTOCOL_VERSION,
 };
 
 struct Helper {
     child: Child,
     stdin: ChildStdin,
     stdout: ChildStdout,
+    seq: u32,
 }
 
 fn start() -> Helper {
@@ -41,6 +42,7 @@ fn start_with_args(args: &[&str]) -> Helper {
         child,
         stdin,
         stdout,
+        seq: 0,
     }
 }
 
@@ -83,6 +85,13 @@ impl Helper {
     fn send_raw(&mut self, bytes: &[u8]) {
         self.stdin.write_all(bytes).expect("write raw");
         self.stdin.flush().expect("flush raw");
+    }
+
+    fn send_stream(&mut self, session_id: u32, data: &[u8]) {
+        let frame = encode_stream(session_id, self.seq, data);
+        self.seq = self.seq.wrapping_add(1);
+        self.stdin.write_all(&frame).expect("write stream frame");
+        self.stdin.flush().expect("flush stream frame");
     }
 
     fn read_frame(&mut self) -> (u8, Vec<u8>) {
@@ -622,6 +631,7 @@ fn s2_bounded_under_control_flood() {
         child,
         mut stdin,
         mut stdout,
+        ..
     } = start();
 
     send_req(&mut stdin, &Request::Hello {
@@ -797,7 +807,7 @@ fn s5_concurrent_sessions_across_helpers() {
     let child_pids: Vec<u32> = sessions.iter().map(|(_, _, pid)| *pid).collect();
     let mut children: Vec<Child> = Vec::new();
     for h in helpers {
-        let Helper { child, stdin, stdout: _ } = h;
+        let Helper { child, stdin, stdout: _, .. } = h;
         drop(stdin); // close stdin so each helper shuts down
         children.push(child);
     }
@@ -1148,6 +1158,7 @@ fn a3_ingress_full_hangup_does_not_spin() {
         mut child,
         mut stdin,
         mut stdout,
+        ..
     } = start();
     send_req(&mut stdin, &Request::Hello {
         protocol: PROTOCOL_VERSION,
@@ -1351,4 +1362,79 @@ fn c2_cancel_connecting_session_kills_descendants() {
         other => panic!("expected session.closed, got {other:?}"),
     }
     assert!(!pid_alive(pid), "child {pid} still alive");
+}
+
+// C2 regression: a real (ssh-kind) session starts from a normal interactive
+// termios, so a 0x03 byte sent as a binary stream frame reaches the local tty
+// as SIGINT and interrupts a foreground sleep. The echo console still runs raw;
+// ssh must not, or OpenSSH forwards the raw modes to the remote PTY and Ctrl+C
+// stops working there.
+#[test]
+fn c2_ctrl_c_interrupts_foreground_sleep_in_ssh_kind_session() {
+    let mut h = start();
+    h.hello();
+
+    h.send(&Request::OpenSsh {
+        id: 1,
+        cols: 80,
+        rows: 24,
+        program: "/bin/sh".to_string(),
+        argv: vec!["sh".to_string()],
+        env: HashMap::new(),
+        cwd: None,
+    });
+    let sid = match h.read_response() {
+        Response::SessionOpened { session_id, .. } => session_id,
+        other => panic!("expected session.opened, got {other:?}"),
+    };
+
+    h.send(&Request::SessionCredit {
+        id: 2,
+        session_id: sid,
+        bytes: 1 << 20,
+    });
+    match h.read_response() {
+        Response::SessionCreditAck { .. } => {}
+        other => panic!("expected session.credit_ack, got {other:?}"),
+    }
+
+    h.send_stream(sid, b"sleep 300\n");
+    std::thread::sleep(Duration::from_secs(1));
+    h.send_stream(sid, b"\x03");
+    std::thread::sleep(Duration::from_millis(500));
+    h.send_stream(sid, b"echo after-int\n");
+
+    let echoed = h.read_until_stream_contains(sid, "after-int");
+    assert!(
+        echoed.contains("after-int"),
+        "after-int not received after 0x03: {echoed:?}"
+    );
+}
+
+// C2 regression: an ssh-kind child that exits 255 must report ssh_error on
+// every teardown path, including the orphan path that can win the race against
+// the PTY reaching EOF.
+#[test]
+fn c2_ssh_exit_255_reports_ssh_error() {
+    let mut h = start();
+    h.hello();
+
+    h.send(&Request::OpenSsh {
+        id: 1,
+        cols: 80,
+        rows: 24,
+        program: "/bin/sh".to_string(),
+        argv: vec!["sh".to_string(), "-c".to_string(), "exit 255".to_string()],
+        env: HashMap::new(),
+        cwd: None,
+    });
+    let sid = match h.read_response() {
+        Response::SessionOpened { session_id, .. } => session_id,
+        other => panic!("expected session.opened, got {other:?}"),
+    };
+
+    let (code, sig, reason) = h.read_until_closed_status(sid);
+    assert_eq!(code, Some(255));
+    assert_eq!(sig, None);
+    assert_eq!(reason, "ssh_error");
 }
