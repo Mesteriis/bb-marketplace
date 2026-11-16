@@ -417,6 +417,7 @@ impl FrameReader {
         }
     }
 
+    #[cfg(feature = "test-hooks")]
     fn read_total(&self) -> u64 {
         self.read_total
     }
