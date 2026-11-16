@@ -1,0 +1,114 @@
+/**
+ * Create PR on the thread's own branch when GitHub has none for it: a child
+ * thread writes the description and opens it, as gitbutler's Create PR did
+ * (`plugins/gitbutler/src/app/branch-actions.tsx`). The tab finds that child
+ * again after a remount, and watches it until it stops.
+ */
+import {
+  experimental_useRpcMutation as useRpcMutation,
+  experimental_useRpcQuery as useRpcQuery,
+  useBbNavigate,
+} from "@get-bb/plugin-sdk/app";
+import { useEffect, useState } from "react";
+import { sourceControlContract } from "../contract/rpc.ts";
+import { useHostGate } from "./host-gate.ts";
+import { Button } from "./components/ui/button.tsx";
+import { Pending } from "./ui.tsx";
+
+/** While a child works, the tab looks this often to see it finish. */
+const PUBLISH_POLL_MS = 5_000;
+
+/**
+ * Create PR's state for one branch: the child already working on it, if any,
+ * and `start`, which asks the server for one at the head the reader sees.
+ */
+export function useCreatePullRequest(threadId: string, branch: string, head: string) {
+  const requests = useRpcQuery({
+    contract: sourceControlContract,
+    method: "publishRequests",
+    input: { threadId },
+  });
+  const mutation = useRpcMutation({ contract: sourceControlContract, method: "createPullRequest" });
+  const [error, setError] = useState<string | null>(null);
+  const gate = useHostGate();
+  const current = requests.data?.requests.find((request) => request.branch === branch);
+  const running = current?.running ?? false;
+  const { refetch } = requests;
+  useEffect(() => {
+    if (!running) return undefined;
+    const timer = setInterval(() => void refetch(), PUBLISH_POLL_MS);
+    return () => clearInterval(timer);
+  }, [running, refetch]);
+  const start = async () => {
+    setError(null);
+    try {
+      const answer = await mutation.mutate({ threadId, branch, head });
+      if (!answer.ok) setError(answer.message);
+      await refetch();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Couldn't start the PR thread.");
+    }
+  };
+  return { current, running, pending: mutation.isPending, error, gate, start };
+}
+
+export function CreatePullRequest({
+  threadId,
+  branch,
+  head,
+  busy,
+}: {
+  threadId: string;
+  branch: string;
+  /** The head the reader sees: the child starts only while the branch is still there. */
+  head: string;
+  busy: boolean;
+}) {
+  const navigate = useBbNavigate();
+  const { current, running, pending, error, gate, start } = useCreatePullRequest(
+    threadId,
+    branch,
+    head,
+  );
+  return (
+    <>
+      {running ? null : (
+        // A disabled button takes no hover, so the reason sits on a wrapper.
+        <span className="flex shrink-0" title={gate ?? undefined}>
+          <Button
+            variant="outline"
+            disabled={busy || gate !== null || pending}
+            data-host-bound="createPullRequest"
+            aria-label={`Create PR for ${branch}`}
+            data-testid="sc-create-pr"
+            onClick={() => void start()}
+          >
+            <Pending pending={pending} icon="GitPullRequest" />
+            Create PR
+          </Button>
+        </span>
+      )}
+      {current ? (
+        // `output` is the native polite live region, so the hand-off is announced.
+        <output
+          data-testid="sc-create-pr-status"
+          className="flex min-w-0 basis-full items-center gap-1.5 text-[12px] leading-4 text-muted-foreground"
+        >
+          <span className="me-auto min-w-0">
+            {current.running
+              ? "A subthread is writing and opening the PR."
+              : "The PR subthread stopped without opening a PR."}
+          </span>
+          <Button variant="ghost" onClick={() => navigate.toThread(current.threadId)}>
+            Open subthread
+          </Button>
+        </output>
+      ) : null}
+      {error ? (
+        <span role="alert" className="basis-full text-[12px] leading-4 text-warning">
+          {error}
+        </span>
+      ) : null}
+    </>
+  );
+}
