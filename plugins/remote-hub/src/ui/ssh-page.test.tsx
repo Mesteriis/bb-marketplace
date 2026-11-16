@@ -121,4 +121,24 @@ describe("SshPage state transitions", () => {
     const socket = FakeWebSocket.instances[0];
     expect(socket.sent).toContain(JSON.stringify({ type: "resize", cols: 80, rows: 24 }));
   });
-});
+});  it("a rejected reattach shows error, not a stuck connecting state", async () => {
+    const { onAttach } = await connectAndRun();
+    onAttach.mockRejectedValueOnce(new Error("session_not_found"));
+    fireEvent.click(screen.getByText("Reattach"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("ssh-state").textContent).toContain("error");
+    expect(screen.getByText("session_not_found")).toBeTruthy();
+    expect(screen.getByText("Connect").getAttribute("disabled")).toBeNull();
+  });
+
+  it("a 4410 close is closed with helper_exited, not detached", async () => {
+    await connectAndRun();
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => {
+      socket.onclose?.({ code: 4410 });
+    });
+    expect(screen.getByTestId("ssh-state").textContent).toContain("closed");
+  });
