@@ -89,7 +89,29 @@ describe("matchShortcut", () => {
     expect(matchShortcut(key({ key: "t", code: "KeyT" }), false)).toEqual({ kind: "translate" });
     expect(matchShortcut(key({ key: "е", code: "KeyT" }), false)).toEqual({ kind: "translate" });
     expect(matchShortcut(key({ key: "е", code: "KeyT" }), true)).toEqual({ kind: "go", target: "trash" });
-    expect(matchShortcut(key({ key: "T", code: "KeyT", shiftKey: true }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "T", code: "KeyT", shiftKey: true }), false)).toEqual({ kind: "find_tasks" });
+  });
+
+  it("Shift+S summarizes and Shift+T finds tasks by the physical key (Cyrillic layout too); never while typing (slice 3f)", () => {
+    expect(matchShortcut(key({ key: "S", code: "KeyS", shiftKey: true }), false)).toEqual({ kind: "summarize" });
+    expect(matchShortcut(key({ key: "\u042b", code: "KeyS", shiftKey: true }), false)).toEqual({ kind: "summarize" });
+    expect(matchShortcut(key({ key: "\u0415", code: "KeyT", shiftKey: true }), false)).toEqual({ kind: "find_tasks" });
+    // s alone still flags.
+    expect(matchShortcut(key({ key: "s", code: "KeyS" }), false)).toEqual({ kind: "flag" });
+    expect(matchShortcut(key({ key: "S", code: "KeyS", shiftKey: true, metaKey: true }), false)).toBeNull();
+    const input = document.createElement("input");
+    const editor = document.createElement("div");
+    editor.setAttribute("contenteditable", "true");
+    document.body.append(input, editor);
+    for (const target of [input, editor]) {
+      expect(matchShortcut(key({ key: "S", code: "KeyS", shiftKey: true, target }), false)).toBeNull();
+      expect(matchShortcut(key({ key: "T", code: "KeyT", shiftKey: true, target }), false)).toBeNull();
+    }
+    input.remove();
+    editor.remove();
+    const labels = SHORTCUT_SHEET.flatMap((section) => section.entries.map((entry) => entry.label));
+    expect(labels).toContain("Summarize the conversation (AI)");
+    expect(labels).toContain("Find tasks in the conversation (AI)");
   });
 
   it("t is never a hotkey while typing", () => {

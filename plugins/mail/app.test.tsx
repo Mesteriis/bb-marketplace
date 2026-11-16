@@ -629,6 +629,9 @@ const NOT_MOVES = [
   "Edit draft",
   "Snooze",
   "Block",
+  "Summarize",
+  "Find tasks",
+  "Remind me\u2026",
 ];
 
 function toolbar(slot: ReturnType<typeof render>) {
@@ -1003,7 +1006,7 @@ describe("Fix round 1", () => {
       .map((button) => button.textContent?.trim())
       .filter((label) => label !== "Back");
     // Writing still applies; the moves do not.
-    expect(labels).toEqual(["Reply", "Reply all", "Forward", "Translate", "Block", "Hand to agent"]);
+    expect(labels).toEqual(["Reply", "Reply all", "Forward", "Translate", "Block", "Summarize", "Find tasks", "Hand to agent"]);
   });
 
   it("shows Spam and Delete but no Archive in an archive folder", async () => {
@@ -4162,5 +4165,152 @@ describe("New-mail toasts, settings and agent triage (slice 3e)", () => {
     });
     expect(callsTo(slot as never, "action_undo")[0]?.input).toEqual({ undoId: "batch-1" });
     expect(await slot.findByText("Undone")).toBeTruthy();
+  });
+});
+
+describe("Slice 3f: AI in the reading pane and the list", () => {
+  function renderWith(rpc: Record<string, unknown>, settings: Record<string, string | number | boolean> = {}, subPath = "") {
+    return renderSlot({ component: MailWithSidebar }, { subPath }, {
+      rpc: rpc as never,
+      settings,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+  }
+  const SUMMARY = {
+    kind: "summary",
+    provider: "provider-x",
+    model: "model-y",
+    cached: false,
+    stale: false,
+    notes: { hidden: 0, leftOut: 0, truncated: 0, unreadItems: 0 },
+    citations: [{ n: 1, messageId: "m-old", accountId: "acc-1", threadId: "th-a" }],
+    createdAt: "2026-11-16T08:00:00.000Z",
+    decisions: [{ text: "<b>Ship</b> on Friday", messages: [1] }],
+    questions: [],
+    deadlines: [],
+  };
+  const aiRpc = (overrides: Record<string, (input: never) => unknown> = {}) =>
+    mailRpc({
+      status_get: () => status({ translate: { gateway: "ok" } }),
+      reminders_due: () => ({ reminders: [] }),
+      ai_start: () => ({ jobId: "job-1" }),
+      ai_poll: () => ({ state: "done", result: SUMMARY }),
+      ai_cancel: () => ({ cancelled: true }),
+      ...overrides,
+    });
+
+  it("Shift+S summarizes the open conversation as text; a citation brings the message into view", async () => {
+    const slot = renderWith(aiRpc());
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    press(pageRoot(slot as never), { key: "S", code: "KeyS", shiftKey: true });
+    expect(await slot.findByText("<b>Ship</b> on Friday")).toBeTruthy();
+    expect(callsTo(slot as never, "ai_start")[0]?.input).toEqual({ kind: "summary", threadId: "th-a", folder: "INBOX" });
+    expect(slot.container.querySelector("section[aria-label=Summary] b")).toBeNull();
+    fireEvent.click(slot.getByRole("button", { name: "Open cited message 1" }));
+    await waitFor(() =>
+      expect(callsTo(slot as never, "message_body").map((call) => call.input)).toContainEqual({ messageId: "m-old" }),
+    );
+  });
+
+  it("AI buttons are off with the reason outside AI access, and Shift+T does nothing", async () => {
+    const outside: ThreadDetail = {
+      ...detailA,
+      messages: detailA.messages.map((m) => ({ ...m, inAiScope: false })),
+    };
+    const slot = renderWith(aiRpc({ thread_get: () => outside }));
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    const summarize = (await slot.findByRole("button", { name: "Summarize" })) as HTMLButtonElement;
+    expect(summarize.disabled).toBe(true);
+    expect(summarize.closest("span")?.getAttribute("title")).toBe("Outside AI access (Mail settings)");
+    expect((slot.getByRole("button", { name: "Find tasks" }) as HTMLButtonElement).disabled).toBe(true);
+    press(pageRoot(slot as never), { key: "T", code: "KeyT", shiftKey: true });
+    press(pageRoot(slot as never), { key: "S", code: "KeyS", shiftKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(callsTo(slot as never, "ai_start")).toHaveLength(0);
+  });
+
+  it("without Makosh AI the AI buttons say so", async () => {
+    const slot = renderWith(aiRpc({ status_get: () => status({ translate: { gateway: "gateway_missing" } }) }));
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    const summarize = (await slot.findByRole("button", { name: "Summarize" })) as HTMLButtonElement;
+    expect(summarize.disabled).toBe(true);
+    expect(summarize.closest("span")?.getAttribute("title")).toBe("AI features need the Makosh AI plugin");
+  });
+
+  it("chips and filters show only with categories on; Accept labels with Undo", async () => {
+    const suggested = { ...threadA, categorySuggestion: "bills" as const };
+    const rpc = aiRpc({
+      threads_list: () => ({ threads: [suggested, threadB], nextCursor: null }),
+      thread_get: () => ({ ...detailA, thread: suggested }),
+      category_accept: () => ({ changed: 1, undoId: "cu-1" }),
+      category_undo: () => ({ ok: true }),
+    });
+    const off = renderWith(rpc);
+    await off.findByText("Lunch");
+    expect(off.queryByRole("button", { name: "Bills" })).toBeNull();
+    expect(off.queryByText("Bills?")).toBeNull();
+    off.unmount();
+
+    const slot = renderWith(rpc, { mailCategories: true });
+    expect(await slot.findByText("Bills?")).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Bills" }));
+    await waitFor(() =>
+      expect(callsTo(slot as never, "threads_list").at(-1)?.input).toMatchObject({ filter: { category: "bills" } }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    fireEvent.click(await slot.findByRole("button", { name: "Accept" }));
+    await waitFor(() => expect(callsTo(slot as never, "category_accept")[0]?.input).toEqual({ messageIds: ["m-new"] }));
+    await waitFor(() => expect(toasts.log.some((t) => t.text === "Labelled 1 message")).toBe(true));
+    const labelled = toasts.log.find((t) => t.text === "Labelled 1 message")!;
+    labelled.options?.action?.onClick();
+    await waitFor(() => expect(callsTo(slot as never, "category_undo")[0]?.input).toEqual({ undoId: "cu-1" }));
+  });
+
+  it("the Waiting for a reply strip sits atop the Inbox with its actions", async () => {
+    const reminder = {
+      id: "rem-1",
+      accountId: "acc-1",
+      threadId: "th-b",
+      state: "due",
+      days: 3,
+      sentAt: "2026-11-10T09:00:00.000Z",
+      dueAt: "2026-11-13T09:00:00.000Z",
+      recipient: { name: "Bo Example", address: "bo@example.org" },
+      subject: "Lunch",
+    };
+    const slot = renderWith(
+      aiRpc({
+        reminders_due: () => ({ reminders: [reminder] }),
+        reminder_snooze: () => ({ ok: true }),
+        reminder_dismiss: () => ({ ok: true }),
+      }),
+      { replyReminderDays: 2 },
+    );
+    const strip = await slot.findByRole("region", { name: "Waiting for a reply" });
+    fireEvent.click(within(strip).getByRole("button", { name: "Remind in 2 days" }));
+    await waitFor(() => expect(callsTo(slot as never, "reminder_snooze")[0]?.input).toEqual({ id: "rem-1", days: 2 }));
+    fireEvent.click(within(strip).getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(callsTo(slot as never, "reminder_dismiss")[0]?.input).toEqual({ id: "rem-1" }));
+  });
+
+  it("Ask sends the question and shows the answer; nothing is kept after Close", async () => {
+    const answer = {
+      ...SUMMARY,
+      kind: "ask",
+      answer: "On Friday",
+      sources: [1],
+      found: true,
+    };
+    const slot = renderWith(aiRpc({ ai_poll: () => ({ state: "done", result: answer }) }));
+    await slot.findByText("Lunch");
+    fireEvent.click(slot.getByRole("button", { name: "Ask" }));
+    fireEvent.change(slot.getByLabelText("Ask about your mail"), { target: { value: "When do we ship?" } });
+    fireEvent.submit(slot.getByRole("search"));
+    expect(await slot.findByText("On Friday")).toBeTruthy();
+    expect(callsTo(slot as never, "ai_start")[0]?.input).toEqual({ kind: "ask", question: "When do we ship?", accountId: "acc-1" });
+    expect(callsTo(slot as never, "search")).toHaveLength(0);
+    fireEvent.click(slot.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(slot.queryByText("On Friday")).toBeNull());
   });
 });

@@ -29,6 +29,8 @@ export type ShortcutCommand =
   | { kind: "translate" }
   | { kind: "undo" }
   | { kind: "snooze" }
+  | { kind: "summarize" }
+  | { kind: "find_tasks" }
   | { kind: "go"; target: GoTarget };
 
 /** How long `g` waits for its second key. */
@@ -128,6 +130,9 @@ function matchKey(event: KeyLike, afterG: boolean): KeyMatch {
   if (event.shiftKey) {
     if (event.code === "KeyU") return { kind: "mark_unread" };
     if (event.code === "KeyI") return { kind: "mark_read" };
+    // Slice 3f: by the physical key, so a Cyrillic layout works too.
+    if (event.code === "KeyS") return { kind: "summarize" };
+    if (event.code === "KeyT") return { kind: "find_tasks" };
     return null;
   }
   switch (event.code) {
@@ -257,6 +262,8 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
       { keys: ["v"], label: "Move to…" },
       { keys: ["b"], label: "Snooze" },
       { keys: ["t"], label: "Translate, or show the original" },
+      { keys: ["Shift", "s"], label: "Summarize the conversation (AI)" },
+      { keys: ["Shift", "t"], label: "Find tasks in the conversation (AI)" },
       { keys: ["z"], label: "Undo the last action" },
     ],
   },

@@ -18,7 +18,7 @@ import type {
   ThreadDetail,
   ThreadSummary,
 } from "../core/index.ts";
-import type { IdentityView, UnsubscribeInfoView } from "../core/model.ts";
+import type { IdentityView, ReminderView, UnsubscribeInfoView } from "../core/model.ts";
 import { archiveAllowedFrom, ROLE_NAMES, roleFolders } from "../core/actions.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -45,9 +45,22 @@ import {
 } from "./folder-list.tsx";
 import { BlockDialog, type BlockCheck, type BlockChoice } from "./block-dialog.tsx";
 import { MoveDialog } from "./move-dialog.tsx";
+import type { AiJobPorts } from "./ai-job.ts";
+import type { AiCitation } from "./ai-text.tsx";
+import { AskPanel, ASK_QUESTION_MAX } from "./ask-panel.tsx";
+import { CategoryChip, type Category } from "./category-chips.tsx";
+import { RemindDialog, ReminderStrip } from "./reminder-strip.tsx";
+import { SummaryBlock } from "./summary-block.tsx";
+import { TasksDialog, type TaskPick } from "./tasks-dialog.tsx";
 import { SnoozeMenu } from "./snooze-menu.tsx";
 import { OutboxSection, type OutboxAction } from "./outbox.tsx";
-import { messageToHand, ReadingPane, type BodyState, type ReadingTranslation } from "./reading-pane.tsx";
+import {
+  conversationAiReason,
+  messageToHand,
+  ReadingPane,
+  type BodyState,
+  type ReadingTranslation,
+} from "./reading-pane.tsx";
 import {
   SelectionBar,
   SelectionPanel,
@@ -133,6 +146,32 @@ export interface MailInboxPorts {
   onReturnNow: (threadId: string) => void;
   loadBlockCheck: (messageId: string) => Promise<BlockCheck>;
   onBlock: (messageId: string, choice: BlockChoice) => void;
+}
+
+/** The AI features and reply reminders on the page (slice 3f). */
+export interface MailAiPorts {
+  jobs: AiJobPorts;
+  /** Why every AI button is off (Makosh AI is missing), or null. */
+  disabledReason: string | null;
+  keepTasks: (jobId: string, picks: TaskPick[]) => Promise<number>;
+  /** Opens a conversation by its link (a cited message of another conversation). */
+  onOpenConversation: (accountId: string, threadId: string) => void;
+  /** mailCategories is on: chips, filters and the page actions show. */
+  categoriesOn: boolean;
+  onCategorySet: (messageIds: string[], category: Category | null) => void;
+  onCategoryAccept: (messageIds: string[]) => void;
+  onCategoryRule: (messageId: string, category: Category) => void;
+  /** Suggest categories for the conversations of the list page. */
+  onSuggestCategories: (threadIds: string[]) => void;
+  /** Accept all on this page. */
+  onAcceptPage: (threadIds: string[]) => void;
+  /** replyReminderDays. */
+  reminderDays: number;
+  /** Due reply reminders: the Waiting for a reply strip in Inbox views. */
+  reminders: readonly ReminderView[];
+  onRemind: (messageId: string, days: number) => void;
+  onReminderSnooze: (reminder: ReminderView, days: number) => void;
+  onReminderDismiss: (reminder: ReminderView) => void;
 }
 
 export interface MailPageProps {
@@ -226,6 +265,8 @@ export interface MailPageProps {
   onListFilter?: (next: ListFilter) => void;
   /** Unsubscribe, snooze and block (slice 3e); absent: none of them. */
   inbox?: MailInboxPorts;
+  /** Summaries, Ask, tasks, categories and reply reminders (slice 3f); absent: none of them. */
+  ai?: MailAiPorts;
 }
 
 function PageFrame({ children }: { children: ReactNode }) {
@@ -393,6 +434,13 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const [snoozeTargets, setSnoozeTargets] = useState<string[] | null>(null);
   const [blockMessage, setBlockMessage] = useState<string | null>(null);
   const [composerFocused, setComposerFocused] = useState(false);
+  /** Slice 3f: the summary open on a conversation, the tasks request, Ask, a cited message, Remind me. */
+  const [summaryFor, setSummaryFor] = useState<{ threadId: string; serial: number } | null>(null);
+  const [tasksFor, setTasksFor] = useState<{ kind: "tasks"; threadId: string; folder?: string } | null>(null);
+  const [askMode, setAskMode] = useState(false);
+  const [asked, setAsked] = useState<{ question: string; serial: number } | null>(null);
+  const [highlight, setHighlight] = useState<{ messageId: string; serial: number } | null>(null);
+  const [remindMessage, setRemindMessage] = useState<string | null>(null);
   // A composer that closed while focused leaves no focus behind.
   const composerId = props.composer?.draft.id ?? null;
   useEffect(() => {
@@ -620,6 +668,40 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     setMoveTargets(ids);
   };
 
+  // ---- Slice 3f: the AI features of the open conversation ----
+
+  const ai = props.ai;
+  const openDetail = reading.detail;
+  /** The folder the server reads the open conversation in. */
+  const aiFolder = openDetail === null ? undefined : model.pathsOf(openDetail.thread.accountId)[0];
+  const aiReason = ai === undefined || openDetail === null ? null : conversationAiReason(openDetail.messages, ai.disabledReason);
+  const aiReady = ai !== undefined && openDetail !== null && threadOpen && !selecting && aiReason === null;
+  const summarize = () => {
+    if (!aiReady || openDetail === null) return;
+    setSummaryFor((prev) => ({ threadId: openDetail.thread.id, serial: (prev?.serial ?? 0) + 1 }));
+  };
+  const findTasks = () => {
+    if (!aiReady || openDetail === null) return;
+    rememberOpener();
+    setTasksFor({ kind: "tasks", threadId: openDetail.thread.id, ...(aiFolder !== undefined ? { folder: aiFolder } : {}) });
+  };
+  /** A citation chip: a message of the open conversation comes into view; another conversation opens. */
+  const cite = (citation: AiCitation) => {
+    if (citation.threadId === reading.threadId) {
+      if (!reading.expandedIds.has(citation.messageId)) props.onToggleMessage(citation.messageId);
+      setHighlight((prev) => ({ messageId: citation.messageId, serial: (prev?.serial ?? 0) + 1 }));
+      return;
+    }
+    ai?.onOpenConversation(citation.accountId, citation.threadId);
+  };
+  // The mark on a cited message fades after a moment.
+  useEffect(() => {
+    if (highlight === null) return;
+    const timer = setTimeout(() => setHighlight(null), 2_000);
+    return () => clearTimeout(timer);
+  }, [highlight?.serial]);
+  const summaryShown = summaryFor !== null && summaryFor.threadId === reading.threadId && openDetail !== null && ai !== undefined;
+
   const onKeyDown = useShortcuts((command: ShortcutCommand, repeat: boolean) => {
     // A quick second tap after an action must not reach the cursor row.
     if (!destructiveGuard.admit(command)) return;
@@ -682,6 +764,10 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         return;
       case "snooze":
         return openSnooze(targets());
+      case "summarize":
+        return summarize();
+      case "find_tasks":
+        return findTasks();
       case "sheet":
         rememberOpener();
         setSheetOpen(true);
@@ -753,6 +839,12 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           rememberOpener();
           setSheetOpen(true);
         }}
+        askMode={ai !== undefined && askMode}
+        onAskMode={ai === undefined ? undefined : (on) => {
+          setAskMode(on);
+          if (!on) setAsked(null);
+        }}
+        onAsk={(question) => setAsked((prev) => (question === "" ? null : { question, serial: (prev?.serial ?? 0) + 1 }))}
       />
       {errors.map((account) => (
         <div
@@ -804,7 +896,42 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
             />
           ) : null}
           {!searching && props.listFilter !== undefined && props.onListFilter !== undefined ? (
-            <QuickFilters filter={props.listFilter} onChange={props.onListFilter} />
+            <QuickFilters filter={props.listFilter} onChange={props.onListFilter} categories={ai?.categoriesOn === true} />
+          ) : null}
+          {!searching && ai !== undefined && ai.categoriesOn && list.threads.length > 0 ? (
+            <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-3 py-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs text-muted-foreground"
+                disabled={ai.disabledReason !== null}
+                onClick={() => ai.onSuggestCategories(list.threads.map((t) => t.id))}
+              >
+                Suggest categories
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs text-muted-foreground"
+                disabled={!list.threads.some((t) => t.category === null && t.categorySuggestion !== null)}
+                onClick={() =>
+                  ai.onAcceptPage(list.threads.filter((t) => t.category === null && t.categorySuggestion !== null).map((t) => t.id))
+                }
+              >
+                Accept all on this page
+              </Button>
+            </div>
+          ) : null}
+          {!searching && ai !== undefined && model.use === "inbox" ? (
+            <ReminderStrip
+              reminders={ai.reminders.filter((r) => props.unified || r.accountId === props.account?.id)}
+              defaultDays={ai.reminderDays}
+              onOpen={(reminder) => {
+                if (reminder.threadId !== null) ai.onOpenConversation(reminder.accountId, reminder.threadId);
+              }}
+              onSnooze={ai.onReminderSnooze}
+              onDismiss={ai.onReminderDismiss}
+            />
           ) : null}
           {model.use === "sent" && !searching ? (
             <OutboxSection
@@ -812,6 +939,16 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               onAction={props.onOutboxAction}
               pending={props.outboxPending}
               marker={marker}
+            />
+          ) : null}
+          {ai !== undefined && askMode && asked !== null ? (
+            <AskPanel
+              key={asked.serial}
+              ports={ai.jobs}
+              question={asked.question}
+              {...(!props.unified && props.account !== null ? { accountId: props.account.id } : {})}
+              onOpen={(citation) => ai.onOpenConversation(citation.accountId, citation.threadId)}
+              onClose={() => setAsked(null)}
             />
           ) : null}
           <ListColumn
@@ -884,6 +1021,52 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               onEditDraft={props.onEditDraft}
               hideToolbar={docked && composerFocused}
               translation={props.translation}
+              ai={
+                ai === undefined || openDetail === null
+                  ? undefined
+                  : {
+                      disabledReason: ai.disabledReason,
+                      onSummarize: summarize,
+                      onFindTasks: findTasks,
+                      summary: summaryShown ? (
+                        <SummaryBlock
+                          key={`${summaryFor.threadId}:${summaryFor.serial}`}
+                          ports={ai.jobs}
+                          threadId={summaryFor.threadId}
+                          {...(aiFolder !== undefined ? { folder: aiFolder } : {})}
+                          onCite={cite}
+                          onClose={() => setSummaryFor(null)}
+                        />
+                      ) : null,
+                      category: ai.categoriesOn
+                        ? (() => {
+                            const shown = messageToHand(openDetail.messages, reading.expandedIds);
+                            if (shown === null || isDraft(shown)) return null;
+                            const address = shown.from.address.trim();
+                            return (
+                              <CategoryChip
+                                category={openDetail.thread.category}
+                                suggestion={openDetail.thread.categorySuggestion}
+                                onAccept={() => ai.onCategoryAccept([shown.id])}
+                                onChange={(category) => ai.onCategorySet([shown.id], category)}
+                                onAlways={
+                                  address === "" || model.use === "sent" ? null : (category) => ai.onCategoryRule(shown.id, category)
+                                }
+                              />
+                            );
+                          })()
+                        : null,
+                      ...(model.use === "sent"
+                        ? {
+                            onRemind: (message: MessageHeader) => {
+                              rememberOpener();
+                              setRemindMessage(message.id);
+                            },
+                          }
+                        : {}),
+                      highlight,
+                    }
+              }
               inbox={
                 props.inbox === undefined
                   ? undefined
@@ -967,6 +1150,32 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           />
         </>
       ) : null}
+      {ai !== undefined ? (
+        <>
+          <TasksDialog
+            request={tasksFor}
+            ports={ai.jobs}
+            onKeep={ai.keepTasks}
+            onCite={(citation) => {
+              setTasksFor(null);
+              cite(citation);
+            }}
+            onClose={() => setTasksFor(null)}
+            onCloseAutoFocus={restoreFocus}
+          />
+          <RemindDialog
+            open={remindMessage !== null}
+            defaultDays={ai.reminderDays}
+            onRemind={(days) => {
+              const id = remindMessage;
+              setRemindMessage(null);
+              if (id !== null) ai.onRemind(id, days);
+            }}
+            onCancel={() => setRemindMessage(null)}
+            onCloseAutoFocus={restoreFocus}
+          />
+        </>
+      ) : null}
       <DetailsPanel
         details={props.details}
         onClose={props.onCloseDetails}
@@ -1047,6 +1256,7 @@ function ListColumn(
       onToggleChecked={props.onToggleChecked}
       onToggleFlag={props.onToggleThreadFlag}
       focusedId={props.focusedId}
+      categories={props.ai?.categoriesOn === true}
     />
   );
 }
@@ -1075,9 +1285,14 @@ function MailHeader(
     status: StatusView;
     searchRef: RefObject<HTMLInputElement | null>;
     onShowShortcuts: () => void;
+    /** Slice 3f: the box asks a question instead of searching. */
+    askMode?: boolean;
+    onAskMode?: (on: boolean) => void;
+    onAsk?: (question: string) => void;
   },
 ) {
   const [draft, setDraft] = useState(props.search.query);
+  const asking = props.askMode === true;
 
   // The page may end a search (a folder was chosen); the box follows.
   useEffect(() => {
@@ -1086,29 +1301,62 @@ function MailHeader(
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    props.onSearch(draft.trim());
+    if (asking) props.onAsk?.(draft.trim().slice(0, ASK_QUESTION_MAX));
+    else props.onSearch(draft.trim());
   }
 
   function clear() {
     setDraft("");
-    props.onSearch("");
+    if (asking) props.onAsk?.("");
+    else props.onSearch("");
+  }
+
+  function switchMode(ask: boolean) {
+    if (ask === asking) return;
+    setDraft("");
+    if (props.search.query !== "") props.onSearch("");
+    props.onAskMode?.(ask);
   }
 
   const shown = props.unified ? props.status.accounts : props.account !== null ? [props.account] : [];
   return (
     <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+      {props.onAskMode !== undefined ? (
+        <div role="group" aria-label="Search or ask" className="flex shrink-0 items-center rounded-md border border-border p-0.5">
+          <Button
+            type="button"
+            variant={asking ? "ghost" : "secondary"}
+            size="sm"
+            className="h-6 px-2 text-xs"
+            aria-pressed={!asking}
+            onClick={() => switchMode(false)}
+          >
+            Search
+          </Button>
+          <Button
+            type="button"
+            variant={asking ? "secondary" : "ghost"}
+            size="sm"
+            className="h-6 px-2 text-xs"
+            aria-pressed={asking}
+            onClick={() => switchMode(true)}
+          >
+            Ask
+          </Button>
+        </div>
+      ) : null}
       <form role="search" onSubmit={submit} className="flex min-w-40 flex-1 items-center gap-1">
         <Input
           ref={props.searchRef}
           type="search"
-          aria-label="Search mail"
-          placeholder="Search mail — from:, subject:, is:unread"
+          aria-label={asking ? "Ask about your mail" : "Search mail"}
+          placeholder={asking ? "Ask about your mail (AI)" : "Search mail — from:, subject:, is:unread"}
           value={draft}
-          maxLength={500}
+          maxLength={asking ? ASK_QUESTION_MAX : 500}
           onChange={(event) => setDraft(event.target.value)}
           className="h-8"
         />
-        {props.search.query !== "" ? (
+        {props.search.query !== "" || (asking && draft !== "") ? (
           <Button type="button" variant="ghost" size="sm" onClick={clear}>
             Clear
           </Button>

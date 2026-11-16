@@ -4,7 +4,7 @@
 // messages show sender, date and snippet; an expanded one shows its body.
 // The toolbar acts on the conversation's messages in the folder (or role)
 // being viewed; each message has its own flag, Details and downloads.
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import type {
   AttachmentMeta,
   MessageAction,
@@ -75,6 +75,30 @@ export interface ReadingPaneProps {
   translation?: ReadingTranslation;
   /** Unsubscribe, Snooze and Block (slice 3e); absent: none of them. */
   inbox?: ReadingInbox;
+  /** Summarize, Find tasks, the category line and Remind me (slice 3f); absent: none of them. */
+  ai?: ReadingAi;
+}
+
+/** The reading pane's part of the AI features (slice 3f). */
+export interface ReadingAi {
+  /** Why every AI button is off (Makosh AI is missing), or null. */
+  disabledReason: string | null;
+  onSummarize: () => void;
+  onFindTasks: () => void;
+  /** The summary block, shown under the subject; null when none is open. */
+  summary: ReactNode | null;
+  /** The category line; null with categories off. */
+  category: ReactNode | null;
+  /** Remind me... on a sent message; absent outside Sent. */
+  onRemind?: (message: MessageHeader) => void;
+  /** A cited message to bring into view and mark for a moment. */
+  highlight: { messageId: string; serial: number } | null;
+}
+
+/** Why Summarize and Find tasks are off for a conversation, or null. */
+export function conversationAiReason(messages: readonly MessageHeader[], disabledReason: string | null): string | null {
+  if (!messages.some((m) => m.inAiScope)) return OUTSIDE_AI_ACCESS;
+  return disabledReason;
 }
 
 /** The reading pane's part of inbox triage (slice 3e). */
@@ -240,6 +264,7 @@ function MessageItem({
   onDownloadAttachment,
   onEditDraft,
   translation,
+  highlighted = false,
 }: {
   message: MessageHeader;
   expanded: boolean;
@@ -257,6 +282,8 @@ function MessageItem({
   onEditDraft: (() => void) | null;
   /** This message's translation block, shown above its body. */
   translation: ReactNode | null;
+  /** A citation points here: marked for a moment. */
+  highlighted?: boolean;
 }) {
   const sender = addressLabel(message.from);
   const senderAddress = message.from.address.trim() !== "" ? message.from.address : null;
@@ -265,7 +292,8 @@ function MessageItem({
   return (
     <article
       aria-label={`Message from ${sender}`}
-      className="rounded-lg border border-border bg-card"
+      data-message-id={message.id}
+      className={cn("rounded-lg border border-border bg-card", highlighted && "ring-2 ring-ring")}
     >
       <div className="flex items-start gap-1 px-3 py-2">
         <button
@@ -389,6 +417,17 @@ export function messageToHand(messages: MessageHeader[], expandedIds: ReadonlySe
 
 export function ReadingPane(props: ReadingPaneProps) {
   const { detail, loading, error, expandedIds, bodies, onBack, folderUse, archiveAllowed } = props;
+  const highlight = props.ai?.highlight ?? null;
+  // A citation chip was clicked: its message comes into view.
+  useEffect(() => {
+    if (highlight === null || typeof document === "undefined") return;
+    for (const element of Array.from(document.querySelectorAll<HTMLElement>("[data-message-id]"))) {
+      if (element.dataset.messageId === highlight.messageId) {
+        element.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+        return;
+      }
+    }
+  }, [highlight?.serial]);
   const back = (
     <div className="@3xl:hidden">
       <Button variant="ghost" size="sm" onClick={onBack}>
@@ -511,7 +550,16 @@ export function ReadingPane(props: ReadingPaneProps) {
             Block
           </Button>
         ) : null}
+        {props.ai !== undefined && handed !== null && !handedDraft && props.ai.onRemind !== undefined ? (
+          <Button variant="ghost" size="sm" onClick={() => props.ai?.onRemind?.(handed)}>
+            <Icon name="Clock" fallback="Info" aria-hidden />
+            {"Remind me\u2026"}
+          </Button>
+        ) : null}
         <span className="flex-1" />
+        {props.ai !== undefined ? (
+          <AiButtons ai={props.ai} reason={conversationAiReason(messages, props.ai.disabledReason)} />
+        ) : null}
         {handed !== null ? (
           <span title={handed.inAiScope ? undefined : OUTSIDE_AI_ACCESS} className="inline-flex">
             <Button variant="ghost" size="sm" disabled={!handed.inAiScope} onClick={() => props.onHandToAgent(handed)}>
@@ -556,7 +604,9 @@ export function ReadingPane(props: ReadingPaneProps) {
         {inbox !== undefined && unsubscribe !== null && unsubscribe.hidden && unsubscribe.listName !== null ? (
           <p className="text-xs text-muted-foreground">{UNSUBSCRIBE_HIDDEN_HINT}</p>
         ) : null}
+        {props.ai?.category ?? null}
       </div>
+      {props.ai?.summary ?? null}
       {messages.map((message) => {
         const sender = message.from.address.trim().toLowerCase();
         return (
@@ -581,9 +631,27 @@ export function ReadingPane(props: ReadingPaneProps) {
             onDownloadAttachment={(attachment) => props.onDownloadAttachment(message, attachment)}
             onEditDraft={props.isDraft(message) ? () => props.onEditDraft(message) : null}
             translation={props.translation?.shown?.messageId === message.id ? props.translation.shown.block : null}
+            highlighted={highlight?.messageId === message.id}
           />
         );
       })}
     </div>
+  );
+}
+
+/** Summarize and Find tasks; off with the reason as the tooltip. */
+function AiButtons({ ai, reason }: { ai: ReadingAi; reason: string | null }) {
+  return (
+    // A disabled button shows no tooltip of its own: the wrapper carries the reason.
+    <span title={reason ?? undefined} className="inline-flex">
+      <Button variant="ghost" size="sm" disabled={reason !== null} aria-description={reason ?? undefined} onClick={ai.onSummarize}>
+        <Icon name="Sparkles" fallback="Bot" aria-hidden />
+        Summarize
+      </Button>
+      <Button variant="ghost" size="sm" disabled={reason !== null} aria-description={reason ?? undefined} onClick={ai.onFindTasks}>
+        <Icon name="ListChecks" fallback="Check" aria-hidden />
+        Find tasks
+      </Button>
+    </span>
   );
 }

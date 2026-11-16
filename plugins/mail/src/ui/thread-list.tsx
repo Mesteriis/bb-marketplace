@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
+import { CategoryFilters, RowCategory, categoryLabel, type Category } from "./category-chips.tsx";
 
 export const NO_SUBJECT = "(no subject)";
 
@@ -62,9 +63,9 @@ export function formatUntil(iso: string | null, now: Date = new Date()): string 
 }
 
 /** The quick filters of a list (slice 3e); `keep` is the page's, not a toggle. */
-export type ListFilter = { unread?: true; flagged?: true; attachments?: true };
+export type ListFilter = { unread?: true; flagged?: true; attachments?: true; category?: Category };
 
-export const LIST_FILTERS: readonly { key: keyof ListFilter; label: string }[] = [
+export const LIST_FILTERS: readonly { key: "unread" | "flagged" | "attachments"; label: string }[] = [
   { key: "unread", label: "Unread" },
   { key: "flagged", label: "Flagged" },
   { key: "attachments", label: "Attachments" },
@@ -72,11 +73,14 @@ export const LIST_FILTERS: readonly { key: keyof ListFilter; label: string }[] =
 
 /** Whether any toggle is on. */
 export function filterActive(filter: ListFilter): boolean {
-  return filter.unread === true || filter.flagged === true || filter.attachments === true;
+  return filter.unread === true || filter.flagged === true || filter.attachments === true || filter.category !== undefined;
 }
 
 /** The empty list's text under the toggles that are on. */
 export function filterEmptyText(filter: ListFilter): string {
+  if (filter.category !== undefined && !LIST_FILTERS.some(({ key }) => filter[key] === true)) {
+    return `No ${categoryLabel(filter.category)} conversations here`;
+  }
   const on = LIST_FILTERS.filter(({ key }) => filter[key] === true).map(({ key }) => key);
   if (on.length === 1 && on[0] === "unread") return "No unread conversations here";
   if (on.length === 1 && on[0] === "flagged") return "No flagged conversations here";
@@ -85,7 +89,16 @@ export function filterEmptyText(filter: ListFilter): string {
 }
 
 /** Unread, Flagged and Attachments: Tab-reachable toggles, no hotkeys. */
-export function QuickFilters({ filter, onChange }: { filter: ListFilter; onChange: (next: ListFilter) => void }) {
+export function QuickFilters({
+  filter,
+  onChange,
+  categories = false,
+}: {
+  filter: ListFilter;
+  onChange: (next: ListFilter) => void;
+  /** Slice 3f: the category filters, with categories on. */
+  categories?: boolean;
+}) {
   return (
     <div role="group" aria-label="Quick filters" className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-3 py-1">
       {LIST_FILTERS.map(({ key, label }) => {
@@ -108,6 +121,17 @@ export function QuickFilters({ filter, onChange }: { filter: ListFilter; onChang
           </Button>
         );
       })}
+      {categories ? (
+        <CategoryFilters
+          value={filter.category}
+          onChange={(category) => {
+            const next: ListFilter = { ...filter };
+            if (category === undefined) delete next.category;
+            else next.category = category;
+            onChange(next);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -148,6 +172,8 @@ interface RowProps {
   marker: string | null;
   /** When a snoozed conversation comes back (slice 3e). */
   snoozedUntil?: string | null;
+  /** Slice 3f: the label or the suggestion. */
+  category?: { category: Category | null; suggestion: Category | null };
   onSelect: () => void;
   /** Checkbox and star; absent for search hits. */
   check?: { checked: boolean; anyChecked: boolean; onToggle: (range: boolean) => void };
@@ -166,6 +192,7 @@ function Row({
   snippet,
   marker,
   snoozedUntil = null,
+  category,
   onSelect,
   check,
   star,
@@ -220,6 +247,7 @@ function Row({
               {marker}
             </span>
           ) : null}
+          {category !== undefined ? <RowCategory category={category.category} suggestion={category.suggestion} /> : null}
           {count !== undefined && count > 1 ? (
             <span className="shrink-0 text-xs text-muted-foreground">{count}</span>
           ) : null}
@@ -280,6 +308,8 @@ export interface ThreadListProps {
   onToggleChecked: (threadId: string, range: boolean) => void;
   onToggleFlag: (threadId: string) => void;
   focusedId: string | null;
+  /** Slice 3f: category chips on the rows (categories on). */
+  categories?: boolean;
 }
 
 export function ThreadList({
@@ -295,6 +325,7 @@ export function ThreadList({
   onToggleChecked,
   onToggleFlag,
   focusedId,
+  categories = false,
 }: ThreadListProps) {
   return (
     <div className="flex flex-col">
@@ -313,6 +344,7 @@ export function ThreadList({
             snippet={thread.snippet}
             marker={marker(thread.accountId)}
             snoozedUntil={thread.snoozedUntil}
+            {...(categories ? { category: { category: thread.category, suggestion: thread.categorySuggestion } } : {})}
             onSelect={() => onSelect(thread)}
             check={{
               checked: checked.has(thread.id),

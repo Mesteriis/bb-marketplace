@@ -18,6 +18,7 @@ import {
   useComposer,
   useRealtime,
   useRpc,
+  useSettings,
   type ExperimentalBadge,
   type PluginNavPanelProps,
   type PluginPendingInteractionProps,
@@ -32,6 +33,7 @@ import type {
   IdentityView,
   MAIL_CHANGED_CHANNEL as MailChangedChannel,
   NEW_MAIL_CHANNEL as NewMailChannel,
+  DAY_NOTICE_CHANNEL as DayNoticeChannel,
   MessageAction,
   MessageHeader,
   NewAccountInput,
@@ -106,12 +108,20 @@ import {
 } from "./src/ui/unsubscribe-dialog.tsx";
 import { SnoozeFolderDialog, type SnoozeFolderRequest } from "./src/ui/snooze-folder-dialog.tsx";
 import type { BlockChoice } from "./src/ui/block-dialog.tsx";
+import type { AiStartInput } from "./src/core/contract.ts";
+import type { AiResultView, ReminderView } from "./src/core/model.ts";
+import { AI_ERROR_TEXT, AI_POLL_MS, type AiJobPorts } from "./src/ui/ai-job.ts";
+import { categoryLabel, type Category } from "./src/ui/category-chips.tsx";
+import type { MailAiPorts } from "./src/ui/mail-page.tsx";
+import { daysText } from "./src/ui/reminder-strip.tsx";
+import type { TaskPick } from "./src/ui/tasks-dialog.tsx";
 
 // The channel name is checked against the core constant without importing it
 // at runtime: a value import of the core would bundle its zod schemas.
 const MAIL_CHANGED_CHANNEL: typeof MailChangedChannel = "mail-changed";
 const OUTBOX_CHANGED_CHANNEL: typeof OutboxChangedChannel = "outbox-changed";
 const NEW_MAIL_CHANNEL: typeof NewMailChannel = "mail-new";
+const DAY_NOTICE_CHANNEL: typeof DayNoticeChannel = "mail-day";
 /** The Undo window when a row's sendAfter is not known yet. */
 const UNDO_WINDOW_MS = 10_000;
 /** How often a running translation is polled while the page is visible. */
@@ -2288,6 +2298,202 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     />
   );
 
+  // ---- Slice 3f: AI on the owner's click, categories, reply reminders ----
+
+  const pluginSettings = useSettings().values;
+  const categoriesOn = pluginSettings?.mailCategories === true;
+  const reminderDaysSetting = (() => {
+    const days = pluginSettings?.replyReminderDays;
+    return typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= 30 ? days : 3;
+  })();
+  const aiJobs = useMemo<AiJobPorts>(
+    () => ({
+      start: (input) => rpc.call("ai_start", input),
+      poll: (jobId) => rpc.call("ai_poll", { jobId }),
+      cancel: (jobId) => rpc.call("ai_cancel", { jobId }),
+    }),
+    [rpc],
+  );
+  /** One AI request to its end, for the page actions that show no block (Suggest categories). */
+  const runAiToEnd = useCallback(
+    async (input: AiStartInput): Promise<AiResultView> => {
+      const started = await rpc.call("ai_start", input);
+      if ("cached" in started) return started.cached;
+      for (;;) {
+        const poll = await rpc.call("ai_poll", { jobId: started.jobId });
+        if (poll.state === "running") {
+          await new Promise((resolve) => setTimeout(resolve, AI_POLL_MS));
+          continue;
+        }
+        if (poll.state === "done" && poll.result !== undefined) return poll.result;
+        throw new Error(AI_ERROR_TEXT[poll.error ?? (poll.state === "cancelled" ? "cancelled" : "failed")]);
+      }
+    },
+    [rpc],
+  );
+  const [dueReminders, setDueReminders] = useState<ReminderView[]>([]);
+  const loadReminders = useCallback(async () => {
+    try {
+      setDueReminders((await rpc.call("reminders_due", {})).reminders);
+    } catch {
+      // The strip keeps what it showed.
+    }
+  }, [rpc]);
+  useEffect(() => {
+    if (status?.vaultReady !== true || accountIds === "") return;
+    void loadReminders();
+  }, [accountIds, loadReminders, status?.vaultReady]);
+  useDebouncedRealtime(MAIL_CHANGED_CHANNEL, () => void loadReminders());
+  useDebouncedRealtime(DAY_NOTICE_CHANNEL, () => void loadReminders());
+  /** The list, and the open conversation, after a label changed. */
+  const reloadAfterLabel = useCallback(() => {
+    refreshAfterChange();
+    const open = openThreadId.current;
+    if (open !== null) void loadThread(open, null);
+  }, [loadThread, refreshAfterChange]);
+  const labelledToast = useCallback(
+    (changed: number, undoId: string | null) => {
+      if (changed === 0) {
+        toast("Nothing to label");
+        return;
+      }
+      toast(`Labelled ${plural(changed, "message", "messages")}`, {
+        ...(undoId !== null
+          ? {
+              action: {
+                label: "Undo",
+                onClick: () => {
+                  rpc
+                    .call("category_undo", { undoId })
+                    .then(reloadAfterLabel)
+                    .catch((error: unknown) => toast.error(`Could not undo: ${messageOf(error)}`));
+                },
+              },
+            }
+          : {}),
+      });
+    },
+    [reloadAfterLabel, rpc],
+  );
+  /** The newest message in the view of each conversation, for page-wide label actions. */
+  const latestMessages = useCallback(
+    async (threadIds: readonly string[]) => {
+      const { items } = await collect(threadIds, latest.current.reading, latest.current);
+      const newest = new Map<string, string>();
+      for (const item of items) newest.set(item.threadId, item.id);
+      return [...newest.values()];
+    },
+    [collect],
+  );
+  const mailAi = useMemo<MailAiPorts>(
+    () => ({
+      jobs: aiJobs,
+      disabledReason: status?.translate.gateway === "gateway_missing" ? AI_ERROR_TEXT.gateway_missing : null,
+      keepTasks: async (jobId: string, picks: TaskPick[]) => {
+        const { kept } = await rpc.call("tasks_keep", { jobId, picks });
+        toast.success(kept === 1 ? "Kept 1 task" : `Kept ${kept} tasks`);
+        return kept;
+      },
+      onOpenConversation: (accountId, threadId) =>
+        navigate.toPluginPanel("mail", { subPath: threadSubPath(accountId, threadId) }),
+      categoriesOn,
+      onCategorySet: (messageIds, category) => {
+        rpc
+          .call("category_set", { messageIds, category })
+          .then(({ changed, undoId }) => {
+            labelledToast(changed, undoId);
+            reloadAfterLabel();
+          })
+          .catch((error: unknown) => toast.error(`Could not change the category: ${messageOf(error)}`));
+      },
+      onCategoryAccept: (messageIds) => {
+        rpc
+          .call("category_accept", { messageIds })
+          .then(({ changed, undoId }) => {
+            labelledToast(changed, undoId);
+            reloadAfterLabel();
+          })
+          .catch((error: unknown) => toast.error(`Could not accept the category: ${messageOf(error)}`));
+      },
+      onCategoryRule: (messageId, category: Category) => {
+        rpc
+          .call("category_rule_add", { messageId, kind: "address", category })
+          .then(() => rpc.call("category_set", { messageIds: [messageId], category }))
+          .then(({ changed, undoId }) => {
+            toast.success(`New mail from this sender will be labelled ${categoryLabel(category)}`);
+            if (changed > 0) labelledToast(changed, undoId);
+            reloadAfterLabel();
+          })
+          .catch((error: unknown) => toast.error(`Could not add the rule: ${messageOf(error)}`));
+      },
+      onSuggestCategories: (threadIds) => {
+        void (async () => {
+          try {
+            const ids = (await latestMessages(threadIds)).slice(0, 50);
+            if (ids.length === 0) return;
+            toast("Suggesting categories\u2026");
+            const result = await runAiToEnd({ kind: "categories", messageIds: ids });
+            const suggested = result.kind === "categories" ? result.items.filter((item) => item.category !== null).length : 0;
+            toast(suggested === 1 ? "Suggested a category for 1 message" : `Suggested categories for ${suggested} messages`);
+            reloadAfterLabel();
+          } catch (error) {
+            toast.error(`Could not suggest categories: ${messageOf(error)}`);
+          }
+        })();
+      },
+      onAcceptPage: (threadIds) => {
+        void (async () => {
+          try {
+            const ids = await latestMessages(threadIds);
+            if (ids.length === 0) return;
+            const { changed, undoId } = await rpc.call("category_accept", { messageIds: ids.slice(0, 200) });
+            labelledToast(changed, undoId);
+            reloadAfterLabel();
+          } catch (error) {
+            toast.error(`Could not accept the categories: ${messageOf(error)}`);
+          }
+        })();
+      },
+      reminderDays: reminderDaysSetting,
+      reminders: dueReminders,
+      onRemind: (messageId, days) => {
+        rpc
+          .call("reminder_set", { messageId, days })
+          .then(() => toast.success(`You will be reminded if no reply comes in ${daysText(days)}`))
+          .catch((error: unknown) => toast.error(`Could not set the reminder: ${messageOf(error)}`));
+      },
+      onReminderSnooze: (reminder, days) => {
+        rpc
+          .call("reminder_snooze", { id: reminder.id, days })
+          .then(() => {
+            toast(`Reminding again in ${daysText(days)}`);
+            void loadReminders();
+          })
+          .catch((error: unknown) => toast.error(`Could not change the reminder: ${messageOf(error)}`));
+      },
+      onReminderDismiss: (reminder) => {
+        rpc
+          .call("reminder_dismiss", { id: reminder.id })
+          .then(() => void loadReminders())
+          .catch((error: unknown) => toast.error(`Could not dismiss the reminder: ${messageOf(error)}`));
+      },
+    }),
+    [
+      aiJobs,
+      categoriesOn,
+      dueReminders,
+      labelledToast,
+      latestMessages,
+      loadReminders,
+      navigate,
+      reloadAfterLabel,
+      reminderDaysSetting,
+      rpc,
+      runAiToEnd,
+      status?.translate.gateway,
+    ],
+  );
+
   // ---- The sidebar's rail ----
 
   const outboxInScope = useMemo(
@@ -2423,6 +2629,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       listFilter={listFilter}
       onListFilter={setListFilter}
       inbox={inboxPorts}
+      ai={mailAi}
     />
     <UnsubscribeDialog
       request={unsubscribeAsk === null ? null : { info: unsubscribeAsk.info, method: unsubscribeAsk.method }}
