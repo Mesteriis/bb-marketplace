@@ -1223,3 +1223,5 @@ These override the sections and resolutions above (review of 2026-11-16).
 8. **List keys are namespaced** (replaces `listKey` in "Parsing at sync" and refines resolution 9).
    - `listKey` is `id:<List-Id>` for a List-Id and `from:<address>` for the From fallback, so a List-Id that spells an address never names that sender's fallback list. Migration element 9 rewrites stored keys in `messages.unsubscribe_json` and `unsubscribes.list_key`: a key with `@` was a From fallback, any other a List-Id.
    - **Archive all from this list** (`unsubscribe_archive`, `sameList`) takes the stored Inbox rows with the same key; for anything but an `id:` key it also requires the same From address as the clicked message, so a From-fallback list archives only mail from that exact address.
+9. **Return now answers within the undo wait** (replaces "runs the tick for those accounts" in "Return now").
+   - `message_unsnooze` sets `due_at = now`, then waits for the snooze clock's tick at most as long as `action_undo` waits (5 s). It answers `{ ok, pending }`: `pending: true` when the account's queue was still busy (a long round), and the tick finishes in the background.

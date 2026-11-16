@@ -2472,9 +2472,18 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
           const message = store.getMessage(id);
           if (message !== null && store.updateSnooze(id, { dueAt: at }, at)) accounts.add(message.accountId);
         }
+        if (accounts.size === 0) return { ok: false, pending: false };
         // The clock moves them back (a full round, never an Inbox-only one).
-        if (accounts.size > 0) await deps.snoozeClock.tick([...accounts]);
-        return { ok: accounts.size > 0 };
+        // Its tick waits for the account's queue: past the undo wait the
+        // answer is pending and the tick finishes in the background (review
+        // item 9); the tick never rejects.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const finished = await Promise.race([
+          deps.snoozeClock.tick([...accounts]).then(() => true),
+          new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), deps.undoWaitMs))),
+        ]);
+        clearTimeout(timer);
+        return { ok: true, pending: !finished };
       },
       snooze_folder_create: owner("snooze_folder_create", async ({ accountId }) => ({
         path: await ensureSnoozeFolder(deps, accountId, (line) => bb.log.info(line)),

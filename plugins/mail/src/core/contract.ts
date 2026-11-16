@@ -591,9 +591,10 @@ export const rpcSchemas = {
     }),
   },
   /** Returns snoozed messages now. */
+  /** `pending`: the account's queue was busy past the wait; the return finishes in the background. */
   message_unsnooze: {
     input: z.object({ messageIds: messageIdList }),
-    output: okOutput,
+    output: z.object({ ok: z.boolean(), pending: z.boolean() }),
   },
   /** Creates the account's snooze folder (the owner confirmed it). */
   snooze_folder_create: {
