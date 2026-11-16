@@ -543,8 +543,14 @@ async function runRule(
       const open = store.incidentFor(alert.ref);
       // An open incident takes the mail as an update the owner adds ("Add to incident thread").
       if (open !== null && appendable(open, deps.clock.now())) state = "ready";
+      // Check and reserve the fingerprint in one step: another start (the owner's, or another rule's) wins once.
+      else if (!store.reserveIncident(alert.ref, open?.bbThreadId ?? null, { token: runId, projectId: rule.projectId, at: nowIso() })) state = "ready";
     }
   }
+  const reserved = state === "starting" && alert !== null;
+  const release = () => {
+    if (reserved) store.releaseIncident(alert!.ref, runId);
+  };
   // The gate row is written before the spawn: a `starting` run whose id the thread's metadata carries.
   const inserted = store.insertRuleRun(
     {
@@ -559,8 +565,9 @@ async function runRule(
     },
     RULE_CAPS,
   );
-  if (inserted === "duplicate") return;
+  if (inserted === "duplicate") return release();
   if (inserted === "capped") {
+    release();
     deps.agentLog({ actor: "rule", tool: "rule_thread", outcome: "capped", messageIds: [header.id], refId: rule.id });
     return;
   }
@@ -596,6 +603,7 @@ async function runRule(
     // Never a second spawn and never the checkout. BB may have made the thread
     // before the error reached us: the run stays `starting` (counted, gated by
     // its metadata) until reconcileRuleStarts finds the thread or fails it.
+    release();
     deps.agentLog({ actor: "rule", tool: "rule_thread", outcome: "failed", messageIds: [header.id], refId: rule.id });
     deps.log(`rule ${rule.id}: thread not started (${errorKind(error)})`);
     return;
@@ -1581,6 +1589,11 @@ export function createBbRpc(deps: BbRpcDeps) {
         const thread = await incidentThread(open.bbThreadId);
         if (thread !== null && (thread === "unknown" || !thread.archived)) throw refuse("conflict", INCIDENT_OPEN_TEXT);
       }
+      // Check and reserve in one step: a rule's start for the same alert between our check and the spawn loses (or wins) once.
+      const token = `own_${deps.newId()}`;
+      if (!store.reserveIncident(alert.ref, open?.bbThreadId ?? null, { token, projectId: project.id, at: nowIso() })) {
+        throw refuse("conflict", BB_REFUSAL_TEXT.in_flight);
+      }
       let bbThreadId: string;
       try {
         bbThreadId = (
@@ -1593,6 +1606,7 @@ export function createBbRpc(deps: BbRpcDeps) {
           })
         ).threadId;
       } catch (error) {
+        store.releaseIncident(alert.ref, token);
         deps.agentLog({ actor: "owner_bb", tool: "incident", outcome: "failed", messageIds: [header.id] });
         throw bbRefusal(error, deps.log, "incident_start");
       }

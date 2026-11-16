@@ -110,7 +110,7 @@ import type {
   TaskRecord,
 } from "../ports.ts";
 import { AI_RESULT_MAX_BYTES, TASKS_OPEN_MAX } from "../ports.ts";
-import { BINDINGS_MAX } from "../ports.ts";
+import { BINDINGS_MAX, INCIDENT_PENDING_PREFIX, INCIDENT_RESERVE_MS } from "../ports.ts";
 import type {
   BbLinkRow,
   BindingKind,
@@ -2720,7 +2720,21 @@ export class InMemoryMailStore implements MailStore {
 
   incidentFor(fingerprint: string): IncidentRow | null {
     const row = this.state.incidents.get(fingerprint);
-    return row === undefined ? null : { ...row };
+    return row === undefined || row.bbThreadId.startsWith(INCIDENT_PENDING_PREFIX) ? null : { ...row };
+  }
+
+  reserveIncident(fingerprint: string, expectedBbThreadId: string | null, row: { token: string; projectId: string; at: string }): boolean {
+    const current = this.state.incidents.get(fingerprint);
+    const pending = current !== undefined && current.bbThreadId.startsWith(INCIDENT_PENDING_PREFIX);
+    if (pending && Date.parse(row.at) - Date.parse(current.createdAt) < INCIDENT_RESERVE_MS) return false;
+    const currentId = current === undefined || pending ? null : current.bbThreadId;
+    if (currentId !== expectedBbThreadId) return false;
+    this.putIncident({ fingerprint, bbThreadId: `${INCIDENT_PENDING_PREFIX}${row.token}`, projectId: row.projectId, createdAt: row.at, lastAt: row.at });
+    return true;
+  }
+
+  releaseIncident(fingerprint: string, token: string): void {
+    if (this.state.incidents.get(fingerprint)?.bbThreadId === `${INCIDENT_PENDING_PREFIX}${token}`) this.state.incidents.delete(fingerprint);
   }
 
   touchIncident(fingerprint: string, nowIso: string): boolean {

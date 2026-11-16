@@ -5082,6 +5082,26 @@ describe.each(storeKinds)("slice-3g store semantics (%s)", (_kind, make) => {
       expect(s.pruneBbLinks("thread", [])).toBe(0);
     });
 
+    it("reserves an incident start in one step: compare with the row the caller saw, then hold it pending", () => {
+      const at = T3G;
+      expect(s.reserveIncident("f1", null, { token: "k1", projectId: "p_api", at })).toBe(true);
+      // Pending is no incident to readers, and a second start is refused while it is held.
+      expect(s.incidentFor("f1")).toBeNull();
+      expect(s.reserveIncident("f1", null, { token: "k2", projectId: "p_api", at: at3g(1) })).toBe(false);
+      s.putIncident({ fingerprint: "f1", bbThreadId: "bb_1", projectId: "p_api", createdAt: at3g(2), lastAt: at3g(2) });
+      expect(s.incidentFor("f1")!.bbThreadId).toBe("bb_1");
+      // A caller that saw no incident (or another thread) loses to the one that started.
+      expect(s.reserveIncident("f1", null, { token: "k3", projectId: "p_api", at: at3g(3) })).toBe(false);
+      expect(s.reserveIncident("f1", "bb_1", { token: "k4", projectId: "p_api", at: at3g(4) })).toBe(true);
+      s.releaseIncident("f1", "k_other");
+      expect(s.reserveIncident("f1", "bb_1", { token: "k5", projectId: "p_api", at: at3g(5) })).toBe(false);
+      s.releaseIncident("f1", "k4");
+      expect(s.incidentFor("f1")).toBeNull();
+      expect(s.reserveIncident("f1", null, { token: "k6", projectId: "p_api", at: at3g(6) })).toBe(true);
+      // A reservation older than 10 minutes is stale and may be taken over.
+      expect(s.reserveIncident("f1", null, { token: "k7", projectId: "p_api", at: at3g(6 + 11 * 60_000) })).toBe(true);
+    });
+
     it("keeps one incident per fingerprint and touches it", () => {
       expect(s.incidentFor("f1")).toBeNull();
       s.putIncident({ fingerprint: "f1", bbThreadId: "bb_1", projectId: "p_api", createdAt: T3G, lastAt: T3G });

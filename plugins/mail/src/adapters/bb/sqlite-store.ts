@@ -85,6 +85,7 @@ import type { UndoRow } from "../../core/undo.ts";
 import { cleanSnippet, needsSnippetRepair, snippetOf } from "../../core/snippet.ts";
 import { AI_RESULT_MAX_BYTES, BINDINGS_MAX, TASKS_OPEN_MAX } from "../../core/ports.ts";
 import type { BbLinkRow, BindingKind, RuleRecord, RuleRunRecord, RuleRunState } from "../../core/ports.ts";
+import { INCIDENT_PENDING_PREFIX, INCIDENT_RESERVE_MS } from "../../core/ports.ts";
 import type { BbLinkRowKind } from "../../core/model.ts";
 import type { DevClass, DevKind, DevSource, DevState } from "../../core/dev-notify.ts";
 import { RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, RULE_THREADS_KEEP_DAYS, RULES_MAX, capVerdict, type RuleMatch, type RuleMode, type RuleRunCounts } from "../../core/mail-rules.ts";
@@ -5495,9 +5496,33 @@ export function createSqliteStore(db: Database.Database): MailStore {
           "SELECT * FROM incident_threads WHERE fingerprint = ?",
         )
         .get(fingerprint);
-      return row === undefined
+      return row === undefined || row.bb_thread_id.startsWith(INCIDENT_PENDING_PREFIX)
         ? null
         : { fingerprint: row.fingerprint, bbThreadId: row.bb_thread_id, projectId: row.project_id, createdAt: row.created_at, lastAt: row.last_at };
+    },
+
+    reserveIncident(fingerprint, expectedBbThreadId, row) {
+      return atomic(() => {
+        const current = db
+          .prepare<[string], { bb_thread_id: string; created_at: string }>("SELECT bb_thread_id, created_at FROM incident_threads WHERE fingerprint = ?")
+          .get(fingerprint);
+        const pending = current !== undefined && current.bb_thread_id.startsWith(INCIDENT_PENDING_PREFIX);
+        if (pending && Date.parse(row.at) - Date.parse(current.created_at) < INCIDENT_RESERVE_MS) return false;
+        const currentId = current === undefined || pending ? null : current.bb_thread_id;
+        if (currentId !== expectedBbThreadId) return false;
+        store.putIncident({
+          fingerprint,
+          bbThreadId: `${INCIDENT_PENDING_PREFIX}${row.token}`,
+          projectId: row.projectId,
+          createdAt: row.at,
+          lastAt: row.at,
+        });
+        return true;
+      });
+    },
+
+    releaseIncident(fingerprint, token) {
+      db.prepare("DELETE FROM incident_threads WHERE fingerprint = ? AND bb_thread_id = ?").run(fingerprint, `${INCIDENT_PENDING_PREFIX}${token}`);
     },
 
     touchIncident(fingerprint, nowIso) {

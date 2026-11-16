@@ -6899,6 +6899,24 @@ describe("slice 3g: alerts and incident threads", () => {
     expect(sdkCalls(host, "threads.spawn")).toEqual([]);
   });
 
+  it("incident_start checks and reserves the alert in one step: another start's reservation refuses it", async () => {
+    const { host, ids } = await loadDev();
+    const view = (await call(host, "alert_view", { messageId: ids[5] })) as { alert: { alertRef: string } };
+    // A rule's start for the same alert holds the fingerprint (its spawn is under way).
+    expect(sqlStore(host).reserveIncident(view.alert.alertRef, null, { token: "run_x", projectId: "api", at: NOW.toISOString() })).toBe(true);
+    await expect(call(host, "incident_start", { messageId: ids[5], projectId: "api" })).rejects.toThrow(BB_REFUSAL_TEXT.in_flight);
+    expect(sdkCalls(host, "threads.spawn")).toEqual([]);
+    sqlStore(host).releaseIncident(view.alert.alertRef, "run_x");
+    // A failed spawn gives the reservation back.
+    host.harness.sdk.stub("threads.spawn", async () => {
+      throw new Error("invented failure");
+    });
+    await expect(call(host, "incident_start", { messageId: ids[5], projectId: "api" })).rejects.toThrow();
+    host.harness.sdk.stub("threads.spawn", async () => ({ id: "bb_t9" }));
+    await expect(call(host, "incident_start", { messageId: ids[5], projectId: "api" })).resolves.toEqual({ bbThreadId: "bb_t9" });
+    expect(host.bb.storage.database().prepare("SELECT bb_thread_id FROM incident_threads").all()).toEqual([{ bb_thread_id: "bb_t9" }]);
+  });
+
   it("a second append of the same mail while one runs, or just after, is refused", async () => {
     const sdk = bbSdk({ threads: [sdkThread("bb_t1")] });
     const { host, ids } = await loadDev({ sdk });

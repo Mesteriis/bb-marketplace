@@ -966,7 +966,18 @@ export interface MailStore {
     nextCursor: string | null;
   };
   putIncident(row: IncidentRow): void;
+  /** The incident thread of a fingerprint; a pending reservation is none. */
   incidentFor(fingerprint: string): IncidentRow | null;
+  /**
+   * Check and reserve in one transaction (review): when the fingerprint's
+   * thread is still `expectedBbThreadId` (null: none) and no other start
+   * holds it (a reservation younger than INCIDENT_RESERVE_MS), the row
+   * becomes a pending reservation under `token`; false otherwise.
+   * putIncident replaces it with the started thread.
+   */
+  reserveIncident(fingerprint: string, expectedBbThreadId: string | null, row: { token: string; projectId: string; at: string }): boolean;
+  /** Drops the reservation `token` holds (the start failed); other rows stay. */
+  releaseIncident(fingerprint: string, token: string): void;
   /** Sets `last_at`; false when there is no incident. */
   touchIncident(fingerprint: string, nowIso: string): boolean;
   listRules(): RuleRecord[];
@@ -1056,6 +1067,11 @@ export type BindingKind = (typeof BINDING_KINDS)[number];
 export const BINDINGS_MAX = 500;
 /** A binding rule; `value` lower case, a domain in ASCII. */
 export type BindingRow = { kind: BindingKind; value: string; projectId: string; createdAt: string };
+
+/** How long an incident start's reservation holds the fingerprint. */
+export const INCIDENT_RESERVE_MS = 10 * 60 * 1000;
+/** The bb_thread_id of a reserved incident (no thread yet). */
+export const INCIDENT_PENDING_PREFIX = "pending:";
 
 /** An incident thread; `fingerprint` is the alert's internal fingerprint (alertRef in outputs). */
 export type IncidentRow = { fingerprint: string; bbThreadId: string; projectId: string; createdAt: string; lastAt: string };
