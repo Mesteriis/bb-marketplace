@@ -22,7 +22,7 @@ import {
 // selectors and addresses on example.com / example.org / example.net.
 const h = (key: string, value: string): HeaderLine => ({ key: key.toLowerCase(), value });
 const from: MailAddress = { name: "Billing", address: "billing@example.com" };
-const inbox: { folderRole: SpecialUse | null; outbox?: boolean } = { folderRole: "inbox" };
+const inbox: { folderRole: SpecialUse | null } = { folderRole: "inbox" };
 
 const ar = (body: string, id = "mx.google.com") => h("Authentication-Results", `${id};\r\n       ${body}`);
 const DKIM_PASS = "dkim=pass header.i=@example.com header.s=sel1";
@@ -133,8 +133,10 @@ describe("senderCheckOf: forged results", () => {
   it("lets the worst DMARC result win and ignores DMARC for another domain", () => {
     expect(check(message([ar("dmarc=pass header.from=example.com; dmarc=fail header.from=example.com")])).state).toBe("failed");
     expect(check(message([ar("dmarc=fail header.from=example.com; dmarc=pass header.from=example.com")])).state).toBe("failed");
+    // Slice 3i review: DMARC only for another domain is an anomaly, `failed`.
     const other = check(message([ar("dmarc=pass header.from=example.org")]));
-    expect(other.state).toBe("unchecked");
+    expect(other.state).toBe("failed");
+    expect(other.decidedBy).toBeNull();
     expect(other.dmarc).toBeNull();
     expect(other.otherDmarc).toEqual([{ result: "pass", domain: "example.org" }]);
     expect(check(message([ar("dmarc=pass")])).state).toBe("unchecked");
@@ -185,10 +187,9 @@ describe("senderCheckOf: who is checked", () => {
     }
   });
 
-  it("leaves Sent, Drafts and outbox copies unchecked", () => {
+  it("leaves Sent and Drafts copies unchecked (outbox copies arrive through Sent)", () => {
     expect(check(failing, "gmail", from, { folderRole: "sent" }).basis).toBe("own");
     expect(check(failing, "gmail", from, { folderRole: "drafts" }).state).toBe("unchecked");
-    expect(check(failing, "gmail", from, { folderRole: null, outbox: true }).basis).toBe("own");
   });
 
   it("judges an Inbox message forged from the owner's own address", () => {
@@ -197,13 +198,14 @@ describe("senderCheckOf: who is checked", () => {
   });
 
   it("never claims ok with two From lines or two mailboxes", () => {
+    // Slice 3i review: such a message is `failed` (it drives nothing), not `unchecked`.
     const passing = `${DKIM_PASS}; dmarc=pass header.from=example.com`;
     const twoLines = check(message([ar(passing)], [h("From", "other@example.org")]));
-    expect(twoLines.state).toBe("unchecked");
+    expect(twoLines.state).toBe("failed");
     expect(twoLines.multipleFrom).toBe(true);
     const twoBoxes = [...message([ar(passing)])];
     twoBoxes[twoBoxes.length - 1] = h("From", "billing@example.com, other@example.org");
-    expect(check(twoBoxes).state).toBe("unchecked");
+    expect(check(twoBoxes).state).toBe("failed");
     const quotedComma = [...message([ar(passing)])];
     quotedComma[quotedComma.length - 1] = h("From", '"Billing, Team" <billing@example.com>');
     expect(check(quotedComma).state).toBe("ok");
@@ -214,17 +216,19 @@ describe("senderCheckOf: who is checked", () => {
 });
 
 describe("parseAuthResults bounds", () => {
-  it("reads at most 4 KB of a value and marks it", () => {
-    const long = `mx.google.com; dmarc=pass header.from=example.com; x=${"a".repeat(5_000)}`;
-    const parsed = parseAuthResults(long);
-    expect(parsed?.malformed).toBe(true);
-    expect(check(message([h("Authentication-Results", long)])).state).toBe("unchecked");
+  it("reads at most 64 KB of a value and marks it (slice 3i review: was 4 KB)", () => {
+    const fine = `mx.google.com; dmarc=pass header.from=example.com; x=${"a".repeat(5_000)}`;
+    expect(parseAuthResults(fine)?.malformed).toBe(false);
+    const long = `mx.google.com; dmarc=pass header.from=example.com; x=${"a".repeat(70_000)}`;
+    expect(parseAuthResults(long)?.malformed).toBe(true);
+    expect(check(message([h("Authentication-Results", long)])).state).toBe("failed");
   });
 
-  it("reads at most 20 entries", () => {
+  it("keeps at most 20 DKIM entries and reads SPF and DMARC past them", () => {
     const many = Array.from({ length: 25 }, () => "dkim=none").join("; ");
     const parsed = parseAuthResults(`mx.google.com; ${many}; dmarc=fail header.from=example.com`);
-    expect(parsed?.entries.length).toBe(20);
+    expect(parsed?.entries.filter((entry) => entry.method === "dkim").length).toBe(20);
+    expect(parsed?.entries.at(-1)?.method).toBe("dmarc");
     expect(parsed?.malformed).toBe(true);
   });
 
@@ -338,5 +342,137 @@ describe("SECURITY_HEADER_FIELDS", () => {
     for (const name of UNSUBSCRIBE_HEADER_FIELDS) expect(lower).toContain(name.toLowerCase());
     for (const name of ["reply-to", "content-type", ...RECEIPT_HEADERS.map((header) => header.toLowerCase())]) expect(lower).toContain(name);
     expect(new Set(lower).size).toBe(lower.length);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 3i review fixes (findings 1, 2, 7, 9, 13): results past the caps, an
+// unbalanced quote in a comment, hostile A-R lines, From anomalies and
+// multi-tenant suffixes.
+
+describe("review: a trusted header that cannot be read in full drives nothing", () => {
+  const twentyDkim = Array.from({ length: 20 }, (_, i) => `dkim=temperror (no key for signature) header.i=@s${i}.example.org header.s=s header.b=AAAA`).join("; ");
+
+  it("reads DMARC past 20 DKIM entries", () => {
+    const result = check(message([ar(`${twentyDkim}; spf=pass smtp.mailfrom=a@example.org; dmarc=fail (p=REJECT) header.from=example.com`)]));
+    expect(result.state).toBe("failed");
+    expect(result.decidedBy).toBe("dmarc");
+    expect(result.dmarc).toEqual({ result: "fail", domain: "example.com" });
+  });
+
+  it("reads DMARC past 4 KB of entries", () => {
+    const long = Array.from({ length: 14 }, (_, i) =>
+      `dkim=temperror (no key for signature) header.i=@${"a".repeat(60)}.${"b".repeat(60)}.${"c".repeat(60)}.s${i}.example.org header.s=${"s".repeat(60)} header.b=AAAA`,
+    ).join("; ");
+    const value = `${long}; spf=pass smtp.mailfrom=a@example.org; dmarc=fail (p=REJECT) header.from=example.com`;
+    expect(value.length).toBeGreaterThan(4_096);
+    const result = check(message([ar(value)]));
+    expect(result.state).toBe("failed");
+    expect(result.decidedBy).toBe("dmarc");
+  });
+
+  it("is failed, not ok, when more DKIM entries than kept would have decided", () => {
+    const many = Array.from({ length: 21 }, () => "dkim=pass header.i=@example.com").join("; ");
+    const result = check(message([ar(`${many}; dmarc=pass header.from=example.com`)]));
+    expect(result.malformed).toBe(true);
+    expect(result.state).toBe("failed");
+    expect(result.decidedBy).toBeNull();
+    expect(senderCheckSummary(result)).toBe("the provider's results could not be read in full");
+    expect(autoImagesAllowed(result, [])).toBe(false);
+  });
+
+  it("is failed when a quote is left open, and reads DMARC through an odd quote in a comment", () => {
+    const odd = check(
+      message([
+        ar('spf=pass (google.com: domain of a"b@example.org designates 192.0.2.4 as permitted sender) smtp.mailfrom=example.org; dmarc=fail (p=REJECT) header.from=example.com'),
+      ]),
+    );
+    expect(odd.malformed).toBe(true);
+    expect(odd.state).toBe("failed");
+    expect(odd.dmarc).toEqual({ result: "fail", domain: "example.com" });
+    // A pass seen only by the comment-blind reading is not taken.
+    const injected = check(
+      message([ar('spf=none (domain of a"b@example.org) dkim=pass header.i=@example.com; dmarc=none header.from=example.com')]),
+    );
+    expect(injected.dkim.some((entry) => entry.result === "pass")).toBe(false);
+    expect(injected.state).toBe("failed");
+  });
+
+  it("reads a stored unchecked check with an anomaly as failed", () => {
+    const stored: SenderCheck = {
+      ...check(message([ar(`${DKIM_PASS}; dmarc=pass header.from=example.com`)])),
+      state: "unchecked",
+      decidedBy: null,
+      malformed: true,
+    };
+    expect(readStoredCheck(JSON.stringify(stored), "gmail").state).toBe("failed");
+  });
+});
+
+describe("review: From anomalies drive nothing", () => {
+  const passing = `${DKIM_PASS}; dmarc=pass header.from=example.com`;
+
+  it("is failed with two From lines or two mailboxes", () => {
+    const twoLines = check(message([ar(passing)], [h("From", "other@example.org")]));
+    expect(twoLines.state).toBe("failed");
+    expect(twoLines.decidedBy).toBeNull();
+    expect(senderCheckSummary(twoLines)).toBe("more than one sender in From");
+    const twoBoxes = [...message([ar(passing)])];
+    twoBoxes[twoBoxes.length - 1] = h("From", "Boss <billing@example.com>, x@example.org");
+    expect(check(twoBoxes).state).toBe("failed");
+    expect(autoImagesAllowed(check(twoBoxes), [])).toBe(false);
+  });
+
+  it("is failed when DMARC names another domain and none names the From domain", () => {
+    const other = check(message([ar("spf=pass smtp.mailfrom=x@example.org; dkim=pass header.i=@example.org; dmarc=pass header.from=example.org")]));
+    expect(other.state).toBe("failed");
+    expect(other.decidedBy).toBeNull();
+    expect(senderCheckSummary(other)).toBe("the provider's DMARC result names another domain");
+    // A DMARC entry naming no domain says nothing about a mismatch.
+    expect(check(message([ar("dmarc=pass")])).state).toBe("unchecked");
+    // One for the From domain decides as before.
+    expect(check(message([ar(`${passing}; dmarc=pass header.from=example.org`)])).state).toBe("ok");
+  });
+});
+
+describe("review: hostile Authentication-Results lines", () => {
+  it("skips untrusted ids before parsing and stays fast on 120 hostile lines", () => {
+    // Details judges the full header block (no 64-line cap). One call, generous bound.
+    const evil = h("Authentication-Results", `evil.example; ${"a".repeat(5_000)}`);
+    const trustedEvil = h("Authentication-Results", `mx.google.com; ${"a".repeat(5_000)}`);
+    const headers = [...Array.from({ length: 60 }, () => trustedEvil), ...Array.from({ length: 60 }, () => evil), h("From", "a@example.com")];
+    const started = performance.now();
+    check(headers);
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
+  it("parses at most eight trusted headers in the top block and counts the rest", () => {
+    const headers = [
+      ...Array.from({ length: 10 }, () => ar("dmarc=fail header.from=example.com")),
+      h("From", "billing@example.com"),
+    ];
+    const found = trustedAuthResults(headers, "gmail");
+    expect(found?.counted.length).toBe(8);
+    expect(check(headers).alsoPresent).toBe(9);
+  });
+
+  it("reads the authserv-id behind a leading comment", () => {
+    expect(parseAuthResults("(note) mx.google.com; dmarc=fail header.from=example.com")?.authservId).toBe("mx.google.com");
+  });
+});
+
+describe("review: orgDomain and multi-tenant suffixes", () => {
+  it("keeps a tenant under a shared hosting suffix apart", () => {
+    expect(orgDomain("victim.github.io")).toBe("victim.github.io");
+    expect(orgDomain("a.b.onmicrosoft.com")).toBe("b.onmicrosoft.com");
+    expect(orgDomain("tenant.sharepoint.com")).toBe("tenant.sharepoint.com");
+    expect(orgDomain("github.io")).toBe("github.io");
+    expect(orgDomain("docs.github.com")).toBe("github.com");
+  });
+
+  it("does not align a DKIM signer of another tenant", () => {
+    const result = check(message([ar("dkim=pass header.i=@evil.onmicrosoft.com")]), "gmail", { name: null, address: "ceo@victim.onmicrosoft.com" });
+    expect(result.dkim[0]?.aligned).toBe(false);
+    expect(result.state).toBe("unchecked");
   });
 });

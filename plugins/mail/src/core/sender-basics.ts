@@ -10,6 +10,19 @@ export type SenderCheckState = (typeof SENDER_CHECK_STATES)[number];
 /** Second-level labels under which a registrable name takes three labels (`example.co.uk`). */
 const COUNTRY_SECOND_LEVEL = new Set(["co", "com", "net", "org", "ac", "gov", "edu", "ne", "or", "go"]);
 
+/**
+ * Shared hosting suffixes whose tenants are separate organizations (slice 3i
+ * review): one label under them is the registrable name, as the public suffix
+ * list says. A short list of well-known multi-tenant hosts that send mail or
+ * host sign-in pages (the full list is not shipped); a suffix missing here is
+ * treated as one organization, the heuristic's known limit.
+ */
+const SHARED_SUFFIXES = new Set([
+  "github.io", "gitlab.io", "blogspot.com", "herokuapp.com", "appspot.com", "azurewebsites.net", "onmicrosoft.com",
+  "sharepoint.com", "firebaseapp.com", "web.app", "netlify.app", "vercel.app", "pages.dev", "workers.dev",
+  "myshopify.com", "wixsite.com",
+]);
+
 /** The domain in ASCII lower case without a trailing dot; null when it is not a usable name. */
 export function asciiDomainOf(domain: string | null | undefined): string | null {
   if (domain === null || domain === undefined) return null;
@@ -32,13 +45,16 @@ export function addressDomain(address: string): string | null {
  * The registrable ("organizational") domain by a heuristic without the
  * public suffix list (no dependency): the last two labels, or the last three
  * when the second-to-last is a common country second level and the last is
- * two letters (`a.b.example.co.uk` gives `example.co.uk`). ASCII (punycode) form.
+ * two letters (`a.b.example.co.uk` gives `example.co.uk`), or the last three
+ * under a shared hosting suffix (`a.tenant.github.io` gives `tenant.github.io`).
+ * ASCII (punycode) form.
  * It can be wrong; a wrong answer shows or hides a warning, never blocks mail.
  */
 export function orgDomain(domain: string): string {
   const ascii = asciiDomainOf(domain) ?? domain.trim().toLowerCase().replace(/\.$/, "");
   const labels = ascii.split(".");
   if (labels.length <= 2) return ascii;
+  if (SHARED_SUFFIXES.has(labels.slice(-2).join("."))) return labels.slice(-3).join(".");
   const last = labels[labels.length - 1] ?? "";
   const second = labels[labels.length - 2] ?? "";
   const take = /^[a-z]{2}$/.test(last) && COUNTRY_SECOND_LEVEL.has(second) ? 3 : 2;

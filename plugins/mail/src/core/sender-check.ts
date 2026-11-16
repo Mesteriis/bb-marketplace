@@ -25,7 +25,8 @@ import type { SenderCheckState } from "./sender-basics.ts";
  * Why the state is what it is: `results` the provider's header was read;
  * `no_results` the preset trusts an id but none was found in the top block;
  * `provider` the preset trusts no id (other servers, iCloud until pinned);
- * `own` a Sent or Drafts copy or an outbox copy.
+ * `own` a Sent or Drafts copy (the plugin's outbox copies reach the store
+ * only through the Sent folder's sync, so the folder role covers them).
  */
 export const SENDER_CHECK_BASES = ["results", "no_results", "provider", "own"] as const;
 export type SenderCheckBasis = (typeof SENDER_CHECK_BASES)[number];
@@ -36,7 +37,11 @@ export type SenderCheck = {
   basis: SenderCheckBasis | null;
   /** The trusted authserv-id that was read; null when none was. */
   authserv: string | null;
-  /** What decided `ok` or `failed`; null otherwise. */
+  /**
+   * What decided `ok` or `failed`; null otherwise. A `failed` with null is an
+   * anomaly (slice 3i review): `multipleFrom`, `malformed`, or DMARC only for
+   * another domain.
+   */
   decidedBy: "dmarc" | "spf" | "dkim" | null;
   spf: { result: AuthResult; domain: string | null } | null;
   /** In header order, at most DKIM_KEPT. */
@@ -45,9 +50,9 @@ export type SenderCheck = {
   dmarc: { result: AuthResult; domain: string | null } | null;
   /** DMARC entries for another domain: kept for Details, never decide (resolution 4.3). At most 3. */
   otherDmarc: { result: AuthResult; domain: string | null }[];
-  /** More than one From line or mailbox: never `ok` (resolution 4.5). */
+  /** More than one From line or mailbox: `failed` (resolution 4.5 as changed by the slice 3i review). */
   multipleFrom: boolean;
-  /** The provider's header was cut or could not be read in full: never `ok`. */
+  /** The provider's header was cut or could not be read in full: `failed` (slice 3i review). */
   malformed: boolean;
   /** Further trusted-id headers in the top block that were not used (resolution 4.1). */
   alsoPresent: number;
@@ -117,19 +122,73 @@ function blank(state: SenderCheckState, basis: SenderCheckBasis | null): SenderC
 export const UNKNOWN_SENDER_CHECK: SenderCheck = Object.freeze(blank("unknown", null)) as SenderCheck;
 
 /**
+ * Whether the provider's results cannot be tied to the From Mail shows
+ * (slice 3i review, findings 1 and 9): more than one sender in From, a
+ * header that could not be read in full, or DMARC results that all name
+ * another domain (an entry naming none says nothing either way). Such a
+ * check is `failed`, so it drives nothing: no dev class, no rule, no alert,
+ * no automatic images, and the strip says why.
+ */
+function anomalyOf(check: Pick<SenderCheck, "multipleFrom" | "malformed" | "dmarc" | "otherDmarc">): string | null {
+  if (check.multipleFrom) return "more than one sender in From";
+  if (check.malformed) return "the provider's results could not be read in full";
+  if (check.dmarc === null && check.otherDmarc.some((entry) => entry.domain !== null)) {
+    return "the provider's DMARC result names another domain";
+  }
+  return null;
+}
+
+/** The check with an anomaly made `failed` (decided by nothing); a failure the results decided stays as it is. */
+function withAnomaly(check: SenderCheck): SenderCheck {
+  if (check.basis !== "results" || check.state === "failed" || anomalyOf(check) === null) return check;
+  return { ...check, state: "failed", decidedBy: null };
+}
+
+/**
+ * The check cut to fit `maxBytes` serialized (slice 3i review, finding 3):
+ * Details' extras go first (DMARC for other domains, then DKIM entries not
+ * aligned, then the rest from the end), then every domain; the state, its
+ * basis and what decided it always stay, so a failure is never lost.
+ */
+export function fitSenderCheck(check: SenderCheck, maxBytes: number): SenderCheck {
+  const size = (value: SenderCheck) => new TextEncoder().encode(JSON.stringify(value)).length;
+  let out = check;
+  while (size(out) > maxBytes && out.otherDmarc.length > 0) out = { ...out, otherDmarc: out.otherDmarc.slice(0, -1) };
+  while (size(out) > maxBytes && out.dkim.length > 0) {
+    let drop = out.dkim.length - 1;
+    for (let index = out.dkim.length - 1; index >= 0; index -= 1) {
+      if (!out.dkim[index]!.aligned) {
+        drop = index;
+        break;
+      }
+    }
+    out = { ...out, dkim: out.dkim.filter((_, index) => index !== drop) };
+  }
+  if (size(out) > maxBytes) {
+    out = {
+      ...out,
+      spf: out.spf === null ? null : { ...out.spf, domain: null },
+      dmarc: out.dmarc === null ? null : { ...out.dmarc, domain: null },
+    };
+  }
+  if (size(out) > maxBytes) out = { ...out, authserv: null };
+  return out;
+}
+
+/**
  * The sender check of one message from its kept header lines (part A
  * "Sender check" with resolutions 3, 4): the topmost trusted A-R only, the
  * worst result per method, DMARC only for the From domain, relaxed
- * alignment by `orgDomain`. Sent and Drafts copies and outbox copies are not
- * judged; every other folder is, whoever From claims.
+ * alignment by `orgDomain`. Sent and Drafts copies are not judged; every
+ * other folder is, whoever From claims. An anomaly (`anomalyOf`) is `failed`.
  */
 export function senderCheckOf(
   headers: HeaderLine[],
   preset: AccountPreset,
   from: MailAddress,
-  options: { folderRole: SpecialUse | null; outbox?: boolean },
+  options: { folderRole: SpecialUse | null },
 ): SenderCheck {
-  if (options.outbox === true || options.folderRole === "sent" || options.folderRole === "drafts") return blank("unchecked", "own");
+  if (options.folderRole === "sent" || options.folderRole === "drafts") return blank("unchecked", "own");
   const found = trustedAuthResults(headers, preset);
   if (found === null) return blank("unchecked", "provider");
   const top = found.counted[0];
@@ -175,12 +234,8 @@ export function senderCheckOf(
     state = "ok";
     decidedBy = "dkim";
   }
-  if (state === "ok" && (multipleFrom || top.malformed)) {
-    state = "unchecked";
-    decidedBy = null;
-  }
 
-  return {
+  return withAnomaly({
     state,
     basis: "results",
     authserv: top.authservId,
@@ -191,8 +246,8 @@ export function senderCheckOf(
     otherDmarc: dmarcAll.filter((entry) => !dmarcOwn.includes(entry)).slice(0, OTHER_DMARC_KEPT),
     multipleFrom,
     malformed: top.malformed,
-    alsoPresent: found.counted.length - 1,
-  };
+    alsoPresent: found.counted.length - 1 + found.more,
+  });
 }
 
 const NOT_READ = "Not checked: Mail does not read this server's results";
@@ -205,7 +260,9 @@ export function senderCheckSummary(check: SenderCheck): string | null {
     case "unknown":
       return "Not checked yet";
     case "failed":
-      return check.decidedBy === "spf" ? "SPF failed and no aligned DKIM signature passed" : "DMARC failed";
+      if (check.decidedBy === "spf") return "SPF failed and no aligned DKIM signature passed";
+      if (check.decidedBy === "dmarc") return "DMARC failed";
+      return anomalyOf(check) ?? "DMARC failed";
     case "unchecked":
       if (check.basis === "own") return "Not checked: your own mail";
       if (check.basis === "provider") return NOT_READ;
@@ -279,7 +336,8 @@ export function readStoredCheck(json: string | null, preset: AccountPreset): Sen
   if (state === "unchecked" && basis === "provider" && v.authserv === null && TRUSTED_AUTHSERV[preset].length > 0) {
     return UNKNOWN_SENDER_CHECK;
   }
-  return {
+  // A check stored before the slice 3i review kept an anomaly `unchecked`.
+  return withAnomaly({
     state,
     basis: basis as SenderCheckBasis,
     authserv: v.authserv as string | null,
@@ -291,5 +349,5 @@ export function readStoredCheck(json: string | null, preset: AccountPreset): Sen
     multipleFrom: v.multipleFrom,
     malformed: v.malformed,
     alsoPresent: v.alsoPresent,
-  };
+  });
 }

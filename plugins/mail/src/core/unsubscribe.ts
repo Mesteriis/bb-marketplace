@@ -278,9 +278,11 @@ function matchesTrace(name: string, patterns: readonly string[]): boolean {
  * Quoted strings are tracked inside comments too (part A resolution 4.4),
  * so a quoted local part holding `)` cannot close a comment early and smuggle
  * text out of it. `balanced` is false when the text ends inside a quote or a
- * comment.
+ * comment. With `quotesInComments` false (the rule before 4.4, kept for the
+ * second reading of an unbalanced value, slice 3i review) a `"` inside a
+ * comment is plain text.
  */
-function stripComments(text: string): { text: string; balanced: boolean } {
+function stripComments(text: string, quotesInComments = true): { text: string; balanced: boolean } {
   let out = "";
   let depth = 0;
   let quoted = false;
@@ -289,7 +291,7 @@ function stripComments(text: string): { text: string; balanced: boolean } {
     if (ch === "\\" && (quoted || depth > 0)) {
       if (depth === 0) out += ch + (text[i + 1] ?? "");
       i += 1;
-    } else if (ch === '"') {
+    } else if (ch === '"' && (quotesInComments || depth === 0)) {
       quoted = !quoted;
       if (depth === 0) out += ch;
     } else if (!quoted && ch === "(") {
@@ -329,10 +331,18 @@ function splitEntries(text: string): string[] {
 
 const unquote = (value: string) => (value.startsWith('"') && value.endsWith('"') && value.length >= 2 ? value.slice(1, -1) : value);
 
-/** Longest Authentication-Results value read; the rest is cut and the result marked malformed (slice 3i). */
-export const AUTH_RESULTS_VALUE_MAX = 4 * 1024;
-/** Most method entries read from one Authentication-Results value. */
+/**
+ * Longest Authentication-Results value read; the rest is cut and the result
+ * marked malformed. Slice 3i review: SPF and DMARC are read through the whole
+ * value up to this bound (it was 4 KB for every entry); the reading is linear.
+ */
+export const AUTH_RESULTS_VALUE_MAX = 64 * 1024;
+/** Most DKIM entries kept from one value; more marks it malformed (SPF and DMARC entries are read past it). */
 export const AUTH_RESULTS_ENTRIES_MAX = 20;
+/** Most trusted headers of the top block parsed (slice 3i review); the rest are only counted. */
+export const AUTH_RESULTS_COUNTED_MAX = 8;
+/** How much of a value is read for the authserv-id before anything else. */
+const AUTHSERV_PREFIX_MAX = 1_024;
 
 /** One `spf`, `dkim` or `dmarc` entry of an Authentication-Results header, property values as written. */
 export type AuthEntry = {
@@ -358,32 +368,85 @@ export type AuthResults = {
 const AUTH_METHODS = new Set<AuthEntry["method"]>(["spf", "dkim", "dmarc"]);
 
 /**
- * The method entries of one Authentication-Results value (RFC 8601), bounded
- * before any regular expression runs. Unknown methods are skipped; null
- * without an authserv-id.
+ * The authserv-id of a value, lower case, read from its first kilobyte only
+ * (comments taken out), so an untrusted header is skipped before anything
+ * else runs (slice 3i review). Null when there is none.
  */
-export function parseAuthResults(value: string): AuthResults | null {
-  let malformed = value.length > AUTH_RESULTS_VALUE_MAX;
-  const stripped = stripComments(value.slice(0, AUTH_RESULTS_VALUE_MAX));
-  if (!stripped.balanced) malformed = true;
-  const parts = splitEntries(stripped.text);
-  const authservId = (parts[0] ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
-  if (authservId === "") return null;
-  const entries: AuthEntry[] = [];
-  for (const part of parts.slice(1)) {
-    if (entries.length >= AUTH_RESULTS_ENTRIES_MAX) {
-      malformed = true;
-      break;
+export function authservIdOf(value: string): string | null {
+  const head = splitEntries(stripComments(value.slice(0, AUTHSERV_PREFIX_MAX)).text)[0] ?? "";
+  const id = head.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  return id === "" ? null : id;
+}
+
+const isNameChar = (code: number) =>
+  (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a) || code === 0x2e || code === 0x5f || code === 0x2d;
+const isSpace = (ch: string) => ch === " " || ch === "\t" || ch === "\r" || ch === "\n" || /\s/.test(ch);
+
+/**
+ * The `name=value` pairs of one entry in one linear pass (slice 3i review:
+ * no unanchored `+` that a long run without `=` makes quadratic). A value is
+ * a quoted string, else a run up to whitespace or `;`; an unclosed quote
+ * reads as the run.
+ */
+function pairsOf(part: string): { name: string; value: string }[] {
+  const out: { name: string; value: string }[] = [];
+  const n = part.length;
+  let i = 0;
+  while (i < n) {
+    if (!isNameChar(part.charCodeAt(i))) {
+      i += 1;
+      continue;
     }
-    const pairs = [...part.matchAll(/([A-Za-z0-9._-]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^\s;]+)/g)].map((m) => ({
-      name: (m[1] ?? "").toLowerCase(),
-      value: unquote(m[2] ?? ""),
-    }));
+    let j = i;
+    while (j < n && isNameChar(part.charCodeAt(j))) j += 1;
+    let k = j;
+    while (k < n && isSpace(part[k] ?? "")) k += 1;
+    if (part[k] !== "=") {
+      i = j;
+      continue;
+    }
+    k += 1;
+    while (k < n && isSpace(part[k] ?? "")) k += 1;
+    if (k >= n || part[k] === ";") {
+      i = j;
+      continue;
+    }
+    let end = -1;
+    if (part[k] === '"') {
+      let m = k + 1;
+      while (m < n && part[m] !== '"') m += part[m] === "\\" ? 2 : 1;
+      if (m < n) end = m + 1;
+    }
+    if (end === -1) {
+      end = k;
+      while (end < n && part[end] !== ";" && !isSpace(part[end] ?? "")) end += 1;
+    }
+    out.push({ name: part.slice(i, j).toLowerCase(), value: unquote(part.slice(k, end)) });
+    i = end;
+  }
+  return out;
+}
+
+/** The method entries of comment-free text after the authserv-id; DKIM entries past the cap are dropped and reported. */
+function entriesOf(text: string): { entries: AuthEntry[]; overflow: boolean } {
+  const entries: AuthEntry[] = [];
+  let dkim = 0;
+  let overflow = false;
+  for (const part of splitEntries(text).slice(1)) {
+    const pairs = pairsOf(part);
     const first = pairs[0];
     if (first === undefined || !AUTH_METHODS.has(first.name as AuthEntry["method"])) continue;
+    const method = first.name as AuthEntry["method"];
+    if (method === "dkim") {
+      if (dkim >= AUTH_RESULTS_ENTRIES_MAX) {
+        overflow = true;
+        continue;
+      }
+      dkim += 1;
+    }
     const prop = (name: string) => pairs.slice(1).find((p) => p.name === name)?.value ?? null;
     entries.push({
-      method: first.name as AuthEntry["method"],
+      method,
       result: first.value.toLowerCase(),
       smtpMailfrom: prop("smtp.mailfrom"),
       headerFrom: prop("header.from"),
@@ -392,6 +455,30 @@ export function parseAuthResults(value: string): AuthResults | null {
       headerS: prop("header.s"),
       headerB: prop("header.b"),
     });
+  }
+  return { entries, overflow };
+}
+
+/**
+ * The method entries of one Authentication-Results value (RFC 8601), bounded
+ * and read in linear time. Unknown methods are skipped; null without an
+ * authserv-id. Slice 3i review: SPF and DMARC are read past the DKIM cap, and
+ * a value left unbalanced (an open quote, maybe inside a comment) is read a
+ * second time with comments taken out whole; every answer of that reading
+ * other than `pass` is kept too, so the worst of both counts and a pass seen
+ * only there never does.
+ */
+export function parseAuthResults(value: string): AuthResults | null {
+  const authservId = authservIdOf(value);
+  if (authservId === null) return null;
+  const text = value.slice(0, AUTH_RESULTS_VALUE_MAX);
+  const strict = stripComments(text);
+  const read = entriesOf(strict.text);
+  let entries = read.entries;
+  const malformed = value.length > AUTH_RESULTS_VALUE_MAX || read.overflow || !strict.balanced;
+  if (!strict.balanced) {
+    const loose = entriesOf(stripComments(text, false).text);
+    entries = [...entries, ...loose.entries.filter((entry) => entry.result !== "pass")];
   }
   return { authservId, entries, malformed };
 }
@@ -425,13 +512,14 @@ function dkimResults(results: AuthResults): DkimResult[] {
  * shared with the slice-3i sender check): only trusted authserv-ids, only
  * inside the provider's top trace block and above the topmost
  * DKIM-Signature, in message order (the provider's own comes first).
- * `elsewhere`: a trusted id also appears further down. Null when the preset
- * trusts no id.
+ * `elsewhere`: a trusted id also appears further down. At most
+ * AUTH_RESULTS_COUNTED_MAX are parsed; `more` counts the rest. Null when the
+ * preset trusts no id.
  */
 export function trustedAuthResults(
   headers: HeaderLine[],
   preset: AccountPreset,
-): { counted: AuthResults[]; elsewhere: boolean } | null {
+): { counted: AuthResults[]; elsewhere: boolean; more: number } | null {
   const trusted = TRUSTED_AUTHSERV[preset].map((id) => id.toLowerCase());
   if (trusted.length === 0) return null;
 
@@ -444,14 +532,24 @@ export function trustedAuthResults(
 
   const counted: AuthResults[] = [];
   let elsewhere = false;
+  let more = 0;
   headers.forEach((line, index) => {
     if (keyOf(line) !== "authentication-results") return;
+    // The id first: an untrusted or misplaced header is never parsed (slice 3i review).
+    const id = authservIdOf(line.value);
+    if (id === null || !trusted.includes(id)) return;
+    if (index >= limit) {
+      elsewhere = true;
+      return;
+    }
+    if (counted.length >= AUTH_RESULTS_COUNTED_MAX) {
+      more += 1;
+      return;
+    }
     const parsed = parseAuthResults(line.value);
-    if (parsed === null || !trusted.includes(parsed.authservId)) return;
-    if (index < limit) counted.push(parsed);
-    else elsewhere = true;
+    if (parsed !== null) counted.push(parsed);
   });
-  return { counted, elsewhere };
+  return { counted, elsewhere, more };
 }
 
 type Signature = { d: string | null; s: string | null; b: string; h: string[] };
@@ -499,6 +597,8 @@ export function trustOf(
   if (found === null) return "untrusted_provider";
   const counted = found.counted;
   if (counted.length === 0) return found.elsewhere ? "untrusted_provider" : "no_dkim";
+  // Headers past the parse cap were not read: one of them could contradict a pass.
+  if (found.more > 0) return "not_covered";
 
   const signatures = linesNamed(headers, "dkim-signature").map((line) => parseSignature(line.value));
   const results = counted.flatMap(dkimResults);

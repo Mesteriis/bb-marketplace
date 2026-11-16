@@ -75,17 +75,34 @@ const TRACE_PREFIXES = [
   ),
 ];
 
-/** The lines the sync-time check reads (as the gateway keeps them), so open-time verdicts agree (resolution 16). */
-function judgedLines(lines: readonly HeaderLine[]): HeaderLine[] {
-  return lines.filter((line) => {
+const isKept = (key: string) => UNSUBSCRIBE_NAMES.has(key) || TRACE_PREFIXES.some((prefix) => key.startsWith(prefix));
+
+/**
+ * The lines the sync-time check reads (as the gateway keeps them), so
+ * open-time verdicts agree (resolution 16). With the `whole` header block
+ * (Details' raw message), the first line of any other name stays as an empty
+ * marker, so the provider's top block ends where it really does: a
+ * trusted-id header the sender wrote under its own Subject is never counted
+ * (slice 3i review, finding 12). A partial fetch (the refresh) cannot know.
+ */
+function judgedLines(lines: readonly HeaderLine[], whole: boolean): HeaderLine[] {
+  const out: HeaderLine[] = [];
+  let marked = !whole;
+  for (const line of lines) {
     const key = line.key.toLowerCase();
-    return UNSUBSCRIBE_NAMES.has(key) || TRACE_PREFIXES.some((prefix) => key.startsWith(prefix));
-  });
+    if (isKept(key)) out.push(line);
+    else if (!marked) {
+      out.push({ key, value: "" });
+      marked = true;
+    }
+  }
+  return out;
 }
 
-/** What one fetched header block says, judged as sync would for this stored row. */
-function judge(row: SenderCheckRow, lines: readonly HeaderLine[], preset: AccountPreset, cap: boolean) {
-  const kept = judgedLines(lines);
+/** What one fetched header block says, judged as sync would for this stored row; `whole` for Details' raw message. */
+function judge(row: SenderCheckRow, lines: readonly HeaderLine[], preset: AccountPreset, whole: boolean) {
+  const cap = !whole;
+  const kept = judgedLines(lines, whole);
   const check = senderCheckOf(cap ? capHeaderLines(kept) : kept, preset, row.from, { folderRole: row.folderRole });
   const contentType = lines.find((line) => line.key.toLowerCase() === "content-type")?.value ?? null;
   return { check, receipt: receiptRequested(lines), crypto: cryptoKindOf(contentType, row.firstLine) };
@@ -160,7 +177,7 @@ export function createSenderChecks(deps: SenderChecksDeps): SenderChecks {
           for (const row of current) {
             const block = byUid.get(row.uid!);
             if (block === undefined) continue;
-            const judged = judge(row, headerLines(block), account.preset, true);
+            const judged = judge(row, headerLines(block), account.preset, false);
             const wrote = store.writeSenderCheck(row.id, {
               ...judged,
               force: force || repinned(row),
@@ -215,7 +232,7 @@ export function createSenderChecks(deps: SenderChecksDeps): SenderChecks {
     const [row] = store.senderCheckRows([messageId]);
     if (row === undefined) return { authserv: null, lines: [] };
     // The full header block, without the 64-line cap (resolution 7).
-    const judged = judge(row, headerLines(raw), presetOf(row.accountId), false);
+    const judged = judge(row, headerLines(raw), presetOf(row.accountId), true);
     if (row.senderCheckJson === null || repinned(row)) {
       try {
         store.writeSenderCheck(row.id, { ...judged, force: repinned(row) });
