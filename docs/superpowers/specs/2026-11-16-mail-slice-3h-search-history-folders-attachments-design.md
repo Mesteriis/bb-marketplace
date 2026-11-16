@@ -1,9 +1,12 @@
 # Makosh Mail — slice 3h: search, history, folders, attachments, reading (server search, older mail, operators, saved searches, folder management, Gmail labels, attachment viewer and files, reading comfort)
 
-Status: builder's design, proposed to the owner on 2026-11-16. The owner
-asked for the whole backlog to be closed and accepts sensible defaults; every
-decision in "Owner's decisions" below is a proposal marked
-*(owner, accepted 2026-11-16)* with a one-line rationale. It follows 3a
+Status: builder's design, accepted by the owner on 2026-11-16 (every
+decision below, including 11, 12, 13 and 18, and `pdfjs-dist` 6.5.438 as a
+new dependency). The owner asked for the whole backlog to be closed and
+accepts sensible defaults; every decision in "Owner's decisions" below is
+marked *(owner, accepted 2026-11-16)* with a one-line rationale. The
+"Resolutions after the builder check" at the end override every section
+above them. It follows 3a
 (organize and read), 3b (write and send), 3c (agent proposals and
 translation), 3d (sending polish), 3e (inbox triage), 3f (agent and mail) and
 3g (BB integration), all on `feat/mail-imap-slice`. Everything in the
@@ -39,8 +42,9 @@ file and the code:
 
 Points the builder could not verify are marked **[unverified]** and collected
 in "Not verified" at the end. "Open questions for the owner" lists the places
-where a proposed decision is most likely to be changed. Each has a
-recommendation, and the design below follows it.
+where a decision was most likely to be changed. Each had a recommendation;
+the owner accepted every recommendation on 2026-11-16, and the design below
+follows it.
 
 ## Owner's decisions
 
@@ -142,22 +146,22 @@ Proposed by the builder on 2026-11-16; each line is marked
     scripting, no forms, no annotation layer, fonts from the file only, no
     network; links inside a PDF are listed under it by their real URL and
     opened only by click. If the owner declines the dependency, PDFs stay
-    download-only and #84 covers text attachments only. *(proposed — owner to
-    confirm)* It is the one vetted, pure-JavaScript PDF renderer; the
+    download-only and #84 covers text attachments only. *(owner, accepted
+    2026-11-16, including the new dependency `pdfjs-dist` 6.5.438)* It is the one vetted, pure-JavaScript PDF renderer; the
     sandboxed frame blocks the browser's own PDF plugin.
 12. **Files view.** Rail **Files** lists every synced attachment (inline
     images left out) with filters by type, sender, account and date, and
     **View**, **Download**, **Save to project…** (3g) and **Open message**.
-    Metadata only; nothing is fetched until the owner acts. *(proposed —
-    owner to confirm)* The metadata is already stored.
+    Metadata only; nothing is fetched until the owner acts. *(owner,
+    accepted 2026-11-16)* The metadata is already stored.
 13. **Attachment text is indexed only when the owner turns it on, and only
     here.** Setting `indexAttachmentText` (off): text-like attachments and
     PDFs up to 10 MB, in mail within the sync window (and loaded history),
     are fetched (`BODY.PEEK`), their text extracted on this machine (PDF with
     the same pinned pdf.js, in the plugin server, no canvas) and indexed in a
     separate local full-text index; at most 50 attachments per sync round.
-    Agents never search or read attachment text. *(proposed — owner to
-    confirm)* It costs bandwidth and disk, and attachment text has not passed
+    Agents never search or read attachment text. *(owner, accepted
+    2026-11-16)* It costs bandwidth and disk, and attachment text has not passed
     the redaction agents rely on.
 14. **No semantic search in 3h.** A plugin has no local embedding model, and
     computing embeddings through Makosh AI would send all mail to a provider,
@@ -189,8 +193,8 @@ Proposed by the builder on 2026-11-16; each line is marked
     only when already allowed) in a hidden sandboxed frame without scripts and
     calls its `print()`; the system dialog's **Save as PDF** saves the file.
     Where printing is unavailable, **Save printable page** downloads the same
-    document as `.html` through `experimental_saveFile`. *(proposed — owner to
-    confirm)* No PDF library is needed to make a PDF.
+    document as `.html` through `experimental_saveFile`. *(owner, accepted
+    2026-11-16)* No PDF library is needed to make a PDF.
 19. **What 3h sends outside the machine:** only IMAP commands to the owner's
     own mail server — server search criteria (the search words), fetches of
     older mail, hits and (opt-in) attachments, folder `CREATE` / `RENAME` /
@@ -1091,7 +1095,7 @@ Each task ends with `npm run check`. The last also runs `npm run build` and
    reconcile over `history_since`, conversation load, day-clock expiry
    (+ tests).
 5. **Attachment text.** Indexer, text decoding, `pdf-text.ts` with the pinned
-   pdf.js (only after the owner accepts decision 11) (+ tests).
+   pdf.js (decision 11 accepted by the owner on 2026-11-16) (+ tests).
 6. **Server RPCs.** Every method in the table, the view ticket and sniffing
    on `/download`, folder operations through the write queue, labels with
    undo, settings (+ tests).
@@ -1143,7 +1147,10 @@ Each task ends with `npm run check`. The last also runs `npm run build` and
 
 ## Open questions for the owner
 
-1. **pdf.js.** Add `pdfjs-dist` 6.5.438 (proposed), or keep PDFs
+All eight are closed: the owner accepted every recommendation on 2026-11-16,
+including question 1 (`pdfjs-dist` 6.5.438 is added).
+
+1. **pdf.js.** *(accepted 2026-11-16: added.)* Add `pdfjs-dist` 6.5.438 (proposed), or keep PDFs
    download-only and #84 text-only? *Recommendation:* add it; it is the only
    way to read a PDF inside Mail without writing it to disk.
 2. **Server-hit lifetime.** 14 days unopened (proposed), keep forever, or
@@ -1187,3 +1194,285 @@ Each task ends with `npm run check`. The last also runs `npm run build` and
   shortcuts.
 - Performance of the 20 000-message timing tests on the owner's machine
   (CI-like bounds as in 3f resolution 19).
+
+## Resolutions after the builder check
+
+These override the sections above. The owner accepted every decision on
+2026-11-16, including decisions 11, 12, 13 and 18 and the new dependency
+`pdfjs-dist` 6.5.438 (exact pin); open questions 1–8 are closed as
+recommended. Names below were checked against the current code
+(`src/core/search.ts`, `src/core/sync.ts`, `src/core/ports.ts`,
+`src/core/undo.ts`, `src/core/contract.test.ts`, `src/ui/sanitize.ts`,
+`src/adapters/bb/sqlite-store.ts` and its test, `imapflow-gateway.ts`,
+`downloads.ts`, `server.ts`, `tests/architecture.test.ts`) and imapflow
+2.11.0 (`node_modules/imapflow/dist/cjs/…`). Line numbers are in the tree at
+commit `80783998`.
+
+1. **Server-side PDF text runs in a `worker_threads` worker** (blocking 1;
+   replaces "PDF: `pdfjs-dist` legacy build in the plugin server … no
+   worker" in "Attachment text" and the matching line in "Calls made by
+   me").
+   - `src/adapters/bb/pdf-text.ts` extracts one PDF per worker: a
+     `node:worker_threads` `Worker` with `resourceLimits`
+     (`maxOldGenerationSizeMb: 256`, `maxYoungGenerationSizeMb: 32`,
+     `stackSizeMb: 4`), the PDF bytes transferred in, the text (≤ 200 000
+     characters) or a reason code posted back. The parent arms a 20-second
+     timer and calls `worker.terminate()` when it fires (`timeout`); an
+     `error` or non-zero `exit` is `unreadable` (`ERR_WORKER_OUT_OF_MEMORY`
+     included). Nothing pdf.js does can block or crash the plugin server's
+     own thread; the indexer runs one worker at a time.
+   - Inside the worker, the options stay as above (`isEvalSupported: false`,
+     `disableFontFace: true`, `useSystemFonts: false`, no
+     `standardFontDataUrl`, `data` bytes only, ≤ 200 pages) and pdf.js runs
+     its own processing in that worker thread (its "fake worker").
+   - `dist/server.js` is one bundled file (it imports only `node:` modules),
+     so shipping the worker's code is not a given. **Task 0's spike** must
+     prove one way the built plugin starts the worker and loads pdf.js in
+     it. If no way passes, #84 ships for text attachments only (text, CSV,
+     JSON, XML, code, `.ics`, HTML source as text), PDFs are never indexed
+     (no row is written for them), README and the setting's label say
+     "text attachments", and the page-side viewer (resolution 2) is decided
+     on its own.
+2. **Page-side pdf.js is proven by the spike; the fallback is download-only**
+   (blocking 2; replaces "when the page cannot start a worker
+   **[unverified]**, pdf.js runs on the main thread with the page cap
+   lowered to 100" in "Attachment viewer").
+   - `dist/app.js` is one bundle that shares BB's React and runs in BB's own
+     document, so BB's CSP and BB's main thread are at stake. Task 0 checks,
+     on the build output: whether `bb plugin build` keeps a dynamic
+     `import()` as a separate chunk or inlines it, the bundle size with the
+     library and the worker, and that the worker can be embedded so the page
+     starts it from a `blob:` URL without any network request.
+   - pdf.js is used with no `cMapUrl`, no `standardFontDataUrl` and no
+     `wasmUrl` (nothing may be fetched). PDFs that need CMaps, non-embedded
+     standard fonts or the wasm image decoders may show gaps; the viewer
+     always shows **Download** beside the page and says "Some parts of this
+     PDF may not display".
+   - At run time the viewer first starts the embedded worker; if BB's page
+     refuses it (CSP, any error) the PDF is **download-only** with "PDF
+     preview is not available here". pdf.js never runs on BB's main thread.
+     If the spike fails at build level, PDF preview is download-only in 3h
+     and `pdf-view.tsx` is not built.
+   - **Layer rule** (found while checking): `src/ui` may import only React,
+     DOMPurify, the four TipTap packages and the design system
+     (`tests/architecture.test.ts` `ui.packages`). `pdf-view.tsx` therefore
+     takes a `PdfEngine` port (`open(bytes) → { pages, page(n) → render to a
+     canvas, links(n) }`) as a prop; the implementation over `pdfjs-dist`
+     lives in `src/adapters/bb/pdf-page.ts` and is injected by `app.tsx`.
+     The same applies to the host components the viewer and reading use:
+     `experimental_SourceCode` (already wrapped as `HostSourceCode` in
+     `app.tsx`), `experimental_ImageLightbox`, `experimental_saveFile` and
+     `experimental_useCodeTheme` (read in `app.tsx`, passed down as
+     `dark: boolean`). `tests/architecture.test.ts` is not changed.
+3. **Rename and delete keep the AI access scope right** (blocking 3; adds to
+   "Folder management").
+   - `ai_scope_accounts.folders_json` (`sqlite-store.ts` 565–570, read and
+     written at 4722–4747) holds folder paths. Rename rewrites, in the same
+     re-home transaction, every entry equal to `from` or under `from +
+     delimiter`; delete drops the deleted path's entry.
+   - `saveFolders` (`sqlite-store.ts` 3080–3112) also drops removed paths
+     from `folders_json` in its transaction, so a folder deleted by another
+     client, or a crash before re-home (resolution 8), never leaves a stale
+     path that a later folder of the same name would inherit.
+   - The schema-scan test covers `folders_json` explicitly (a JSON column the
+     name pattern would miss) beside the columns named `folder`, `path`,
+     `*_folder` and `return_to`.
+4. **Attachment text only for an explicit owner request** (blocking 4;
+   replaces "the local `search` (owner path only)" in "Attachment text").
+   - The `search` RPC (`server.ts` 2682–2684) gains `refusePluginCaller`
+     and an optional `attachments: boolean` input. Only the page sends
+     `attachments: true`; the store's `search(query, accountId, limit,
+     opts)` joins `attachment_text_fts` only when `opts.attachments ===
+     true`, whatever `opts.scoped` says.
+   - The CLI `search` command (`server.ts` 5097–5130; unscoped outside a
+     thread), `mail_search`, `agentSearch` and every other caller never pass
+     it. Tests: the CLI outside a thread, an agent tool and a plugin caller
+     with a matching attachment get no attachment hit and no excerpt.
+5. **Deleting a non-empty Gmail label folder is a plain `DELETE`** (blocking
+   5; replaces the "Gmail" bullet of "Folder management" and that part of
+   decision 7).
+   - On a Gmail account (`capabilities().gmail`) a label folder (not INBOX,
+     not under `[Gmail]` / `[Google Mail]`, no special use) is deleted with
+     IMAP `DELETE` on a fresh connection with nothing selected, whatever its
+     message count. Gmail removes only the label; the messages stay in All
+     Mail and in their other labels. The Trash path is never used for it.
+   - `folder_delete_check` returns `gmailLabel: true` with the count; the
+     dialog says "Delete the label *Receipts*? It is removed from 41
+     messages. The messages stay in All Mail and keep their other labels."
+     and calls `folder_delete({ moveToTrash: false, expectedMessages: N })`.
+     Children still refuse.
+   - The residual-risk note (mail arriving between `STATUS` and `DELETE`) does
+     not apply to Gmail labels.
+6. **Jobs never swallow new mail** (gap; adds to "Server search" and "Older
+   mail").
+   - A server-search, history or conversation job reads the folder's
+     `sync_state` before inserting: a folder with no `sync_state` is skipped
+     (`not_synced`), and a session whose UIDVALIDITY differs from the stored
+     `uid_validity` skips the folder (`changed`). Uids above the stored
+     `last_uid` are never inserted by a job: they belong to the next
+     incremental round, whose `known` set (`sync.ts` 627–634) would
+     otherwise hide them from `newInbox` (no toast, rule, category or
+     triage). Skipped uids are counted in the poll result.
+   - Job rows never enter `SyncOutcome` (`newInbox`, `returning`,
+     `inserted`): jobs run outside `syncAccount`, so new-mail hooks, rules,
+     categories and reminders never see them.
+7. **Store and sync plumbing for kept rows** (gap).
+   - `MailStore.upsertMessages(accountId, folder, messages, opts?: { kept?:
+     "history" | "search" })` (`ports.ts` 318–322; `sqlite-store.ts` 2422;
+     `InMemoryMailStore` in `src/core/testing/fakes.ts`). New rows take
+     `kept` and `kept_at = now`. An existing row is never downgraded: window
+     rows (`kept` NULL) and `opened` rows stay; `search` becomes `history`
+     when a history load covers it. Sync calls stay as they are (no
+     `opts`).
+   - `prepareMessage` (`sync.ts` 788, private today) is exported unchanged;
+     jobs call it with the same context (`preset`, `classifyDev`,
+     `devHosts`), so job rows get unsubscribe info, List-Id and the dev
+     class like synced rows.
+   - Naming: `sync.ts` already has a local `kept` map in `syncFolder` /
+     `keptAtReset`; the column keeps its name and the code reads it through
+     `KeptState = "history" | "search" | "opened"`.
+8. **A crash between `RENAME` and the re-home** (gap; adds to "Folder
+   management").
+   - The re-home transaction runs right after the server's OK, before the
+     re-listing. If the plugin stops between the two, the next listing's
+     `saveFolders` (`sqlite-store.ts` 3080–3112) deletes the old path's
+     local rows and sync state, and the new path syncs as a never-synced
+     folder: its window comes back by the next round. Lost, locally only:
+     loaded history, server hits and `opened` rows of that folder outside
+     the window, and its `folder_prefs` row. Nothing is lost on the server,
+     the AI scope entry is dropped (resolution 3), and README states it.
+9. **Reconcile over loaded history is daily** (gap; replaces "Reconcile
+   covers history" in "Older mail").
+   - `SyncOptions` gains `historyCheck?: boolean`. Only then does
+     `reconcile` (`sync.ts` 748) check flags of the rows between
+     `history_since` and `synced_since`, in the existing 500-uid batches;
+     other rounds check only the window, as today.
+   - The sync service sets it on full rounds for a folder whose
+     `sync_state.history_checked_at` (new column, element 13) is NULL or
+     older than 24 hours, and the store updates it after the check. A message
+     deleted on the server can linger in loaded history for up to a day.
+10. **Label changes have their own undo kind** (gap; replaces "records the
+    inverse change as the undo action" in "Gmail labels").
+    - `UndoGroupKind` (`src/core/undo.ts` 22) gains `"labels"`; a labels
+      group carries `labelDeltas: { messageId, added: string[], removed:
+      string[] }[]`, only the labels the change really added or removed
+      (from the stored `gm_labels` before the change). Undo removes what was
+      added and adds back what was removed, per message; a label the message
+      already had is never touched.
+    - imapflow's `messageFlagsAdd` / `messageFlagsRemove` with `useLabels`
+      return `false` on a refusal instead of throwing (`commands/store.js`
+      17). The gateway turns `false` into `SafeImapError("LabelsRefused")`,
+      re-fetches `X-GM-LABELS` for the uids after a success and stores what
+      the server reports. No undo record is made for a refused change.
+11. **Gmail `in:trash` and `in:spam`, and Gmail without All Mail** (gap;
+    replaces "`in:trash` / `in:spam` add Gmail's `in:anywhere`" in "Server
+    search").
+    - Gmail does not show Trash and Spam in All Mail. With `in:trash` or
+      `in:spam` the plan runs `X-GM-RAW` in the Trash or Spam folder itself
+      (special use `trash` / `junk`) instead of All Mail; with both, in each.
+      Other `in:` roles stay on All Mail as `in:` terms of the raw query.
+    - When the listing has no `\All` folder (All Mail hidden from IMAP), a
+      Gmail account is planned like any other server (folder list, cap 30),
+      with `gmailRaw` per folder because the session still has `X-GM-EXT-1`.
+      Live step 2 confirms both.
+12. **The tokenizer changes** (gap; replaces "The tokenizer stays" in
+    "Search operators").
+    - `OPERATOR = /^([a-z]+):/i` (`search.ts` 12) rejects `newer_than`,
+      `older_than` and a leading `-`. It becomes
+      `/^(-?)([a-z][a-z_]*):/i`: the sign and the name are read apart. A
+      bare `-word`, a lone `-` and an unknown `-name:value` stay free text
+      (the unknown one with an `unknown_operator` note). The forward scan,
+      quoted values and Unicode spaces are unchanged, and every existing
+      `search.test.ts` case keeps passing.
+13. **SVG is download-only** (gap; replaces "SVG only as an `<img>`" in
+    decision 10 and "Attachment viewer").
+    - A same-origin `blob:` of type `image/svg+xml` runs scripts if anything
+      ever navigates to it. SVG is therefore not viewable: `fileKindOf`
+      still files it as `image` for the Files view, but `isViewable` refuses
+      `image/svg+xml`, the view ticket answers `not_viewable`, and the page
+      never builds an SVG `Blob`. The server sniffer still recognises SVG, so
+      an SVG declared as PNG is a mismatch (`409 not_viewable`). Blobs are
+      made only with the sniffed raster type.
+14. **Sanitizer and dark detection** (gap; refines "Thread management" and
+    "Plain text and dark mail").
+    - DOMPurify keeps `data-*` attributes by default and `sanitize.ts` sets
+      no `ALLOW_DATA_ATTR`. The existing purifier gets an
+      `uponSanitizeAttribute` hook that drops every incoming `data-mk-*`
+      attribute; Mail's own `data-mk-quote` marks are added afterwards, on
+      the sanitized tree. A test feeds `<div data-mk-quote>` from the mail
+      and finds it shown.
+    - `meta` is forbidden (`sanitize.ts` 32–40), so dark support is read from
+      the raw HTML before sanitizing: `declaresDarkSupport(rawHtml)` (pure,
+      `src/ui/sanitize.ts`) scans at most the first 200 000 characters for a
+      `color-scheme` or `supported-color-schemes` meta naming `dark` and for
+      `prefers-color-scheme: dark` inside `<style>`. The raw HTML is only
+      read, never rendered.
+15. **Attachment text has a total size cap** (gap; adds to "Attachment
+    text").
+    - `ATTACHMENT_TEXT_TOTAL_MAX = 50_000_000` characters of `body` across
+      the table (the trigram index is several times that on disk). Before an
+      insert the indexer checks `SUM(length(body))`; at the cap indexing
+      stops, `attachment_text_status` gains `full: true`, and Mail settings
+      show "Attachment text index is full · Remove attachment text". No rows
+      are written for files not indexed because of the cap, so nothing
+      needs a retry.
+16. **A UIDVALIDITY reset keeps `opened` rows it can find** (gap; replaces
+    "UIDVALIDITY reset" in "Older mail" as far as `opened` rows go).
+    - `keptAtReset` (`sync.ts` 669) also wants every row of the folder with
+      `kept = 'opened'`, so they are looked for by their old uid and then by
+      Message-ID (`reattachKept`, 693) like snoozed rows. A row found
+      nowhere is gone from that folder on the server and is deleted, as a
+      reconcile would; an `opened` row is never deleted only because the
+      reset happened. `history` and `search` rows are handled as written
+      (deleted unless reattached; `history_since` cleared).
+17. **Stable search order** (nit). The `search` cursor follows the store's
+    existing order `date IS NULL DESC, date DESC, id DESC`
+    (`sqlite-store.ts` 3012): `{ date: string | null, id }`. `files_list`
+    and `messages_list` take cursors that match their own `ORDER BY`
+    exactly (including the NULL-date rule); tests page across rows with
+    equal and NULL dates.
+18. **No folder names imapflow would read as special use** (nit; adds to
+    "Names" in "Folder management").
+    - imapflow assigns special use by name when the server has no
+      SPECIAL-USE flag (`dist/cjs/special-use.js` 883–916: exact localized
+      names, then decorated names). `folder_create` and `folder_rename`
+      refuse a name for which `specialUse(false, { name, flags: [] }).flag`
+      is not null ("That name is used for system folders"). The check sits
+      in `imapflow-gateway.ts` as `namedLikeSpecialUse(name)` (imported from
+      `imapflow/lib/special-use.js`) and is handed to the core's
+      `folder-ops.ts` name rule as a function, so the core stays
+      imapflow-free.
+19. **Printing never loads remote images** (nit; replaces "remote images
+    only when already allowed" in decision 18, "Print" and "Security and
+    privacy").
+    - The print document's CSP allows `data:` and Mail's already-resolved
+      inline (`cid:`) images only; remote images are left out with "Remote
+      images are not printed". Printing makes no network request.
+20. **Smaller corrections** (nits).
+    - `Cache-Control: no-store` is already in `BASE_HEADERS`
+      (`downloads.ts` 117–121); the view ticket reuses them unchanged.
+    - `SearchCharsetRefused` is dropped: imapflow answers `false` for every
+      refused SEARCH, so the gateway keeps `SafeImapError("SearchFailed")`
+      (`imapflow-gateway.ts` 647). The page says "This server could not
+      search for this text" when the criteria held non-ASCII text, else "The
+      server refused the search".
+    - The sender card counts From by equality, `from_address = ? COLLATE
+      NOCASE`, which the `messages_from` index serves; it never uses
+      `mail_lower(…) LIKE` for From.
+21. **`@napi-rs/canvas` and Node** *(owner, decided 2026-11-16)*.
+    - `@napi-rs/canvas` is an optional dependency of `pdfjs-dist`. It may
+      land in `node_modules` and `package-lock.json`; Mail never imports it,
+      and the build output must not contain it (`dist/server.js` and
+      `dist/app.js` searched for `@napi-rs/canvas` in Task 0 and in the docs
+      task). README says so.
+    - The BB host runs Node 24.20.0, which meets `pdfjs-dist`'s engines
+      (`>=22.13.0 || >=24`). The "Not verified" item about the Node version
+      is closed.
+22. **#74 and #76 stay moved to 3j** *(owner, accepted 2026-11-16)*. List
+    virtualization and density are not part of 3h; 3h adds only timing tests
+    for its own queries.
+23. **Migration element 13 additions.** Besides the SQL above, element 13
+    adds `ALTER TABLE sync_state ADD COLUMN history_checked_at TEXT`
+    (resolution 9). Elements 0–11 are pinned today
+    (`sqlite-store.test.ts` 755–778, `MIGRATIONS.slice(0, 12)`); element 12
+    exists unpinned. The docs task pins `MIGRATIONS.slice(0, 14)`.
