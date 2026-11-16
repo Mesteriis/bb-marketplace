@@ -148,6 +148,24 @@ describe("day clock", () => {
     expect(published).toEqual(["token-1", "token-2"]);
   });
 
+  it("a window asking inside quiet hours gets nothing and the notice stays unshown; it is announced again after", () => {
+    settings = { ...settings, quietHours: "21:00-23:30" };
+    clock.set(at(8, 0));
+    const tick = dayClock().tick;
+    tick();
+    expect(published).toEqual(["token-1"]);
+    // Nobody looked; the evening's quiet hours begin and a window opens.
+    clock.set(at(22, 0));
+    tick();
+    expect(takeDayNotice(store, at(22, 0), settings.quietHours)).toBeNull();
+    expect(store.getDigest("2026-11-16")!.notifiedAt).toBeNull();
+    // After quiet hours the clock wakes the windows again, and the notice is shown once.
+    clock.set(at(23, 30));
+    tick();
+    expect(published).toEqual(["token-1", "token-2"]);
+    expect(takeDayNotice(store, at(23, 31), settings.quietHours)).toMatchObject({ kind: "digest" });
+  });
+
   it("publishes tokens only and logs no address or subject", () => {
     reminder("r-due");
     clock.set(at(10, 0));

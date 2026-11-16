@@ -210,6 +210,11 @@ export class DayNoticeBook {
     return token;
   }
 
+  /** Forgets what was announced: after quiet hours every unshown notice is announced again. */
+  reannounce(): void {
+    this.announced.clear();
+  }
+
   /** Whether a token was handed out (an unknown one still gets the oldest notice). */
   knows(token: string): boolean {
     return this.tokens.has(token);
@@ -218,9 +223,11 @@ export class DayNoticeBook {
 
 /**
  * The oldest unshown notice of today, marked shown: today's built digest
- * first, then due reminders by due time. Null when none waits.
+ * first, then due reminders by due time. Null when none waits, and inside
+ * quiet hours (the notice stays unshown; the clock announces it again after).
  */
-export function takeDayNotice(store: MailStore, now: Date): DayNotice | null {
+export function takeDayNotice(store: MailStore, now: Date, quietHours = ""): DayNotice | null {
+  if (inQuietHours(parseQuietHours(quietHours), localMinutes(now))) return null;
   const nowIso = now.toISOString();
   const day = localDay(now);
   const digest = store.getDigest(day);
@@ -283,6 +290,9 @@ export function createDayClock(deps: DayClockDeps): DayClock {
     }
   }
 
+  /** Whether the last tick fell inside quiet hours. */
+  let wasQuiet = false;
+
   function tickOnce(): void {
     const { store } = deps;
     const now = deps.clock.now();
@@ -311,7 +321,13 @@ export function createDayClock(deps: DayClockDeps): DayClock {
     }
 
     // Announce what waits, outside quiet hours; once per notice.
-    if (inQuietHours(parseQuietHours(settings.quietHours), localMinutes(now))) return;
+    if (inQuietHours(parseQuietHours(settings.quietHours), localMinutes(now))) {
+      wasQuiet = true;
+      return;
+    }
+    // A window that asked inside quiet hours got nothing: wake the windows again for what is still unshown.
+    if (wasQuiet) deps.book.reannounce();
+    wasQuiet = false;
     const digest = settings.morningDigest ? store.getDigest(day) : null;
     if (digest !== null && digest.notifiedAt === null) {
       const token = deps.book.announce(`digest:${day}`);

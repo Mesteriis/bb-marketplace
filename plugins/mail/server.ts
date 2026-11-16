@@ -1366,6 +1366,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       aiNonce: () => translateNonce((size) => new Uint8Array(randomBytes(size))),
       restoreTag: (parts) => newRestoreTag((size) => new Uint8Array(randomBytes(size)), parts),
       categoriesOn: () => current.mailCategories,
+      quietHours: () => current.quietHours,
       categoryUndo: new CategoryUndoBook(randomUUID),
     };
     registerRpc(bb, rpcDeps);
@@ -1445,6 +1446,8 @@ type RpcDeps = {
   restoreTag: (parts: string[]) => string;
   /** The owner's "Sort mail into categories" setting. */
   categoriesOn: () => boolean;
+  /** The owner's quiet hours: Today's notices wait them out (slice 3f). */
+  quietHours: () => string;
   categoryUndo: CategoryUndoBook;
 };
 
@@ -4638,7 +4641,7 @@ function createDayRpc(deps: RpcDeps, withCategories: (threads: ThreadSummary[], 
   }
 
   function notice() {
-    const taken = takeDayNotice(store, clock.now());
+    const taken = takeDayNotice(store, clock.now(), deps.quietHours());
     if (taken === null) throw refuse("not_found", NO_DAY_NOTICE_MESSAGE);
     if (taken.kind === "digest") return { kind: "digest" as const, replyCount: taken.replyCount };
     const copy = sentCopy(store, taken.reminder);
