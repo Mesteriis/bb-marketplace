@@ -7,7 +7,8 @@ translation of a message.
 
 **Status: experimental.** Plugin id: `makosh-mail`. It reads mail, and
 changes it on the server only when you click or press a key: read and unread,
-flags, moves. It sends mail you write through your account's SMTP server,
+flags, moves, and the snoozes and block rules you set up, which move mail
+later on their own. It sends mail you write through your account's SMTP server,
 after a 10-second Undo window. Agents cannot send on their own: with
 `agentPropose` on (off by default) an agent can propose an email, and it goes
 out only when you press **Send** on its card in that agent's thread.
@@ -66,7 +67,7 @@ out only when you press **Send** on its card in that agent's thread.
 - Hotkeys on the Mail page; `?` shows them all. `j` / `k` next and previous
   conversation, `o` or Enter open, `u` back to the list, `/` search, `x`
   select, `e` archive, `#` delete, `!` spam, `s` flag or unflag, Shift+`u`
-  mark unread, Shift+`i` mark read, `v` Move to…, and `g` then `i`, `s`, `d`,
+  mark unread, Shift+`i` mark read, `v` Move to…, `b` snooze, and `g` then `i`, `s`, `d`,
   `t` or `a` for Inbox, Sent, Drafts, Trash or All accounts. Letters follow
   the physical key, so they work on other keyboard layouts. Keys do nothing
   while you type in a field. `c` compose, `r` reply, `a` reply all, `f`
@@ -88,7 +89,13 @@ out only when you press **Send** on its card in that agent's thread.
   downloads and every other fetch use `BODY.PEEK` and never mark mail read.
   Undo of Archive on Gmail adds the message back to the folder it came from
   with UID COPY, never into Trash or Spam (those get a move back); nothing
-  else uses COPY. Every other undo is an ordinary move back.
+  else uses COPY. Every other undo is an ordinary move back. Snooze creates
+  one folder per account, "Snoozed" (on Gmail "Snoozed (Makosh)"), only when
+  you confirm it, and moves snoozed mail there and back; block rules and
+  approved triage items move mail like your own buttons. Instant new mail
+  watches the Inbox read-only (`EXAMINE`) and writes nothing. The one
+  outbound web request is an unsubscribe one-click POST you confirmed (see
+  [Inbox tools](#inbox-tools-new-mail-unsubscribe-snooze-block-filters)).
 - Agent tools `mail_search` and `mail_read` and the `mail` skill, off by
   default behind the `agentTools` setting, which also gates
   `bb makosh-mail accounts`, `search` and `read` inside agent threads. They
@@ -107,8 +114,11 @@ out only when you press **Send** on its card in that agent's thread.
   limits it: every queued send shows the "Sending in N s · Undo" toast on
   any open Mail page, the Outbox in Sent always lists sends that are not
   done, and each account sends at most 10 messages a minute (Retry, Send
-  again and Send now count too). The same holds for agent proposals and
-  translation; the next sections say what it means there.
+  again and Send now count too). The same holds for agent proposals,
+  translation and the inbox tools: through `bb plugin rpc call` such an
+  agent can also run `unsubscribe_run`, `block_add` and
+  `snooze_folder_create` and answer an inbox-actions card; the next
+  sections say what it means there.
 - An `@` mention provider (**Mail**) and a **Hand to agent** button that give
   an agent one message you picked.
 - CLI: `bb makosh-mail accounts|search|read|sync|remove`. `remove <accountId>`
@@ -122,8 +132,8 @@ Account passwords are sealed with AES-256-GCM under the `vaultKey` secret
 setting, generated on first load. Mail and credentials stay on the machine
 that runs the BB server.
 
-Not yet: creating or renaming folders, Gmail API or OAuth and scheduled
-send.
+Not yet: creating or renaming folders (beyond the one snooze folder), Gmail
+API or OAuth, scheduled send and system notifications.
 
 ## Writing and sending
 
@@ -258,6 +268,98 @@ reached: try Undo again).
 - Undo is kept in memory: a BB restart or plugin reload forgets it. While a
   long sync holds the account, it says "Undo will finish after the current
   sync".
+
+## Inbox tools: new mail, unsubscribe, snooze, block, filters
+
+**Instant new mail.** While BB runs, each account keeps one more IMAP
+connection open on its Inbox (`instantMail`, on by default). It only
+watches (`EXAMINE` and IDLE, no writes); a change starts an Inbox-only sync
+within seconds. A dead connection is noticed in about two and a half
+minutes and reopened with backoff; the 5-minute sync goes on regardless.
+
+**New-mail toasts.** New unread Inbox mail from someone you have written to
+(not a mailing list or newsletter, not your own address, not blocked, at
+most 6 hours old) shows a BB toast "New mail from <name>" with the address
+and **Open**, in every BB window. It names the sender only, never the
+subject or text. It is an in-app toast, not a system notification: nothing
+shows while BB is closed or hidden behind other apps. No toast while the
+Mail page shows an Inbox (the list updates there). `notifyNewMail` turns
+toasts off; `quietHours` ("22:00–08:00", may cross midnight) silences them,
+by the clock and time zone of the machine running the BB server, so a
+remote BB server uses its own hours. Nothing is saved for later. A forged
+From naming someone you write to can toast too; the address shown is the
+one in the message. A snoozed message that comes back toasts by the same
+rule.
+
+**Unsubscribe.** A message with `List-Unsubscribe` gets **Unsubscribe** in
+the reading pane (never in Spam or Trash, which says "Use Spam or Block for
+mail you never signed up for"). A dialog names the list and the method and
+always says the cost: unsubscribing tells the sender the address is read.
+- One click (RFC 8058) is offered only on Gmail, and only when Gmail's own
+  `Authentication-Results` vouch for a DKIM signature that covers both list
+  headers by a domain related to the sender or the link. iCloud gets the
+  email method only until its verifier ids are pinned from a live check;
+  other servers always get the email. The POST goes to the stored `https`
+  link only, port 443, to public addresses only (no local network), with no
+  cookies, no redirect followed and the answer's body never read; 5 s to
+  connect, 10 s in all; at most one per message per 10 minutes and 30 an
+  hour. A redirect says it may not have worked.
+- The email goes out from the address the list wrote to, through the Outbox
+  with the 10-second Undo, listed as "Unsubscribe request" (no Edit) and
+  never saved to Drafts. An unsubscribe address at another domain than the
+  sender's is pointed out.
+- Afterwards the pane says "You asked to unsubscribe on <date>" and offers
+  **Archive all from this list** (an ordinary archive of that list's mail
+  in this Inbox). Nothing is archived, blocked or moved by itself.
+
+**Snooze** (`b`, or Snooze in the toolbar or selection bar, Inbox only):
+Later today, Tomorrow, This weekend, Next week or a date and time. The first
+snooze in an account asks before creating a "Snoozed" folder ("Snoozed
+(Makosh)" on Gmail, so it is not mistaken for Gmail's own Snoozed), or lets
+you pick an existing folder; Mail settings → Inbox changes it. Snoozed mail
+moves there and comes back to where it was, unread, at that time, with
+"Snoozed until Tue 08:00 · Undo" and **Return now**. Returns happen only
+while BB runs: on your phone it waits in Snoozed, and overdue mail returns at
+the next start. Renaming or deleting the folder elsewhere ends those snoozes
+(the mail stays where it is).
+
+**Block** a sender's address, or everyone at their domain (not offered for
+public providers like gmail.com). It says when you have written to them and
+can also move their stored Inbox mail (ticked for an address, unticked for a
+domain). Rules apply to every account, are kept on this machine, and move to
+Spam, never delete: new Inbox mail from them is moved after each sync (within
+seconds with instant mail). Mail you move back into the Inbox yourself, or
+out of Spam, is not moved again. "Blocked · Undo" takes a rule back; Mail
+settings → Inbox → Blocked senders lists them with **Unblock** (mail already
+in Spam stays there).
+
+**Filters.** **Unread**, **Flagged** and **Attachments** above the list
+narrow it; each view keeps its own while the page is open, and the open
+conversation stays listed until you open another. Search has `is:unread`
+instead.
+
+## Inbox triage by an agent
+
+With `agentTriage` on (off by default, separate from the other agent
+settings), an agent can list your Inbox (`mail_inbox`), read messages
+(`mail_read`) and propose up to 50 actions (`mail_triage`): archive, mark
+read, snooze, Spam, unsubscribe or reply. Nothing runs until you decide: a
+card "Review N inbox actions" in its thread shows each message as the store
+has it (sender, subject, date, account) beside the agent's action and note,
+in plain text. Every item starts ticked except Unsubscribe; a snooze in an
+account without a snooze folder waits for its own "Create a 'Snoozed'
+folder" tick. **Apply N** runs only the ticked items through the same paths
+as your buttons; the host's submit shortcut does not apply. A reply item
+only lets the agent draft that reply with `mail_propose` (which needs
+`agentPropose`); every reply is its own card. The settled row says "Applied
+N of M" with skipped and rate-limited items and offers **Undo** (expand the
+row) while the undo record lives; unsubscribe requests cannot be undone
+there. No agent tool blocks senders, creates folders or applies a batch.
+Caps: one card waiting per thread and three in all, six per thread an hour
+and 30 a day, a ten-minute pause after three cancelled cards; a card waits
+24 hours, and a restart while applying marks it "A restart interrupted
+this; check your Inbox". The shell limit above applies: an agent with shell
+access can answer the card itself.
 
 ## Emails an agent proposes
 
