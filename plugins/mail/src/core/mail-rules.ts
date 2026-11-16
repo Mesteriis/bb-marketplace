@@ -188,10 +188,13 @@ export function ruleCandidates(outcome: { newInbox: readonly string[]; returning
 export type RuleRunCounts = { ruleHour: number; ruleDay: number; allDay: number; conversationDay: number };
 
 /** "ok" below every cap, else "capped". */
-export function capVerdict(counts: RuleRunCounts): "ok" | "capped" {
-  return counts.ruleHour < RULE_CAPS.perRuleHour &&
-    counts.ruleDay < RULE_CAPS.perRuleDay &&
-    counts.allDay < RULE_CAPS.allDay &&
+export function capVerdict(
+  counts: RuleRunCounts,
+  caps: { perRuleHour: number; perRuleDay: number; allDay: number } = RULE_CAPS,
+): "ok" | "capped" {
+  return counts.ruleHour < caps.perRuleHour &&
+    counts.ruleDay < caps.perRuleDay &&
+    counts.allDay < caps.allDay &&
     counts.conversationDay < 1
     ? "ok"
     : "capped";

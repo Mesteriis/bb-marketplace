@@ -999,9 +999,10 @@ export interface MailStore {
    * than 60 days, answered reminders older than ANSWERED_KEEP_DAYS, and the
    * agent log by age and count. Slice 3g: conversation bindings of gone
    * conversations, rule runs older than 30 days, incidents older than 90,
-   * ready runs older than 7 days become `expired`.
+   * ready runs older than 7 days become `expired`; with `knownProjectIds`,
+   * conversation bindings older than 30 days to a project not in it.
    */
-  purgeDaily(nowIso: string): number;
+  purgeDaily(nowIso: string, knownProjectIds?: readonly string[] | null): number;
 }
 
 // ---- Slice 3g store rows ----

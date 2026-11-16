@@ -9,6 +9,8 @@ import { removeControls, removeInvisible } from "./html-entities.ts";
 import { redactSecrets } from "./redact.ts";
 
 export const INCIDENT_APPEND_DAYS = 7;
+/** Incident threads are kept this many days (the daily purge). */
+export const INCIDENT_KEEP_DAYS = 90;
 const FIELD_MAX = 200;
 const LINKS_MAX = 5;
 const URL_MAX = 2_000;

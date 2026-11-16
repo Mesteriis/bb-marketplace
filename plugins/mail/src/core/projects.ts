@@ -5,6 +5,9 @@
 /** A repository by host and path ("owner/repo", GitLab subgroups kept). */
 export type RepoRef = { host: string; path: string };
 
+/** Conversation bindings to a project no longer in BB are dropped after this many days. */
+export const UNKNOWN_PROJECT_DAYS = 30;
+
 export type ProjectInfo = {
   id: string;
   name: string;

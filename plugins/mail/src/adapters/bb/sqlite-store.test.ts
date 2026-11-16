@@ -9,8 +9,11 @@ import { dismissalKey } from "../../core/digest.ts";
 import type { NewDraft, NewOutboxRow, ParsedQuery, RemoteFolder } from "../../core/model.ts";
 import {
   AI_RESULT_MAX_BYTES,
+  BINDINGS_MAX,
   TASKS_OPEN_MAX,
   type AiResultRecord,
+  type BbLinkRow,
+  type NewRuleRun,
   type MailStore,
   type NewProposal,
   type NewReminder,
@@ -18,6 +21,7 @@ import {
   type TranslationRecord,
 } from "../../core/ports.ts";
 import { REMINDERS_LIVE_MAX, dueAt } from "../../core/reminders.ts";
+import { RULES_MAX, type Rule } from "../../core/mail-rules.ts";
 import { TRANSLATION_CACHE_ROWS } from "../../core/translate.ts";
 import type { UnsubscribeInfo } from "../../core/unsubscribe.ts";
 import {
@@ -3342,7 +3346,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(11);
+    expect(MIGRATIONS).toHaveLength(12);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -3990,7 +3994,7 @@ describe("slice-3f migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(11);
+    expect(MIGRATIONS).toHaveLength(12);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -4692,6 +4696,510 @@ describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
       expect(s.getReminder("r_dismissed_new")).not.toBeNull();
       expect(s.listAgentLog({ limit: 10 }).entries).toHaveLength(1);
       expect(s.purgeDaily(now)).toBe(0);
+    });
+  });
+});
+
+// ---- Slice 3g: dev classes, List-Id, BB links, project binding, incidents, mail rules ----
+
+const T3G = "2026-11-16T10:00:00.000Z";
+const at3g = (ms: number) => new Date(Date.parse(T3G) + ms).toISOString();
+const HOUR = 3_600_000;
+const DAY = 86_400_000;
+const CAPS = { perRuleHour: 3, perRuleDay: 10, allDay: 20 };
+const CI_FAILED = { source: "github", repo: "github.com/example-org/demo", kind: "ci", state: "failed", ref: "17" } as const;
+
+function ruleOf(id: string, overrides: Partial<Rule> = {}): Rule {
+  return {
+    id,
+    name: `Rule ${id}`,
+    enabled: true,
+    match: { dev: { kind: "ci" } },
+    projectId: "p_api",
+    template: "Find the failing test.",
+    mode: "start",
+    ...overrides,
+  };
+}
+
+function runOf(id: string, overrides: Partial<NewRuleRun> = {}): NewRuleRun {
+  return { id, ruleId: "r1", accountId: "acc_1", messageId: `m_${id}`, threadId: `t_${id}`, state: "starting", createdAt: T3G, ...overrides };
+}
+
+function linkOf(id: string, overrides: Partial<BbLinkRow> = {}): BbLinkRow {
+  return {
+    id,
+    accountId: "acc_1",
+    messageId: "m_x",
+    threadId: "t_x",
+    kind: "thread",
+    targetId: `bb_${id}`,
+    projectId: "p_api",
+    extra: null,
+    createdAt: T3G,
+    ...overrides,
+  };
+}
+
+describe("slice-3g migration (SQLite)", () => {
+  it("element 11 on a 3f database adds the columns and tables without REFERENCES; old rows stay unknown", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 11).forEach((s) => old.exec(s)))();
+    const legacy = createSqliteStore(old);
+    legacy.saveAccount(makeStoredAccount());
+    legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+
+    old.transaction(() => MIGRATIONS.slice(11).forEach((s) => old.exec(s)))();
+
+    expect(MIGRATIONS).toHaveLength(12);
+    expect(old.prepare("SELECT list_id, dev_source, dev_repo, dev_kind, dev_state, dev_ref FROM messages").get()).toEqual({
+      list_id: null,
+      dev_source: null,
+      dev_repo: null,
+      dev_kind: null,
+      dev_state: null,
+      dev_ref: null,
+    });
+    const tables = ["bb_links", "conversation_projects", "project_bindings", "incident_threads", "mail_rules", "rule_runs"];
+    const objects = old
+      .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`)
+      .all(...tables) as { name: string; sql: string }[];
+    expect(objects.map((o) => o.name).sort()).toEqual([...tables].sort());
+    for (const object of objects) expect(object.sql).not.toMatch(/REFERENCES/i);
+    const indexes = (old.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]).map((r) => r.name);
+    expect(indexes).toEqual(expect.arrayContaining(["messages_dev", "bb_links_target", "rule_runs_bb_thread", "rule_runs_rule"]));
+    const columns = (table: string) => (old.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+    expect(columns("compose_attachments")).toContain("origin");
+    expect(columns("mail_tasks")).toContain("note");
+
+    const migrated = createSqliteStore(old);
+    migrated.assignThreads("acc_1", new Map());
+    const id = idOf(migrated, 1);
+    expect(migrated.getMessage(id)).toMatchObject({ dev: null, bbLinks: [] });
+    expect(migrated.devUnclassified(10).map((r) => r.id)).toEqual([id]);
+    expect(migrated.listUnknown("acc_1", INBOX, null, 10)).toEqual([{ uid: 1 }]);
+  });
+
+  it("one projectId page among 5 000+ conversations is fast (timed alone)", () => {
+    store.upsertMessages(
+      "acc_1",
+      INBOX,
+      Array.from({ length: 5_200 }, (_, i) =>
+        makeFetchedMessage(i + 1, {
+          messageId: `bind-${i}@example.org`,
+          from: { name: null, address: i % 7 === 0 ? `dev${i}@example.com` : `person${i}@example.net` },
+          date: new Date(Date.UTC(2026, 9, 1) + i * 60_000).toISOString(),
+        }),
+      ),
+    );
+    store.assignThreads("acc_1", new Map());
+    store.addBinding({ kind: "domain", value: "example.com", projectId: "p_api", createdAt: T3G });
+    store.addBinding({ kind: "address", value: "person5@example.net", projectId: "p_web", createdAt: T3G });
+    const { value: page, ms } = timeOne(() =>
+      store.listThreads("acc_1", INBOX, null, 50, { projectId: "p_api" }),
+    );
+    expect(ms).toBeLessThan(PAGE_MS);
+    expect(page.threads).toHaveLength(50);
+    expect(page.threads.every((t) => t.projectId === "p_api")).toBe(true);
+    expect(page.nextCursor).not.toBeNull();
+  }, SEEDING_TIMEOUT_MS);
+});
+
+describe.each(storeKinds)("slice-3g store semantics (%s)", (_kind, make) => {
+  let s: MailStore;
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org", username: "second@example.org" }));
+    s.saveFolders("acc_1", FOLDERS_3F);
+    s.saveFolders("acc_2", FOLDERS_3F);
+  });
+  const idIn = (folder: string, uid: number, accountId = "acc_1") =>
+    s.localFolderIndex(accountId, folder, EPOCH).find((e) => e.uid === uid)!.id;
+  const thread = (accountId = "acc_1") => s.assignThreads(accountId, buildThreads(s.threadingInputs(accountId)));
+  const day = (n: number) => new Date(Date.UTC(2026, 10, n, 9)).toISOString();
+
+  describe("dev classes and List-Id", () => {
+    it("writes classes, marks checked rows and pages unclassified rows newest first outside Spam and Trash", () => {
+      s.upsertMessages("acc_1", INBOX, [1, 2, 3].map((uid) => makeFetchedMessage(uid, { date: day(uid) })));
+      s.upsertMessages("acc_1", "Spam", [makeFetchedMessage(4, { date: day(9) })]);
+      s.upsertMessages("acc_1", "Trash", [makeFetchedMessage(5, { date: day(9) })]);
+      expect(s.devUnclassified(10).map((r) => r.id)).toEqual([idIn(INBOX, 3), idIn(INBOX, 2), idIn(INBOX, 1)]);
+      expect(s.devUnclassified(1)).toEqual([
+        { id: idIn(INBOX, 3), accountId: "acc_1", from: "sender@example.org", subject: "Invented subject 3" },
+      ]);
+      expect(s.setDevClass([{ id: idIn(INBOX, 3), dev: { ...CI_FAILED } }, { id: idIn(INBOX, 2), dev: null }])).toBe(2);
+      expect(s.devUnclassified(10).map((r) => r.id)).toEqual([idIn(INBOX, 1)]);
+      expect(s.getMessage(idIn(INBOX, 3))!.dev).toEqual(CI_FAILED);
+      expect(s.getMessage(idIn(INBOX, 2))!.dev).toBeNull();
+      expect(s.devUnclassified(0)).toEqual([]);
+    });
+
+    it("fills List-Ids only where unknown and only while UIDVALIDITY matches", () => {
+      s.upsertMessages("acc_1", INBOX, [1, 2, 3].map((uid) => makeFetchedMessage(uid)));
+      s.saveSyncState("acc_1", INBOX, { uidValidity: 7, lastUid: 3, syncedSince: T3G });
+      expect(s.listUnknown("acc_1", INBOX, null, 10)).toEqual([{ uid: 3 }, { uid: 2 }, { uid: 1 }]);
+      expect(s.listUnknown("acc_1", INBOX, 3, 1)).toEqual([{ uid: 2 }]);
+      expect(s.fillListIds("acc_1", INBOX, 8, [{ uid: 1, listId: "demo.example-org.github.com" }])).toBe(0);
+      expect(s.fillListIds("acc_1", INBOX, 7, [{ uid: 1, listId: "demo.example-org.github.com" }, { uid: 2, listId: "" }])).toBe(2);
+      expect(s.fillListIds("acc_1", INBOX, 7, [{ uid: 1, listId: "other.example.com" }])).toBe(0);
+      expect(s.listUnknown("acc_1", INBOX, null, 10)).toEqual([{ uid: 3 }]);
+    });
+
+    it("groups dev mail by (source, repo) with counts, the latest failure and unread, paged by group", () => {
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { date: day(10), subject: "Run failed: build" }),
+        makeFetchedMessage(2, { date: day(12), subject: "Run failed: test", seen: true }),
+        makeFetchedMessage(3, { date: day(11), subject: "PR opened", seen: true }),
+        makeFetchedMessage(4, { date: day(13), subject: "Alert firing" }),
+        makeFetchedMessage(5, { date: day(1), subject: "Too old" }),
+      ]);
+      s.upsertMessages("acc_1", "Trash", [makeFetchedMessage(6, { date: day(14) })]);
+      const repo = "github.com/example-org/demo";
+      s.setDevClass([
+        { id: idIn(INBOX, 1), dev: { ...CI_FAILED } },
+        { id: idIn(INBOX, 2), dev: { ...CI_FAILED, ref: "18" } },
+        { id: idIn(INBOX, 3), dev: { source: "github", repo, kind: "pr", state: null, ref: "42" } },
+        { id: idIn(INBOX, 4), dev: { source: "monitoring", repo: "grafana", kind: "alert", state: "firing", ref: null } },
+        { id: idIn(INBOX, 5), dev: { ...CI_FAILED } },
+        { id: idIn("Trash", 6), dev: { ...CI_FAILED } },
+      ]);
+      const all = s.devGroups({ sinceIso: day(5), limit: 50 });
+      expect(all.next).toBeNull();
+      expect(all.groups).toEqual([
+        {
+          source: "monitoring",
+          repo: "grafana",
+          counts: { alert: 1 },
+          ciFailed: 0,
+          latestFailure: null,
+          unread: 1,
+          total: 1,
+          latestDate: day(13),
+          messageIds: [idIn(INBOX, 4)],
+        },
+        {
+          source: "github",
+          repo,
+          counts: { ci: 2, pr: 1 },
+          ciFailed: 2,
+          latestFailure: { messageId: idIn(INBOX, 2), subject: "Run failed: test", date: day(12) },
+          unread: 1,
+          total: 3,
+          latestDate: day(12),
+          messageIds: [idIn(INBOX, 2), idIn(INBOX, 3), idIn(INBOX, 1)],
+        },
+      ]);
+      const first = s.devGroups({ sinceIso: day(5), limit: 1 });
+      expect(first.groups.map((g) => g.source)).toEqual(["monitoring"]);
+      const second = s.devGroups({ sinceIso: day(5), limit: 1, cursor: first.next });
+      expect(second.groups.map((g) => g.source)).toEqual(["github"]);
+      expect(second.next).toBeNull();
+      expect(s.devGroups({ sinceIso: day(5), accountId: "acc_2", limit: 50 }).groups).toEqual([]);
+    });
+
+    it("hides dev notifications with notDev, keeping the open conversation", () => {
+      s.upsertMessages("acc_1", INBOX, [1, 2, 3].map((uid) => makeFetchedMessage(uid, { date: day(uid) })));
+      thread();
+      s.setDevClass([{ id: idIn(INBOX, 2), dev: { ...CI_FAILED } }, { id: idIn(INBOX, 3), dev: null }]);
+      const listed = s.listThreads("acc_1", INBOX, null, 10, { notDev: true }).threads.map((t) => t.subject);
+      expect(listed).toEqual(["Invented subject 3", "Invented subject 1"]);
+      const devThread = s.getMessage(idIn(INBOX, 2))!.threadId;
+      expect(s.listThreads("acc_1", INBOX, null, 10, { notDev: true, keep: devThread }).threads).toHaveLength(3);
+      expect(s.listThreadsAll("inbox", null, 10, { notDev: true }).threads).toHaveLength(2);
+    });
+  });
+
+  describe("project binding", () => {
+    beforeEach(() => {
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { date: day(1), from: { name: null, address: "Anna@Example.com" } }),
+        makeFetchedMessage(2, { date: day(2), from: { name: null, address: "bot@lists.example.org" } }),
+        makeFetchedMessage(3, { date: day(3), from: { name: null, address: "notifications@example.net" } }),
+        makeFetchedMessage(4, { date: day(4), from: { name: null, address: "bo@example.com" } }),
+        makeFetchedMessage(5, { date: day(5), from: { name: null, address: "other@example.info" } }),
+      ]);
+      s.saveSyncState("acc_1", INBOX, { uidValidity: 1, lastUid: 5, syncedSince: T3G });
+      s.fillListIds("acc_1", INBOX, 1, [{ uid: 2, listId: "demo.lists.example.org" }]);
+      s.setDevClass([{ id: idIn(INBOX, 3), dev: { ...CI_FAILED } }]);
+      thread();
+    });
+    const projectOf = (uid: number) => {
+      const threadId = s.getMessage(idIn(INBOX, uid))!.threadId;
+      return s.listThreads("acc_1", INBOX, null, 50).threads.find((t) => t.id === threadId)!.projectId;
+    };
+
+    it("resolves address, list, repo and domain rules at read time, the owner's choice winning", () => {
+      expect([1, 2, 3, 4, 5].map(projectOf)).toEqual([null, null, null, null, null]);
+      expect(s.addBinding({ kind: "domain", value: "example.com", projectId: "p_domain", createdAt: T3G })).toEqual({ created: true });
+      expect(s.addBinding({ kind: "address", value: "anna@example.com", projectId: "p_address", createdAt: T3G })).toEqual({ created: true });
+      s.addBinding({ kind: "list", value: "demo.lists.example.org", projectId: "p_list", createdAt: T3G });
+      s.addBinding({ kind: "repo", value: "github.com/example-org/demo", projectId: "p_repo", createdAt: T3G });
+      expect([1, 2, 3, 4, 5].map(projectOf)).toEqual(["p_address", "p_list", "p_repo", "p_domain", null]);
+      const annaThread = s.getMessage(idIn(INBOX, 1))!.threadId;
+      s.setConversationProject("acc_1", annaThread, "p_owner", T3G);
+      expect(s.conversationProject("acc_1", annaThread)).toBe("p_owner");
+      expect(projectOf(1)).toBe("p_owner");
+      expect(s.getThread(annaThread, INBOX)!.thread.projectId).toBe("p_owner");
+      s.setConversationProject("acc_1", annaThread, null, T3G);
+      expect(projectOf(1)).toBe("p_address");
+      expect(s.addBinding({ kind: "domain", value: "example.com", projectId: "p_moved", createdAt: T3G })).toEqual({ created: false });
+      expect(projectOf(4)).toBe("p_moved");
+      expect(s.removeBinding("domain", "example.com")).toBe(true);
+      expect(s.removeBinding("domain", "example.com")).toBe(false);
+      expect(projectOf(4)).toBeNull();
+      expect(s.listBindings().map((b) => `${b.kind}:${b.value}:${b.projectId}`)).toEqual([
+        "address:anna@example.com:p_address",
+        "list:demo.lists.example.org:p_list",
+        "repo:github.com/example-org/demo:p_repo",
+      ]);
+    });
+
+    it("filters by project across a filtered page boundary and lists a project's conversations", () => {
+      s.addBinding({ kind: "domain", value: "example.com", projectId: "p_api", createdAt: T3G });
+      s.addBinding({ kind: "repo", value: "github.com/example-org/demo", projectId: "p_api", createdAt: T3G });
+      s.setConversationProject("acc_1", s.getMessage(idIn(INBOX, 5))!.threadId, "p_api", T3G);
+      // Address wins over domain for uid 1: it leaves p_api.
+      s.addBinding({ kind: "address", value: "anna@example.com", projectId: "p_other", createdAt: T3G });
+      const first = s.listThreads("acc_1", INBOX, null, 2, { projectId: "p_api" });
+      expect(first.threads.map((t) => t.subject)).toEqual(["Invented subject 5", "Invented subject 4"]);
+      const second = s.listThreads("acc_1", INBOX, first.nextCursor, 2, { projectId: "p_api" });
+      expect(second.threads.map((t) => t.subject)).toEqual(["Invented subject 3"]);
+      expect(second.nextCursor).toBeNull();
+      expect(s.projectThreads("p_api", { cursor: null, limit: 50 }).threads.map((t) => t.subject)).toEqual([
+        "Invented subject 5",
+        "Invented subject 4",
+        "Invented subject 3",
+      ]);
+      expect(s.projectThreads("p_other", { cursor: null, limit: 50 }).threads.map((t) => t.projectId)).toEqual(["p_other"]);
+      expect(s.listThreadsAll("inbox", null, 10, { projectId: "p_other" }).threads).toHaveLength(1);
+    });
+
+    it("stops at BINDINGS_MAX new rules", () => {
+      for (let i = 0; i < BINDINGS_MAX; i++) {
+        expect(s.addBinding({ kind: "address", value: `a${i}@example.com`, projectId: "p", createdAt: T3G })).toEqual({ created: true });
+      }
+      expect(s.addBinding({ kind: "address", value: "over@example.com", projectId: "p", createdAt: T3G })).toEqual({ full: true });
+      expect(s.addBinding({ kind: "address", value: "a1@example.com", projectId: "q", createdAt: T3G })).toEqual({ created: false });
+    });
+  });
+
+  describe("BB links and incidents", () => {
+    it("lists links by message, conversation and target, shows them on the header and prunes by target", () => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)]);
+      thread();
+      const m1 = s.getMessage(idIn(INBOX, 1))!;
+      s.addBbLink(linkOf("l1", { messageId: m1.id, threadId: m1.threadId }));
+      s.addBbLink(linkOf("l2", { messageId: m1.id, threadId: m1.threadId, kind: "project_file", targetId: "mail-attachments/a.pdf", extra: "s".repeat(64), createdAt: at3g(1) }));
+      s.addBbLink(linkOf("l3", { messageId: idIn(INBOX, 2), threadId: "t_other", kind: "incident", targetId: "bb_l1", createdAt: at3g(2) }));
+      expect(s.listBbLinks({ messageIds: [m1.id] }).map((l) => l.id)).toEqual(["l1", "l2"]);
+      expect(s.listBbLinks({ messageIds: [] })).toEqual([]);
+      expect(s.listBbLinks({ accountId: "acc_1", threadId: m1.threadId }).map((l) => l.id)).toEqual(["l1", "l2"]);
+      expect(s.listBbLinks({ targetId: "bb_l1" }).map((l) => l.id)).toEqual(["l1", "l3"]);
+      expect(s.listBbLinks({ targetId: "bb_l1" })[0]).toEqual(linkOf("l1", { messageId: m1.id, threadId: m1.threadId }));
+      expect(s.getMessage(m1.id)!.bbLinks).toEqual([
+        { kind: "thread", targetId: "bb_l1", projectId: "p_api", title: null, createdAt: T3G },
+        { kind: "project_file", targetId: "mail-attachments/a.pdf", projectId: "p_api", title: null, createdAt: at3g(1) },
+      ]);
+      expect(s.pruneBbLinks("thread", ["bb_l1"])).toBe(1);
+      expect(s.listBbLinks({ targetId: "bb_l1" }).map((l) => l.id)).toEqual(["l3"]);
+      expect(s.pruneBbLinks("thread", [])).toBe(0);
+    });
+
+    it("keeps one incident per fingerprint and touches it", () => {
+      expect(s.incidentFor("f1")).toBeNull();
+      s.putIncident({ fingerprint: "f1", bbThreadId: "bb_1", projectId: "p_api", createdAt: T3G, lastAt: T3G });
+      expect(s.touchIncident("f1", at3g(HOUR))).toBe(true);
+      expect(s.touchIncident("f2", at3g(HOUR))).toBe(false);
+      expect(s.incidentFor("f1")).toEqual({ fingerprint: "f1", bbThreadId: "bb_1", projectId: "p_api", createdAt: T3G, lastAt: at3g(HOUR) });
+    });
+  });
+
+  describe("mail rules and runs", () => {
+    it("saves, edits keeping the id, lists, deletes and stops at RULES_MAX", () => {
+      expect(s.saveRule(ruleOf("r1"), T3G)).toEqual({ rule: { ...ruleOf("r1"), createdAt: T3G, updatedAt: T3G } });
+      expect(s.saveRule(ruleOf("r1", { name: "Renamed", mode: "prepare" }), at3g(1))).toEqual({
+        rule: { ...ruleOf("r1", { name: "Renamed", mode: "prepare" }), createdAt: T3G, updatedAt: at3g(1) },
+      });
+      for (let i = 2; i <= RULES_MAX; i++) expect(s.saveRule(ruleOf(`r${i}`), at3g(i))).toHaveProperty("rule");
+      expect(s.saveRule(ruleOf("r_over"), at3g(99))).toEqual({ full: true });
+      expect(s.listRules()).toHaveLength(RULES_MAX);
+      expect(s.listRules()[0]!.name).toBe("Renamed");
+      expect(s.deleteRule("r2")).toBe(true);
+      expect(s.deleteRule("r2")).toBe(false);
+      expect(s.saveRule(ruleOf("r_over"), at3g(99))).toHaveProperty("rule");
+    });
+
+    it("pauses every enabled rule and resumes exactly those", () => {
+      s.saveRule(ruleOf("r1"), T3G);
+      s.saveRule(ruleOf("r2", { enabled: false }), T3G);
+      s.saveRule(ruleOf("r3"), T3G);
+      expect(s.pauseRules(at3g(1))).toEqual(["r1", "r3"]);
+      expect(s.listRules().map((r) => r.enabled)).toEqual([false, false, false]);
+      expect(s.pauseRules(at3g(2))).toEqual([]);
+      expect(s.resumeRules(["r1", "r3", "r_gone"], at3g(3))).toBe(2);
+      expect(s.listRules().map((r) => r.enabled)).toEqual([true, false, true]);
+    });
+
+    it("caps starts at 3 per rule per hour", () => {
+      for (let i = 0; i < 3; i++) expect(s.insertRuleRun(runOf(`a${i}`, { createdAt: at3g(i) }), CAPS)).toBe("inserted");
+      expect(s.insertRuleRun(runOf("a3", { createdAt: at3g(10) }), CAPS)).toBe("capped");
+      expect(s.getRuleRun("a3")!.state).toBe("capped");
+      // An hour later the hourly cap is free again.
+      expect(s.insertRuleRun(runOf("a4", { createdAt: at3g(HOUR + 10) }), CAPS)).toBe("inserted");
+      // Another rule is not capped by this one's hour.
+      expect(s.insertRuleRun(runOf("b1", { ruleId: "r2", createdAt: at3g(20) }), CAPS)).toBe("inserted");
+    });
+
+    it("caps starts at 10 per rule per day and 20 in all per day, deleted rules' runs included", () => {
+      for (let i = 0; i < 10; i++) {
+        expect(s.insertRuleRun(runOf(`a${i}`, { createdAt: at3g(i * 2 * HOUR) }), CAPS)).toBe("inserted");
+      }
+      expect(s.insertRuleRun(runOf("a10", { createdAt: at3g(20 * HOUR) }), CAPS)).toBe("capped");
+      s.deleteRule("r1");
+      for (let i = 0; i < 10; i++) {
+        expect(s.insertRuleRun(runOf(`b${i}`, { ruleId: `r_b${i}`, createdAt: at3g(20 * HOUR + i) }), CAPS)).toBe("inserted");
+      }
+      expect(s.insertRuleRun(runOf("c0", { ruleId: "r_c", createdAt: at3g(20 * HOUR + 50) }), CAPS)).toBe("capped");
+      // A day after the first run, the oldest drop out of the window.
+      expect(s.insertRuleRun(runOf("c1", { ruleId: "r_c", createdAt: at3g(DAY + 3 * HOUR) }), CAPS)).toBe("inserted");
+    });
+
+    it("counts only starting and started runs, and allows one per conversation per rule per day", () => {
+      expect(s.insertRuleRun(runOf("a0", { threadId: "t_same" }), CAPS)).toBe("inserted");
+      expect(s.insertRuleRun(runOf("a1", { threadId: "t_same", createdAt: at3g(1) }), CAPS)).toBe("capped");
+      expect(s.insertRuleRun(runOf("a2", { threadId: "t_same", ruleId: "r2", createdAt: at3g(2) }), CAPS)).toBe("inserted");
+      expect(s.insertRuleRun(runOf("a3", { threadId: "t_same", accountId: "acc_2", createdAt: at3g(3) }), CAPS)).toBe("inserted");
+      s.updateRuleRun("a0", { state: "failed" }, at3g(4));
+      expect(s.insertRuleRun(runOf("a4", { threadId: "t_same", createdAt: at3g(5) }), CAPS)).toBe("inserted");
+      // Prepare runs are not capped.
+      for (let i = 0; i < 25; i++) expect(s.insertRuleRun(runOf(`p${i}`, { state: "ready", createdAt: at3g(10 + i) }), CAPS)).toBe("inserted");
+    });
+
+    it("refuses a second run for the same rule and message", () => {
+      expect(s.insertRuleRun(runOf("a0"), CAPS)).toBe("inserted");
+      expect(s.insertRuleRun(runOf("a1", { messageId: "m_a0" }), CAPS)).toBe("duplicate");
+      expect(s.insertRuleRun(runOf("a2", { messageId: "m_a0", ruleId: "r2" }), CAPS)).toBe("inserted");
+    });
+
+    it("finds a rule thread by its BB thread only while starting or started, pages runs and fails stale starts", () => {
+      s.insertRuleRun(runOf("a0"), CAPS);
+      s.insertRuleRun(runOf("a1", { state: "ready", createdAt: at3g(1) }), CAPS);
+      s.insertRuleRun(runOf("a2", { createdAt: at3g(20 * 60_000) }), CAPS);
+      expect(s.updateRuleRun("a0", { state: "started", bbThreadId: "bb_rule" }, at3g(2))).toBe(true);
+      expect(s.updateRuleRun("nope", { state: "started" }, at3g(2))).toBe(false);
+      expect(s.ruleRunByBbThread("bb_rule")).toMatchObject({ id: "a0", state: "started", bbThreadId: "bb_rule", updatedAt: at3g(2) });
+      expect(s.ruleRunByBbThread("bb_other")).toBeNull();
+      const page = s.listRuleRuns({ limit: 2 });
+      expect(page.runs.map((r) => r.id)).toEqual(["a2", "a1"]);
+      expect(s.listRuleRuns({ limit: 2, cursor: page.next }).runs.map((r) => r.id)).toEqual(["a0"]);
+      expect(s.listRuleRuns({ state: "ready", limit: 10 }).runs.map((r) => r.id)).toEqual(["a1"]);
+      expect(s.failStaleStarts(at3g(10 * 60_000), at3g(30 * 60_000))).toBe(0);
+      expect(s.failStaleStarts(at3g(30 * 60_000), at3g(31 * 60_000))).toBe(1);
+      expect(s.getRuleRun("a2")!.state).toBe("failed");
+      expect(s.updateRuleRun("a0", { state: "dismissed" }, at3g(3))).toBe(true);
+      expect(s.ruleRunByBbThread("bb_rule")).toBeNull();
+    });
+  });
+
+  describe("tasks and attachments", () => {
+    it("keeps a local task's note and an attachment's origin", () => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+      const task: NewTask = { id: "task_1", accountId: "acc_1", messageId: idIn(INBOX, 1), dedupKey: "k", title: "Fix it", due: null, createdAt: T3G, note: "From mail: Ada" };
+      expect(s.keepTasks([task, { ...task, id: "task_2", note: undefined }])).toEqual({ kept: 2 });
+      expect(s.getTask("task_1")!.note).toBe("From mail: Ada");
+      expect(s.getTask("task_2")!.note).toBeNull();
+      s.createDraft(newDraft());
+      const attached = s.addAttachment("d_1", { ...file([1, 2]), origin: "bb:project:p_api" });
+      expect(attached.origin).toBe("bb:project:p_api");
+      expect(s.listAttachments("d_1")[0]!.origin).toBe("bb:project:p_api");
+      expect(s.attachmentData("d_1")[0]!.origin).toBe("bb:project:p_api");
+      expect(s.addAttachment("d_1", file([3])).origin).toBeNull();
+    });
+  });
+
+  describe("deletes and prunes", () => {
+    beforeEach(() => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)]);
+      s.upsertMessages("acc_2", INBOX, [makeFetchedMessage(1, { messageId: "acc2@example.org" })]);
+      thread("acc_1");
+      thread("acc_2");
+    });
+
+    it("deleteAccount deletes the account's links, bindings and runs; rules, rule bindings and incidents stay", () => {
+      const m1 = s.getMessage(idIn(INBOX, 1))!;
+      const other = s.getMessage(idIn(INBOX, 1, "acc_2"))!;
+      s.addBbLink(linkOf("l1", { messageId: m1.id, threadId: m1.threadId }));
+      s.addBbLink(linkOf("l2", { accountId: "acc_2", messageId: other.id, threadId: other.threadId }));
+      s.setConversationProject("acc_1", m1.threadId, "p_api", T3G);
+      s.setConversationProject("acc_2", other.threadId, "p_api", T3G);
+      s.insertRuleRun(runOf("a1", { messageId: m1.id }), CAPS);
+      s.insertRuleRun(runOf("a2", { accountId: "acc_2", messageId: other.id }), CAPS);
+      s.saveRule(ruleOf("r1"), T3G);
+      s.addBinding({ kind: "domain", value: "example.org", projectId: "p_api", createdAt: T3G });
+      s.putIncident({ fingerprint: "f1", bbThreadId: "bb_1", projectId: "p_api", createdAt: T3G, lastAt: T3G });
+
+      s.deleteAccount("acc_1");
+
+      expect(s.listBbLinks({ targetId: "bb_l1" })).toEqual([]);
+      expect(s.listBbLinks({ targetId: "bb_l2" }).map((l) => l.id)).toEqual(["l2"]);
+      expect(s.conversationProject("acc_1", m1.threadId)).toBeNull();
+      expect(s.conversationProject("acc_2", other.threadId)).toBe("p_api");
+      expect(s.getRuleRun("a1")).toBeNull();
+      expect(s.getRuleRun("a2")).not.toBeNull();
+      expect(s.listRules()).toHaveLength(1);
+      expect(s.listBindings()).toHaveLength(1);
+      expect(s.incidentFor("f1")).not.toBeNull();
+    });
+
+    it("removing messages deletes their links and rule runs", () => {
+      const m1 = idIn(INBOX, 1);
+      const m2 = idIn(INBOX, 2);
+      s.addBbLink(linkOf("l1", { messageId: m1 }));
+      s.addBbLink(linkOf("l2", { messageId: m2 }));
+      s.insertRuleRun(runOf("a1", { messageId: m1 }), CAPS);
+      s.insertRuleRun(runOf("a2", { messageId: m2 }), CAPS);
+      s.deleteByUids("acc_1", INBOX, [1]);
+      expect(s.listBbLinks({ messageIds: [m1, m2] }).map((l) => l.id)).toEqual(["l2"]);
+      expect(s.getRuleRun("a1")).toBeNull();
+      expect(s.getRuleRun("a2")).not.toBeNull();
+    });
+
+    it("the daily purge drops gone conversations' and unknown projects' bindings, old runs and incidents, and expires ready runs", () => {
+      const m1 = s.getMessage(idIn(INBOX, 1))!;
+      const m2 = s.getMessage(idIn(INBOX, 2))!;
+      s.setConversationProject("acc_1", m1.threadId, "p_api", T3G);
+      s.setConversationProject("acc_1", m2.threadId, "p_removed", T3G);
+      s.setConversationProject("acc_1", "t_gone", "p_api", T3G);
+      s.insertRuleRun(runOf("old", { createdAt: T3G }), CAPS);
+      s.insertRuleRun(runOf("ready_old", { state: "ready", createdAt: at3g(25 * DAY) }), CAPS);
+      s.insertRuleRun(runOf("ready_new", { state: "ready", createdAt: at3g(30 * DAY) }), CAPS);
+      s.putIncident({ fingerprint: "f_old", bbThreadId: "bb_1", projectId: "p_api", createdAt: T3G, lastAt: T3G });
+      s.putIncident({ fingerprint: "f_new", bbThreadId: "bb_2", projectId: "p_api", createdAt: at3g(30 * DAY), lastAt: T3G });
+      const now = at3g(91 * DAY);
+
+      s.purgeDaily(now, ["p_api"]);
+
+      expect(s.conversationProject("acc_1", m1.threadId)).toBe("p_api");
+      expect(s.conversationProject("acc_1", m2.threadId)).toBeNull();
+      expect(s.conversationProject("acc_1", "t_gone")).toBeNull();
+      expect(s.getRuleRun("old")).toBeNull();
+      expect(s.getRuleRun("ready_old")).toBeNull();
+      expect(s.incidentFor("f_old")).toBeNull();
+      expect(s.incidentFor("f_new")).not.toBeNull();
+    });
+
+    it("expires ready runs after 7 days and keeps unknown-project bindings without a project list", () => {
+      const m1 = s.getMessage(idIn(INBOX, 1))!;
+      s.setConversationProject("acc_1", m1.threadId, "p_removed", T3G);
+      s.insertRuleRun(runOf("ready_old", { state: "ready", createdAt: T3G }), CAPS);
+      s.insertRuleRun(runOf("ready_new", { state: "ready", createdAt: at3g(5 * DAY) }), CAPS);
+      s.purgeDaily(at3g(8 * DAY));
+      expect(s.getRuleRun("ready_old")!.state).toBe("expired");
+      expect(s.getRuleRun("ready_new")!.state).toBe("ready");
+      expect(s.conversationProject("acc_1", m1.threadId)).toBe("p_removed");
+      s.purgeDaily(at3g(40 * DAY), []);
+      expect(s.conversationProject("acc_1", m1.threadId)).toBeNull();
     });
   });
 });

@@ -110,7 +110,26 @@ import type {
   TaskRecord,
 } from "../ports.ts";
 import { AI_RESULT_MAX_BYTES, TASKS_OPEN_MAX } from "../ports.ts";
-import type { BbLinkRow, BindingRow, DevGroupRow, DevUnclassifiedRow, IncidentRow, RuleRecord, RuleRunRecord } from "../ports.ts";
+import { BINDINGS_MAX } from "../ports.ts";
+import type {
+  BbLinkRow,
+  BindingKind,
+  BindingRow,
+  DevGroupRow,
+  DevUnclassifiedRow,
+  IncidentRow,
+  NewRuleRun,
+  RuleCaps,
+  RuleRecord,
+  RuleRunRecord,
+  RuleRunState,
+} from "../ports.ts";
+import type { BbLinkRowKind } from "../model.ts";
+import type { DevClass } from "../dev-notify.ts";
+import { RULES_MAX, RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, capVerdict, type Rule } from "../mail-rules.ts";
+import { INCIDENT_KEEP_DAYS } from "../alerts.ts";
+import { UNKNOWN_PROJECT_DAYS } from "../projects.ts";
+import { groupDevRows, pageDevGroups } from "../dev-groups.ts";
 import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiScope } from "../ai-scope.ts";
 import { AGENT_LOG_IDS_MAX, AGENT_LOG_KEEP_DAYS, AGENT_LOG_ROWS_MAX, type LogEntry, type LogOutcome } from "../agent-log.ts";
 import type { AiCategoryAnswer } from "../ai-input.ts";
@@ -272,6 +291,10 @@ type Row = {
   bulk: boolean | null;
   /** `unsubscribe_json` (slice 3e): null when not known. */
   unsubscribe: UnsubscribeInfo | null;
+  /** Slice 3g: List-Id; undefined or null = unknown, '' = checked, none. */
+  listId?: string | null;
+  /** Slice 3g: the dev class; undefined = not classified, null = checked, none. */
+  dev?: DevClass | null;
 };
 
 type StoredSnooze = SnoozeRow & { createdAt: string; updatedAt: string };
@@ -333,6 +356,15 @@ type StoreState = {
   /** stateKey(accountId, dedupKey) to dismissed at. */
   replyDismissals: Map<string, string>;
   reminders: Map<string, ReminderRecord>;
+  // Slice 3g.
+  bbLinks: BbLinkRow[];
+  /** stateKey(accountId, threadId) to project id and set at. */
+  conversationProjects: Map<string, { projectId: string; createdAt: string }>;
+  /** `${kind}\u0000${value}`. */
+  bindings: Map<string, BindingRow>;
+  incidents: Map<string, IncidentRow>;
+  rules: Map<string, RuleRecord>;
+  ruleRuns: RuleRunRecord[];
 };
 
 type StoredTask = Omit<TaskRecord, "threadId">;
@@ -423,6 +455,12 @@ export class InMemoryMailStore implements MailStore {
     digests: new Map(),
     replyDismissals: new Map(),
     reminders: new Map(),
+    bbLinks: [],
+    conversationProjects: new Map(),
+    bindings: new Map(),
+    incidents: new Map(),
+    rules: new Map(),
+    ruleRuns: [],
   };
   /** The installed AI scope and its excluded conversations: memory only, as SQLite's. */
   private aiScope: AiScope = OPEN_AI_SCOPE;
@@ -513,6 +551,12 @@ export class InMemoryMailStore implements MailStore {
       for (const key of [...map.keys()]) if (key.startsWith(`${id}\u0000`)) map.delete(key);
     }
     for (const [key, row] of [...this.state.reminders]) if (row.accountId === id) this.state.reminders.delete(key);
+    // Slice 3g: bindings, incidents and rules are not per account and stay.
+    this.state.bbLinks = this.state.bbLinks.filter((link) => link.accountId !== id);
+    for (const key of [...this.state.conversationProjects.keys()]) {
+      if (key.startsWith(`${id}\u0000`)) this.state.conversationProjects.delete(key);
+    }
+    this.state.ruleRuns = this.state.ruleRuns.filter((run) => run.accountId !== id);
     this.dropOrphanTranslations();
   }
 
@@ -2489,37 +2533,320 @@ export class InMemoryMailStore implements MailStore {
     return rows[rows.length - 1]?.threadId ?? null;
   }
 
-  // ---- Slice 3g (stubs until Task 7) ----
-  setDevClass(): number { return notYet(); }
-  devUnclassified(): DevUnclassifiedRow[] { return []; }
-  listUnknown(): { uid: number }[] { return []; }
-  fillListIds(): number { return notYet(); }
-  devGroups(): { groups: DevGroupRow[]; next: string | null } { return { groups: [], next: null }; }
-  addBbLink(): void { notYet(); }
-  listBbLinks(): BbLinkRow[] { return []; }
-  pruneBbLinks(): number { return notYet(); }
-  setConversationProject(): void { notYet(); }
-  conversationProject(): string | null { return null; }
-  addBinding(): { created: boolean } | { full: true } { return notYet(); }
-  removeBinding(): boolean { return notYet(); }
-  listBindings(): BindingRow[] { return []; }
-  projectThreads(): { threads: ThreadSummary[]; nextCursor: string | null } { return { threads: [], nextCursor: null }; }
-  putIncident(): void { notYet(); }
-  incidentFor(): IncidentRow | null { return null; }
-  touchIncident(): boolean { return notYet(); }
-  listRules(): RuleRecord[] { return []; }
-  saveRule(): { rule: RuleRecord } | { full: true } { return notYet(); }
-  deleteRule(): boolean { return notYet(); }
-  pauseRules(): string[] { return notYet(); }
-  resumeRules(): number { return notYet(); }
-  insertRuleRun(): "inserted" | "capped" | "duplicate" { return notYet(); }
-  updateRuleRun(): boolean { return notYet(); }
-  ruleRunByBbThread(): RuleRunRecord | null { return null; }
-  getRuleRun(): RuleRunRecord | null { return null; }
-  listRuleRuns(): { runs: RuleRunRecord[]; next: string | null } { return { runs: [], next: null }; }
-  failStaleStarts(): number { return notYet(); }
+  // ---- Slice 3g ----
 
-  purgeDaily(nowIso: string): number {
+  setDevClass(rows: { id: string; dev: DevClass | null }[]): number {
+    let changed = 0;
+    for (const { id, dev } of rows) {
+      const row = this.state.rows.find((r) => r.id === id);
+      if (row === undefined) continue;
+      row.dev = dev === null ? null : { ...dev };
+      changed++;
+    }
+    return changed;
+  }
+
+  devUnclassified(limit: number): DevUnclassifiedRow[] {
+    if (limit <= 0) return [];
+    return this.state.rows
+      .filter((r) => r.dev === undefined && !["junk", "trash"].includes(this.roleOf(r.accountId, r.folder) ?? ""))
+      .sort((a, b) => -oldestFirst(a, b))
+      .slice(0, limit)
+      .map((r) => ({ id: r.id, accountId: r.accountId, from: r.message.from.address, subject: r.message.subject }));
+  }
+
+  listUnknown(accountId: string, folder: string, belowUid: number | null, limit: number): { uid: number }[] {
+    if (limit <= 0) return [];
+    return this.state.rows
+      .filter(
+        (r) =>
+          r.accountId === accountId &&
+          r.folder === folder &&
+          r.uid !== null &&
+          (r.listId === undefined || r.listId === null) &&
+          (belowUid === null || r.uid < belowUid),
+      )
+      .map((r) => r.uid!)
+      .sort((a, b) => b - a)
+      .slice(0, limit)
+      .map((uid) => ({ uid }));
+  }
+
+  fillListIds(accountId: string, folder: string, uidValidity: number, ids: { uid: number; listId: string }[]): number {
+    if (this.state.syncStates.get(stateKey(accountId, folder))?.uidValidity !== uidValidity) return 0;
+    let changed = 0;
+    for (const { uid, listId } of ids) {
+      const row = this.state.rows.find((r) => r.accountId === accountId && r.folder === folder && r.uid === uid);
+      if (row === undefined || (row.listId !== undefined && row.listId !== null)) continue;
+      row.listId = listId;
+      changed++;
+    }
+    return changed;
+  }
+
+  devGroups(opts: { sinceIso: string; accountId?: string | null; cursor?: string | null; limit: number }): {
+    groups: DevGroupRow[];
+    next: string | null;
+  } {
+    const rows = this.state.rows
+      .filter(
+        (r) =>
+          r.dev !== undefined &&
+          r.dev !== null &&
+          r.message.date !== null &&
+          r.message.date >= opts.sinceIso &&
+          (opts.accountId == null || r.accountId === opts.accountId) &&
+          r.movePending === null &&
+          !["junk", "trash"].includes(this.roleOf(r.accountId, r.folder) ?? ""),
+      )
+      .sort((a, b) => -oldestFirst(a, b))
+      .map((r) => ({
+        id: r.id,
+        accountId: r.accountId,
+        dedupKey: r.dedupKey,
+        source: r.dev!.source,
+        repo: r.dev!.repo,
+        kind: r.dev!.kind,
+        state: r.dev!.state,
+        subject: r.message.subject,
+        date: r.message.date,
+        isRead: r.isRead,
+      }));
+    return pageDevGroups(groupDevRows(rows), opts.cursor ?? null, opts.limit);
+  }
+
+  addBbLink(row: BbLinkRow): void {
+    if (this.state.bbLinks.some((link) => link.id === row.id)) throw new Error("UNIQUE constraint failed: bb_links.id");
+    this.state.bbLinks.push({ ...row });
+  }
+
+  listBbLinks(query: { messageIds: string[] } | { accountId: string; threadId: string } | { targetId: string }): BbLinkRow[] {
+    const match =
+      "messageIds" in query
+        ? (link: BbLinkRow) => query.messageIds.includes(link.messageId)
+        : "targetId" in query
+          ? (link: BbLinkRow) => link.targetId === query.targetId
+          : (link: BbLinkRow) => link.accountId === query.accountId && link.threadId === query.threadId;
+    return this.state.bbLinks
+      .filter(match)
+      .sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? -1 : 1))
+      .map((link) => ({ ...link }));
+  }
+
+  pruneBbLinks(kind: BbLinkRowKind, targetIds: string[]): number {
+    const before = this.state.bbLinks.length;
+    this.state.bbLinks = this.state.bbLinks.filter((link) => link.kind !== kind || !targetIds.includes(link.targetId));
+    return before - this.state.bbLinks.length;
+  }
+
+  setConversationProject(accountId: string, threadId: string, projectId: string | null, nowIso: string): void {
+    const key = stateKey(accountId, threadId);
+    if (projectId === null) this.state.conversationProjects.delete(key);
+    else this.state.conversationProjects.set(key, { projectId, createdAt: nowIso });
+  }
+
+  conversationProject(accountId: string, threadId: string): string | null {
+    return this.state.conversationProjects.get(stateKey(accountId, threadId))?.projectId ?? null;
+  }
+
+  addBinding(row: BindingRow): { created: boolean } | { full: true } {
+    const key = `${row.kind}\u0000${row.value}`;
+    const existing = this.state.bindings.get(key);
+    if (existing !== undefined) {
+      existing.projectId = row.projectId;
+      return { created: false };
+    }
+    if (this.state.bindings.size >= BINDINGS_MAX) return { full: true };
+    this.state.bindings.set(key, { ...row });
+    return { created: true };
+  }
+
+  removeBinding(kind: BindingKind, value: string): boolean {
+    return this.state.bindings.delete(`${kind}\u0000${value}`);
+  }
+
+  listBindings(): BindingRow[] {
+    return [...this.state.bindings.values()]
+      .sort((a, b) => (a.kind === b.kind ? (a.value < b.value ? -1 : a.value > b.value ? 1 : 0) : a.kind < b.kind ? -1 : 1))
+      .map((row) => ({ ...row }));
+  }
+
+  projectThreads(projectId: string, opts: { cursor: string | null; limit: number }): {
+    threads: ThreadSummary[];
+    nextCursor: string | null;
+  } {
+    const groups = new Map<string, Row[]>();
+    for (const row of this.state.rows) {
+      const group = groups.get(row.threadId);
+      if (group) group.push(row);
+      else groups.set(row.threadId, [row]);
+    }
+    const all = [...groups.entries()]
+      .filter(([id, rows]) => this.projectOf(rows[0]!.accountId, id) === projectId)
+      .map(([id, rows]) => this.summarize(id, rows, (r) => r.movePending === null))
+      .sort((a, b) => {
+        const byDate = (timeOf(b.lastDate) ?? -Infinity) - (timeOf(a.lastDate) ?? -Infinity);
+        if (byDate !== 0) return byDate;
+        return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+      });
+    const offset = opts.cursor === null ? 0 : Number(opts.cursor);
+    const threads = all.slice(offset, offset + opts.limit);
+    const next = offset + threads.length;
+    return { threads, nextCursor: next < all.length ? String(next) : null };
+  }
+
+  putIncident(row: IncidentRow): void {
+    this.state.incidents.set(row.fingerprint, { ...row });
+  }
+
+  incidentFor(fingerprint: string): IncidentRow | null {
+    const row = this.state.incidents.get(fingerprint);
+    return row === undefined ? null : { ...row };
+  }
+
+  touchIncident(fingerprint: string, nowIso: string): boolean {
+    const row = this.state.incidents.get(fingerprint);
+    if (row === undefined) return false;
+    row.lastAt = nowIso;
+    return true;
+  }
+
+  listRules(): RuleRecord[] {
+    return [...this.state.rules.values()]
+      .sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? -1 : 1))
+      .map((rule) => structuredClone(rule));
+  }
+
+  saveRule(rule: Rule, nowIso: string): { rule: RuleRecord } | { full: true } {
+    const existing = this.state.rules.get(rule.id);
+    if (existing === undefined && this.state.rules.size >= RULES_MAX) return { full: true };
+    const record: RuleRecord = {
+      ...structuredClone(rule),
+      createdAt: existing?.createdAt ?? nowIso,
+      updatedAt: nowIso,
+    };
+    this.state.rules.set(rule.id, record);
+    return { rule: structuredClone(record) };
+  }
+
+  deleteRule(id: string): boolean {
+    return this.state.rules.delete(id);
+  }
+
+  pauseRules(nowIso: string): string[] {
+    const paused: string[] = [];
+    for (const rule of this.state.rules.values()) {
+      if (!rule.enabled) continue;
+      rule.enabled = false;
+      rule.updatedAt = nowIso;
+      paused.push(rule.id);
+    }
+    return paused.sort();
+  }
+
+  resumeRules(ids: string[], nowIso: string): number {
+    let changed = 0;
+    for (const id of ids) {
+      const rule = this.state.rules.get(id);
+      if (rule === undefined) continue;
+      rule.enabled = true;
+      rule.updatedAt = nowIso;
+      changed++;
+    }
+    return changed;
+  }
+
+  insertRuleRun(row: NewRuleRun, caps: RuleCaps): "inserted" | "capped" | "duplicate" {
+    if (this.state.ruleRuns.some((run) => run.ruleId === row.ruleId && run.messageId === row.messageId)) return "duplicate";
+    let state: RuleRunState = row.state;
+    if (row.state === "starting") {
+      const at = Date.parse(row.createdAt);
+      const hour = new Date(at - 3_600_000).toISOString();
+      const day = new Date(at - 86_400_000).toISOString();
+      const live = this.state.ruleRuns.filter((run) => (run.state === "starting" || run.state === "started") && run.createdAt >= day);
+      const own = live.filter((run) => run.ruleId === row.ruleId);
+      const counts = {
+        ruleHour: own.filter((run) => run.createdAt >= hour).length,
+        ruleDay: own.length,
+        allDay: live.length,
+        conversationDay:
+          row.threadId === null ? 0 : own.filter((run) => run.accountId === row.accountId && run.threadId === row.threadId).length,
+      };
+      if (capVerdict(counts, caps) === "capped") state = "capped";
+    }
+    this.state.ruleRuns.push({ ...row, state, bbThreadId: null, notifiedAt: null, updatedAt: row.createdAt });
+    return state === "capped" ? "capped" : "inserted";
+  }
+
+  updateRuleRun(
+    id: string,
+    patch: { state?: RuleRunState; bbThreadId?: string | null; notifiedAt?: string | null },
+    nowIso: string,
+  ): boolean {
+    const run = this.state.ruleRuns.find((r) => r.id === id);
+    if (run === undefined) return false;
+    Object.assign(run, definedOnly(patch), { updatedAt: nowIso });
+    return true;
+  }
+
+  ruleRunByBbThread(bbThreadId: string): RuleRunRecord | null {
+    const run = this.state.ruleRuns
+      .filter((r) => r.bbThreadId === bbThreadId && (r.state === "starting" || r.state === "started"))
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))[0];
+    return run === undefined ? null : { ...run };
+  }
+
+  getRuleRun(id: string): RuleRunRecord | null {
+    const run = this.state.ruleRuns.find((r) => r.id === id);
+    return run === undefined ? null : { ...run };
+  }
+
+  listRuleRuns(opts: { state?: RuleRunState; cursor?: string | null; limit: number }): { runs: RuleRunRecord[]; next: string | null } {
+    const all = this.state.ruleRuns
+      .filter((run) => opts.state === undefined || run.state === opts.state)
+      .sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? 1 : -1) : a.createdAt < b.createdAt ? 1 : -1));
+    const offset = opts.cursor == null ? 0 : Number(opts.cursor);
+    const runs = all.slice(offset, offset + opts.limit).map((run) => ({ ...run }));
+    const next = offset + runs.length;
+    return { runs, next: next < all.length ? String(next) : null };
+  }
+
+  failStaleStarts(beforeIso: string, nowIso: string): number {
+    let changed = 0;
+    for (const run of this.state.ruleRuns) {
+      if (run.state !== "starting" || run.createdAt >= beforeIso) continue;
+      run.state = "failed";
+      run.updatedAt = nowIso;
+      changed++;
+    }
+    return changed;
+  }
+
+  /** The conversation's project: the owner's binding, else the first matching rule (address, list, repo, domain). */
+  private projectOf(accountId: string, threadId: string): string | null {
+    const owner = this.state.conversationProjects.get(stateKey(accountId, threadId));
+    if (owner !== undefined) return owner.projectId;
+    if (this.state.bindings.size === 0) return null;
+    // The most recently stored row first (SQLite orders by seq).
+    const rows = this.state.rows.filter((r) => r.threadId === threadId).reverse();
+    const lookups: [BindingKind, (r: Row) => string | null | undefined][] = [
+      ["address", (r) => r.message.from.address.toLowerCase()],
+      ["list", (r) => r.listId],
+      ["repo", (r) => r.dev?.repo],
+      ["domain", (r) => r.message.from.address.slice(r.message.from.address.indexOf("@") + 1).toLowerCase()],
+    ];
+    for (const [kind, valueOf] of lookups) {
+      for (const row of rows) {
+        const value = valueOf(row);
+        if (value === undefined || value === null || value === "") continue;
+        const binding = this.state.bindings.get(`${kind}\u0000${value}`);
+        if (binding !== undefined) return binding.projectId;
+      }
+    }
+    return null;
+  }
+
+  purgeDaily(nowIso: string, knownProjectIds?: readonly string[] | null): number {
     const now = Date.parse(nowIso);
     const before = (days: number) => new Date(now - days * 86_400_000).toISOString();
     const keys = new Set(this.state.rows.map((r) => stateKey(r.accountId, r.dedupKey)));
@@ -2554,7 +2881,34 @@ export class InMemoryMailStore implements MailStore {
       this.state.reminders.delete(id);
       removed++;
     }
-    return removed + this.purgeAgentLog(before(AGENT_LOG_KEEP_DAYS), AGENT_LOG_ROWS_MAX);
+    removed += this.purgeAgentLog(before(AGENT_LOG_KEEP_DAYS), AGENT_LOG_ROWS_MAX);
+    // Slice 3g.
+    const conversations = new Set(this.state.rows.map((r) => stateKey(r.accountId, r.threadId)));
+    const unknownBefore = before(UNKNOWN_PROJECT_DAYS);
+    for (const [key, row] of [...this.state.conversationProjects]) {
+      const unknown = knownProjectIds != null && !knownProjectIds.includes(row.projectId) && row.createdAt < unknownBefore;
+      if (conversations.has(key) && !unknown) continue;
+      this.state.conversationProjects.delete(key);
+      removed++;
+    }
+    const ready = before(RULE_READY_DAYS);
+    for (const run of this.state.ruleRuns) {
+      if (run.state === "ready" && run.createdAt < ready) {
+        run.state = "expired";
+        run.updatedAt = nowIso;
+      }
+    }
+    const runs = before(RULE_RUNS_KEEP_DAYS);
+    const keptRuns = this.state.ruleRuns.filter((run) => run.createdAt >= runs);
+    removed += this.state.ruleRuns.length - keptRuns.length;
+    this.state.ruleRuns = keptRuns;
+    const incidents = before(INCIDENT_KEEP_DAYS);
+    for (const [key, row] of [...this.state.incidents]) {
+      if (row.createdAt >= incidents) continue;
+      this.state.incidents.delete(key);
+      removed++;
+    }
+    return removed;
   }
 
   /** Translations and snoozes follow their message: dropped with every removed row (as SQLite deleteRows). */
@@ -2570,6 +2924,9 @@ export class InMemoryMailStore implements MailStore {
     for (const task of this.state.tasks.values()) {
       if (task.messageId !== null && !ids.has(task.messageId)) task.messageId = null;
     }
+    // Slice 3g: links and rule runs go with their message.
+    this.state.bbLinks = this.state.bbLinks.filter((link) => ids.has(link.messageId));
+    this.state.ruleRuns = this.state.ruleRuns.filter((run) => ids.has(run.messageId));
   }
 
   /** The row landed in a junk-role folder: block never moves its dedup key again (spec resolution 17). */
@@ -2842,10 +3199,12 @@ export class InMemoryMailStore implements MailStore {
       agentSubject: redactSecrets(row.message.subject).text,
       inAiScope: this.anyCopyInScope(row),
       devLinks: [],
-      dev: null,
+      dev: row.dev ?? null,
       patch: null,
       alert: false,
-      bbLinks: [],
+      bbLinks: this.state.bbLinks
+        .filter((link) => link.messageId === row.id)
+        .map((link) => ({ kind: link.kind, targetId: link.targetId, projectId: link.projectId, title: null, createdAt: link.createdAt })),
     };
   }
 
@@ -2882,7 +3241,7 @@ export class InMemoryMailStore implements MailStore {
       flagged: rows.some((r) => inScope(r) && r.isFlagged),
       snoozedUntil: this.snoozedUntil(rows.filter(inScope)),
       ...this.labelsOf(rows.filter((r) => inScope(r) && r.movePending === null)),
-      projectId: null,
+      projectId: this.projectOf(latest.accountId, threadId),
     };
   }
 
@@ -2921,6 +3280,8 @@ export class InMemoryMailStore implements MailStore {
       if (filter?.category !== undefined && this.state.categories.get(stateKey(r.accountId, r.dedupKey))?.category !== filter.category) {
         return false;
       }
+      if (filter?.notDev === true && r.dev !== undefined && r.dev !== null) return false;
+      if (filter?.projectId !== undefined && this.projectOf(r.accountId, r.threadId) !== filter.projectId) return false;
       return true;
     };
   }
@@ -3559,8 +3920,4 @@ export function composeHarness(options: { now?: string } = {}) {
     vaultReady: () => proposal.vaultOpen,
   };
   return Object.assign(harness, { ...deps, deps, drafts, sent, advance, sleeps, proposal, proposalDeps });
-}
-
-function notYet(): never {
-  throw new Error("Not available yet");
 }

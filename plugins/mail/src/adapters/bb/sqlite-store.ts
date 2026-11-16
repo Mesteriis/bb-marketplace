@@ -83,7 +83,14 @@ import { ANSWERED_KEEP_DAYS, REMINDERS_LIVE_MAX, dueAt, type ReminderState } fro
 import { TEMPLATES_MAX } from "../../core/templates.ts";
 import type { UndoRow } from "../../core/undo.ts";
 import { cleanSnippet, needsSnippetRepair, snippetOf } from "../../core/snippet.ts";
-import { AI_RESULT_MAX_BYTES, TASKS_OPEN_MAX } from "../../core/ports.ts";
+import { AI_RESULT_MAX_BYTES, BINDINGS_MAX, TASKS_OPEN_MAX } from "../../core/ports.ts";
+import type { BbLinkRow, BindingKind, RuleRecord, RuleRunRecord, RuleRunState } from "../../core/ports.ts";
+import type { BbLinkRowKind } from "../../core/model.ts";
+import type { DevClass, DevKind, DevSource, DevState } from "../../core/dev-notify.ts";
+import { RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, RULES_MAX, capVerdict, type RuleMatch, type RuleMode, type RuleRunCounts } from "../../core/mail-rules.ts";
+import { INCIDENT_KEEP_DAYS } from "../../core/alerts.ts";
+import { UNKNOWN_PROJECT_DAYS } from "../../core/projects.ts";
+import { groupDevRows, pageDevGroups } from "../../core/dev-groups.ts";
 import type {
   AiResultRecord,
   ReminderRecord,
@@ -667,9 +674,211 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX reply_reminders_state ON reply_reminders(state, due_at);
   CREATE INDEX reply_reminders_mid ON reply_reminders(rfc_message_id);
   `,
+  // 11: slice 3g - dev classification and List-Id of messages (NULL = not
+  // classified / unknown; '' = checked, none), links from mail to BB
+  // (threads, Taskboard tasks, saved files, patch hand-offs, incidents),
+  // project binding (per conversation and by rule), incident threads, mail
+  // rules and their runs (state starting|ready|started|dismissed|capped|
+  // failed|expired), the origin of a compose attachment picked from BB and
+  // the note of a local task from mail. No REFERENCES: deletes are explicit.
+  `
+  ALTER TABLE messages ADD COLUMN list_id TEXT;
+  ALTER TABLE messages ADD COLUMN dev_source TEXT;
+  ALTER TABLE messages ADD COLUMN dev_repo TEXT;
+  ALTER TABLE messages ADD COLUMN dev_kind TEXT;
+  ALTER TABLE messages ADD COLUMN dev_state TEXT;
+  ALTER TABLE messages ADD COLUMN dev_ref TEXT;
+  CREATE INDEX messages_dev ON messages(dev_source, dev_repo, date);
+
+  CREATE TABLE bb_links (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    thread_id TEXT,
+    kind TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    project_id TEXT,
+    extra_json TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX bb_links_message ON bb_links(message_id);
+  CREATE INDEX bb_links_thread ON bb_links(account_id, thread_id);
+  CREATE INDEX bb_links_target ON bb_links(kind, target_id);
+
+  CREATE TABLE conversation_projects (
+    account_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, thread_id)
+  );
+  CREATE INDEX conversation_projects_project ON conversation_projects(project_id);
+  CREATE TABLE project_bindings (
+    kind TEXT NOT NULL,
+    value TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (kind, value)
+  );
+
+  CREATE TABLE incident_threads (
+    fingerprint TEXT PRIMARY KEY,
+    bb_thread_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_at TEXT NOT NULL
+  );
+
+  CREATE TABLE mail_rules (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    match_json TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    template TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE rule_runs (
+    id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    thread_id TEXT,
+    state TEXT NOT NULL,
+    bb_thread_id TEXT,
+    notified_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (rule_id, message_id)
+  );
+  CREATE INDEX rule_runs_state ON rule_runs(state, created_at);
+  CREATE INDEX rule_runs_rule ON rule_runs(rule_id, created_at);
+  CREATE INDEX rule_runs_bb_thread ON rule_runs(bb_thread_id);
+
+  ALTER TABLE compose_attachments ADD COLUMN origin TEXT;
+  ALTER TABLE mail_tasks ADD COLUMN note TEXT;
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
+
+// ---- Slice 3g rows ----
+
+type DevColumns = {
+  dev_source: string | null;
+  dev_repo: string | null;
+  dev_kind: string | null;
+  dev_state: string | null;
+  dev_ref: string | null;
+};
+
+/** NULL (not classified) and '' (checked, none) are both "no class". */
+function toDevClass(row: DevColumns | undefined): DevClass | null {
+  if (row === undefined || row.dev_source === null || row.dev_source === "" || row.dev_kind === null) return null;
+  return {
+    source: row.dev_source as DevSource,
+    repo: row.dev_repo,
+    kind: row.dev_kind as DevKind,
+    state: row.dev_state as DevState | null,
+    ref: row.dev_ref,
+  };
+}
+
+type BbLinkDbRow = {
+  id: string;
+  account_id: string;
+  message_id: string;
+  thread_id: string | null;
+  kind: BbLinkRowKind;
+  target_id: string;
+  project_id: string | null;
+  extra_json: string | null;
+  created_at: string;
+};
+
+function toBbLink(row: BbLinkDbRow): BbLinkRow {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    messageId: row.message_id,
+    threadId: row.thread_id,
+    kind: row.kind,
+    targetId: row.target_id,
+    projectId: row.project_id,
+    extra: row.extra_json,
+    createdAt: row.created_at,
+  };
+}
+
+type RuleDbRow = {
+  id: string;
+  name: string;
+  enabled: number;
+  match_json: string;
+  project_id: string;
+  template: string;
+  mode: RuleMode;
+  created_at: string;
+  updated_at: string;
+};
+
+function toRule(row: RuleDbRow): RuleRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    enabled: row.enabled === 1,
+    match: JSON.parse(row.match_json) as RuleMatch,
+    projectId: row.project_id,
+    template: row.template,
+    mode: row.mode,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+type RuleRunDbRow = {
+  id: string;
+  rule_id: string;
+  account_id: string;
+  message_id: string;
+  thread_id: string | null;
+  state: RuleRunState;
+  bb_thread_id: string | null;
+  notified_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function toRuleRun(row: RuleRunDbRow): RuleRunRecord {
+  return {
+    id: row.id,
+    ruleId: row.rule_id,
+    accountId: row.account_id,
+    messageId: row.message_id,
+    threadId: row.thread_id,
+    state: row.state,
+    bbThreadId: row.bb_thread_id,
+    notifiedAt: row.notified_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+type DevDbRow = {
+  id: string;
+  account_id: string;
+  dedup_key: string;
+  dev_source: DevSource;
+  dev_repo: string | null;
+  dev_kind: DevKind;
+  dev_state: DevState | null;
+  subject: string;
+  date: string | null;
+  is_read: number;
+};
+
 /** Delivered-To / X-Original-To addresses kept per message (slice 3d). */
 const DELIVERED_TO_MAX = 10;
 /** Rows per transaction when stale snippets are repaired on load. */
@@ -919,6 +1128,7 @@ type ComposeAttachmentRow = {
   sha256: string;
   content_id: string | null;
   data: Buffer;
+  origin: string | null;
 };
 
 /** Outbox columns without the blobs. */
@@ -940,7 +1150,7 @@ type ThreadRow = {
 };
 
 /** A thread row with whether a message of it in the listed folder is flagged. */
-type ListedThreadRow = ThreadRow & { flagged: number; snoozed_until: string | null };
+type ListedThreadRow = ThreadRow & { flagged: number; snoozed_until: string | null; project_id: string | null };
 
 type AttachmentRow = {
   message_id: string;
@@ -1193,6 +1403,10 @@ function filterCondition(filter: ThreadFilter | undefined): string {
     filter?.category === undefined
       ? null
       : "(m.account_id, m.dedup_key) IN (SELECT account_id, dedup_key FROM message_categories WHERE category = @category)",
+    // Slice 3g: a member row that is not a dev notification ('' = checked, none).
+    filter?.notDev === true ? "(m.dev_source IS NULL OR m.dev_source = '')" : null,
+    // Slice 3g: the conversation's project, from an uncorrelated candidate list checked exactly.
+    filter?.projectId === undefined ? null : `m.thread_id IN (${PROJECT_THREADS})`,
   ].filter((part): part is string => part !== null);
   if (flags.length === 0) return "";
   const keep = filter?.keep === undefined ? "" : " OR m.thread_id = @keep";
@@ -1203,8 +1417,46 @@ function filterParams(filter: ThreadFilter | undefined): Record<string, string> 
   return {
     ...(filter?.keep === undefined ? {} : { keep: filter.keep }),
     ...(filter?.category === undefined ? {} : { category: filter.category }),
+    ...(filter?.projectId === undefined ? {} : { projectId: filter.projectId }),
   };
 }
+
+/** The domain of a stored From address, lower case. */
+const FROM_DOMAIN = (alias: string) =>
+  `mail_lower(substr(${alias}.from_address, instr(${alias}.from_address, '@') + 1))`;
+
+/**
+ * The project of the conversation `t` (columns id, account_id), as SQL
+ * (slice 3g): the owner's binding, else the first binding rule matching one
+ * of its messages in the order address, list, repo, domain (the most
+ * recently stored message first within a kind; seq keeps it on the index). Evaluated at read time, so a new rule applies to
+ * existing mail.
+ */
+function projectOfSql(t: string): string {
+  const byRule = (kind: string, value: string) =>
+    `(SELECT b.project_id FROM messages x JOIN project_bindings b ON b.kind = '${kind}' AND b.value = ${value}
+       WHERE x.thread_id = ${t}.id ORDER BY x.seq DESC LIMIT 1)`;
+  return `COALESCE(
+    (SELECT cp.project_id FROM conversation_projects cp WHERE cp.account_id = ${t}.account_id AND cp.thread_id = ${t}.id),
+    ${byRule("address", "mail_lower(x.from_address)")},
+    ${byRule("list", "x.list_id")},
+    ${byRule("repo", "x.dev_repo")},
+    ${byRule("domain", FROM_DOMAIN("x"))})`;
+}
+
+/**
+ * Thread ids whose project is @projectId: candidates from the owner's
+ * bindings and the matching rules (uncorrelated), each checked exactly with
+ * projectOfSql so the first matching rule wins.
+ */
+const boundValues = (kind: string) => `(SELECT value FROM project_bindings WHERE kind = '${kind}' AND project_id = @projectId)`;
+const PROJECT_THREADS = `SELECT c.id FROM threads c WHERE c.id IN (
+    SELECT thread_id FROM conversation_projects WHERE project_id = @projectId
+    UNION SELECT thread_id FROM messages WHERE mail_lower(from_address) IN ${boundValues("address")}
+    UNION SELECT thread_id FROM messages WHERE list_id IN ${boundValues("list")}
+    UNION SELECT thread_id FROM messages WHERE dev_repo IN ${boundValues("repo")}
+    UNION SELECT x.thread_id FROM messages x WHERE ${FROM_DOMAIN("x")} IN ${boundValues("domain")})
+  AND ${projectOfSql("c")} = @projectId`;
 
 function deliveredToJson(addresses: string[] | undefined): string | null {
   if (addresses === undefined) return null;
@@ -1365,6 +1617,7 @@ type TaskRow = {
   created_at: string;
   updated_at: string;
   thread_id: string | null;
+  note: string | null;
 };
 
 function toTask(row: TaskRow): TaskRecord {
@@ -1379,7 +1632,7 @@ function toTask(row: TaskRow): TaskRecord {
     threadId: row.message_id === null ? null : row.thread_id,
     doneAt: row.done_at,
     updatedAt: row.updated_at,
-    note: null,
+    note: row.note ?? null,
   };
 }
 
@@ -1462,6 +1715,7 @@ function toThread(
   flagged: boolean,
   snoozedUntil: string | null = null,
   labels: { category: Category | null; suggestion: AiCategoryAnswer | null } = { category: null, suggestion: null },
+  projectId: string | null = null,
 ): ThreadSummary {
   return {
     id: row.id,
@@ -1477,7 +1731,7 @@ function toThread(
     category: labels.category,
     // "none" is the model's answer, not a category.
     categorySuggestion: labels.suggestion === null || labels.suggestion === "none" ? null : labels.suggestion,
-    projectId: null,
+    projectId,
   };
 }
 
@@ -1789,15 +2043,33 @@ export function createSqliteStore(db: Database.Database): MailStore {
     const removeSnooze = db.prepare("DELETE FROM snoozes WHERE message_id = ?");
     // A kept task outlives its message: "no longer in Makosh Mail" (slice 3f).
     const orphanTasks = db.prepare("UPDATE mail_tasks SET message_id = NULL WHERE message_id = ?");
+    // Slice 3g: links and rule runs of a removed message go with it.
+    const removeLinks = db.prepare("DELETE FROM bb_links WHERE message_id = ?");
+    const removeRuns = db.prepare("DELETE FROM rule_runs WHERE message_id = ?");
     for (const row of rows) {
       deleteAttachmentsOf.run(row.id);
       deleteInlinePartsOf.run(row.id);
       removeTranslations.run(row.id);
       removeSnooze.run(row.id);
       orphanTasks.run(row.id);
+      removeLinks.run(row.id);
+      removeRuns.run(row.id);
       remove.run(row.id);
     }
     return new Set(rows.map((r) => r.thread_id));
+  }
+
+  // Prepared on first use: a store opened on an older schema (migration tests) never reads them.
+  const devOf = lazyStatement<[string], DevColumns>(
+    "SELECT dev_source, dev_repo, dev_kind, dev_state, dev_ref FROM messages WHERE id = ?",
+  );
+  const linksOfMessage = lazyStatement<[string], BbLinkDbRow>(
+    "SELECT * FROM bb_links WHERE message_id = ? ORDER BY created_at, id",
+  );
+  function lazyStatement<P extends unknown[], R>(sql: string): { get(...args: P): R | undefined; all(...args: P): R[] } {
+    let statement: Database.Statement<P, R> | null = null;
+    const ready = () => (statement ??= db.prepare<P, R>(sql));
+    return { get: (...args) => ready().get(...args), all: (...args) => ready().all(...args) };
   }
 
   function header(row: HeaderRow): MessageHeader {
@@ -1809,11 +2081,18 @@ export function createSqliteStore(db: Database.Database): MailStore {
       draftId: row.uid === null ? null : (draftByServerCopy.get(row.account_id, row.folder, row.uid)?.id ?? null),
       agentSubject: redactSecrets(row.subject).text,
       inAiScope: (freshScope(), anyCopyInScope.get(row.id) !== undefined),
+      // Links, patch and alert need the body or BB: the server fills them.
       devLinks: [],
-      dev: null,
+      dev: toDevClass(devOf.get(row.id)),
       patch: null,
       alert: false,
-      bbLinks: [],
+      bbLinks: linksOfMessage.all(row.id).map((link) => ({
+        kind: link.kind,
+        targetId: link.target_id,
+        projectId: link.project_id,
+        title: null,
+        createdAt: link.created_at,
+      })),
     };
   }
 
@@ -1858,7 +2137,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
     limit: number;
   }): { threads: ThreadSummary[]; nextCursor: string | null } {
     const after = query.cursor === null ? null : decodeCursor(query.cursor);
-    const columns = `threads.*, ${query.flagged} AS flagged, ${query.snoozed} AS snoozed_until`;
+    const columns = `threads.*, ${query.flagged} AS flagged, ${query.snoozed} AS snoozed_until,
+      ${projectOfSql("threads")} AS project_id`;
     const params = { ...query.params, limit: query.limit + 1 };
     let rows: ListedThreadRow[];
     if (after === null) {
@@ -1889,7 +2169,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
     const last = page[page.length - 1];
     const labels = labelLookup(query);
     return {
-      threads: page.map((row) => toThread(row, row.flagged === 1, row.snoozed_until, labels(row.id))),
+      threads: page.map((row) => toThread(row, row.flagged === 1, row.snoozed_until, labels(row.id), row.project_id)),
       nextCursor: rows.length > query.limit && last ? encodeCursor(last.last_date, last.id) : null,
     };
   }
@@ -2010,6 +2290,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
           "category_suggestions",
           "reply_dismissals",
           "reply_reminders",
+          // Slice 3g. project_bindings, incident_threads and mail_rules are not per account and stay.
+          "bb_links",
+          "conversation_projects",
+          "rule_runs",
         ]) {
           db.prepare(`DELETE FROM ${table} WHERE account_id = ?`).run(id);
         }
@@ -2534,7 +2818,17 @@ export function createSqliteStore(db: Database.Database): MailStore {
              WHERE m.thread_id = @threadId AND m.folder = @folder`,
           )
           .get({ threadId, folder })?.due ?? null;
-      return { thread: toThread(thread, flagged, snoozed), messages, project: null, projectSuggestion: null };
+      const projectId =
+        db
+          .prepare<[string], { project_id: string | null }>(`SELECT ${projectOfSql("t")} AS project_id FROM threads t WHERE t.id = ?`)
+          .get(threadId)?.project_id ?? null;
+      // The project's name and the suggestion need BB's project list: the server fills them.
+      return {
+        thread: toThread(thread, flagged, snoozed, undefined, projectId),
+        messages,
+        project: null,
+        projectSuggestion: null,
+      };
     },
 
     getMessage(messageId) {
@@ -3112,8 +3406,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
         const id = newAttachmentId();
         db.prepare(
           `INSERT INTO compose_attachments (id, draft_id, file_name, mime_type, size, sha256, content_id,
-             data, position)
-           VALUES (@id, @draftId, @fileName, @mimeType, @size, @sha256, @contentId, @data,
+             data, origin, position)
+           VALUES (@id, @draftId, @fileName, @mimeType, @size, @sha256, @contentId, @data, @origin,
              (SELECT COALESCE(MAX(position), -1) + 1 FROM compose_attachments WHERE draft_id = @draftId))`,
         ).run({
           id,
@@ -3124,25 +3418,26 @@ export function createSqliteStore(db: Database.Database): MailStore {
           sha256: input.sha256,
           contentId: input.contentId ?? null,
           data: Buffer.from(input.data),
+          origin: input.origin ?? null,
         });
-        return { id, fileName: input.fileName, mimeType: input.mimeType, size: input.size, origin: null };
+        return { id, fileName: input.fileName, mimeType: input.mimeType, size: input.size, origin: input.origin ?? null };
       });
     },
 
     listAttachments(draftId) {
       return db
-        .prepare<[string], { id: string; file_name: string; mime_type: string; size: number }>(
-          `SELECT id, file_name, mime_type, size FROM compose_attachments WHERE draft_id = ?
+        .prepare<[string], { id: string; file_name: string; mime_type: string; size: number; origin: string | null }>(
+          `SELECT id, file_name, mime_type, size, origin FROM compose_attachments WHERE draft_id = ?
            ORDER BY position`,
         )
         .all(draftId)
-        .map((row) => ({ id: row.id, fileName: row.file_name, mimeType: row.mime_type, size: row.size, origin: null }));
+        .map((row) => ({ id: row.id, fileName: row.file_name, mimeType: row.mime_type, size: row.size, origin: row.origin }));
     },
 
     attachmentData(draftId) {
       return db
         .prepare<[string], ComposeAttachmentRow>(
-          `SELECT id, file_name, mime_type, size, sha256, content_id, data FROM compose_attachments
+          `SELECT id, file_name, mime_type, size, sha256, content_id, data, origin FROM compose_attachments
            WHERE draft_id = ? ORDER BY position`,
         )
         .all(draftId)
@@ -3154,7 +3449,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
           sha256: row.sha256,
           contentId: row.content_id,
           data: bytesOf(row.data),
-          origin: null,
+          origin: row.origin,
         }));
     },
 
@@ -4490,10 +4785,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
         const open = db.prepare<[], { n: number }>("SELECT count(*) AS n FROM mail_tasks WHERE done_at IS NULL").get()!.n;
         if (open + rows.length > TASKS_OPEN_MAX) return { full: true as const };
         const insert = db.prepare(
-          `INSERT INTO mail_tasks (id, account_id, message_id, dedup_key, title, due_date, done_at, created_at, updated_at)
-           VALUES (@id, @accountId, @messageId, @dedupKey, @title, @due, NULL, @createdAt, @createdAt)`,
+          `INSERT INTO mail_tasks (id, account_id, message_id, dedup_key, title, due_date, done_at, created_at, updated_at, note)
+           VALUES (@id, @accountId, @messageId, @dedupKey, @title, @due, NULL, @createdAt, @createdAt, @note)`,
         );
-        for (const row of rows) insert.run(row);
+        for (const row of rows) insert.run({ ...row, note: row.note ?? null });
         return { kept: rows.length };
       });
     },
@@ -4853,7 +5148,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
       );
     },
 
-    purgeDaily(nowIso) {
+    purgeDaily(nowIso, knownProjectIds) {
       const now = Date.parse(nowIso);
       const before = (days: number) => new Date(now - days * 86_400_000).toISOString();
       return atomic(() => {
@@ -4875,44 +5170,386 @@ export function createSqliteStore(db: Database.Database): MailStore {
           .prepare("DELETE FROM reply_reminders WHERE state IN ('answered', 'dismissed') AND updated_at < ?")
           .run(before(ANSWERED_KEEP_DAYS)).changes;
         removed += store.purgeAgentLog(before(AGENT_LOG_KEEP_DAYS), AGENT_LOG_ROWS_MAX);
+        // Slice 3g.
+        removed += db
+          .prepare(
+            `DELETE FROM conversation_projects WHERE NOT EXISTS (SELECT 1 FROM threads t
+               WHERE t.account_id = conversation_projects.account_id AND t.id = conversation_projects.thread_id)`,
+          )
+          .run().changes;
+        if (knownProjectIds != null) {
+          removed += db
+            .prepare(
+              `DELETE FROM conversation_projects WHERE created_at < ?
+                 AND project_id NOT IN (SELECT value FROM json_each(?))`,
+            )
+            .run(before(UNKNOWN_PROJECT_DAYS), JSON.stringify(knownProjectIds)).changes;
+        }
+        db.prepare("UPDATE rule_runs SET state = 'expired', updated_at = ? WHERE state = 'ready' AND created_at < ?").run(
+          nowIso,
+          before(RULE_READY_DAYS),
+        );
+        removed += db.prepare("DELETE FROM rule_runs WHERE created_at < ?").run(before(RULE_RUNS_KEEP_DAYS)).changes;
+        removed += db.prepare("DELETE FROM incident_threads WHERE created_at < ?").run(before(INCIDENT_KEEP_DAYS)).changes;
         return removed;
       });
     },
 
-    // ---- Slice 3g (stubs until migration element 11) ----
-    setDevClass: notYet,
-    devUnclassified: () => [],
-    listUnknown: () => [],
-    fillListIds: notYet,
-    devGroups: () => ({ groups: [], next: null }),
-    addBbLink: notYet,
-    listBbLinks: () => [],
-    pruneBbLinks: notYet,
-    setConversationProject: notYet,
-    conversationProject: () => null,
-    addBinding: notYet,
-    removeBinding: notYet,
-    listBindings: () => [],
-    projectThreads: () => ({ threads: [], nextCursor: null }),
-    putIncident: notYet,
-    incidentFor: () => null,
-    touchIncident: notYet,
-    listRules: () => [],
-    saveRule: notYet,
-    deleteRule: notYet,
-    pauseRules: notYet,
-    resumeRules: notYet,
-    insertRuleRun: notYet,
-    updateRuleRun: notYet,
-    ruleRunByBbThread: () => null,
-    getRuleRun: () => null,
-    listRuleRuns: () => ({ runs: [], next: null }),
-    failStaleStarts: notYet,
+    // ---- Slice 3g --------------------------------------------------------
+
+    setDevClass(rows) {
+      if (rows.length === 0) return 0;
+      return atomic(() => {
+        const update = db.prepare(
+          `UPDATE messages SET dev_source = @source, dev_repo = @repo, dev_kind = @kind, dev_state = @state, dev_ref = @ref
+           WHERE id = @id`,
+        );
+        let changed = 0;
+        for (const row of rows) {
+          changed += update.run({
+            id: row.id,
+            // '' marks a row checked and not a dev notification.
+            source: row.dev?.source ?? "",
+            repo: row.dev?.repo ?? null,
+            kind: row.dev?.kind ?? null,
+            state: row.dev?.state ?? null,
+            ref: row.dev?.ref ?? null,
+          }).changes;
+        }
+        return changed;
+      });
+    },
+
+    devUnclassified(limit) {
+      if (limit <= 0) return [];
+      return db
+        .prepare<[number], { id: string; account_id: string; from_address: string; subject: string }>(
+          `SELECT m.id, m.account_id, m.from_address, m.subject FROM ${MESSAGES_WITH_FOLDER}
+           WHERE m.dev_source IS NULL AND COALESCE(${ROW_ROLE}, '') NOT IN ('junk', 'trash')
+           ORDER BY m.date IS NULL, m.date DESC, m.id DESC LIMIT ?`,
+        )
+        .all(limit)
+        .map((row) => ({ id: row.id, accountId: row.account_id, from: row.from_address, subject: row.subject }));
+    },
+
+    listUnknown(accountId, folder, belowUid, limit) {
+      if (limit <= 0) return [];
+      return db
+        .prepare<[string, string, number | null, number | null, number], { uid: number }>(
+          `SELECT uid FROM messages
+           WHERE account_id = ? AND folder = ? AND uid IS NOT NULL AND list_id IS NULL AND (? IS NULL OR uid < ?)
+           ORDER BY uid DESC LIMIT ?`,
+        )
+        .all(accountId, folder, belowUid, belowUid, limit);
+    },
+
+    fillListIds(accountId, folder, uidValidity, ids) {
+      if (ids.length === 0) return 0;
+      return atomic(() => {
+        const update = db.prepare<[string, string, string, number, string, string, number]>(
+          `UPDATE messages SET list_id = ?
+           WHERE account_id = ? AND folder = ? AND uid = ? AND list_id IS NULL
+             AND EXISTS (SELECT 1 FROM sync_state WHERE account_id = ? AND folder = ? AND uid_validity = ?)`,
+        );
+        let changed = 0;
+        for (const row of ids) {
+          changed += update.run(row.listId, accountId, folder, row.uid, accountId, folder, uidValidity).changes;
+        }
+        return changed;
+      });
+    },
+
+    devGroups(opts) {
+      const rows = db
+        .prepare<[{ since: string; accountId: string | null }], DevDbRow>(
+          `SELECT m.id, m.account_id, m.dedup_key, m.dev_source, m.dev_repo, m.dev_kind, m.dev_state, m.subject,
+             m.date, m.is_read
+           FROM ${MESSAGES_WITH_FOLDER}
+           WHERE m.dev_source IS NOT NULL AND m.dev_source != '' AND m.date >= @since
+             AND (@accountId IS NULL OR m.account_id = @accountId) AND m.move_pending IS NULL
+             AND COALESCE(${ROW_ROLE}, '') NOT IN ('junk', 'trash')
+           ORDER BY m.date DESC, m.id DESC`,
+        )
+        .all({ since: opts.sinceIso, accountId: opts.accountId ?? null });
+      const listed = rows.map((row) => ({
+        id: row.id,
+        accountId: row.account_id,
+        dedupKey: row.dedup_key,
+        source: row.dev_source,
+        repo: row.dev_repo,
+        kind: row.dev_kind,
+        state: row.dev_state,
+        subject: row.subject,
+        date: row.date,
+        isRead: row.is_read === 1,
+      }));
+      return pageDevGroups(groupDevRows(listed), opts.cursor ?? null, opts.limit);
+    },
+
+    addBbLink(row) {
+      db.prepare(
+        `INSERT INTO bb_links (id, account_id, message_id, thread_id, kind, target_id, project_id, extra_json, created_at)
+         VALUES (@id, @accountId, @messageId, @threadId, @kind, @targetId, @projectId, @extra, @createdAt)`,
+      ).run(row);
+    },
+
+    listBbLinks(query) {
+      let rows: BbLinkDbRow[];
+      if ("messageIds" in query) {
+        if (query.messageIds.length === 0) return [];
+        rows = db
+          .prepare<[string], BbLinkDbRow>(
+            "SELECT * FROM bb_links WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY created_at, id",
+          )
+          .all(JSON.stringify(query.messageIds));
+      } else if ("targetId" in query) {
+        rows = db
+          .prepare<[string], BbLinkDbRow>("SELECT * FROM bb_links WHERE target_id = ? ORDER BY created_at, id")
+          .all(query.targetId);
+      } else {
+        rows = db
+          .prepare<[string, string], BbLinkDbRow>(
+            "SELECT * FROM bb_links WHERE account_id = ? AND thread_id = ? ORDER BY created_at, id",
+          )
+          .all(query.accountId, query.threadId);
+      }
+      return rows.map(toBbLink);
+    },
+
+    pruneBbLinks(kind, targetIds) {
+      if (targetIds.length === 0) return 0;
+      return db
+        .prepare<[string, string]>("DELETE FROM bb_links WHERE kind = ? AND target_id IN (SELECT value FROM json_each(?))")
+        .run(kind, JSON.stringify(targetIds)).changes;
+    },
+
+    setConversationProject(accountId, threadId, projectId, nowIso) {
+      if (projectId === null) {
+        db.prepare("DELETE FROM conversation_projects WHERE account_id = ? AND thread_id = ?").run(accountId, threadId);
+        return;
+      }
+      db.prepare(
+        `INSERT INTO conversation_projects (account_id, thread_id, project_id, created_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (account_id, thread_id) DO UPDATE SET project_id = excluded.project_id, created_at = excluded.created_at`,
+      ).run(accountId, threadId, projectId, nowIso);
+    },
+
+    conversationProject(accountId, threadId) {
+      return (
+        db
+          .prepare<[string, string], { project_id: string }>(
+            "SELECT project_id FROM conversation_projects WHERE account_id = ? AND thread_id = ?",
+          )
+          .get(accountId, threadId)?.project_id ?? null
+      );
+    },
+
+    addBinding(row) {
+      return atomic(() => {
+        const existing = db
+          .prepare<[string, string], { project_id: string }>("SELECT project_id FROM project_bindings WHERE kind = ? AND value = ?")
+          .get(row.kind, row.value);
+        if (existing !== undefined) {
+          db.prepare("UPDATE project_bindings SET project_id = ? WHERE kind = ? AND value = ?").run(row.projectId, row.kind, row.value);
+          return { created: false };
+        }
+        const count = db.prepare<[], { n: number }>("SELECT count(*) AS n FROM project_bindings").get()!.n;
+        if (count >= BINDINGS_MAX) return { full: true as const };
+        db.prepare("INSERT INTO project_bindings (kind, value, project_id, created_at) VALUES (?, ?, ?, ?)").run(
+          row.kind,
+          row.value,
+          row.projectId,
+          row.createdAt,
+        );
+        return { created: true };
+      });
+    },
+
+    removeBinding(kind, value) {
+      return db.prepare("DELETE FROM project_bindings WHERE kind = ? AND value = ?").run(kind, value).changes > 0;
+    },
+
+    listBindings() {
+      return db
+        .prepare<[], { kind: BindingKind; value: string; project_id: string; created_at: string }>(
+          "SELECT * FROM project_bindings ORDER BY kind, value",
+        )
+        .all()
+        .map((row) => ({ kind: row.kind, value: row.value, projectId: row.project_id, createdAt: row.created_at }));
+    },
+
+    projectThreads(projectId, opts) {
+      return pageThreads({
+        where: `threads.id IN (${PROJECT_THREADS})`,
+        flagged: `EXISTS (SELECT 1 FROM messages f WHERE f.thread_id = threads.id AND f.move_pending IS NULL AND f.is_flagged = 1)`,
+        snoozed: `(SELECT min(z.due_at) FROM messages s JOIN snoozes z ON z.message_id = s.id WHERE s.thread_id = threads.id)`,
+        latest: `messages l WHERE l.thread_id = @threadId AND l.move_pending IS NULL`,
+        params: { projectId },
+        cursor: opts.cursor,
+        limit: opts.limit,
+      });
+    },
+
+    putIncident(row) {
+      db.prepare(
+        `INSERT INTO incident_threads (fingerprint, bb_thread_id, project_id, created_at, last_at)
+         VALUES (@fingerprint, @bbThreadId, @projectId, @createdAt, @lastAt)
+         ON CONFLICT (fingerprint) DO UPDATE SET bb_thread_id = excluded.bb_thread_id, project_id = excluded.project_id,
+           created_at = excluded.created_at, last_at = excluded.last_at`,
+      ).run(row);
+    },
+
+    incidentFor(fingerprint) {
+      const row = db
+        .prepare<[string], { fingerprint: string; bb_thread_id: string; project_id: string; created_at: string; last_at: string }>(
+          "SELECT * FROM incident_threads WHERE fingerprint = ?",
+        )
+        .get(fingerprint);
+      return row === undefined
+        ? null
+        : { fingerprint: row.fingerprint, bbThreadId: row.bb_thread_id, projectId: row.project_id, createdAt: row.created_at, lastAt: row.last_at };
+    },
+
+    touchIncident(fingerprint, nowIso) {
+      return db.prepare("UPDATE incident_threads SET last_at = ? WHERE fingerprint = ?").run(nowIso, fingerprint).changes > 0;
+    },
+
+    listRules() {
+      return db.prepare<[], RuleDbRow>("SELECT * FROM mail_rules ORDER BY created_at, id").all().map(toRule);
+    },
+
+    saveRule(rule, nowIso) {
+      return atomic(() => {
+        const existing = db.prepare<[string], RuleDbRow>("SELECT * FROM mail_rules WHERE id = ?").get(rule.id);
+        const params = {
+          id: rule.id,
+          name: rule.name,
+          enabled: rule.enabled ? 1 : 0,
+          match: JSON.stringify(rule.match),
+          projectId: rule.projectId,
+          template: rule.template,
+          mode: rule.mode,
+          now: nowIso,
+        };
+        if (existing !== undefined) {
+          db.prepare(
+            `UPDATE mail_rules SET name = @name, enabled = @enabled, match_json = @match, project_id = @projectId,
+               template = @template, mode = @mode, updated_at = @now WHERE id = @id`,
+          ).run(params);
+        } else {
+          const count = db.prepare<[], { n: number }>("SELECT count(*) AS n FROM mail_rules").get()!.n;
+          if (count >= RULES_MAX) return { full: true as const };
+          db.prepare(
+            `INSERT INTO mail_rules (id, name, enabled, match_json, project_id, template, mode, created_at, updated_at)
+             VALUES (@id, @name, @enabled, @match, @projectId, @template, @mode, @now, @now)`,
+          ).run(params);
+        }
+        return { rule: toRule(db.prepare<[string], RuleDbRow>("SELECT * FROM mail_rules WHERE id = ?").get(rule.id)!) };
+      });
+    },
+
+    deleteRule(id) {
+      return db.prepare("DELETE FROM mail_rules WHERE id = ?").run(id).changes > 0;
+    },
+
+    pauseRules(nowIso) {
+      return db
+        .prepare<[string], { id: string }>("UPDATE mail_rules SET enabled = 0, updated_at = ? WHERE enabled = 1 RETURNING id")
+        .all(nowIso)
+        .map((row) => row.id)
+        .sort();
+    },
+
+    resumeRules(ids, nowIso) {
+      if (ids.length === 0) return 0;
+      return db
+        .prepare<[string, string]>("UPDATE mail_rules SET enabled = 1, updated_at = ? WHERE id IN (SELECT value FROM json_each(?))")
+        .run(nowIso, JSON.stringify(ids)).changes;
+    },
+
+    insertRuleRun(row, caps) {
+      return atomic(() => {
+        const duplicate = db
+          .prepare<[string, string], { id: string }>("SELECT id FROM rule_runs WHERE rule_id = ? AND message_id = ?")
+          .get(row.ruleId, row.messageId);
+        if (duplicate !== undefined) return "duplicate" as const;
+        let state: RuleRunState = row.state;
+        if (row.state === "starting") {
+          const at = Date.parse(row.createdAt);
+          const hour = new Date(at - 3_600_000).toISOString();
+          const day = new Date(at - 86_400_000).toISOString();
+          const count = db.prepare<[{ ruleId: string; hour: string; day: string; accountId: string; threadId: string | null }], RuleRunCounts>(
+            `SELECT
+               count(CASE WHEN rule_id = @ruleId AND created_at >= @hour THEN 1 END) AS ruleHour,
+               count(CASE WHEN rule_id = @ruleId THEN 1 END) AS ruleDay,
+               count(*) AS allDay,
+               count(CASE WHEN rule_id = @ruleId AND @threadId IS NOT NULL AND account_id = @accountId
+                 AND thread_id = @threadId THEN 1 END) AS conversationDay
+             FROM rule_runs WHERE state IN ('starting', 'started') AND created_at >= @day`,
+          );
+          const counts = count.get({ ruleId: row.ruleId, hour, day, accountId: row.accountId, threadId: row.threadId })!;
+          if (capVerdict(counts, caps) === "capped") state = "capped";
+        }
+        db.prepare(
+          `INSERT INTO rule_runs (id, rule_id, account_id, message_id, thread_id, state, bb_thread_id, notified_at, created_at, updated_at)
+           VALUES (@id, @ruleId, @accountId, @messageId, @threadId, @state, NULL, NULL, @createdAt, @createdAt)`,
+        ).run({ ...row, state });
+        return state === "capped" ? ("capped" as const) : ("inserted" as const);
+      });
+    },
+
+    updateRuleRun(id, patch, nowIso) {
+      const sets: string[] = ["updated_at = @now"];
+      if (patch.state !== undefined) sets.push("state = @state");
+      if (patch.bbThreadId !== undefined) sets.push("bb_thread_id = @bbThreadId");
+      if (patch.notifiedAt !== undefined) sets.push("notified_at = @notifiedAt");
+      return (
+        db
+          .prepare(`UPDATE rule_runs SET ${sets.join(", ")} WHERE id = @id`)
+          .run({ id, now: nowIso, state: patch.state ?? null, bbThreadId: patch.bbThreadId ?? null, notifiedAt: patch.notifiedAt ?? null })
+          .changes > 0
+      );
+    },
+
+    ruleRunByBbThread(bbThreadId) {
+      const row = db
+        .prepare<[string], RuleRunDbRow>(
+          "SELECT * FROM rule_runs WHERE bb_thread_id = ? AND state IN ('starting', 'started') ORDER BY created_at LIMIT 1",
+        )
+        .get(bbThreadId);
+      return row === undefined ? null : toRuleRun(row);
+    },
+
+    getRuleRun(id) {
+      const row = db.prepare<[string], RuleRunDbRow>("SELECT * FROM rule_runs WHERE id = ?").get(id);
+      return row === undefined ? null : toRuleRun(row);
+    },
+
+    listRuleRuns(opts) {
+      const after = opts.cursor == null ? null : decodeCursor(opts.cursor);
+      const rows = db
+        .prepare<[{ state: string | null; afterDate: string | null; afterId: string | null; limit: number }], RuleRunDbRow>(
+          `SELECT * FROM rule_runs WHERE (@state IS NULL OR state = @state)
+             AND (@afterDate IS NULL OR created_at < @afterDate OR (created_at = @afterDate AND id < @afterId))
+           ORDER BY created_at DESC, id DESC LIMIT @limit`,
+        )
+        .all({ state: opts.state ?? null, afterDate: after?.lastDate ?? null, afterId: after?.id ?? null, limit: opts.limit + 1 });
+      const page = rows.slice(0, opts.limit);
+      const last = page[page.length - 1];
+      return {
+        runs: page.map(toRuleRun),
+        next: rows.length > opts.limit && last !== undefined ? encodeCursor(last.created_at, last.id) : null,
+      };
+    },
+
+    failStaleStarts(beforeIso, nowIso) {
+      return db
+        .prepare("UPDATE rule_runs SET state = 'failed', updated_at = ? WHERE state = 'starting' AND created_at < ?")
+        .run(nowIso, beforeIso).changes;
+    },
   };
   return store;
 }
 
-function notYet(): never {
-  throw new Error("Not available yet");
-}
+
 
