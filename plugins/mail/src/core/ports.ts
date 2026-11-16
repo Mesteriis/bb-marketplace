@@ -843,6 +843,8 @@ export interface MailStore {
   appendAgentLog(entry: LogEntry): number;
   /** Moves every row of a proposal or triage batch to its final outcome and count; returns how many changed. */
   updateAgentLog(refId: string, outcome: LogOutcome, count: number): number;
+  /** Records what a row's later step sent (Ask's excerpts): ids (capped), their count and the hidden values; returns how many changed. */
+  setAgentLogSources(seq: number, messageIds: readonly string[], count: number, hiddenCount: number): number;
   /** Newest first; `cursor` is the last seq of the previous page. */
   listAgentLog(opts: { threadId?: string; cursor?: string | null; limit: number }): {
     entries: (LogEntry & { seq: number })[];

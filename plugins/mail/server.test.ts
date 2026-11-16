@@ -5692,6 +5692,27 @@ describe("AI on the owner's click (slice 3f)", () => {
     expect(missing.result).toMatchObject({ kind: "ask", found: false, sources: [] });
   });
 
+  it("ask and translation log what was sent: the excerpt ids, their count and the hidden values", async () => {
+    const ai = new MakoshAiStub();
+    const host = await loadAi(ai);
+    const { inside } = canaryIds(host);
+    ai.queue.push('{"queries":["login code"]}', '{"answer":"Invented answer","sources":[1],"found":true}');
+    await aiToEnd(host, { kind: "ask", question: "Did anyone send a login code?" });
+    const ask = agentLogRows(host).filter((row) => row.tool === "ai_ask");
+    expect(ask).toHaveLength(1);
+    expect(JSON.parse(String(ask[0]!.message_ids_json))).toEqual([inside]);
+    expect(ask[0]!.result_count).toBe(1);
+    // The subject's code, the From name's password, the body's token and card.
+    expect(Number(ask[0]!.hidden_count)).toBeGreaterThanOrEqual(4);
+
+    ai.answer = sse(TRANSLATED);
+    await translateToEnd(host, inside);
+    const translate = agentLogRows(host).filter((row) => row.tool === "ai_translate");
+    expect(translate).toHaveLength(1);
+    // The subject's code, the body's token and card (the From name is not translated).
+    expect(Number(translate[0]!.hidden_count)).toBeGreaterThanOrEqual(3);
+  });
+
   it("tasks: an evidence miss stays unticked; Keep stores the picks with edited titles", async () => {
     const ai = new MakoshAiStub();
     const host = await loadAi(ai);

@@ -798,22 +798,32 @@ function folderNames(store: MailStore): (message: { accountId: string; folder: s
 
 // ---- Agent paths (slice 3f): scope, redaction and the action log ----
 
-/** Writes one content-free agent-log row; a failure is logged by kind only and never stops the path. */
-type AgentLog = (input: LogEntryInput) => void;
+/** Writes one content-free agent-log row and answers its seq (null on failure); a failure is logged by kind only and never stops the path. */
+type AgentLog = (input: LogEntryInput) => number | null;
 /** Moves a proposal's or triage batch's rows to their final outcome. */
 type AgentLogUpdate = (refId: string, outcome: LogOutcome, count: number) => void;
+/** Records what a row's later step sent (Ask's excerpts). */
+type AgentLogSources = (seq: number, messageIds: readonly string[], hiddenCount: number) => void;
 
 function createAgentLog(
   store: MailStore,
   clock: Clock,
   warn: (line: string) => void,
-): { log: AgentLog; update: AgentLogUpdate } {
+): { log: AgentLog; update: AgentLogUpdate; sources: AgentLogSources } {
   return {
     log: (input) => {
       try {
-        store.appendAgentLog(logEntry(input, clock.now()));
+        return store.appendAgentLog(logEntry(input, clock.now()));
       } catch (error) {
         warn(`agent log failed (${errorKind(error)})`);
+        return null;
+      }
+    },
+    sources: (seq, messageIds, hiddenCount) => {
+      try {
+        store.setAgentLogSources(seq, messageIds, messageIds.length, hiddenCount);
+      } catch (error) {
+        warn(`agent log update failed (${errorKind(error)})`);
       }
     },
     update: (refId, outcome, count) => {
@@ -1351,6 +1361,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       newMail,
       agentLog: agentLog.log,
       agentLogUpdate: agentLog.update,
+      agentLogSources: agentLog.sources,
       aiJobs,
       aiNonce: () => translateNonce((size) => new Uint8Array(randomBytes(size))),
       restoreTag: (parts) => newRestoreTag((size) => new Uint8Array(randomBytes(size)), parts),
@@ -1425,6 +1436,7 @@ type RpcDeps = {
   /** The content-free agent action log (slice 3f). */
   agentLog: AgentLog;
   agentLogUpdate: AgentLogUpdate;
+  agentLogSources: AgentLogSources;
   /** Owner-click AI jobs (slice 3f). */
   aiJobs: AiJobs;
   /** A fresh frame nonce. */
@@ -2662,7 +2674,16 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         }
         const started = await deps.jobs.start(messageId, targetLanguage, current, force === undefined ? {} : { force });
         if ("jobId" in started) {
-          deps.agentLog({ actor: "owner_ai", tool: "ai_translate", outcome: "ok", messageIds: [messageId], count: 1, provider: current.providerId, model: current.model });
+          deps.agentLog({
+            actor: "owner_ai",
+            tool: "ai_translate",
+            outcome: "ok",
+            messageIds: [messageId],
+            count: 1,
+            hiddenCount: deps.jobs.hiddenCount(started.jobId),
+            provider: current.providerId,
+            model: current.model,
+          });
         }
         return started;
       }),
@@ -4140,9 +4161,9 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
     const current = deps.translateSettings();
     return { provider: current.providerId, model: current.model };
   };
-  const logAi = (kind: string, outcome: LogOutcome, ids: readonly string[] = [], hidden = 0) => {
+  const logAi = (kind: string, outcome: LogOutcome, ids: readonly string[] = [], hidden = 0): number | null => {
     const { provider, model } = settings();
-    deps.agentLog({
+    return deps.agentLog({
       actor: "owner_ai",
       tool: `ai_${kind}` as LogEntryInput["tool"],
       outcome,
@@ -4168,10 +4189,11 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
     return { thread, inScope, leftOut: thread.messages.length - inScope.length };
   };
 
-  const startJob = (kind: AiKind, built: AiBuild, extra: Partial<AiJobContext> = {}) => {
+  const startJob = (kind: AiKind, built: AiBuild, extra: Partial<AiJobContext> = {}, onLogged?: (seq: number | null) => void) => {
     try {
       const started = deps.aiJobs.start(kind, built, { ...settings(), ...extra });
-      logAi(kind, "ok", built.parts.map((part) => part.messageId), built.notes.hidden);
+      const seq = logAi(kind, "ok", built.parts.map((part) => part.messageId), built.notes.hidden);
+      onLogged?.(seq);
       return started;
     } catch (error) {
       if (error instanceof AiJobRefusal) logAi(kind, "refused_caps");
@@ -4179,8 +4201,17 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
     }
   };
 
-  /** Ask's second step: the planned queries and the question's words, scoped, post-filtered, deduped, newest first. */
-  const askSearch = (question: string, accountId: string | null, today: string) => (queries: string[]): AiBuild => {
+  /**
+   * Ask's second step: the planned queries and the question's words, scoped,
+   * post-filtered, deduped, newest first. `sent` receives the excerpts' ids
+   * and hidden count, so the log row lists what went to the model.
+   */
+  const askSearch = (
+    question: string,
+    accountId: string | null,
+    today: string,
+    sent: (messageIds: string[], hidden: number) => void,
+  ) => (queries: string[]): AiBuild => {
     const seen = new Set<string>();
     const hits: MessageSummary[] = [];
     const words = queryWords(question).filter((word) => [...word].length >= 3).slice(0, ASK_QUESTION_WORDS);
@@ -4199,7 +4230,9 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
       const header = store.getMessage(hit.id);
       return header === null ? [] : [sourceMessage(store, header)];
     });
-    return withNonce(deps, (nonce) => askAnswerInput(question, excerpts, { nonce, today }));
+    const built = withNonce(deps, (nonce) => askAnswerInput(question, excerpts, { nonce, today }));
+    sent(built.parts.map((part) => part.messageId), built.notes.hidden);
+    return built;
   };
 
   async function start(input: AiStartInput): Promise<{ cached: NonNullable<AiResultViewOut> } | { jobId: string }> {
@@ -4265,7 +4298,17 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
       }
       case "ask": {
         const plan = askPlanInput(input.question, today);
-        return startJob("ask", plan, { search: askSearch(input.question, input.accountId ?? null, today) });
+        // The row is written at start (the plan sends the question only); step 2 fills in the excerpts.
+        let seq: number | null = null;
+        let pending: { ids: string[]; hidden: number } | null = null;
+        const sent = (ids: string[], hidden: number) => {
+          if (seq === null) pending = { ids, hidden };
+          else deps.agentLogSources(seq, ids, hidden);
+        };
+        return startJob("ask", plan, { search: askSearch(input.question, input.accountId ?? null, today, sent) }, (logged) => {
+          seq = logged;
+          if (seq !== null && pending !== null) deps.agentLogSources(seq, pending.ids, pending.hidden);
+        });
       }
       case "categories": {
         requireCategories();

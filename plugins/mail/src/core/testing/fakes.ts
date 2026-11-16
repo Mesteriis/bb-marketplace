@@ -2107,6 +2107,15 @@ export class InMemoryMailStore implements MailStore {
     return seq;
   }
 
+  setAgentLogSources(seq: number, messageIds: readonly string[], count: number, hiddenCount: number): number {
+    const entry = this.state.agentLog.find((row) => row.seq === seq);
+    if (entry === undefined) return 0;
+    entry.messageIds = [...new Set(messageIds)].slice(0, AGENT_LOG_IDS_MAX);
+    entry.count = count;
+    entry.hiddenCount = hiddenCount;
+    return 1;
+  }
+
   updateAgentLog(refId: string, outcome: LogOutcome, count: number): number {
     let changed = 0;
     for (const entry of this.state.agentLog) {

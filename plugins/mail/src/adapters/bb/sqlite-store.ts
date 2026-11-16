@@ -4383,6 +4383,12 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return Number(result.lastInsertRowid);
     },
 
+    setAgentLogSources(seq, messageIds, count, hiddenCount) {
+      return db
+        .prepare("UPDATE agent_log SET message_ids_json = ?, result_count = ?, hidden_count = ? WHERE seq = ?")
+        .run(JSON.stringify([...new Set(messageIds)].slice(0, AGENT_LOG_IDS_MAX)), count, hiddenCount, seq).changes;
+    },
+
     updateAgentLog(refId, outcome, count) {
       return db.prepare("UPDATE agent_log SET outcome = ?, result_count = ? WHERE ref_id = ?").run(outcome, count, refId)
         .changes;
