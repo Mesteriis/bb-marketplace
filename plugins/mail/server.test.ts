@@ -56,6 +56,9 @@ import {
   UNDO_MS,
   UNTRUSTED_NOTICE,
   AI_START_KINDS,
+  RECEIPT_HEADERS,
+  SECURITY_HEADER_FIELDS,
+  senderCheckOf,
 } from "./src/core/index.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -1300,7 +1303,11 @@ describe("makosh-mail server", () => {
           messages: [
             {
               folder: "INBOX",
-              message: makeFetchedMessage(1, { from: { name: "News", address: "News@Example.org" } }),
+              // Judged at sync (slice 3i): iCloud trusts no authserv-id yet, so the check is unchecked.
+              message: makeFetchedMessage(1, {
+                from: { name: "News", address: "News@Example.org" },
+                senderCheck: senderCheckOf([], "icloud", { name: "News", address: "News@Example.org" }, { folderRole: "inbox" }),
+              }),
             },
           ],
         }),
@@ -3440,6 +3447,21 @@ describe("sending polish: compose_check", () => {
     expect(await call(host, "compose_check", { draftId, baseRevision: saved.revision })).toEqual({
       issues: [{ kind: "outside_conversation", addresses: ["newcomer@example.net"] }],
     });
+  });
+
+  it("a reply to a foreign Reply-To raises reply_to_elsewhere (slice 3i)", async () => {
+    const host = await loadCompose();
+    sqlStore(host).upsertMessages("acc_1", "INBOX", [
+      makeFetchedMessage(6, {
+        from: { name: null, address: "billing@example.com" },
+        replyTo: [{ name: null, address: "collect@elsewhere.example.net" }],
+        subject: "Invented invoice",
+      }),
+    ]);
+    const { draftId } = (await call(host, "compose_prepare", { kind: "reply", messageId: messageIdAt(host, "INBOX", 6) })) as { draftId: string };
+    const opened = (await call(host, "compose_open", { draftId })) as { draft: { revision: number } };
+    const { issues } = (await call(host, "compose_check", { draftId, baseRevision: opened.draft.revision })) as { issues: unknown[] };
+    expect(issues).toContainEqual({ kind: "reply_to_elsewhere", addresses: ["collect@elsewhere.example.net"] });
   });
 });
 
@@ -6663,7 +6685,7 @@ function seedDevMail(store: ReturnType<typeof createSqliteStore>): void {
       date: hoursAgo(3),
       subject: "Invented code review",
       bodyText: null,
-      bodyHtml: '<p>See <a href="https://github.com/example-org/demo/issues/7">this issue</a></p><pre>const a = 1;\nconst b = 2;</pre>',
+      bodyHtml: '<p>See <a href="https://github.com/example-org/demo/issues/7?utm_source=digest&amp;utm_medium=email">this issue</a></p><pre>const a = 1;\nconst b = 2;</pre>',
     }),
     makeFetchedMessage(4, { date: hoursAgo(4), subject: "[PATCH] Fix the invented parser", bodyText: FORMAT_PATCH }),
     makeFetchedMessage(5, {
@@ -6751,6 +6773,7 @@ describe("slice 3g: dev mail, links and code", () => {
     ]);
     expect(plain.dev).toMatchObject({ source: "github", kind: "ci" });
     const html = await threadAt(host, ids[3]!);
+    // Slice 3i: dev links are cleaned of tracking parameters where the server computes them.
     expect(html.messages[0]!.devLinks).toEqual([expect.objectContaining({ url: "https://github.com/example-org/demo/issues/7", kind: "issue" })]);
     // A suggestion only: nothing is bound by it.
     expect(html.project).toBeNull();
@@ -7193,6 +7216,27 @@ describe("slice 3g: mail rules", () => {
     await call(host, "bb_thread_start", { messageId: runs[0]!.messageId, include: "message", projectId: "api", instruction: "Look into it.", ruleRunId: runId });
     expect(ruleRuns(host)[0]).toMatchObject({ state: "started", bb_thread_id: "bb_t1" });
     await expect(call(host, "rule_run_dismiss", { id: runId })).rejects.toThrow("Unknown rule run");
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("never judges mail whose sender check failed (slice 3i, decision 5)", async () => {
+    const { host, accountId, service } = await started();
+    // Judged as Gmail mail from here on: mx.google.com's results count.
+    host.bb.storage.database().prepare("UPDATE accounts SET preset = 'gmail' WHERE id = ?").run(accountId);
+    await call(host, "rule_save", ruleInput());
+    const results = (dmarc: "pass" | "fail") => [
+      { key: "received", value: "by 2002:a05:6000:1:b0:1 with SMTP id x" },
+      { key: "authentication-results", value: `mx.google.com; dkim=none; spf=${dmarc} smtp.mailfrom=${RULE_FROM}; dmarc=${dmarc} header.from=example.com` },
+      { key: "from", value: `Alerts <${RULE_FROM}>` },
+    ];
+    deliver(host, 1, { subject: "Invented forged alert", unsubscribeHeaders: results("fail") });
+    deliver(host, 1, { subject: "Invented genuine alert", unsubscribeHeaders: results("pass") });
+    await wakeAndWait(host, accountId);
+    await vi.waitFor(() => expect(ruleRuns(host)).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const { runs } = (await call(host, "rule_runs_list", { state: "ready" })) as { runs: { subject: string }[] };
+    expect(runs.map((run) => run.subject)).toEqual(["Invented genuine alert"]);
     service.controller.abort();
     await service.done;
   });
@@ -8082,5 +8126,261 @@ describe("makosh-mail server: slice 3h", () => {
     await call(host, "attachment_view_ticket", { messageId, partId: "1" });
     const seen = [logText(host), realtimeText(host), JSON.stringify(agentLogRows(host))].join("\n");
     for (const canary of ["Zebracanary", "Folder-canary", "Label-canary", "file-canary"]) expect(seen, canary).not.toContain(canary);
+  });
+});
+
+// ---- Slice 3i: sender checks, warnings, images, refresh, secure delete -----
+
+/** A stored sender check as sync would write it from the provider's results (synthetic values). */
+function storedCheck(state: "ok" | "failed"): NonNullable<FetchedMessage["senderCheck"]> {
+  return {
+    state,
+    basis: "results",
+    authserv: "mx.example.org",
+    decidedBy: "dmarc",
+    spf: null,
+    dkim: [],
+    dmarc: { result: state === "ok" ? "pass" : "fail", domain: "example.com" },
+    otherDmarc: [],
+    multipleFrom: false,
+    malformed: false,
+    alsoPresent: 0,
+  };
+}
+
+/** Header lines the fake server returns for a header-fields fetch: a trusted-looking A-R the "other" preset ignores. */
+const SERVER_HEADERS = [
+  { key: "Authentication-Results", value: "mx.example.org; dmarc=fail header.from=example.com" },
+  { key: "From", value: "Billing <billing@example.com>" },
+  { key: "Content-Type", value: 'multipart/signed; protocol="application/pgp-signature"; boundary="b"' },
+  { key: RECEIPT_HEADERS[0]!, value: "billing@example.com" },
+];
+
+describe("slice 3i: sender checks on the server", () => {
+  function load3i(server?: (gateway: RawGateway) => void) {
+    return load({
+      settings: { vaultKey: COMPOSE_KEY },
+      seed: (bb) => {
+        seedCompose(bb);
+        const store = createSqliteStore(bb.storage.database());
+        store.upsertMessages("acc_1", "INBOX", [
+          makeFetchedMessage(1, {
+            from: { name: "Billing", address: "billing@example.com" },
+            replyTo: [{ name: null, address: "collect@elsewhere.example.net" }],
+            senderCheck: storedCheck("failed"),
+            receiptRequested: true,
+            crypto: { kind: "pgp_signed", opaque: false },
+          }),
+          makeFetchedMessage(2, { from: { name: "News", address: "news@examp1e.com" }, senderCheck: storedCheck("ok") }),
+          makeFetchedMessage(3, { from: { name: "Old", address: "old@example.net" } }),
+          makeFetchedMessage(4, { from: { name: "Fine", address: "fine@example.net" }, senderCheck: storedCheck("ok") }),
+        ]);
+        store.upsertMessages("acc_1", "Sent", [
+          makeFetchedMessage(1, { from: { name: null, address: "owner@example.org" }, to: [{ name: null, address: "ana@example.com" }] }),
+        ]);
+        store.saveSyncState("acc_1", "INBOX", { uidValidity: 3, lastUid: 4, syncedSince: "2026-10-01T00:00:00.000Z" });
+      },
+      server: (gateway) => {
+        composeServer(gateway);
+        server?.(gateway);
+      },
+      outboxIntervalMs: 5,
+    });
+  }
+
+  const detailOf = async (host: Host, uid: number) => {
+    const header = sqlStore(host).getMessage(messageIdAt(host, "INBOX", uid))!;
+    const detail = (await call(host, "thread_get", { threadId: header.threadId, folder: "INBOX" })) as ThreadDetail;
+    return detail.messages.find((m) => m.id === header.id)!;
+  };
+
+  it("thread_get returns the check, warnings, receipt request and crypto kind", async () => {
+    const host = await load3i();
+    expect(await detailOf(host, 1)).toMatchObject({
+      senderCheck: { state: "failed", summary: "DMARC failed" },
+      warnings: [{ kind: "reply_to_elsewhere", addresses: ["collect@elsewhere.example.net"] }],
+      receiptRequested: true,
+      crypto: { kind: "pgp_signed", opaque: false },
+    });
+    // example.com is a domain the owner wrote to (Sent): examp1e.com looks like it.
+    expect((await detailOf(host, 2)).warnings).toEqual([{ kind: "lookalike", domain: "examp1e.com", like: "example.com" }]);
+    expect(await detailOf(host, 3)).toMatchObject({ senderCheck: { state: "unknown", summary: "Not checked yet" }, warnings: [], receiptRequested: false, crypto: null });
+    expect((await detailOf(host, 4)).senderCheck).toEqual({ state: "ok", summary: null });
+  });
+
+  it("message_body: an always-show sender's images wait for a known, unwarned check", async () => {
+    const host = await load3i();
+    const allowed = async (uid: number) => {
+      const messageId = messageIdAt(host, "INBOX", uid);
+      await call(host, "images_allow_sender", { messageId });
+      return ((await call(host, "message_body", { messageId })) as MessageBody).remoteImagesAllowed;
+    };
+    expect(await allowed(1)).toBe(false); // failed
+    expect(await allowed(2)).toBe(false); // lookalike
+    expect(await allowed(3)).toBe(false); // unknown until the refresh
+    expect(await allowed(4)).toBe(true);
+    // The stored rule is untouched.
+    expect(sqlStore(host).getBody(messageIdAt(host, "INBOX", 1))!.remoteImagesAllowed).toBe(true);
+  });
+
+  it("sender_check_refresh: PEEK only, one session per folder, unknown rows only unless forced", async () => {
+    const workMessages = Array.from({ length: 20 }, (_, i) => makeFetchedMessage(i + 1, { messageId: `<w-${i}@example.org>`, unsubscribeHeaders: SERVER_HEADERS }));
+    const inboxMessages = Array.from({ length: 30 }, (_, i) => makeFetchedMessage(i + 1, { messageId: `<i-${i}@example.org>`, unsubscribeHeaders: SERVER_HEADERS }));
+    const host = await load({
+      settings: { vaultKey: COMPOSE_KEY },
+      seed: (bb) => {
+        seedCompose(bb);
+        const store = createSqliteStore(bb.storage.database());
+        store.saveFolders("acc_1", [
+          { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+          { path: "Work", name: "Work", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
+        ]);
+        // As synced before 3i: no check, receipt or crypto.
+        const bare = (m: FetchedMessage) => {
+          const { unsubscribeHeaders: _h, ...rest } = structuredClone(m);
+          return rest;
+        };
+        store.upsertMessages("acc_1", "INBOX", inboxMessages.map(bare));
+        store.upsertMessages("acc_1", "Work", workMessages.map(bare));
+        store.saveSyncState("acc_1", "INBOX", { uidValidity: 3, lastUid: 30, syncedSince: "2026-10-01T00:00:00.000Z" });
+        store.saveSyncState("acc_1", "Work", { uidValidity: 5, lastUid: 20, syncedSince: "2026-10-01T00:00:00.000Z" });
+      },
+      server: (gateway) => {
+        gateway.mailbox = { uidValidity: 3, uidNext: 31, messages: structuredClone(inboxMessages) };
+        gateway.addFolder({ path: "Work" }, { uidValidity: 5, uidNext: 21, messages: structuredClone(workMessages) });
+      },
+    });
+    const ids = [
+      ...Array.from({ length: 30 }, (_, i) => messageIdAt(host, "INBOX", i + 1)),
+      ...Array.from({ length: 20 }, (_, i) => messageIdAt(host, "Work", i + 1)),
+    ];
+    const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    await expect(host.harness.behavior.callRpc("sender_check_refresh", { messageIds: ids }, asPlugin)).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    expect(host.gateway.sessions).toEqual([]);
+
+    expect(await call(host, "sender_check_refresh", { messageIds: ids })).toEqual({ refreshed: 50, failed: 0 });
+    expect(host.gateway.sessions.map((s) => [s.path, s.readOnly, s.closed]).sort()).toEqual([
+      ["INBOX", true, true],
+      ["Work", true, true],
+    ]);
+    for (const session of host.gateway.sessions) {
+      expect(session.calls.map((c) => c.method)).toEqual(["status", "fetchHeaderFields"]);
+      expect(session.calls[1]!.fields).toEqual([...SECURITY_HEADER_FIELDS]);
+    }
+    const rows = sqlStore(host).senderCheckRows(ids);
+    expect(rows.every((row) => row.senderCheckJson !== null && row.receiptRequested === true && row.crypto?.kind === "pgp_signed")).toBe(true);
+    // The "other" preset trusts no authserv-id: the forged-looking A-R decides nothing.
+    expect(new Set(rows.map((row) => JSON.parse(row.senderCheckJson!).state))).toEqual(new Set(["unchecked"]));
+
+    // Judged now: without force nothing is fetched again.
+    expect(await call(host, "sender_check_refresh", { messageIds: ids })).toEqual({ refreshed: 0, failed: 0 });
+    expect(host.gateway.sessions).toHaveLength(2);
+    // force (Details' Check again) overwrites a stored check.
+    const db = host.bb.storage.database();
+    db.prepare("UPDATE messages SET sender_check_json = ? WHERE id = ?").run(JSON.stringify(storedCheck("failed")), ids[0]);
+    expect(await call(host, "sender_check_refresh", { messageIds: [ids[0]!], force: true })).toEqual({ refreshed: 1, failed: 0 });
+    expect(JSON.parse(sqlStore(host).senderCheckRows([ids[0]!])[0]!.senderCheckJson!).state).toBe("unchecked");
+    expect(logText(host)).not.toContain("sender_check");
+  });
+
+  it("sender_check_refresh skips a folder whose UIDVALIDITY changed and logs only the error kind of a failed fetch", async () => {
+    const host = await load3i((gateway) => {
+      gateway.mailbox = { uidValidity: 9, uidNext: 5, messages: [makeFetchedMessage(3, { unsubscribeHeaders: SERVER_HEADERS })] };
+    });
+    const old = messageIdAt(host, "INBOX", 3);
+    expect(await call(host, "sender_check_refresh", { messageIds: [old] })).toEqual({ refreshed: 0, failed: 1 });
+    expect(sqlStore(host).senderCheckRows([old])[0]!.senderCheckJson).toBeNull();
+
+    host.gateway.failOpenFolder("INBOX", imapError("Unavailable"));
+    expect(await call(host, "sender_check_refresh", { messageIds: [old] })).toEqual({ refreshed: 0, failed: 1 });
+    const lines = host.harness.inspection.logEntries.map((entry) => entry.message).filter((line) => line.includes("sender_check"));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(new RegExp(`^sender_check ${old}: fetch failed \\(\\w+\\)$`));
+  });
+
+  it("message_source computes Details' authenticity from the full headers and stores an unknown row's check", async () => {
+    const host = await load3i();
+    const id = messageIdAt(host, "INBOX", 3);
+    const raw = [
+      "Received: from mail.example.net by mx.example.org",
+      "Authentication-Results: mx.example.org; dmarc=pass header.from=example.net",
+      "From: Old <old@example.net>",
+      "Message-ID: <msg-3@example.org>",
+      "Subject: Invented",
+      "",
+      "Invented body.",
+      "",
+    ].join("\r\n");
+    const bytes = new TextEncoder().encode(raw);
+    host.gateway.setRaw("INBOX", 3, bytes);
+    host.bb.storage.database().prepare("UPDATE messages SET size = ? WHERE id = ?").run(bytes.byteLength, id);
+    const source = (await call(host, "message_source", { messageId: id })) as { authenticity: { authserv: string | null; lines: string[] } };
+    expect(source.authenticity).toEqual({ authserv: null, lines: ["Not checked: Mail does not read this server's results"] });
+    expect(JSON.parse(sqlStore(host).senderCheckRows([id])[0]!.senderCheckJson!)).toMatchObject({ state: "unchecked", basis: "provider" });
+  });
+
+  it("calls hardenDatabase after migrate on load (secure_delete on, FTS option set)", async () => {
+    const pragmas: string[] = [];
+    const host = await load({
+      wrap: (bb) => {
+        const storage: BbPluginApi["storage"] = new Proxy(bb.storage, {
+          get(target, key) {
+            if (key !== "database") return Reflect.get(target, key);
+            return () => {
+              const db = target.database();
+              return new Proxy(db, {
+                get(dbTarget, dbKey) {
+                  const value = Reflect.get(dbTarget, dbKey);
+                  if (dbKey !== "pragma") return typeof value === "function" ? value.bind(dbTarget) : value;
+                  return (source: string, ...rest: unknown[]) => {
+                    pragmas.push(source);
+                    return (dbTarget.pragma as (s: string, ...r: unknown[]) => unknown)(source, ...rest);
+                  };
+                },
+              });
+            };
+          },
+        });
+        return new Proxy(bb, { get: (target, key) => (key === "storage" ? storage : Reflect.get(target, key)) });
+      },
+    });
+    expect(pragmas.map((p) => p.replace(/\s+/g, " ").toLowerCase())).toContain("secure_delete = on");
+    expect(host.bb.storage.database().pragma("secure_delete", { simple: true })).toBe(1);
+    // Recorded for the plan: the FTS5 secure-delete option took on this SQLite.
+    expect(logText(host)).not.toContain("secure_delete: fts option unavailable");
+  });
+
+  it("declares the cleanLinks setting, on by default", async () => {
+    const host = await load();
+    const descriptors = host.harness.inspection.registrations.settingsDescriptors as Record<string, { default?: unknown; label: string }>;
+    expect(descriptors.cleanLinks).toMatchObject({ type: "boolean", default: true, label: "Remove tracking from links I open" });
+  });
+});
+
+describe("slice 3i paths leak no canary", () => {
+  it("the agent line, thread_get warnings and sender_check_refresh keep secrets out of every log and realtime", async () => {
+    const host = await loadCanary({}, {});
+    const ids = canaryIds(host);
+    // Raw SQL: a second store on the connection would reset the in-memory AI scope.
+    const db = host.bb.storage.database();
+    db.prepare("UPDATE messages SET sender_check_json = ?, receipt_requested = 1, reply_to_json = ? WHERE id = ?").run(
+      JSON.stringify(storedCheck("failed")),
+      JSON.stringify([{ name: `Reply ${CANARY.fromName}`, address: "collect@elsewhere.example.net" }]),
+      ids.inside,
+    );
+
+    const outputs = await canaryOutputs(host);
+    const read = toolText(await host.harness.behavior.callAgentTool("mail_read", { messageId: ids.inside }, { threadId: CANARY_THREAD }));
+    expect(read).toContain("Sender check: failed; sender warning: reply-to elsewhere");
+    expect(toolText(await host.harness.behavior.callAgentTool("mail_inbox", {}, { threadId: CANARY_THREAD }))).toContain("   Sender check: failed");
+    const { thread_id: threadId } = db.prepare("SELECT thread_id FROM messages WHERE id = ?").get(ids.inside) as { thread_id: string };
+    const detail = (await call(host, "thread_get", { threadId, folder: "INBOX" })) as ThreadDetail;
+    expect(detail.messages.find((m) => m.id === ids.inside)!.warnings).toEqual([
+      { kind: "reply_to_elsewhere", addresses: ["collect@elsewhere.example.net"] },
+    ]);
+    // A refresh that fails (the Work folder is not on the server) logs the id and the kind only.
+    await call(host, "sender_check_refresh", { messageIds: [ids.inside, ids.outside], force: true });
+    expect(logText(host)).toContain(`sender_check ${ids.outside}: fetch failed`);
+    expectNoCanary(host, [...outputs, read]);
   });
 });

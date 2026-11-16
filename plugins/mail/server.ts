@@ -58,7 +58,8 @@ import { createOriginalReader } from "./src/adapters/bb/original-reader.ts";
 import { createOutboxWorker, type OutboxWorker } from "./src/adapters/bb/outbox-worker.ts";
 import { createSmtpTransport } from "./src/adapters/bb/smtp-transport.ts";
 import { UploadBook, UploadError } from "./src/adapters/bb/uploads.ts";
-import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
+import { MIGRATIONS, createSqliteStore, hardenDatabase } from "./src/adapters/bb/sqlite-store.ts";
+import { createSenderChecks, type SenderChecks } from "./src/adapters/bb/sender-checks.ts";
 import { createServerJobs } from "./src/adapters/bb/server-search-jobs.ts";
 import { RetryLater, charsetOf, createAttachmentIndexer, matchingPart } from "./src/adapters/bb/attachment-indexer.ts";
 import { extractPdfText } from "./src/adapters/bb/pdf-text.ts";
@@ -209,6 +210,7 @@ import {
   renderContactsCounted,
   renderInboxForAgentCounted,
   failedSenderIds,
+  autoImagesAllowed,
   renderMessageForAgentCounted,
   renderSearchHitsCounted,
   type LogEntryInput,
@@ -624,6 +626,12 @@ function defineSettings(bb: BbPluginApi) {
       label: "Hide quoted text in replies",
       default: true,
     },
+    // Slice 3i: off keeps every parameter and wrapper; the status line, tracking note and dialog stay.
+    cleanLinks: {
+      type: "boolean",
+      label: "Remove tracking from links I open",
+      default: true,
+    },
   });
 }
 
@@ -959,9 +967,17 @@ type AgentRead =
  * the AI scope is read (agent paths); an id outside it answers as unknown.
  * Never marks the message read.
  */
-function readForAgent(store: MailStore, messageId: string, maxChars: number, scoped = true): AgentRead {
-  const header = scoped ? store.scopedMessage(messageId) : store.getMessage(messageId);
-  if (header === null) return { found: false, outOfScope: scoped && store.getMessage(messageId) !== null };
+function readForAgent(
+  store: MailStore,
+  secure: (header: MessageHeader) => MessageHeader,
+  messageId: string,
+  maxChars: number,
+  scoped = true,
+): AgentRead {
+  const stored = scoped ? store.scopedMessage(messageId) : store.getMessage(messageId);
+  if (stored === null) return { found: false, outOfScope: scoped && store.getMessage(messageId) !== null };
+  // Slice 3i: Mail's sender line and the encrypted placeholder come from the stored check and crypto.
+  const header = secure(stored);
   const rendered = renderMessageForAgentCounted(header, store.getBody(header.id), maxChars, folderNames(store)(header));
   return { found: true, id: header.id, ...rendered };
 }
@@ -1133,6 +1149,12 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
 
     const db = bb.storage.database();
     bb.storage.migrate(db, MIGRATIONS);
+    // Slice 3i (resolution 8): deleted rows are overwritten, the search indexes too where SQLite can.
+    try {
+      if (!hardenDatabase(db).fts) bb.log.warn("secure_delete: fts option unavailable");
+    } catch {
+      bb.log.warn("secure_delete: fts option unavailable");
+    }
     const store = createSqliteStore(db);
     // Snippets stored before entities were fully decoded; runs before the sync loop.
     // A failure here must not stop the plugin: the snippets stay as they are.
@@ -1205,6 +1227,17 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     // One promise chain per account: sync rounds, APPENDs, expunges and SMTP
     // sends of an account never overlap (resolution 7).
     const queue = overrides.queue ?? createAccountQueue();
+    // Slice 3i: the known-domain cache, header view fields and the old-row refresh.
+    const senderChecks = createSenderChecks({
+      store,
+      clock,
+      gateway,
+      vault: sealer,
+      queue,
+      vaultReady: () => vault !== null,
+      log: (line) => bb.log.warn(line),
+      publishChanged,
+    });
     // Undo's second wake: the account's next round end wakes it once more.
     const roundWakes = new RoundWakes((accountId) => loop.wake(accountId));
     // New-mail toasts (slice 3e): ids in memory under a token; realtime carries the token only.
@@ -1255,6 +1288,15 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
           }
           // Attachment text after an ok round (slice 3h), when the owner turned it on.
           if (only === undefined) startIndexing();
+          // Slice 3i: new Sent rows add domains the owner writes to. A failed
+          // lookup marks the set stale too (no log line: resolution 18 allows two).
+          try {
+            if (outcome.inserted.length > 0 && store.senderCheckRows(outcome.inserted).some((row) => row.folderRole === "sent")) {
+              senderChecks.markStale();
+            }
+          } catch {
+            senderChecks.markStale();
+          }
           afterRound(newMailDeps, accountId, outcome, only);
           // Category rules and reply reminders over the round's new rows (slice 3f).
           afterRoundAi({ store, clock, categoriesOn: () => current.mailCategories, log: (line) => bb.log.info(line) }, accountId, outcome);
@@ -1399,6 +1441,8 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
           publishChanged(accountId);
           loop.wake(accountId);
         }
+        // Slice 3i: a finished send may add a domain the owner writes to.
+        if (state === "done") senderChecks.markStale();
       },
     };
     const queueDeps: QueueDeps = { ...composeDeps, notifier: outboxNotifier, rate: new SendRateLimit(clock), undone: new UndoneSends(clock) };
@@ -1508,6 +1552,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       log: (line) => bb.log.info(line),
       mailRules: () => current.mailRules,
       notify: () => dayClock.tick(),
+      security: (header) => senderChecks.secure([header])[0]!,
     };
     const reconcileStarts = async () => {
       try {
@@ -1668,8 +1713,13 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       categoriesOn: () => current.mailCategories,
       quietHours: () => current.quietHours,
       categoryUndo: new CategoryUndoBook(randomUUID),
+      senderChecks,
     };
     registerRpc(bb, rpcDeps);
+    /** One header with its 3i fields, for agent text (the sender line and the encrypted placeholder). */
+    function secureOne(header: MessageHeader): MessageHeader {
+      return senderChecks.secure([header])[0]!;
+    }
     registerDownloadRoute(bb, store, rawDeps, tickets);
     // Every agent tool refuses inside a rule thread, by the thread it runs in (spec resolution 4).
     const agentBb = gateRuleThreads(bb, isRuleThread, agentLog.log);
@@ -1685,6 +1735,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       agentLogUpdate: agentLog.update,
       isRuleThread,
       isRuleThreadContext,
+      secure: secureOne,
     });
     registerTriageTools(agentBb, rpcDeps);
     registerCli(bb, store, {
@@ -1696,6 +1747,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       vaultReady: () => vault !== null,
       agentTools: () => current.agentTools,
       agentLog: agentLog.log,
+      secure: secureOne,
     });
   };
 }
@@ -1764,6 +1816,8 @@ type RpcDeps = {
   /** The owner's quiet hours: Today's notices wait them out (slice 3f). */
   quietHours: () => string;
   categoryUndo: CategoryUndoBook;
+  /** Slice 3i: sender checks, disguise warnings and the old-row refresh. */
+  senderChecks: SenderChecks;
 };
 
 /** What a download ticket stands for; the name and bytes are resolved again when it is used. */
@@ -2663,6 +2717,8 @@ async function unsubscribeOnce(
 function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const { store, accountDeps, composeDeps, publishChanged } = deps;
   const log = (line: string) => bb.log.warn(line);
+  /** Slice 3i: one header with its sender check, warnings, receipt and crypto. */
+  const secureOne = (header: MessageHeader): MessageHeader => deps.senderChecks.secure([header])[0]!;
   /** Owner-only compose handler: plugin callers refused first, failures as fixed-text refusals. */
   function owner<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
@@ -2724,6 +2780,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     publishChanged,
     log,
     ...(deps.saveToProjectEnabled === undefined ? {} : { saveEnabled: deps.saveToProjectEnabled }),
+    security: secureOne,
   });
   const day = createDayRpc(deps, ai.withCategories, { dev: () => bbRpc.todayDev(), rulesReady: () => bbRpc.rulesReady() });
   /** A slice 3g owner method: plugin callers refused first; BB failures as fixed texts. */
@@ -2837,12 +2894,17 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       thread_get: async ({ threadId, folder }) => {
         const thread = store.getThread(threadId, folder);
         if (thread === null) throw refuse("not_found", "Unknown thread");
-        return bbRpc.threadDetail(thread);
+        const detail = await bbRpc.threadDetail(thread);
+        // Slice 3i: the sender check, disguise warnings, receipt request and crypto kind.
+        return { ...detail, messages: deps.senderChecks.secure(detail.messages) };
       },
       // cid: images come inline as data: URLs, so the page fetches nothing for them.
       message_body: ({ messageId }) => {
-        const body = store.getBody(messageId);
-        if (body === null) throw refuse("not_found", "Unknown message");
+        const stored = store.getBody(messageId);
+        if (stored === null) throw refuse("not_found", "Unknown message");
+        // Slice 3i (resolution 5): an always-show sender's images wait for a known, unwarned check.
+        const view = stored.remoteImagesAllowed ? deps.senderChecks.views([messageId]).get(messageId) : undefined;
+        const body = { ...stored, remoteImagesAllowed: view !== undefined && autoImagesAllowed(view.check, view.warnings) };
         if (body.html === null) return body;
         // Slice 3g: the HTML's <pre> blocks for the code-block view (no DOM on the server).
         return { ...body, html: inlineCidImages(body.html, store.inlineParts(messageId)), codeBlocks: scanHtml(body.html).preBlocks };
@@ -2851,7 +2913,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // Like the tools and mentions, it never marks the message read.
       // Outside the AI scope it answers as an unknown message (spec resolution 4).
       message_agent_text: ({ messageId }) => {
-        const read = readForAgent(store, messageId, AGENT_TEXT_CAP);
+        const read = readForAgent(store, secureOne, messageId, AGENT_TEXT_CAP);
         if (!read.found) {
           deps.agentLog({ actor: "handoff", tool: "handoff", outcome: unknownOutcome(read) });
           throw refuse("not_found", "Unknown message");
@@ -2906,8 +2968,16 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
           throw rawRefusal(error);
         }
         const { ref, account, raw } = fetched;
+        let authenticity: { authserv: string | null; lines: string[] } = { authserv: null, lines: [] };
+        try {
+          // Slice 3i: Details' Authenticity from the full headers; stores the check where it reads unknown.
+          authenticity = deps.senderChecks.fromRaw(messageId, raw);
+        } catch {
+          // Hostile headers that do not parse: the panel shows the source without the block.
+        }
         return {
           ...renderSource(raw, (line) => bb.log.warn(line)),
+          authenticity,
           size: raw.byteLength,
           uid: ref.uid,
           folder: ref.folder,
@@ -3157,7 +3227,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       compose_check: owner("compose_check", async ({ draftId, baseRevision }) => {
         const draft = ownerDraft(draftId);
         const origins = store.listAttachments(draftId).some((attachment) => attachment.origin !== null);
-        return { issues: checkDraft(store, draft, baseRevision, origins ? await projectNames() : undefined) };
+        return { issues: checkDraft(store, draft, baseRevision, origins ? await projectNames() : undefined, () => deps.senderChecks.known()) };
       }),
       action_undo: owner("action_undo", ({ undoId }) => runUndo(deps, undoId, (line) => bb.log.info(line))),
       // Slice 3e: wired in the server tasks; until then every call refuses.
@@ -3403,12 +3473,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       attachment_text_clear: owner3h("attachment_text_clear", () => s3.attachmentTextClear()),
       related_messages: owner3h("related_messages", (input) => s3.relatedMessages(input)),
       sender_card: owner3h("sender_card", (input) => s3.senderCard(input)),
-      // Slice 3i: the contract is in (plan Task 3); the header fetch and the
-      // store write come with the server work (plan Task 7). Until then it
-      // refuses plugin callers and refreshes nothing.
-      sender_check_refresh: async (_input, context) => {
+      // Slice 3i (resolution 7): the old-row check, one read-only PEEK session per folder
+      // through the account queue; Details' Check again passes force.
+      sender_check_refresh: async ({ messageIds, force }, context) => {
         refusePluginCaller(context);
-        throw refuse("conflict", "Checking senders again is not available yet");
+        return deps.senderChecks.refresh({ messageIds, force });
       },
     },
     { experimental_discoverable: false },
@@ -3546,6 +3615,8 @@ type AgentSurfaceDeps = {
   isRuleThread: (threadId: string) => boolean;
   /** configure's check: also a thread whose metadata says it came from a rule (review C1). */
   isRuleThreadContext: (threadId: string, metadata: unknown) => boolean;
+  /** Slice 3i: a header with its sender check, warnings and crypto, for agent text. */
+  secure: (header: MessageHeader) => MessageHeader;
 };
 
 /** Each agent tool's agent-log name. */
@@ -3844,7 +3915,7 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
         agentLog({ actor: "agent", tool: "read", outcome: "refused_off", threadId });
         return AGENT_MAIL_OFF_RESULT;
       }
-      const read = readForAgent(store, messageId, maxChars ?? AGENT_TEXT_CAP);
+      const read = readForAgent(store, deps.secure, messageId, maxChars ?? AGENT_TEXT_CAP);
       if (read.found) {
         agentLog({ actor: "agent", tool: "read", outcome: "ok", threadId, messageIds: [read.id], count: 1, hiddenCount: read.hiddenCount });
         return read.text;
@@ -3946,7 +4017,7 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
     // Throwing would block the owner's send, so a lost or out-of-scope message resolves to a notice.
     resolve: (itemId) => {
       try {
-        const read = readForAgent(store, itemId, AGENT_TEXT_CAP);
+        const read = readForAgent(store, deps.secure, itemId, AGENT_TEXT_CAP);
         if (!read.found) {
           agentLog({ actor: "mention", tool: "mention", outcome: unknownOutcome(read) });
           return { context: MESSAGE_GONE_CONTEXT };
@@ -5291,6 +5362,8 @@ type CliDeps = {
   agentLog: AgentLog;
   /** The clock for relative dates in queries (newer_than, older_than). */
   now: () => Date;
+  /** Slice 3i: a header with its sender check, warnings and crypto, for agent text. */
+  secure: (header: MessageHeader) => MessageHeader;
 };
 
 function unknownAccount(accountId: string): PluginCliError {
@@ -5422,7 +5495,7 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
             requireMailAccess(ctx);
             const { messageId } = positionals;
             const inThread = ctx.threadId !== undefined;
-            const read = readForAgent(store, messageId, options["max-chars"], inThread);
+            const read = readForAgent(store, deps.secure, messageId, options["max-chars"], inThread);
             if (inThread) {
               agentLog(
                 read.found

@@ -26,6 +26,9 @@ import {
   isBulkRow,
   mailRuleMatches,
   ownAddresses,
+  failedSenderIds,
+  cleanLink,
+  type DevLink,
   ruleCandidates,
   rulePrompt,
   validateRule,
@@ -215,6 +218,8 @@ export type BbRpcDeps = {
   log: (line: string) => void;
   /** Saving into a project (SAVE_TO_PROJECT_ENABLED; tests turn it off). */
   saveEnabled?: boolean;
+  /** Slice 3i: fills a header's sender check, warnings and crypto for BB text. */
+  security?: Secure;
 };
 
 export function refuse(code: "conflict" | "forbidden" | "invalid" | "not_found", message: string): Error {
@@ -300,10 +305,32 @@ export class InFlight {
 /** How long a task or an incident update for one message stays refused after it was made. */
 export const REPEAT_HOLD_MS = 5_000;
 
-/** The message and its body as the BB text builders read them. */
-export function bbMessage(store: MailStore, header: MessageHeader): BbMessage {
-  return { header, body: store.getBody(header.id) };
+/**
+ * Dev links with tracking removed (part A resolution 9), always cleaned: the
+ * strip opens them and BB text carries them. A link that does not clean (a
+ * scheme cleanLink refuses) is kept as the classifier gave it; duplicates
+ * after cleaning are dropped.
+ */
+function cleanedDevLinks(links: readonly DevLink[]): DevLink[] {
+  const seen = new Set<string>();
+  const out: DevLink[] = [];
+  for (const link of links) {
+    const url = cleanLink(link.url, null, { clean: true })?.url ?? link.url;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push({ ...link, url });
+  }
+  return out;
 }
+
+/** The message and its body as the BB text builders read them; `secure` adds the 3i fields (sender line, encrypted placeholder). */
+export function bbMessage(store: MailStore, header: MessageHeader, secure: Secure = unsecured): BbMessage {
+  return { header: secure(header), body: store.getBody(header.id) };
+}
+
+/** Slice 3i: a header with its stored sender check, warnings, receipt and crypto filled in. */
+export type Secure = (header: MessageHeader) => MessageHeader;
+const unsecured: Secure = (header) => header;
 
 /** The bytes of a stored attachment, read from a fetched raw message, or why not. */
 export type PartRead = { ok: true; bytes: Uint8Array; filename: string | null } | { ok: false; reason: string };
@@ -470,6 +497,8 @@ export type RuleDeps = {
   mailRules: () => boolean;
   /** A run was prepared or started: the day clock announces it. */
   notify: () => void;
+  /** Slice 3i: fills a header's sender check, warnings and crypto for the rule prompt. */
+  security?: Secure;
 };
 
 /**
@@ -496,6 +525,8 @@ export async function afterRoundRules(
   const nowIso = deps.clock.now().toISOString();
   const rows = new Map(store.notifyRows(ids, nowIso).map((row) => [row.id, row]));
   const listIds = store.listIds(ids);
+  // Slice 3i (decision 5): a message whose stored sender check failed drives no rule.
+  const failed = failedSenderIds(store, ids);
   const own = new Set(ownAddresses(store).map((address) => address.trim().toLowerCase()));
   let projects: ProjectInfo[] | null | undefined;
   const projectList = async () => {
@@ -521,6 +552,7 @@ export async function afterRoundRules(
       subject: header.subject,
       dev: header.dev,
       bulk: isBulkRow(row.bulk, row.fromAddress),
+      senderFailed: failed.has(id),
     };
     for (const rule of rules) {
       if (!mailRuleMatches(rule, ruleRow)) continue;
@@ -593,7 +625,7 @@ async function runRule(
   let bbThreadId: string;
   let hidden = 0;
   try {
-    const text = rulePrompt(rule, bbMessage(store, header));
+    const text = rulePrompt(rule, bbMessage(store, header, deps.security));
     hidden = text.hidden;
     bbThreadId = (
       await deps.threads.spawn({
@@ -690,6 +722,7 @@ export async function reconcileRuleStarts(
 
 export function createBbRpc(deps: BbRpcDeps) {
   const { store, projects, threads, clock } = deps;
+  const secure = deps.security ?? unsecured;
   const saveEnabled = deps.saveEnabled ?? SAVE_TO_PROJECT_ENABLED;
   const nowIso = () => clock.now().toISOString();
   const starts = new InFlight();
@@ -737,11 +770,11 @@ export function createBbRpc(deps: BbRpcDeps) {
    */
   function threadMessages(header: MessageHeader, include: "message" | "conversation"): { messages: BbMessage[]; skipped: number } {
     if (!header.inAiScope) throw new BbTextOutOfScope();
-    if (include === "message") return { messages: [bbMessage(store, header)], skipped: 0 };
+    if (include === "message") return { messages: [bbMessage(store, header, secure)], skipped: 0 };
     const members = store.getThread(header.threadId, header.folder)?.messages ?? [header];
     const inScope = members.filter((member) => member.inAiScope);
     const list = inScope.some((member) => member.id === header.id) ? inScope : [...inScope, header];
-    return { messages: list.map((member) => bbMessage(store, member)), skipped: members.length - inScope.length };
+    return { messages: list.map((member) => bbMessage(store, member, secure)), skipped: members.length - inScope.length };
   }
 
   function buildThreadText(
@@ -1019,7 +1052,8 @@ export function createBbRpc(deps: BbRpcDeps) {
           sender: header.from,
           date: header.date,
           inAiScope: header.inAiScope,
-          excerpt: input.excerpt ? bbMessage(store, header) : null,
+          excerpt: input.excerpt ? bbMessage(store, header, secure) : null,
+          security: secure(header),
           target: input.target.kind,
         });
       } catch (error) {
@@ -1361,7 +1395,7 @@ export function createBbRpc(deps: BbRpcDeps) {
         // Counted when the owner opens it (patch_view fetches the attachment).
         patch = { files: 0, added: 0, removed: 0 };
       }
-      return { ...header, devLinks: devLinks(source.text, source.hrefs, remotes), patch, alert: header.dev?.source === "monitoring" };
+      return { ...header, devLinks: cleanedDevLinks(devLinks(source.text, source.hrefs, remotes)), patch, alert: header.dev?.source === "monitoring" };
     });
     const owned = store.conversationProject(detail.thread.accountId, detail.thread.id);
     const boundId = owned ?? detail.thread.projectId;
@@ -1576,7 +1610,7 @@ export function createBbRpc(deps: BbRpcDeps) {
     const project = await projectOf(input.projectId, method);
     let text;
     try {
-      text = incidentPrompt(alert.parts, bbMessage(store, header), input.instruction);
+      text = incidentPrompt(alert.parts, bbMessage(store, header, secure), input.instruction);
     } catch (error) {
       throw bbRefusal(error, deps.log, method);
     }
@@ -1647,7 +1681,7 @@ export function createBbRpc(deps: BbRpcDeps) {
       if (thread === null || thread.archived) throw refuse("conflict", INCIDENT_GONE_TEXT);
       let text;
       try {
-        text = incidentUpdate(alert.parts, bbMessage(store, header));
+        text = incidentUpdate(alert.parts, bbMessage(store, header, secure));
         // Queued when the thread is running: an update never interrupts a turn.
         await threads.send(row.bbThreadId, text.text);
       } catch (error) {

@@ -59,8 +59,8 @@ export type RuleRow = {
   bulk: boolean;
   /**
    * Slice 3i: the stored sender check is `failed`. Such a message never
-   * matches, whatever the rule matches on (part A decision 5). Optional
-   * until the server passes it (plan Task 7).
+   * matches, whatever the rule matches on (part A decision 5). The server's
+   * rule evaluation always passes it; optional so rule fixtures stay short.
    */
   senderFailed?: boolean;
 };
