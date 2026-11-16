@@ -108,6 +108,8 @@ function makeServiceAndSocket() {
 }
 
 /** A renderer that follows X1: acks only binary frames after {type:"live"}. */
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
 function ackLive(socket: FakeSocket, handlers: Handlers): void {
   let live = false;
   const seen = new Set<number>();
@@ -152,6 +154,8 @@ describe("credit window X1 (real service + real socket)", () => {
     // 100000 live bytes, acked.
     helper.emitOutput(handle.sessionId, new Uint8Array(100_000).fill(65));
     ackLive(socket, handlers);
+    await flush();
+    await flush();
     handlers.onClose();
 
     // Reattach with a 100000-byte snapshot.
@@ -174,6 +178,8 @@ describe("credit window X1 (real service + real socket)", () => {
     await handlers.onOpen(socket);
     helper.emitOutput(handle.sessionId, new Uint8Array(100_000).fill(65));
     ackLive(socket, handlers);
+    await flush();
+    await flush();
     handlers.onClose();
 
     for (let i = 0; i < 5; i++) {
@@ -193,6 +199,8 @@ describe("credit window X1 (real service + real socket)", () => {
     await handlers.onOpen(socket);
     handlers.onMessage(socket, JSON.stringify({ type: "ack", bytes: 2_147_483_647 }));
     handlers.onMessage(socket, JSON.stringify({ type: "ack", bytes: 2_147_483_647 }));
+    await flush();
+    await flush();
     expect(helper.creditFrames.map((f) => f.bytes)).toEqual([262_144]);
   });
 
@@ -210,6 +218,8 @@ describe("credit window X1 (real service + real socket)", () => {
     ha.onClose(); // A detaches; B is promoted.
     helper.emitOutput(handle.sessionId, new Uint8Array(262_144).fill(66));
     ackLive(b, hb); // B acks all live bytes.
+    await flush();
+    await flush();
 
     expect(helper.creditFrames.map((f) => f.bytes)).toContain(262_144);
     const granted = helper.creditFrames.reduce((s, f) => s + f.bytes, 0);
@@ -225,6 +235,8 @@ describe("credit window X1 (real service + real socket)", () => {
     await handlers.onOpen(socket);
     // A buggy renderer acks the (empty) snapshot length.
     handlers.onMessage(socket, JSON.stringify({ type: "ack", bytes: 0 }));
+    await flush();
+    await flush();
     expect(helper.creditFrames.map((f) => f.bytes)).toEqual([262_144]);
   });
 
