@@ -302,7 +302,7 @@ describe("backfillUnsubscribe", () => {
 
     expect(outcome).toEqual({ marked: 1, unanswered: 0, folders: 1, skipped: 0, failed: 0 });
     expect(infoOf("INBOX", inbox)).toMatchObject({
-      listKey: "weekly.example.com",
+      listKey: "id:weekly.example.com",
       listName: "Weekly News",
       mailto: { address: "leave@example.com", subject: "stop" },
       trust: "untrusted_provider",

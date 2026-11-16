@@ -516,6 +516,20 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (batch_id, position)
   );
   `,
+  // Review of slice 3e, item 8: list keys are namespaced, "id:" for a
+  // List-Id and "from:" for the From fallback. A stored key with an "@" was a
+  // From fallback (a List-Id has none), any other one a List-Id.
+  `
+  UPDATE messages SET unsubscribe_json = json_set(
+      unsubscribe_json, '$.listKey',
+      CASE WHEN instr(json_extract(unsubscribe_json, '$.listKey'), '@') > 0 THEN 'from:' ELSE 'id:' END
+        || json_extract(unsubscribe_json, '$.listKey'))
+    WHERE unsubscribe_json IS NOT NULL AND json_valid(unsubscribe_json)
+      AND json_type(unsubscribe_json, '$.listKey') = 'text';
+
+  UPDATE OR IGNORE unsubscribes SET list_key =
+      CASE WHEN instr(list_key, '@') > 0 THEN 'from:' ELSE 'id:' END || list_key;
+  `,
 ];
 
 const HTML_CAP = 1_000_000;

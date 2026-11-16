@@ -1526,7 +1526,7 @@ describe("slice-3e sync", () => {
       await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
       expect(store.getUnsubscribeInfo(idByUid(store, INBOX, listed.uid)), preset).toMatchObject({
-        listKey: "news@example.com",
+        listKey: "from:news@example.com",
         https: "https://u.example.com/x",
         oneClick: true,
         mailto: { address: "leave@example.com" },
@@ -1540,7 +1540,7 @@ describe("slice-3e sync", () => {
     const store = new InMemoryMailStore();
     const withHeaders = makeFetchedMessage(1, {
       unsubscribe: {
-        listKey: "news@example.com",
+        listKey: "from:news@example.com",
         listName: "News",
         https: null,
         oneClick: false,
@@ -1552,7 +1552,7 @@ describe("slice-3e sync", () => {
     const { unsubscribe: _info, ...without } = withHeaders;
     store.upsertMessages(ACCOUNT_ID, INBOX, [without]);
     const id = store.localFolderIndex(ACCOUNT_ID, INBOX, EPOCH)[0]!.id;
-    expect(store.getUnsubscribeInfo(id)).toMatchObject({ listKey: "news@example.com" });
+    expect(store.getUnsubscribeInfo(id)).toMatchObject({ listKey: "from:news@example.com" });
   });
 
   it("a listing without the snooze folder clears it; a listing with it keeps it", async () => {

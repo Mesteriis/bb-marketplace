@@ -341,7 +341,7 @@ describe("unsubscribeInfoOf", () => {
       FROM,
     );
     expect(info).toEqual({
-      listKey: "weekly.example.com",
+      listKey: "id:weekly.example.com",
       listName: "Weekly News",
       https: "https://u.example.com/x",
       oneClick: true,
@@ -350,12 +350,24 @@ describe("unsubscribeInfoOf", () => {
     });
   });
 
+  it("keeps List-Id keys and From fallbacks apart (review item 8)", () => {
+    // A List-Id that spells another sender's address never names that sender's From-fallback list.
+    const forged = unsubscribeInfoOf([lu("<mailto:x@evil.example>"), h("List-Id", "<news@example.com>")], "other", {
+      name: null,
+      address: "x@evil.example",
+    });
+    const real = unsubscribeInfoOf([lu("<mailto:leave@example.com>")], "other", { name: null, address: "news@example.com" });
+    expect(forged?.listKey).toBe("id:news@example.com");
+    expect(real?.listKey).toBe("from:news@example.com");
+    expect(forged?.listKey).not.toBe(real?.listKey);
+  });
+
   it("falls back to the From address and name and cuts the name to 80", () => {
     const info = unsubscribeInfoOf([lu("<mailto:leave@example.com>")], "other", {
       name: "N".repeat(100),
       address: "News@Example.com",
     });
-    expect(info?.listKey).toBe("news@example.com");
+    expect(info?.listKey).toBe("from:news@example.com");
     expect(info?.listName?.length).toBe(80);
     expect(info?.trust).toBe("untrusted_provider");
     expect(info?.mailto?.address).toBe("leave@example.com");

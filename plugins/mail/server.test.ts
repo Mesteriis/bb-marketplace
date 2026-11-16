@@ -4147,7 +4147,7 @@ describe("inbox triage: unsubscribe (slice 3e)", () => {
     const [session] = host.gateway.sessions;
     expect(session).toMatchObject({ path: "INBOX", readOnly: true, closed: true });
     expect(session!.calls.map((c) => c.method)).toEqual(["status", "fetchHeaderFields"]);
-    expect(sqlStore(host).getUnsubscribeInfo(id)).toMatchObject({ listKey: "weekly.example.com" });
+    expect(sqlStore(host).getUnsubscribeInfo(id)).toMatchObject({ listKey: "id:weekly.example.com" });
     // Stored now: a second call opens nothing.
     await call(host, "unsubscribe_info", { messageId: id });
     expect(host.gateway.sessions).toHaveLength(1);
@@ -4312,6 +4312,33 @@ describe("inbox triage: unsubscribe (slice 3e)", () => {
     await expect(host.harness.behavior.callRpc("unsubscribe_archive", { messageId: listed }, asPlugin)).rejects.toThrow(
       PLUGIN_CALLER_MESSAGE,
     );
+  });
+
+  it("unsubscribe_archive keeps List-Id lists and From fallbacks apart (review item 8)", async () => {
+    const fallback = { ...UNSUB_INFO, listKey: "from:news@example.com" };
+    const host = await loadUnsubscribe({ info: fallback });
+    const store = sqlStore(host);
+    store.saveFolders("acc_1", [
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
+      { path: "Junk", name: "Junk", delimiter: "/", specialUse: "junk", selectable: true },
+    ]);
+    // uid 3: someone else whose List-Id spells the sender's address; uid 4: a legacy un-prefixed key
+    // from another From; uid 5: the same From-fallback key but another From (a stored row from before).
+    store.upsertMessages("acc_1", "INBOX", [
+      makeFetchedMessage(3, { messageId: "<f-3@example.net>", from: { name: null, address: "x@evil.example" }, unsubscribe: { ...UNSUB_INFO, listKey: "id:news@example.com" } }),
+      makeFetchedMessage(4, { messageId: "<f-4@example.net>", from: { name: null, address: "y@evil.example" }, unsubscribe: { ...UNSUB_INFO, listKey: "news@example.com" } }),
+      makeFetchedMessage(5, { messageId: "<f-5@example.net>", from: { name: null, address: "z@evil.example" }, unsubscribe: fallback }),
+    ]);
+    const real = messageIdAt(host, "INBOX", 1);
+    await call(host, "unsubscribe_archive", { messageId: real });
+    expect(movePending(host, real)).toBe("Archive");
+    for (const uid of [3, 4, 5]) expect(movePending(host, messageIdAt(host, "INBOX", uid)), `uid ${uid}`).toBeNull();
+
+    const forged = messageIdAt(host, "INBOX", 3);
+    await call(host, "unsubscribe_archive", { messageId: forged });
+    expect(movePending(host, forged)).toBe("Archive");
+    for (const uid of [4, 5]) expect(movePending(host, messageIdAt(host, "INBOX", uid)), `uid ${uid}`).toBeNull();
   });
 
   it("both unsubscribe methods refuse plugin callers", async () => {
