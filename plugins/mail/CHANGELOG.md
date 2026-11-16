@@ -8,6 +8,43 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- BB integration (slice 3g). **New thread…** (Shift+N) starts a BB agent
+  thread from a message or conversation after showing the exact prompt and
+  the project's permission mode; **Edit in composer** opens BB's composer
+  with it. **Make a task…** (Shift+K) on a Makosh Taskboard board, or in
+  Mail's Tasks with a note when Taskboard does not answer.
+- **Save to project…** and **Save all to project…**: attachments written as
+  new files inside a project's working tree (`attachmentFolder`), mode
+  0644, never into `.git` or a dot folder, with Keep both, Replace (only the
+  file shown) or Cancel when a name exists; agent instruction and shortcut
+  names get `.txt`. **Attach from BB** in the composer picks up to 10
+  project or thread files, asks again for secret-like names, and the
+  pre-send check lists them and warns about secret-looking text.
+- **Email the result** (thread menu) and **Email this** (assistant
+  messages) make a Mail draft from a BB thread, a reply when the thread
+  started from a mail. Nothing is sent.
+- **Dev** view (`g n`) of GitHub, GitLab, CI and monitoring mail by
+  repository, recognised locally at sync (`devNotifications`), with Mark
+  read and Archive, **Hide dev notifications** and a Dev line in Today.
+  Repository, PR, issue and CI links listed by URL with their project.
+- Code, diffs and logs in mail render with BB's highlighter and diff viewer;
+  HTML `<pre>` blocks show as "Code (N)". The composer keeps code blocks and
+  inline code (toolbar **Code block**, ```` ``` ```` + Enter, fenced paste).
+- Patches: review per file with warnings and refusals, **Save .patch to
+  project** (`patchFolder`), **Apply with an agent** in a new managed
+  worktree. Alerts: **Open incident thread** once per alert, **Add to
+  incident thread** for a later mail.
+- Project binding: the **Project** chip and binding rules, a **Projects**
+  view, and a **Mail** section in a BB thread's Info tab.
+- **Mail rules** (`mailRules`, off by default): prepare a thread for review
+  in the Inbox's **Ready to start** strip, or start one in a worktree with
+  accept-edits after an explicit confirmation; capped, paused with Undo,
+  and with no mail tools in rule threads.
+- Settings `devNotifications`, `mailRules`, `attachmentFolder`,
+  `patchFolder`, `taskTarget`; Mail settings gain **BB integration** and
+  **Rules**. Migration element 11 adds the dev columns, `list_id`, BB links,
+  bindings, incidents and rule tables.
+
 - Agents and AI (slice 3f). Redaction: every text that reaches an agent or
   a model (tools, the CLI in a thread, mentions, Hand to agent, translation
   and the AI features) has one-time codes, passwords, tokens and card

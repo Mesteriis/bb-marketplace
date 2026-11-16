@@ -35,7 +35,7 @@ node scripts/configure-subtree-remotes.mjs
 | Плагин / ID | Назначение | GitHub |
 | --- | --- | --- |
 | [Makosh AI [Experimental]](plugins/makosh-ai)<br>`makosh-ai` | Streams Claude Messages and Codex Responses to BB plugins through the existing Account Pooler. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/makosh-ai) |
-| [Makosh Mail [Experimental]](plugins/mail)<br>`makosh-mail` | Reads, snoozes, sends and translates iCloud, Gmail and IMAP mail; AI summaries, Ask, tasks and Today on click; agent access scoped, logged. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/mail) |
+| [Makosh Mail [Experimental]](plugins/mail)<br>`makosh-mail` | Reads, snoozes, sends and translates iCloud, Gmail and IMAP mail; AI on click; mail to BB threads, tasks and projects; agent access logged. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/mail) |
 | [Makosh Navigation](plugins/navigation)<br>`makosh-navigation` | Customizable BB navigation with nested groups, icons, separators and a settings editor with autosave. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/navigation) |
 | [Makosh Sidebar [Experimental]](plugins/sidebar)<br>`makosh-sidebar` | Project tree with a configurable root, recent activity sorting, reversible hiding, and running threads visible in collapsed groups. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/sidebar) |
 | [Makosh Taskboard [Experimental]](plugins/taskboard)<br>`makosh-taskboard` | Local task CRUD plus Jira Cloud and Server/Data Center boards in one focused List and Kanban view. | [Mesteriis](https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/taskboard) |

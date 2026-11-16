@@ -6,7 +6,9 @@ message to an agent, emails an agent proposes for you to send, machine
 translation of a message, and AI on your click (summaries, Ask, tasks,
 categories, a Today view, reply reminders, Improve), with secrets hidden
 from every agent and model, an AI access scope and a local log of what
-agents did.
+agents did. On your click it hands mail to BB: a new agent thread or a task,
+an attachment saved into a project, a patch or an alert handed to an agent,
+and a thread's result back as a draft (see [BB integration](#bb-integration)).
 
 **Status: experimental.** Plugin id: `makosh-mail`. It reads mail, and
 changes it on the server only when you click or press a key: read and unread,
@@ -68,7 +70,8 @@ out only when you press **Send** on its card in that agent's thread.
   list of safe ones (HTML, SVG and scripts among them) are saved as generic
   binary files.
 - Hotkeys on the Mail page; `?` shows them all. Slice 3f adds Shift+`s`
-  summarize and Shift+`t` find tasks. `j` / `k` next and previous
+  summarize and Shift+`t` find tasks; slice 3g adds Shift+`n` New thread…,
+  Shift+`k` Make a task… and `g` then `n` for Dev. `j` / `k` next and previous
   conversation, `o` or Enter open, `u` back to the list, `/` search, `x`
   select, `e` archive, `#` delete, `!` spam, `s` flag or unflag, Shift+`u`
   mark unread, Shift+`i` mark read, `v` Move to…, `b` snooze, and `g` then `i`, `s`, `d`,
@@ -495,6 +498,110 @@ translation you read, the hidden values come back in place: the provider saw
 `[hidden one-time code]`, you see the code. The map that restores them lives
 only in the running job and is dropped when it ends.
 
+## BB integration
+
+Slice 3g connects mail to BB's projects, threads and Taskboard. Every step
+starts with your click (or a mail rule you made, below), and nothing in it
+writes to the mail server, sends mail, runs a command or makes a web request.
+
+- **New thread…** (Shift+`n`): pick a BB project, this message or the whole
+  conversation (the latest 10), and an optional instruction. The dialog shows
+  the exact prompt the thread starts with, read-only, the project's
+  permission mode ("Runs with full permissions" adds "The agent can run
+  commands without asking") and how many hidden values and earlier messages
+  were left out. **Start thread** starts it in the project's default
+  environment and opens it; **Edit in composer** opens BB's own composer with
+  that prompt instead. **Also save the attachments** saves them as below.
+- **Make a task…** (Shift+`k`): on a board of Makosh Taskboard (its **Take
+  into work** then shows the description) when Taskboard answers, else a
+  task in Mail's own Tasks with your note and a due date. If Taskboard does
+  not answer, the dialog offers the Mail task instead; Taskboard's own
+  refusals show as "Taskboard: …". Setting `taskTarget`.
+- **Save to project…** on an attachment, **Save all to project…** on a
+  message: into the project's working tree, in `attachmentFolder` (default
+  `mail-attachments/`) or a folder you type. Mail writes only new files there
+  (it reads first and writes only when the name is free), mode `0644`, never
+  into `.git` or a folder that starts with a dot, never outside the tree. A
+  name that exists asks: **Keep both** (`report (2).pdf`, the default),
+  **Replace** (a second confirmation, and only the file the dialog showed:
+  a file that changed since is not replaced) or **Cancel**. Shortcut files
+  and names agents read as instructions (`AGENTS.md`, `CLAUDE.md`,
+  `.cursorrules`, `*.mdc` and the like) are saved with `.txt` added. Mail
+  never opens or runs a saved file. Saving is allowed for mail outside AI
+  access (it is your file); the other BB actions are not.
+- **Attach from BB ▾** in the composer: **From a project…** (search its
+  files) or **From a thread…** (the thread Mail runs beside, or a recent
+  thread of a project), up to 10 files. The list marks them "from a BB
+  project"; a name that looks like it holds a secret (`.env.local`,
+  `id_rsa`) asks again. Before you send, the check lists the files from BB,
+  and warns when your text looks like it holds a password, token or code.
+- **Email the result** in a BB thread's menu and **Email this** on an
+  assistant message turn the thread's result or that message into a Mail
+  draft (Markdown becomes paragraphs, lists and code blocks). A thread
+  started from a mail opens a reply to that mail, decided from Mail's own
+  records, never from thread metadata. Nothing is sent until you press Send.
+- **Dev** in the rail (`g` `n`): GitHub, GitLab, CI and monitoring mail of the
+  last 7 days by repository, with CI failures, the latest failure and the
+  project, and **Mark read** / **Archive** with Undo. Recognised on this
+  computer at sync from headers, sender and subject (`devNotifications`, on);
+  **Hide dev notifications** in the list. Today shows "Dev: N CI failures".
+- **Links**: repository, PR, issue, commit and CI links of a message, listed
+  by their real URL with **Open**, **Open project** and **New thread…** in the
+  project whose remote matches.
+- **Code**: code, diffs and logs in plain mail show with BB's highlighter and
+  diff viewer (a plain `<pre>` where BB does not offer them), each with
+  **Copy**; an HTML mail's `<pre>` blocks show under it as "Code (N)". The
+  composer has **Code block** (or ```` ``` ```` and Enter), and a pasted fenced
+  block becomes one.
+- **Patches**: a `.patch` / `.diff` attachment or a `git format-patch` body
+  shows "Patch · N files · +a -r · Review". The review lists each file's diff
+  and warnings (executable files, symlinks, CI workflows, hooks, lock files,
+  agent instruction files); a patch that touches `.git`, absolute or `..`
+  paths, or more than 200 files is refused with no action. **Save .patch to
+  project** writes it as above (`patchFolder`, default `mail-patches/`).
+  **Apply with an agent** uploads the patch to a new thread in a fresh
+  managed worktree with a fixed instruction (`git apply --check` first, no
+  commit, push or scripts); Mail never applies a patch itself. When BB cannot
+  make a worktree, the dialog offers your checkout only after a warning.
+- **Alerts**: a Grafana, Alertmanager, Sentry, PagerDuty or Datadog mail shows
+  the alert's name, state, service and links; **Open incident thread…**
+  starts one thread per alert, and a later mail of the same alert offers
+  **Add to incident thread** for 7 days.
+- **Projects**: the **Project** chip binds a conversation to a project
+  (**Always for** its sender, domain or repository adds a binding rule; a
+  suggestion from the mail's links is never bound by itself). **Projects**
+  in the rail lists each project's mail; a BB thread's Info tab shows a
+  **Mail** section with the project's latest bound conversations and those
+  the thread came from.
+- **Mail rules** (Mail settings → Rules, `mailRules`, **off by default**):
+  "when new Inbox mail matches … → in project … with this instruction". Only
+  mail that a regular sync round brought into the Inbox counts, never a
+  backfill, a first sync or old mail. A rule **prepares** a thread by
+  default: it waits in the **Ready to start** strip of the Inbox for your
+  **Review** (the New thread dialog) and a toast says so. **Start the thread
+  by itself** is a per-rule choice behind a confirmation ("An email from
+  anyone matching this rule will start an agent in *project*"); such a thread
+  runs in a new managed worktree with `accept-edits` permissions (the agent
+  may edit files there without asking, but not in your checkout), never in
+  your checkout, and needs a project with a local checkout. Caps: 3 threads
+  an hour and 10 a day per rule, 20 a day for all rules, one a day per
+  conversation per rule; over a cap the run waits for you. A rule thread
+  gets no mail tools, no mail skill and no mail CLI. **Pause all rules** in
+  the strip and in settings, with Undo.
+
+What goes into BB: every prompt, title, task text, incident text and alert
+update is built in one place on the server from mail in AI access, with
+secrets replaced by `[hidden …]` placeholders over each whole field, quoted
+history removed and the mail framed as untrusted data. Thread metadata holds
+ids only. The agent log records each hand-off by ids and counts, never a
+path, project name, title or prompt. What a thread's agent does with that
+text goes to its model provider, as with Hand to agent.
+
+Settings: `devNotifications`, `mailRules`, `attachmentFolder`,
+`patchFolder` and `taskTarget` are BB plugin settings (BB Settings →
+Plugins → Makosh Mail); Mail settings shows them under **BB integration**
+and **Rules**, with the binding rules.
+
 ## Agents, AI and your secrets
 
 ### Redaction
@@ -618,6 +725,10 @@ redacted text framed as untrusted data:
   characters each.
 - Improve: your own text of the draft and your instruction.
 - Translation: the message's subject and text.
+- New thread, Make a task through Taskboard (its **Take into work**), incident,
+  patch and rule threads (slice 3g): the text goes into a BB thread or a
+  Taskboard task, built as described in [BB integration](#bb-integration);
+  the thread's agent then sends it to its own model provider.
 
 Never: recipients' addresses, attachments, images, HTML, folder or account
 names. Text handed to an agent goes to that agent's model provider.
@@ -627,8 +738,11 @@ names. Text handed to an agent goes to that agent's model provider.
 AI access, redaction and the log bind every plugin surface for agents. They
 do not bind an agent with shell access to the BB server, which can call the
 Mail page's own methods (`ai_start`, `message_body`, `thread_get`, `search`
-among them) through `bb plugin rpc call`, as described above. This is the
-accepted limit of slices 3c to 3e, and the skill tells agents not to.
+among them) through `bb plugin rpc call`, as described above. Slice 3g adds
+methods that write into BB on the owner's behalf: `attachment_save`,
+`bb_thread_start`, `task_from_mail`, `patch_save`, `patch_handoff`,
+`incident_start` and `rule_save`. This is the accepted limit of slices 3c to
+3g, and the skill tells agents not to.
 
 ## Mail in the sidebar
 

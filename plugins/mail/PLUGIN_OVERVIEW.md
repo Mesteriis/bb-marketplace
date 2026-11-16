@@ -1,6 +1,6 @@
 This experimental release puts your mailbox next to your threads: read,
 sort, snooze and send iCloud, Gmail or IMAP mail, use AI on your click, and
-let an agent propose mail and inbox actions you confirm.
+hand mail to BB projects, threads and Taskboard.
 
 ## What you get
 
@@ -10,71 +10,73 @@ let an agent propose mail and inbox actions you confirm.
 - **All accounts** merges Inbox, Sent, Drafts, Spam, Archive and Trash.
 - Mark, flag, archive, delete or **Move to…** a selection; **Undo** or `z`;
   filters; hotkeys (`?`).
-- Remote images stay hidden until you allow them; downloads use a one-time
-  60-second link.
+- Remote images stay hidden until you allow them.
 - **Hand to agent** and an `@` mention give an agent a message you picked.
 
 ## Inbox tools
 
-- Toasts for new mail from people you write to (sender only). Quiet hours.
-- **Unsubscribe** asks first; one click only on Gmail with DKIM vouching.
-- **Snooze** (`b`) into a "Snoozed" folder created on your confirmation.
-- **Block** an address or domain: rules move new Inbox mail to Spam.
+Toasts for new mail from people you write to. **Unsubscribe** asks first.
+**Snooze** (`b`) and **Block** rules move mail later on their own.
 
 ## AI on your click
 
-Through Makosh AI only, on your click only: **Translate**, **Summarize** with
-cited messages, **Ask** your mail, **Find tasks** for a local Tasks list,
-local **categories**, a **Today** view, **reply reminders** and **Improve**
-for your draft behind a diff you apply. Answers are plain text; nothing a
-model says acts without your click.
+Through Makosh AI only: **Translate**, **Summarize**, **Ask** your mail,
+**Find tasks**, local **categories**, **Today**, **reply reminders** and
+**Improve** for your draft. Nothing a model says acts without your click.
+The provider gets subjects, sender names, dates and bodies without quotes
+of the mail involved; never addresses, attachments or HTML.
 
-What goes to the provider: subjects, sender names, dates and bodies without
-quotes of the mail involved; your question; your own draft text. Never
-recipients' addresses, attachments, images or HTML.
+## BB integration
+
+- **New thread…** from a mail shows the exact prompt and the project's
+  permission mode first; **Make a task…** on Taskboard or in Mail.
+- **Save to project…** writes attachments as new files inside the project's
+  tree, never over a file without asking; **Attach from BB** picks project
+  or thread files.
+- **Email the result** turns a thread's answer into a draft, never sent.
+- **Dev** groups GitHub, CI and monitoring mail; links, code and diffs show
+  with BB's highlighter.
+- Patches go to an agent in a new worktree (Mail never applies them);
+  alerts open one incident thread; conversations bind to projects.
+- **Mail rules** (off by default) prepare threads for your review, or start
+  capped ones in a worktree; rule threads get no mail tools.
 
 ## Your secrets and agents
 
 Codes, passwords, tokens and card numbers become `[hidden …]` before any
-agent or model sees them. It is a heuristic: unusual formats can pass.
-**AI access** limits agents and AI to chosen accounts and folders (Spam and
-Trash never) and excludes senders. **Agent activity** logs every agent and AI
-call locally, ids and counts only.
+agent, model or BB thread sees them. It is a heuristic: unusual formats can
+pass. **AI access** limits agents and AI to chosen accounts and folders and
+excludes senders. **Agent activity** logs every agent, AI and BB hand-off
+locally, ids and counts only.
 
 ## Writing and sending
 
-- **Compose**, **Reply**, **Reply all**, **Forward**: rich text,
-  attachments up to 25 MB, signatures, templates, advisory checks.
-- **Send** waits 10 seconds with **Undo**, then goes out over SMTP with TLS.
-  The **Outbox** shows every send not done.
+**Compose**, **Reply**, **Forward** with rich text, code blocks,
+attachments up to 25 MB, signatures and templates. **Send** waits 10
+seconds with **Undo**, then goes out over SMTP with TLS.
 
 ## Agent access
 
 `mail_search`, `mail_read` and the `mail` skill are off until you turn on
-`agentTools`. `mail_propose` (`agentPropose`, off) proposes mail on a card;
-only **Send** sends it. `mail_inbox` and `mail_triage` (`agentTriage`, off)
-propose inbox actions; only the ones you tick run.
+`agentTools`. `mail_propose` (off) proposes mail on a card; only **Send**
+sends it. `mail_triage` (off) proposes inbox actions you tick.
 
 None of this stops an agent with shell access to the BB server: it can call
-the page's own methods (`ai_start`, `message_body`, `thread_get`, `search`,
-`unsubscribe_run` among them). Sends still show Undo.
+the page's own methods. Sends still show Undo.
 
 ## What it changes on the server
 
 Read state, flags and moves on your click or key, and by your snoozes and
-block rules. Snooze creates one folder per account when you confirm. Delete
-moves to Trash. Drafts and sent copies are appended; only its own superseded
-drafts are expunged. Categories, tasks and reminders stay local: nothing new
-is written in this release. The only web request is a one-click unsubscribe
-you confirmed.
+block rules. Delete moves to Trash. Drafts and sent copies are appended.
+Nothing new is written by the BB integration. The only web request is a
+one-click unsubscribe you confirmed.
 
 ## What it costs
 
 - An app password per account; Gmail needs 2-step verification.
 - Mail and encrypted credentials stay on the BB server.
-- One more IMAP connection per account while BB runs.
 - Allowing images or unsubscribing tells senders you read the mail.
-- The page bundle is about 770 KB, mostly the editor.
+- The page bundle is about 860 KB, mostly the editor.
 
 ## Not yet
 
