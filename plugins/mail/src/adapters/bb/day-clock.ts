@@ -10,6 +10,7 @@
 // rules and clears reminders a round's new rows answer.
 import {
   REMINDERS_LIVE_MAX,
+  REPLY_CLOCK_SKEW_MS,
   answers,
   digestDue,
   inQuietHours,
@@ -118,7 +119,9 @@ export function replyArrived(store: MailStore, nowIso: string, only?: ReadonlySe
     (r): r is ReminderRecord & { sentAt: string } => r.sentAt !== null && (r.state === "waiting" || r.state === "due"),
   );
   if (live.length === 0) return 0;
-  const after = live.reduce((min, r) => (r.sentAt < min ? r.sentAt : min), live[0]!.sentAt);
+  const earliest = live.reduce((min, r) => (r.sentAt < min ? r.sentAt : min), live[0]!.sentAt);
+  // Rows dated up to REPLY_CLOCK_SKEW_MS before the send can answer (core `answers`).
+  const after = new Date(Date.parse(earliest) - REPLY_CLOCK_SKEW_MS).toISOString();
   const rows = store
     .answeringRows(
       live.map((r) => r.rfcMessageId),

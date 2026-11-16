@@ -251,4 +251,13 @@ describe("after a round", () => {
     ]);
     expect(replyArrived(store, at(12).toISOString())).toBe(1);
   });
+
+  it("a referencing reply dated a few hours before the send (a skewed clock) still answers", () => {
+    reminder("r-1");
+    store.upsertMessages("acc_1", "INBOX", [
+      makeFetchedMessage(6, { date: at(3, 0, 10).toISOString(), inReplyTo: "<sent-1@example.org>" }),
+    ]);
+    expect(replyArrived(store, at(12).toISOString())).toBe(1);
+    expect(store.getReminder("r-1")!.state).toBe("answered");
+  });
 });

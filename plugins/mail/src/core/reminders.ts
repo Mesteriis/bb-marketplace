@@ -8,6 +8,12 @@ import { toastName } from "./notify.ts";
 export const REMINDER_DAYS = { min: 1, max: 30 } as const;
 export const REMINDERS_LIVE_MAX = 500;
 export const ANSWERED_KEEP_DAYS = 30;
+/**
+ * How far before the send a referencing reply may be dated: the sender's or
+ * the replier's clock can be off, and a row that names the sent Message-ID
+ * cannot predate it in fact.
+ */
+export const REPLY_CLOCK_SKEW_MS = 86_400_000;
 
 export const REMINDER_STATES = ["queued", "waiting", "due", "answered", "dismissed"] as const;
 export type ReminderState = (typeof REMINDER_STATES)[number];
@@ -19,8 +25,8 @@ function bareId(id: string): string {
 }
 
 /**
- * Whether `row` answers the reminder's sent message: dated after `sentAt`,
- * not the sent message itself, not bulk or automated, and its In-Reply-To
+ * Whether `row` answers the reminder's sent message: dated after `sentAt`
+ * less REPLY_CLOCK_SKEW_MS, not the sent message itself, not bulk or automated, and its In-Reply-To
  * or References holds the sent Message-ID.
  */
 export function answers(
@@ -40,7 +46,7 @@ export function answers(
   if (isBulkRow(row.bulk, row.fromAddress) || isAutomatedAddress(row.fromAddress)) return false;
   const at = row.date === null ? NaN : Date.parse(row.date);
   const sentAt = Date.parse(reminder.sentAt);
-  if (!Number.isFinite(at) || !Number.isFinite(sentAt) || at <= sentAt) return false;
+  if (!Number.isFinite(at) || !Number.isFinite(sentAt) || at <= sentAt - REPLY_CLOCK_SKEW_MS) return false;
   if (row.inReplyTo !== null && bareId(row.inReplyTo) === sent) return true;
   return row.references.some((ref) => bareId(ref) === sent);
 }

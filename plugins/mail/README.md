@@ -586,8 +586,9 @@ wrong; check the cited messages".
   listed conversations to the model.
 - **Reply reminders**: **Remind me if no reply in N days** beside Send
   (`replyReminderDays`, 3) or **Remind me…** on a Sent message. A reminder is
-  answered when a later message (not bulk, not automated) refers to the sent
-  one by In-Reply-To or References; otherwise it turns due, shows in the
+  answered when a message (not bulk, not automated, dated after the send or
+  up to a day before it, for a skewed clock) refers to the sent one by
+  In-Reply-To or References; otherwise it turns due, shows in the
   **Waiting for a reply** strip atop the Inbox and in Today, with a toast.
   A server that rewrites the Message-ID on send (some corporate relays)
   leaves replies unmatched: the reminder then turns due and you dismiss it.
