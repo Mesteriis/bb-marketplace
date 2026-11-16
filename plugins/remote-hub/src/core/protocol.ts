@@ -38,11 +38,22 @@ export const openEchoRequestSchema = z.object({
   cols: sizeSchema,
   rows: sizeSchema,
 });
+/** Maximum UTF-8 bytes a single session.input may carry (matches Rust PENDING_INPUT_CAP). */
+export const MAX_SESSION_INPUT_BYTES = 262_144;
+
+/** Host-free validator shared by the IPC protocol and the BB RPC schema. */
+export const sessionInputDataSchema = z
+  .string()
+  .min(1)
+  .refine((value) => new TextEncoder().encode(value).length <= MAX_SESSION_INPUT_BYTES, {
+    message: "session input exceeds " + MAX_SESSION_INPUT_BYTES + " UTF-8 bytes",
+  });
+
 export const sessionInputRequestSchema = z.object({
   type: z.literal("session.input"),
   id: idSchema,
   sessionId: sessionIdSchema,
-  data: z.string().max(1_048_576),
+  data: sessionInputDataSchema,
 });
 export const sessionResizeRequestSchema = z.object({
   type: z.literal("session.resize"),

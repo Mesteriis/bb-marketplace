@@ -55,8 +55,8 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   command via argv itself) and offers no way to attach an existing PTY master,
   so Remote Hub cannot hand its own `openpty` master to it; the chosen path is
   the plugin's own PTY transport rendered with xterm.js, not the BB terminal.
-- Flow control and limits: per-session pending input is 256 KiB (262 144
-  bytes) and a single `session.input` above it is refused with
+- Flow control and limits: per-session pending input is 262 144 UTF-8 bytes, enforced identically in TS and Rust;
+  a single `session.input` above it is refused with
   `input_overflow`; per-session pending output is 256 KiB; the shared
   stdout outbox is 4 MiB (with a 512 KiB reserve so one control response always
   fits); the maximum control/stream frame body is 4 MiB; the stdin ingress
@@ -64,8 +64,8 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   PTY only while its pending output has room, reads stdin only while the outbox
   has room, polls stdout POLLOUT while the outbox is non-empty, and treats an
   EPIPE or any non-transient stdout error as fatal shutdown. `session.close`
-  drains at most the pending-output bound (256 KiB) plus the same again from
-  the PTY and drops the rest. The remaining limit is the single shared stdout
+  drains at most 512 KiB (the 256 KiB pending-output bound plus one 256 KiB
+  PTY read) and drops the rest. The remaining limit is the single shared stdout
   pipe: a stalled reader stalls every session, which stage 2 will revisit with
   a per-session binary WebSocket.
 - openpty retry: `openpty` is retried a bounded 8 times on transient

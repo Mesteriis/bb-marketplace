@@ -990,3 +990,87 @@ fn t4_close_does_not_signal_reaped_child() {
     );
     assert!(!pid_alive(pid), "child {pid} still alive");
 }
+
+// U2: a failed session setup must not leak the PTY descriptors.
+#[test]
+fn u2_failed_setup_does_not_leak_descriptors() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_remote-hub-helper"));
+    command
+        .env("REMOTE_HUB_NOFILE", "7")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    let mut child = command.spawn().expect("spawn helper");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let helper_pid = child.id();
+
+    send_req(&mut stdin, &Request::Hello {
+        protocol: PROTOCOL_VERSION,
+    });
+    match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+        Response::HelloAck { .. } => {}
+        other => panic!("expected hello_ack, got {other:?}"),
+    }
+
+    let before = child_fds(helper_pid);
+    for _ in 0..20 {
+        send_req(&mut stdin, &Request::OpenEcho {
+            id: 100,
+            cols: 80,
+            rows: 24,
+        });
+        match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+            Response::Error { code, .. } => assert_eq!(code, "session_open_failed"),
+            other => panic!("expected session_open_failed, got {other:?}"),
+        }
+    }
+    let after = child_fds(helper_pid);
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "descriptor count changed: before {before:?}, after {after:?}"
+    );
+
+    drop(stdin);
+    let status = wait_timeout(&mut child, Duration::from_secs(5)).expect("helper did not exit");
+    assert_eq!(status.code(), Some(0));
+}
+
+// U3: a half-close with a full outbox must not spin.
+#[test]
+fn u3_half_close_does_not_spin() {
+    let mut helper = start();
+    helper.hello();
+    let helper_pid = helper.child.id();
+
+    let mut id = 0u64;
+    let mut written = 0usize;
+    while written < 3 * 1024 * 1024 {
+        let frame = encode_request(&Request::Ping { id });
+        helper.stdin.write_all(&frame).unwrap();
+        written += frame.len();
+        id += 1;
+    }
+    helper.stdin.flush().unwrap();
+    drop(helper.stdin);
+
+    let t0 = cpu_seconds(helper_pid);
+    std::thread::sleep(Duration::from_secs(2));
+    let t1 = cpu_seconds(helper_pid);
+    let cpu = t1 - t0;
+    assert!(cpu < 0.5, "helper spun: {cpu} s CPU over 2 s");
+
+    // Drain stdout to EOF, then the helper exits.
+    let mut buf = [0u8; 65536];
+    loop {
+        match helper.stdout.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    let status = wait_timeout(&mut helper.child, Duration::from_secs(5)).expect("helper did not exit");
+    assert_eq!(status.code(), Some(0));
+}

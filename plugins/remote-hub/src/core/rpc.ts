@@ -1,6 +1,7 @@
 // The BB RPC contract for the Remote Hub page, as plain zod schemas.
 // server.ts wraps these with the SDK's defineRpcContract.
 import { z } from "zod";
+import { sessionInputDataSchema } from "./protocol.ts";
 
 const sessionIdSchema = z.number().int().min(0).max(0xffff_ffff);
 const sizeSchema = z.number().int().min(1).max(10_000);
@@ -28,7 +29,7 @@ export const rpcSchemas = {
     output: sessionHandleSchema,
   },
   echo_input: {
-    input: sessionHandleSchema.extend({ data: z.string().min(1).max(262_144) }),
+    input: sessionHandleSchema.extend({ data: sessionInputDataSchema }),
     output: z.object({ output: z.string(), truncated: z.boolean() }),
   },
   echo_close: {

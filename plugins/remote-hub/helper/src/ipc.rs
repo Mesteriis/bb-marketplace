@@ -291,6 +291,14 @@ impl FrameReader {
         }
     }
 
+    fn is_full(&self) -> bool {
+        self.buf.len() >= INGRESS_CAP
+    }
+
+    fn mark_eof(&mut self) {
+        self.eof = true;
+    }
+
     fn try_take(&mut self) -> Result<Option<Request>, String> {
         if self.buf.len() < 4 {
             return Ok(None);
@@ -379,6 +387,17 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
     set_nonblocking(0);
     set_nonblocking(1);
 
+    #[cfg(feature = "test-hooks")]
+    if let Ok(v) = std::env::var("REMOTE_HUB_NOFILE") {
+        if let Ok(n) = v.parse::<u64>() {
+            let lim = libc::rlimit {
+                rlim_cur: n,
+                rlim_max: n,
+            };
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) };
+        }
+    }
+
     let (signal_rfd, signal_wfd) = make_pipe();
     SIGNAL_WRITE_FD.store(signal_wfd, Ordering::SeqCst);
     install_handler(libc::SIGTERM, on_shutdown_signal);
@@ -415,10 +434,16 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         let mut fds: Vec<libc::pollfd> = Vec::with_capacity(3 + session_fds.len());
         let mut roles: Vec<PollRole> = Vec::with_capacity(3 + session_fds.len());
         // Keep reading stdin until EOF, but only while the outbox has room so
-        // a control-frame flood cannot grow memory without limit.
+        // a control-frame flood cannot grow memory without limit. Once EOF is
+        // seen, stdin is dropped from the poll set entirely so a lingering
+        // POLLHUP cannot make poll return at once.
         let want_stdin = !reader.eof && outbox.len() + OUTBOX_RESERVE <= OUTBOX_CAP;
-        roles.push(PollRole::Stdin);
-        fds.push(pollfd(0, if want_stdin { libc::POLLIN } else { 0 }));
+        let mut stdin_idx: Option<usize> = None;
+        if !reader.eof {
+            stdin_idx = Some(fds.len());
+            roles.push(PollRole::Stdin);
+            fds.push(pollfd(0, if want_stdin { libc::POLLIN } else { 0 }));
+        }
         roles.push(PollRole::Signal);
         fds.push(pollfd(signal_rfd, libc::POLLIN));
         if !outbox.is_empty() {
@@ -522,8 +547,8 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
 
         // stdin: read more (POLLIN while we want input, or a hangup that still
         // has buffered data even when the outbox is full), then drain frames.
-        {
-            let revents = fds[0].revents;
+        if let Some(idx) = stdin_idx {
+            let revents = fds[idx].revents;
             let hung_up = revents & (libc::POLLHUP | libc::POLLERR) != 0;
             let read_now = (want_stdin && revents & libc::POLLIN != 0) || hung_up;
             if !reader.eof && read_now {
@@ -534,6 +559,11 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                         message: e,
                     }));
                     SHUTDOWN.store(true, Ordering::SeqCst);
+                }
+                // The peer hung up but the ingress is still full: no more bytes
+                // can be read, so treat it as EOF.
+                if hung_up && reader.is_full() {
+                    reader.mark_eof();
                 }
             }
         }

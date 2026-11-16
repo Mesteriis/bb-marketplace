@@ -6,6 +6,7 @@ import {
   decodeFrame,
   encodeControlFrame,
   encodeStreamFrame,
+  sessionInputDataSchema,
   type ControlMessage,
 } from "../../core/protocol.ts";
 import { createRemoteHubService } from "./service.ts";
@@ -130,7 +131,17 @@ describe("helper-process (pure parts)", () => {
 });
 
 describe("helper-process (lifecycle)", () => {
-  // T1: the zod schema rejects 262 145 bytes of input data before it is written.
+  // U1: a shared UTF-8 byte-length validator, literals for both boundaries.
+  it("accepts 262 144 ASCII bytes and rejects 262 145", () => {
+    expect(sessionInputDataSchema.safeParse("x".repeat(262_144)).success).toBe(true);
+    expect(sessionInputDataSchema.safeParse("x".repeat(262_145)).success).toBe(false);
+  });
+
+  it("accepts 262 144 UTF-8 bytes of é and rejects 262 146", () => {
+    expect(sessionInputDataSchema.safeParse("é".repeat(131_072)).success).toBe(true);
+    expect(sessionInputDataSchema.safeParse("é".repeat(131_073)).success).toBe(false);
+  });
+
   it("rejects 262 145 bytes of session input at the schema", () => {
     const result = rpcSchemas.echo_input.input.safeParse({
       generation: "a".repeat(32),
@@ -138,6 +149,18 @@ describe("helper-process (lifecycle)", () => {
       data: "x".repeat(262_145),
     });
     expect(result.success).toBe(false);
+  });
+
+  // U1: an oversized input is refused at the adapter without writing to stdin.
+  it("refuses oversized input at the adapter without writing to stdin", async () => {
+    const fake = makeFakeChild();
+    const spawn: HelperSpawn = () => {
+      setImmediate(() => fake.child.stdout.push(helloAck(GEN_A)));
+      return fake.child as unknown as ChildProcessWithoutNullStreams;
+    };
+    const hp = await HelperProcess.spawn("bin", spawn);
+    await expect(hp.input({ generation: GEN_A, sessionId: 1 }, "é".repeat(131_073))).rejects.toBeTruthy();
+    expect(fake.writes.length).toBe(1); // only the hello frame
   });
 
   // T1: a helper that never answers ping is killed and the next call restarts.

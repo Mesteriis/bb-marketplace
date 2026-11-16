@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::ffi::CString;
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 /// Per-session bound on buffered, not-yet-flushed PTY output. When a session's
 /// pending output reaches this bound the helper stops reading from its PTY,
@@ -274,6 +274,12 @@ impl SessionManager {
                 errno: openpty_errno,
             });
         }
+        // RAII ownership: any setup failure below (or the fork-failure path)
+        // closes both descriptors.
+        let master_owned = unsafe { OwnedFd::from_raw_fd(master) };
+        let slave_owned = unsafe { OwnedFd::from_raw_fd(slave) };
+        let master = master_owned.as_raw_fd();
+        let slave = slave_owned.as_raw_fd();
         set_cloexec(master)?;
         set_cloexec(slave)?;
         set_nonblocking(master)?;
@@ -317,11 +323,8 @@ impl SessionManager {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         if pid < 0 {
-            unsafe {
-                libc::close(master);
-                libc::close(slave);
-            }
             restore_signal_mask(&old_mask);
+            // master_owned/slave_owned drop here, closing both descriptors.
             return Err(SessionError::Sys {
                 step: "fork",
                 errno: fork_errno,
@@ -352,9 +355,11 @@ impl SessionManager {
             }
         }
 
-        // Parent restores its signal mask and keeps the master, closes slave.
+        // Parent restores its signal mask, closes the slave, and transfers
+        // ownership of the master into the session.
         restore_signal_mask(&old_mask);
-        unsafe { libc::close(slave) };
+        drop(slave_owned);
+        let master_raw = master_owned.into_raw_fd();
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         self.sessions.insert(
@@ -362,7 +367,7 @@ impl SessionManager {
             Session {
                 id,
                 child: pid,
-                master,
+                master: master_raw,
                 seq: 0,
                 pending_out: Vec::new(),
                 pending_in: Vec::new(),
