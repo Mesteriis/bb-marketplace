@@ -250,6 +250,7 @@ those that write into BB: `attachment_save`, `bb_thread_start`,
 `rule_save`; those that change the owner's mail server: `folder_create`,
 `folder_rename`, `folder_delete`, `folder_subscribe` and `labels_change`;
 and those that fetch from it: `server_search_start`, `server_search_more`,
-`history_load` and `conversation_load`) with `bb plugin rpc call`. Never do that: those methods are the owner's, they
+`history_load`, `conversation_load` and `sender_check_refresh`) with
+`bb plugin rpc call`. Never do that: those methods are the owner's, they
 bypass the owner's AI access and the log, and calling them is not something
 the owner asked you to do.

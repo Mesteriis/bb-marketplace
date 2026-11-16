@@ -788,7 +788,7 @@
     {
       "id": "makosh-mail",
       "displayName": "Makosh Mail [Experimental]",
-      "description": "Reads, searches, files and sends iCloud, Gmail and IMAP mail; attachment viewer; AI on click; mail to BB threads and tasks; agent log.",
+      "description": "Reads, searches, files and sends iCloud, Gmail and IMAP mail; sender warnings; AI on click; mail to BB threads and tasks; agent log.",
       "icon": {
         "url": "./plugins/mail/assets/icon.svg"
       },

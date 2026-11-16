@@ -54,7 +54,9 @@ out only when you press **Send** on its card in that agent's thread.
   has no stored inline images: they show only once that message is fetched
   again, which does not happen automatically. Remote images are hidden; a bar
   offers **Show images** for that message or **Always show from** its
-  sender. Only `https:` images load, even when allowed.
+  sender. Only `https:` images load, even when allowed. Tracking pixels
+  never load, and a sender whose check failed or who looks disguised gets
+  no automatic images (see [Security and privacy](#security-and-privacy)).
 - **Spam**, **Not spam** (in Spam only), **Archive** and **Delete** in the
   reading pane move the open conversation's messages in the folder you are
   viewing. Delete moves to Trash; nothing is ever permanently deleted.
@@ -86,7 +88,9 @@ out only when you press **Send** on its card in that agent's thread.
   while you type in a field. `c` compose, `r` reply, `a` reply all, `f`
   forward, `t` translate (again: show the original), `z` undo the last
   action; in the composer Cmd/Ctrl+Enter sends, Cmd/Ctrl+Alt+T opens the
-  templates and Escape closes.
+  templates and Escape closes. Slice 3i adds Apple Mail's keys beside these:
+  arrows, Shift+arrows, Backspace and Delete everywhere, Command chords on a
+  Mac (see [Apple Mail keys and the reading flow](#apple-mail-keys-and-the-reading-flow)).
 - When a sender's images are always shown, the message says so and offers
   **Stop showing**.
 - What the plugin writes on the server: `\Seen` when you open a message or
@@ -152,8 +156,9 @@ setting, generated on first load. Mail and credentials stay on the machine
 that runs the BB server.
 
 Not yet: Gmail API or OAuth, scheduled send, system notifications, semantic
-search, a virtualized list, and writing categories or reminders to the mail
-server.
+search, a virtualized list, writing categories or reminders to the mail
+server, and PGP or S/MIME signing, checking and decryption (Mail only
+recognises such mail; see [Security and privacy](#security-and-privacy)).
 
 ## Writing and sending
 
@@ -254,12 +259,15 @@ aliases you added.
 
 ## Before you send
 
-Send saves the draft and runs four checks; none of them blocks a send:
+Send saves the draft and runs these checks; none of them blocks a send:
 
 - an attachment mentioned ("attached", "see the file", "во вложении", "прикрепляю"…) with nothing attached;
 - an empty subject;
 - on a reply, a recipient who is not in the conversation;
-- on a new message or forward, an address you have never sent to.
+- on a new message or forward, an address you have never sent to;
+- on a reply or reply all, a recipient that is the original's Reply-To
+  address when it goes elsewhere than the sender ("Reply-To differs from
+  the sender: …"; **Fix** marks the address). Slice 3i.
 
 When one applies, **Before you send** lists them. **Fix** takes you to it
 (the attachment picker, the subject, the recipient row with the chips
@@ -288,6 +296,77 @@ reached: try Undo again).
 - Undo is kept in memory: a BB restart or plugin reload forgets it. While a
   long sync holds the account, it says "Undo will finish after the current
   sync".
+
+## Apple Mail keys and the reading flow
+
+Slice 3i adds Apple Mail's keys beside the Gmail letters; every letter
+keeps what it did. Letters, arrows and Backspace follow the physical key,
+so they work on other keyboard layouts.
+
+On every platform:
+
+| Key | Does |
+| --- | --- |
+| Down / Up | Next / previous conversation, and opens it (like `j` / `k`, which open only when a conversation is already open) |
+| Shift+Down / Shift+Up | Extend the selection from the cursor row (grouped lists only, as `x`) |
+| Down / Up on a message header or the earlier-messages stack | Move focus to the next / previous header |
+| Backspace, Delete | Delete, as `#` |
+
+On a Mac only (the same chords with Ctrl would collide with browser and
+system keys on Windows and Linux, where the letters cover them):
+
+| Chord | Does | Letter |
+| --- | --- | --- |
+| ⌘R / ⇧⌘R | Reply / Reply all | `r` / `a` |
+| ⇧⌘F | Forward | `f` |
+| ⌃⌘A | Archive | `e` |
+| ⇧⌘J | Spam | `!` |
+| ⌃⌘M | Move to… | `v` |
+| ⇧⌘U | Mark read, or unread when nothing is unread | Shift+`i` / Shift+`u` |
+| ⇧⌘L | Flag or unflag | `s` |
+| ⌥⌘F | Search | `/` |
+| ⌘Z | Undo the last action (outside any field) | `z` |
+| ⌘Backspace | Delete | `#` |
+| ⇧⌘D | Send, in the composer (with Before you send) | Cmd+Enter |
+
+- **Keys BB keeps.** Mail never binds a chord BB uses: ⌘N (use `c`),
+  ⇧⌘N (the Sync button), ⌘F (use `/` or ⌥⌘F), ⌘P (Shift+`p`), ⌘1–⌘9
+  (`g` then a letter), ⌘K, ⌘J, ⌘W, ⌘T, ⌘O, ⌘[ and ⌘], ⌘\ and the other BB
+  defaults, the ⌃⌘ arrows and Escape (use `u`). Apple's Erase Junk Mail
+  (⌥⌘J) is not bound: Mail never expunges by key. ⌘R, ⇧⌘R and ⌘Z stay
+  bound until the live check in BB shows whether the desktop app reloads
+  the window or runs its own undo on them; a chord that does is removed. In
+  a browser tab the browser may keep ⌘R for itself; the letters still work.
+- **Arrows open.** In two columns Down and Up open the next conversation
+  even when none is open, and opening marks it read, as any open does. In
+  one column with nothing open they only move the cursor; once a
+  conversation is open they open as in two columns. A held arrow only moves
+  the cursor and opens the row it stops on when you release it. Inside the
+  message text Up and Down scroll, as the browser does. In Drafts an arrow
+  opens the draft in the reading pane, not the composer.
+- **Keys stay safe.** No key acts while you type in a field, the composer,
+  a dialog, a menu or a list, or while an input method is composing. A held
+  chord or Backspace acts once; a second Delete while the first is still
+  running is dropped, so it never deletes the next conversation unseen.
+- **The next conversation opens** after Archive, Delete, Spam, Not spam,
+  Move to…, Snooze, or a drag to a folder of the conversation that is open,
+  from the reading pane, a hotkey, an Apple chord or the drag: the row
+  below, at the end of the list the row above, and the empty state when no
+  rows are left. It opens only while the conversation you acted on is still
+  open, and an action that fails leaves it open. Mark unread, Block sender
+  and anything a rule or another device does close the conversation as
+  before. After an action on a selection the cursor moves to the next
+  remaining row and nothing opens.
+- **Undo reopens.** Undo (the toast's **Undo**, `z` or ⌘Z) brings the
+  conversation back and opens it again when the conversation that action
+  opened (or nothing) is still shown; after you opened something else it
+  does not. On Gmail an archived conversation added back with UID COPY may
+  come back as a new conversation; then nothing reopens.
+- **Keys inside a message.** After a click into a message's text the keys
+  still reach the page, so hotkeys and Backspace keep working. Enter,
+  Space, Tab, arrows, Page Up/Down, Home and End stay with the message:
+  Enter on a focused link opens that link (through the link check below),
+  never the cursor row.
 
 ## Inbox tools: new mail, unsubscribe, snooze, block, filters
 
@@ -769,11 +848,148 @@ X-GM-LABELS`, and the `MOVE`s you ask for.
 Settings: `historyStepDays`, `serverSearchKeepDays`, `indexAttachmentText`,
 `mailView`, `darkMail` and `hideQuotes` are BB plugin settings.
 
+- **Earlier messages** (slice 3i): when a conversation opens, the read
+  messages before the first one you need wait in one closed stack, "N
+  earlier messages", when there are two or more of them. The message you
+  opened, the newest and every message that was unread when the
+  conversation opened are never stacked, nor is one you expanded. A click,
+  Enter or Space opens the stack; **Expand all** (`;`) opens it with
+  everything, **Collapse all** closes it again, and a finished **Load the
+  whole conversation** that added messages opens it. The stack names the
+  senders and adds "· sender warning" when a stacked message has one. Order
+  stays oldest to newest; print, Hand to agent and citations still see every
+  message. The single-message view has no stack.
+
 **pdf.js** (`pdfjs-dist` 6.5.438, exact) is the one new dependency. npm may
 also install its optional `@napi-rs/canvas` package into `node_modules`;
 Mail never loads it (the server worker blocks it) and it is not in the
 build. `dist/app.js` contains one inert mention of it in pdf.js's Node-only
 code path, which never runs in BB's page.
+
+## Security and privacy
+
+Slice 3i warns about senders, blocks trackers and cleans links. It adds no
+network traffic of its own: no DNS lookup, no link prefetch, no redirect
+probe, and nothing written to your mail server.
+
+### Sender check
+
+- **What it reads.** The `Authentication-Results` your own mail provider
+  wrote at the top of the message, and only from a provider id Mail trusts:
+  Gmail (`mx.google.com`). Mail does not verify DKIM or SPF itself. iCloud
+  shows "Not checked" until its provider id is pinned after a live check;
+  other servers show "Not checked: Mail does not read this server's
+  results". Mail in Sent and Drafts is your own and is not checked.
+- **Failed** means DMARC failed for the From domain, or there was no DMARC
+  answer and SPF failed with no DKIM pass aligned with From. Only the
+  topmost trusted result counts and a fail is never cancelled by a pass; a
+  result a sender wrote lower in the headers is ignored. Two senders in From
+  are never a pass.
+- **No trust badge.** Mail shows warnings only. A pass appears only in
+  **Details**, in the provider's words ("Authenticity (from mx.google.com):
+  SPF pass … · DMARC pass"); nothing in the list or the header says a
+  sender is verified. **Check again** in Details reads the headers again.
+- **A failed check** shows "Sender not verified" above the body. It can also
+  be a forwarder or an old-style mailing list that rewrites mail (Mail does
+  not evaluate ARC), so it means "could not confirm", not "forged".
+- **What a failed check stops:** the message never prepares or starts a mail
+  rule, gets no Dev class (no Dev entry, no alert card, no rule match on Dev
+  fields) and loads no remote images through **Always show from**. Agent
+  and BB text get the line "Sender check: failed" after From. Notifications
+  are unchanged.
+- **Older mail** synced before 3i is checked when you open it: after the
+  conversation has stayed open briefly, Mail fetches the header fields of
+  its expanded messages once with `BODY.PEEK` (read-only, through the
+  account's queue). Nothing is checked in bulk; stacked and collapsed
+  messages wait until you expand them.
+- **Limits.** The registrable-domain rule is a heuristic, not the public
+  suffix list. A provider that does not strip a forged result carrying its
+  own id from incoming mail would be believed (RFC 8601 says it must strip
+  it).
+
+### Sender warnings
+
+Under the From line, fixed text with the values shown as data (domains in
+their real ASCII form):
+
+- "Replies go to … , not to …" when Reply-To goes to another domain. Before
+  you send then lists "Reply-To differs from the sender: …" when a reply
+  still goes there.
+- "… looks like …, which you write to" for a domain that imitates one you
+  sent mail to or your own (confusable letters, or one edit away).
+- "This domain mixes alphabets: xn--…" (shown as it really is).
+- "The name shows … but the address is …".
+
+A lookalike domain or a name that shows another address, like a failed
+check, gets no automatic images. **Show images** for that one message still
+works; **Always show** is not offered there and your always-show list is
+kept. The image bar says why: "Images from this sender are not loaded
+automatically because the sender check failed" (or because the domain looks
+like another, the name shows another address, or the sender check has not
+run yet; an older message from an always-show sender loads its images once
+its check has run).
+
+### Trackers
+
+Tracking pixels are removed even when images are allowed: images at most
+2 pixels wide or high (by attribute or inline style), hidden by an inline
+style (`display:none`, `visibility:hidden`, `opacity:0`), or from a short
+list of open-tracking hosts. The bar says "Images shown · 2 trackers
+blocked", or with images hidden that the message has trackers and they stay
+blocked; a message whose only remote images are trackers offers no **Show
+images**. Limit: an image hidden by a `<style>` class or by a hidden parent
+element is not found (Mail does no layout).
+
+### Links
+
+- **Cleaned.** Links in a message, the printed and saved page and the plain
+  view lose known tracking parameters (`utm_*`, `fbclid`, `gclid`, `mc_eid`
+  and similar); the rest of the address is kept byte for byte. Google
+  `/url?q=`, Outlook SafeLinks and Facebook `l.php` wrappers are unwrapped
+  to the address they carry (one level, read from the URL, never fetched).
+  The setting `cleanLinks` ("Remove tracking from links I open", on) turns
+  removal and unwrapping off; the checks below stay. Links handed to agents
+  and BB are always cleaned, so an agent that opens one does not confirm a
+  tracked open.
+- **Status line.** Pointing at or focusing a link shows where it goes at the
+  bottom of the reading pane: "→ https://shop.example.com/sale (3 tracking
+  parameters removed)", or "→ via tracking redirect at
+  click.example-esp.com; Mail cannot see where it ends" for a known
+  newsletter click host (Mail never follows the redirect to find out).
+- **The dialog.** A link opens only after a dialog when its text names one
+  site but it opens another ("This link says www.example.com but opens
+  example.net."), when its host mixes alphabets, or when it looks like one
+  of your own domains or a domain a sender warning in the open conversation
+  names. A known tracking redirect and a host that is only in
+  punycode (`xn--`) open without a dialog; the status line shows them. A
+  link Mail cannot open safely is refused ("This link cannot be opened
+  here."). PDF, alert and Dev links pass the same check.
+
+### Read receipts, signed and encrypted mail
+
+- **Read receipts are never sent.** When a message asks for one, the header
+  says "The sender asked for a read receipt. Makosh Mail does not send
+  receipts." Mail's own mail never asks for one either.
+- **Signed and encrypted mail is recognised only.** PGP and S/MIME get a
+  neutral chip ("Signed (PGP)": Mail does not check signatures; "Encrypted
+  (S/MIME)": Mail cannot read it). Nothing is verified or decrypted and no
+  key is read. An encrypted body is never stored: the pane says "This
+  message is encrypted. Open it in a mail client that has your key.", agents
+  and BB get "[encrypted message — not readable]", and the search and
+  attachment-text indexes hold none of it. The ciphertext stays reachable
+  through the attachments and **Download .eml**. Signing and encryption are
+  planned for slice 3k.
+
+### Deleted mail on disk
+
+Mail overwrites what it deletes from its database file (SQLite
+`secure_delete`), including the search indexes where SQLite supports the
+FTS `secure-delete` option (3.42 and later). BB's SQLite version is not
+verified: if the option is unavailable, the plugin log says
+`secure_delete: fts option unavailable` and the search index may keep words
+of deleted mail until SQLite merges it. Copies in the database's WAL file
+until the next checkpoint, in backups and in BB's own files are outside
+this; the database itself is not encrypted.
 
 ## Agents, AI and your secrets
 
@@ -918,8 +1134,10 @@ methods that write into BB on the owner's behalf: `attachment_save`,
 server: `folder_create`, `folder_rename`, `folder_delete`, `folder_subscribe`
 and `labels_change`; methods that fetch from it: `server_search_start`,
 `server_search_more`, `history_load` and `conversation_load`; and the owner's
-search with `attachments: true`, which reads attachment text. This is the
-accepted limit of slices 3c to 3h, and the skill tells agents not to.
+search with `attachments: true`, which reads attachment text. Slice 3i adds
+`sender_check_refresh`, which fetches header fields from your mail server
+(read-only) and stores the sender check. This is the accepted limit of
+slices 3c to 3i, and the skill tells agents not to.
 
 ## Mail in the sidebar
 

@@ -8,13 +8,15 @@ hand mail to BB projects, threads and Taskboard.
   every 5 minutes, last 30 days; the Inbox within seconds (IDLE).
 - **All accounts** merges Inbox, Sent, Drafts, Spam, Archive and Trash.
 - Mark, flag, archive, delete or **Move to…** a selection; **Undo** or `z`;
-  filters; hotkeys (`?`).
-- Remote images stay hidden until you allow them.
+  filters; Gmail and Apple Mail keys (`?`).
+- Remote images stay hidden until you allow them; trackers never load.
+- Warnings for a failed sender check, a foreign Reply-To or a lookalike
+  domain; links lose tracking and open after a check; no read receipts.
 - **Hand to agent** and `@` mentions share a message you pick.
 
 ## Search, folders and files
 
-- Operators (`from:`, `has:attachment`, `newer_than:`, `-in:`), saved
+- Operators (`from:`, `has:attachment`, `-in:`), saved
   searches, **Search on the server** and **Load 30 more days**, read-only.
 - Create, rename, delete folders; drag onto them; Gmail labels with Undo.
 - A viewer for images, text and PDF; **Files**; opt-in search inside
@@ -31,35 +33,34 @@ Toasts for new mail from people you write to. **Unsubscribe** asks first.
 Through Makosh AI only: **Translate**, **Summarize**, **Ask** your mail,
 **Find tasks**, local **categories**, **Today**, **reply reminders** and
 **Improve** for your draft. Nothing a model says acts without your click.
-The provider gets subjects, sender names, dates and bodies without quotes
-of the mail involved; never addresses, attachments or HTML.
+The provider gets subjects, sender names, dates and unquoted bodies of the
+mail involved; never addresses, attachments or HTML.
 
 ## BB integration
 
-- **New thread…** from a mail shows the exact prompt and the project's
-  permission mode first; **Make a task…** on Taskboard or in Mail.
-- **Save to project…** writes attachments as new files in the project,
-  never over a file without asking; **Attach from BB** picks files.
-- **Email the result** drafts a thread's answer, unsent.
-- **Dev** groups GitHub, CI and monitoring mail; links, code and diffs show
-  with BB's highlighter.
-- Patches go to an agent in a new worktree; alerts open one incident
-  thread; conversations bind to projects.
-- **Mail rules** (off) prepare threads for review, or start capped ones in
-  a worktree.
+- **New thread…** shows the exact prompt and permission mode first;
+  **Make a task…** on Taskboard or in Mail.
+- **Save to project…** writes attachments into a project, never
+  overwriting without asking; **Attach from BB** picks files.
+- **Email the result** drafts a thread's answer.
+- **Dev** groups GitHub, CI and monitoring mail; code and diffs use BB's
+  highlighter.
+- Patches go to an agent in a worktree; alerts open one incident thread.
+- **Mail rules** (off) prepare threads, or start capped ones in a
+  worktree.
 
 ## Your secrets and agents
 
 Codes, passwords, tokens and card numbers become `[hidden …]` before any
-agent, model or BB thread sees them (a heuristic). **AI access** limits
-agents and AI to chosen accounts and folders and excludes senders. **Agent activity** logs every agent, AI and BB hand-off
-locally, ids and counts only.
+agent, model or BB thread sees them (a heuristic); encrypted mail never
+does. **AI access** limits agents and AI to chosen accounts and folders.
+**Agent activity** logs every hand-off locally, ids and counts only.
 
 ## Writing and sending
 
-**Compose**, **Reply**, **Forward** with rich text, code blocks,
-attachments up to 25 MB, signatures and templates. **Send** waits 10
-seconds with **Undo**, then goes out over SMTP with TLS.
+**Compose**, **Reply**, **Forward** with rich text, attachments up to 25 MB,
+signatures and templates. **Send** waits 10 seconds with **Undo**, then
+goes out over SMTP with TLS.
 
 ## Agent access
 
@@ -75,7 +76,7 @@ the page's own methods. Sends still show Undo.
 Read state, flags and moves on your click or key, and by your snoozes and
 block rules. Delete moves to Trash. Drafts and sent copies are appended.
 Folders and Gmail labels on your click; nothing is expunged. Server search
-sends your words to your own mail server. The only web request is a
+sends your words only to your mail server. The only web request is a
 one-click unsubscribe you confirmed.
 
 ## What it costs

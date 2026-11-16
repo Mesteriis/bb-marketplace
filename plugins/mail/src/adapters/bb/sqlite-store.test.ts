@@ -761,7 +761,7 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 14).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 15).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
       "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
@@ -785,6 +785,8 @@ describe("slice-2 migrations (SQLite)", () => {
       "e4714d9efb12775f4b66b49f5d831a93df288b19004a05c29ab72cf73cf2d3d8",
       // Element 13 (slice 3h: kept rows, Gmail labels, attachment kinds and text, saved searches, folder prefs).
       "9308a59ee243d1fcd946a94f35d8c86665cafd9d5ea6bb822af0f47b936ad4ba",
+      // Element 14 (slice 3i: sender check, read receipt request, crypto kind).
+      "85e10b2409d979ca08535d7c9a7b495375e014126b9b16ab645be6f16c189d79",
     ]);
   });
 

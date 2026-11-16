@@ -8,6 +8,44 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Security and privacy (slice 3i, part A). A sender check from the
+  provider's own `Authentication-Results` (trusted ids only: Gmail; iCloud
+  "Not checked" until its id is pinned live; the topmost trusted header,
+  worst result per method, DMARC for the From domain only), shown as a
+  "Sender not verified" strip and, for a pass, only in **Details** with
+  **Check again**; never a "verified" badge. Warnings for a foreign
+  Reply-To (also in **Before you send**), a lookalike of a domain you write
+  to, mixed alphabets and a name that shows another address. A failed
+  sender gets no mail rule, no Dev class or alert and no automatic images;
+  lookalike and name warnings also hold automatic images, and the image bar
+  says why. Older mail is checked on open with a read-only header fetch
+  (`sender_check_refresh`, owner only). Agent and BB text get "Sender
+  check: failed" / "Sender warning: …" after From.
+- Trackers (pixels by size or inline style, and a short list of
+  open-tracking hosts) are removed even when images are allowed, and
+  counted on the image bar. Links lose tracking parameters and unwrap
+  Google, SafeLinks and Facebook redirects (`cleanLinks`, on), everywhere
+  Mail shows or prints them and always for agents; a status line shows the
+  real address, and a link whose text names another site, whose host mixes
+  alphabets or that imitates a known domain opens after a dialog (known
+  tracking redirects and punycode-only hosts get a note only).
+- Read receipt requests are shown and never answered. PGP and S/MIME mail
+  gets a neutral Signed or Encrypted chip; encrypted bodies are never
+  stored, indexed or handed to an agent, model or BB. SQLite
+  `secure_delete` (and the FTS `secure-delete` option where available)
+  overwrites deleted mail in the database file. Migration element 14 adds
+  three message columns.
+- Apple Mail keys and reading flow (slice 3i, part B). Down/Up open the
+  next or previous conversation (cursor only in one column with nothing
+  open; a held arrow opens on release), Shift+Down/Up extend the selection,
+  Up/Down move between message headers, Backspace and Delete delete. On a
+  Mac: ⌘R, ⇧⌘R, ⇧⌘F, ⌃⌘A, ⇧⌘J, ⌃⌘M, ⇧⌘U, ⇧⌘L, ⌥⌘F, ⌘Z, ⌘Backspace and
+  ⇧⌘D to send in the composer; no chord BB owns is taken, and ⌘R, ⇧⌘R and
+  ⌘Z are subject to the live check. After Archive, Delete, Spam, Not spam,
+  Move, Snooze or a drag to a folder of the open conversation the next one
+  opens; Undo reopens it. Earlier read messages wait in one closed "N
+  earlier messages" stack. Keys typed inside a message body reach the page.
+
 - Search, older mail, folders and attachments (slice 3h). Gmail-style search
   operators with `-` negation (`to:`, `cc:`, `has:attachment`, `filename:`,
   `in:`, `account:`, `is:`, `larger:`, `smaller:`, `newer_than:`,
