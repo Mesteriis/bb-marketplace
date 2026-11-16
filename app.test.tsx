@@ -1,0 +1,105 @@
+// @vitest-environment jsdom
+import { afterEach, expect, test } from "vitest";
+import { fireEvent, screen, within, waitFor } from "@testing-library/react";
+import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import app from "./app";
+import { persistentInputSchema, type PersistentServer } from "./persistent";
+import type { Server } from "./servers";
+
+let unmount: (() => void) | undefined;
+afterEach(() => { unmount?.(); unmount = undefined; });
+function viewer(): PersistentServer {
+  return { ...persistentInputSchema.parse({ name: "harbor", cwd: "/durable", command: "harbor view --port 5995", port: 5995 }),
+    name: "harbor", displayName: "harbor", tailnetDescription: "harbor",
+    state: "running", pid: 42, startedAt: Date.now() - 65_000, uptimeMs: 65_000, restartAt: null,
+    failures: 0, lastExit: { at: Date.now(), code: 42, signal: null, reason: "Process exited" },
+    healthResult: { healthy: true, checkedAt: Date.now(), message: "Expected Harbor response" },
+    tailnetUrl: "https://fixture.example.ts.net:5995/", logs: [{ at: Date.now(), stream: "stdout", line: "ready" }] };
+}
+function appServer(): Server {
+  return { name: "mobbin cards", projectId: "project", projectName: "Fieldlabel", environmentId: "env", environmentName: "checkout", branchName: "main", path: "/fieldlabel",
+    port: 5970, pid: 42, processName: "node", command: "vite", connectUrl: null, tailnetUrl: "https://fixture.example.ts.net:5970/",
+    threadIds: ["thread"], thread: { id: "thread", title: "Mobbin" }, terminal: null, association: "managed" };
+}
+
+test("the left menu uses BB's clipboard writer and exposes a manual fallback on failure", async () => {
+  const definition = await loadPluginApp(app);
+  const slot = renderSlot(definition.navPanels[0]!, { subPath: "" }, {
+    experimental_copyToClipboard: async () => false,
+    rpc: { list: () => ({ servers: [appServer()], scannedAt: Date.now() }), persistentList: () => ({ servers: [] }) },
+  });
+  unmount = slot.lifecycle.unmount;
+  const trigger = await slot.findByRole("button", { name: "More ways to open dev server" });
+  fireEvent.keyDown(trigger, { key: "ArrowDown" });
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Copy URL" }));
+  const field = await slot.findByRole("textbox", { name: "URL to copy manually" }) as HTMLInputElement;
+  expect(field.value).toBe(appServer().tailnetUrl);
+  expect(slot.inspection.experimental_clipboardWrites).toEqual([{ text: appServer().tailnetUrl }]);
+});
+
+test("the preview toolbar copies with the host clipboard API", async () => {
+  const definition = await loadPluginApp(app);
+  type PreviewTab = Extract<typeof definition.tabs[number], { availability: "action"; context: { kind: "thread" } }>;
+  const slot = renderSlot(definition.tabs[0]! as PreviewTab, { threadId: "thread", params: { environmentId: "env", port: 5970 } }, {
+    rpc: { list: () => ({ servers: [appServer()], scannedAt: Date.now() }) },
+  });
+  unmount = slot.lifecycle.unmount;
+  fireEvent.click(await slot.findByRole("button", { name: "Copy dev server URL" }));
+  await waitFor(() => expect(slot.inspection.experimental_clipboardWrites).toEqual([{ text: appServer().tailnetUrl }]));
+  expect(slot.queryByRole("alert")).toBeNull();
+});
+
+test("left nav shows both sections, observable status and controls without a thread", async () => {
+  const definition = await loadPluginApp(app);
+  let server = viewer();
+  const controls: string[] = [];
+  const slot = renderSlot(definition.navPanels[0]!, { subPath: "" }, { rpc: {
+    list: () => ({ servers: [], scannedAt: Date.now() }),
+    persistentList: () => ({ servers: [server] }),
+    persistentControl: (input: any) => { controls.push(input.action); server = { ...server, enabled: input.action !== "stop", state: input.action === "stop" ? "stopped" : "starting" }; return { ok: true }; },
+  } });
+  unmount = slot.lifecycle.unmount;
+  await slot.findByText("harbor");
+  expect(slot.getByText("Persistent servers")).toBeDefined();
+  expect(slot.getByText("Thread dev servers")).toBeDefined();
+  expect(slot.getByText("running")).toBeDefined();
+  expect(slot.getByText(/Uptime 1m/)).toBeDefined();
+  expect(slot.getByText(/Last exit: code 42/)).toBeDefined();
+  fireEvent.click(slot.getByRole("button", { name: "Restart" }));
+  await waitFor(() => expect(controls).toEqual(["restart"]));
+  await waitFor(() => expect((slot.getByRole("button", { name: "Stop" }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(slot.getByRole("button", { name: "Stop" }));
+  await slot.findByRole("button", { name: "Start" });
+  fireEvent.click(slot.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(controls).toEqual(["restart", "stop", "start"]));
+  fireEvent.click(slot.getByText("Details and recent logs"));
+  expect(slot.getByText(/\[stdout\] ready/)).toBeDefined();
+});
+
+test("promotion asks for durable working directory and a new fixed port then registers the reviewed command", async () => {
+  const definition = await loadPluginApp(app);
+  const threadServer = { name: "icon grader", projectId: "p", projectName: "Canvas", environmentId: "env", environmentName: "worktree", branchName: "feature", path: "/disposable/worktree",
+    port: 5910, pid: 10, processName: "node", command: "npm run dev -- --port 5910", connectUrl: null, tailnetUrl: null,
+    threadIds: ["thread"], thread: { id: "thread", title: "Canvas thread" }, terminal: null, association: "managed" };
+  const added: unknown[] = [];
+  const slot = renderSlot(definition.navPanels[0]!, { subPath: "" }, { rpc: {
+    list: () => ({ servers: [threadServer], scannedAt: Date.now() }), persistentList: () => ({ servers: [] }),
+    persistentAdd: (input: any) => { added.push(input); return viewer(); },
+  } });
+  unmount = slot.lifecycle.unmount;
+  fireEvent.click(await slot.findByRole("button", { name: "Promote" }));
+  const row = within(slot.getByRole("article", { name: "Thread server icon grader" }));
+  expect(row.getByRole("heading", { name: "icon grader", level: 3 })).toBeDefined();
+  expect(row.getByText(":5910")).toBeDefined();
+  const form = within(slot.getByRole("form", { name: "Promote to persistent server" }));
+  const cwd = form.getByLabelText("Working directory on this machine") as HTMLInputElement;
+  expect(cwd.value).toBe("");
+  expect((form.getByLabelText("Name") as HTMLInputElement).value).toBe("icon grader");
+  expect((form.getByLabelText("Name") as HTMLInputElement).maxLength).toBe(24);
+  expect((form.getByLabelText("Fixed port") as HTMLInputElement).value).toBe("6360");
+  expect((form.getByLabelText("Command") as HTMLTextAreaElement).value).toContain("{port}");
+  fireEvent.change(cwd, { target: { value: "/durable/canvas" } });
+  fireEvent.submit(slot.getByRole("form"));
+  await waitFor(() => expect(added).toHaveLength(1));
+  expect(added[0]).toMatchObject({ cwd: "/durable/canvas", port: 6360, command: "npm run dev -- --port {port}", enabled: true });
+});
