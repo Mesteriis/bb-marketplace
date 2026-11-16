@@ -140,6 +140,22 @@ describe("parseQuery: slice 3h operators", () => {
     expect(parseQuery("newer_than:3x", NOW).notes).toEqual([{ kind: "bad_value", term: "newer_than:3x" }]);
   });
 
+  it("flags a relative date before 1970", () => {
+    const parsed = parseQuery("older_than:9999y invoice", NOW);
+    expect(parsed.notes).toEqual([{ kind: "bad_value", term: "older_than:9999y" }]);
+    expect(parsed.conditions.filter((c) => c.field === "before")).toEqual([]);
+    expect(parseQuery("older_than:57y", NOW).notes).toEqual([{ kind: "bad_value", term: "older_than:57y" }]);
+    expect(parseQuery("older_than:9999w", NOW).notes).toEqual([{ kind: "bad_value", term: "older_than:9999w" }]);
+    expect(cond("older_than:56y", new Date("2026-12-31T12:00:00.000Z"))).toEqual([{ field: "before", value: "1970-12-31", negated: false }]);
+  });
+
+  it("clamps the day when months are subtracted", () => {
+    expect(cond("newer_than:1m", new Date("2026-03-31T12:00:00.000Z"))).toEqual([{ field: "after", value: "2026-02-28", negated: false }]);
+    expect(cond("newer_than:1m", new Date("2028-03-31T12:00:00.000Z"))).toEqual([{ field: "after", value: "2028-02-29", negated: false }]);
+    expect(cond("newer_than:13m", new Date("2026-05-31T12:00:00.000Z"))).toEqual([{ field: "after", value: "2025-04-30", negated: false }]);
+    expect(cond("older_than:1y", new Date("2028-02-29T12:00:00.000Z"))).toEqual([{ field: "before", value: "2027-02-28", negated: false }]);
+  });
+
   it("negates any operator with a leading minus", () => {
     const parsed = parseQuery("-in:trash -from:a@example.org -has:attachment", NOW);
     expect(parsed.conditions).toEqual([

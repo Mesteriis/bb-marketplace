@@ -213,26 +213,29 @@ function isoDate(value: string): string | null {
   return valid ? `${match[1]}-${match[2]}-${match[3]}` : null;
 }
 
-/** `3d`, `2w`, `3m`, `1y` back from `now`, as an ISO date (UTC). */
+/**
+ * `3d`, `2w`, `3m`, `1y` back from `now`, as an ISO date (UTC). Months and
+ * years keep the day when the target month has it, else take its last day
+ * (31 March less a month is 28 or 29 February). Null before 1970.
+ */
 function relativeDate(value: string, now: Date): string | null {
   const match = RELATIVE.exec(value);
   if (!match) return null;
   const count = Number(match[1]);
-  const date = new Date(now.getTime());
-  switch (match[2]!.toLowerCase()) {
-    case "d":
-      date.setUTCDate(date.getUTCDate() - count);
-      break;
-    case "w":
-      date.setUTCDate(date.getUTCDate() - count * 7);
-      break;
-    case "m":
-      date.setUTCMonth(date.getUTCMonth() - count);
-      break;
-    default:
-      date.setUTCFullYear(date.getUTCFullYear() - count);
+  const unit = match[2]!.toLowerCase();
+  let date: Date;
+  if (unit === "d" || unit === "w") {
+    date = new Date(now.getTime() - count * (unit === "w" ? 7 : 1) * 86_400_000);
+  } else {
+    const months = now.getUTCFullYear() * 12 + now.getUTCMonth() - (unit === "m" ? count : count * 12);
+    const year = Math.floor(months / 12);
+    const month = months - year * 12;
+    const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    date = new Date(now.getTime());
+    date.setUTCFullYear(year, month, Math.min(now.getUTCDate(), lastDay));
   }
-  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+  if (Number.isNaN(date.getTime()) || date.getUTCFullYear() < 1970) return null;
+  return date.toISOString().slice(0, 10);
 }
 
 const SPACE = /^\s$/u;
