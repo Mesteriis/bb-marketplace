@@ -210,6 +210,10 @@ fn pid_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
+fn process_group_alive(pgid: u32) -> bool {
+    unsafe { libc::kill(-(pgid as libc::pid_t), 0) == 0 }
+}
+
 /// Cumulative CPU seconds of a process, from ps -o time=. Panics if ps fails
 /// or the output is malformed, so a failed measurement can never read as 0.
 fn cpu_seconds(pid: u32) -> f64 {
@@ -1236,10 +1240,29 @@ fn b3_credit_isolates_sessions() {
         env: HashMap::new(),
         cwd: None,
     });
-    let _x_sid = match helper.read_response() {
+    let x_sid = match helper.read_response() {
         Response::SessionOpened { session_id, .. } => session_id,
         other => panic!("expected session.opened, got {other:?}"),
     };
+
+    // Let X read first: grant a bounded window and drain some output, then stop
+    // granting so X's credit is exhausted and it starves.
+    helper.send(&Request::SessionCredit {
+        id: 20,
+        session_id: x_sid,
+        bytes: 65_536,
+    });
+    match helper.read_response() {
+        Response::SessionCreditAck { .. } => {}
+        other => panic!("expected session.credit_ack, got {other:?}"),
+    }
+    let mut x_drained = 0usize;
+    while x_drained < 4096 {
+        let (rsid, _seq, data) = helper.read_stream();
+        if rsid == x_sid {
+            x_drained += data.len();
+        }
+    }
 
     helper.send(&Request::OpenEcho {
         id: 2,
@@ -1301,6 +1324,11 @@ fn b5_lingering_descendants_are_reaped() {
     assert_eq!(code, Some(0));
     assert_eq!(reason, "exited");
     assert!(!pid_alive(pid), "direct child {pid} still alive");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_group_alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!process_group_alive(pid), "descendant process group {pid} still alive");
 }
 
 // B6: an allowlisted pipe fd reaches the child and nothing else above 2 does.
@@ -1363,6 +1391,11 @@ fn c2_cancel_connecting_session_kills_descendants() {
         other => panic!("expected session.closed, got {other:?}"),
     }
     assert!(!pid_alive(pid), "child {pid} still alive");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_group_alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!process_group_alive(pid), "descendant process group {pid} still alive");
 }
 
 // C2 regression: a real (ssh-kind) session starts from a normal interactive
@@ -1403,7 +1436,7 @@ fn c2_ctrl_c_interrupts_foreground_sleep_in_ssh_kind_session() {
     std::thread::sleep(Duration::from_secs(1));
     h.send_stream(sid, b"\x03");
     std::thread::sleep(Duration::from_millis(500));
-    h.send_stream(sid, b"echo after-int\n");
+    h.send_stream(sid, b"printf 'aft%s\n' er-int\n");
 
     let echoed = h.read_until_stream_contains(sid, "after-int");
     assert!(

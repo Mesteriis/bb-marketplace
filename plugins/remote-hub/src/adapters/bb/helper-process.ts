@@ -186,7 +186,7 @@ export class HelperProcess {
   private readonly streams = new Map<number, StreamState>();
   private readonly scrollbacks = new Map<number, Scrollback>();
   private readonly inputSeq = new Map<number, number>();
-  private readonly closedSessions = new Map<number, { exitCode: number | null; signal: number | null; reason: string }>();
+  private readonly echoSessions = new Set<number>();
   private readonly onSessionClosedCallbacks: Array<(sessionId: number, info: { exitCode: number | null; signal: number | null; reason: string }) => void> = [];
   private readonly onSessionOutputCallbacks: Array<(sessionId: number, data: Uint8Array) => void> = [];
   private readonly onExitCallbacks: Array<() => void> = [];
@@ -339,9 +339,8 @@ export class HelperProcess {
       return;
     }
     if (resp.type === "session.closed") {
-      this.streams.delete(resp.sessionId);
+      this.releaseSession(resp.sessionId);
       const info = { exitCode: resp.exitCode, signal: resp.signal, reason: resp.reason };
-      this.closedSessions.set(resp.sessionId, info);
       for (const cb of this.onSessionClosedCallbacks) cb(resp.sessionId, info);
       if (this._status !== null) this._status.sessionCount = Math.max(0, this._status.sessionCount - 1);
     }
@@ -355,20 +354,32 @@ export class HelperProcess {
     }
     scrollback.append(data);
     for (const cb of this.onSessionOutputCallbacks) cb(sessionId, data);
-    let state = this.streams.get(sessionId);
-    if (state === undefined) {
-      state = { decoder: new TextDecoder("utf-8"), parts: [], bytes: 0, truncated: false };
-      this.streams.set(sessionId, state);
+    // Only the echo console consumes the decoded text buffer (drain()/
+    // waitForOutput()); SSH sessions stream bytes straight through and must
+    // not accumulate in the 256 KiB echo buffer.
+    if (this.echoSessions.has(sessionId)) {
+      let state = this.streams.get(sessionId);
+      if (state === undefined) {
+        state = { decoder: new TextDecoder("utf-8"), parts: [], bytes: 0, truncated: false };
+        this.streams.set(sessionId, state);
+      }
+      const text = state.decoder.decode(data, { stream: true });
+      const bytes = data.byteLength;
+      if (text.length > 0) state.parts.push({ text, bytes });
+      state.bytes += bytes;
+      while (state.bytes > MAX_STREAM_BUFFER_BYTES && state.parts.length > 0) {
+        const dropped = state.parts.shift()!;
+        state.bytes -= dropped.bytes;
+        state.truncated = true;
+      }
     }
-    const text = state.decoder.decode(data, { stream: true });
-    const bytes = data.byteLength;
-    if (text.length > 0) state.parts.push({ text, bytes });
-    state.bytes += bytes;
-    while (state.bytes > MAX_STREAM_BUFFER_BYTES && state.parts.length > 0) {
-      const dropped = state.parts.shift()!;
-      state.bytes -= dropped.bytes;
-      state.truncated = true;
-    }
+  }
+
+  private releaseSession(sessionId: number): void {
+    this.streams.delete(sessionId);
+    this.scrollbacks.delete(sessionId);
+    this.inputSeq.delete(sessionId);
+    this.echoSessions.delete(sessionId);
   }
 
   private writeControl(message: ControlMessage): void {
@@ -513,6 +524,7 @@ export class HelperProcess {
     if (resp.type === "error") throw new Error(resp.message);
     if (resp.type !== "session.opened") throw new Error("unexpected helper response: " + resp.type);
     if (this._status !== null) this._status.sessionCount += 1;
+    this.echoSessions.add(resp.sessionId);
     return { generation: this.generation, sessionId: resp.sessionId };
   }
 
@@ -576,9 +588,8 @@ export class HelperProcess {
     const resp = await this.request({ type: "session.close", sessionId: handle.sessionId } as RequestMessage);
     if (resp.type === "error") throw new Error(resp.message);
     if (resp.type !== "session.closed") throw new Error("unexpected helper response: " + resp.type);
-    this.streams.delete(handle.sessionId);
+    this.releaseSession(handle.sessionId);
     const info = { exitCode: resp.exitCode, signal: resp.signal, reason: resp.reason };
-    this.closedSessions.set(handle.sessionId, info);
     if (this._status !== null) this._status.sessionCount = Math.max(0, this._status.sessionCount - 1);
     return info;
   }

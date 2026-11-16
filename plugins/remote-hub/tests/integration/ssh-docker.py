@@ -228,7 +228,12 @@ def ssh_argv(port, key, known_hosts, cfg):
     ]
 
 
+def _sigterm_handler(signum, frame):
+    raise SystemExit(143)
+
+
 def main():
+    signal.signal(signal.SIGTERM, _sigterm_handler)
     if not docker_available():
         print("not run")
         return NOT_RUN
@@ -262,7 +267,7 @@ def main():
         with open(cfg, "w") as f:
             f.write("Host rh\n")
 
-        cases(tmp, port, key, known_hosts, cfg)
+        cases(tmp, port, key, known_hosts, cfg, cid)
         print("integration ok")
         return 0
     except KeyboardInterrupt:
@@ -276,7 +281,7 @@ def main():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def cases(tmp, port, key, known_hosts, cfg):
+def cases(tmp, port, key, known_hosts, cfg, cid):
     def mark(n):
         print('case ' + n, flush=True)
 
@@ -298,14 +303,20 @@ def cases(tmp, port, key, known_hosts, cfg):
     assert b"30 100" in out, out
 
     mark('3')
-    # Case 3: Ctrl+C (byte 0x03) interrupts sleep 300.
+    # Case 3: Ctrl+C (byte 0x03) interrupts sleep 300. The marker is built by
+    # the remote shell from a split printf word, so it cannot come from the
+    # typed command's own echo.
     h.input_bytes(sid, b"sleep 300\n")
     time.sleep(1.0)
     h.input_bytes(sid, b"\x03")
     time.sleep(0.5)
-    h.input_bytes(sid, b"echo after-int\n")
+    h.input_bytes(sid, b"printf 'aft%s\n' er-int\n")
     out = h.read_until(sid, b"after-int", timeout=10)
     assert b"after-int" in out, out
+    ps = subprocess.check_output(
+        ["docker", "exec", cid, "sh", "-c", "ps -o comm= | grep '^sleep$' || true"]
+    ).decode()
+    assert "sleep" not in ps, ps
 
     mark('4')
     # Case 4: remote "exit 7" propagates through the real PTY to ssh's exit code.
@@ -328,10 +339,15 @@ def cases(tmp, port, key, known_hosts, cfg):
     # Alpine motd and a shell prompt, and neither may appear before answering.
     assert b"Welcome to Alpine" not in out5, out5
     assert b"~#" not in out5, out5
+    # Type a command before answering: its output is a split printf word, so it
+    # cannot be produced by the typed-command echo. It must never run.
+    h5.input_bytes(sid5, b"printf 'nev%s\n' er-ran\n")
+    time.sleep(0.5)
     h5.input_bytes(sid5, b"no\n")
     collected5, closed5 = h5.collect_until_closed(sid5)
     assert closed5 is not None and closed5.get("exitCode") == 255, closed5
     assert closed5.get("reason") == "ssh_error", closed5
+    assert b"never-ran" not in collected5, collected5
     assert b"Welcome to Alpine" not in collected5, collected5
     assert os.path.getsize(empty_kh) == 0
 
@@ -353,6 +369,7 @@ def cases(tmp, port, key, known_hosts, cfg):
     assert b"REMOTE HOST IDENTIFICATION HAS CHANGED" in out6, out6
     closed6 = h6.read_until_closed(sid6)
     assert closed6 is not None and closed6.get("exitCode") == 255, closed6
+    assert closed6.get("reason") == "ssh_error", closed6
     assert sha256_file(changed_kh) == before
 
     mark('7')

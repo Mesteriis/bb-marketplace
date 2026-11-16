@@ -261,6 +261,70 @@ describe("helper-process (lifecycle)", () => {
     10_000,
   );
 
+  // V10: ssh output streams bytes straight through and never fills the echo
+  // text buffer; only the echo console accumulates decoded text for drain().
+  it("does not buffer ssh output in the echo text buffer", async () => {
+    const fake = makeFakeChild();
+    const spawn: HelperSpawn = () => {
+      setImmediate(() => {
+        fake.child.stdout.push(helloAck(GEN_A));
+        setTimeout(() => {
+          fake.child.stdout.push(
+            Buffer.from(
+              encodeControlFrame({
+                type: "session.opened",
+                id: 1,
+                sessionId: 1,
+                cols: 80,
+                rows: 24,
+                kind: "ssh",
+              }),
+            ),
+          );
+        }, 0);
+      });
+      return fake.child as unknown as ChildProcessWithoutNullStreams;
+    };
+    const hp = await HelperProcess.spawn("bin", spawn);
+    const spec = { program: "/usr/bin/ssh", argv: ["ssh", "-tt", "--", "example.com"], env: { TERM: "xterm" } };
+    const sshHandle = await hp.openSsh(spec, 80, 24);
+    const big = new Uint8Array(300 * 1024).fill(0x78);
+    fake.child.stdout.push(encodeStreamFrame({ sessionId: sshHandle.sessionId, seq: 0 }, big));
+    await tick();
+    expect(hp.drain(sshHandle.sessionId).output).toBe("");
+  });
+
+  it("buffers echo output in the echo text buffer", async () => {
+    const fake = makeFakeChild();
+    const spawn: HelperSpawn = () => {
+      setImmediate(() => {
+        fake.child.stdout.push(helloAck(GEN_A));
+        setTimeout(() => {
+          fake.child.stdout.push(
+            Buffer.from(
+              encodeControlFrame({
+                type: "session.opened",
+                id: 1,
+                sessionId: 1,
+                cols: 80,
+                rows: 24,
+                kind: "echo",
+              }),
+            ),
+          );
+        }, 0);
+      });
+      return fake.child as unknown as ChildProcessWithoutNullStreams;
+    };
+    const hp = await HelperProcess.spawn("bin", spawn);
+    const echoHandle = await hp.openEcho(80, 24);
+    fake.child.stdout.push(
+      encodeStreamFrame({ sessionId: echoHandle.sessionId, seq: 0 }, new TextEncoder().encode("echo-token")),
+    );
+    await tick();
+    expect(hp.drain(echoHandle.sessionId).output).toBe("echo-token");
+  });
+
   // R4 + S7(a): a dead helper is marked, rejects immediately, and a new start
   // sends only hello.
   it("marks a dead helper and starts a fresh one without replaying input", async () => {
@@ -397,14 +461,30 @@ describe("helper-process (lifecycle)", () => {
   it("decodes multibyte UTF-8 split across stream frames", async () => {
     const fake = makeFakeChild();
     const spawn: HelperSpawn = () => {
-      setImmediate(() => fake.child.stdout.push(helloAck(GEN_A)));
+      setImmediate(() => {
+        fake.child.stdout.push(helloAck(GEN_A));
+        setTimeout(() => {
+          fake.child.stdout.push(
+            Buffer.from(
+              encodeControlFrame({
+                type: "session.opened",
+                id: 1,
+                sessionId: 1,
+                cols: 80,
+                rows: 24,
+                kind: "echo",
+              }),
+            ),
+          );
+        }, 0);
+      });
       return fake.child as unknown as ChildProcessWithoutNullStreams;
     };
     const hp = await HelperProcess.spawn("bin", spawn);
-    const sid = 7;
-    fake.child.stdout.push(encodeStreamFrame({ sessionId: sid, seq: 0 }, new Uint8Array([0xc3])));
-    fake.child.stdout.push(encodeStreamFrame({ sessionId: sid, seq: 1 }, new Uint8Array([0xa9])));
+    const handle = await hp.openEcho(80, 24);
+    fake.child.stdout.push(encodeStreamFrame({ sessionId: handle.sessionId, seq: 0 }, new Uint8Array([0xc3])));
+    fake.child.stdout.push(encodeStreamFrame({ sessionId: handle.sessionId, seq: 1 }, new Uint8Array([0xa9])));
     await tick();
-    expect(hp.drain(sid)).toMatchObject({ output: "é" });
+    expect(hp.drain(handle.sessionId)).toMatchObject({ output: "é" });
   });
 });

@@ -61,6 +61,18 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   const sessionEndListeners = new Map<string, Set<(info: { exitCode: number | null; signal: number | null; reason: string }) => void>>();
   const attachTokens = new AttachTokens(ATTACH_TOKEN_TTL_MS, deps.clock);
   const helperExitCallbacks = new Set<() => void>();
+  const EVICT_CLOSED_AFTER_MS = 5 * 60 * 1000;
+
+  const maybeEvictClosed = (key: string): void => {
+    setTimeout(() => {
+      const set = listeners.get(key);
+      if (set === undefined || set.size === 0) {
+        sessions.delete(key);
+        sessionEndListeners.delete(key);
+        listeners.delete(key);
+      }
+    }, EVICT_CLOSED_AFTER_MS);
+  };
 
   const start = (): Promise<HelperProcess> => {
     if (helper !== null) return Promise.resolve(helper);
@@ -101,6 +113,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
             if (ends !== undefined) {
               for (const cb of ends) cb(info);
             }
+            maybeEvictClosed(key);
           });
           started.onSessionOutput((sessionId, data) => {
             const set = listeners.get(generation + ":" + sessionId);
@@ -192,6 +205,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       if (ends !== undefined) {
         for (const cb of ends) cb(info);
       }
+      maybeEvictClosed(key);
       return info;
     },
     sessionAttach(handle) {
