@@ -63,3 +63,8 @@ export * from "./file-kinds.ts";
 export * from "./quotes.ts";
 export * from "./labels.ts";
 export * from "./folder-ops.ts";
+export * from "./server-search.ts";
+export * from "./history.ts";
+export * from "./saved-searches.ts";
+export * from "./attachment-text.ts";
+export * from "./related.ts";

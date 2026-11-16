@@ -447,6 +447,22 @@ export type RawRef = {
 export const fileKindSchema = z.enum(["image", "pdf", "text", "document", "archive", "calendar", "other"]);
 export type FileKind = z.infer<typeof fileKindSchema>;
 
+/**
+ * Why a row outside the sync window is kept (slice 3h, `messages.kept`):
+ * loaded history, a server search hit (expires), or opened by the owner
+ * (never expires). NULL in the column: a window row.
+ */
+export const keptStateSchema = z.enum(["history", "search", "opened"]);
+export type KeptState = z.infer<typeof keptStateSchema>;
+
+/** Why a message is listed as related (slice 3h, #83). */
+export const relatedReasonSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("terms"), terms: z.array(z.string()) }),
+  z.object({ kind: z.literal("participants"), count: z.number().int().min(1) }),
+  z.object({ kind: z.literal("reference") }),
+]);
+export type RelatedReason = z.infer<typeof relatedReasonSchema>;
+
 /** The operators a search condition may carry (slice 3h). */
 export const searchFieldSchema = z.enum([
   "from",
