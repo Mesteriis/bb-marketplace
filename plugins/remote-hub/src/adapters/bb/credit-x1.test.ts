@@ -143,6 +143,18 @@ describe("credit window X1 (real service + real socket)", () => {
     expect(helper.creditFrames.map((f) => f.bytes)).toEqual([262_144]);
   });
 
+  it("live bytes sent but not acked grant nothing", async () => {
+    const { helper, service, wire } = makeServiceAndSocket();
+    const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+    const token = service.sessionAttach(handle);
+    const socket = makeSocket();
+    await wire("ws://x/attach?attach=" + token).onOpen(socket);
+    helper.emitOutput(handle.sessionId, new Uint8Array(100_000).fill(65));
+    await flush();
+    await flush();
+    expect(helper.creditFrames.map((f) => f.bytes)).toEqual([262_144]);
+  });
+
   it("scenario 2: reattach with snapshot grants no new window; unconsumed stays 262144", async () => {
     const { helper, service, wire } = makeServiceAndSocket();
     const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
