@@ -1485,3 +1485,33 @@ describe("createFolderWith", () => {
     await expect(createFolderWith(none as never, "Snoozed")).rejects.toMatchObject({ code: "CreateFailed" });
   });
 });
+
+const DEV_RAW = [
+  "From: GitHub <notifications@github.com>",
+  "Subject: [example-org/demo] Run failed: CI - main (abc1234)",
+  "List-ID: example-org/demo <demo.example-org.github.com>",
+  "X-GitHub-Reason: ci_activity",
+  "X-GitLab-Project-Path: Group/Demo",
+  "X-Unrelated: kept out",
+  "Message-ID: <dev-1@example.com>",
+  "",
+  "Invented body.",
+  "",
+].join("\r\n");
+
+describe("toFetchedMessage dev headers (slice 3g)", () => {
+  it("keeps the DEV_HEADER_FIELDS lines with lower-case keys, and List-Id in the bulk headers", async () => {
+    const parsed = await PostalMime.parse(DEV_RAW);
+    const fetched = toFetchedMessage(imapMessage({ source: Buffer.from(DEV_RAW) }), parsed);
+    expect(fetched.devHeaders).toEqual([
+      { key: "x-github-reason", value: "ci_activity" },
+      { key: "x-gitlab-project-path", value: "Group/Demo" },
+    ]);
+    expect(fetched.bulkHeaders?.listId).toBe("example-org/demo <demo.example-org.github.com>");
+  });
+
+  it("leaves devHeaders absent when the fetch read no headers", () => {
+    const fetched = toFetchedMessage(imapMessage({ source: undefined }), { headers: [], headerLines: [], attachments: [] });
+    expect(fetched.devHeaders).toBeUndefined();
+  });
+});

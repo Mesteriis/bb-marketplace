@@ -12,7 +12,13 @@
 // the server does not answer for stays NULL; `cursors` (kept by the caller
 // for the life of the process) moves below it, so it is not asked again
 // until a restart. Never throws; returns counts only, never mail text.
+//
+// Slice 3g: the same fetch also keeps the List-Id where it is unknown
+// (messages.list_id NULL, '' when absent), so list binding rules and rule
+// matches apply to mail synced before 3g; rows needing only the List-Id are
+// fetched too, within the same budget and UIDVALIDITY rule.
 import { classifyBulk } from "./contacts.ts";
+import { normalizeListId } from "./dev-notify.ts";
 import { headerLines, headerValue } from "./headers.ts";
 import type { BulkHeaders, Folder } from "./model.ts";
 import { ImapAuthError, type FolderSession, type ImapGateway, type MailStore, type SecretVault } from "./ports.ts";
@@ -77,15 +83,25 @@ export async function backfillBulk(
   return backfillPass(deps, accountId, options, BACKFILL_BUDGET, {
     folders: () => true,
     cursorKey,
-    unknown: (path, below, limit) => deps.store.bulkUnknown(accountId, path, below, limit),
+    unknown: (path, below, limit) => {
+      // Rows missing the mark, the List-Id or both, newest uid first; `fromAddress` null: the mark is known.
+      const rows = new Map<number, { uid: number; fromAddress: string | null }>();
+      for (const row of deps.store.listUnknown(accountId, path, below, limit)) rows.set(row.uid, { uid: row.uid, fromAddress: null });
+      for (const row of deps.store.bulkUnknown(accountId, path, below, limit)) rows.set(row.uid, row);
+      return [...rows.values()].sort((a, b) => b.uid - a.uid).slice(0, limit);
+    },
     fetch: (session, uids) => session.fetchListHeaders(uids),
-    fill: (path, uidValidity, found) =>
-      deps.store.fillBulk(
-        accountId,
-        path,
-        uidValidity,
-        found.map(({ row, block }) => ({ uid: row.uid, bulk: classifyBulk(bulkHeadersOf(block), row.fromAddress) })),
-      ),
+    fill: (path, uidValidity, found) => {
+      const listIds = (rows: typeof found) =>
+        rows.map(({ row, block }) => ({ uid: row.uid, listId: normalizeListId(bulkHeadersOf(block).listId) ?? "" }));
+      const marks = found.flatMap(({ row, block }) =>
+        row.fromAddress === null ? [] : [{ uid: row.uid, bulk: classifyBulk(bulkHeadersOf(block), row.fromAddress) }],
+      );
+      const marked = deps.store.fillBulk(accountId, path, uidValidity, marks);
+      deps.store.fillListIds(accountId, path, uidValidity, listIds(found.filter(({ row }) => row.fromAddress !== null)));
+      // A row that needed only its List-Id counts once, when it was filled.
+      return marked + deps.store.fillListIds(accountId, path, uidValidity, listIds(found.filter(({ row }) => row.fromAddress === null)));
+    },
   });
 }
 

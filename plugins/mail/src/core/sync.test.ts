@@ -1691,3 +1691,74 @@ describe("snoozed mail outside the sync window (review item 1)", () => {
     expect(store.getMessage(id)).toBeNull();
   });
 });
+
+describe("slice 3g: dev classification and List-Id at sync", () => {
+  const CLASSIFY = { ...OPTIONS, classify: true };
+  const githubCi = {
+    from: { name: "GitHub", address: "notifications@github.com" },
+    subject: "[example-org/demo] Run failed: CI - main (abc1234)",
+    bulkHeaders: { listId: "Example <demo.example-org.github.com>", listUnsubscribe: null, precedence: "list", autoSubmitted: null },
+    devHeaders: [{ key: "x-github-reason", value: "ci_activity" }],
+  };
+  /** Session calls that could change the server. */
+  const WRITES = new Set(["setFlags", "markSeen", "moveMessages", "copyMessages", "appendMessage", "expungeOwn"]);
+
+  it("classifies a new GitHub CI failure at insert and keeps its List-Id", async () => {
+    const { store, gateway, deps } = setup(mailbox(1));
+    await syncAccount(deps, ACCOUNT_ID, CLASSIFY);
+    const ci = gateway.deliver(githubCi);
+    const outcome = await syncAccount(deps, ACCOUNT_ID, CLASSIFY);
+
+    const id = idByUid(store, INBOX, ci.uid);
+    expect(outcome).toMatchObject({ status: "ok", newInbox: [id], returning: [] });
+    expect(store.getMessage(id)!.dev).toEqual({ source: "github", repo: "github.com/example-org/demo", kind: "ci", state: "failed", ref: null });
+    expect(store.listUnknown(ACCOUNT_ID, INBOX, null, 10).map((r) => r.uid)).not.toContain(ci.uid);
+    store.addBinding({ kind: "list", value: "demo.example-org.github.com", projectId: "p_api", createdAt: NOW.toISOString() });
+    expect(store.listThreads(ACCOUNT_ID, INBOX, null, 10, { projectId: "p_api" }).threads.map((t) => t.id)).toEqual([
+      store.getMessage(id)!.threadId,
+    ]);
+    // The first message was fetched without headers: its List-Id stays unknown.
+    expect(store.listUnknown(ACCOUNT_ID, INBOX, null, 10)).toEqual([{ uid: 1 }]);
+    const calls = gateway.sessions.flatMap((s) => s.calls.map((c) => c.method));
+    expect(calls.filter((method) => WRITES.has(method))).toEqual([]);
+  });
+
+  it("reads GitLab's headers", async () => {
+    const { store, gateway, deps } = setup(mailbox(0));
+    await syncAccount(deps, ACCOUNT_ID, CLASSIFY);
+    const pipeline = gateway.deliver({
+      from: { name: null, address: "gitlab@gitlab.example.com" },
+      subject: "Failed pipeline for main | demo | abc1234",
+      devHeaders: [
+        { key: "x-gitlab-project-path", value: "Group/Sub/Demo" },
+        { key: "x-gitlab-pipeline-status", value: "failed" },
+        { key: "x-gitlab-pipeline-id", value: "88" },
+      ],
+    });
+    await syncAccount(deps, ACCOUNT_ID, CLASSIFY);
+    expect(store.getMessage(idByUid(store, INBOX, pipeline.uid))!.dev).toEqual({
+      source: "gitlab",
+      repo: "gitlab.example.com/group/sub/demo",
+      kind: "ci",
+      state: "failed",
+      ref: "88",
+    });
+  });
+
+  it("leaves Spam rows unclassified, and classifies nothing with classification off", async () => {
+    const { store, gateway, deps } = setup(mailbox(0));
+    gateway.addFolder({ path: "Spam", name: "Spam", specialUse: "junk" }, { uidValidity: 4, uidNext: 1, messages: [] });
+    await syncAccount(deps, ACCOUNT_ID, CLASSIFY);
+    const spam = gateway.deliver(githubCi, "Spam");
+    const off = gateway.deliver(githubCi);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(store.getMessage(idByUid(store, INBOX, off.uid))!.dev).toBeNull();
+    expect(store.devUnclassified(10).map((r) => r.id)).toEqual([idByUid(store, INBOX, off.uid)]);
+    const later = gateway.deliver({ ...githubCi, messageId: "later@example.org" }, "Spam");
+    await syncAccount(deps, ACCOUNT_ID, CLASSIFY);
+    expect(store.getMessage(idByUid(store, "Spam", spam.uid))!.dev).toBeNull();
+    expect(store.getMessage(idByUid(store, "Spam", later.uid))!.dev).toBeNull();
+    // Spam rows are not offered to the backfill either.
+    expect(store.devUnclassified(10).map((r) => r.id)).toEqual([idByUid(store, INBOX, off.uid)]);
+  });
+});

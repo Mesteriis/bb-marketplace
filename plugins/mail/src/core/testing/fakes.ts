@@ -125,7 +125,7 @@ import type {
   RuleRunState,
 } from "../ports.ts";
 import type { BbLinkRowKind } from "../model.ts";
-import type { DevClass } from "../dev-notify.ts";
+import { normalizeListId, type DevClass } from "../dev-notify.ts";
 import { RULES_MAX, RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, capVerdict, type Rule } from "../mail-rules.ts";
 import { INCIDENT_KEEP_DAYS } from "../alerts.ts";
 import { UNKNOWN_PROJECT_DAYS } from "../projects.ts";
@@ -621,6 +621,10 @@ export class InMemoryMailStore implements MailStore {
         row.inlineParts = inlineParts;
         row.bulk = bulkMarkOf(message);
         if (message.unsubscribe !== undefined) row.unsubscribe = storedUnsubscribe(message.unsubscribe);
+        // Slice 3g: List-Id and dev class only where still unknown (as SQLite).
+        const listId = listIdOf(message);
+        if (listId !== undefined && (row.listId === undefined || row.listId === null)) row.listId = listId;
+        if (message.dev !== undefined && row.dev === undefined) row.dev = message.dev === null ? null : { ...message.dev };
         if (junk) this.markSpamSeen(row);
         continue;
       }
@@ -646,6 +650,8 @@ export class InMemoryMailStore implements MailStore {
         inlineParts,
         bulk: bulkMarkOf(message),
         unsubscribe: message.unsubscribe === undefined ? null : storedUnsubscribe(message.unsubscribe),
+        ...(listIdOf(message) === undefined ? {} : { listId: listIdOf(message) }),
+        ...(message.dev === undefined ? {} : { dev: message.dev === null ? null : { ...message.dev } }),
       });
       if (junk) this.markSpamSeen(this.state.rows[this.state.rows.length - 1]!);
     }
@@ -3301,6 +3307,11 @@ export class InMemoryMailStore implements MailStore {
       .map(([id, rows]) => this.summarize(id, rows, this.inFolder(folder)))
       .sort((a, b) => (timeOf(b.lastDate) ?? -Infinity) - (timeOf(a.lastDate) ?? -Infinity));
   }
+}
+
+/** Slice 3g: the List-Id kept from the fetched bulk headers ('' = none); undefined without headers (as SQLite). */
+function listIdOf(message: FetchedMessage): string | undefined {
+  return message.bulkHeaders === undefined ? undefined : (normalizeListId(message.bulkHeaders.listId) ?? "");
 }
 
 function senderKey(accountId: string, address: string): string {

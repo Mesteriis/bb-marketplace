@@ -32,9 +32,15 @@
 // ok round, inside the same queue task and after the send checks,
 // onRoundOk(accountId, outcome, only) runs (the server's block, notify and
 // snooze hooks); the bulk and unsubscribe backfills run on full rounds only.
+//
+// Slice 3g: with `classify` on (the devNotifications setting) sync judges
+// new rows' dev class, and after a full round the dev backfill classifies up
+// to DEV_BACKFILL_BUDGET older rows from their stored From and subject (no
+// server contact) while unclassified rows remain.
 import {
   backfillBulk,
   backfillUnsubscribe,
+  devBackfill,
   syncAccount,
   type BackfillCursors,
   type AccountWriteQueue,
@@ -229,6 +235,9 @@ export function createSyncLoop(
       );
     }
 
+    /** False once a dev backfill found no unclassified rows left (new rows are classified at sync); true again while classification is off. */
+    let devRowsLeft = true;
+
     /** True when the round had accounts to sync (only those count toward the wake window). */
     async function round(target: "all" | Map<string, "inbox" | "all">): Promise<boolean> {
       if (!isReady()) return false;
@@ -236,8 +245,8 @@ export function createSyncLoop(
       let syncOptions: SyncOptions;
       try {
         ids = guarded.store.listAccounts().map((account) => account.id);
-        const { windowDays, batchSize } = settings();
-        syncOptions = { windowDays, batchSize };
+        const { windowDays, batchSize, classify } = settings();
+        syncOptions = classify === true ? { windowDays, batchSize, classify } : { windowDays, batchSize };
       } catch {
         log("sync: cannot start a round");
         return false;
@@ -247,6 +256,13 @@ export function createSyncLoop(
         if (signal.aborted) break;
         const only = target !== "all" && target.get(id) === "inbox" ? { only: "inbox" as const } : {};
         await Promise.race([syncOne(id, { ...syncOptions, ...only }), aborted]);
+      }
+      // Rows synced while classification was off wait for the backfill again.
+      if (syncOptions.classify !== true) devRowsLeft = true;
+      if (target === "all" && syncOptions.classify === true && !signal.aborted && devRowsLeft) {
+        const dev = devBackfill(guarded.store);
+        devRowsLeft = dev.more;
+        if (dev.checked > 0) log(`backfill dev: checked ${dev.checked}, classified ${dev.classified}`);
       }
       return ids.length > 0;
     }

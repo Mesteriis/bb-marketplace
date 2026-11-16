@@ -4846,6 +4846,23 @@ describe.each(storeKinds)("slice-3g store semantics (%s)", (_kind, make) => {
       expect(s.listUnknown("acc_1", INBOX, null, 10)).toEqual([{ uid: 3 }]);
     });
 
+    it("upsert keeps the List-Id of read headers ('' when absent) and a judged dev class, never overwriting them", () => {
+      const headers = { listId: "Demo <demo.example-org.github.com>", listUnsubscribe: null, precedence: null, autoSubmitted: null };
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { bulkHeaders: headers, dev: { ...CI_FAILED } }),
+        makeFetchedMessage(2, { bulkHeaders: { ...headers, listId: null }, dev: null }),
+        makeFetchedMessage(3),
+      ]);
+      expect(s.listUnknown("acc_1", INBOX, null, 10)).toEqual([{ uid: 3 }]);
+      expect(s.getMessage(idIn(INBOX, 1))!.dev).toEqual(CI_FAILED);
+      expect(s.devUnclassified(10).map((r) => r.id)).toEqual([idIn(INBOX, 3)]);
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { bulkHeaders: { ...headers, listId: "<other.example.com>" }, dev: null })]);
+      expect(s.getMessage(idIn(INBOX, 1))!.dev).toEqual(CI_FAILED);
+      s.addBinding({ kind: "list", value: "demo.example-org.github.com", projectId: "p_demo", createdAt: T3G });
+      thread();
+      expect(s.listThreads("acc_1", INBOX, null, 10, { projectId: "p_demo" }).threads).toHaveLength(1);
+    });
+
     it("groups dev mail by (source, repo) with counts, the latest failure and unread, paged by group", () => {
       s.upsertMessages("acc_1", INBOX, [
         makeFetchedMessage(1, { date: day(10), subject: "Run failed: build" }),

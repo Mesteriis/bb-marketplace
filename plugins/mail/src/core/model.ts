@@ -4,7 +4,7 @@ import { composeDocInputSchema, type ComposeDoc } from "./compose-doc.ts";
 import type { SignatureDoc } from "./compose-signature.ts";
 import type { HeaderLine, UnsubscribeInfo } from "./unsubscribe.ts";
 import { LOG_ACTORS, LOG_OUTCOMES, LOG_TOOLS } from "./agent-log.ts";
-import { DEV_KINDS, DEV_SOURCES, DEV_STATES } from "./dev-notify.ts";
+import { DEV_KINDS, DEV_SOURCES, DEV_STATES, type DevClass } from "./dev-notify.ts";
 import { DEV_LINK_KINDS } from "./dev-links.ts";
 
 /** Which server preset an account was set up with. */
@@ -392,6 +392,16 @@ export type FetchedMessage = {
    * List-Unsubscribe). Absent: the store leaves the stored info alone.
    */
   unsubscribe?: UnsubscribeInfo | null;
+  /**
+   * Slice 3g: the DEV_HEADER_FIELDS lines (lower-case keys), in message
+   * order. Absent when the fetch did not read headers.
+   */
+  devHeaders?: HeaderLine[];
+  /**
+   * Slice 3g: the dev class sync judged (null = not a dev notification).
+   * Absent: not classified (classification off, or Spam and Trash).
+   */
+  dev?: DevClass | null;
 };
 
 /** A folder as the server lists it. */

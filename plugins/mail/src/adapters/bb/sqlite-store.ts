@@ -91,6 +91,7 @@ import { RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, RULES_MAX, capVerdict, type RuleM
 import { INCIDENT_KEEP_DAYS } from "../../core/alerts.ts";
 import { UNKNOWN_PROJECT_DAYS } from "../../core/projects.ts";
 import { groupDevRows, pageDevGroups } from "../../core/dev-groups.ts";
+import { normalizeListId } from "../../core/dev-notify.ts";
 import type {
   AiResultRecord,
   ReminderRecord,
@@ -881,6 +882,11 @@ type DevDbRow = {
 
 /** Delivered-To / X-Original-To addresses kept per message (slice 3d). */
 const DELIVERED_TO_MAX = 10;
+
+/** Slice 3g: the List-Id to keep from the fetched bulk headers ('' = none); undefined when no headers were read. */
+function listIdOf(message: FetchedMessage): string | undefined {
+  return message.bulkHeaders === undefined ? undefined : (normalizeListId(message.bulkHeaders.listId) ?? "");
+}
 /** Rows per transaction when stale snippets are repaired on load. */
 const SNIPPET_REPAIR_BATCH = 500;
 /** Trigram FTS needs at least three characters; shorter text uses LIKE. */
@@ -2066,6 +2072,15 @@ export function createSqliteStore(db: Database.Database): MailStore {
   const linksOfMessage = lazyStatement<[string], BbLinkDbRow>(
     "SELECT * FROM bb_links WHERE message_id = ? ORDER BY created_at, id",
   );
+  const fillListId = lazyPrepare("UPDATE messages SET list_id = ? WHERE id = ? AND list_id IS NULL");
+  const fillDev = lazyPrepare(
+    `UPDATE messages SET dev_source = @source, dev_repo = @repo, dev_kind = @kind, dev_state = @state, dev_ref = @ref
+     WHERE id = @id AND dev_source IS NULL`,
+  );
+  function lazyPrepare(sql: string): { get(): Database.Statement } {
+    let statement: Database.Statement | null = null;
+    return { get: () => (statement ??= db.prepare(sql)) };
+  }
   function lazyStatement<P extends unknown[], R>(sql: string): { get(...args: P): R | undefined; all(...args: P): R[] } {
     let statement: Database.Statement<P, R> | null = null;
     const ready = () => (statement ??= db.prepare<P, R>(sql));
@@ -2419,6 +2434,20 @@ export function createSqliteStore(db: Database.Database): MailStore {
             insertMessage.run({ ...params, id, threadId: `t_${id}`, dedupKey });
           }
           if (junk) markSpamSeen.run(id);
+          // Slice 3g: List-Id and dev class where still unknown (absent: the fetch did not judge them).
+          const listId = listIdOf(message);
+          if (listId !== undefined) fillListId.get().run(listId, id);
+          if (message.dev !== undefined) {
+            const dev = message.dev;
+            fillDev.get().run({
+              id,
+              source: dev?.source ?? "",
+              repo: dev?.repo ?? null,
+              kind: dev?.kind ?? null,
+              state: dev?.state ?? null,
+              ref: dev?.ref ?? null,
+            });
+          }
           deleteAttachmentsOf.run(id);
           for (const a of message.attachments) {
             insertAttachment.run(id, a.partId, a.filename, a.mimeType, a.size, a.isInline ? 1 : 0);

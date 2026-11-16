@@ -38,6 +38,7 @@ import { normalizeMessageId } from "./headers.ts";
 import { SNOOZES_MAX_PER_ACCOUNT } from "./snooze.ts";
 import { buildThreads } from "./threading.ts";
 import { unsubscribeInfoOf } from "./unsubscribe.ts";
+import { classifyDev, normalizeListId } from "./dev-notify.ts";
 
 export const INBOX = "INBOX";
 
@@ -68,6 +69,11 @@ export interface SyncOptions {
    * appended. Absent: a full round.
    */
   only?: "inbox";
+  /**
+   * Slice 3g: classify new rows as dev notifications (the devNotifications
+   * setting); Spam and Trash rows are never classified. Absent: off.
+   */
+  classify?: boolean;
 }
 
 export type SyncOutcome =
@@ -108,6 +114,8 @@ type FolderCounts = { fetched: number; removed: number; flagsChanged: number };
 /** What one folder's sync needs beyond the session: how to judge headers, and where new Inbox rows go. */
 type FolderContext = {
   preset: AccountPreset;
+  /** Slice 3g: classification is on and the folder is not Spam or Trash. */
+  classifyDev: boolean;
   /** Set for an Inbox-role folder: its incremental fetch collects inserted rows here. */
   collect: { newInbox: string[]; returning: string[] } | null;
   /** Every row inserted this round in any folder, reconcile backfill included (slice 3f). */
@@ -199,6 +207,7 @@ export async function syncAccount(
       try {
         const context: FolderContext = {
           preset: account.preset,
+          classifyDev: options.classify === true && folder.specialUse !== "junk" && folder.specialUse !== "trash",
           collect: folder.specialUse === "inbox" ? collected : null,
           inserted,
         };
@@ -590,7 +599,7 @@ async function syncFolder(
     for (let i = 0; i < batchUids.length; i += options.batchSize) {
       const batch = batchUids.slice(i, i + options.batchSize);
       const messages: FetchedMessage[] = (await session.fetchMessages(batch)).map((message) =>
-        withUnsubscribe(message, context.preset),
+        prepareMessage(message, context),
       );
       for (const uid of batch) lastUid = Math.max(lastUid, uid);
       for (const message of messages) lastUid = Math.max(lastUid, message.uid);
@@ -635,7 +644,7 @@ async function syncFolder(
   // Every successful round, not only the one that saw the change: a reset
   // round that failed midway has already saved the new UIDVALIDITY, so the
   // rows it detached are only cleaned up here.
-  if (kept.size > 0) fetched += await reattachKept(store, session, accountId, path, kept, context.preset, options.batchSize, context.inserted);
+  if (kept.size > 0) fetched += await reattachKept(store, session, accountId, path, kept, context, options.batchSize, context.inserted);
   const stillThere = queuedAtReset.filter((id) => store.getMessage(id) !== null);
   const resetRemoved = store.finishFolderReset(accountId, path);
   const droppedMoves = stillThere.filter((id) => store.getMessage(id) === null);
@@ -682,7 +691,7 @@ async function reattachKept(
   accountId: string,
   path: string,
   kept: ReadonlyMap<string, number | null>,
-  preset: AccountPreset,
+  context: Pick<FolderContext, "preset" | "classifyDev">,
   batchSize: number,
   inserted: string[],
 ): Promise<number> {
@@ -703,7 +712,7 @@ async function reattachKept(
       if (rows.length === 0) return;
       const messages = (await session.fetchMessages(fresh.slice(i, i + batchSize)))
         .filter((message) => ours(message, rows))
-        .map((message) => withUnsubscribe(message, preset));
+        .map((message) => prepareMessage(message, context));
       if (messages.length === 0) continue;
       inserted.push(...store.transaction(() => store.upsertMessages(accountId, path, messages)).inserted);
       stored += messages.length;
@@ -764,6 +773,29 @@ async function reconcile(
   const gone = local.filter((uid) => !onServer.has(uid));
   const removed = gone.length > 0 ? store.deleteByUids(accountId, path, gone) : 0;
   return { backfilled, removed, flagsChanged };
+}
+
+/**
+ * The message as the store takes it: unsubscribe info, and (slice 3g) the
+ * local dev class when classification is on for the folder. Nothing here
+ * writes to the server.
+ */
+function prepareMessage(message: FetchedMessage, context: Pick<FolderContext, "preset" | "classifyDev">): FetchedMessage {
+  let out = withUnsubscribe(message, context.preset);
+  if (context.classifyDev) {
+    // The store keeps the List-Id itself, from the same bulk headers.
+    const listId = message.bulkHeaders === undefined ? null : normalizeListId(message.bulkHeaders.listId);
+    const headers =
+      message.devHeaders === undefined ? null : new Map(message.devHeaders.map((line) => [line.key.toLowerCase(), line.value] as const));
+    const dev = classifyDev({
+      from: message.from.address,
+      subject: message.subject,
+      headers,
+      listId,
+    });
+    out = { ...out, dev };
+  }
+  return out;
 }
 
 /**

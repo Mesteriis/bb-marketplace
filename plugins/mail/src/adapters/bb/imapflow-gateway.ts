@@ -33,6 +33,7 @@ import {
   LIST_HEADER_FIELDS,
   PROVIDER_TRACE_HEADERS,
   UNSUBSCRIBE_HEADER_FIELDS,
+  DEV_HEADER_FIELDS,
   capInlineParts,
   type AttachmentMeta,
   type BulkHeaders,
@@ -790,7 +791,27 @@ export function toFetchedMessage(message: FetchMessageObject, parsed: Email): Fe
     bulkHeaders: toBulkHeaders(parsed),
     deliveredTo: toDeliveredTo(parsed),
     unsubscribeHeaders: toUnsubscribeHeaders(parsed),
+    devHeaders: toDevHeaders(parsed),
   };
+}
+
+const DEV_NAMES = new Set(DEV_HEADER_FIELDS.map((name) => name.toLowerCase()));
+/** Dev header lines kept per message. */
+const DEV_HEADERS_MAX = 16;
+
+/**
+ * The DEV_HEADER_FIELDS lines of the parsed source (slice 3g), lower-case
+ * keys, at most 16; absent when the source had no headers.
+ */
+function toDevHeaders(parsed: Email): HeaderLine[] | undefined {
+  if (parsed.headers.length === 0) return undefined;
+  const out: HeaderLine[] = [];
+  for (const header of parsed.headers) {
+    if (!DEV_NAMES.has(header.key.toLowerCase())) continue;
+    out.push({ key: header.key.toLowerCase(), value: header.value });
+    if (out.length >= DEV_HEADERS_MAX) break;
+  }
+  return out;
 }
 
 const UNSUBSCRIBE_NAMES = new Set(UNSUBSCRIBE_HEADER_FIELDS.map((name) => name.toLowerCase()));

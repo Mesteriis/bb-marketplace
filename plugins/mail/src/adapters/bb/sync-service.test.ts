@@ -578,3 +578,42 @@ describe("createSyncLoop Inbox-only rounds and onRoundOk (slice 3e)", () => {
     expect(lines).toContain("sync acc_1: round hook failed");
   });
 });
+
+describe("createSyncLoop: slice 3g dev classification", () => {
+  it("passes classify to sync and runs the dev backfill after a full round, logging counts only", async () => {
+    const { store, scripted, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    // An old row stored before 3g: never classified.
+    store.upsertMessages("acc_1", "Archive", [
+      { ...scripted.mailbox.messages[0]!, uid: 9, messageId: "old@example.org", from: { name: null, address: "notifications@github.com" }, subject: "[example-org/demo] Run failed: CI - main (abc)" },
+    ]);
+    const lines: string[] = [];
+    const loop = createSyncLoop(deps, () => ({ ...SETTINGS(), classify: true }), { log: (line) => lines.push(line) });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.waitFor(() => expect(lines.some((line) => line.startsWith("backfill dev:"))).toBe(true));
+    controller.abort();
+    await done;
+    expect(lines).toContain("backfill dev: checked 1, classified 1");
+    expect(lines.join("\n")).not.toContain("example-org");
+    // The synced Inbox row was classified at insert (not a dev notification).
+    const [entry] = store.localFolderIndex("acc_1", "INBOX", "1970-01-01T00:00:00.000Z");
+    expect(store.getMessage(entry!.id)!.dev).toBeNull();
+    expect(store.devUnclassified(10)).toEqual([]);
+  });
+
+  it("classifies nothing and runs no dev backfill with classification off", async () => {
+    const { store, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    const backfill = vi.spyOn(store, "devUnclassified");
+    const lines: string[] = [];
+    const loop = createSyncLoop(deps, SETTINGS, { log: (line) => lines.push(line) });
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.waitFor(() => expect(lines.some((line) => line.startsWith("sync acc_1: ok"))).toBe(true));
+    controller.abort();
+    await done;
+    expect(backfill).not.toHaveBeenCalled();
+    expect(store.devUnclassified(10)).toHaveLength(1);
+  });
+});
