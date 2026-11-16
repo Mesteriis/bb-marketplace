@@ -88,7 +88,7 @@ describe("backfillBulk", () => {
     gateway = new ScriptedImapGateway({ uidValidity: 1, uidNext: 1, messages: [] });
     cursors = new Map();
     store.saveAccount(makeStoredAccount());
-    store.saveFolders("acc_1", [{ path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true }]);
+    store.saveFolders("acc_1", [{ path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true }]);
     store.saveSyncState("acc_1", "INBOX", state);
   });
 
@@ -110,8 +110,8 @@ describe("backfillBulk", () => {
   it("never overwrites a mark sync set, and skips folders without NULL rows", async () => {
     gateway.addFolder({ path: "Archive" });
     store.saveFolders("acc_1", [
-      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
     ]);
     store.saveSyncState("acc_1", "Archive", state);
     // Synced with headers: the stored mark is personal although the server now says list.
@@ -213,7 +213,7 @@ describe("backfillBulk", () => {
   it("a folder never synced is left alone", async () => {
     const fresh = new InMemoryMailStore();
     fresh.saveAccount(makeStoredAccount());
-    fresh.saveFolders("acc_1", [{ path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true }]);
+    fresh.saveFolders("acc_1", [{ path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true }]);
     fresh.upsertMessages("acc_1", "INBOX", [makeFetchedMessage(1)]);
     const outcome = await backfillBulk({ store: fresh, gateway, vault: new IdentityVault() }, "acc_1", { cursors });
     expect(outcome.folders).toBe(0);
@@ -248,8 +248,8 @@ describe("backfillBulk", () => {
   it("a failing folder is counted and the next one still runs; a rejected login stops the account", async () => {
     gateway.addFolder({ path: "Archive" });
     store.saveFolders("acc_1", [
-      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
     ]);
     store.saveSyncState("acc_1", "Archive", state);
     oldMessage("INBOX");
@@ -320,8 +320,8 @@ describe("backfillUnsubscribe", () => {
     store.saveAccount(makeStoredAccount());
     gateway.addFolder({ path: "Archive" });
     store.saveFolders("acc_1", [
-      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
     ]);
     store.saveSyncState("acc_1", "INBOX", state);
     store.saveSyncState("acc_1", "Archive", state);

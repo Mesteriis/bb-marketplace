@@ -32,10 +32,12 @@ function header(overrides: Partial<MessageHeader> = {}): MessageHeader {
     isRead: false,
     isFlagged: false,
     hasAttachments: true,
+    kept: null,
+    labels: [],
     to: [{ name: null, address: "owner@example.org" }],
     cc: [{ name: "Copy", address: "copy@example.org" }],
     attachments: [
-      { partId: "1", filename: "plan.pdf", mimeType: "application/pdf", size: 1234, isInline: false },
+      { partId: "1", filename: "plan.pdf", mimeType: "application/pdf", size: 1234, isInline: false, kind: "pdf" },
     ],
     draftId: null,
     agentSubject: overrides.subject ?? "Invented subject",
@@ -194,6 +196,8 @@ describe("renderSearchHits", () => {
     isRead: true,
     isFlagged: false,
     hasAttachments: false,
+    kept: null,
+    labels: [],
   };
 
   it("lists hits after the untrusted notice", () => {
@@ -385,7 +389,7 @@ describe("slice 3f redaction in the renderers", () => {
         to: [{ name: `To ${CANARY.card}`, address: "owner@example.org" }],
         cc: [{ name: `Cc ${CANARY.code}`, address: "copy@example.org" }],
         attachments: [
-          { partId: "1", filename: `file ${CANARY.credential}.pdf`, mimeType: "application/pdf", size: 1, isInline: false },
+          { partId: "1", filename: `file ${CANARY.credential}.pdf`, mimeType: "application/pdf", size: 1, isInline: false, kind: "pdf" },
         ],
       }),
       body({ text: `Body ${ALL_CANARIES}` }),
@@ -432,6 +436,8 @@ describe("slice 3f redaction in the renderers", () => {
       isRead: true,
       isFlagged: false,
       hasAttachments: false,
+      kept: null,
+      labels: [],
     };
     const hits = renderSearchHitsCounted([hit]);
     expectNoSecret(hits.text);

@@ -46,8 +46,8 @@ function setup(options: { enabled?: boolean; ready?: boolean } = {}) {
   const addAccount = (id: string, overrides: Parameters<typeof makeStoredAccount>[0] = {}) => {
     store.saveAccount(makeStoredAccount({ id, email: `${id}@example.org`, username: `${id}@example.org`, ...overrides }));
     store.saveFolders(id, [
-      { path: "Boxes/Incoming", name: "Incoming", delimiter: "/", specialUse: "inbox", selectable: true },
-      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
+      { path: "Boxes/Incoming", name: "Incoming", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
     ]);
   };
   const controller = new AbortController();

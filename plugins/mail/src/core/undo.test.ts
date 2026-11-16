@@ -16,7 +16,7 @@ import {
 } from "./undo.ts";
 
 function folder(path: string, specialUse: SpecialUse | null, selectable = true, accountId = "a1"): Folder {
-  return { accountId, path, name: path.split("/").pop()!, specialUse, selectable, unreadCount: 0, totalCount: 0 };
+  return { accountId, path, name: path.split("/").pop()!, specialUse, selectable, unreadCount: 0, totalCount: 0, subscribed: true };
 }
 
 const GMAIL = [

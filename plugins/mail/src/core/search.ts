@@ -62,7 +62,7 @@ export function parseQuery(raw: string, now?: Date): ParsedQuery {
       result.conditions.push(read.condition);
       continue;
     }
-    if (read.note !== null) result.notes.push({ kind: read.note, token: clean(token.raw) });
+    if (read.note !== null) result.notes.push({ kind: read.note, term: clean(token.raw) });
     text.push(token.raw);
   }
   result.text = text.join(" ");

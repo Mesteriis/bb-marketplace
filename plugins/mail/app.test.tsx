@@ -201,6 +201,8 @@ function message(overrides: Partial<MessageHeader> & { id: string }): MessageHea
     isRead: true,
     isFlagged: false,
     hasAttachments: false,
+    kept: null,
+    labels: [],
     to: [{ name: null, address: "owner@example.org" }],
     cc: [],
     attachments: [],
@@ -565,6 +567,7 @@ function folder(overrides: Partial<Folder> & { path: string; name: string }): Fo
     selectable: true,
     unreadCount: 0,
     totalCount: 3,
+    subscribed: true,
     ...overrides,
   };
 }
@@ -1736,7 +1739,7 @@ describe("Details and downloads", () => {
           {
             ...detailA.messages[1]!,
             attachments: [
-              { partId: "2", filename: "plan.pdf", mimeType: "application/pdf", size: 2048, isInline: false },
+              { partId: "2", filename: "plan.pdf", mimeType: "application/pdf", size: 2048, isInline: false, kind: "pdf" },
             ],
           },
         ],

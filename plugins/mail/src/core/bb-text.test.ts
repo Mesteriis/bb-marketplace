@@ -57,6 +57,8 @@ function header(overrides: Partial<MessageHeader> = {}): MessageHeader {
     isRead: false,
     isFlagged: false,
     hasAttachments: false,
+    kept: null,
+    labels: [],
     to: [{ name: null, address: "owner@example.org" }],
     cc: [],
     attachments: [],
@@ -85,7 +87,7 @@ const secretMessage = () => ({
     subject: `Subject ${ALL}`,
     from: { name: `Name ${SECRET.token}`, address: "sender@example.org" },
     attachments: [
-      { partId: "2", filename: `file ${SECRET.credential}.pdf`, mimeType: "application/pdf", size: 10, isInline: false },
+      { partId: "2", filename: `file ${SECRET.credential}.pdf`, mimeType: "application/pdf", size: 10, isInline: false, kind: "pdf" },
     ],
   }),
   body: body(`Body ${ALL}`),

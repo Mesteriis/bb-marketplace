@@ -94,6 +94,9 @@ export class SafeImapError extends Error {
   }
 }
 
+/** What a slice 3h command answers until Task 5 implements it. */
+const NOT_YET = "Not available yet";
+
 /** What a session needs from an imapflow client; tests pass a stub. */
 export type SessionClient = Pick<
   ImapFlow,
@@ -195,6 +198,23 @@ export function createImapflowGateway(options: ImapflowGatewayOptions = {}): Ima
       } finally {
         await logoutQuietly(client);
       }
+    },
+
+    // Slice 3h folder writes: Task 3 stubs; Task 5 implements them.
+    async renameFolder() {
+      throw new SafeImapError("RenameFailed", NOT_YET);
+    },
+    async folderStatus() {
+      throw new SafeImapError("StatusFailed", NOT_YET);
+    },
+    async deleteFolder() {
+      throw new SafeImapError("DeleteFailed", NOT_YET);
+    },
+    async setSubscribed() {
+      throw new SafeImapError("SubscribeFailed", NOT_YET);
+    },
+    namedLikeSpecialUse() {
+      return false;
     },
   };
 }
@@ -611,6 +631,14 @@ export function createSession(
       }
     }),
 
+    // Slice 3h: Task 3 stubs; Task 5 implements them.
+    searchServer: async () => {
+      throw new SafeImapError("SearchFailed", NOT_YET);
+    },
+    fetchLabels: async () => [],
+    setLabels: async () => {
+      throw new SafeImapError("LabelsRefused", NOT_YET);
+    },
     close: () => logoutQuietly(client),
   };
 }
@@ -920,6 +948,8 @@ export function toRemoteFolders(entries: ListResponse[]): RemoteFolder[] {
       delimiter: entry.delimiter ?? "",
       specialUse,
       selectable: ![...flags].some((flag) => NOT_SELECTABLE_FLAGS.has(flag)),
+      // Servers without LSUB / LIST-EXTENDED leave it unset: every folder counts as subscribed.
+      subscribed: entry.subscribed ?? true,
     });
   }
   return folders;

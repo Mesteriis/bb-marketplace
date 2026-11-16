@@ -2552,6 +2552,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   });
   const day = createDayRpc(deps, ai.withCategories, { dev: () => bbRpc.todayDev(), rulesReady: () => bbRpc.rulesReady() });
   /** A slice 3g owner method: plugin callers refused first; BB failures as fixed texts. */
+  /** A slice 3h method not built yet: plugin callers refused first, then a fixed refusal. */
+  const notYet3h = (_input: unknown, context: ExperimentalPluginRpcHandlerContext): never => {
+    refusePluginCaller(context);
+    throw refuse("conflict", "Not available yet");
+  };
   function ownerBb<I, O>(method: string, run: (input: I) => O | Promise<O>) {
     return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
       refusePluginCaller(context);
@@ -2679,9 +2684,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         deps.loop.wake(opened.accountId);
         return { ok: true };
       },
-      search: ({ query, accountId, limit }) => ({
-        hits: store.search(parseQuery(query), accountId, limit),
-      }),
+      // Slice 3h Task 3: the new output fields; Task 9 adds paging, attachment text and the plugin-caller refusal.
+      search: ({ query, accountId, limit }) => {
+        const parsed = parseQuery(query);
+        return { hits: store.search(parsed, accountId, limit), nextCursor: null, notes: parsed.notes, attachmentMatches: [] };
+      },
       folders_list: ({ accountId }) =>
         accountId === null
           ? {
@@ -3159,6 +3166,35 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       rules_pause: ownerBb("rules_pause", (input) => bbRpc.rulesPause(input)),
       rule_runs_list: ownerBb("rule_runs_list", (input) => bbRpc.ruleRunsList(input)),
       rule_run_dismiss: ownerBb("rule_run_dismiss", (input) => bbRpc.ruleRunDismiss(input)),
+      // Slice 3h: owner-only; Tasks 7-9 implement them.
+      server_search_start: notYet3h,
+      server_search_more: notYet3h,
+      history_load: notYet3h,
+      conversation_load: notYet3h,
+      server_job_poll: notYet3h,
+      server_job_cancel: notYet3h,
+      history_forget_check: notYet3h,
+      history_forget: notYet3h,
+      saved_searches_list: notYet3h,
+      saved_search_save: notYet3h,
+      saved_search_delete: notYet3h,
+      saved_search_move: notYet3h,
+      folder_create: notYet3h,
+      folder_rename: notYet3h,
+      folder_delete_check: notYet3h,
+      folder_delete: notYet3h,
+      folder_subscribe: notYet3h,
+      folder_prefs_set: notYet3h,
+      messages_list: notYet3h,
+      labels_list: notYet3h,
+      labels_change: notYet3h,
+      attachment_view_ticket: notYet3h,
+      files_list: notYet3h,
+      attachment_text_status: notYet3h,
+      attachment_text_retry: notYet3h,
+      attachment_text_clear: notYet3h,
+      related_messages: notYet3h,
+      sender_card: notYet3h,
     },
     { experimental_discoverable: false },
   );

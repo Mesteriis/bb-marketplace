@@ -861,14 +861,14 @@ const ICLOUD_LIST: ListResponse[] = [
 describe("toRemoteFolders", () => {
   it("maps a Gmail listing and skips the virtual Starred and Important folders", () => {
     expect(toRemoteFolders(GMAIL_LIST)).toEqual([
-      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-      { path: "[Gmail]", name: "[Gmail]", delimiter: "/", specialUse: null, selectable: false },
-      { path: "[Gmail]/All Mail", name: "All Mail", delimiter: "/", specialUse: "all", selectable: true },
-      { path: "[Gmail]/Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true },
-      { path: "[Gmail]/Sent Mail", name: "Sent Mail", delimiter: "/", specialUse: "sent", selectable: true },
-      { path: "[Gmail]/Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true },
-      { path: "[Gmail]/Trash", name: "Trash", delimiter: "/", specialUse: "trash", selectable: true },
-      { path: "Work", name: "Work", delimiter: "/", specialUse: null, selectable: true },
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "[Gmail]", name: "[Gmail]", delimiter: "/", specialUse: null, selectable: false, subscribed: true },
+      { path: "[Gmail]/All Mail", name: "All Mail", delimiter: "/", specialUse: "all", selectable: true, subscribed: true },
+      { path: "[Gmail]/Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true, subscribed: true },
+      { path: "[Gmail]/Sent Mail", name: "Sent Mail", delimiter: "/", specialUse: "sent", selectable: true, subscribed: true },
+      { path: "[Gmail]/Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true, subscribed: true },
+      { path: "[Gmail]/Trash", name: "Trash", delimiter: "/", specialUse: "trash", selectable: true, subscribed: true },
+      { path: "Work", name: "Work", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
     ]);
   });
 
@@ -905,8 +905,8 @@ describe("toRemoteFolders", () => {
       listEntry("Gone", [], undefined, undefined, { listed: false }),
     ]);
     expect(folders).toEqual([
-      { path: "Flagged", name: "Flagged", delimiter: "/", specialUse: null, selectable: true },
-      { path: "Odd", name: "Odd", delimiter: "/", specialUse: null, selectable: true },
+      { path: "Flagged", name: "Flagged", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
+      { path: "Odd", name: "Odd", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
     ]);
   });
 });

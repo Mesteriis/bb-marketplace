@@ -12,9 +12,9 @@ function setup(options: { ready?: boolean } = {}) {
   const store = new InMemoryMailStore();
   store.saveAccount(makeStoredAccount({ id: "acc_1", snoozeFolder: "Snoozed" }));
   store.saveFolders("acc_1", [
-    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-    { path: "Snoozed", name: "Snoozed", delimiter: "/", specialUse: null, selectable: true },
-    { path: "Lists", name: "Lists", delimiter: "/", specialUse: null, selectable: true },
+    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+    { path: "Snoozed", name: "Snoozed", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
+    { path: "Lists", name: "Lists", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
   ]);
   const wakes: string[] = [];
   const notified: { accountId: string; ids: string[] }[] = [];

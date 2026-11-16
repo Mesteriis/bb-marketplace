@@ -41,6 +41,21 @@ class OneBadUserGateway implements ImapGateway {
   createFolder(config: ImapConfig, name: string) {
     return this.inner.createFolder(config, name);
   }
+  renameFolder(...args: Parameters<ImapGateway["renameFolder"]>) {
+    return this.inner.renameFolder(...args);
+  }
+  folderStatus(...args: Parameters<ImapGateway["folderStatus"]>) {
+    return this.inner.folderStatus(...args);
+  }
+  deleteFolder(...args: Parameters<ImapGateway["deleteFolder"]>) {
+    return this.inner.deleteFolder(...args);
+  }
+  setSubscribed(...args: Parameters<ImapGateway["setSubscribed"]>) {
+    return this.inner.setSubscribed(...args);
+  }
+  namedLikeSpecialUse(name: string) {
+    return this.inner.namedLikeSpecialUse(name);
+  }
 }
 
 function setup() {
@@ -206,7 +221,7 @@ describe("createSyncLoop", () => {
     const stuck: ImapGateway = {
       test: async () => ({ ok: true }),
       listFolders: async () => [
-        { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+        { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
       ],
       openFolder: () => {
         opened = true;
@@ -216,6 +231,19 @@ describe("createSyncLoop", () => {
       createFolder: async () => {
         throw new Error("unused");
       },
+      renameFolder: async () => {
+        throw new Error("unused");
+      },
+      folderStatus: async () => {
+        throw new Error("unused");
+      },
+      deleteFolder: async () => {
+        throw new Error("unused");
+      },
+      setSubscribed: async () => {
+        throw new Error("unused");
+      },
+      namedLikeSpecialUse: () => false,
     };
     const loop = createSyncLoop({ ...deps, gateway: stuck }, SETTINGS);
     const controller = new AbortController();
@@ -245,6 +273,11 @@ describe("createSyncLoop", () => {
       },
       watchFolder: (...args) => scripted.watchFolder(...args),
       createFolder: (config, name) => scripted.createFolder(config, name),
+      renameFolder: (...args) => scripted.renameFolder(...args),
+      folderStatus: (...args) => scripted.folderStatus(...args),
+      deleteFolder: (...args) => scripted.deleteFolder(...args),
+      setSubscribed: (...args) => scripted.setSubscribed(...args),
+      namedLikeSpecialUse: (name) => scripted.namedLikeSpecialUse(name),
     };
     const loop = createSyncLoop({ ...deps, gateway: gated }, SETTINGS);
     const controller = new AbortController();

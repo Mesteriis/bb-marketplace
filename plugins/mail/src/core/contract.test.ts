@@ -12,6 +12,7 @@ import {
   headerAddressInput,
   newMailPayloadSchema,
   rpcSchemas,
+  SLICE_3H_METHODS,
 } from "./contract.ts";
 import {
   accountSchema,
@@ -201,6 +202,7 @@ describe("rpcSchemas", () => {
         ...SLICE_3D_METHODS,
         ...SLICE_3E_METHODS,
         ...SLICE_3F_METHODS,
+        ...SLICE_3H_METHODS,
         "status_get",
         "accounts_test",
         "accounts_add",
@@ -454,6 +456,7 @@ describe("slice-2 model", () => {
       selectable: true,
       unreadCount: 0,
       totalCount: 3,
+      subscribed: true,
     };
     expect(folderSchema.safeParse(folder).success).toBe(true);
     expect(folderSchema.safeParse({ ...folder, specialUse: null }).success).toBe(true);
@@ -512,7 +515,7 @@ describe("slice-3b contract", () => {
 
   it("adds exactly 19 methods to the 17 before it", () => {
     expect(COMPOSE_METHODS).toHaveLength(19);
-    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS];
+    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(36);
   });
 
@@ -821,7 +824,7 @@ describe("slice-3c contract", () => {
 
   it("adds exactly 8 methods to the 36 before it", () => {
     expect(SLICE_3C_METHODS).toHaveLength(8);
-    const later: readonly string[] = [...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS];
+    const later: readonly string[] = [...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(44);
     expect(COMPOSE_METHODS).toHaveLength(19);
   });
@@ -1059,7 +1062,7 @@ describe("slice-3d contract", () => {
 
   it("adds exactly 11 methods to the 44 before it", () => {
     expect(SLICE_3D_METHODS).toHaveLength(11);
-    const later: readonly string[] = [...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS];
+    const later: readonly string[] = [...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(55);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
@@ -1238,7 +1241,7 @@ describe("slice-3e contract", () => {
 
   it("adds exactly 14 methods to the 55 before it", () => {
     expect(SLICE_3E_METHODS).toHaveLength(14);
-    const later: readonly string[] = [...SLICE_3F_METHODS, ...SLICE_3G_METHODS];
+    const later: readonly string[] = [...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(69);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
@@ -1384,7 +1387,8 @@ describe("slice-3f contract", () => {
 
   it("adds exactly 24 methods to the 69 before it", () => {
     expect(SLICE_3F_METHODS).toHaveLength(24);
-    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3G_METHODS as readonly string[]).includes(m))).toHaveLength(93);
+    const later: readonly string[] = [...SLICE_3G_METHODS, ...SLICE_3H_METHODS];
+    expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(93);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
     expect(SLICE_3D_METHODS).toHaveLength(11);
@@ -1554,7 +1558,7 @@ describe("slice-3g contract", () => {
   it("adds exactly 33 methods to the 93 before it, leaving the earlier lists alone", () => {
     // 31 at the build, then incident_prepare and patch_handoff_prepare (review C5).
     expect(SLICE_3G_METHODS).toHaveLength(33);
-    expect(Object.keys(rpcSchemas)).toHaveLength(126);
+    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3H_METHODS as readonly string[]).includes(m))).toHaveLength(126);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
     expect(SLICE_3D_METHODS).toHaveLength(11);
@@ -1684,5 +1688,97 @@ describe("slice-3g contract", () => {
     for (const schema of [messageHeaderSchema, threadDetailSchema, messageBodySchema, rpcSchemas.today_get.output]) {
       expect(keysOf(schema).filter((key) => SECRET_KEY.test(key))).toEqual([]);
     }
+  });
+});
+
+describe("slice 3h contract", () => {
+  const parses = (method: keyof typeof rpcSchemas, input: unknown) => rpcSchemas[method].input.safeParse(input).success;
+  const earlier = [...COMPOSE_METHODS, ...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS];
+
+  it("adds exactly 28 methods to the 126 before it, leaving the earlier lists alone", () => {
+    expect(SLICE_3H_METHODS).toHaveLength(28);
+    expect(new Set(SLICE_3H_METHODS).size).toBe(28);
+    expect(Object.keys(rpcSchemas)).toHaveLength(154);
+    for (const method of SLICE_3H_METHODS) expect(earlier as readonly string[], method).not.toContain(method);
+    expect(SLICE_3G_METHODS).toHaveLength(33);
+  });
+
+  it("puts no credential-like key in any new output, nor in the changed search and model views", () => {
+    for (const method of SLICE_3H_METHODS) {
+      const keys = keysOf(rpcSchemas[method].output);
+      expect(keys.length, method).toBeGreaterThan(0);
+      expect(keys.filter((key) => SECRET_KEY.test(key)), method).toEqual([]);
+    }
+    for (const schema of [rpcSchemas.search.output, messageSummarySchema, messageHeaderSchema, folderSchema]) {
+      expect(keysOf(schema).filter((key) => SECRET_KEY.test(key))).toEqual([]);
+    }
+    expect(keysOf(rpcSchemas.search.output)).toEqual(
+      expect.arrayContaining(["hits", "nextCursor", "notes", "attachmentMatches", "excerpt", "kept", "labels"]),
+    );
+    expect(keysOf(rpcSchemas.server_job_poll.output)).toEqual(expect.arrayContaining(["skipped", "reason"]));
+    expect(keysOf(rpcSchemas.folder_delete_check.output)).toContain("gmailLabel");
+    expect(keysOf(rpcSchemas.attachment_text_status.output)).toContain("full");
+  });
+
+  it("keeps search input without attachments or cursor parsing as before", () => {
+    expect(parses("search", { query: "invoice", accountId: null, limit: 50 })).toBe(true);
+    expect(parses("search", { query: "invoice", accountId: null, limit: 50, attachments: true, cursor: "c1" })).toBe(true);
+    expect(parses("search", { query: "invoice", accountId: null, limit: 50, cursor: null })).toBe(true);
+    expect(parses("search", { query: "invoice", accountId: null, limit: 50, attachments: "yes" })).toBe(false);
+  });
+
+  it("bounds queries at 500, saved-search names at 60 and folder names at 100", () => {
+    const q = (query: string) => ({ query, accountId: null });
+    expect(parses("server_search_start", q("x".repeat(500)))).toBe(true);
+    expect(parses("server_search_start", q("x".repeat(501)))).toBe(false);
+    expect(parses("server_search_start", q(""))).toBe(false);
+    const saved = (name: string, query = "from:a@example.org") => ({ name, query, accountId: null });
+    expect(parses("saved_search_save", saved("n".repeat(60)))).toBe(true);
+    expect(parses("saved_search_save", saved("n".repeat(61)))).toBe(false);
+    expect(parses("saved_search_save", saved("n", "q".repeat(501)))).toBe(false);
+    expect(parses("saved_search_move", { id: "s1", position: 49 })).toBe(true);
+    expect(parses("saved_search_move", { id: "s1", position: 50 })).toBe(false);
+    const create = (name: string) => ({ accountId: "a1", parent: null, name });
+    expect(parses("folder_create", create("f".repeat(100)))).toBe(true);
+    expect(parses("folder_create", create("f".repeat(101)))).toBe(false);
+    expect(parses("folder_create", create(""))).toBe(false);
+    expect(parses("folder_rename", { accountId: "a1", path: "Work", name: "f".repeat(101) })).toBe(false);
+  });
+
+  it("bounds label changes: up to 200 messages and 20 labels each way, at least one label", () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `m${i}`);
+    const labels = (n: number) => Array.from({ length: n }, (_, i) => `L${i}`);
+    expect(parses("labels_change", { messageIds: ids(200), add: labels(20), remove: [] })).toBe(true);
+    expect(parses("labels_change", { messageIds: ids(201), add: labels(1), remove: [] })).toBe(false);
+    expect(parses("labels_change", { messageIds: ids(1), add: labels(21), remove: [] })).toBe(false);
+    expect(parses("labels_change", { messageIds: ids(1), add: [], remove: labels(21) })).toBe(false);
+    expect(parses("labels_change", { messageIds: ids(1), add: [], remove: [] })).toBe(false);
+    expect(parses("labels_change", { messageIds: ids(1), add: ["l".repeat(101)], remove: [] })).toBe(false);
+    expect(parses("labels_change", { messageIds: [], add: ["A"], remove: [] })).toBe(false);
+  });
+
+  it("bounds list limits and files filters", () => {
+    const files = (extra: object) => ({ cursor: null, limit: 100, ...extra });
+    expect(parses("files_list", files({}))).toBe(true);
+    expect(parses("files_list", files({ limit: 101 }))).toBe(false);
+    expect(parses("files_list", files({ kind: "pdf", includeJunk: true }))).toBe(true);
+    expect(parses("files_list", files({ kind: "exe" }))).toBe(false);
+    const scope = { kind: "account", accountId: "a1", folder: "INBOX" };
+    expect(parses("messages_list", { scope, cursor: null, limit: 100 })).toBe(true);
+    expect(parses("messages_list", { scope, cursor: null, limit: 101 })).toBe(false);
+    expect(parses("folder_delete", { accountId: "a1", path: "Work", moveToTrash: false, expectedMessages: -1 })).toBe(false);
+    expect(parses("folder_prefs_set", { accountId: "*", path: "inbox", grouping: false })).toBe(true);
+  });
+
+  it("refuses empty and overlong ids in every new method that takes one", () => {
+    const long = "x".repeat(257);
+    expect(parses("server_job_poll", { jobId: "" })).toBe(false);
+    expect(parses("server_job_poll", { jobId: long })).toBe(false);
+    expect(parses("history_load", { accountId: "a1", folder: long })).toBe(false);
+    expect(parses("conversation_load", { threadId: "" })).toBe(false);
+    expect(parses("attachment_view_ticket", { messageId: "m1", partId: "" })).toBe(false);
+    expect(parses("related_messages", { messageId: long })).toBe(false);
+    expect(parses("sender_card", { address: "a@", accountId: null })).toBe(false);
+    expect(parses("sender_card", { address: "a@example.org", accountId: null })).toBe(true);
   });
 });

@@ -21,8 +21,8 @@ beforeEach(() => {
   store = new InMemoryMailStore();
   store.saveAccount(makeStoredAccount());
   store.saveFolders("acc_1", [
-    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-    { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true },
+    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+    { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true, subscribed: true },
   ]);
   // A person writing to the owner, waiting for a reply.
   store.upsertMessages("acc_1", "INBOX", [

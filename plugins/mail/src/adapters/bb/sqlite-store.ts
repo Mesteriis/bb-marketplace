@@ -59,6 +59,7 @@ import type { ComposeDoc } from "../../core/compose-doc.ts";
 import type { SignatureDoc } from "../../core/compose-signature.ts";
 import { ComposeError } from "../../core/compose.ts";
 import { normalizeMessageId } from "../../core/headers.ts";
+import { fileKindOf } from "../../core/file-kinds.ts";
 import {
   IDENTITIES_MAX_PER_ACCOUNT,
   ownerAddressSets,
@@ -86,6 +87,10 @@ import { cleanSnippet, needsSnippetRepair, snippetOf } from "../../core/snippet.
 import { AI_RESULT_MAX_BYTES, BINDINGS_MAX, TASKS_OPEN_MAX } from "../../core/ports.ts";
 import type { BbLinkRow, BindingKind, RuleRecord, RuleRunRecord, RuleRunState } from "../../core/ports.ts";
 import { INCIDENT_PENDING_PREFIX, INCIDENT_RESERVE_MS } from "../../core/ports.ts";
+import type { AttachmentTextRow, FilesFilter, SavedSearchRow, SearchOptions, SenderStats } from "../../core/ports.ts";
+import type { AttachmentMatch, FileRow, SearchCursor } from "../../core/model.ts";
+import type { AttachmentCandidate } from "../../core/attachment-text.ts";
+import type { RelatedCandidate } from "../../core/related.ts";
 import type { BbLinkRowKind } from "../../core/model.ts";
 import type { DevClass, DevKind, DevSource, DevState } from "../../core/dev-notify.ts";
 import { RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, RULE_THREADS_KEEP_DAYS, RULES_MAX, capVerdict, type RuleMatch, type RuleMode, type RuleRunCounts } from "../../core/mail-rules.ts";
@@ -1593,6 +1598,8 @@ function toSummary(row: MessageRow): MessageSummary {
     isRead: row.is_read === 1,
     isFlagged: row.is_flagged === 1,
     hasAttachments: row.has_attachments === 1,
+    kept: null,
+    labels: [],
   };
 }
 
@@ -1797,6 +1804,9 @@ function toAttachment(row: AttachmentRow): AttachmentMeta {
     isInline: row.is_inline === 1,
   };
 }
+
+/** What a slice 3h write answers until Task 4 implements it. */
+const NOT_YET = "Not available yet";
 
 export function createSqliteStore(db: Database.Database): MailStore {
   /** Runs fn atomically; nests as a savepoint inside a caller's transaction. */
@@ -2140,7 +2150,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
       ...toSummary(row),
       to: JSON.parse(row.to_json) as MailAddress[],
       cc: JSON.parse(row.cc_json) as MailAddress[],
-      attachments: attachmentsOf.all(row.id).map(toAttachment),
+      attachments: attachmentsOf.all(row.id).map((a) => {
+        const meta = toAttachment(a);
+        return { ...meta, kind: fileKindOf(meta.mimeType, meta.filename) };
+      }),
       draftId: row.uid === null ? null : (draftByServerCopy.get(row.account_id, row.folder, row.uid)?.id ?? null),
       agentSubject: redactSecrets(row.subject).text,
       inAiScope: (freshScope(), anyCopyInScope.get(row.id) !== undefined),
@@ -3144,6 +3157,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
           selectable: r.selectable === 1,
           unreadCount: r.unread ?? 0,
           totalCount: r.total ?? 0,
+          // Stored by migration element 13 (Task 4).
+          subscribed: true,
         }))
         .sort(compareFolders);
     },
@@ -5272,6 +5287,132 @@ export function createSqliteStore(db: Database.Database): MailStore {
         removed += db.prepare("DELETE FROM incident_threads WHERE created_at < ?").run(before(INCIDENT_KEEP_DAYS)).changes;
         return removed;
       });
+    },
+
+    // ---- Slice 3h (Task 3 stubs; Task 4 implements them) ----
+
+    searchPage(query: ParsedQuery, accountId: string | null, limit: number, opts?: SearchOptions): { hits: MessageSummary[]; nextCursor: SearchCursor | null; attachmentMatches: AttachmentMatch[] } {
+      return { hits: store.search(query, accountId, limit, opts), nextCursor: null, attachmentMatches: [] };
+    },
+
+    listMessages(_accountId: string, _folder: string, _cursor: string | null, _limit: number, _filter?: ThreadFilter): { messages: MessageSummary[]; nextCursor: string | null } {
+      return { messages: [], nextCursor: null };
+    },
+
+    listMessagesAll(_role: SpecialUse, _cursor: string | null, _limit: number, _filter?: ThreadFilter): { messages: MessageSummary[]; nextCursor: string | null } {
+      return { messages: [], nextCursor: null };
+    },
+
+    historyState(_accountId: string, _folder: string): { historySince: string | null; historyCheckedAt: string | null } | null {
+      return null;
+    },
+
+    historyForgetCount(_accountId: string, _folder: string): number {
+      return 0;
+    },
+
+    movePendingCount(_accountId: string, _path: string): number {
+      return 0;
+    },
+
+    folderGrouping(_accountId: string, _path: string): boolean {
+      return true;
+    },
+
+    listSavedSearches(): SavedSearchRow[] {
+      return [];
+    },
+
+    filesList(_filter: FilesFilter, _cursor: string | null, _limit: number): { files: FileRow[]; nextCursor: string | null } {
+      return { files: [], nextCursor: null };
+    },
+
+    senderStats(_address: string, _accountId: string | null): SenderStats {
+      return { name: null, fromCount: 0, toCount: 0, toCapped: false, firstDate: null, lastDate: null, conversations: [], files: [] };
+    },
+
+    relatedCandidates(_messageId: string, _terms: readonly string[]): RelatedCandidate[] {
+      return [];
+    },
+
+    summaries(_messageIds: readonly string[]): MessageSummary[] {
+      return [];
+    },
+
+    gmLabels(_messageIds: readonly string[]): Map<string, string[]> {
+      return new Map();
+    },
+
+    accountLabels(_accountId: string): string[] {
+      return [];
+    },
+
+    attachmentTextCandidates(_limit: number): AttachmentCandidate[] {
+      return [];
+    },
+
+    attachmentTextStatus(): { indexed: number; skipped: number; failed: number; pending: number; totalChars: number } {
+      return { indexed: 0, skipped: 0, failed: 0, pending: 0, totalChars: 0 };
+    },
+
+    promoteKept(_messageIds: readonly string[]): string[] {
+      throw new Error(NOT_YET);
+    },
+
+    expireSearchRows(_nowIso: string, _days: number): { removed: number; accounts: string[] } {
+      throw new Error(NOT_YET);
+    },
+
+    setHistorySince(_accountId: string, _folder: string, _since: string | null): void {
+      throw new Error(NOT_YET);
+    },
+
+    historyChecked(_accountId: string, _folder: string, _atIso: string): void {
+      throw new Error(NOT_YET);
+    },
+
+    historyForget(_accountId: string, _folder: string): number {
+      throw new Error(NOT_YET);
+    },
+
+    rehomeFolder(_accountId: string, _from: string, _to: string, _delimiter: string): void {
+      throw new Error(NOT_YET);
+    },
+
+    dropFolder(_accountId: string, _path: string): void {
+      throw new Error(NOT_YET);
+    },
+
+    setFolderGrouping(_accountId: string, _path: string, _grouping: boolean): void {
+      throw new Error(NOT_YET);
+    },
+
+    saveSavedSearch(_row: { id: string; name: string; query: string; accountId: string | null; nowIso: string }): "ok" | "full" | "not_found" {
+      throw new Error(NOT_YET);
+    },
+
+    deleteSavedSearch(_id: string): boolean {
+      throw new Error(NOT_YET);
+    },
+
+    moveSavedSearch(_id: string, _position: number): boolean {
+      throw new Error(NOT_YET);
+    },
+
+    setGmLabels(_accountId: string, _folder: string, _entries: readonly { uid: number; labels: string[] }[]): void {
+      throw new Error(NOT_YET);
+    },
+
+    insertAttachmentText(_row: AttachmentTextRow): void {
+      throw new Error(NOT_YET);
+    },
+
+    retryAttachmentText(): number {
+      throw new Error(NOT_YET);
+    },
+
+    clearAttachmentText(): number {
+      throw new Error(NOT_YET);
     },
 
     // ---- Slice 3g --------------------------------------------------------

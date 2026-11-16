@@ -232,6 +232,7 @@ function seedMail(
       delimiter: "/",
       specialUse: f.specialUse ?? null,
       selectable: f.selectable ?? true,
+      subscribed: true,
     })),
   );
   for (const { folder, message } of seed.messages) store.upsertMessages(accountId, folder, [message]);
@@ -2080,9 +2081,9 @@ function seedCompose(bb: BbPluginApi, overrides: Parameters<typeof makeStoredAcc
     }),
   );
   store.saveFolders("acc_1", [
-    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-    { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true },
-    { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true },
+    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+    { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true, subscribed: true },
+    { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true, subscribed: true },
   ]);
 }
 
@@ -4108,10 +4109,10 @@ function loadUnsubscribe(options: { info?: UnsubscribeInfo; poster?: FakePoster;
       seedCompose(bb);
       const store = createSqliteStore(bb.storage.database());
       store.saveFolders("acc_1", [
-        { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-        { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true },
-        { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true },
-        { path: "Junk", name: "Junk", delimiter: "/", specialUse: "junk", selectable: true },
+        { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+        { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true, subscribed: true },
+        { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true, subscribed: true },
+        { path: "Junk", name: "Junk", delimiter: "/", specialUse: "junk", selectable: true, subscribed: true },
       ]);
       // As synced before 3e: no unsubscribe info for uid 2.
       store.upsertMessages("acc_1", "INBOX", inbox.map(({ unsubscribeHeaders: _h, ...m }) => structuredClone(m)));
@@ -4316,11 +4317,11 @@ describe("inbox triage: unsubscribe (slice 3e)", () => {
     const host = await loadUnsubscribe();
     const store = sqlStore(host);
     store.saveFolders("acc_1", [
-      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
-      { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true },
-      { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true },
-      { path: "Junk", name: "Junk", delimiter: "/", specialUse: "junk", selectable: true },
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
+      { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true, subscribed: true },
+      { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true, subscribed: true },
+      { path: "Junk", name: "Junk", delimiter: "/", specialUse: "junk", selectable: true, subscribed: true },
     ]);
     const listed = messageIdAt(host, "INBOX", 1);
     const unknown = messageIdAt(host, "INBOX", 2);
@@ -4345,9 +4346,9 @@ describe("inbox triage: unsubscribe (slice 3e)", () => {
     const host = await loadUnsubscribe({ info: fallback });
     const store = sqlStore(host);
     store.saveFolders("acc_1", [
-      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
-      { path: "Junk", name: "Junk", delimiter: "/", specialUse: "junk", selectable: true },
+      { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+      { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
+      { path: "Junk", name: "Junk", delimiter: "/", specialUse: "junk", selectable: true, subscribed: true },
     ]);
     // uid 3: someone else whose List-Id spells the sender's address; uid 4: a legacy un-prefixed key
     // from another From; uid 5: the same From-fallback key but another From (a stored row from before).
@@ -5215,11 +5216,11 @@ function seedCanary(bb: BbPluginApi, scope: CanaryScope = {}): void {
   seedCompose(bb);
   const store = createSqliteStore(bb.storage.database());
   store.saveFolders("acc_1", [
-    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-    { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true },
-    { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true },
-    { path: "Work", name: "Work", delimiter: "/", specialUse: null, selectable: true },
-    ...(scope.allMail === true ? [{ path: "[Gmail]/All Mail", name: "All Mail", delimiter: "/", specialUse: "all" as const, selectable: true }] : []),
+    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+    { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true, subscribed: true },
+    { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true, subscribed: true },
+    { path: "Work", name: "Work", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
+    ...(scope.allMail === true ? [{ path: "[Gmail]/All Mail", name: "All Mail", delimiter: "/", specialUse: "all" as const, selectable: true, subscribed: true }] : []),
   ]);
   if (scope.allMail === true) store.upsertMessages("acc_1", "[Gmail]/All Mail", [makeFetchedMessage(40, { messageId: "msg-1@example.org" })]);
   store.upsertMessages("acc_1", "INBOX", [

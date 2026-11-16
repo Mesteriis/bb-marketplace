@@ -48,6 +48,7 @@ import type {
   ThreadFilter,
 } from "../model.ts";
 import { headerValue, normalizeMessageId } from "../headers.ts";
+import { fileKindOf } from "../file-kinds.ts";
 import type { ProposalCapRow, ProposalState } from "../agent-propose.ts";
 import type { ProposalDeps } from "../agent-proposals.ts";
 import { SendRateLimit, UndoneSends } from "../compose-outbox.ts";
@@ -125,6 +126,10 @@ import type {
   RuleRunState,
 } from "../ports.ts";
 import type { BbLinkRowKind } from "../model.ts";
+import type { AttachmentTextRow, FilesFilter, SavedSearchRow, SearchOptions, SenderStats } from "../ports.ts";
+import type { AttachmentMatch, FileRow, SearchCursor } from "../model.ts";
+import type { AttachmentCandidate } from "../attachment-text.ts";
+import type { RelatedCandidate } from "../related.ts";
 import { normalizeListId, type DevClass } from "../dev-notify.ts";
 import { RULES_MAX, RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, RULE_THREADS_KEEP_DAYS, capVerdict, type Rule } from "../mail-rules.ts";
 import { INCIDENT_KEEP_DAYS } from "../alerts.ts";
@@ -422,6 +427,9 @@ function snippetOf(message: FetchedMessage): string {
 function translationKey(messageId: string, targetLanguage: string): string {
   return `${messageId}\u0000${targetLanguage}`;
 }
+
+/** What a slice 3h write answers until Task 4 implements it. */
+const NOT_YET = "Not available yet";
 
 export class InMemoryMailStore implements MailStore {
   private state: StoreState = {
@@ -928,7 +936,7 @@ export class InMemoryMailStore implements MailStore {
     };
   }
 
-  search(query: ParsedQuery, accountId: string | null, limit: number, opts?: { scoped: boolean }): MessageSummary[] {
+  search(query: ParsedQuery, accountId: string | null, limit: number, opts?: SearchOptions): MessageSummary[] {
     const contains = (haystack: string | null | undefined, needle: string) =>
       (haystack ?? "").toLowerCase().includes(needle.toLowerCase());
     const after = query.after === undefined ? null : Date.parse(query.after);
@@ -2981,6 +2989,132 @@ export class InMemoryMailStore implements MailStore {
     return removed;
   }
 
+  // ---- Slice 3h (Task 3 stubs; Task 4 implements them) ----
+
+  searchPage(query: ParsedQuery, accountId: string | null, limit: number, opts?: SearchOptions): { hits: MessageSummary[]; nextCursor: SearchCursor | null; attachmentMatches: AttachmentMatch[] } {
+    return { hits: this.search(query, accountId, limit, opts), nextCursor: null, attachmentMatches: [] };
+  }
+
+  listMessages(_accountId: string, _folder: string, _cursor: string | null, _limit: number, _filter?: ThreadFilter): { messages: MessageSummary[]; nextCursor: string | null } {
+    return { messages: [], nextCursor: null };
+  }
+
+  listMessagesAll(_role: SpecialUse, _cursor: string | null, _limit: number, _filter?: ThreadFilter): { messages: MessageSummary[]; nextCursor: string | null } {
+    return { messages: [], nextCursor: null };
+  }
+
+  historyState(_accountId: string, _folder: string): { historySince: string | null; historyCheckedAt: string | null } | null {
+    return null;
+  }
+
+  historyForgetCount(_accountId: string, _folder: string): number {
+    return 0;
+  }
+
+  movePendingCount(_accountId: string, _path: string): number {
+    return 0;
+  }
+
+  folderGrouping(_accountId: string, _path: string): boolean {
+    return true;
+  }
+
+  listSavedSearches(): SavedSearchRow[] {
+    return [];
+  }
+
+  filesList(_filter: FilesFilter, _cursor: string | null, _limit: number): { files: FileRow[]; nextCursor: string | null } {
+    return { files: [], nextCursor: null };
+  }
+
+  senderStats(_address: string, _accountId: string | null): SenderStats {
+    return { name: null, fromCount: 0, toCount: 0, toCapped: false, firstDate: null, lastDate: null, conversations: [], files: [] };
+  }
+
+  relatedCandidates(_messageId: string, _terms: readonly string[]): RelatedCandidate[] {
+    return [];
+  }
+
+  summaries(_messageIds: readonly string[]): MessageSummary[] {
+    return [];
+  }
+
+  gmLabels(_messageIds: readonly string[]): Map<string, string[]> {
+    return new Map();
+  }
+
+  accountLabels(_accountId: string): string[] {
+    return [];
+  }
+
+  attachmentTextCandidates(_limit: number): AttachmentCandidate[] {
+    return [];
+  }
+
+  attachmentTextStatus(): { indexed: number; skipped: number; failed: number; pending: number; totalChars: number } {
+    return { indexed: 0, skipped: 0, failed: 0, pending: 0, totalChars: 0 };
+  }
+
+  promoteKept(_messageIds: readonly string[]): string[] {
+    throw new Error(NOT_YET);
+  }
+
+  expireSearchRows(_nowIso: string, _days: number): { removed: number; accounts: string[] } {
+    throw new Error(NOT_YET);
+  }
+
+  setHistorySince(_accountId: string, _folder: string, _since: string | null): void {
+    throw new Error(NOT_YET);
+  }
+
+  historyChecked(_accountId: string, _folder: string, _atIso: string): void {
+    throw new Error(NOT_YET);
+  }
+
+  historyForget(_accountId: string, _folder: string): number {
+    throw new Error(NOT_YET);
+  }
+
+  rehomeFolder(_accountId: string, _from: string, _to: string, _delimiter: string): void {
+    throw new Error(NOT_YET);
+  }
+
+  dropFolder(_accountId: string, _path: string): void {
+    throw new Error(NOT_YET);
+  }
+
+  setFolderGrouping(_accountId: string, _path: string, _grouping: boolean): void {
+    throw new Error(NOT_YET);
+  }
+
+  saveSavedSearch(_row: { id: string; name: string; query: string; accountId: string | null; nowIso: string }): "ok" | "full" | "not_found" {
+    throw new Error(NOT_YET);
+  }
+
+  deleteSavedSearch(_id: string): boolean {
+    throw new Error(NOT_YET);
+  }
+
+  moveSavedSearch(_id: string, _position: number): boolean {
+    throw new Error(NOT_YET);
+  }
+
+  setGmLabels(_accountId: string, _folder: string, _entries: readonly { uid: number; labels: string[] }[]): void {
+    throw new Error(NOT_YET);
+  }
+
+  insertAttachmentText(_row: AttachmentTextRow): void {
+    throw new Error(NOT_YET);
+  }
+
+  retryAttachmentText(): number {
+    throw new Error(NOT_YET);
+  }
+
+  clearAttachmentText(): number {
+    throw new Error(NOT_YET);
+  }
+
   /** Translations and snoozes follow their message: dropped with every removed row (as SQLite deleteRows). */
   private dropOrphanTranslations(): void {
     const ids = new Set(this.state.rows.map((r) => r.id));
@@ -3058,6 +3192,7 @@ export class InMemoryMailStore implements MailStore {
           name: f.name,
           specialUse: effectiveSpecialUse(f.path, f.specialUse),
           selectable: f.selectable,
+          subscribed: f.subscribed ?? true,
           unreadCount: new Set(rows.filter((r) => !r.isRead).map((r) => r.dedupKey)).size,
           totalCount: new Set(rows.map((r) => r.dedupKey)).size,
         };
@@ -3256,6 +3391,8 @@ export class InMemoryMailStore implements MailStore {
       isRead: row.isRead,
       isFlagged: row.isFlagged,
       hasAttachments: row.message.attachments.some((a) => !a.isInline),
+      kept: null,
+      labels: [],
     };
   }
 
@@ -3264,7 +3401,7 @@ export class InMemoryMailStore implements MailStore {
       ...this.summary(row),
       to: row.message.to.map((a) => ({ ...a })),
       cc: row.message.cc.map((a) => ({ ...a })),
-      attachments: row.message.attachments.map((a) => ({ ...a })),
+      attachments: row.message.attachments.map((a) => ({ ...a, kind: fileKindOf(a.mimeType, a.filename) })),
       draftId: row.uid === null ? null : this.draftForServerCopy(row.accountId, row.folder, row.uid),
       agentSubject: redactSecrets(row.message.subject).text,
       inAiScope: this.anyCopyInScope(row),
@@ -3457,7 +3594,7 @@ export class ScriptedImapGateway implements ImapGateway {
   readonly sessions: OpenedSession[] = [];
   readonly mailboxes = new Map<string, FakeMailbox>();
   folders: RemoteFolder[] = [
-    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
   ];
   listFoldersCalls = 0;
   moveUidMap = true;
@@ -3503,6 +3640,7 @@ export class ScriptedImapGateway implements ImapGateway {
       delimiter: "/",
       specialUse: null,
       selectable: true,
+      subscribed: true,
       ...folder,
     };
     this.folders = [...this.folders.filter((f) => f.path !== listed.path), listed];
@@ -3598,6 +3736,27 @@ export class ScriptedImapGateway implements ImapGateway {
     if (this.folders.some((folder) => folder.path === name)) return { path: name, created: false };
     this.addFolder({ path: name });
     return { path: name, created: true };
+  }
+
+  // Slice 3h folder writes: Task 3 stubs; Task 5 gives them behaviour.
+  async renameFolder(_config: ImapConfig, _from: string, _to: string): Promise<{ path: string }> {
+    throw new Error(NOT_YET);
+  }
+
+  async folderStatus(_config: ImapConfig, _path: string): Promise<{ messages: number; uidValidity: number }> {
+    throw new Error(NOT_YET);
+  }
+
+  async deleteFolder(_config: ImapConfig, _path: string, _options: { expectEmpty: boolean }): Promise<void> {
+    throw new Error(NOT_YET);
+  }
+
+  async setSubscribed(_config: ImapConfig, _path: string, _subscribed: boolean): Promise<void> {
+    throw new Error(NOT_YET);
+  }
+
+  namedLikeSpecialUse(_name: string): boolean {
+    return false;
   }
 
   async listFolders(_config: ImapConfig): Promise<RemoteFolder[]> {
@@ -3804,6 +3963,14 @@ export class ScriptedImapGateway implements ImapGateway {
         }
         messages.splice(index, 1);
         this.expunged.push({ path, uid });
+      },
+      // Slice 3h: Task 3 stubs; Task 5 gives them behaviour.
+      searchServer: async () => {
+        throw new Error(NOT_YET);
+      },
+      fetchLabels: async () => [],
+      setLabels: async () => {
+        throw new Error(NOT_YET);
       },
       close: async () => {
         opened.closed = true;

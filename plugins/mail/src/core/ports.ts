@@ -36,7 +36,14 @@ import type {
   ThreadFilter,
   MailAddress,
   UnsubscribeState,
+  AttachmentMatch,
+  FileKind,
+  FileRow,
+  SearchCursor,
 } from "./model.ts";
+import type { ServerCriteria } from "./server-search.ts";
+import type { AttachmentCandidate } from "./attachment-text.ts";
+import type { RelatedCandidate } from "./related.ts";
 import type { BlockRule } from "./blocking.ts";
 import type { WatchEnd } from "./idle-policy.ts";
 import type { NotifyRow } from "./notify.ts";
@@ -98,6 +105,26 @@ export interface ImapGateway {
    * SafeImapError "CreateFailed" when the server refuses.
    */
   createFolder(config: ImapConfig, name: string): Promise<{ path: string; created: boolean }>;
+  /**
+   * Slice 3h folder writes. Each runs on a fresh connection with no mailbox
+   * selected (so imapflow never sends CLOSE, which would expunge) and logs
+   * out after. Errors are SafeImapError codes, never server text.
+   * RENAME of `from` to `to`; "RenameFailed" on a refusal.
+   */
+  renameFolder(config: ImapConfig, from: string, to: string): Promise<{ path: string }>;
+  /** STATUS of one folder; "StatusFailed" on a refusal. */
+  folderStatus(config: ImapConfig, path: string): Promise<{ messages: number; uidValidity: number }>;
+  /**
+   * DELETE of one folder. `expectEmpty`: STATUS messages first on the same
+   * connection, "NotEmpty" (nothing deleted) when it is above 0. Without it
+   * (a Gmail label folder, spec resolution 5) DELETE only. "DeleteFailed"
+   * on a refusal.
+   */
+  deleteFolder(config: ImapConfig, path: string, options: { expectEmpty: boolean }): Promise<void>;
+  /** SUBSCRIBE / UNSUBSCRIBE; "SubscribeFailed" on a refusal. */
+  setSubscribed(config: ImapConfig, path: string, subscribed: boolean): Promise<void>;
+  /** Whether imapflow would read a folder of this name as special use (spec resolution 18). */
+  namedLikeSpecialUse(name: string): boolean;
 }
 
 /** An open folder. Every fetch uses BODY.PEEK, so reading never marks mail read. */
@@ -183,6 +210,22 @@ export interface FolderSession {
    * refuses; and on a read-only session.
    */
   expungeOwn(uid: number, guard: { messageId: string; size: number }): Promise<void>;
+  /**
+   * UID SEARCH by Mail's criteria (slice 3h): X-GM-RAW when the session is
+   * Gmail and `gmailRaw` is set, else the IMAP criteria. At most
+   * SERVER_SEARCH_CAPS.uidsPerFolder uids (the newest). Throws SafeImapError
+   * "SearchFailed" when the server refuses.
+   */
+  searchServer(criteria: ServerCriteria): Promise<number[]>;
+  /** X-GM-LABELS of the uids (Gmail only; BODY.PEEK not involved: a FETCH of labels sets no flag). */
+  fetchLabels(uids: number[]): Promise<{ uid: number; labels: string[] }[]>;
+  /**
+   * STORE X-GM-LABELS: adds then removes labels on the uids (Gmail, read-write
+   * session). Throws SafeImapError "LabelsRefused" when the server refuses;
+   * after a success returns the labels the server now reports (spec
+   * resolution 10).
+   */
+  setLabels(uids: number[], change: { add: string[]; remove: string[] }): Promise<{ uid: number; labels: string[] }[]>;
   close(): Promise<void>;
 }
 
@@ -319,6 +362,13 @@ export interface MailStore {
     accountId: string,
     folder: string,
     messages: FetchedMessage[],
+    /**
+     * Slice 3h jobs only (spec resolution 7): new rows take `kept` and
+     * `kept_at = now`; an existing row is never downgraded (window rows and
+     * `opened` rows stay; `search` becomes `history` under a history load).
+     * Sync passes nothing.
+     */
+    opts?: { kept?: "history" | "search" },
   ): { inserted: string[]; returning: string[] };
   localFolderIndex(
     accountId: string,
@@ -434,7 +484,19 @@ export interface MailStore {
   getMessage(messageId: string): MessageHeader | null;
   getBody(messageId: string): MessageBody | null;
   /** `scoped` (slice 3f, agent paths): only rows inside the AI scope, before the dedup picks one per message. */
-  search(query: ParsedQuery, accountId: string | null, limit: number, opts?: { scoped: boolean }): MessageSummary[];
+  search(query: ParsedQuery, accountId: string | null, limit: number, opts?: SearchOptions): MessageSummary[];
+  /**
+   * search with paging and attachment matches (slice 3h). Keyset by the
+   * search order (spec resolution 17). `attachment_text` is joined only
+   * when `opts.attachments === true`, whatever `scoped` says (spec
+   * resolution 4).
+   */
+  searchPage(
+    query: ParsedQuery,
+    accountId: string | null,
+    limit: number,
+    opts?: SearchOptions,
+  ): { hits: MessageSummary[]; nextCursor: SearchCursor | null; attachmentMatches: AttachmentMatch[] };
   /** Distinct unread messages (by dedup key) in Inbox folders. */
   unreadCount(accountId: string | null): number;
   /** Upserts the folders; drops folders not listed, with their rows; returns removed paths. */
@@ -1026,7 +1088,139 @@ export interface MailStore {
    * conversation bindings older than 30 days to a project not in it.
    */
   purgeDaily(nowIso: string, knownProjectIds?: readonly string[] | null): number;
+
+  // ---- Slice 3h ----
+
+  /** One row per deduplicated message in the scope's folder (grouping off), keyset by (date DESC, id DESC). */
+  listMessages(
+    accountId: string,
+    folder: string,
+    cursor: string | null,
+    limit: number,
+    filter?: ThreadFilter,
+  ): { messages: MessageSummary[]; nextCursor: string | null };
+  /** As listMessages over a role's folders in every account. */
+  listMessagesAll(
+    role: SpecialUse,
+    cursor: string | null,
+    limit: number,
+    filter?: ThreadFilter,
+  ): { messages: MessageSummary[]; nextCursor: string | null };
+
+  /** Rows the owner touched leave expiry: `history` and `search` become `opened`. Returns ids changed. */
+  promoteKept(messageIds: readonly string[]): string[];
+  /**
+   * Deletes, locally, `search` rows kept before `nowIso - days`, with their
+   * attachments, inline parts and attachment text. Returns the accounts touched.
+   */
+  expireSearchRows(nowIso: string, days: number): { removed: number; accounts: string[] };
+
+  /** Loaded history of a folder: where it starts (NULL: window only) and when reconcile last checked it. */
+  historyState(accountId: string, folder: string): { historySince: string | null; historyCheckedAt: string | null } | null;
+  setHistorySince(accountId: string, folder: string, since: string | null): void;
+  /** Reconcile checked the loaded history (spec resolution 9). */
+  historyChecked(accountId: string, folder: string, atIso: string): void;
+  /** Rows dated before the window whose `kept` is history or search. */
+  historyForgetCount(accountId: string, folder: string): number;
+  /** Deletes those rows (with their attachment text) and clears history_since; returns how many. */
+  historyForget(accountId: string, folder: string): number;
+
+  /**
+   * After a server RENAME: every stored path equal to `from` or under
+   * `from + delimiter` is rewritten in one transaction (spec "Folder
+   * management", resolution 3, folders_json included).
+   */
+  rehomeFolder(accountId: string, from: string, to: string, delimiter: string): void;
+  /** After a server DELETE: the folder's rows, sync state, prefs and AI scope entry go. */
+  dropFolder(accountId: string, path: string): void;
+  /** Rows of the folder waiting to move out, or moves queued into it. */
+  movePendingCount(accountId: string, path: string): number;
+
+  /** grouping per folder; `accountId` '*' with a role name as `path` for All accounts views. */
+  folderGrouping(accountId: string, path: string): boolean;
+  setFolderGrouping(accountId: string, path: string, grouping: boolean): void;
+
+  listSavedSearches(): SavedSearchRow[];
+  /** Inserts (new id, at the end) or updates. "full" at SAVED_SEARCHES_MAX; "not_found" for an unknown id. */
+  saveSavedSearch(row: { id: string; name: string; query: string; accountId: string | null; nowIso: string }): "ok" | "full" | "not_found";
+  deleteSavedSearch(id: string): boolean;
+  moveSavedSearch(id: string, position: number): boolean;
+
+  /** Non-inline attachments of rows not waiting to move, one per (dedup key, part). */
+  filesList(filter: FilesFilter, cursor: string | null, limit: number): { files: FileRow[]; nextCursor: string | null };
+  /** The stored counts and lists of the sender card (the server adds images, block and project). */
+  senderStats(address: string, accountId: string | null): SenderStats;
+  /** At most RELATED_CANDIDATES_MAX local candidates for the message and its terms. */
+  relatedCandidates(messageId: string, terms: readonly string[]): RelatedCandidate[];
+  /** Summaries of the ids (any order; missing ids left out). */
+  summaries(messageIds: readonly string[]): MessageSummary[];
+
+  /** X-GM-LABELS as stored, per message id (empty when not fetched). */
+  gmLabels(messageIds: readonly string[]): Map<string, string[]>;
+  /** Stores the labels the server reported for these uids of one folder. */
+  setGmLabels(accountId: string, folder: string, entries: readonly { uid: number; labels: string[] }[]): void;
+  /** Every label any stored message of the account carries, system labels included. */
+  accountLabels(accountId: string): string[];
+
+  /** Attachments the indexer may still extract (no attachment_text row yet), with what the caps need. */
+  attachmentTextCandidates(limit: number): AttachmentCandidate[];
+  insertAttachmentText(row: AttachmentTextRow): void;
+  attachmentTextStatus(): { indexed: number; skipped: number; failed: number; pending: number; totalChars: number };
+  /** Deletes failed rows so the next round tries them again; returns how many. */
+  retryAttachmentText(): number;
+  /** Deletes every row; returns how many. */
+  clearAttachmentText(): number;
 }
+
+/** Store options of search (slice 3h adds cursor and attachments). */
+export type SearchOptions = {
+  /** Agent paths (slice 3f): only rows inside the AI scope. */
+  scoped?: boolean;
+  /** Owner page only: also match attachment text (spec resolution 4). */
+  attachments?: boolean;
+  cursor?: SearchCursor | null;
+};
+
+export type SavedSearchRow = {
+  id: string;
+  name: string;
+  query: string;
+  accountId: string | null;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FilesFilter = {
+  kind?: FileKind;
+  /** From address, case-insensitive equality. */
+  sender?: string;
+  accountId?: string;
+  /** A file name fragment. */
+  name?: string;
+  /** Spam and Trash are left out unless true. */
+  includeJunk?: boolean;
+};
+
+export type SenderStats = {
+  name: string | null;
+  fromCount: number;
+  toCount: number;
+  toCapped: boolean;
+  firstDate: string | null;
+  lastDate: string | null;
+  conversations: ThreadSummary[];
+  files: FileRow[];
+};
+
+export type AttachmentTextRow = {
+  messageId: string;
+  partId: string;
+  state: "indexed" | "skipped" | "failed";
+  reason: "too_large" | "unsupported" | "encrypted" | "timeout" | "unreadable" | null;
+  body: string | null;
+  extractedAt: string;
+};
 
 // ---- Slice 3g store rows ----
 

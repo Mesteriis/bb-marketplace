@@ -40,8 +40,8 @@ describe("parseQuery", () => {
     const parsed = parseQuery("after:2026-02-30 before:yesterday hello");
     expect(legacy(parsed)).toEqual({ text: "after:2026-02-30 before:yesterday hello" });
     expect(parsed.notes).toEqual([
-      { kind: "bad_value", token: "after:2026-02-30" },
-      { kind: "bad_value", token: "before:yesterday" },
+      { kind: "bad_value", term: "after:2026-02-30" },
+      { kind: "bad_value", term: "before:yesterday" },
     ]);
   });
 
@@ -55,8 +55,8 @@ describe("parseQuery", () => {
     expect(legacy(parsed)).toEqual({ text: "is:bogus from: zz:x" });
     expect(parsed.conditions).toEqual([]);
     expect(parsed.notes).toEqual([
-      { kind: "bad_value", token: "is:bogus" },
-      { kind: "unknown_operator", token: "zz:x" },
+      { kind: "bad_value", term: "is:bogus" },
+      { kind: "unknown_operator", term: "zz:x" },
     ]);
   });
 
@@ -137,7 +137,7 @@ describe("parseQuery: slice 3h operators", () => {
   });
 
   it("flags a bad relative date", () => {
-    expect(parseQuery("newer_than:3x", NOW).notes).toEqual([{ kind: "bad_value", token: "newer_than:3x" }]);
+    expect(parseQuery("newer_than:3x", NOW).notes).toEqual([{ kind: "bad_value", term: "newer_than:3x" }]);
   });
 
   it("negates any operator with a leading minus", () => {
@@ -159,7 +159,7 @@ describe("parseQuery: slice 3h operators", () => {
     expect(parseQuery("-bogus:x")).toEqual({
       text: "-bogus:x",
       conditions: [],
-      notes: [{ kind: "unknown_operator", token: "-bogus:x" }],
+      notes: [{ kind: "unknown_operator", term: "-bogus:x" }],
     });
   });
 
@@ -194,15 +194,15 @@ describe("parseQuery: slice 3h operators", () => {
     const bad = parseQuery("larger:abc smaller:10G");
     expect(bad.conditions).toEqual([]);
     expect(bad.notes).toEqual([
-      { kind: "bad_value", token: "larger:abc" },
-      { kind: "bad_value", token: "smaller:10G" },
+      { kind: "bad_value", term: "larger:abc" },
+      { kind: "bad_value", term: "smaller:10G" },
     ]);
   });
 
   it("refuses a has: value other than attachment", () => {
     const parsed = parseQuery("has:pdf");
     expect(parsed.conditions).toEqual([]);
-    expect(parsed.notes).toEqual([{ kind: "bad_value", token: "has:pdf" }]);
+    expect(parsed.notes).toEqual([{ kind: "bad_value", term: "has:pdf" }]);
   });
 
   it("cuts values to 200 characters and removes control characters", () => {

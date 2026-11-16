@@ -34,6 +34,7 @@ const folder = (accountId: string, path: string, specialUse: Folder["specialUse"
   selectable: true,
   unreadCount: 0,
   totalCount: 0,
+  subscribed: true,
 });
 
 const VIEW: AiScopeView = {

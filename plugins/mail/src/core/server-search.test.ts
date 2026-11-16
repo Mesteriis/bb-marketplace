@@ -14,7 +14,7 @@ const NOW = new Date("2026-11-16T12:00:00.000Z");
 const q = (raw: string) => parseQuery(raw, NOW);
 
 function folder(path: string, specialUse: SpecialUse | null = null, selectable = true): Folder {
-  return { accountId: "a1", path, name: path.split("/").pop()!, specialUse, selectable, unreadCount: 0, totalCount: 0 };
+  return { accountId: "a1", path, name: path.split("/").pop()!, specialUse, selectable, unreadCount: 0, totalCount: 0, subscribed: true };
 }
 
 const GMAIL = [

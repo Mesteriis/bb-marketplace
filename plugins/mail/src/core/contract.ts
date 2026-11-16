@@ -47,6 +47,14 @@ import {
   taskViewSchema,
   draftModeSchema,
   devClassSchema,
+  attachmentMatchSchema,
+  fileKindSchema,
+  fileRowSchema,
+  relatedHitSchema,
+  savedSearchViewSchema,
+  searchFieldSchema,
+  searchNoteSchema,
+  senderCardSchema,
 } from "./model.ts";
 import { languageTagSchema } from "./translate.ts";
 import { DEV_KINDS, DEV_SOURCES, DEV_STATES } from "./dev-notify.ts";
@@ -340,6 +348,39 @@ export const ruleRunViewSchema = z.object({
   createdAt: z.string(),
 });
 
+// ---- Slice 3h inputs ----
+
+/** A search query, as `search` takes it. */
+const queryInput = z.string().min(1).max(500);
+/** A saved search's name (saved-searches.ts SAVED_SEARCH_NAME_MAX). */
+const savedSearchNameInput = z.string().min(1).max(60);
+/** A folder's new name (folder-ops.ts FOLDER_NAME_MAX); folder-ops checks the rest. */
+const folderNameInput = z.string().min(1).max(100);
+/** A Gmail label name (labels.ts LABEL_NAME_MAX). */
+const labelNameInput = z.string().min(1).max(100);
+const labelListInput = z.array(labelNameInput).max(20);
+/** Why a job skipped a folder or stopped early (spec resolution 6). */
+const jobReasonSchema = z.enum([
+  "not_synced",
+  "changed",
+  "search_failed",
+  "time_budget",
+  "cancelled",
+  "connection_failed",
+  "password_needed",
+  "nothing_to_search",
+]);
+/** Why a folder cannot be renamed or deleted (folder-ops.ts FolderOpRefusal). */
+const folderRefusalSchema = z.enum([
+  "inbox",
+  "special_use",
+  "gmail_system",
+  "snooze_folder",
+  "has_children",
+  "move_pending",
+  "parent_not_selectable",
+]);
+
 export const rpcSchemas = {
   status_get: {
     input: z.null(),
@@ -400,8 +441,17 @@ export const rpcSchemas = {
       query: z.string().min(1).max(500),
       accountId: z.string().nullable(),
       limit: z.number().int().min(1).max(50),
+      /** Slice 3h: the keyset cursor of the previous page. */
+      cursor: cursorInput.nullable().optional(),
+      /** Slice 3h: the owner's page also searches attachment text (spec resolution 4). */
+      attachments: z.boolean().optional(),
     }),
-    output: z.object({ hits: z.array(messageSummarySchema) }),
+    output: z.object({
+      hits: z.array(messageSummarySchema),
+      nextCursor: z.string().nullable(),
+      notes: z.array(searchNoteSchema),
+      attachmentMatches: z.array(attachmentMatchSchema),
+    }),
   },
   /** One account's folders, or (null) every account's with the merged roles. */
   folders_list: {
@@ -1270,7 +1320,227 @@ export const rpcSchemas = {
     input: z.object({ id: idInput }),
     output: okOutput,
   },
+
+  // ---- Slice 3h: server search, older mail, saved searches, folders, labels, files ----
+
+  /** Searches the owner's own mail servers (read-only); `localOnly`: operators the server did not use. */
+  server_search_start: {
+    input: z.object({ query: queryInput, accountId: idInput.nullable() }),
+    output: z.object({ jobId: z.string(), localOnly: z.array(searchFieldSchema) }),
+  },
+  /** Fetches the next 50 hits of a finished server search. */
+  server_search_more: {
+    input: z.object({ jobId: idInput }),
+    output: okOutput,
+  },
+  /** Loads the next historyStepDays of one folder. */
+  history_load: {
+    input: z.object({ accountId: idInput, folder: idInput }),
+    output: z.object({ jobId: z.string() }),
+  },
+  /** Loads the rest of one conversation from the server. */
+  conversation_load: {
+    input: z.object({ threadId: idInput }),
+    output: z.object({ jobId: z.string() }),
+  },
+  server_job_poll: {
+    input: z.object({ jobId: idInput }),
+    output: z.object({
+      state: z.enum(["running", "done", "failed", "cancelled"]),
+      accounts: z.array(
+        z.object({
+          accountId: z.string(),
+          searched: z.number().int().min(0),
+          total: z.number().int().min(0),
+          fetched: z.number().int().min(0),
+          found: z.number().int().min(0),
+          /** Uids left out: above last_uid, or a folder skipped (spec resolution 6). */
+          skipped: z.number().int().min(0),
+          partial: z.boolean(),
+          reason: jobReasonSchema.nullable(),
+        }),
+      ),
+      messageIds: z.array(z.string()),
+      moreAvailable: z.boolean(),
+      /** history_load: where loaded history starts now. */
+      historySince: z.string().nullable().optional(),
+      /** history_load: empty steps in a row (the list speaks at three). */
+      emptySteps: z.number().int().min(0).optional(),
+    }),
+  },
+  server_job_cancel: {
+    input: z.object({ jobId: idInput }),
+    output: okOutput,
+  },
+  history_forget_check: {
+    input: z.object({ accountId: idInput, folder: idInput }),
+    output: z.object({ count: z.number().int().min(0) }),
+  },
+  history_forget: {
+    input: z.object({ accountId: idInput, folder: idInput }),
+    output: z.object({ removed: z.number().int().min(0) }),
+  },
+  saved_searches_list: {
+    input: z.object({}),
+    output: z.object({ searches: z.array(savedSearchViewSchema).max(50) }),
+  },
+  saved_search_save: {
+    input: z.object({
+      id: idInput.optional(),
+      name: savedSearchNameInput,
+      query: queryInput,
+      accountId: idInput.nullable(),
+    }),
+    output: z.object({ id: z.string() }),
+  },
+  saved_search_delete: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+  saved_search_move: {
+    input: z.object({ id: idInput, position: z.number().int().min(0).max(49) }),
+    output: okOutput,
+  },
+  folder_create: {
+    input: z.object({ accountId: idInput, parent: idInput.nullable(), name: folderNameInput }),
+    output: z.object({ path: z.string() }),
+  },
+  folder_rename: {
+    input: z.object({ accountId: idInput, path: idInput, name: folderNameInput }),
+    output: z.object({ path: z.string() }),
+  },
+  /** The server's message count, the children and why the folder cannot go; `gmailLabel`: a plain DELETE (spec resolution 5). */
+  folder_delete_check: {
+    input: z.object({ accountId: idInput, path: idInput }),
+    output: z.object({
+      messages: z.number().int().min(0),
+      children: z.number().int().min(0),
+      gmailLabel: z.boolean(),
+      refusal: folderRefusalSchema.nullable(),
+    }),
+  },
+  /** Never expunges: DELETE only at 0 messages, emptying only by MOVE to Trash (Gmail labels: a plain DELETE). */
+  folder_delete: {
+    input: z.object({
+      accountId: idInput,
+      path: idInput,
+      moveToTrash: z.boolean(),
+      expectedMessages: z.number().int().min(0),
+    }),
+    output: z.object({ ok: z.boolean(), moved: z.number().int().min(0) }),
+  },
+  folder_subscribe: {
+    input: z.object({ accountId: idInput, path: idInput, subscribed: z.boolean() }),
+    output: okOutput,
+  },
+  /** `accountId` '*' with a role name as `path`: an All accounts view. */
+  folder_prefs_set: {
+    input: z.object({ accountId: idInput, path: idInput, grouping: z.boolean() }),
+    output: okOutput,
+  },
+  /** A folder one message per row (grouping off), as threads_list. */
+  messages_list: {
+    input: z.object({
+      scope: threadScope,
+      cursor: z.string().nullable(),
+      limit: z.number().int().min(1).max(100),
+      filter: threadFilterSchema.optional(),
+    }),
+    output: z.object({ messages: z.array(messageSummarySchema), nextCursor: z.string().nullable() }),
+  },
+  labels_list: {
+    input: z.object({ accountId: idInput }),
+    output: z.object({ labels: z.array(z.object({ name: z.string(), path: z.string().nullable() })) }),
+  },
+  labels_change: {
+    input: z
+      .object({
+        messageIds: messageIdList,
+        add: labelListInput,
+        remove: labelListInput,
+        undoId: z.uuid().optional(),
+      })
+      .refine((input) => input.add.length + input.remove.length > 0, { message: "Add or remove a label" }),
+    output: z.object({ changed: z.number().int().min(0) }),
+  },
+  /** A one-time URL for the viewer; the server sniffs the bytes (409 not_viewable on a mismatch). */
+  attachment_view_ticket: {
+    input: z.object({ messageId: idInput, partId: idInput }),
+    output: z.object({ url: z.string(), kind: fileKindSchema, mimeType: z.string(), size: z.number().int().min(0) }),
+  },
+  files_list: {
+    input: z.object({
+      kind: fileKindSchema.optional(),
+      sender: addressInput.optional(),
+      accountId: idInput.optional(),
+      name: z.string().min(1).max(200).optional(),
+      includeJunk: z.boolean().optional(),
+      cursor: cursorInput.nullable(),
+      limit: z.number().int().min(1).max(100),
+    }),
+    output: z.object({ files: z.array(fileRowSchema), nextCursor: z.string().nullable() }),
+  },
+  attachment_text_status: {
+    input: z.object({}),
+    output: z.object({
+      indexed: z.number().int().min(0),
+      skipped: z.number().int().min(0),
+      failed: z.number().int().min(0),
+      pending: z.number().int().min(0),
+      running: z.boolean(),
+      /** The index reached ATTACHMENT_TEXT_TOTAL_MAX (spec resolution 15). */
+      full: z.boolean(),
+    }),
+  },
+  attachment_text_retry: {
+    input: z.object({}),
+    output: okOutput,
+  },
+  attachment_text_clear: {
+    input: z.object({}),
+    output: okOutput,
+  },
+  related_messages: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({ hits: z.array(relatedHitSchema).max(10) }),
+  },
+  sender_card: {
+    input: z.object({ address: addressInput, accountId: idInput.nullable() }),
+    output: senderCardSchema,
+  },
 } as const;
+
+/** The 28 owner-only methods slice 3h adds. */
+export const SLICE_3H_METHODS = [
+  "server_search_start",
+  "server_search_more",
+  "history_load",
+  "conversation_load",
+  "server_job_poll",
+  "server_job_cancel",
+  "history_forget_check",
+  "history_forget",
+  "saved_searches_list",
+  "saved_search_save",
+  "saved_search_delete",
+  "saved_search_move",
+  "folder_create",
+  "folder_rename",
+  "folder_delete_check",
+  "folder_delete",
+  "folder_subscribe",
+  "folder_prefs_set",
+  "messages_list",
+  "labels_list",
+  "labels_change",
+  "attachment_view_ticket",
+  "files_list",
+  "attachment_text_status",
+  "attachment_text_retry",
+  "attachment_text_clear",
+  "related_messages",
+  "sender_card",
+] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** Realtime channel the server publishes on when stored mail changes. */
 export const MAIL_CHANGED_CHANNEL = "mail-changed";

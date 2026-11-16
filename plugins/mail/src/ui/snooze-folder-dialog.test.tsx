@@ -16,6 +16,7 @@ const folder = (path: string, specialUse: Folder["specialUse"] = null, selectabl
   selectable,
   unreadCount: 0,
   totalCount: 0,
+  subscribed: true,
 });
 const FOLDERS: Folder[] = [
   folder("INBOX", "inbox"),

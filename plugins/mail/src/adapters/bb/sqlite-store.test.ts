@@ -178,10 +178,12 @@ describe("createSqliteStore", () => {
       isRead: false,
       isFlagged: false,
       hasAttachments: true,
+      kept: null,
+      labels: [],
       to: [{ name: null, address: "owner@example.org" }],
       cc: [{ name: "Copy", address: "copy@example.org" }],
       attachments: [
-        { partId: "2", filename: "plan.txt", mimeType: "text/plain", size: 12, isInline: false },
+        { partId: "2", filename: "plan.txt", mimeType: "text/plain", size: 12, isInline: false, kind: "text" },
       ],
       draftId: null,
       agentSubject: "Re: Invented plan",
@@ -686,7 +688,7 @@ function remoteFolder(
   specialUse: RemoteFolder["specialUse"] = null,
   overrides: Partial<RemoteFolder> = {},
 ): RemoteFolder {
-  return { path, name: path.split("/").pop()!, delimiter: "/", specialUse, selectable: true, ...overrides };
+  return { path, name: path.split("/").pop()!, delimiter: "/", specialUse, selectable: true, subscribed: true, ...overrides };
 }
 
 function idIn(target: MailStore, folder: string, uid: number, accountId = "acc_1"): string {
@@ -1004,6 +1006,7 @@ describe.each(storeKinds)("slice-2 store semantics (%s)", (_kind, make) => {
       selectable: true,
       unreadCount: 0,
       totalCount: 0,
+      subscribed: true,
     });
     expect(folders.find((f) => f.path === "Alpha")?.selectable).toBe(false);
   });
@@ -3282,10 +3285,10 @@ describe.each(storeKinds)("slice-3d store semantics (%s)", (_kind, make) => {
 // ---------------------------------------------------------------------------
 
 const FOLDERS_3E: RemoteFolder[] = [
-  { path: INBOX, name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-  { path: "Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true },
-  { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
-  { path: "Snoozed", name: "Snoozed", delimiter: "/", specialUse: null, selectable: true },
+  { path: INBOX, name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+  { path: "Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true, subscribed: true },
+  { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
+  { path: "Snoozed", name: "Snoozed", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
 ];
 
 const INFO: UnsubscribeInfo = {
@@ -3934,12 +3937,12 @@ describe.each(storeKinds)("slice-3e store semantics (%s)", (_kind, make) => {
 // ---- Slice 3f: AI scope, agent log, AI results, tasks, categories, Today, reminders ----
 
 const FOLDERS_3F: RemoteFolder[] = [
-  { path: INBOX, name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
-  { path: "Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true },
-  { path: "Trash", name: "Trash", delimiter: "/", specialUse: "trash", selectable: true },
-  { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
-  { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true },
-  { path: "Projects", name: "Projects", delimiter: "/", specialUse: null, selectable: true },
+  { path: INBOX, name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+  { path: "Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true, subscribed: true },
+  { path: "Trash", name: "Trash", delimiter: "/", specialUse: "trash", selectable: true, subscribed: true },
+  { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true, subscribed: true },
+  { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true, subscribed: true },
+  { path: "Projects", name: "Projects", delimiter: "/", specialUse: null, selectable: true, subscribed: true },
 ];
 
 function aiScope(
@@ -4142,7 +4145,7 @@ describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
     });
 
     it("lists a Gmail Inbox message whose in-scope copy is its All Mail copy (chosen folders)", () => {
-      s.saveFolders("acc_2", [...FOLDERS_3F, { path: "[Gmail]/All Mail", name: "All Mail", delimiter: "/", specialUse: "all", selectable: true }]);
+      s.saveFolders("acc_2", [...FOLDERS_3F, { path: "[Gmail]/All Mail", name: "All Mail", delimiter: "/", specialUse: "all", selectable: true, subscribed: true }]);
       s.upsertMessages("acc_2", "[Gmail]/All Mail", [makeFetchedMessage(9, { messageId: "other-account@example.org" })]);
       thread("acc_2");
       s.setAiScope(aiScope([["acc_2", { mode: "folders", folders: ["[Gmail]/All Mail"] }]]));

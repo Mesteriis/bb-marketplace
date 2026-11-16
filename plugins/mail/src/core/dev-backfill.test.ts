@@ -4,8 +4,8 @@ import { InMemoryMailStore, makeFetchedMessage, makeStoredAccount } from "./test
 
 const EPOCH = "1970-01-01T00:00:00.000Z";
 const FOLDERS = [
-  { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox" as const, selectable: true },
-  { path: "Spam", name: "Spam", delimiter: "/", specialUse: "junk" as const, selectable: true },
+  { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox" as const, selectable: true, subscribed: true },
+  { path: "Spam", name: "Spam", delimiter: "/", specialUse: "junk" as const, selectable: true, subscribed: true },
 ];
 
 function setup() {

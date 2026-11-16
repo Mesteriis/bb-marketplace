@@ -91,6 +91,28 @@ export const newAccountInputSchema = z.object({
 );
 export type NewAccountInput = z.infer<typeof newAccountInputSchema>;
 
+// ---- Slice 3h: kinds, kept rows, related reasons (defined early: schemas below use them) ----
+
+/** What an attachment is, for the viewer and the Files view (slice 3h; stored in attachments.kind). */
+export const fileKindSchema = z.enum(["image", "pdf", "text", "document", "archive", "calendar", "other"]);
+export type FileKind = z.infer<typeof fileKindSchema>;
+
+/**
+ * Why a row outside the sync window is kept (slice 3h, `messages.kept`):
+ * loaded history, a server search hit (expires), or opened by the owner
+ * (never expires). NULL in the column: a window row.
+ */
+export const keptStateSchema = z.enum(["history", "search", "opened"]);
+export type KeptState = z.infer<typeof keptStateSchema>;
+
+/** Why a message is listed as related (slice 3h, #83). */
+export const relatedReasonSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("terms"), terms: z.array(z.string()) }),
+  z.object({ kind: z.literal("participants"), count: z.number().int().min(1) }),
+  z.object({ kind: z.literal("reference") }),
+]);
+export type RelatedReason = z.infer<typeof relatedReasonSchema>;
+
 export const attachmentMetaSchema = z.object({
   partId: z.string(),
   filename: z.string().nullable(),
@@ -99,6 +121,10 @@ export const attachmentMetaSchema = z.object({
   isInline: z.boolean(),
 });
 export type AttachmentMeta = z.infer<typeof attachmentMetaSchema>;
+
+/** An attachment as the reading pane sees it: with its kind (slice 3h, stored in attachments.kind). */
+export const attachmentViewSchema = attachmentMetaSchema.extend({ kind: fileKindSchema });
+export type AttachmentView = z.infer<typeof attachmentViewSchema>;
 
 /** A notification's local dev class (slice 3g, dev-notify.ts); `repo` "host/owner/repo" or a service. */
 export const devClassSchema = z.object({
@@ -167,6 +193,8 @@ export const folderSchema = z.object({
   selectable: z.boolean(),
   unreadCount: z.number().int(),
   totalCount: z.number().int(),
+  /** Slice 3h: subscribed on the server (servers without LSUB report every folder subscribed). */
+  subscribed: z.boolean(),
 });
 export type Folder = z.infer<typeof folderSchema>;
 
@@ -218,13 +246,17 @@ export const messageSummarySchema = z.object({
   isRead: z.boolean(),
   isFlagged: z.boolean(),
   hasAttachments: z.boolean(),
+  /** Slice 3h: why a row outside the sync window is kept; null for a window row. */
+  kept: keptStateSchema.nullable(),
+  /** Slice 3h: the owner's Gmail labels (system labels left out); empty elsewhere. */
+  labels: z.array(z.string()),
 });
 export type MessageSummary = z.infer<typeof messageSummarySchema>;
 
 export const messageHeaderSchema = messageSummarySchema.extend({
   to: z.array(mailAddressSchema),
   cc: z.array(mailAddressSchema),
-  attachments: z.array(attachmentMetaSchema),
+  attachments: z.array(attachmentViewSchema),
   /** The compose_drafts row whose server copy is this message, or null (drives Edit draft). */
   draftId: z.string().nullable(),
   /** The subject with its secrets hidden (slice 3f): the Hand-to-agent chip label. */
@@ -411,6 +443,8 @@ export type RemoteFolder = {
   delimiter: string;
   specialUse: SpecialUse | null;
   selectable: boolean;
+  /** Slice 3h: ListResponse.subscribed. */
+  subscribed: boolean;
 };
 
 /** What threading needs to know about one stored message. */
@@ -443,26 +477,6 @@ export type RawRef = {
   uidValidity: number | null;
 };
 
-/** What an attachment is, for the viewer and the Files view (slice 3h; stored in attachments.kind). */
-export const fileKindSchema = z.enum(["image", "pdf", "text", "document", "archive", "calendar", "other"]);
-export type FileKind = z.infer<typeof fileKindSchema>;
-
-/**
- * Why a row outside the sync window is kept (slice 3h, `messages.kept`):
- * loaded history, a server search hit (expires), or opened by the owner
- * (never expires). NULL in the column: a window row.
- */
-export const keptStateSchema = z.enum(["history", "search", "opened"]);
-export type KeptState = z.infer<typeof keptStateSchema>;
-
-/** Why a message is listed as related (slice 3h, #83). */
-export const relatedReasonSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("terms"), terms: z.array(z.string()) }),
-  z.object({ kind: z.literal("participants"), count: z.number().int().min(1) }),
-  z.object({ kind: z.literal("reference") }),
-]);
-export type RelatedReason = z.infer<typeof relatedReasonSchema>;
-
 /** The operators a search condition may carry (slice 3h). */
 export const searchFieldSchema = z.enum([
   "from",
@@ -493,10 +507,13 @@ export type SearchField = z.infer<typeof searchFieldSchema>;
  */
 export type SearchCondition = { field: SearchField; value: string; negated: boolean };
 
-/** Why a token stayed free text. */
+/**
+ * Why a query word stayed free text. `term` is the word as typed (the spec
+ * calls it `token`; output keys never say token, contract.test.ts).
+ */
 export const searchNoteSchema = z.object({
   kind: z.enum(["unknown_operator", "bad_value"]),
-  token: z.string(),
+  term: z.string(),
 });
 export type SearchNote = z.infer<typeof searchNoteSchema>;
 
@@ -515,6 +532,73 @@ export type ParsedQuery = {
   conditions: SearchCondition[];
   notes: SearchNote[];
 };
+
+// ---- Slice 3h views ----
+
+/** One attachment in the Files view and the sender card (stored metadata only). */
+export const fileRowSchema = z.object({
+  messageId: z.string(),
+  partId: z.string(),
+  filename: z.string().nullable(),
+  kind: fileKindSchema,
+  mimeType: z.string(),
+  size: z.number().int(),
+  date: z.string().nullable(),
+  from: mailAddressSchema,
+  accountId: z.string(),
+  threadId: z.string(),
+});
+export type FileRow = z.infer<typeof fileRowSchema>;
+
+/** A saved search in the rail; `unread` counts hits up to 500 (`capped` above that). */
+export const savedSearchViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  query: z.string(),
+  accountId: z.string().nullable(),
+  unread: z.number().int().min(0),
+  capped: z.boolean(),
+});
+export type SavedSearchView = z.infer<typeof savedSearchViewSchema>;
+
+/**
+ * The sender card (#86). Counts by dedup key across folders, Spam and Trash
+ * left out; `toCapped`: To/Cc were counted over the newest rows only
+ * ("in recent mail").
+ */
+export const senderCardSchema = z.object({
+  name: z.string().nullable(),
+  address: z.string(),
+  fromCount: z.number().int().min(0),
+  toCount: z.number().int().min(0),
+  toCapped: z.boolean(),
+  firstDate: z.string().nullable(),
+  lastDate: z.string().nullable(),
+  conversations: z.array(threadSummarySchema).max(10),
+  files: z.array(fileRowSchema).max(5),
+  imagesAllowed: z.boolean(),
+  blocked: z.boolean(),
+  projectId: z.string().nullable(),
+});
+export type SenderCard = z.infer<typeof senderCardSchema>;
+
+/** A related message with why it is related (#83). */
+export const relatedHitSchema = z.object({
+  summary: messageSummarySchema,
+  reasons: z.array(relatedReasonSchema),
+});
+export type RelatedHit = z.infer<typeof relatedHitSchema>;
+
+/** The search keyset cursor: the store's order `date IS NULL DESC, date DESC, id DESC` (spec resolution 17). */
+export type SearchCursor = { date: string | null; id: string };
+
+/** An attachment-text hit of the owner's search (spec resolution 4). */
+export const attachmentMatchSchema = z.object({
+  messageId: z.string(),
+  filename: z.string().nullable(),
+  excerpt: z.string(),
+});
+export type AttachmentMatch = z.infer<typeof attachmentMatchSchema>;
 
 // ---- Compose and send (slice 3b) ----
 
