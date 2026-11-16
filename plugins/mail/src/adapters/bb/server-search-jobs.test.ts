@@ -517,7 +517,10 @@ describe("conversation jobs", () => {
     await jobs.settled(start.jobId);
     const view = jobs.poll(start.jobId)!;
     expect(view.accounts[0]!.fetched).toBe(100);
-    expect(new Set(keptOf(env.store, view.messageIds))).toEqual(new Set(["history"]));
+    // Kept as server hits: outside [history_since, window) they expire like them unless opened.
+    expect(new Set(keptOf(env.store, view.messageIds))).toEqual(new Set(["search"]));
+    expect(env.store.expireSearchRows(new Date(Date.now() + 100 * DAY).toISOString(), 30).removed).toBe(100);
+    expect(env.store.getMessage(rootId)).not.toBeNull();
     const searched = env.scripted.sessions.flatMap((s) => s.calls.filter((c) => c.method === "searchServer").map((c) => c.criteria!));
     expect(searched[0]!.headers).toEqual([
       { name: "References", value: "<root@example.org>" },

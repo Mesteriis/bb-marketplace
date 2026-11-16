@@ -674,10 +674,13 @@ new reads go to your own mail server only; the new writes are listed under
 
 - At the end of a folder, **Load 30 more days** (`historyStepDays`, default
   30) fetches up to 500 older messages per step from the server, read-only;
-  **Stop** ends a step. In a conversation, **Load the whole conversation**
-  looks for its other messages (Gmail by the conversation id; elsewhere by
-  Message-ID and References, in the conversation's folders plus Sent and
-  Archive), at most 100.
+  **Stop** ends a step. A step that had more than 500, or was stopped, runs
+  the same days again next time, skipping what is already loaded. In a
+  conversation, **Load the whole conversation** looks for its other messages
+  (Gmail by the conversation id; elsewhere by Message-ID and References, in
+  the conversation's folders plus Sent and Archive), at most 100; they are
+  kept like server hits, so unopened ones are removed after
+  `serverSearchKeepDays` unless a later step loads their days.
 - Loaded mail stays until you choose **Forget older mail** in the folder's
   menu, which removes it from Mail only; nothing changes on the server.
   Flags of loaded mail are checked once a day, so a message deleted on the

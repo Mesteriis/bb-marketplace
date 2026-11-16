@@ -620,7 +620,9 @@ export function createServerJobs(deps: ServerJobsDeps): ServerJobs {
           const known = storedUids(accountId, path);
           const fresh = uids.filter((uid) => !known.has(uid));
           run.found += uids.length;
-          const done = await fetchInto(job, run, session, path, fresh, "history", context, signal, budget);
+          // Kept as server hits: these rows lie outside [history_since, window)
+          // and expire like them unless opened (or a history step covers them).
+          const done = await fetchInto(job, run, session, path, fresh, "search", context, signal, budget);
           budget -= done.processed;
         });
       } catch (error) {
