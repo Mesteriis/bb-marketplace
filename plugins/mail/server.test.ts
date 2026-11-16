@@ -7762,6 +7762,25 @@ describe("makosh-mail server: slice 3h", () => {
     expect(host.gateway.sessions.flatMap((session) => session.calls).filter((c) => c.method === "expungeOwn")).toEqual([]);
   });
 
+  it("a \\Noselect folder is deleted without STATUS", async () => {
+    const host = await load3h({ folders: [...ICLOUD_FOLDERS, { path: "Group", selectable: false }] });
+    expect(await call(host, "folder_delete_check", { accountId: "acc_1", path: "Group" })).toMatchObject({ messages: 0, refusal: null });
+    expect(await call(host, "folder_delete", { accountId: "acc_1", path: "Group", moveToTrash: false, expectedMessages: 0 })).toEqual({ ok: true, moved: 0 });
+    expect(host.gateway.folderOps.filter((op) => op.path === "Group")).toEqual([{ op: "delete", path: "Group", expectEmpty: false, selected: null }]);
+  });
+
+  it("a Gmail label folder takes the normal path when the server does not advertise X-GM-EXT-1", async () => {
+    const host = await load3h({
+      preset: "gmail",
+      folders: [...GMAIL_FOLDERS, { path: "Receipts" }],
+      server: (gateway) => {
+        gateway.deliver({ subject: "Invented receipt" }, "Receipts");
+      },
+    });
+    await expect(call(host, "folder_delete", { accountId: "acc_1", path: "Receipts", moveToTrash: false, expectedMessages: 1 })).rejects.toThrow();
+    expect(host.gateway.folders.map((f) => f.path)).toContain("Receipts");
+  });
+
   it("move-then-delete empties a folder into Trash with MOVE, and stops when new mail arrives", async () => {
     const oldMail = (count: number) =>
       Array.from({ length: count }, (_, i) => makeFetchedMessage(i + 1, { subject: `Invented old ${i}`, messageId: `old-${i}@example.org` }));
@@ -7812,7 +7831,9 @@ describe("makosh-mail server: slice 3h", () => {
       refusal: null,
     });
     expect(await call(host, "folder_delete", { accountId: "acc_1", path: "Receipts", moveToTrash: false, expectedMessages: 2 })).toEqual({ ok: true, moved: 0 });
-    expect(host.gateway.folderOps.filter((op) => op.op === "delete")).toEqual([{ op: "delete", path: "Receipts", expectEmpty: false, selected: null }]);
+    expect(host.gateway.folderOps.filter((op) => op.op === "delete")).toEqual([
+      { op: "delete", path: "Receipts", expectEmpty: true, gmailLabel: true, selected: null },
+    ]);
     expect(host.gateway.sessions.flatMap((session) => session.calls).filter((c) => c.method === "moveMessages")).toEqual([]);
     await expect(call(host, "folder_delete", { accountId: "acc_1", path: "[Gmail]/Trash", moveToTrash: false, expectedMessages: 0 })).rejects.toThrow(
       FOLDER_REFUSAL_MESSAGES.special_use,

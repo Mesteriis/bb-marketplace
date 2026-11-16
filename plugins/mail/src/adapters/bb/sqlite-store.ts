@@ -6055,6 +6055,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
           .all(accountId, from)
           .map((row) => row.thread_id);
         rewrite("messages", "folder", "account_id");
+        // Queued moves into the folder or a child follow it (the move worker reads the new path).
+        rewrite("messages", "move_pending", "account_id");
         rewrite("sync_state", "folder", "account_id", true);
         rewrite("folders", "path", "account_id", true);
         rewrite("compose_drafts", "server_folder", "account_id");

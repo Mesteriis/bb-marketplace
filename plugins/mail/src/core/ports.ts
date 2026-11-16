@@ -118,10 +118,11 @@ export interface ImapGateway {
   /**
    * DELETE of one folder. `expectEmpty`: STATUS messages first on the same
    * connection, "NotEmpty" (nothing deleted) when it is above 0. Without it
-   * (a Gmail label folder, spec resolution 5) DELETE only. "DeleteFailed"
-   * on a refusal.
+   * (a \Noselect folder) DELETE only. `gmailLabel` (spec resolution 5):
+   * DELETE only when that connection advertises X-GM-EXT-1, else the STATUS
+   * check. "DeleteFailed" on a refusal.
    */
-  deleteFolder(config: ImapConfig, path: string, options: { expectEmpty: boolean }): Promise<void>;
+  deleteFolder(config: ImapConfig, path: string, options: { expectEmpty: boolean; gmailLabel?: boolean }): Promise<void>;
   /** SUBSCRIBE / UNSUBSCRIBE; "SubscribeFailed" on a refusal. */
   setSubscribed(config: ImapConfig, path: string, subscribed: boolean): Promise<void>;
   /** Whether imapflow would read a folder of this name as special use (spec resolution 18). */

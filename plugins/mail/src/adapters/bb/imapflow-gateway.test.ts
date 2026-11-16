@@ -1671,6 +1671,7 @@ type FolderOpsStub = {
   subscribed?: unknown;
   throwOn?: string;
   selected?: unknown;
+  capabilities?: string[];
 };
 
 /** A session-less client that records the selected mailbox at every command. */
@@ -1679,6 +1680,7 @@ function folderOpsClient(options: FolderOpsStub = {}) {
   const client = {
     mailbox: options.selected ?? false,
     loggedOut: false,
+    capabilities: new Map((options.capabilities ?? []).map((name) => [name, true])),
   } as Record<string, unknown>;
   const method = (name: string, answer: unknown) =>
     async (...args: unknown[]) => {
@@ -1719,9 +1721,21 @@ describe("slice 3h: folder commands", () => {
     expect(calls[0]!.args).toEqual(["Old", { messages: true, uidValidity: true }]);
   });
 
-  it("a Gmail label delete issues DELETE without STATUS", async () => {
+  it("a Gmail label delete issues DELETE without STATUS when the connection advertises X-GM-EXT-1", async () => {
+    const { client, calls } = folderOpsClient({ status: { path: "Label", messages: 41, uidValidity: 9n }, capabilities: ["X-GM-EXT-1"] });
+    await deleteFolderWith(client, "Label", { expectEmpty: false, gmailLabel: true });
+    expect(calls.map((c) => c.method)).toEqual(["mailboxDelete"]);
+  });
+
+  it("a Gmail label delete without X-GM-EXT-1 takes the normal path: STATUS first, NotEmpty above 0", async () => {
     const { client, calls } = folderOpsClient({ status: { path: "Label", messages: 41, uidValidity: 9n } });
-    await deleteFolderWith(client, "Label", { expectEmpty: false });
+    await expect(deleteFolderWith(client, "Label", { expectEmpty: false, gmailLabel: true })).rejects.toMatchObject({ code: "NotEmpty" });
+    expect(calls.map((c) => c.method)).toEqual(["status"]);
+  });
+
+  it("a \\Noselect folder (expectEmpty false) is deleted without STATUS", async () => {
+    const { client, calls } = folderOpsClient({ status: false });
+    await deleteFolderWith(client, "Group", { expectEmpty: false });
     expect(calls.map((c) => c.method)).toEqual(["mailboxDelete"]);
   });
 

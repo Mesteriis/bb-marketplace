@@ -5650,13 +5650,21 @@ describe("slice-3h kept rows (SQLite)", () => {
 });
 
 describe("slice-3h folders (SQLite)", () => {
-  /** Every column a folder path can live in: the names folder, path, *_folder and return_to, plus folders_json. */
+  /** Every column a folder path can live in: the names folder, path, *_folder, return_to and move_pending, plus folders_json. */
   function pathColumns(target: Database.Database): string[] {
     const tables = (target.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((r) => r.name);
     return tables.flatMap((table) =>
       (target.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[])
         .map((c) => c.name)
-        .filter((name) => name === "folder" || name === "path" || name.endsWith("_folder") || name === "return_to" || name === "folders_json")
+        .filter(
+          (name) =>
+            name === "folder" ||
+            name === "path" ||
+            name.endsWith("_folder") ||
+            name === "return_to" ||
+            name === "move_pending" ||
+            name === "folders_json",
+        )
         .map((name) => `${table}.${name}`),
     );
   }
@@ -5671,6 +5679,7 @@ describe("slice-3h folders (SQLite)", () => {
         "folder_prefs.path",
         "folders.path",
         "messages.folder",
+        "messages.move_pending",
         "snoozes.return_to",
         "sync_state.folder",
       ].sort(),
@@ -5686,6 +5695,9 @@ describe("slice-3h folders (SQLite)", () => {
     store.createDraft(newDraft());
     db.prepare("UPDATE compose_drafts SET server_folder = 'Work/Sub'").run();
     store.putAiScope([{ accountId: "acc_1", scope: { mode: "folders", folders: [INBOX, "Work", "Work/Sub", "Work2"] } }], [], T0);
+    // A queued move into a child of the renamed folder follows it.
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(9, { messageId: "queued@example.org" })]);
+    db.prepare("UPDATE messages SET move_pending = 'Work/Sub' WHERE folder = ? AND uid = 9").run(INBOX);
 
     store.rehomeFolder("acc_1", "Work", "Jobs", "/");
 
@@ -5708,6 +5720,7 @@ describe("slice-3h folders (SQLite)", () => {
     expect(store.folderGrouping("acc_1", "Jobs/Sub")).toBe(false);
     expect(store.getSyncState("acc_1", "Jobs")).not.toBeNull();
     expect(store.localFolderIndex("acc_1", "Work2", EPOCH)).toHaveLength(1);
+    expect(db.prepare("SELECT move_pending AS v FROM messages WHERE folder = ? AND uid = 9").get(INBOX)).toEqual({ v: "Jobs/Sub" });
   });
 
   it("drops a deleted folder with its rows, prefs and AI scope entry", () => {
@@ -5997,10 +6010,14 @@ describe.each(storeKinds)("slice-3h store semantics (%s)", (_kind, make) => {
 
   it("re-homes a rename, keeps prefs and saved searches, and drops a deleted folder", () => {
     s.upsertMessages("acc_1", "Work/Sub", [makeFetchedMessage(1)]);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(2)]);
+    s.queueMove([idIn(s, INBOX, 2)], "Work/Sub");
     s.setFolderGrouping("acc_1", "Work", false);
     s.putAiScope([{ accountId: "acc_1", scope: { mode: "folders", folders: ["Work", "Work/Sub", "Work2"] } }], [], T0);
     s.rehomeFolder("acc_1", "Work", "Jobs", "/");
     expect(s.localFolderIndex("acc_1", "Jobs/Sub", EPOCH)).toHaveLength(1);
+    // A queued move into a child follows the rename.
+    expect(s.pendingMoves("acc_1", INBOX).map((move) => move.destination)).toEqual(["Jobs/Sub"]);
     expect(s.folderGrouping("acc_1", "Jobs")).toBe(false);
     expect(s.loadAiScope().accounts.get("acc_1")).toEqual({ mode: "folders", folders: ["Jobs", "Jobs/Sub", "Work2"] });
     expect(s.listFolders("acc_1").find((f) => f.path === "Jobs")?.name).toBe("Jobs");

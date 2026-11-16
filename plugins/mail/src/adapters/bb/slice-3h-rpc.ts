@@ -520,11 +520,14 @@ export function createSlice3hRpc(deps: Slice3hDeps) {
         if (status.messages !== input.expectedMessages) throw refuse("conflict", FOLDER_CHANGED_MESSAGE);
       }
       if (gmailLabel) {
-        // A Gmail label folder: DELETE removes the label only (spec resolution 5).
-        await gateway.deleteFolder(config, folder.path, { expectEmpty: false });
+        // A Gmail label folder: DELETE removes the label only (spec resolution 5);
+        // the gateway checks for STATUS 0 instead when the server lacks X-GM-EXT-1.
+        await gateway.deleteFolder(config, folder.path, { expectEmpty: true, gmailLabel: true });
       } else {
         if (input.moveToTrash && input.expectedMessages > 0) count = await emptyIntoTrash(input.accountId, config, folder.path, trash!.path);
-        await gateway.deleteFolder(config, folder.path, { expectEmpty: true });
+        // A \Noselect folder (stored and listed so) holds no messages: no STATUS.
+        const selectable = folder.selectable || listing.some((f) => f.path === folder.path && f.selectable);
+        await gateway.deleteFolder(config, folder.path, { expectEmpty: selectable });
       }
       store.dropFolder(input.accountId, folder.path);
       await relist(input.accountId, config);

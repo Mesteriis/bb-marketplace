@@ -261,7 +261,7 @@ export function namedLikeSpecialUse(name: string): boolean {
 /** What the session-less folder commands need from an imapflow client; tests pass a stub. */
 export type FolderOpsClient = Pick<
   ImapFlow,
-  "mailbox" | "mailboxRename" | "mailboxDelete" | "mailboxSubscribe" | "mailboxUnsubscribe" | "status"
+  "mailbox" | "mailboxRename" | "mailboxDelete" | "mailboxSubscribe" | "mailboxUnsubscribe" | "status" | "capabilities"
 >;
 
 /**
@@ -310,15 +310,20 @@ export async function folderStatusWith(
 /**
  * DELETE of one folder with nothing selected. `expectEmpty`: STATUS first
  * on the same connection and "NotEmpty" (nothing deleted) above 0 messages;
- * without it (a Gmail label folder, spec resolution 5) DELETE only.
+ * without it (a \Noselect folder, which holds no messages) DELETE only.
+ * `gmailLabel` (spec resolution 5): DELETE only, which removes the label and
+ * keeps the mail, when this connection advertises X-GM-EXT-1; otherwise the
+ * STATUS check as with `expectEmpty`.
  */
 export async function deleteFolderWith(
   client: FolderOpsClient,
   path: string,
-  options: { expectEmpty: boolean },
+  options: { expectEmpty: boolean; gmailLabel?: boolean },
 ): Promise<void> {
   assertNothingSelected(client, "DeleteFailed");
-  if (options.expectEmpty) {
+  const gmail = client.capabilities?.has("X-GM-EXT-1") === true;
+  const check = options.gmailLabel === true ? !gmail : options.expectEmpty;
+  if (check) {
     const { messages } = await folderStatusWith(client, path);
     if (messages > 0) throw new SafeImapError("NotEmpty");
     assertNothingSelected(client, "DeleteFailed");

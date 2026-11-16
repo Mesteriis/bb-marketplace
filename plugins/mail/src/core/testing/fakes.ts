@@ -3180,6 +3180,8 @@ export class InMemoryMailStore implements MailStore {
     for (const row of this.state.rows) {
       const next = row.accountId === accountId ? move(row.folder) : null;
       if (next !== null) row.folder = next;
+      const destination = row.accountId === accountId && row.movePending !== null ? move(row.movePending) : null;
+      if (destination !== null) row.movePending = destination;
     }
     rekey(this.state.syncStates);
     rekey(this.state.history);
@@ -4082,6 +4084,7 @@ export type FolderOp = {
   path: string;
   to?: string;
   expectEmpty?: boolean;
+  gmailLabel?: boolean;
   selected: string | null;
 };
 
@@ -4350,12 +4353,14 @@ export class ScriptedImapGateway implements ImapGateway {
     return { messages: box.messages.length, uidValidity: box.uidValidity };
   }
 
-  async deleteFolder(_config: ImapConfig, path: string, options: { expectEmpty: boolean }): Promise<void> {
-    this.folderOp({ op: "delete", path, expectEmpty: options.expectEmpty, selected: null });
+  async deleteFolder(_config: ImapConfig, path: string, options: { expectEmpty: boolean; gmailLabel?: boolean }): Promise<void> {
+    this.folderOp({ op: "delete", path, expectEmpty: options.expectEmpty, ...(options.gmailLabel === true ? { gmailLabel: true } : {}), selected: null });
     const refusal = this.refuseFolderOp.get("delete");
     if (refusal) throw refusal;
     if (!this.folders.some((f) => f.path === path)) throw imapError("DeleteFailed");
-    if (options.expectEmpty && (this.mailboxes.get(path)?.messages.length ?? 0) > 0) throw imapError("NotEmpty");
+    // A Gmail label is deleted without the check only on a server with X-GM-EXT-1.
+    const check = options.gmailLabel === true ? !this.gmail : options.expectEmpty;
+    if (check && (this.mailboxes.get(path)?.messages.length ?? 0) > 0) throw imapError("NotEmpty");
     this.removeFolder(path);
   }
 
