@@ -1470,8 +1470,10 @@ fn c2_ctrl_c_interrupts_foreground_sleep_in_ssh_kind_session() {
         env: HashMap::new(),
         cwd: None,
     });
-    let sid = match h.read_response() {
-        Response::SessionOpened { session_id, .. } => session_id,
+    let (sid, sh_pid) = match h.read_response() {
+        Response::SessionOpened {
+            session_id, pid, ..
+        } => (session_id, pid),
         other => panic!("expected session.opened, got {other:?}"),
     };
 
@@ -1496,6 +1498,22 @@ fn c2_ctrl_c_interrupts_foreground_sleep_in_ssh_kind_session() {
         echoed.contains("after-int"),
         "after-int not received after 0x03: {echoed:?}"
     );
+
+    // The foreground sleep must be gone: no child of sh named sleep.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut alive = true;
+    while Instant::now() < deadline {
+        let out = Command::new("pgrep")
+            .args(["-P", &sh_pid.to_string(), "sleep"])
+            .output()
+            .expect("pgrep");
+        if out.stdout.is_empty() {
+            alive = false;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!alive, "sleep child of sh pid {sh_pid} still alive");
 }
 
 // C2 regression: an ssh-kind child that exits 255 must report ssh_error on
@@ -1562,18 +1580,23 @@ fn v1_env_values_reach_execve_intact() {
     }
 
     let mut got = String::new();
+    let mut closed = false;
     for _ in 0..400 {
         let (kind, payload) = h.read_frame();
-        if kind == FRAME_KIND_STREAM {
+        if kind == FRAME_KIND_CONTROL {
+            if let Response::SessionClosed { session_id, .. } = decode_response(&payload).unwrap() {
+                assert_eq!(session_id, sid);
+                closed = true;
+                break;
+            }
+        } else {
             let rsid = u32::from_le_bytes(payload[0..4].try_into().unwrap());
             if rsid == sid {
                 got.push_str(&String::from_utf8_lossy(&payload[8..]));
             }
         }
-        if got.contains("A=alpha") && got.contains("B=beta gamma") && got.contains("C=\u{03b4}") {
-            break;
-        }
     }
+    assert!(closed, "session.closed never arrived for {sid}");
 
     let mut lines: Vec<String> = got
         .lines()

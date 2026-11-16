@@ -239,11 +239,13 @@ fn handle(
             // reachable with test-hooks (the feature gate compiles this check
             // away), where the Rust tests exercise them.
             #[cfg(not(feature = "test-hooks"))]
-            if let Err(code) = crate::ssh_args::validate_ssh_spawn(&program, &argv, &env) {
+            if cwd.is_some()
+                || crate::ssh_args::validate_ssh_spawn(&program, &argv, &env).is_err()
+            {
                 return Ok(protocol::encode_response(&Response::Error {
                     id: Some(id),
-                    code,
-                    message: "session.open_ssh carries a disallowed program or option".to_string(),
+                    code: "ssh_option_rejected".to_string(),
+                    message: "session.open_ssh carries a disallowed program, option, cwd or env".to_string(),
                 }));
             }
             let spec = build_spawn_spec(program, argv, env, cwd);

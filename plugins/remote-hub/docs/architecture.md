@@ -1,4 +1,4 @@
-# Remote Hub — architecture (stage 1)
+# Remote Hub — architecture (stage 2a)
 
 Layer split follows the repository root rules: `src/core` and `src/ui` are
 host-free, `src/adapters/bb` owns host code, and `server.ts` / `app.tsx`
@@ -93,21 +93,28 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   detached (src/core/credit.ts).
 - Attach/detach semantics: one WebSocket per attached view, bound to a single
   session handle by a single-use attach token; closing the socket detaches the
-  view but the session keeps running in the helper. Re-attach sends a bounded
-  scrollback snapshot (last 1 MiB, owned by the TS adapter) before live bytes.
+  view but the session keeps running in the helper. service.attachStream takes
+  the scrollback snapshot and subscribes synchronously (no await between), so a
+  re-attach sends the snapshot first, then the buffered tail, then live bytes
+  with no duplication or reordering.
 - SSH config trust: without an explicit configFile the user's real ~/.ssh/config
   applies, including any StrictHostKeyChecking there. configFile, identityFile
   and knownHostsFile are provided by the RPC caller and passed as separate argv
-  entries; paths may contain spaces (only control characters are rejected).
+  entries. configFile and identityFile may contain spaces (only control
+  characters are rejected); knownHostsFile may not contain whitespace or be
+  /dev/null, because ssh splits UserKnownHostsFile on whitespace and /dev/null
+  would accept any host. The Rust validator is a policy mirror of the TS builder,
+  not a sandbox: a caller who can choose -F <file> can make ssh run a
+  ProxyCommand from that file.
 - Binary WebSocket facts (bb-plugin-sdk.d.ts:20446-20484):
   `bb.http.experimental_websocket(path, handler, { auth })` registers a route in
   the `/http/` namespace; a GET upgrades only with `Upgrade: websocket`.
   `ExperimentalPluginWebSocket.send(data: string | Uint8Array)` is binary-capable
   and `onMessage` receives `string | Uint8Array`. `PluginHttpAuthMode` is
   `"local" | "none" | "token"`. The default auth mode is "local": Origin/Host
-  must be a local BB app origin (bb-plugin-sdk.d.ts:20487-20491), and
-  experimental_websocket (bb-plugin-sdk.d.ts:20500-20503) says its auth modes
-  are identical to HTTP routes. Remote Hub relies on that default and adds its
+  must be a local BB app origin (bb-plugin-sdk.d.ts:20470), and
+  experimental_websocket (bb-plugin-sdk.d.ts:20482) says its auth modes are
+  identical to HTTP routes. Remote Hub relies on that default and adds its
   own single-use attach token plus per-session binding on top. Auth and origin
   checks are not exercised in a live BB server in this stage.
 - RDP image frames: not in this stage; nothing is claimed about them yet.

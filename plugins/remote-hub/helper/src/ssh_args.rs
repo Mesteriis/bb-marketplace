@@ -4,7 +4,7 @@
 //! never produce. Order of the allowed options is intentionally not enforced,
 //! because the integration drivers build the same argv in a different (still
 //! allowed) order; every option is validated on its own.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub fn ssh_option_rejected() -> String {
     "ssh_option_rejected".to_string()
@@ -47,6 +47,13 @@ fn opt_value<'a>(argv: &'a [String], i: usize, last: usize) -> Result<&'a str, S
     Ok(argv[i + 1].as_str())
 }
 
+/// /dev/null with any run of slashes or a trailing slash still names the null
+/// device; ssh would silently accept any host there.
+fn is_dev_null(path: &str) -> bool {
+    let normalized: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    normalized == ["dev", "null"]
+}
+
 pub fn validate_ssh_spawn(
     program: &str,
     argv: &[String],
@@ -67,9 +74,15 @@ pub fn validate_ssh_spawn(
         return Err(ssh_option_rejected());
     }
 
+    let mut seen = HashSet::new();
+    let mut seen_user_known_hosts = false;
     let mut i = 2;
     while i < last {
-        match argv[i].as_str() {
+        let key = argv[i].as_str();
+        if !seen.insert(key.to_string()) && key != "-o" {
+            return Err(ssh_option_rejected());
+        }
+        match key {
             "-l" => {
                 let v = opt_value(argv, i, last)?;
                 if !token_ok(v) {
@@ -100,16 +113,31 @@ pub fn validate_ssh_spawn(
                 if !absolute_path_ok(v) {
                     return Err(ssh_option_rejected());
                 }
-                i += 2;
+                // The builder always pairs -i with IdentitiesOnly=yes.
+                if i + 3 >= last || argv[i + 2] != "-o" || argv[i + 3] != "IdentitiesOnly=yes" {
+                    return Err(ssh_option_rejected());
+                }
+                seen.insert("-o".to_string());
+                seen.insert("IdentitiesOnly=yes".to_string());
+                i += 4;
             }
             "-o" => {
                 let v = opt_value(argv, i, last)?;
                 if let Some(path) = v.strip_prefix("UserKnownHostsFile=") {
-                    if path == "/dev/null" || !absolute_path_ok(path) {
+                    if is_dev_null(path)
+                        || !absolute_path_ok(path)
+                        || path.chars().any(|c| c.is_whitespace())
+                    {
                         return Err(ssh_option_rejected());
                     }
+                    if seen_user_known_hosts {
+                        return Err(ssh_option_rejected());
+                    }
+                    seen_user_known_hosts = true;
                 } else if v == "IdentitiesOnly=yes" {
-                    // accepted
+                    if !seen.insert("IdentitiesOnly=yes".to_string()) {
+                        return Err(ssh_option_rejected());
+                    }
                 } else {
                     return Err(ssh_option_rejected());
                 }
@@ -119,8 +147,11 @@ pub fn validate_ssh_spawn(
         }
     }
 
-    for key in env.keys() {
+    for (key, value) in env {
         if !env_key_ok(key) {
+            return Err(ssh_option_rejected());
+        }
+        if key == "TERM" && value != "xterm-256color" {
             return Err(ssh_option_rejected());
         }
     }
@@ -150,7 +181,7 @@ mod tests {
         ];
         for argv in [builder, driver] {
             let a: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-            assert!(validate_ssh_spawn("/usr/bin/ssh", &a, &env(&[("TERM", "xterm")])).is_ok());
+            assert!(validate_ssh_spawn("/usr/bin/ssh", &a, &env(&[("TERM", "xterm-256color")])).is_ok());
         }
     }
 
@@ -197,9 +228,7 @@ mod tests {
             let result = validate_ssh_spawn("/usr/bin/ssh", &case.argv, &HashMap::new());
             match case.error {
                 None => assert!(result.is_ok(), "expected accept for {:?}", case.argv),
-                Some(code) => {
-                    assert_eq!(result, Err(code.clone()), "expected {code} for {:?}", case.argv)
-                }
+                Some(_) => assert!(result.is_err(), "expected reject for {:?}", case.argv),
             }
         }
     }

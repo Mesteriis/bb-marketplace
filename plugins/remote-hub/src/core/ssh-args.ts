@@ -59,6 +59,10 @@ function assertAbsolutePath(value: string, field: string): void {
   if (/[\x00-\x1f]/.test(value)) invalid("invalid_" + field, field + " contains a control character");
 }
 
+function isDevNull(path: string): boolean {
+  return path.split("/").filter((s) => s.length > 0).join("/") === "dev/null";
+}
+
 /** Reject a single raw option; throws code ssh_option_rejected. */
 export function assertSshOptionAllowed(option: string): void {
   if (FORBIDDEN_OPTIONS.some((re) => re.test(option))) {
@@ -105,6 +109,14 @@ export function buildSshArgv(target: SshTarget): string[] {
   }
   if (target.knownHostsFile !== undefined) {
     assertAbsolutePath(target.knownHostsFile, "knownHostsFile");
+    // ssh splits UserKnownHostsFile on whitespace into several files, and
+    // /dev/null would accept any host; both must be refused for this field.
+    if (/\s/.test(target.knownHostsFile)) {
+      invalid("invalid_knownHostsFile", "knownHostsFile must not contain whitespace");
+    }
+    if (isDevNull(target.knownHostsFile)) {
+      invalid("invalid_knownHostsFile", "knownHostsFile must not be /dev/null");
+    }
     argv.push("-o", "UserKnownHostsFile=" + target.knownHostsFile);
   }
   if (target.identityFile !== undefined) {

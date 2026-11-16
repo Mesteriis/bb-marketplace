@@ -76,11 +76,14 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   const maybeEvictClosed = (key: string): void => {
     setTimeout(() => {
       const set = listeners.get(key);
-      if (set === undefined || set.size === 0) {
-        sessions.delete(key);
-        sessionEndListeners.delete(key);
-        listeners.delete(key);
+      if (set !== undefined && set.size > 0) {
+        // A view is still attached: retry later rather than leak or evict early.
+        maybeEvictClosed(key);
+        return;
       }
+      sessions.delete(key);
+      sessionEndListeners.delete(key);
+      listeners.delete(key);
     }, EVICT_CLOSED_AFTER_MS);
   };
 
@@ -111,6 +114,9 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
               }
               for (const key of Array.from(creditOwners.keys())) {
                 if (key.startsWith(generation + ":")) creditOwners.delete(key);
+              }
+              for (const key of Array.from(sessions.keys())) {
+                if (key.startsWith(generation + ":")) maybeEvictClosed(key);
               }
               attachTokens.revokeGeneration(generation);
               for (const cb of helperExitCallbacks) cb();

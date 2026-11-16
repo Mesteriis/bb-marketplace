@@ -101,6 +101,36 @@
       "target": { "host": "example.com", "extraOptions": ["-o", "UserKnownHostsFile=/dev/null"] },
       "argv": ["ssh", "-tt", "-o", "UserKnownHostsFile=/dev/null", "--", "example.com"],
       "error": "ssh_option_rejected"
+    },
+    {
+      "name": "knownhosts-devnull-direct",
+      "target": { "host": "example.com", "knownHostsFile": "/dev/null", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-o", "UserKnownHostsFile=/dev/null", "--", "example.com"],
+      "error": "invalid_knownHostsFile"
+    },
+    {
+      "name": "knownhosts-with-space",
+      "target": { "host": "example.com", "knownHostsFile": "/tmp/my kh", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-o", "UserKnownHostsFile=/tmp/my kh", "--", "example.com"],
+      "error": "invalid_knownHostsFile"
+    },
+    {
+      "name": "non-ascii-host",
+      "target": { "host": "münich.example", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "--", "münich.example"],
+      "error": null
+    },
+    {
+      "name": "config-with-space",
+      "target": { "host": "example.com", "configFile": "/tmp/my cfg", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-F", "/tmp/my cfg", "--", "example.com"],
+      "error": null
+    },
+    {
+      "name": "identity-with-space",
+      "target": { "host": "example.com", "identityFile": "/tmp/my id", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-i", "/tmp/my id", "-o", "IdentitiesOnly=yes", "--", "example.com"],
+      "error": null
     }
   ]
 }

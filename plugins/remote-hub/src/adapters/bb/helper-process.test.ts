@@ -234,15 +234,29 @@ describe("helper-process (lifecycle)", () => {
       });
       const handleA = await service.echoOpen(80, 24);
       const tokenA = service.sessionAttach(handleA);
+      let oldReceived = "";
+      const unsubA = service.subscribeSession(handleA, (data) => {
+        oldReceived += new TextDecoder().decode(data);
+      });
 
       // The helper dies; a new one starts and reuses session id 1.
       spawns[0].child.emit("exit");
       const handleB = await service.echoOpen(80, 24);
 
+      // B produces output; the stale A subscriber must receive nothing.
+      spawns[1].child.stdout.push(
+        encodeStreamFrame({ sessionId: handleB.sessionId, seq: 0 }, new TextEncoder().encode("B-output")),
+      );
+      await tick();
+      expect(oldReceived).toBe("");
+      unsubA();
+
       expect(service.consumeAttachToken(tokenA)).toBeNull();
+      const writesBefore = spawns[1].writes.length;
       await expect(service.sessionTerminalInput(handleA, new Uint8Array([0x78]))).rejects.toMatchObject({
         code: "session_not_found",
       });
+      expect(spawns[1].writes.length).toBe(writesBefore);
       await expect(service.sessionResize(handleA, 100, 30)).rejects.toMatchObject({
         code: "session_not_found",
       });
