@@ -267,6 +267,8 @@ export interface MailPageProps {
   inbox?: MailInboxPorts;
   /** Summaries, Ask, tasks, categories and reply reminders (slice 3f); absent: none of them. */
   ai?: MailAiPorts;
+  /** The Today or Tasks page (slice 3f), shown instead of the list and the conversation. */
+  page?: ReactNode;
 }
 
 function PageFrame({ children }: { children: ReactNode }) {
@@ -325,6 +327,13 @@ export function MailPage(props: MailPageProps) {
           ExternalLink={props.ExternalLink}
         />
       </PageFrame>
+    );
+  }
+  if (props.page !== undefined) {
+    return (
+      <div className="h-full min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto box-border w-full max-w-2xl px-4 pb-6 pt-3 md:px-5 md:pt-4">{props.page}</div>
+      </div>
     );
   }
   return <Mailbox {...props} status={status} />;
@@ -1046,10 +1055,12 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
                             const shown = messageToHand(openDetail.messages, reading.expandedIds);
                             if (shown === null || isDraft(shown)) return null;
                             const address = shown.from.address.trim();
+                            // The list row carries the local suggestion threads_list adds; thread_get may not.
+                            const row = list.threads.find((t) => t.id === openDetail.thread.id);
                             return (
                               <CategoryChip
-                                category={openDetail.thread.category}
-                                suggestion={openDetail.thread.categorySuggestion}
+                                category={row?.category ?? openDetail.thread.category}
+                                suggestion={row?.categorySuggestion ?? openDetail.thread.categorySuggestion}
                                 onAccept={() => ai.onCategoryAccept([shown.id])}
                                 onChange={(category) => ai.onCategorySet([shown.id], category)}
                                 onAlways={

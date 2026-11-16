@@ -81,6 +81,9 @@ import {
   parseDraftSubPath,
   parseThreadSubPath,
   parseViewSubPath,
+  pageSubPath,
+  parsePageSubPath,
+  type MailPageName,
   threadSubPath,
   viewSubPath,
   type ThreadLink,
@@ -97,7 +100,7 @@ import {
   type TranslationState,
 } from "./src/ui/translation-block.tsx";
 import { TranslationSettings } from "./src/ui/translation-settings.tsx";
-import { MailSettings, type SettingsSection, type TemplateView } from "./src/ui/mail-settings.tsx";
+import { MailSettings, type SettingsAiPorts, type SettingsSection, type TemplateView } from "./src/ui/mail-settings.tsx";
 import type { LanguageTag } from "./src/core/translate.ts";
 import { filterActive, formatUntil, subjectOrPlaceholder, type ListFilter } from "./src/ui/thread-list.tsx";
 import {
@@ -115,6 +118,9 @@ import { categoryLabel, type Category } from "./src/ui/category-chips.tsx";
 import type { MailAiPorts } from "./src/ui/mail-page.tsx";
 import { daysText } from "./src/ui/reminder-strip.tsx";
 import type { TaskPick } from "./src/ui/tasks-dialog.tsx";
+import { TodayView } from "./src/ui/today-view.tsx";
+import { DAY_NOTICE_TOAST_MS, dayNoticePlan } from "./src/ui/day-notices.ts";
+import { TasksView } from "./src/ui/tasks-view.tsx";
 
 // The channel name is checked against the core constant without importing it
 // at runtime: a value import of the core would bundle its zod schemas.
@@ -349,7 +355,8 @@ type PageCommand =
   | { kind: "account"; choice: string }
   | { kind: "view"; view: MailView }
   | { kind: "settings" }
-  | { kind: "thread"; link: ThreadLink };
+  | { kind: "thread"; link: ThreadLink }
+  | { kind: "page"; page: MailPageName };
 
 /**
  * What the Mail page and its sidebar share while both are mounted (they are
@@ -905,7 +912,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       if (key === null) return;
       wantedLink.current = null;
       if (currentSearch.query !== "") void runSearch("", forAccount);
-      if (!sameView(next, current)) navigate.toPluginPanel("mail", { subPath: viewSubPath(next) });
+      // From the Today or Tasks page, the view the page sits on opens too.
+      if (!sameView(next, current) || parsePageSubPath(latest.current.subPath) !== null) {
+        navigate.toPluginPanel("mail", { subPath: viewSubPath(next) });
+      }
     },
     [navigate, runSearch],
   );
@@ -2253,6 +2263,51 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     },
     [accounts],
   );
+  // ---- Slice 3f: plugin settings the page reads, and Mail settings' AI tabs ----
+
+  const pluginSettings = useSettings().values;
+  const categoriesOn = pluginSettings?.mailCategories === true;
+  const reminderDaysSetting = (() => {
+    const days = pluginSettings?.replyReminderDays;
+    return typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= 30 ? days : 3;
+  })();
+  const morningDigest = pluginSettings?.morningDigest === true;
+  const digestTime = typeof pluginSettings?.digestTime === "string" ? pluginSettings.digestTime : "08:00";
+  const openConversation = useCallback(
+    (accountId: string, threadId: string) => {
+      setSettings((prev) => ({ ...prev, open: false }));
+      navigate.toPluginPanel("mail", { subPath: threadSubPath(accountId, threadId) });
+    },
+    [navigate],
+  );
+  const settingsAi = useMemo<SettingsAiPorts>(
+    () => ({
+      scope: {
+        load: () => rpc.call("ai_scope_get", {}),
+        save: (input) => rpc.call("ai_scope_set", input),
+        folders: async (accountId) => (await rpc.call("folders_list", { accountId })).folders,
+      },
+      activity: {
+        load: ({ threadId, cursor }) =>
+          rpc.call("agent_log_list", { ...(threadId !== undefined ? { threadId } : {}), cursor, limit: 50 }),
+        clear: async () => (await rpc.call("agent_log_clear", {})).removed,
+        onOpen: openConversation,
+      },
+      categoriesOn,
+      morningDigest,
+      digestTime,
+      reminderDays: reminderDaysSetting,
+      loadRules: async () => (await rpc.call("category_rules_list", {})).rules,
+      removeRule: async (id) => {
+        await rpc.call("category_rule_remove", { id });
+      },
+      onOpenAiSettings: () => {
+        setSettings((prev) => ({ ...prev, open: false }));
+        setTranslateSettingsOpen(true);
+      },
+    }),
+    [categoriesOn, digestTime, morningDigest, openConversation, reminderDaysSetting, rpc],
+  );
   const settingsDialog = (
     <MailSettings
       open={settings.open}
@@ -2295,17 +2350,12 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         await loadBlockRules();
       }}
       onChangeSnoozeFolder={changeSnoozeFolder}
+      ai={settingsAi}
     />
   );
 
   // ---- Slice 3f: AI on the owner's click, categories, reply reminders ----
 
-  const pluginSettings = useSettings().values;
-  const categoriesOn = pluginSettings?.mailCategories === true;
-  const reminderDaysSetting = (() => {
-    const days = pluginSettings?.replyReminderDays;
-    return typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= 30 ? days : 3;
-  })();
   const aiJobs = useMemo<AiJobPorts>(
     () => ({
       start: (input) => rpc.call("ai_start", input),
@@ -2494,6 +2544,88 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     ],
   );
 
+  // ---- Slice 3f: the Today and Tasks pages ----
+
+  const shownPage = parsePageSubPath(subPath);
+  const [pageCounts, setPageCounts] = useState<{ today: number | null; tasks: number | null }>({ today: null, tasks: null });
+  const [pageRefresh, setPageRefresh] = useState(0);
+  const loadPageCounts = useCallback(async () => {
+    const [today, tasks] = await Promise.allSettled([rpc.call("today_get", {}), rpc.call("tasks_list", { done: false })]);
+    setPageCounts({
+      today: today.status === "fulfilled" ? today.value.needsReply.length : null,
+      tasks: tasks.status === "fulfilled" ? tasks.value.tasks.length : null,
+    });
+  }, [rpc]);
+  useEffect(() => {
+    if (status?.vaultReady !== true || accountIds === "") return;
+    void loadPageCounts();
+  }, [accountIds, loadPageCounts, status?.vaultReady]);
+  useDebouncedRealtime(MAIL_CHANGED_CHANNEL, () => {
+    void loadPageCounts();
+    setPageRefresh((n) => n + 1);
+  });
+  /** A change on a page: its counts and lists load again. */
+  const pageChanged = useCallback(() => {
+    void loadPageCounts();
+    void loadReminders();
+  }, [loadPageCounts, loadReminders]);
+  const showCategory = useCallback(
+    (category: Category) => {
+      setListFilter({ category });
+      navigate.toPluginPanel("mail", { subPath: viewSubPath(latest.current.view) });
+    },
+    [navigate, setListFilter],
+  );
+  const loadToday = useCallback(() => rpc.call("today_get", {}), [rpc]);
+  const loadTasks = useCallback(
+    (done: boolean, cursor: string | null) => rpc.call("tasks_list", { done, cursor }),
+    [rpc],
+  );
+  const pageContent =
+    shownPage === "today" ? (
+      <TodayView
+        load={loadToday}
+        jobs={aiJobs}
+        aiDisabledReason={mailAi.disabledReason}
+        onOpen={mailAi.onOpenConversation}
+        onNoReply={async (threadId) => {
+          await rpc.call("reply_dismiss", { threadId });
+          pageChanged();
+        }}
+        reminderDays={reminderDaysSetting}
+        onReminderSnooze={async (reminder, days) => {
+          await rpc.call("reminder_snooze", { id: reminder.id, days });
+          pageChanged();
+        }}
+        onReminderDismiss={async (reminder) => {
+          await rpc.call("reminder_dismiss", { id: reminder.id });
+          pageChanged();
+        }}
+        onTaskDone={async (task) => {
+          await rpc.call("task_update", { id: task.id, done: true });
+          pageChanged();
+        }}
+        {...(categoriesOn ? { onShowCategory: showCategory } : {})}
+        refreshKey={pageRefresh}
+      />
+    ) : shownPage === "tasks" ? (
+      <TasksView
+        load={loadTasks}
+        update={async (id, patch) => {
+          await rpc.call("task_update", { id, ...patch });
+          pageChanged();
+        }}
+        remove={async (id) => {
+          await rpc.call("task_delete", { id });
+          pageChanged();
+        }}
+        onOpen={(task) => {
+          if (task.threadId !== null) mailAi.onOpenConversation(task.accountId, task.threadId);
+        }}
+        refreshKey={pageRefresh}
+      />
+    ) : undefined;
+
   // ---- The sidebar's rail ----
 
   const outboxInScope = useMemo(
@@ -2514,9 +2646,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
             foldersError: scoped?.error ?? null,
             view,
             outbox: outboxInScope,
+            pages: { ...pageCounts, current: shownPage },
           },
     // currentViewKey stands for view, which is a new object each render.
-    [status, unified, account, folders, scoped, currentViewKey, outboxInScope],
+    [status, unified, account, folders, scoped, currentViewKey, outboxInScope, pageCounts, shownPage],
   );
   /** Changes when a pick in the sidebar should bring focus to the page. */
   const [focusRequest, setFocusRequest] = useState(0);
@@ -2539,6 +2672,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         return;
       case "thread":
         navigate.toPluginPanel("mail", { subPath: threadSubPath(command.link.accountId, command.link.threadId) });
+        return;
+      case "page":
+        navigate.toPluginPanel("mail", { subPath: pageSubPath(command.page) });
         return;
     }
   };
@@ -2630,6 +2766,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onListFilter={setListFilter}
       inbox={inboxPorts}
       ai={mailAi}
+      {...(pageContent !== undefined ? { page: pageContent } : {})}
     />
     <UnsubscribeDialog
       request={unsubscribeAsk === null ? null : { info: unsubscribeAsk.info, method: unsubscribeAsk.method }}
@@ -2782,10 +2919,96 @@ function useNewMailToasts(): void {
   });
 }
 
+// ---- Day notices (slice 3f) ----
+
+/** Tokens of day notices already asked for in this window. */
+const dayNoticeTokens = new Set<string>();
+/** Most notices one ask shows (each call hands the oldest unshown one). */
+const DAY_NOTICES_PER_ASK = 3;
+
+/** The waiting day notices as toasts with Open; any failure shows nothing. */
+async function showDayNotices(
+  rpc: ReturnType<typeof useRpc<typeof rpcContract>>,
+  token: string | null,
+  navigate: { current: Navigate | null },
+): Promise<void> {
+  for (let shown = 0; shown < DAY_NOTICES_PER_ASK; shown++) {
+    let notice: Awaited<ReturnType<typeof rpc.call<"day_notice_get">>>;
+    try {
+      notice = await rpc.call("day_notice_get", token !== null && shown === 0 ? { token } : {});
+    } catch {
+      // None waiting (not_found), a refusal, or no server: the badge carries on.
+      return;
+    }
+    try {
+      const plan = dayNoticePlan(notice);
+      const target = plan.open;
+      const subPath = "page" in target ? pageSubPath(target.page) : threadSubPath(target.accountId, target.threadId);
+      const canOpen = navigate.current !== null || mailPageLink.mounted();
+      const open = () => {
+        try {
+          if (navigate.current !== null) navigate.current.toPluginPanel("mail", { subPath });
+          else if ("page" in target) mailPageLink.send({ kind: "page", page: target.page });
+          else mailPageLink.send({ kind: "thread", link: target });
+        } catch {
+          // Nothing to open.
+        }
+      };
+      toast(plan.title, {
+        id: `makosh-mail-day-${token ?? "open"}-${shown}`,
+        description: plan.description,
+        duration: DAY_NOTICE_TOAST_MS,
+        ...(canOpen ? { action: { label: "Open", onClick: open } } : {}),
+      });
+    } catch {
+      return;
+    }
+  }
+}
+
+/**
+ * Today and reply-reminder toasts in every BB window (spec "Toasts"): the
+ * badge hook subscribes to mail-day and asks once on mount, so a window
+ * opened after the notice still shows it once (the server hands each notice
+ * out once). Every step is caught (3e resolution 23).
+ */
+function useDayNotices(): void {
+  const rpc = useRpc<typeof rpcContract>();
+  let navigate: Navigate | null = null;
+  try {
+    navigate = useBbNavigate();
+  } catch {
+    navigate = null;
+  }
+  const navigateRef = useRef<Navigate | null>(navigate);
+  navigateRef.current = navigate;
+  const rpcRef = useRef(rpc);
+  rpcRef.current = rpc;
+  useEffect(() => {
+    try {
+      void showDayNotices(rpcRef.current, null, navigateRef);
+    } catch {
+      // The badge carries on.
+    }
+  }, []);
+  useRealtime(DAY_NOTICE_CHANNEL, (payload) => {
+    try {
+      const token = newMailToken(payload);
+      if (token === null || dayNoticeTokens.has(token)) return;
+      dayNoticeTokens.add(token);
+      while (dayNoticeTokens.size > TOASTED_TOKENS_KEPT) dayNoticeTokens.delete(dayNoticeTokens.values().next().value!);
+      void showDayNotices(rpcRef.current, token, navigateRef);
+    } catch {
+      // The badge carries on.
+    }
+  });
+}
+
 /** The nav entry's unread count, kept current by the same realtime signal. */
 function useUnreadBadge(): ExperimentalBadge | null {
   const rpc = useRpc<typeof rpcContract>();
   useNewMailToasts();
+  useDayNotices();
   const [count, setCount] = useState(0);
   const refresh = useCallback(() => {
     rpc.call("status_get", null).then(
@@ -2823,6 +3046,9 @@ function MailFolderSidebar(_props: PluginNavPanelProps) {
       }}
       onOpenSettings={() => {
         if (!mailPageLink.send({ kind: "settings" })) navigate.toPluginPanel("mail");
+      }}
+      onSelectPage={(page) => {
+        if (!mailPageLink.send({ kind: "page", page })) navigate.toPluginPanel("mail", { subPath: pageSubPath(page) });
       }}
     />
   );
