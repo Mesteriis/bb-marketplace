@@ -174,10 +174,10 @@ fn handle(
                     pid: pid as u32,
                 }))
             }
-            Err(_) => Ok(protocol::encode_response(&Response::Error {
+            Err(e) => Ok(protocol::encode_response(&Response::Error {
                 id: Some(id),
                 code: "session_open_failed".to_string(),
-                message: "could not open an echo session".to_string(),
+                message: e.to_string(),
             })),
         },
         Request::SessionInput {

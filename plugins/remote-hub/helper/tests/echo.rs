@@ -682,3 +682,62 @@ fn s9_child_does_not_inherit_sibling_fds() {
     let fds = child_fds(b_pid);
     assert_eq!(fds, vec![0, 1, 2], "B's child inherited unexpected fds: {fds:?}");
 }
+
+// Stage-1 repair 3 regression: many concurrent sessions across many helpers
+// all open, echo their own literal line, and are all reaped on shutdown.
+#[test]
+fn s5_concurrent_sessions_across_helpers() {
+    let mut helpers: Vec<Helper> = (0..8).map(|_| start()).collect();
+    for h in helpers.iter_mut() {
+        h.hello();
+    }
+
+    let mut sessions: Vec<(usize, u32, u32)> = Vec::new(); // (helper index, session id, child pid)
+    for (hi, h) in helpers.iter_mut().enumerate() {
+        for _ in 0..8 {
+            h.send(&Request::OpenEcho {
+                id: 100,
+                cols: 80,
+                rows: 24,
+            });
+            match h.read_response() {
+                Response::SessionOpened {
+                    session_id, pid, ..
+                } => sessions.push((hi, session_id, pid)),
+                other => panic!("expected session.opened, got {other:?}"),
+            }
+        }
+    }
+    assert_eq!(sessions.len(), 64);
+
+    for (n, (hi, sid, _pid)) in sessions.iter().enumerate() {
+        let line = format!("s-{n}\n");
+        helpers[*hi].send(&Request::SessionInput {
+            id: 200 + n as u64,
+            session_id: *sid,
+            data: line,
+        });
+        match helpers[*hi].read_response() {
+            Response::SessionInputAck { .. } => {}
+            other => panic!("expected session.input_ack, got {other:?}"),
+        }
+        let needle = format!("s-{n}");
+        let echoed = helpers[*hi].read_until_stream_contains(*sid, &needle);
+        assert!(echoed.contains(&needle), "session {n} echo missing: {echoed:?}");
+    }
+
+    let child_pids: Vec<u32> = sessions.iter().map(|(_, _, pid)| *pid).collect();
+    let mut children: Vec<Child> = Vec::new();
+    for h in helpers {
+        let Helper { child, stdin, stdout: _ } = h;
+        drop(stdin); // close stdin so each helper shuts down
+        children.push(child);
+    }
+    for child in children.iter_mut() {
+        let status = wait_timeout(child, Duration::from_secs(5)).expect("helper did not exit");
+        assert_eq!(status.code(), Some(0));
+    }
+    for pid in child_pids {
+        assert!(!pid_alive(pid), "child {pid} still alive after shutdown");
+    }
+}

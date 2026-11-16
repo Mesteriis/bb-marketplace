@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 use std::ffi::CString;
-use std::io;
 use std::os::fd::RawFd;
 
 /// Per-session bound on buffered, not-yet-flushed PTY output. When a session's
@@ -49,11 +48,73 @@ pub struct SessionManager {
 
 #[derive(Debug)]
 pub enum SessionError {
-    Pty,
-    Fork,
+    /// A named step failed with this errno (diagnosable in the error frame).
+    Sys { step: &'static str, errno: i32 },
     Unknown,
     InputOverflow,
-    Io(io::Error),
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionError::Sys { step, errno } => write!(f, "{step} failed: {}", errno_text(*errno)),
+            SessionError::Unknown => write!(f, "no such session"),
+            SessionError::InputOverflow => write!(f, "session input overflows the pending-input window"),
+        }
+    }
+}
+
+fn last_errno() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+fn errno_text(errno: i32) -> String {
+    let name = match errno {
+        libc::EAGAIN => Some("EAGAIN"),
+        libc::EINTR => Some("EINTR"),
+        libc::ENOSPC => Some("ENOSPC"),
+        libc::EMFILE => Some("EMFILE"),
+        libc::ENFILE => Some("ENFILE"),
+        libc::EIO => Some("EIO"),
+        libc::EPERM => Some("EPERM"),
+        libc::ENOENT => Some("ENOENT"),
+        libc::EACCES => Some("EACCES"),
+        libc::ECHILD => Some("ECHILD"),
+        _ => None,
+    };
+    match name {
+        Some(name) => format!("{name} ({errno})"),
+        None => std::io::Error::from_raw_os_error(errno).to_string(),
+    }
+}
+
+/// Transient errnos (positive or the negative values macOS pty code paths
+/// store) that a bounded retry may clear: EAGAIN, EINTR, ENXIO.
+fn is_transient_errno(errno: i32) -> bool {
+    let e = errno.abs();
+    e == libc::EAGAIN || e == libc::EINTR || e == libc::ENXIO
+}
+
+/// The fds above 2 currently open in this process, listed from /dev/fd. Built
+/// in the parent so the child can close exactly the open ones without any
+/// allocation between fork and exec.
+fn open_fds_above_two() -> Vec<i32> {
+    let mut fds: Vec<i32> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("/dev/fd") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if let Some(name) = name.to_str() {
+                if let Ok(n) = name.parse::<i32>() {
+                    if n > 2 {
+                        fds.push(n);
+                    }
+                }
+            }
+        }
+    }
+    fds.sort_unstable();
+    fds.dedup();
+    fds
 }
 
 fn set_cloexec(fd: RawFd) {
@@ -129,17 +190,36 @@ impl SessionManager {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        let ret = unsafe {
-            libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                &mut winsize,
-            )
-        };
-        if ret != 0 {
-            return Err(SessionError::Pty);
+
+        // openpty fails transiently (EAGAIN/EINTR/ENXIO) under concurrent PTY
+        // creation; retry a bounded number of times and keep the last errno.
+        let mut openpty_errno = 0;
+        for _ in 0..8 {
+            master = -1;
+            slave = -1;
+            let ret = unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut winsize,
+                )
+            };
+            if ret == 0 {
+                break;
+            }
+            openpty_errno = last_errno();
+            if !is_transient_errno(openpty_errno) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        if master < 0 || slave < 0 {
+            return Err(SessionError::Sys {
+                step: "openpty",
+                errno: openpty_errno,
+            });
         }
         set_cloexec(master);
         set_cloexec(slave);
@@ -155,19 +235,41 @@ impl SessionManager {
             libc::tcsetattr(slave, libc::TCSANOW, &tio);
         }
 
-        let pid = unsafe { libc::fork() };
+        // List the fds the child will inherit (before fork) so the child can
+        // close exactly the open ones, including any non-CLOEXEC fd it got from
+        // its parent.
+        let inherited = open_fds_above_two();
+
+        let mut pid: libc::pid_t;
+        let mut fork_errno = 0;
+        let mut fork_attempts = 0;
+        loop {
+            pid = unsafe { libc::fork() };
+            if pid >= 0 {
+                break;
+            }
+            fork_errno = last_errno();
+            fork_attempts += 1;
+            if !is_transient_errno(fork_errno) || fork_attempts >= 8 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         if pid < 0 {
             unsafe {
                 libc::close(master);
                 libc::close(slave);
             }
-            return Err(SessionError::Fork);
+            return Err(SessionError::Sys {
+                step: "fork",
+                errno: fork_errno,
+            });
         }
         if pid == 0 {
             // Child: new session, the slave as controlling terminal, raw mode,
             // stdin/stdout/stderr to the slave, then exec the echo command.
-            // No allocation here: prog/c_args were built by the parent, and
-            // every other inherited fd is close-on-exec.
+            // No allocation here: prog/c_args/inherited were built by the
+            // parent.
             unsafe {
                 libc::setsid();
                 libc::ioctl(slave, libc::TIOCSCTTY as libc::c_ulong, 0);
@@ -177,7 +279,11 @@ impl SessionManager {
                 if slave > 2 {
                     libc::close(slave);
                 }
-                libc::close(master);
+                for fd in &inherited {
+                    if *fd != slave {
+                        libc::close(*fd);
+                    }
+                }
                 libc::execv(prog.as_ptr(), c_args.as_ptr());
                 libc::_exit(127);
             }
@@ -234,11 +340,11 @@ impl SessionManager {
             libc::write(session.master, buf.as_ptr() as *const libc::c_void, chunk as libc::size_t)
         };
         if n < 0 {
-            let err = io::Error::last_os_error();
-            if err.kind() == io::ErrorKind::Interrupted || err.kind() == io::ErrorKind::WouldBlock {
+            let errno = last_errno();
+            if errno == libc::EINTR || errno == libc::EAGAIN {
                 return Ok(0);
             }
-            return Err(SessionError::Io(err));
+            return Err(SessionError::Sys { step: "write", errno });
         }
         session.pending_in.drain(..n as usize);
         Ok(n as usize)
@@ -255,12 +361,12 @@ impl SessionManager {
         };
         let ret = unsafe { libc::ioctl(session.master, libc::TIOCSWINSZ as libc::c_ulong, &winsize) };
         if ret != 0 {
-            return Err(SessionError::Io(io::Error::last_os_error()));
+            return Err(SessionError::Sys { step: "ioctl", errno: last_errno() });
         }
         let mut readback: libc::winsize = unsafe { std::mem::zeroed() };
         let ret = unsafe { libc::ioctl(session.master, libc::TIOCGWINSZ as libc::c_ulong, &mut readback) };
         if ret != 0 {
-            return Err(SessionError::Io(io::Error::last_os_error()));
+            return Err(SessionError::Sys { step: "ioctl", errno: last_errno() });
         }
         Ok((readback.ws_col, readback.ws_row))
     }
@@ -282,13 +388,13 @@ impl SessionManager {
             libc::read(session.master, buf.as_mut_ptr() as *mut libc::c_void, chunk as libc::size_t)
         };
         if n < 0 {
-            let err = io::Error::last_os_error();
-            if err.kind() == io::ErrorKind::Interrupted || err.kind() == io::ErrorKind::WouldBlock {
+            let errno = last_errno();
+            if errno == libc::EINTR || errno == libc::EAGAIN {
                 return Ok(0);
             }
             // EIO (or any other read error) also completes the PTY.
             session.pty_done = true;
-            return Ok(0);
+            return Err(SessionError::Sys { step: "read", errno });
         }
         if n == 0 {
             session.pty_done = true;
