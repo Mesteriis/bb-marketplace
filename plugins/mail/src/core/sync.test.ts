@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ImapAuthError } from "./ports.ts";
-import { INBOX, syncAccount, type SyncDeps } from "./sync.ts";
+import { INBOX, prepareMessage, syncAccount, type SyncDeps } from "./sync.ts";
 import { planSnoozes } from "./snooze.ts";
 import {
   FixedClock,
@@ -1768,5 +1768,154 @@ describe("slice 3g: dev classification and List-Id at sync", () => {
     expect(store.getMessage(idByUid(store, "Spam", later.uid))!.dev).toBeNull();
     // Spam rows are not offered to the backfill either.
     expect(store.devUnclassified(10).map((r) => r.id)).toEqual([idByUid(store, INBOX, off.uid)]);
+  });
+});
+
+describe("slice 3h: kept rows, history check and Gmail labels", () => {
+  const DAY = 86_400_000;
+  const daysAgo = (days: number) => new Date(NOW.getTime() - days * DAY).toISOString();
+  const EPOCH = "1970-01-01T00:00:00.000Z";
+
+  /** INBOX with three recent messages and two from 60 and 61 days ago (outside the 30-day window). */
+  function withHistory() {
+    const box: FakeMailbox = {
+      uidValidity: 7,
+      uidNext: 6,
+      messages: [
+        makeFetchedMessage(1, { date: daysAgo(61), messageId: "<old-1@example.org>" }),
+        makeFetchedMessage(2, { date: daysAgo(60), messageId: "<old-2@example.org>" }),
+        makeFetchedMessage(3, { date: hoursAgo(3) }),
+        makeFetchedMessage(4, { date: hoursAgo(2) }),
+        makeFetchedMessage(5, { date: hoursAgo(1) }),
+      ],
+    };
+    const env = setup(box);
+    return { ...env, box };
+  }
+
+  /** Loads the two old messages as history, as a history job would. */
+  function loadHistory(store: InMemoryMailStore, box: FakeMailbox) {
+    store.upsertMessages(ACCOUNT_ID, INBOX, box.messages.slice(0, 2).map((m) => structuredClone(m)), { kept: "history" });
+    store.setHistorySince(ACCOUNT_ID, INBOX, daysAgo(65));
+  }
+
+  const flagUids = (gateway: ScriptedImapGateway, from = 0) =>
+    gateway.sessions.slice(from).flatMap((s) => s.calls.filter((c) => c.method === "fetchFlags").flatMap((c) => c.uids!));
+
+  const idAt = (store: InMemoryMailStore, uid: number) =>
+    store.localFolderIndex(ACCOUNT_ID, INBOX, EPOCH).find((e) => e.uid === uid)?.id;
+
+  it("prepareMessage is exported and judges unsubscribe info and the dev class as sync does", async () => {
+    const message = makeFetchedMessage(1, {
+      unsubscribeHeaders: [{ key: "list-unsubscribe", value: "<https://example.org/u>" }],
+    });
+    const prepared = prepareMessage(message, { preset: "other", classifyDev: false, devHosts: new Set() });
+    expect(prepared.unsubscribe).not.toBeUndefined();
+    expect(prepared).not.toHaveProperty("dev");
+    expect(prepareMessage(makeFetchedMessage(2), { preset: "other", classifyDev: false, devHosts: new Set() })).toEqual(makeFetchedMessage(2));
+    expect(prepareMessage(makeFetchedMessage(3), { preset: "other", classifyDev: true, devHosts: new Set() })).toHaveProperty("dev");
+  });
+
+  it("checks history rows only with historyCheck, then at most once a day", async () => {
+    const { store, gateway, deps, box } = withHistory();
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    loadHistory(store, box);
+    // An incremental round never fetches the flags of history rows.
+    let from = gateway.sessions.length;
+    expect((await syncAccount(deps, ACCOUNT_ID, OPTIONS)).status).toBe("ok");
+    expect(flagUids(gateway, from).sort()).toEqual([3, 4, 5]);
+    expect(store.historyState(ACCOUNT_ID, INBOX)!.historyCheckedAt).toBeNull();
+
+    // A full round with historyCheck checks them; a message gone from the server leaves.
+    box.messages = box.messages.filter((m) => m.uid !== 1);
+    box.messages[0]!.seen = true;
+    from = gateway.sessions.length;
+    const outcome = await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, historyCheck: true });
+    expect(outcome).toMatchObject({ status: "ok", removed: 1, newInbox: [], returning: [], inserted: [] });
+    expect(flagUids(gateway, from).sort()).toEqual([1, 2, 3, 4, 5]);
+    expect(idAt(store, 1)).toBeUndefined();
+    expect(store.getMessage(idAt(store, 2)!)!.isRead).toBe(true);
+    expect(store.getMessage(idAt(store, 2)!)!.kept).toBe("history");
+    expect(store.historyState(ACCOUNT_ID, INBOX)!.historyCheckedAt).toBe(NOW.toISOString());
+
+    // Checked less than a day ago: not again.
+    from = gateway.sessions.length;
+    await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, historyCheck: true });
+    expect(flagUids(gateway, from).sort()).toEqual([3, 4, 5]);
+    const later = { ...deps, clock: new FixedClock(new Date(NOW.getTime() + DAY + 1)) };
+    from = gateway.sessions.length;
+    await syncAccount(later, ACCOUNT_ID, { ...OPTIONS, historyCheck: true });
+    expect(flagUids(gateway, from)).toContain(2);
+  });
+
+  it("checks nothing outside the window when no history was loaded", async () => {
+    const { store, gateway, deps } = withHistory();
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const from = gateway.sessions.length;
+    await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, historyCheck: true });
+    expect(flagUids(gateway, from).sort()).toEqual([3, 4, 5]);
+    expect(store.historyState(ACCOUNT_ID, INBOX)!.historyCheckedAt).toBeNull();
+  });
+
+  it("clears kept on rows inside the window", async () => {
+    const { store, deps, box } = withHistory();
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    // A server hit that turned out to be inside the window (the window grew).
+    store.upsertMessages(ACCOUNT_ID, INBOX, [structuredClone(box.messages[1]!)], { kept: "search" });
+    const id = idAt(store, 2)!;
+    expect(store.getMessage(id)!.kept).toBe("search");
+    await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, windowDays: 90 });
+    expect(store.getMessage(id)!.kept).toBeNull();
+  });
+
+  it("a UIDVALIDITY reset keeps opened rows it finds, deletes the rest, and clears history_since", async () => {
+    const { store, deps, box } = withHistory();
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    // uid 1 loaded and opened, uid 2 loaded as history, plus an opened row the server no longer has.
+    store.upsertMessages(ACCOUNT_ID, INBOX, box.messages.slice(0, 2).map((m) => structuredClone(m)), { kept: "history" });
+    store.upsertMessages(ACCOUNT_ID, INBOX, [makeFetchedMessage(9, { date: daysAgo(70), messageId: "<gone@example.org>" })], {
+      kept: "history",
+    });
+    const opened = idAt(store, 1)!;
+    const history = idAt(store, 2)!;
+    const goneOpened = idAt(store, 9)!;
+    store.promoteKept([opened, goneOpened]);
+    store.setHistorySince(ACCOUNT_ID, INBOX, daysAgo(75));
+
+    // The server renumbers the folder: same messages, new uids.
+    box.uidValidity = 8;
+    box.messages = box.messages.map((m, i) => ({ ...m, uid: 101 + i }));
+    box.uidNext = 106;
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome.status).toBe("ok");
+    expect(store.getMessage(opened)).toMatchObject({ kept: "opened" });
+    expect(idAt(store, 101)).toBe(opened);
+    expect(store.getMessage(goneOpened)).toBeNull();
+    expect(store.getMessage(history)).toBeNull();
+    expect(store.historyState(ACCOUNT_ID, INBOX)!.historySince).toBeNull();
+  });
+
+  it("stores Gmail labels at sync and refreshes them in the flag pass", async () => {
+    const box = mailbox(2);
+    box.messages[0]!.gmLabels = ["\\Inbox", "Receipts"];
+    box.messages[1]!.gmLabels = ["\\Inbox"];
+    const { store, gateway, deps } = setup(box);
+    gateway.gmail = true;
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const first = idAt(store, 1)!;
+    expect(store.gmLabels([first]).get(first)).toEqual(["\\Inbox", "Receipts"]);
+    box.messages[0]!.gmLabels = ["\\Inbox", "Travel"];
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(store.gmLabels([first]).get(first)).toEqual(["\\Inbox", "Travel"]);
+  });
+
+  it("stores no labels off Gmail", async () => {
+    const box = mailbox(1);
+    box.messages[0]!.gmLabels = ["Receipts"];
+    const { store, deps } = setup(box);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const id = idAt(store, 1)!;
+    expect(store.gmLabels([id]).get(id)).toEqual([]);
   });
 });

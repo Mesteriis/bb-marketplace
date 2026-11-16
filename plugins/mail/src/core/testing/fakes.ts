@@ -3115,6 +3115,27 @@ export class InMemoryMailStore implements MailStore {
     this.state.history.set(key, { since: since === null ? null : isoOrNull(since), checkedAt: this.state.history.get(key)?.checkedAt ?? null });
   }
 
+  clearWindowKept(accountId: string, folder: string, sinceIso: string): number {
+    const since = timeOf(sinceIso) ?? -Infinity;
+    let changed = 0;
+    for (const row of this.folderRows(accountId, folder)) {
+      if (row.kept === null) continue;
+      const time = timeOf(row.message.date);
+      if (time !== null && time < since) continue;
+      row.kept = null;
+      row.keptAt = null;
+      changed++;
+    }
+    return changed;
+  }
+
+  keptIds(accountId: string, folder: string, kept: KeptState): string[] {
+    return this.folderRows(accountId, folder)
+      .filter((row) => row.kept === kept)
+      .map((row) => row.id)
+      .sort();
+  }
+
   historyChecked(accountId: string, folder: string, atIso: string): void {
     if (!this.state.syncStates.has(stateKey(accountId, folder))) return;
     const key = stateKey(accountId, folder);

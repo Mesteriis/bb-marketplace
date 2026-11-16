@@ -39,6 +39,7 @@ import type {
   AttachmentMatch,
   FileKind,
   FileRow,
+  KeptState,
   SearchCursor,
 } from "./model.ts";
 import type { ServerCriteria } from "./server-search.ts";
@@ -1122,6 +1123,14 @@ export interface MailStore {
   setHistorySince(accountId: string, folder: string, since: string | null): void;
   /** Reconcile checked the loaded history (spec resolution 9). */
   historyChecked(accountId: string, folder: string, atIso: string): void;
+  /**
+   * Rows of the folder dated at or after `sinceIso` (or undated: the window
+   * as localFolderIndex reads it) are window rows: their `kept` and
+   * `kept_at` are cleared. Returns how many rows changed.
+   */
+  clearWindowKept(accountId: string, folder: string, sinceIso: string): number;
+  /** Ids of the folder's rows with this `kept` state, attached or not (a reset looks for `opened` ones, spec resolution 16). */
+  keptIds(accountId: string, folder: string, kept: KeptState): string[];
   /** Rows dated before the window whose `kept` is history or search. */
   historyForgetCount(accountId: string, folder: string): number;
   /** Deletes those rows (with their attachment text) and clears history_since; returns how many. */

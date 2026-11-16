@@ -5984,6 +5984,25 @@ export function createSqliteStore(db: Database.Database): MailStore {
       );
     },
 
+    clearWindowKept(accountId, folder, sinceIso) {
+      const since = normalizeDate(sinceIso) ?? sinceIso;
+      return db
+        .prepare<[string, string, string]>(
+          `UPDATE messages SET kept = NULL, kept_at = NULL
+           WHERE account_id = ? AND folder = ? AND kept IS NOT NULL AND (date IS NULL OR date >= ?)`,
+        )
+        .run(accountId, folder, since).changes;
+    },
+
+    keptIds(accountId, folder, kept) {
+      return db
+        .prepare<[string, string, string], { id: string }>(
+          "SELECT id FROM messages WHERE account_id = ? AND folder = ? AND kept = ? ORDER BY id",
+        )
+        .all(accountId, folder, kept)
+        .map((row) => row.id);
+    },
+
     historyChecked(accountId, folder, atIso) {
       db.prepare("UPDATE sync_state SET history_checked_at = ? WHERE account_id = ? AND folder = ?").run(
         isoOf(atIso),

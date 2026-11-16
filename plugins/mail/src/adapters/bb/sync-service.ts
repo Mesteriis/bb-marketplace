@@ -37,6 +37,9 @@
 // new rows' dev class, and after a full round the dev backfill classifies up
 // to DEV_BACKFILL_BUDGET older rows from their stored From and subject (no
 // server contact) while unclassified rows remain.
+//
+// Slice 3h: full rounds pass historyCheck, so sync checks a folder's loaded
+// history against the server at most once a day (spec resolution 9).
 import {
   backfillBulk,
   backfillUnsubscribe,
@@ -254,7 +257,8 @@ export function createSyncLoop(
       if (target !== "all") ids = ids.filter((id) => target.has(id));
       for (const id of ids) {
         if (signal.aborted) break;
-        const only = target !== "all" && target.get(id) === "inbox" ? { only: "inbox" as const } : {};
+        // Slice 3h: full rounds may check loaded history (once a day per folder, decided by sync).
+        const only = target !== "all" && target.get(id) === "inbox" ? { only: "inbox" as const } : { historyCheck: true };
         await Promise.race([syncOne(id, { ...syncOptions, ...only }), aborted]);
       }
       // Rows synced while classification was off wait for the backfill again.

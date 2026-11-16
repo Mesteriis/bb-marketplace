@@ -541,6 +541,31 @@ describe("createSyncLoop Inbox-only rounds and onRoundOk (slice 3e)", () => {
     await done;
   });
 
+  it("asks the daily history check on full rounds only (slice 3h)", async () => {
+    vi.useFakeTimers();
+    const t0 = Date.now();
+    const until = (ms: number) => vi.advanceTimersByTimeAsync(t0 + ms - Date.now());
+    const { store, deps } = setup();
+    store.saveAccount(account("acc_1"));
+    const checked = vi.spyOn(store, "historyChecked");
+    const loop = createSyncLoop(deps, SETTINGS);
+    const controller = new AbortController();
+    const done = loop.start(controller.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    store.setHistorySince("acc_1", "INBOX", "2026-09-01T00:00:00.000Z");
+    await until(20_000);
+    loop.wake("acc_1", { only: "inbox" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(checked).not.toHaveBeenCalled();
+    await until(40_000);
+    loop.wake("acc_1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(checked).toHaveBeenCalledTimes(1);
+    expect(checked.mock.calls[0]!.slice(0, 2)).toEqual(["acc_1", "INBOX"]);
+    controller.abort();
+    await done;
+  });
+
   it("a scheduled full round clears a queued Inbox-only wake", async () => {
     vi.useFakeTimers();
     const t0 = Date.now();

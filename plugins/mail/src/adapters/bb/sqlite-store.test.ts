@@ -5592,6 +5592,27 @@ describe("slice-3h kept rows (SQLite)", () => {
     expect(store.localFolderIndex("acc_1", INBOX, EPOCH).map((e) => e.uid)).toEqual([2, 9]);
     expect(store.historyState("acc_1", "Nowhere")).toBeNull();
   });
+
+  it("clears kept on window rows (dated inside or undated) and lists ids by kept state", () => {
+    store.upsertMessages(
+      "acc_1",
+      INBOX,
+      [
+        makeFetchedMessage(1, { date: "2026-09-01T00:00:00.000Z" }),
+        makeFetchedMessage(2, { date: "2026-11-01T00:00:00.000Z" }),
+        makeFetchedMessage(3, { date: null }),
+      ],
+      { kept: "history" },
+    );
+    store.markOpened(idOf(store, 1));
+    expect(store.keptIds("acc_1", INBOX, "opened")).toEqual([idOf(store, 1)]);
+    expect(store.keptIds("acc_1", INBOX, "history")).toEqual([idOf(store, 2), idOf(store, 3)].sort());
+    expect(store.clearWindowKept("acc_1", INBOX, "2026-10-17T00:00:00.000Z")).toBe(2);
+    expect(store.keptIds("acc_1", INBOX, "history")).toEqual([]);
+    expect(store.getMessage(idOf(store, 2))!.kept).toBeNull();
+    expect(store.getMessage(idOf(store, 1))!.kept).toBe("opened");
+    expect(store.clearWindowKept("acc_1", INBOX, "2026-10-17T00:00:00.000Z")).toBe(0);
+  });
 });
 
 describe("slice-3h folders (SQLite)", () => {

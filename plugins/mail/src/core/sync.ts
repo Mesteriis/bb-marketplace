@@ -23,6 +23,14 @@
 // the next). One failing folder is recorded and the round goes on; a rejected
 // login stops the account. Never throws; error text is built from error
 // classes and codes, so it never carries the password.
+//
+// Slice 3h: rows loaded by a history or server-search job carry `kept`
+// (KeptState). Reconcile clears it on rows inside the window (they are
+// window rows again) and, with `historyCheck`, once a day per folder also
+// checks the flags of loaded history (between history_since and the
+// window), deleting what left the server. A reset also looks for `opened`
+// rows and clears history_since. Gmail sessions report X-GM-LABELS, which
+// are stored at every fetch and refreshed in the flag pass.
 import type { AccountPreset, FetchedMessage, FlagChange, FlagIntent, Folder, RemoteFolder } from "./model.ts";
 import {
   ImapAuthError,
@@ -76,7 +84,16 @@ export interface SyncOptions {
   classify?: boolean;
   /** Hosts of the BB projects' remotes: a self-hosted GitLab or Jenkins sender counts only from these (or with its own List-Id). */
   devHosts?: readonly string[];
+  /**
+   * Slice 3h (spec resolution 9): reconcile also checks the flags of the
+   * loaded history of a folder whose last check is missing or older than
+   * HISTORY_CHECK_EVERY_MS. The sync service sets it on full rounds.
+   */
+  historyCheck?: boolean;
 }
+
+/** Loaded history of a folder is checked against the server at most this often. */
+export const HISTORY_CHECK_EVERY_MS = 86_400_000;
 
 export type SyncOutcome =
   | {
@@ -113,13 +130,17 @@ export type SyncOutcome =
 
 type FolderCounts = { fetched: number; removed: number; flagsChanged: number };
 
-/** What one folder's sync needs beyond the session: how to judge headers, and where new Inbox rows go. */
-type FolderContext = {
+/** How a fetched message is judged before it is stored (sync, and slice 3h jobs). */
+export type PrepareContext = {
   preset: AccountPreset;
   /** Slice 3g: classification is on and the folder is not Spam or Trash. */
   classifyDev: boolean;
   /** The project remotes' hosts the classifier vouches for. */
   devHosts: ReadonlySet<string>;
+};
+
+/** What one folder's sync needs beyond the session: how to judge headers, and where new Inbox rows go. */
+type FolderContext = PrepareContext & {
   /** Set for an Inbox-role folder: its incremental fetch collects inserted rows here. */
   collect: { newInbox: string[]; returning: string[] } | null;
   /** Every row inserted this round in any folder, reconcile backfill included (slice 3f). */
@@ -577,7 +598,11 @@ async function syncFolder(
     stored === null || resetting
       ? keptAtReset(store, accountId, path, stored === null, queuedAtReset)
       : new Map<string, number | null>();
-  if (resetting) store.beginFolderReset(accountId, path);
+  if (resetting) {
+    store.beginFolderReset(accountId, path);
+    // Loaded history named the old uids: "Load 30 more days" starts again.
+    store.setHistorySince(accountId, path, null);
+  }
   const initial = stored === null || resetting;
 
   const baseState = initial
@@ -611,6 +636,7 @@ async function syncFolder(
       count += messages.length;
       const stored = store.transaction(() => {
         const result = store.upsertMessages(accountId, path, messages);
+        storeLabels(store, accountId, path, messages.map((m) => ({ uid: m.uid, labels: m.gmLabels })));
         store.saveSyncState(accountId, path, { ...baseState, lastUid });
         return result;
       });
@@ -637,7 +663,9 @@ async function syncFolder(
     lastUid = highest;
     store.saveSyncState(accountId, path, { ...baseState, lastUid });
   }
-  const reconciled = await reconcile(store, session, accountId, path, since, fetchAndStore);
+  const historyFrom = initial || options.historyCheck !== true ? null : historyDue(store, accountId, path, now);
+  const reconciled = await reconcile(store, session, accountId, path, since, fetchAndStore, historyFrom);
+  if (historyFrom !== null) store.historyChecked(accountId, path, now.toISOString());
   fetched += reconciled.backfilled;
   if (initial) {
     // The window is stored: start incremental sync from the end of the
@@ -675,6 +703,8 @@ function keptAtReset(
 ): Map<string, number | null> {
   const wanted = new Set<string>(queued);
   for (const snooze of store.listSnoozes(accountId, { limit: SNOOZES_MAX_PER_ACCOUNT })) wanted.add(snooze.messageId);
+  // Slice 3h (spec resolution 16): a row the owner touched is never lost only because of the reset.
+  for (const id of store.keptIds(accountId, path, "opened")) wanted.add(id);
   const kept = new Map<string, number | null>();
   for (const row of store.detachedRows(accountId, path)) if (neverSynced || wanted.has(row.id)) kept.set(row.id, null);
   for (const entry of store.localFolderIndex(accountId, path, EPOCH_ISO)) {
@@ -719,7 +749,13 @@ async function reattachKept(
         .filter((message) => ours(message, rows))
         .map((message) => prepareMessage(message, context));
       if (messages.length === 0) continue;
-      inserted.push(...store.transaction(() => store.upsertMessages(accountId, path, messages)).inserted);
+      inserted.push(
+        ...store.transaction(() => {
+          const result = store.upsertMessages(accountId, path, messages);
+          storeLabels(store, accountId, path, messages.map((m) => ({ uid: m.uid, labels: m.gmLabels })));
+          return result;
+        }).inserted,
+      );
       stored += messages.length;
     }
   };
@@ -752,6 +788,8 @@ async function reconcile(
   path: string,
   since: Date,
   fetchAndStore: (uids: number[]) => Promise<number>,
+  /** Slice 3h: also check loaded history from this date up to the window (null: the window only). */
+  historyFrom: string | null,
 ): Promise<{ backfilled: number; removed: number; flagsChanged: number }> {
   const serverUids = await session.searchSince(since);
   // Every stored uid, not only the window's: a message whose stored date falls
@@ -768,24 +806,62 @@ async function reconcile(
     .map((entry) => entry.uid);
   const onServer = new Set<number>();
   let flagsChanged = 0;
-  for (let i = 0; i < local.length; i += FLAG_BATCH_SIZE) {
-    const flags = await session.fetchFlags(local.slice(i, i + FLAG_BATCH_SIZE));
+  // Slice 3h: loaded history between historyFrom and the window, checked the same way.
+  const windowUids = new Set(local);
+  const history =
+    historyFrom === null
+      ? []
+      : store
+          .localFolderIndex(accountId, path, historyFrom)
+          .map((entry) => entry.uid)
+          .filter((uid) => !windowUids.has(uid));
+  const checked = [...local, ...history];
+  for (let i = 0; i < checked.length; i += FLAG_BATCH_SIZE) {
+    const flags = await session.fetchFlags(checked.slice(i, i + FLAG_BATCH_SIZE));
     for (const entry of flags) onServer.add(entry.uid);
     flagsChanged += store.applyFlags(accountId, path, flags);
+    storeLabels(store, accountId, path, flags.map((entry) => ({ uid: entry.uid, labels: entry.labels })));
   }
+  // Rows inside the window are window rows, whatever loaded them (spec "Window setting change").
+  store.clearWindowKept(accountId, path, since.toISOString());
   // Every flag batch succeeded (a failure throws and ends the round), so a uid
   // the server returned nothing for is gone from it.
-  const gone = local.filter((uid) => !onServer.has(uid));
+  const gone = checked.filter((uid) => !onServer.has(uid));
   const removed = gone.length > 0 ? store.deleteByUids(accountId, path, gone) : 0;
   return { backfilled, removed, flagsChanged };
 }
 
 /**
+ * Where the history check of a folder starts when it is due (spec
+ * resolution 9): history was loaded and the last check is missing or older
+ * than HISTORY_CHECK_EVERY_MS. Null when there is nothing to check.
+ */
+function historyDue(store: MailStore, accountId: string, path: string, now: Date): string | null {
+  const state = store.historyState(accountId, path);
+  if (state === null || state.historySince === null) return null;
+  const checkedAt = state.historyCheckedAt === null ? null : Date.parse(state.historyCheckedAt);
+  if (checkedAt !== null && Number.isFinite(checkedAt) && now.getTime() - checkedAt < HISTORY_CHECK_EVERY_MS) return null;
+  return state.historySince;
+}
+
+/** Stores the X-GM-LABELS a Gmail session reported; entries without labels (other servers) are left out. */
+function storeLabels(
+  store: MailStore,
+  accountId: string,
+  path: string,
+  entries: readonly { uid: number; labels?: string[] | undefined }[],
+): void {
+  const reported = entries.flatMap((entry) => (entry.labels === undefined ? [] : [{ uid: entry.uid, labels: entry.labels }]));
+  if (reported.length > 0) store.setGmLabels(accountId, path, reported);
+}
+
+/**
  * The message as the store takes it: unsubscribe info, and (slice 3g) the
  * local dev class when classification is on for the folder. Nothing here
- * writes to the server.
+ * writes to the server. Slice 3h jobs call it with the same context, so
+ * their rows are judged like synced rows (spec resolution 7).
  */
-function prepareMessage(message: FetchedMessage, context: Pick<FolderContext, "preset" | "classifyDev" | "devHosts">): FetchedMessage {
+export function prepareMessage(message: FetchedMessage, context: PrepareContext): FetchedMessage {
   let out = withUnsubscribe(message, context.preset);
   if (context.classifyDev) {
     // The store keeps the List-Id itself, from the same bulk headers.
