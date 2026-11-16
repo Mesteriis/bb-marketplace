@@ -114,6 +114,28 @@ describe("MessageFrame slice 3i", () => {
     expect(onOpenLink).toHaveBeenCalledWith("https://shop.example.com/sale", "Big sale");
   });
 
+  it("a frame that goes away while its link is hovered clears the status line (slice 3i review)", () => {
+    const onLinkHover = vi.fn();
+    const view = frame({ body: body({ html: "<p>x</p>" }), onLinkHover });
+    const iframe = screen.getByTitle("Message from Ada") as HTMLIFrameElement;
+    const doc = iframe.contentDocument!;
+    fireEvent.load(iframe);
+    doc.body.innerHTML = '<p><a id="l" href="https://shop.example.com/sale">Sale</a></p>';
+    doc.getElementById("l")!.dispatchEvent(new (doc.defaultView as Window & typeof globalThis).MouseEvent("mouseover", { bubbles: true }));
+    expect(onLinkHover).toHaveBeenLastCalledWith(expect.objectContaining({ href: "https://shop.example.com/sale" }));
+    view.unmount();
+    expect(onLinkHover).toHaveBeenLastCalledWith(null);
+  });
+
+  it("a frame that goes away without a hovered link leaves the status line alone", () => {
+    const onLinkHover = vi.fn();
+    const view = frame({ body: body({ html: "<p>x</p>" }), onLinkHover });
+    fireEvent.load(screen.getByTitle("Message from Ada"));
+    const calls = onLinkHover.mock.calls.length;
+    view.unmount();
+    expect(onLinkHover.mock.calls.length).toBe(calls);
+  });
+
   it("a new load clears the status line and leaves one listener of each kind", () => {
     const onLinkHover = vi.fn();
     frame({ body: body({ html: "<p>x</p>" }), onLinkHover });

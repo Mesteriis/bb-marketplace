@@ -81,6 +81,7 @@ import { extendSelection, successorRow } from "./successor.ts";
 import { SmtpDialog, type SmtpResult, type SmtpSettingsInput } from "./smtp-dialog.tsx";
 import {
   createDestructiveGuard,
+  isTypingTarget,
   useShortcuts,
   type DestructiveGuard,
   type GoTarget,
@@ -534,6 +535,14 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const guardRef = useRef<DestructiveGuard | null>(null);
   guardRef.current ??= createDestructiveGuard();
   const destructiveGuard = guardRef.current;
+  // Slice 3i review: a held arrow whose release the page never sees (focus left the window) opens nothing later.
+  useEffect(() => {
+    const drop = () => {
+      heldArrow.current = false;
+    };
+    window.addEventListener("blur", drop);
+    return () => window.removeEventListener("blur", drop);
+  }, []);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [moveTargets, setMoveTargets] = useState<string[] | null>(null);
@@ -755,6 +764,8 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     const next = successorRow(rowIds, isRemoved, current);
     if (next === null) return null;
     return () => {
+      // The successor opens now, maybe long after the key: a quick second tap must not delete it (slice 3i review).
+      destructiveGuard.ran();
       setFocusedId(next);
       openRow(next);
     };
@@ -797,10 +808,12 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     if (!repeat && moveOpens(arrow)) openRow(next);
   };
   /** Releasing a held arrow opens the row under the cursor (same rule as a press). */
-  const onKeyUp = (event: { code: string }) => {
+  const onKeyUp = (event: { code: string; target: EventTarget | null }) => {
     if (event.code !== "ArrowDown" && event.code !== "ArrowUp") return;
     if (!heldArrow.current) return;
     heldArrow.current = false;
+    // Released in a field (focus moved there while held): the run ends, nothing opens (slice 3i review).
+    if (isTypingTarget(event.target)) return;
     if (focusedId === null || !rowIds.includes(focusedId) || !moveOpens(true)) return;
     openRow(focusedId);
   };

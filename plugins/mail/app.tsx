@@ -63,6 +63,7 @@ import { snoozeFolderName } from "./src/core/snooze.ts";
 import type { ComposerPorts, ComposeWarningKind } from "./src/ui/composer.tsx";
 import type { SmtpSettingsInput } from "./src/ui/smtp-dialog.tsx";
 import type { DetailsState } from "./src/ui/details-panel.tsx";
+import { addBounded, setBounded } from "./src/ui/bounded.ts";
 import {
   DEFAULT_FOLDER_PATH,
   inboxPath,
@@ -200,6 +201,10 @@ const UNDO_TOAST_ID = "mail-undo";
 const SENDER_CHECK_DELAY_MS = 600;
 /** sender_check_refresh takes at most this many ids. */
 const SENDER_CHECK_BATCH = 50;
+/** Most message ids the page remembers as already sent to sender_check_refresh (slice 3i review). */
+const SENDER_CHECK_REMEMBERED = 2_000;
+/** Most undo ids whose reopen the page remembers (slice 3i review); only recent undos are offered anyway. */
+const REOPEN_BY_UNDO_MAX = 20;
 
 /** "Moving back…" gives way to the result at the next mail-changed, or after this long. */
 const MOVING_BACK_MAX_MS = 10_000;
@@ -1310,7 +1315,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       }
       const accountId = openAccount.current;
       then();
-      if (undoId !== null) reopenByUndo.current.set(undoId, { threadId: open, accountId, advancedTo: openThreadId.current });
+      if (undoId !== null) {
+        setBounded(reopenByUndo.current, undoId, { threadId: open, accountId, advancedTo: openThreadId.current }, REOPEN_BY_UNDO_MAX);
+      }
     },
     [closeThread],
   );
@@ -1631,9 +1638,13 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     if (ids.length === 0) return;
     const timer = setTimeout(() => {
       if (latest.current.reading.threadId !== threadId) return;
-      for (const id of ids) checkRequested.current.add(id);
+      for (const id of ids) addBounded(checkRequested.current, id, SENDER_CHECK_REMEMBERED);
       rpc.call("sender_check_refresh", { messageIds: ids }).then(
         ({ refreshed }) => {
+          if (refreshed === ids.length) {
+            // Every row is judged now and never `unknown` again: nothing to remember.
+            for (const id of ids) checkRequested.current.delete(id);
+          }
           if (refreshed === 0 || latest.current.reading.threadId !== threadId) return;
           void loadThread(threadId, null);
           for (const id of ids) void refreshBody(id);

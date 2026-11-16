@@ -366,6 +366,12 @@ function HtmlFrame({
 
   const hoverRef = useRef(onLinkHover);
   hoverRef.current = onLinkHover;
+  /** Whether the status line names a link of this frame now (cleared when the frame goes away, slice 3i review). */
+  const shownRef = useRef(false);
+  const report = (link: LinkHover | null) => {
+    shownRef.current = link !== null;
+    hoverRef.current?.(link);
+  };
 
   useEffect(() => {
     openLinkRef.current = onOpenLink;
@@ -379,7 +385,7 @@ function HtmlFrame({
     detachRef.current?.();
     detachRef.current = null;
     // A new document: the status line names nothing of the old one.
-    hoverRef.current?.(null);
+    report(null);
     const frame = frameRef.current;
     const doc = frame?.contentDocument;
     if (!frame || !doc) return;
@@ -401,13 +407,13 @@ function HtmlFrame({
     // Slice 3i: the status line follows the hovered or focused link.
     const onOver = (event: Event) => {
       const anchor = closestAnchor(event.target);
-      if (anchor !== null) hoverRef.current?.(hoverOf(anchor));
+      if (anchor !== null) report(hoverOf(anchor));
     };
     const onOut = (event: Event) => {
       const anchor = closestAnchor(event.target);
       if (anchor === null) return;
       const next = closestAnchor((event as MouseEvent | FocusEvent).relatedTarget ?? null);
-      if (next !== anchor) hoverRef.current?.(null);
+      if (next !== anchor) report(null);
     };
 
     // Slice 3i (part B B10): letters, Backspace and chords pressed in the
@@ -443,7 +449,14 @@ function HtmlFrame({
     };
   }, []);
 
-  useEffect(() => () => detachRef.current?.(), []);
+  useEffect(
+    () => () => {
+      detachRef.current?.();
+      // Collapsed, stacked or closed while its link was hovered: the line names nothing that is gone.
+      if (shownRef.current) report(null);
+    },
+    [],
+  );
 
   return (
     <iframe

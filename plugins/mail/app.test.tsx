@@ -5165,6 +5165,28 @@ describe("Apple keys and reading flow", () => {
     expect(openedThreads(slot)).toEqual(["th-a", "th-c"]);
   });
 
+  it("a held Down released in a field, or after the window lost focus, opens nothing (slice 3i review)", async () => {
+    const slot = render(unreadRowsRpc());
+    await slot.findByText("Tickets");
+    pageRoot(slot).focus();
+    key(DOWN);
+    await waitFor(() => expect(openedThreads(slot)).toEqual(["th-a"]));
+    key({ ...DOWN, repeat: true });
+    fireEvent.keyUp(slot.getByLabelText("Search mail"), DOWN);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(openedThreads(slot)).toEqual(["th-a"]);
+    // The release that follows on the page belongs to no held run any more.
+    fireEvent.keyUp(document.activeElement!, DOWN);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(openedThreads(slot)).toEqual(["th-a"]);
+
+    key({ ...DOWN, repeat: true });
+    fireEvent.blur(window);
+    fireEvent.keyUp(document.activeElement!, DOWN);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(openedThreads(slot)).toEqual(["th-a"]);
+  });
+
   it("j with nothing open moves the cursor and opens nothing", async () => {
     const slot = render(unreadRowsRpc());
     await slot.findByText("Tickets");
@@ -5562,6 +5584,29 @@ describe("Slice 3i part B: the next conversation, undo, frame keys and the stack
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(opened(slot)).toEqual(["th-b", "th-c", "th-a"]);
     expect(actionInputs(slot).map((input) => input.messageIds)).toEqual([["b-1"], ["c-1"], ["a-1", "a-2"]]);
+  });
+
+  it("a tap right after the action completes never deletes the conversation it opened (slice 3i review)", async () => {
+    let release: (() => void) | null = null;
+    const base = flowRpc() as unknown as Record<string, (input: never) => unknown>;
+    const slot = render(
+      flowRpc({
+        // The first delete is slow: it lands after the guard set at dispatch has run out.
+        message_action: (input: never) =>
+          new Promise((resolve) => {
+            release = () => resolve(base.message_action!(input));
+          }),
+      }),
+    );
+    await slot.findByText("Tickets");
+    await openRow(slot, 2, "Lunch");
+    key(BACKSPACE);
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    release!();
+    await slot.findByRole("heading", { name: "Tickets" });
+    key(BACKSPACE);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(actionInputs(slot).map((input) => input.messageIds)).toEqual([["b-1"]]);
   });
 
   it("search results: deleting the open hit's conversation opens the next hit", async () => {
