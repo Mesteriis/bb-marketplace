@@ -2,3 +2,5 @@ node_modules/
 dist/
 bin/
 helper/target/
+__pycache__/
+*.pyc
