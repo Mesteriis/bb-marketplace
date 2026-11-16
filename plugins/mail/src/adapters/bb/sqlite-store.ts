@@ -3686,6 +3686,35 @@ export function createSqliteStore(db: Database.Database): MailStore {
         .map((row) => ({ uid: row.uid, from: { name: row.from_name, address: row.from_address } }));
     },
 
+    inboxMessages(accountId, opts) {
+      const where = [IN_INBOX, "m.uid IS NOT NULL", "m.move_pending IS NULL"];
+      const params: unknown[] = [];
+      if (accountId !== null) {
+        where.push("m.account_id = ?");
+        params.push(accountId);
+      }
+      if (opts.unreadOnly) where.push("m.is_read = 0");
+      params.push(opts.limit);
+      const rows = db
+        .prepare(
+          `SELECT * FROM (
+             SELECT ${SUMMARY_COLUMNS}, m.bulk, m.unsubscribe_json, s.due_at AS snoozed_until,
+               row_number() OVER (PARTITION BY m.account_id, m.dedup_key ORDER BY m.seq DESC) AS rn
+             FROM messages m LEFT JOIN snoozes s ON s.message_id = m.id
+             WHERE ${where.join(" AND ")})
+           WHERE rn = 1
+           ORDER BY date IS NULL DESC, date DESC, id DESC
+           LIMIT ?`,
+        )
+        .all(...params) as (MessageRow & { bulk: number | null; unsubscribe_json: string | null; snoozed_until: string | null })[];
+      return rows.map((row) => ({
+        ...toSummary(row),
+        bulk: row.bulk === null ? null : row.bulk === 1,
+        unsubscribe: row.unsubscribe_json ? (JSON.parse(row.unsubscribe_json) as UnsubscribeInfo) : null,
+        snoozedUntil: row.snoozed_until,
+      }));
+    },
+
     getUnsubscribeInfo(messageId) {
       const row = db
         .prepare<[string], { unsubscribe_json: string | null }>("SELECT unsubscribe_json FROM messages WHERE id = ?")

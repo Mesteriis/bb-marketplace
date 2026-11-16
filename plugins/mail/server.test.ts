@@ -523,10 +523,12 @@ describe("makosh-mail server", () => {
     expect(resolved.instructions).toBeNull();
     expect(host.harness.inspection.registrations.agentTools.map((t) => t.name).sort()).toEqual([
       "mail_contacts",
+      "mail_inbox",
       "mail_propose",
       "mail_read",
       "mail_search",
       "mail_templates",
+      "mail_triage",
     ]);
   });
 
@@ -1207,10 +1209,12 @@ describe("makosh-mail server", () => {
     expect(registrations.experimental_publishedRpcMethods).toEqual([]);
     expect(registrations.agentTools.map((t) => t.name).sort()).toEqual([
       "mail_contacts",
+      "mail_inbox",
       "mail_propose",
       "mail_read",
       "mail_search",
       "mail_templates",
+      "mail_triage",
     ]);
     const resolved = await host.harness.behavior.resolveAgentConfiguration(
       makePluginAgentConfigurationContext(),
@@ -3427,10 +3431,12 @@ describe("sending polish: agent tools", () => {
     expect([...parsed.templates[0]!.text]).toHaveLength(2_000);
     expect(on.harness.inspection.registrations.agentTools.map((t) => t.name).sort()).toEqual([
       "mail_contacts",
+      "mail_inbox",
       "mail_propose",
       "mail_read",
       "mail_search",
       "mail_templates",
+      "mail_triage",
     ]);
     expect(on.harness.inspection.registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "read", "remove", "search", "sync"]);
   });
@@ -4633,5 +4639,339 @@ describe("inbox triage: owner only and server writes (slice 3e)", () => {
     const commands = host.gateway.sessions.flatMap((s) => s.calls);
     expect(commands.map((c) => c.method)).not.toContain("expungeOwn");
     expect(JSON.stringify(commands)).not.toMatch(/deleted/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inbox triage (slice 3e): agent triage
+// ---------------------------------------------------------------------------
+
+const TRIAGE_THREAD = "thread-triage";
+const TRIAGE_SECRETS = ["Invented triage subject", SPAMMER, "friend@example.net", UNSUB_URL, "Invented note text"];
+
+type TriageCard = {
+  result: Promise<unknown>;
+  card: Host["harness"]["inspection"]["pendingInteractions"][number];
+  batchId: string;
+  contentHash: string;
+};
+
+/**
+ * acc_1 (iCloud layout) with agentTriage on: INBOX 1-3 from the spammer,
+ * INBOX 4 from a friend, INBOX 5 a list message with one-click; Archive 1.
+ */
+function loadAgentTriage(options: { settings?: Record<string, string | number | boolean>; snoozeFolder?: boolean; poster?: FakePoster } = {}) {
+  return loadTriage({
+    settings: { agentTriage: true, ...options.settings },
+    poster: options.poster ?? new FakePoster(),
+    messages: [
+      { folder: "INBOX", uid: 1 },
+      { folder: "INBOX", uid: 2 },
+      { folder: "INBOX", uid: 3 },
+      { folder: "INBOX", uid: 4, from: "friend@example.net" },
+      { folder: "INBOX", uid: 5, from: "news@example.com" },
+      { folder: "Archive", uid: 1 },
+    ],
+  }).then((host) => {
+    const db = host.bb.storage.database();
+    db.prepare("UPDATE messages SET subject = 'Invented triage subject'").run();
+    db.prepare("UPDATE messages SET unsubscribe_json = ? WHERE folder = 'INBOX' AND uid = 5").run(JSON.stringify(UNSUB_INFO));
+    if (options.snoozeFolder === true) sqlStore(host).setSnoozeFolder("acc_1", "Work");
+    return host;
+  });
+}
+
+const inboxId = (host: Host, uid: number) => messageIdAt(host, "INBOX", uid);
+
+async function triageCard(host: Host, params: unknown, threadId = TRIAGE_THREAD): Promise<TriageCard> {
+  const before = host.harness.inspection.pendingInteractions.length;
+  const result = host.harness.behavior.callAgentTool("mail_triage", params, { threadId });
+  await vi.waitFor(() => expect(host.harness.inspection.pendingInteractions.length).toBe(before + 1));
+  const card = host.harness.inspection.pendingInteractions.at(-1)!;
+  const { batchId, contentHash } = card.payload as { batchId: string; contentHash: string };
+  return { result, card, batchId, contentHash };
+}
+
+type TriageViewAnswer = {
+  state: string;
+  viewToken: string;
+  view: {
+    summary: string | null;
+    items: { position: number; action: string; available: boolean; reason: string | null; note: string | null; fromName: string | null; unsubscribe: unknown }[];
+    needsFolder: { accountId: string; proposedName: string }[];
+  };
+};
+
+async function triageView(host: Host, t: { batchId: string; contentHash: string }): Promise<TriageViewAnswer> {
+  const view = (await call(host, "triage_view", { batchId: t.batchId, contentHash: t.contentHash })) as TriageViewAnswer;
+  expect(view.state).toBe("ready");
+  return view;
+}
+
+const applyValue = (t: { batchId: string; contentHash: string }, viewToken: string, approved: number[], createSnoozeFolder: string[] = []) => ({
+  action: "apply",
+  batchId: t.batchId,
+  contentHash: t.contentHash,
+  viewToken,
+  approved,
+  createSnoozeFolder,
+});
+
+async function answerTriage(host: Host, t: TriageCard, value: JsonValue) {
+  const described = await t.card.describeSubmission!(value);
+  host.harness.behavior.submitInteraction(t.card.id, value);
+  return { described, result: await t.result };
+}
+
+const toolText = (result: unknown) => (typeof result === "string" ? result : JSON.stringify(result));
+
+describe("inbox triage: agent tools (slice 3e)", () => {
+  it("mail_inbox and mail_triage are offered only with agentTriage, with mail_read; execute re-checks the setting", async () => {
+    const off = await loadAgentTriage({ settings: { agentTriage: false } });
+    const offConfig = await off.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext());
+    expect(offConfig.tools).toEqual([]);
+    expect(toolText(await off.harness.behavior.callAgentTool("mail_inbox", {}))).toContain("Inbox triage for agents is off");
+    expect(toolText(await off.harness.behavior.callAgentTool("mail_triage", { items: [{ messageId: inboxId(off, 1), action: "archive" }] }, { threadId: TRIAGE_THREAD }))).toContain(
+      "Inbox triage for agents is off",
+    );
+    expect(off.harness.inspection.pendingInteractions).toEqual([]);
+
+    const on = await loadAgentTriage();
+    const onConfig = await on.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext());
+    expect(onConfig.tools.map((t) => t.name).sort()).toEqual(["mail_inbox", "mail_read", "mail_triage"]);
+    expect(onConfig.skills.length).toBe(1);
+    expect(String(await on.harness.behavior.callAgentTool("mail_read", { messageId: inboxId(on, 4) }))).toContain(UNTRUSTED_NOTICE);
+
+    const both = await loadAgentTriage({ settings: { agentTools: true } });
+    const bothConfig = await both.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext());
+    expect(bothConfig.tools.map((t) => t.name).filter((name) => name === "mail_read")).toEqual(["mail_read"]);
+  });
+
+  it("mail_inbox lists Inbox mail newest first with the notice, ids and flags only from the store", async () => {
+    const host = await loadAgentTriage();
+    const text = String(await host.harness.behavior.callAgentTool("mail_inbox", { limit: 10 }));
+    expect(text.startsWith(UNTRUSTED_NOTICE)).toBe(true);
+    for (const uid of [1, 2, 3, 4, 5]) expect(text).toContain(`Message id: ${inboxId(host, uid)}`);
+    expect(text).not.toContain(messageIdAt(host, "Archive", 1));
+    expect(text).toMatch(/unsubscribe: one_click/);
+    expect(String(await host.harness.behavior.callAgentTool("mail_inbox", { limit: 2 })).match(/Message id:/g)).toHaveLength(2);
+  });
+
+  it("refuses a batch with a fixed text naming the position: unknown ids, a reply with agentPropose off, unknown unsubscribe options", async () => {
+    const host = await loadAgentTriage();
+    const refusal = async (items: unknown[]) =>
+      toolText(await host.harness.behavior.callAgentTool("mail_triage", { items }, { threadId: TRIAGE_THREAD }));
+    expect(await refusal([{ messageId: "nope", action: "archive" }])).toContain("Item 1 is not a message id from mail_inbox.");
+    expect(await refusal([{ messageId: inboxId(host, 1), action: "archive" }, { messageId: inboxId(host, 2), action: "reply" }])).toContain(
+      "Item 2: replies need the owner's 'Let agents propose mail' setting",
+    );
+    expect(await refusal([{ messageId: inboxId(host, 1), action: "unsubscribe" }])).toContain("Unsubscribe options of item 1 are not known yet");
+    expect(await refusal([{ messageId: messageIdAt(host, "Archive", 1), action: "archive" }])).toContain("Item 1 is not in an Inbox");
+    expect(host.harness.inspection.pendingInteractions).toEqual([]);
+  });
+
+  it("opens the agent-triage card bound to the batch, and the view reveals hidden text and rotates the token", async () => {
+    const host = await loadAgentTriage();
+    host.bb.storage.database().prepare("UPDATE messages SET from_name = 'Invented\u200bName' WHERE folder = 'INBOX' AND uid = 1").run();
+    const t = await triageCard(host, {
+      items: [{ messageId: inboxId(host, 1), action: "archive", note: "Invented note text" }],
+      summary: "Invented summary",
+    });
+    expect(t.card).toMatchObject({
+      threadId: TRIAGE_THREAD,
+      rendererId: "agent-triage",
+      title: "Review inbox actions",
+      timeoutMs: 24 * 60 * 60 * 1000,
+    });
+    expect(Object.keys(t.card.payload as object).sort()).toEqual(["batchId", "contentHash"]);
+    const first = await triageView(host, t);
+    expect(first.view.summary).toBe("Invented summary");
+    expect(first.view.items[0]).toMatchObject({ action: "archive", available: true, note: "Invented note text" });
+    expect(first.view.items[0]!.fromName).not.toContain("\u200b");
+    const second = await triageView(host, t);
+    expect(second.viewToken).not.toBe(first.viewToken);
+    await expect(call(host, "triage_view", { batchId: t.batchId, contentHash: "0".repeat(64) })).resolves.toEqual({ state: "changed" });
+    // A changed hash in the request does not settle the batch.
+    expect(sqlStore(host).getTriageBatch(t.batchId)!.batch.state).toBe("pending");
+    host.harness.behavior.cancelInteraction(t.card.id);
+    expect(toolText(await t.result)).toContain("The owner did not approve these actions; nothing ran.");
+    expect(sqlStore(host).getTriageBatch(t.batchId)!.batch.state).toBe("cancelled");
+  });
+
+  it("applies only the ticked positions through the owner's paths; the agent gets ids and counts", async () => {
+    const host = await loadAgentTriage({ snoozeFolder: true, settings: { agentPropose: true } });
+    const ids = [1, 2, 3, 4].map((uid) => inboxId(host, uid));
+    const t = await triageCard(host, {
+      items: [
+        { messageId: ids[0], action: "archive" },
+        { messageId: ids[1], action: "spam", note: "Invented note text" },
+        { messageId: ids[2], action: "mark_read" },
+        { messageId: ids[3], action: "snooze", snoozeUntil: FUTURE },
+        { messageId: inboxId(host, 5), action: "reply" },
+      ],
+    });
+    const { viewToken } = await triageView(host, t);
+    const { described, result } = await answerTriage(host, t, applyValue(t, viewToken, [0, 2, 3, 4]));
+    expect(described).toEqual({ title: "Approved 4 inbox actions", payload: { batchId: t.batchId } });
+    expect(movePending(host, ids[0]!)).toBe("Archive");
+    expect(movePending(host, ids[1]!)).toBeNull();
+    expect(desired(host, ids[2]!).read).toBe(1);
+    expect(movePending(host, ids[3]!)).toBe("Work");
+    expect(sqlStore(host).listSnoozes("acc_1", { limit: 10 })).toMatchObject([{ messageId: ids[3], state: "moving" }]);
+    const text = toolText(result);
+    expect(text).toContain("The owner approved 4 of 5 actions.");
+    expect(text).toContain("Done: archived 1, marked read 1, snoozed 1.");
+    expect(text).toContain(`Not approved: ${ids[1]}.`);
+    expect(text).toContain(`Replies approved for: ${inboxId(host, 5)}`);
+    for (const secret of TRIAGE_SECRETS) expect(text).not.toContain(secret);
+    expect(await call(host, "triage_status", { batchId: t.batchId })).toEqual({
+      state: "applied",
+      total: 5,
+      approved: 4,
+      done: 3,
+      skipped: 0,
+      failed: 0,
+      rateLimited: 0,
+      byAction: [
+        { action: "archive", done: 1 },
+        { action: "reply", done: 1 },
+        { action: "snooze", done: 1 },
+        { action: "mark_read", done: 1 },
+        { action: "spam", done: 0 },
+      ],
+      undoable: true,
+    });
+    expectNoLeak(host, TRIAGE_SECRETS);
+
+    // The whole batch undoes from the thread row: each group by its own kind.
+    expect(await call(host, "action_undo", { undoId: t.batchId })).toMatchObject({ outcome: "done", restored: 3 });
+    expect(movePending(host, ids[0]!)).toBeNull();
+    expect(movePending(host, ids[3]!)).toBeNull();
+    expect(desired(host, ids[2]!).read).toBe(0);
+    expect(sqlStore(host).listSnoozes("acc_1", { limit: 10 })).toEqual([]);
+    expect(((await call(host, "triage_status", { batchId: t.batchId })) as { undoable: boolean }).undoable).toBe(false);
+  });
+
+  it("refuses a changed submit: a foreign batch id, a wrong hash, positions out of range or moved since, a folder box without snooze items", async () => {
+    const host = await loadAgentTriage();
+    const cases: [string, (t: TriageCard, token: string) => Record<string, unknown>][] = [
+      ["foreign batch", (t, token) => ({ ...applyValue(t, token, [0]), batchId: "6f1c2a52-3b5e-4f0a-9c1d-000000000000" })],
+      ["hash", (t, token) => ({ ...applyValue(t, token, [0]), contentHash: "0".repeat(64) })],
+      ["range", (t, token) => applyValue(t, token, [5])],
+      ["folder box", (t, token) => applyValue(t, token, [0], ["acc_1"])],
+      ["extra key", (t, token) => ({ ...applyValue(t, token, [0]), more: true })],
+    ];
+    for (const [label, value] of cases) {
+      const t = await triageCard(host, { items: [{ messageId: inboxId(host, 1), action: "archive" }] }, `thread-${label}`);
+      const { viewToken } = await triageView(host, t);
+      const { described, result } = await answerTriage(host, t, value(t, viewToken) as JsonValue);
+      expect(described.title, label).toBe("Not applied: the batch changed");
+      expect(toolText(result), label).toContain("Not applied: the batch changed");
+      expect(sqlStore(host).getTriageBatch(t.batchId)!.batch.state, label).toBe("changed");
+      expect(movePending(host, inboxId(host, 1)), label).toBeNull();
+    }
+    const moved = await triageCard(host, { items: [{ messageId: inboxId(host, 2), action: "archive" }] }, "thread-moved");
+    const { viewToken } = await triageView(host, moved);
+    sqlStore(host).queueMove([inboxId(host, 2)], "Work");
+    const answered = await answerTriage(host, moved, applyValue(moved, viewToken, [0]));
+    expect(answered.described.title).toBe("Not applied: the batch changed");
+    expect(movePending(host, inboxId(host, 2))).toBe("Work");
+  });
+
+  it("a stale view token reopens the card; the newest token applies", async () => {
+    const host = await loadAgentTriage();
+    const t = await triageCard(host, { items: [{ messageId: inboxId(host, 1), action: "archive" }] });
+    const stale = (await triageView(host, t)).viewToken;
+    await triageView(host, t);
+    const described = await t.card.describeSubmission!(applyValue(t, stale, [0]));
+    expect(described.title).toBe("Not applied: this card was opened elsewhere; reopen it");
+    host.harness.behavior.submitInteraction(t.card.id, applyValue(t, stale, [0]));
+    await vi.waitFor(() => expect(host.harness.inspection.pendingInteractions.filter((c) => c.rendererId === "agent-triage")).toHaveLength(1));
+    const reopened = { ...t, card: host.harness.inspection.pendingInteractions.at(-1)! };
+    expect(reopened.card.id).not.toBe(t.card.id);
+    const fresh = (await triageView(host, t)).viewToken;
+    const answered = await answerTriage(host, reopened, applyValue(t, fresh, [0]));
+    expect(answered.described.title).toBe("Approved 1 inbox action");
+    expect(movePending(host, inboxId(host, 1))).toBe("Archive");
+  });
+
+  it("snooze items need a ticked folder box when the account has no snooze folder; the box creates it", async () => {
+    const host = await loadAgentTriage();
+    const params = { items: [{ messageId: inboxId(host, 1), action: "snooze", snoozeUntil: FUTURE }] };
+    const without = await triageCard(host, params, "thread-without");
+    const view = await triageView(host, without);
+    expect(view.view.needsFolder).toEqual([{ accountId: "acc_1", accountEmail: "owner@example.org", proposedName: "Snoozed" }]);
+    expect((await answerTriage(host, without, applyValue(without, view.viewToken, [0]))).described.title).toBe("Not applied: the batch changed");
+    expect(host.gateway.created).toEqual([]);
+
+    const ticked = await triageCard(host, params, "thread-ticked");
+    const token = (await triageView(host, ticked)).viewToken;
+    const { result } = await answerTriage(host, ticked, applyValue(ticked, token, [0], ["acc_1"]));
+    expect(host.gateway.created).toEqual(["Snoozed"]);
+    expect(movePending(host, inboxId(host, 1))).toBe("Snoozed");
+    expect(toolText(result)).toContain("snoozed 1");
+  });
+
+  it("unsubscribe items run through the unsubscribe path; beyond the one-click cap they are rate-limited", async () => {
+    const poster = new FakePoster();
+    const host = await loadAgentTriage({ poster });
+    const t = await triageCard(host, { items: [{ messageId: inboxId(host, 5), action: "unsubscribe" }] });
+    const view = await triageView(host, t);
+    expect(view.view.items[0]!.unsubscribe).toEqual({ method: "one_click", host: "unsub.example.com", address: null });
+    const { result } = await answerTriage(host, t, applyValue(t, view.viewToken, [0]));
+    expect(poster.urls).toEqual([UNSUB_URL]);
+    expect(toolText(result)).toContain("unsubscribe requested for 1");
+
+    // Within ten minutes the same message is rate-limited.
+    const again = await triageCard(host, { items: [{ messageId: inboxId(host, 5), action: "unsubscribe" }] }, "thread-again");
+    const token = (await triageView(host, again)).viewToken;
+    const second = await answerTriage(host, again, applyValue(again, token, [0]));
+    expect(toolText(second.result)).toContain(`Rate-limited, try later: ${inboxId(host, 5)}.`);
+    expect(poster.urls).toHaveLength(1);
+    expect(await call(host, "triage_status", { batchId: again.batchId })).toMatchObject({ rateLimited: 1, done: 0 });
+  });
+
+  it("caps pending cards per thread", async () => {
+    const host = await loadAgentTriage();
+    await triageCard(host, { items: [{ messageId: inboxId(host, 1), action: "archive" }] });
+    const second = toolText(
+      await host.harness.behavior.callAgentTool("mail_triage", { items: [{ messageId: inboxId(host, 2), action: "archive" }] }, { threadId: TRIAGE_THREAD }),
+    );
+    expect(second).toContain("A triage card is already waiting for the owner in this thread.");
+  });
+
+  it("a restart marks an applying batch interrupted and a pending one expired", async () => {
+    const seedBatch = (bb: BbPluginApi, id: string, state: "applying" | "pending") => {
+      const store = createSqliteStore(bb.storage.database());
+      store.createTriageBatch(
+        { id, threadId: TRIAGE_THREAD, contentHash: "a".repeat(64), summary: null, createdAt: NOW.toISOString(), expiresAt: FUTURE },
+        [{ batchId: id, position: 0, messageId: "m_1", accountId: "acc_1", action: "archive", snoozeUntil: null, note: null, outcome: null }],
+      );
+      if (state === "applying") {
+        store.transitionTriageBatch(id, ["pending"], "confirming", {}, NOW.toISOString());
+        store.transitionTriageBatch(id, ["confirming"], "applying", {}, NOW.toISOString());
+      }
+    };
+    const host = await load({
+      seed: (bb) => {
+        bb.storage.migrate(bb.storage.database(), MIGRATIONS);
+        seedBatch(bb, "b_applying", "applying");
+        seedBatch(bb, "b_pending", "pending");
+      },
+    });
+    expect(sqlStore(host).getTriageBatch("b_applying")!.batch.state).toBe("interrupted");
+    expect(sqlStore(host).getTriageBatch("b_pending")!.batch.state).toBe("expired");
+    expect(await call(host, "triage_status", { batchId: "b_applying" })).toMatchObject({ state: "interrupted", undoable: false });
+    expect(await call(host, "triage_view", { batchId: "b_pending", contentHash: "a".repeat(64) })).toEqual({ state: "expired" });
+    expect(await call(host, "triage_view", { batchId: "unknown", contentHash: "a".repeat(64) })).toEqual({ state: "gone" });
+  });
+
+  it("triage_view and triage_status refuse plugin callers", async () => {
+    const host = await loadAgentTriage();
+    await expect(host.harness.behavior.callRpc("triage_view", { batchId: "b", contentHash: "a".repeat(64) }, asPlugin)).rejects.toThrow(
+      PLUGIN_CALLER_MESSAGE,
+    );
+    await expect(host.harness.behavior.callRpc("triage_status", { batchId: "b" }, asPlugin)).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    expect(host.harness.inspection.registrations.experimental_publishedRpcMethods).toEqual([]);
   });
 });

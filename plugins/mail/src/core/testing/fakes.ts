@@ -95,6 +95,7 @@ import type {
   FolderSession,
   ImapTestResult,
   MailStore,
+  InboxMessage,
   NewTriageBatch,
   SecretVault,
   TriageBatchRecord,
@@ -1808,6 +1809,26 @@ export class InMemoryMailStore implements MailStore {
       .sort((a, b) => b.uid - a.uid)
       .slice(0, limit)
       .map((row) => ({ uid: row.uid, from: { ...row.message.from } }));
+  }
+
+  inboxMessages(accountId: string | null, opts: { unreadOnly: boolean; limit: number }): InboxMessage[] {
+    const rows = this.state.rows.filter(
+      (r) =>
+        (accountId === null || r.accountId === accountId) &&
+        r.uid !== null &&
+        r.movePending === null &&
+        this.roleOf(r.accountId, r.folder) === "inbox" &&
+        (!opts.unreadOnly || !r.isRead),
+    );
+    return this.onePerKey(rows, (r) => `${r.accountId}\u0000${r.dedupKey}`)
+      .sort((a, b) => oldestFirst(b, a))
+      .slice(0, opts.limit)
+      .map((r) => ({
+        ...this.summary(r),
+        bulk: r.bulk,
+        unsubscribe: r.unsubscribe === null ? null : structuredClone(r.unsubscribe),
+        snoozedUntil: this.state.snoozes.get(r.id)?.dueAt ?? null,
+      }));
   }
 
   getUnsubscribeInfo(messageId: string): UnsubscribeInfo | null {
