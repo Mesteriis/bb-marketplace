@@ -10,6 +10,7 @@ export const helperStatusSchema = z.object({
   pid: z.number().int().positive(),
   platform: z.string().min(1),
   sessionCount: z.number().int().min(0),
+  alive: z.boolean(),
 });
 
 export const rpcSchemas = {

@@ -16,6 +16,10 @@ it speaks with the plugin.
 No SSH or RDP, no saved profiles, no credentials, no agent tools and no CLI
 yet. They arrive in the following stages; nothing here pretends they work.
 
+The helper binary is not committed under bin/. It must be built with
+npm run build:helper, which needs a Rust toolchain for aarch64-apple-darwin;
+until then the tab reports helper_missing with the expected path.
+
 ## Source
 
 Requires BB 0.49 or later. MIT licensed at https://github.com/Mesteriis/makosh-bb.

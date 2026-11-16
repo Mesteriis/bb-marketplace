@@ -19,7 +19,13 @@ function RemoteHubPage() {
     rpc
       .call("helper_status")
       .then((status) => {
-        if (!cancelled) setState({ kind: "ready", status });
+        if (!cancelled) {
+          setState(
+            status.alive
+              ? { kind: "ready", status }
+              : { kind: "error", message: "Remote Hub helper is not running" },
+          );
+        }
       })
       .catch((error: unknown) => {
         if (!cancelled) {

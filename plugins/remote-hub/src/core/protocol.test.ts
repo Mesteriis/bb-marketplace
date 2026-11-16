@@ -42,3 +42,8 @@ describe("frame codec", () => {
     });
   });
 });
+
+  it("returns an error (not an exception) for a zero-length frame", () => {
+    const result = decodeFrame(new Uint8Array([0, 0, 0, 0]));
+    expect(result).toMatchObject({ status: "error", code: "invalid_frame" });
+  });

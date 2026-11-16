@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, experimental_PluginRpcRefusal, type BbPluginApi } from "@get-bb/plugin-sdk";
-import { HELPER_BIN_NAME, HelperProcess, HelperStartError } from "./src/adapters/bb/helper-process.ts";
+import { HELPER_BIN_NAME, HelperProcess, HelperRuntimeError, HelperStartError } from "./src/adapters/bb/helper-process.ts";
 import { rpcSchemas } from "./src/core/rpc.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
@@ -35,6 +35,11 @@ export default function plugin(bb: BbPluginApi): void {
       starting = HelperProcess.start(pluginRootDir())
         .then((started) => {
           helper = started;
+          // A dead helper is dropped from the cache so the next call starts a
+          // fresh one; no input is ever replayed.
+          started.onExit(() => {
+            if (helper === started) helper = null;
+          });
           return started;
         })
         .finally(() => {
@@ -48,7 +53,7 @@ export default function plugin(bb: BbPluginApi): void {
     try {
       return await run(await startHelper());
     } catch (error) {
-      if (error instanceof HelperStartError) {
+      if (error instanceof HelperStartError || error instanceof HelperRuntimeError) {
         throw new experimental_PluginRpcRefusal({ code: "not_found", message: error.message });
       }
       throw error;
@@ -56,7 +61,13 @@ export default function plugin(bb: BbPluginApi): void {
   };
 
   bb.rpc.register(rpcContract, {
-    helper_status: () => withHelper(async (process) => process.status!),
+    helper_status: () =>
+      withHelper(async (process) => {
+        const status = process.status!;
+        // alive reflects a live ping, not just the handshake snapshot.
+        const alive = await process.pingAlive();
+        return { ...status, alive };
+      }),
     echo_open: (input) => withHelper(async (process) => ({ sessionId: await process.openEcho(input.cols, input.rows) })),
     echo_input: (input) => withHelper(async (process) => process.input(input.sessionId, input.data)),
     echo_close: (input) =>

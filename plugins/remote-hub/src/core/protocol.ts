@@ -204,6 +204,9 @@ export function decodeFrame(buffer: Uint8Array): DecodeFrameResult {
       message: `frame body length ${bodyLength} exceeds the ${MAX_FRAME_BODY_BYTES} byte limit`,
     };
   }
+  if (bodyLength < 1) {
+    return { status: "error", code: "invalid_frame", message: "frame body length 0 is invalid" };
+  }
   if (buffer.byteLength < 4 + bodyLength) return { status: "need_more_data" };
   const body = buffer.subarray(4, 4 + bodyLength);
   const remaining = buffer.subarray(4 + bodyLength);

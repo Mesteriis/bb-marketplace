@@ -44,6 +44,22 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   `ExperimentalPluginWebSocket.send` accepts `string | Uint8Array`
   (:20446-20448). Verified in declarations; not wired in this stage (echo output
   returns through the RPC response today).
+- The BB terminal API: `bb.sdk.terminals` (`PluginBbSdk.terminals`,
+  bb-plugin-sdk.d.ts:19377) is a `TerminalsArea` (:18802) with
+  `create/input/resize/output/list/close/rename/restart`.
+  `TerminalsArea.create` (`TerminalCreateArgs` :18759) accepts
+  `start?: { mode: "argv", argv: string[] }` (createTerminalRequestSchema
+  :11458), input is `dataBase64` (:18779; terminalInputRequestSchema :11489)
+  and output arrives as base64 `chunks` with `seq` (:18786;
+  terminalOutputResponseSchema :11504). Verdict: BB owns the PTY (it launches a
+  command via argv itself) and offers no way to attach an existing PTY master,
+  so Remote Hub cannot hand its own `openpty` master to it; the chosen path is
+  the plugin's own PTY transport rendered with xterm.js, not the BB terminal.
+- Flow control: every session's output is bounded (256 KiB pending) and written
+  through a single shared stdout outbox (4 MiB) with non-blocking writes and
+  backpressure; a slow stdout therefore throttles PTY draining rather than
+  buffering without limit. This shared-pipe limit is a known constraint to
+  revisit for stage 2 (per-session binary WebSocket).
 - RDP image frames: not in this stage; nothing is claimed about them yet.
 
 ## 4. Where metadata, secrets, keys and trust records live
@@ -62,9 +78,11 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
 
 ## 5. Placement modes
 
-- Supported and exercised: BB server and execution host on the same Mac (the
-  helper runs as a local child of the BB server). Verified by the helper
-  integration tests in helper/tests/echo.rs.
+- Supported: BB server and execution host on the same Mac (the helper runs as
+  a local child of the BB server). The helper integration tests in
+  helper/tests/echo.rs verify the helper binary standalone over stdio; running
+  the plugin inside a live BB server is NOT yet verified (the plugin has not
+  been installed into a running BB).
 - Separate BB server / execution host: the SDK has a host-entry mechanism —
   `experimental_defineHostEntry` (bb-plugin-sdk.d.ts:19726) and, on its RPC
   context, `experimental_retainWorker` (:19713). Verified in declarations;
