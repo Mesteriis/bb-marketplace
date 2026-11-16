@@ -1,0 +1,96 @@
+{
+  "cases": [
+    {
+      "name": "minimal",
+      "target": { "host": "example.com", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "--", "example.com"],
+      "error": null
+    },
+    {
+      "name": "user-and-port",
+      "target": { "host": "example.com", "user": "alice", "port": 22, "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-l", "alice", "-p", "22", "--", "example.com"],
+      "error": null
+    },
+    {
+      "name": "full",
+      "target": {
+        "host": "example.com",
+        "user": "alice",
+        "port": 22,
+        "configFile": "/tmp/cfg",
+        "knownHostsFile": "/tmp/kh",
+        "identityFile": "/tmp/id",
+        "extraOptions": []
+      },
+      "argv": ["ssh", "-tt", "-l", "alice", "-p", "22", "-F", "/tmp/cfg", "-o", "UserKnownHostsFile=/tmp/kh", "-i", "/tmp/id", "-o", "IdentitiesOnly=yes", "--", "example.com"],
+      "error": null
+    },
+    {
+      "name": "no-user-port",
+      "target": {
+        "host": "example.com",
+        "configFile": "/tmp/cfg",
+        "knownHostsFile": "/tmp/kh",
+        "identityFile": "/tmp/id",
+        "extraOptions": []
+      },
+      "argv": ["ssh", "-tt", "-F", "/tmp/cfg", "-o", "UserKnownHostsFile=/tmp/kh", "-i", "/tmp/id", "-o", "IdentitiesOnly=yes", "--", "example.com"],
+      "error": null
+    },
+    {
+      "name": "reject-A",
+      "target": { "host": "example.com", "extraOptions": ["-A"] },
+      "argv": ["ssh", "-tt", "-A", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-L",
+      "target": { "host": "example.com", "extraOptions": ["-L", "8080:localhost:80"] },
+      "argv": ["ssh", "-tt", "-L", "8080:localhost:80", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-R",
+      "target": { "host": "example.com", "extraOptions": ["-R", "8080:localhost:80"] },
+      "argv": ["ssh", "-tt", "-R", "8080:localhost:80", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-D",
+      "target": { "host": "example.com", "extraOptions": ["-D", "1080"] },
+      "argv": ["ssh", "-tt", "-D", "1080", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-X",
+      "target": { "host": "example.com", "extraOptions": ["-X"] },
+      "argv": ["ssh", "-tt", "-X", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-Y",
+      "target": { "host": "example.com", "extraOptions": ["-Y"] },
+      "argv": ["ssh", "-tt", "-Y", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-proxycommand",
+      "target": { "host": "example.com", "extraOptions": ["-oProxyCommand=evil"] },
+      "argv": ["ssh", "-tt", "-oProxyCommand=evil", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-stricthostkey-no",
+      "target": { "host": "example.com", "extraOptions": ["-o", "StrictHostKeyChecking=no"] },
+      "argv": ["ssh", "-tt", "-o", "StrictHostKeyChecking=no", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-knownhosts-devnull",
+      "target": { "host": "example.com", "extraOptions": ["-o", "UserKnownHostsFile=/dev/null"] },
+      "argv": ["ssh", "-tt", "-o", "UserKnownHostsFile=/dev/null", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    }
+  ]
+}

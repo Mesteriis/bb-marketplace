@@ -34,8 +34,8 @@ pub struct SpawnSpec {
 /// envp (the CStrings were dropped while execve still read them).
 struct ExecArgv {
     prog: CString,
-    argv: Vec<CString>,
-    env: Vec<CString>,
+    _argv: Vec<CString>,
+    _env: Vec<CString>,
     c_args: Vec<*const libc::c_char>,
     envp: Vec<*const libc::c_char>,
 }
@@ -369,8 +369,8 @@ impl SessionManager {
         envp.push(std::ptr::null());
         ExecArgv {
             prog: spec.program.clone(),
-            argv,
-            env,
+            _argv: argv,
+            _env: env,
             c_args,
             envp,
         }

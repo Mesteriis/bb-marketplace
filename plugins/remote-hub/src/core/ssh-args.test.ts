@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   SshArgError,
@@ -5,6 +6,7 @@ import {
   buildSshArgv,
   buildSshSpawn,
   sshEnvAllowlist,
+  type SshTarget,
 } from "./ssh-args.ts";
 
 describe("buildSshArgv", () => {
@@ -125,5 +127,24 @@ describe("buildSshSpawn", () => {
     expect(spec.argv).toEqual(["ssh", "-tt", "--", "example.com"]);
     expect(spec.env.TERM).toBe("xterm-256color");
     expect(spec.env.SECRET).toBeUndefined();
+  });
+});
+
+describe("ssh-args shared fixture (asserted by both TS and Rust)", () => {
+  const fixture = JSON.parse(
+    readFileSync(new URL("../../tests/fixtures/ssh-args.json", import.meta.url), "utf8"),
+  ) as { cases: Array<{ name: string; target: SshTarget; argv: string[]; error: string | null }> };
+
+  it.each(fixture.cases)("$name", (c) => {
+    if (c.error === null) {
+      expect(buildSshArgv(c.target)).toEqual(c.argv);
+    } else {
+      try {
+        buildSshArgv(c.target);
+        throw new Error("expected buildSshArgv to throw");
+      } catch (error) {
+        expect((error as SshArgError).code).toBe(c.error);
+      }
+    }
   });
 });

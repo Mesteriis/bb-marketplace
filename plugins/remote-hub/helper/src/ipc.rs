@@ -234,6 +234,18 @@ fn handle(
             env,
             cwd,
         } => {
+            // Production only: the ssh kind may only run the strict OpenSSH
+            // shape built by src/core/ssh-args.ts. Free-form programs remain
+            // reachable with test-hooks (the feature gate compiles this check
+            // away), where the Rust tests exercise them.
+            #[cfg(not(feature = "test-hooks"))]
+            if let Err(code) = crate::ssh_args::validate_ssh_spawn(&program, &argv, &env) {
+                return Ok(protocol::encode_response(&Response::Error {
+                    id: Some(id),
+                    code,
+                    message: "session.open_ssh carries a disallowed program or option".to_string(),
+                }));
+            }
             let spec = build_spawn_spec(program, argv, env, cwd);
             match spec {
                 Ok(spec) => match manager.open_ssh(spec, cols, rows) {

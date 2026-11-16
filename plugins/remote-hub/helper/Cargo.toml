@@ -24,6 +24,10 @@ name = "echo"
 path = "tests/echo.rs"
 required-features = ["test-hooks"]
 
+[[test]]
+name = "production"
+path = "tests/production.rs"
+
 [dependencies]
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
