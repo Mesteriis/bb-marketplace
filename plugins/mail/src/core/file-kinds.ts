@@ -137,9 +137,11 @@ function declaredCharset(mimeType: string): string | null {
  * What the first bytes are, with the type a blob of them may carry: PDF,
  * PNG, JPEG, GIF, WebP, AVIF, BMP, SVG (after a BOM, an XML declaration
  * and comments), HTML, or text (no NUL; valid UTF-8, or any bytes when
- * `declared` names another charset). Null: none of these.
+ * `declared` names another charset or the part is stored as `text` or
+ * `calendar`: stored parts carry no charset, and the view route serves
+ * such bytes with charsetOf). Null: none of these.
  */
-export function sniffType(firstBytes: Uint8Array, declared: string): Sniffed | null {
+export function sniffType(firstBytes: Uint8Array, declared: string, stored?: FileKind): Sniffed | null {
   const data = firstBytes.subarray(0, SNIFF_BYTES);
   if (startsWith(data, 0, "%PDF-")) return { kind: "pdf", mimeType: "application/pdf" };
   const raster = rasterType(data);
@@ -149,7 +151,8 @@ export function sniffType(firstBytes: Uint8Array, declared: string): Sniffed | n
   if (markup.startsWith("<svg")) return { kind: "svg", mimeType: "image/svg+xml" };
   if (HTML_STARTS.some((start) => markup.startsWith(start))) return { kind: "html", mimeType: "text/html" };
   const charset = declaredCharset(declared);
-  if (isUtf8(data) || (charset !== null && charset !== "utf-8" && charset !== "utf8")) {
+  const textPart = stored === "text" || stored === "calendar";
+  if (textPart || isUtf8(data) || (charset !== null && charset !== "utf-8" && charset !== "utf8")) {
     return { kind: "text", mimeType: "text/plain" };
   }
   return null;

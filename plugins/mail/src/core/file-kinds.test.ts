@@ -95,11 +95,18 @@ describe("sniffType", () => {
     expect(sniffKind(bytes([0xc3]), "text/plain")).toBe("text"); // a cut multibyte character at the end
   });
 
-  it("reads non-UTF-8 bytes as text only with a declared charset", () => {
+  it("reads non-UTF-8 bytes as text only with a declared charset or a stored text kind", () => {
     const latin = bytes("caf", [0xe9], " notes");
     expect(sniffKind(latin, "text/plain")).toBeNull();
     expect(sniffKind(latin, "text/plain; charset=iso-8859-1")).toBe("text");
     expect(sniffKind(latin, "text/plain; charset=utf-8")).toBeNull();
+    // Stored parts carry no charset: a text or calendar part's NUL-free bytes are text.
+    expect(sniffType(latin, "text/plain", "text")).toEqual({ kind: "text", mimeType: "text/plain" });
+    expect(sniffType(latin, "text/calendar", "calendar")).toEqual({ kind: "text", mimeType: "text/plain" });
+    expect(viewableAs("text", "text/plain", sniffType(latin, "text/plain", "text"))).toBe("text");
+    expect(sniffType(latin, "application/octet-stream", "other")).toBeNull();
+    expect(sniffType(bytes("caf", [0xe9, 0], " notes"), "text/plain", "text")).toBeNull();
+    expect(sniffType(bytes("<html>", [0xe9]), "text/plain", "text")).toEqual({ kind: "html", mimeType: "text/html" });
   });
 });
 

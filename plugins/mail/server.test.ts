@@ -7917,6 +7917,12 @@ describe("makosh-mail server: slice 3h", () => {
     expect(shown.headers.get("content-type")).toBe("text/plain; charset=utf-8");
     expect(await shown.text()).toBe("Invented notes");
 
+    // Latin-1 text with no charset on the part: served as windows-1252.
+    const latin = await ticketFor({ filename: "latin.txt", mimeType: "text/plain", content: new Uint8Array([0x43, 0x61, 0x66, 0xe9, 0x20, 0x6e, 0x6f, 0x74, 0x65, 0x73]) });
+    const latinShown = await fetchView(latin.host, ((await latin.view()) as { url: string }).url);
+    expect(latinShown.status).toBe(200);
+    expect(latinShown.headers.get("content-type")).toBe("text/plain; charset=windows-1252");
+
     const svg = await ticketFor({ filename: "logo.svg", mimeType: "image/svg+xml", content: "<svg xmlns='http://www.w3.org/2000/svg'/>" });
     await expect(svg.view()).rejects.toThrow(NOT_VIEWABLE_MESSAGE);
     const html = await ticketFor({ filename: "page.html", mimeType: "text/html", content: "<html><body>Invented</body></html>" });

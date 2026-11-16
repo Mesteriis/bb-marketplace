@@ -3484,7 +3484,7 @@ function registerDownloadRoute(
           // The viewer (slice 3h): the bytes are sniffed here, and only a kind
           // that agrees with the stored one is served, with the sniffed type.
           // SVG and HTML never agree (spec resolutions 13, 20).
-          const sniffed = sniffType(bytes.subarray(0, SNIFF_BYTES), stored.mimeType);
+          const sniffed = sniffType(bytes.subarray(0, SNIFF_BYTES), stored.mimeType, stored.kind);
           const kind = viewableAs(stored.kind, stored.mimeType, sniffed);
           if (kind === null || sniffed === null) return textResponse(409, "not_viewable");
           const cap = kind === "image" ? VIEW_CAPS.image : kind === "pdf" ? VIEW_CAPS.pdf : null;
