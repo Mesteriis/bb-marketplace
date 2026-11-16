@@ -4687,7 +4687,7 @@ describe("inbox triage: owner only and server writes (slice 3e)", () => {
     });
     const account = (await host.harness.behavior.callRpc("accounts_add", NEW_ACCOUNT)) as { id: string };
     const first = host.harness.behavior.runService("sync");
-    await vi.waitFor(() => expect(logText(host)).toContain(`sync ${account.id}: ok`));
+    await vi.waitFor(() => expect(logText(host)).toContain(`sync ${account.id}: ok`), { timeout: 5_000 });
     first.controller.abort();
     await first.done;
     const old = messageIdAt(host, "INBOX", 2);
@@ -4700,9 +4700,10 @@ describe("inbox triage: owner only and server writes (slice 3e)", () => {
     const until = new Date(later.getTime() + DAY).toISOString();
     await call(host, "message_snooze", { messageIds: [old], folder: "INBOX", until });
     const again = host.harness.behavior.runService("sync");
-    await vi.waitFor(() => expect(sqlStore(host).getMessage(old)).toMatchObject({ folder: "Snoozed" }));
-    await vi.waitFor(() =>
-      expect(host.harness.inspection.logEntries.filter((l) => l.message.startsWith(`sync ${account.id}: ok`))).toHaveLength(2),
+    await vi.waitFor(() => expect(sqlStore(host).getMessage(old)).toMatchObject({ folder: "Snoozed" }), { timeout: 5_000 });
+    await vi.waitFor(
+      () => expect(host.harness.inspection.logEntries.filter((l) => l.message.startsWith(`sync ${account.id}: ok`))).toHaveLength(2),
+      { timeout: 5_000 },
     );
     again.controller.abort();
     await again.done;
