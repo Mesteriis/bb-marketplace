@@ -1401,7 +1401,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       if (composer.scope.kind === "new-thread") {
         try {
           composer.insert(
-            { provider: "mail", id: message.id, label: subjectOrPlaceholder(message.subject) },
+            // The chip label lands in the transcript: the redacted subject (spec resolution 4).
+            { provider: "mail", id: message.id, label: subjectOrPlaceholder(message.agentSubject) },
             { at: "end" },
           );
           navigate.toCompose({ focusPrompt: true });
