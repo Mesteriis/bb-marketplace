@@ -7,8 +7,9 @@
 // - Every text that reaches BB comes from bb-text.ts (redacted, quotes
 //   stripped, the AI access scope checked first). Nothing else of a mail is
 //   handed over.
-// - Mail decides where a BB thread came from by its own bb_links rows, never
-//   by thread metadata (metadataFor is written for BB's attribution only).
+// - Mail decides where a BB thread came from by its own bb_links rows. Thread
+//   metadata is read back only to add a restriction (a rule thread gets no
+//   mail) or to find a rule start's thread; it never lifts one (review C1).
 // - Saves are create-only through ProjectDirectory.write; Replace passes the
 //   sha the owner was shown.
 // - Agent-log rows, log lines and refusals carry ids, counts and fixed texts
@@ -61,6 +62,7 @@ import {
   keepBothName,
   markdownToDoc,
   metadataFor,
+  ruleThreadMetadata,
   newCompose,
   normalizeDoc,
   prepareCompose,
@@ -522,8 +524,18 @@ async function runRule(
       if (open !== null && appendable(open, deps.clock.now())) state = "ready";
     }
   }
+  // The gate row is written before the spawn: a `starting` run whose id the thread's metadata carries.
   const inserted = store.insertRuleRun(
-    { id: runId, ruleId: rule.id, accountId: header.accountId, messageId: header.id, threadId: header.threadId, state, createdAt: nowIso() },
+    {
+      id: runId,
+      ruleId: rule.id,
+      accountId: header.accountId,
+      messageId: header.id,
+      threadId: header.threadId,
+      projectId: rule.projectId,
+      state,
+      createdAt: nowIso(),
+    },
     RULE_CAPS,
   );
   if (inserted === "duplicate") return;
@@ -554,18 +566,21 @@ async function runRule(
           kind: alert === null ? "rule" : "incident",
           origin: "rule",
           ruleId: rule.id,
+          ruleRunId: runId,
         }),
         permissionMode: "accept-edits",
       })
     ).threadId;
   } catch (error) {
-    // Never a second spawn and never the checkout: the owner may start it from the strip.
-    store.updateRuleRun(runId, { state: "failed" }, nowIso());
+    // Never a second spawn and never the checkout. BB may have made the thread
+    // before the error reached us: the run stays `starting` (counted, gated by
+    // its metadata) until reconcileRuleStarts finds the thread or fails it.
     deps.agentLog({ actor: "rule", tool: "rule_thread", outcome: "failed", messageIds: [header.id], refId: rule.id });
     deps.log(`rule ${rule.id}: thread not started (${errorKind(error)})`);
     return;
   }
   const at = nowIso();
+  store.addRuleThread({ bbThreadId, ruleId: rule.id, runId, createdAt: at });
   store.updateRuleRun(runId, { state: "started", bbThreadId }, at);
   if (alert !== null) store.putIncident({ fingerprint: alert.ref, bbThreadId, projectId: rule.projectId, createdAt: at, lastAt: at });
   store.addBbLink({
@@ -581,6 +596,53 @@ async function runRule(
   });
   deps.agentLog({ actor: "rule", tool: "rule_thread", outcome: "started", messageIds: [header.id], count: 1, hiddenCount: hidden, refId: bbThreadId });
   deps.notify();
+}
+
+/** Threads of a project looked at when reconciling a start. */
+const RECONCILE_THREADS = 50;
+
+/**
+ * Settles `starting` rule runs older than `beforeIso` (start-up and the daily
+ * purge; review C1): a thread of the rule's project whose metadata carries
+ * the run id makes it `started` (and a rule thread); none makes it `failed`.
+ * When BB does not answer, the run stays `starting`: still counted by the
+ * caps, and its thread (if any) still gated by its metadata at configure.
+ */
+export async function reconcileRuleStarts(
+  deps: Pick<RuleDeps, "store" | "threads" | "clock" | "log">,
+  beforeIso: string,
+): Promise<{ started: number; failed: number }> {
+  const { store } = deps;
+  const out = { started: 0, failed: 0 };
+  const byProject = new Map<string | null, RuleRunRecord[]>();
+  for (const run of store.staleStartingRuns(beforeIso)) {
+    byProject.set(run.projectId, [...(byProject.get(run.projectId) ?? []), run]);
+  }
+  for (const [projectId, runs] of byProject) {
+    let metadata: Map<string, unknown> | null = null;
+    if (projectId !== null) {
+      try {
+        const listed = await deps.threads.list({ projectId, limit: RECONCILE_THREADS });
+        metadata = await deps.threads.pluginMetadata(listed.map((thread) => thread.id));
+      } catch (error) {
+        deps.log(`rules: start reconcile skipped (${errorKind(error)})`);
+        continue;
+      }
+    }
+    for (const run of runs) {
+      const at = deps.clock.now().toISOString();
+      const found = [...(metadata ?? new Map<string, unknown>())].find(([, value]) => ruleThreadMetadata(value)?.ruleRunId === run.id);
+      if (found !== undefined) {
+        store.addRuleThread({ bbThreadId: found[0], ruleId: run.ruleId, runId: run.id, createdAt: at });
+        store.updateRuleRun(run.id, { state: "started", bbThreadId: found[0] }, at);
+        out.started++;
+      } else {
+        store.updateRuleRun(run.id, { state: "failed" }, at);
+        out.failed++;
+      }
+    }
+  }
+  return out;
 }
 
 export function createBbRpc(deps: BbRpcDeps) {
@@ -830,13 +892,21 @@ export function createBbRpc(deps: BbRpcDeps) {
             environment: projectDefaultEnvironment(),
             title: built.title,
             prompt: built.text,
-            pluginMetadata: metadataFor({ accountId: header.accountId, messageId: header.id, threadId: header.threadId, kind: "thread" }),
+            // A rule's prepared run started by the owner is a rule thread too (gated by its metadata as well).
+            pluginMetadata: metadataFor({
+              accountId: header.accountId,
+              messageId: header.id,
+              threadId: header.threadId,
+              kind: "thread",
+              ...(run === null ? {} : { origin: "rule" as const, ruleId: run.ruleId, ruleRunId: run.id }),
+            }),
           })
         ).threadId;
       } catch (error) {
         deps.agentLog({ actor: "owner_bb", tool: "bb_thread", outcome: "failed", messageIds: built.messageIds });
         throw bbRefusal(error, deps.log, "bb_thread_start");
       }
+      if (run !== null) store.addRuleThread({ bbThreadId, ruleId: run.ruleId, runId: run.id, createdAt: nowIso() });
       link({
         accountId: header.accountId,
         messageId: header.id,
@@ -1683,25 +1753,29 @@ export function createBbRpc(deps: BbRpcDeps) {
     return { paused: ids.length };
   }
 
+  /** listRuleRuns leaves out runs whose message is gone; one that slips through is not shown. */
   function ruleRunView(run: RuleRunRecord, names: ReadonlyMap<string, string>) {
-    return {
-      id: run.id,
-      ruleId: run.ruleId,
-      ruleName: names.get(run.ruleId) ?? null,
-      accountId: run.accountId,
-      messageId: run.messageId,
-      threadId: run.threadId,
-      state: run.state,
-      bbThreadId: run.bbThreadId,
-      subject: store.getMessage(run.messageId)?.subject ?? "",
-      createdAt: run.createdAt,
-    };
+    if (run.messageId === null) return [];
+    return [
+      {
+        id: run.id,
+        ruleId: run.ruleId,
+        ruleName: names.get(run.ruleId) ?? null,
+        accountId: run.accountId,
+        messageId: run.messageId,
+        threadId: run.threadId,
+        state: run.state,
+        bbThreadId: run.bbThreadId,
+        subject: store.getMessage(run.messageId)?.subject ?? "",
+        createdAt: run.createdAt,
+      },
+    ];
   }
 
   function ruleRunsList(input: { state?: RuleRunState | undefined; cursor?: string | null | undefined }) {
     const page = store.listRuleRuns({ ...(input.state === undefined ? {} : { state: input.state }), cursor: input.cursor ?? null, limit: RULE_RUNS_PAGE });
     const names = new Map(store.listRules().map((rule) => [rule.id, rule.name]));
-    return { runs: page.runs.map((run) => ruleRunView(run, names)), next: page.next };
+    return { runs: page.runs.flatMap((run) => ruleRunView(run, names)), next: page.next };
   }
 
   function ruleRunDismiss(input: { id: string }) {

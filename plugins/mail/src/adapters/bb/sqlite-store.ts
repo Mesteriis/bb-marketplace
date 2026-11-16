@@ -87,7 +87,7 @@ import { AI_RESULT_MAX_BYTES, BINDINGS_MAX, TASKS_OPEN_MAX } from "../../core/po
 import type { BbLinkRow, BindingKind, RuleRecord, RuleRunRecord, RuleRunState } from "../../core/ports.ts";
 import type { BbLinkRowKind } from "../../core/model.ts";
 import type { DevClass, DevKind, DevSource, DevState } from "../../core/dev-notify.ts";
-import { RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, RULES_MAX, capVerdict, type RuleMatch, type RuleMode, type RuleRunCounts } from "../../core/mail-rules.ts";
+import { RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, RULE_THREADS_KEEP_DAYS, RULES_MAX, capVerdict, type RuleMatch, type RuleMode, type RuleRunCounts } from "../../core/mail-rules.ts";
 import { INCIDENT_KEEP_DAYS } from "../../core/alerts.ts";
 import { UNKNOWN_PROJECT_DAYS } from "../../core/projects.ts";
 import { groupDevRows, pageDevGroups } from "../../core/dev-groups.ts";
@@ -761,6 +761,50 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE compose_attachments ADD COLUMN origin TEXT;
   ALTER TABLE mail_tasks ADD COLUMN note TEXT;
   `,
+  // Slice 3g review (C1): the rule-thread gate and the caps outlive the mail.
+  // rule_threads is never touched by message, folder or account deletion;
+  // rule_runs keeps its rows with message_id cleared, deduplicated by the
+  // mail's dedup key, and learns the rule's project for reconciling starts.
+  `
+  CREATE TABLE rule_threads (
+    bb_thread_id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL,
+    run_id TEXT,
+    created_at TEXT NOT NULL
+  );
+  INSERT OR IGNORE INTO rule_threads (bb_thread_id, rule_id, run_id, created_at)
+    SELECT bb_thread_id, rule_id, id, created_at FROM rule_runs
+    WHERE bb_thread_id IS NOT NULL AND state IN ('starting', 'started');
+
+  CREATE TABLE rule_runs_v2 (
+    id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    message_id TEXT,
+    message_key TEXT NOT NULL,
+    project_id TEXT,
+    thread_id TEXT,
+    state TEXT NOT NULL,
+    bb_thread_id TEXT,
+    notified_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (rule_id, message_key)
+  );
+  INSERT OR IGNORE INTO rule_runs_v2
+    (id, rule_id, account_id, message_id, message_key, project_id, thread_id, state, bb_thread_id, notified_at, created_at, updated_at)
+    SELECT r.id, r.rule_id, r.account_id, r.message_id,
+      COALESCE((SELECT m.account_id || ':' || m.dedup_key FROM messages m WHERE m.id = r.message_id), 'id:' || r.message_id),
+      (SELECT mr.project_id FROM mail_rules mr WHERE mr.id = r.rule_id),
+      r.thread_id, r.state, r.bb_thread_id, r.notified_at, r.created_at, r.updated_at
+    FROM rule_runs r;
+  DROP TABLE rule_runs;
+  ALTER TABLE rule_runs_v2 RENAME TO rule_runs;
+  CREATE INDEX rule_runs_state ON rule_runs(state, created_at);
+  CREATE INDEX rule_runs_rule ON rule_runs(rule_id, created_at);
+  CREATE INDEX rule_runs_bb_thread ON rule_runs(bb_thread_id);
+  CREATE INDEX rule_runs_message ON rule_runs(message_id);
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -843,7 +887,8 @@ type RuleRunDbRow = {
   id: string;
   rule_id: string;
   account_id: string;
-  message_id: string;
+  message_id: string | null;
+  project_id: string | null;
   thread_id: string | null;
   state: RuleRunState;
   bb_thread_id: string | null;
@@ -859,6 +904,7 @@ function toRuleRun(row: RuleRunDbRow): RuleRunRecord {
     accountId: row.account_id,
     messageId: row.message_id,
     threadId: row.thread_id,
+    projectId: row.project_id,
     state: row.state,
     bbThreadId: row.bb_thread_id,
     notifiedAt: row.notified_at,
@@ -2049,9 +2095,10 @@ export function createSqliteStore(db: Database.Database): MailStore {
     const removeSnooze = db.prepare("DELETE FROM snoozes WHERE message_id = ?");
     // A kept task outlives its message: "no longer in Makosh Mail" (slice 3f).
     const orphanTasks = db.prepare("UPDATE mail_tasks SET message_id = NULL WHERE message_id = ?");
-    // Slice 3g: links and rule runs of a removed message go with it.
+    // Slice 3g: links of a removed message go with it. Its rule runs stay for
+    // the caps, without the message (review C1); rule_threads is not touched.
     const removeLinks = db.prepare("DELETE FROM bb_links WHERE message_id = ?");
-    const removeRuns = db.prepare("DELETE FROM rule_runs WHERE message_id = ?");
+    const removeRuns = db.prepare("UPDATE rule_runs SET message_id = NULL WHERE message_id = ?");
     for (const row of rows) {
       deleteAttachmentsOf.run(row.id);
       deleteInlinePartsOf.run(row.id);
@@ -2305,13 +2352,14 @@ export function createSqliteStore(db: Database.Database): MailStore {
           "category_suggestions",
           "reply_dismissals",
           "reply_reminders",
-          // Slice 3g. project_bindings, incident_threads and mail_rules are not per account and stay.
+          // Slice 3g. project_bindings, incident_threads, mail_rules and rule_threads are not per account and stay.
           "bb_links",
           "conversation_projects",
-          "rule_runs",
         ]) {
           db.prepare(`DELETE FROM ${table} WHERE account_id = ?`).run(id);
         }
+        // Rule runs stay for the caps, without their messages (review C1).
+        db.prepare("UPDATE rule_runs SET message_id = NULL WHERE account_id = ?").run(id);
         db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
       });
     },
@@ -5219,6 +5267,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
           before(RULE_READY_DAYS),
         );
         removed += db.prepare("DELETE FROM rule_runs WHERE created_at < ?").run(before(RULE_RUNS_KEEP_DAYS)).changes;
+        removed += db.prepare("DELETE FROM rule_threads WHERE created_at < ?").run(before(RULE_THREADS_KEEP_DAYS)).changes;
         removed += db.prepare("DELETE FROM incident_threads WHERE created_at < ?").run(before(INCIDENT_KEEP_DAYS)).changes;
         return removed;
       });
@@ -5510,9 +5559,14 @@ export function createSqliteStore(db: Database.Database): MailStore {
 
     insertRuleRun(row, caps) {
       return atomic(() => {
+        // The mail's dedup key, so the same mail synced again (or after its row was deleted) is still a duplicate.
+        const key =
+          db
+            .prepare<[string], { key: string }>("SELECT account_id || ':' || dedup_key AS key FROM messages WHERE id = ?")
+            .get(row.messageId)?.key ?? `id:${row.messageId}`;
         const duplicate = db
-          .prepare<[string, string], { id: string }>("SELECT id FROM rule_runs WHERE rule_id = ? AND message_id = ?")
-          .get(row.ruleId, row.messageId);
+          .prepare<[string, string], { id: string }>("SELECT id FROM rule_runs WHERE rule_id = ? AND message_key = ?")
+          .get(row.ruleId, key);
         if (duplicate !== undefined) return "duplicate" as const;
         let state: RuleRunState = row.state;
         if (row.state === "starting") {
@@ -5532,9 +5586,19 @@ export function createSqliteStore(db: Database.Database): MailStore {
           if (capVerdict(counts, caps) === "capped") state = "capped";
         }
         db.prepare(
-          `INSERT INTO rule_runs (id, rule_id, account_id, message_id, thread_id, state, bb_thread_id, notified_at, created_at, updated_at)
-           VALUES (@id, @ruleId, @accountId, @messageId, @threadId, @state, NULL, NULL, @createdAt, @createdAt)`,
-        ).run({ ...row, state });
+          `INSERT INTO rule_runs (id, rule_id, account_id, message_id, message_key, project_id, thread_id, state, bb_thread_id, notified_at, created_at, updated_at)
+           VALUES (@id, @ruleId, @accountId, @messageId, @key, @projectId, @threadId, @state, NULL, NULL, @createdAt, @createdAt)`,
+        ).run({
+          id: row.id,
+          ruleId: row.ruleId,
+          accountId: row.accountId,
+          messageId: row.messageId,
+          key,
+          projectId: row.projectId ?? null,
+          threadId: row.threadId,
+          state,
+          createdAt: row.createdAt,
+        });
         return state === "capped" ? ("capped" as const) : ("inserted" as const);
       });
     },
@@ -5570,7 +5634,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
       const after = opts.cursor == null ? null : decodeCursor(opts.cursor);
       const rows = db
         .prepare<[{ state: string | null; afterDate: string | null; afterId: string | null; limit: number }], RuleRunDbRow>(
-          `SELECT * FROM rule_runs WHERE (@state IS NULL OR state = @state)
+          `SELECT * FROM rule_runs WHERE message_id IS NOT NULL AND (@state IS NULL OR state = @state)
              AND (@afterDate IS NULL OR created_at < @afterDate OR (created_at = @afterDate AND id < @afterId))
            ORDER BY created_at DESC, id DESC LIMIT @limit`,
         )
@@ -5587,6 +5651,30 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return db
         .prepare("UPDATE rule_runs SET state = 'failed', updated_at = ? WHERE state = 'starting' AND created_at < ?")
         .run(nowIso, beforeIso).changes;
+    },
+
+    staleStartingRuns(beforeIso) {
+      return db
+        .prepare<[string], RuleRunDbRow>("SELECT * FROM rule_runs WHERE state = 'starting' AND created_at < ? ORDER BY created_at, id")
+        .all(beforeIso)
+        .map(toRuleRun);
+    },
+
+    addRuleThread(row) {
+      db.prepare(
+        "INSERT OR IGNORE INTO rule_threads (bb_thread_id, rule_id, run_id, created_at) VALUES (@bbThreadId, @ruleId, @runId, @createdAt)",
+      ).run(row);
+    },
+
+    isRuleThread(bbThreadId) {
+      return (
+        db
+          .prepare<[string, string], { one: number }>(
+            `SELECT 1 AS one FROM rule_threads WHERE bb_thread_id = ?
+             UNION ALL SELECT 1 FROM rule_runs WHERE bb_thread_id = ? AND state IN ('starting', 'started') LIMIT 1`,
+          )
+          .get(bbThreadId, bbThreadId) !== undefined
+      );
     },
   };
   return store;

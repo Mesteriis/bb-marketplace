@@ -25,6 +25,7 @@ import {
   HIDDEN_VALUES_INSTRUCTIONS,
   UNSUBSCRIBE_NOT_OFFERED_MESSAGE,
   DIGEST_TIME_PATTERN,
+  NO_THREAD_MESSAGE,
 } from "./server.ts";
 import { BB_REFUSAL_TEXT } from "./src/core/contract.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
@@ -7139,7 +7140,7 @@ describe("slice 3g: mail rules", () => {
     await service.done;
   });
 
-  it("a refused worktree fails the run once, with no second spawn and no checkout fallback", async () => {
+  it("a spawn error spawns no second time and no checkout; the run stays starting until reconciled", async () => {
     const { host, accountId, service } = await started();
     await call(host, "rule_save", ruleInput({ mode: "start", confirmedStart: true }));
     host.harness.sdk.stub("threads.spawn", async () => {
@@ -7147,7 +7148,9 @@ describe("slice 3g: mail rules", () => {
     });
     deliver(host, 1);
     await wakeAndWait(host, accountId);
-    await vi.waitFor(() => expect(ruleRuns(host)[0]).toMatchObject({ state: "failed" }));
+    await vi.waitFor(() => expect(agentLogRows(host).some((row) => row.tool === "rule_thread" && row.outcome === "failed")).toBe(true));
+    // BB may have made the thread before the error: never marked failed (ungated) here.
+    expect(ruleRuns(host)[0]).toMatchObject({ state: "starting", bb_thread_id: null });
     expect(sdkCalls(host, "threads.spawn")).toHaveLength(1);
     expect((sdkCalls(host, "threads.spawn")[0]![0] as { environment: { type: string } }).environment.type).toBe("host");
     expect(agentLogRows(host).at(-1)).toMatchObject({ actor: "rule", outcome: "failed" });
@@ -7230,6 +7233,35 @@ describe("slice 3g: mail rules", () => {
     await service.done;
   });
 
+  it("a starting run whose thread BB has, by its metadata, becomes started and a rule thread", async () => {
+    const sdk = bbSdk({ threads: [sdkThread("bb_found"), sdkThread("bb_other")] });
+    (sdk as { threads: Record<string, unknown> }).threads.experimental_listPluginMetadata = async (args: { threadIds: string[] }) => ({
+      threads: args.threadIds.map((threadId) => ({
+        threadId,
+        metadata: threadId === "bb_found" ? { mail: { v: 1, origin: "rule", ruleId: "rule_a", ruleRunId: "run_old" } } : {},
+      })),
+    });
+    const host = await load({
+      settings: { vaultKey: generateVaultKey(), mailRules: true },
+      sdk,
+      seed: (bb) => {
+        seedMail(bb, { folders: ICLOUD_FOLDERS, messages: [{ folder: "INBOX", message: makeFetchedMessage(1) }] });
+        const store = createSqliteStore(bb.storage.database());
+        const messageId = (bb.storage.database().prepare("SELECT id FROM messages").get() as { id: string }).id;
+        store.insertRuleRun(
+          { id: "run_old", ruleId: "rule_a", accountId: "acc_1", messageId, threadId: null, projectId: "api", state: "starting", createdAt: new Date(NOW.getTime() - 11 * 60_000).toISOString() },
+          { perRuleHour: 3, perRuleDay: 10, allDay: 20 },
+        );
+      },
+    });
+    const service = host.harness.behavior.runService("sync");
+    await vi.waitFor(() => expect(ruleRuns(host)[0]).toMatchObject({ state: "started", bb_thread_id: "bb_found" }));
+    expect(host.bb.storage.database().prepare("SELECT bb_thread_id, run_id FROM rule_threads").all()).toEqual([{ bb_thread_id: "bb_found", run_id: "run_old" }]);
+    expect((await host.harness.behavior.runCli(["accounts"], { threadId: "bb_found" })).exitCode).not.toBe(0);
+    service.controller.abort();
+    await service.done;
+  });
+
   it("a starting run left from before a restart becomes failed", async () => {
     const host = await load({
       settings: { vaultKey: generateVaultKey(), mailRules: true },
@@ -7261,11 +7293,22 @@ describe("slice 3g: mail rules", () => {
     const ruleThread = await host.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "bb_t1" } }));
     expect(ruleThread.tools).toEqual([]);
     expect(ruleThread.skills).toEqual([]);
-    const forged = await host.harness.behavior.resolveAgentConfiguration(
-      makePluginAgentConfigurationContext({ thread: { id: "bb_normal" }, pluginMetadata: { mail: { v: 1, origin: "rule", ruleId: "rule_x" } } }),
+    // Metadata never lifts the gate: an owner origin on the rule thread changes nothing.
+    const lifted = await host.harness.behavior.resolveAgentConfiguration(
+      makePluginAgentConfigurationContext({ thread: { id: "bb_t1" }, pluginMetadata: { mail: { v: 1, origin: "owner" } } }),
     );
-    expect(forged.tools.length).toBeGreaterThan(0);
-    expect(forged.skills).toEqual(["mail"]);
+    expect(lifted.tools).toEqual([]);
+    const plain = await host.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "bb_normal" } }));
+    expect(plain.tools.length).toBeGreaterThan(0);
+    expect(plain.skills).toEqual(["mail"]);
+    // Metadata only adds the gate (review C1): a thread whose metadata says rule gets nothing, and is recorded,
+    // so its tools and the CLI refuse too.
+    const marked = await host.harness.behavior.resolveAgentConfiguration(
+      makePluginAgentConfigurationContext({ thread: { id: "bb_marked" }, pluginMetadata: { mail: { v: 1, origin: "rule", ruleId: "rule_x" } } }),
+    );
+    expect(marked.tools).toEqual([]);
+    expect(marked.skills).toEqual([]);
+    expect((await host.harness.behavior.runCli(["accounts"], { threadId: "bb_marked" })).stderr).toContain("Mail is not available in threads started by a mail rule");
 
     for (const { name } of host.harness.inspection.registrations.agentTools) {
       const params: Record<string, unknown> =
@@ -7285,6 +7328,53 @@ describe("slice 3g: mail rules", () => {
       expect(result.stderr).toContain("Mail is not available in threads started by a mail rule");
     }
     expect((await host.harness.behavior.runCli(["accounts"], { threadId: "bb_normal" })).exitCode).toBe(0);
+    service.controller.abort();
+    await service.done;
+  });
+
+  it("a rule thread stays gated and its run counted after its mail is deleted, reset or its account removed", async () => {
+    const { host, accountId, service } = await started({ settings: { agentTools: true } });
+    await call(host, "rule_save", ruleInput({ mode: "start", confirmedStart: true }));
+    deliver(host, 1);
+    await wakeAndWait(host, accountId);
+    await vi.waitFor(() => expect(ruleRuns(host)[0]).toMatchObject({ state: "started", bb_thread_id: "bb_t1" }));
+    const store = sqlStore(host);
+    const gated = async () => {
+      const configured = await host.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "bb_t1" } }));
+      expect(configured.tools).toEqual([]);
+      const result = await host.harness.behavior.callAgentTool("mail_search", { query: "Invented" }, { threadId: "bb_t1" });
+      expect(toolText(result as never)).toContain("Mail is not available in threads started by a mail rule");
+      expect((await host.harness.behavior.runCli(["accounts"], { threadId: "bb_t1" })).stderr).toContain(
+        "Mail is not available in threads started by a mail rule",
+      );
+    };
+    const messageId = ruleRuns(host)[0]!.message_id as string;
+    const uid = (host.bb.storage.database().prepare("SELECT uid FROM messages WHERE id = ?").get(messageId) as { uid: number }).uid;
+    store.deleteByUids(accountId, "INBOX", [uid]);
+    expect(ruleRuns(host)[0]).toMatchObject({ message_id: null, state: "started" });
+    await gated();
+    store.finishFolderReset(accountId, "INBOX");
+    await gated();
+    service.controller.abort();
+    await service.done;
+    await call(host, "accounts_remove", { accountId });
+    await gated();
+    // The caps still count the run: two more Start runs of the rule in this hour are the most.
+    expect(ruleRuns(host)).toHaveLength(1);
+    const caps = { perRuleHour: 3, perRuleDay: 10, allDay: 20 };
+    const ruleId = ruleRuns(host)[0]!.rule_id as string;
+    const at = NOW.toISOString();
+    expect(store.insertRuleRun({ id: "run_b", ruleId, accountId, messageId: "m_b", threadId: null, state: "starting", createdAt: at }, caps)).toBe("inserted");
+    expect(store.insertRuleRun({ id: "run_c", ruleId, accountId, messageId: "m_c", threadId: null, state: "starting", createdAt: at }, caps)).toBe("inserted");
+    expect(store.insertRuleRun({ id: "run_d", ruleId, accountId, messageId: "m_d", threadId: null, state: "starting", createdAt: at }, caps)).toBe("capped");
+  });
+
+  it("the CLI refuses a call that names a project but no thread", async () => {
+    const { host, service } = await started();
+    const result = await host.harness.behavior.runCli(["accounts"], { projectId: "api" });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain(NO_THREAD_MESSAGE);
+    expect((await host.harness.behavior.runCli(["accounts"], {})).exitCode).toBe(0);
     service.controller.abort();
     await service.done;
   });

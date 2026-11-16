@@ -17,6 +17,7 @@ import {
   incidentTitle,
   incidentUpdate,
   metadataFor,
+  ruleThreadMetadata,
   patchPrompt,
   quoteFreeBody,
   rulePrompt,
@@ -373,5 +374,19 @@ describe("metadataFor", () => {
 
   it("refuses a value that is not an id", () => {
     expect(() => metadataFor({ accountId: "acc 1", messageId: "m_1", threadId: "t_1", kind: "thread" })).toThrow();
+  });
+});
+
+describe("ruleThreadMetadata", () => {
+  it("reads a rule origin or a run id, and only ever to add a restriction", () => {
+    const meta = metadataFor({ accountId: "acc_1", messageId: "m_1", threadId: "t_1", kind: "rule", origin: "rule", ruleId: "r_1", ruleRunId: "run_1" });
+    expect(meta.mail.ruleRunId).toBe("run_1");
+    expect(ruleThreadMetadata(meta)).toEqual({ ruleId: "r_1", ruleRunId: "run_1" });
+    expect(ruleThreadMetadata({ mail: { origin: "rule" } })).toEqual({ ruleId: null, ruleRunId: null });
+    expect(ruleThreadMetadata({ mail: { ruleRunId: "bad id\n" } })).toEqual({ ruleId: null, ruleRunId: null });
+    expect(ruleThreadMetadata(metadataFor({ accountId: "acc_1", messageId: "m_1", threadId: "t_1", kind: "thread" }))).toBeNull();
+    expect(ruleThreadMetadata({})).toBeNull();
+    expect(ruleThreadMetadata(null)).toBeNull();
+    expect(ruleThreadMetadata({ mail: "rule" })).toBeNull();
   });
 });

@@ -73,9 +73,11 @@ import {
   afterRoundRules,
   bbRefusal,
   createBbRpc,
+  reconcileRuleStarts,
   type BbSettings,
   type RuleDeps,
 } from "./src/adapters/bb/bb-rpc.ts";
+import { ruleThreadMetadata } from "./src/core/bb-text.ts";
 import { describeStructure, headerLines, readHeaders } from "./src/core/headers.ts";
 import {
   IdentityRefusal,
@@ -1100,17 +1102,32 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     const bbThreads = createBbThreads(bb.sdk);
     const taskTarget = createTaskboardTarget(bb.sdk);
     /**
-     * A BB thread started by a mail rule (spec resolution 4): decided by
-     * Mail's own rule_runs rows, never by thread metadata. A failed lookup
-     * counts as a rule thread, so no mail is offered.
+     * A BB thread started by a mail rule (spec resolution 4, review C1):
+     * Mail's own rule_threads rows (kept apart from messages, folders and
+     * accounts) and starting or started runs. configure also gates a thread
+     * whose metadata says it came from a rule, and records it here; metadata
+     * never lifts the gate. A failed lookup counts as a rule thread, so no
+     * mail is offered.
      */
     const isRuleThread = (threadId: string): boolean => {
       try {
-        return store.ruleRunByBbThread(threadId) !== null;
+        return store.isRuleThread(threadId);
       } catch (error) {
         bb.log.warn(`rule thread lookup failed (${errorKind(error)})`);
         return true;
       }
+    };
+    /** configure's check: Mail's rows, then the thread's metadata (adding the gate row when it says rule). */
+    const isRuleThreadContext = (threadId: string, metadata: unknown): boolean => {
+      if (isRuleThread(threadId)) return true;
+      const named = ruleThreadMetadata(metadata);
+      if (named === null) return false;
+      try {
+        store.addRuleThread({ bbThreadId: threadId, ruleId: named.ruleId ?? "unknown", runId: named.ruleRunId, createdAt: clock.now().toISOString() });
+      } catch (error) {
+        bb.log.warn(`rule thread record failed (${errorKind(error)})`);
+      }
+      return true;
     };
     const gateway =
       overrides.gateway ?? createImapflowGateway({ logger: (line) => bb.log.warn(line) });
@@ -1373,8 +1390,18 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       mailRules: () => current.mailRules,
       notify: () => dayClock.tick(),
     };
+    const reconcileStarts = async () => {
+      try {
+        const now = clock.now();
+        const settled = await reconcileRuleStarts(ruleDeps, new Date(now.getTime() - STALE_START_MS).toISOString());
+        if (settled.started + settled.failed > 0) bb.log.info(`rules: ${settled.started} starts found, ${settled.failed} failed`);
+      } catch (error) {
+        bb.log.warn(`rule start recovery failed (${errorKind(error)})`);
+      }
+    };
     const purgeDaily = async () => {
       purgeProposals();
+      await reconcileStarts();
       // Bindings to projects BB no longer has go after 30 days; unknown when BB does not answer.
       let known: string[] | null = null;
       try {
@@ -1392,15 +1419,9 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
 
     bb.background.service("sync", {
       start: async (signal) => {
-        // A rule run that was starting when the plugin stopped never got its thread (resolution 13).
-        try {
-          const now = clock.now();
-          const failed = store.failStaleStarts(new Date(now.getTime() - STALE_START_MS).toISOString(), now.toISOString());
-          if (failed > 0) bb.log.info(`rules: ${failed} stale starts failed`);
-        } catch (error) {
-          bb.log.warn(`rule start recovery failed (${errorKind(error)})`);
-        }
         // Not awaited: the purge asks BB for its projects, and the loops must not wait for that.
+        // It first settles rule runs still starting (the plugin stopped, or the spawn errored)
+        // against BB's threads by their metadata; never failed while BB is silent (review C1).
         void purgeDaily();
         const daily = setInterval(() => void purgeDaily(), PURGE_INTERVAL_MS);
         const sweep = setInterval(() => {
@@ -1509,6 +1530,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       agentLog: agentLog.log,
       agentLogUpdate: agentLog.update,
       isRuleThread,
+      isRuleThreadContext,
     });
     registerTriageTools(agentBb, rpcDeps);
     registerCli(bb, store, {
@@ -3259,6 +3281,8 @@ type AgentSurfaceDeps = {
   agentLogUpdate: AgentLogUpdate;
   /** A BB thread started by a mail rule (slice 3g): it gets no mail tools and no skill. */
   isRuleThread: (threadId: string) => boolean;
+  /** configure's check: also a thread whose metadata says it came from a rule (review C1). */
+  isRuleThreadContext: (threadId: string, metadata: unknown) => boolean;
 };
 
 /** Each agent tool's agent-log name. */
@@ -3624,7 +3648,7 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
   // Inbox triage follows agentTriage (slice 3e): mail_inbox, mail_triage and mail_read.
   bb.agents.configure((context) => {
     // A rule thread gets no mail tools and no skill, whatever its metadata says (spec resolution 4).
-    if (deps.isRuleThread(context.thread.id)) return { tools: [], skills: [] };
+    if (deps.isRuleThreadContext(context.thread.id, context.pluginMetadata)) return { tools: [], skills: [] };
     const read = agentTools();
     const propose = deps.agentPropose();
     const triage = deps.agentTriage();
@@ -5009,6 +5033,10 @@ function unknownAccount(accountId: string): PluginCliError {
   });
 }
 
+/** The CLI inside a project with no thread id: which thread asks cannot be known. */
+export const NO_THREAD_MESSAGE =
+  "Mail commands need the BB thread they run in (BB_THREAD_ID); run them from that thread or from your own terminal.";
+
 function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
   const { loop, agentTools, agentLog } = deps;
   /**
@@ -5016,9 +5044,15 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
    * mail and account data follow agentTools, like the tools; the owner's own
    * terminal has no thread. The thread id comes from the agent's environment,
    * so this decides what agents are offered; it is not a barrier against an
-   * agent with shell access to the BB server machine.
+   * agent with shell access to the BB server machine. A call that carries a
+   * project but no thread (an agent environment whose BB_THREAD_ID was
+   * dropped) cannot be told apart from a rule thread, so it is refused too
+   * (review C1).
    */
   const refuseRuleThread = (ctx: PluginCliContext) => {
+    if (ctx.threadId === undefined && ctx.projectId !== undefined) {
+      throw new PluginCliError(NO_THREAD_MESSAGE, { code: "thread_unknown" });
+    }
     if (ctx.threadId !== undefined && deps.isRuleThread(ctx.threadId)) {
       throw new PluginCliError(RULE_THREAD_MESSAGE, { code: "rule_thread" });
     }

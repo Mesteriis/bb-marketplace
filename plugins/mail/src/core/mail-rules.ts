@@ -22,6 +22,8 @@ export const RULE_CAPS = { perRuleHour: 3, perRuleDay: 10, allDay: 20 } as const
 export const RULE_READY_DAYS = 7;
 /** Runs are kept (and counted) this many days, deleted rules' runs included. */
 export const RULE_RUNS_KEEP_DAYS = 30;
+/** A rule thread stays gated this long after it started (review C1), whatever happens to its mail. */
+export const RULE_THREADS_KEEP_DAYS = 180;
 
 export type RuleDevMatch = { source?: DevSource; repo?: string; kind?: DevKind; state?: DevState };
 

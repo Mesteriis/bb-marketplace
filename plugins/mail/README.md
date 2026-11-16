@@ -586,8 +586,12 @@ writes to the mail server, sends mail, runs a command or makes a web request.
   your checkout, and needs a project with a local checkout. Caps: 3 threads
   an hour and 10 a day per rule, 20 a day for all rules, one a day per
   conversation per rule; over a cap the run waits for you. A rule thread
-  gets no mail tools, no mail skill and no mail CLI. **Pause all rules** in
-  the strip and in settings, with Undo.
+  gets no mail tools, no mail skill and no mail CLI, and stays so (for 180
+  days) after its mail, folder or account is gone; the caps keep counting its
+  run. A thread whose metadata says a rule started it is treated the same;
+  metadata never lifts the restriction. The mail CLI also refuses a call that
+  names a project but no thread. **Pause all rules** in the strip and in
+  settings, with Undo.
 
 What goes into BB: every prompt, title, task text, incident text and alert
 update is built in one place on the server from mail in AI access, with

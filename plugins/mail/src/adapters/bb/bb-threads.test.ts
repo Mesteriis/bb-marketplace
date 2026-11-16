@@ -131,4 +131,22 @@ describe("createBbThreads", () => {
     defaults = { model: "m", permissionMode: "full", providerId: "x", reasoningLevel: "r", serviceTier: "s" };
     expect(await threads.defaultPermissionMode("p_api")).toBe("full");
   });
+
+  it("reads this plugin's metadata of threads by id", async () => {
+    const { sdk, harness } = createFakeSdk({
+      pluginId: "mail",
+      overrides: {
+        threads: {
+          experimental_listPluginMetadata: async (args: { threadIds: readonly string[] }) => ({
+            threads: args.threadIds.filter((id) => id !== "bb_none").map((threadId) => ({ threadId, metadata: { mail: { ruleRunId: `run_${threadId}` } } })),
+          }),
+        },
+      },
+    });
+    const threads = createBbThreads(sdk);
+    const found = await threads.pluginMetadata(["bb_1", "bb_none", "bb_1"]);
+    expect([...found]).toEqual([["bb_1", { mail: { ruleRunId: "run_bb_1" } }]]);
+    expect(harness.callsTo("threads.experimental_listPluginMetadata")[0]![0]).toMatchObject({ threadIds: ["bb_1", "bb_none"] });
+    expect(await threads.pluginMetadata([])).toEqual(new Map());
+  });
 });

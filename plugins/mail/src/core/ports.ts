@@ -990,10 +990,20 @@ export interface MailStore {
   /** The run (starting or started) whose BB thread this is: a rule thread. */
   ruleRunByBbThread(bbThreadId: string): RuleRunRecord | null;
   getRuleRun(id: string): RuleRunRecord | null;
-  /** Newest first; `state` keeps those in it. */
+  /** Newest first, runs whose message is gone left out; `state` keeps those in it. */
   listRuleRuns(opts: { state?: RuleRunState; cursor?: string | null; limit: number }): { runs: RuleRunRecord[]; next: string | null };
   /** `starting` runs created before `beforeIso` become `failed`; returns how many. */
   failStaleStarts(beforeIso: string, nowIso: string): number;
+  /** `starting` runs created before `beforeIso`, oldest first (reconciled against BB). */
+  staleStartingRuns(beforeIso: string): RuleRunRecord[];
+  /**
+   * Marks a BB thread a rule thread (review C1): kept apart from messages,
+   * folders and accounts, so deleting the mail never lifts the gate; purged
+   * after RULE_THREADS_KEEP_DAYS. A second write for the thread is ignored.
+   */
+  addRuleThread(row: { bbThreadId: string; ruleId: string; runId: string | null; createdAt: string }): void;
+  /** A rule thread: a rule_threads row, or a starting or started run with this BB thread. */
+  isRuleThread(bbThreadId: string): boolean;
 
   /**
    * The daily purge (slice 3f): labels and suggestions without a row of their
@@ -1061,6 +1071,8 @@ export type NewRuleRun = {
   accountId: string;
   messageId: string;
   threadId: string | null;
+  /** The rule's project, for reconciling a start against BB's threads. */
+  projectId?: string | null;
   /** `starting` (Start mode: caps checked) or `ready` (Prepare mode, or a Start run that cannot start). */
   state: "starting" | "ready";
   createdAt: string;
@@ -1070,8 +1082,10 @@ export type RuleRunRecord = {
   id: string;
   ruleId: string;
   accountId: string;
-  messageId: string;
+  /** Null once the message is gone: the run stays for the caps (review C1). */
+  messageId: string | null;
   threadId: string | null;
+  projectId: string | null;
   state: RuleRunState;
   bbThreadId: string | null;
   notifiedAt: string | null;
@@ -1159,6 +1173,8 @@ export interface BbThreads {
   uploadAttachment(projectId: string, bytes: Uint8Array, filename: string, mimeType: string): Promise<BbInputItem>;
   /** The project's default permission mode, null when none is set. */
   defaultPermissionMode(projectId: string): Promise<BbPermissionMode | null>;
+  /** This plugin's metadata of the given threads (reconciling rule starts); threads without any are left out. */
+  pluginMetadata(threadIds: string[]): Promise<Map<string, unknown>>;
 }
 
 /** Taskboard as a task target (adapter: bb.sdk.plugins.callRpc). Never throws. */

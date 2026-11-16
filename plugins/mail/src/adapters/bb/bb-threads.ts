@@ -3,7 +3,8 @@
 // thread without interrupting a turn, read a thread's result, list threads,
 // read a thread's storage files (inside its storage root only), upload a
 // project attachment (a patch for a worktree thread) and read a project's
-// default permission mode. The SDK shapes are the installed declarations'
+// default permission mode, and read this plugin's metadata of threads
+// (reconciling rule starts). The SDK shapes are the installed declarations'
 // (spec resolution 7): text items carry `mentions: []`, send passes `mode`,
 // and storage `limit` is a string. Errors carry codes only.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -132,6 +133,16 @@ export function createBbThreads(sdk: ThreadsSdk): BbThreads {
     async defaultPermissionMode(projectId): Promise<BbPermissionMode | null> {
       const defaults = await sdk.projects.defaultExecutionOptions({ projectId });
       return defaults?.permissionMode ?? null;
+    },
+
+    async pluginMetadata(threadIds): Promise<Map<string, unknown>> {
+      const out = new Map<string, unknown>();
+      const ids = [...new Set(threadIds)];
+      for (let i = 0; i < ids.length; i += THREAD_IDS_PER_CALL) {
+        const listed = await sdk.threads.experimental_listPluginMetadata({ threadIds: ids.slice(i, i + THREAD_IDS_PER_CALL) });
+        for (const entry of listed.threads) out.set(entry.threadId, entry.metadata);
+      }
+      return out;
     },
   };
 }

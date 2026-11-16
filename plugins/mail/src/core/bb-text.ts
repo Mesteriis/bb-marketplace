@@ -303,8 +303,11 @@ function id(value: string): string {
 }
 
 /**
- * Plugin metadata for a spawned thread: ids and codes only. Written for BB's
- * attribution; Mail never reads it back for a decision (resolution 4).
+ * Plugin metadata for a spawned thread: ids and codes only. A rule thread
+ * carries its rule and its run id (`ruleRunId`, the gate row written before
+ * the spawn); Mail reads it back only to add restrictions (a thread whose
+ * metadata says it came from a rule gets no mail), never to lift one
+ * (review C1, replacing resolution 4's "never read back").
  */
 export function metadataFor(link: {
   accountId: string;
@@ -313,8 +316,18 @@ export function metadataFor(link: {
   kind: BbLinkKind;
   origin?: "owner" | "rule";
   ruleId?: string;
+  ruleRunId?: string;
 }): {
-  mail: { v: 1; accountId: string; messageId: string; threadId: string; kind: BbLinkKind; origin: "owner" | "rule"; ruleId?: string };
+  mail: {
+    v: 1;
+    accountId: string;
+    messageId: string;
+    threadId: string;
+    kind: BbLinkKind;
+    origin: "owner" | "rule";
+    ruleId?: string;
+    ruleRunId?: string;
+  };
 } {
   const mail = {
     v: 1 as const,
@@ -323,6 +336,24 @@ export function metadataFor(link: {
     threadId: id(link.threadId),
     kind: link.kind,
     origin: link.origin === "rule" ? ("rule" as const) : ("owner" as const),
+    ...(link.ruleId === undefined ? {} : { ruleId: id(link.ruleId) }),
+    ...(link.ruleRunId === undefined ? {} : { ruleRunId: id(link.ruleRunId) }),
   };
-  return { mail: link.ruleId === undefined ? mail : { ...mail, ruleId: id(link.ruleId) } };
+  return { mail };
+}
+
+/**
+ * Whether a thread's plugin metadata says it was started by a mail rule:
+ * `mail.origin` "rule" or any `mail.ruleRunId`. Metadata can be written by
+ * anyone, so this only ever adds a restriction. Returns the rule and run ids
+ * it names (when they are well-formed ids) for the gate row.
+ */
+export function ruleThreadMetadata(metadata: unknown): { ruleId: string | null; ruleRunId: string | null } | null {
+  if (typeof metadata !== "object" || metadata === null) return null;
+  const mail = (metadata as Record<string, unknown>).mail;
+  if (typeof mail !== "object" || mail === null) return null;
+  const fields = mail as Record<string, unknown>;
+  const idOrNull = (value: unknown) => (typeof value === "string" && ID.test(value) ? value : null);
+  if (fields.origin !== "rule" && fields.ruleRunId === undefined) return null;
+  return { ruleId: idOrNull(fields.ruleId), ruleRunId: idOrNull(fields.ruleRunId) };
 }

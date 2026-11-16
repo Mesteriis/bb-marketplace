@@ -126,7 +126,7 @@ import type {
 } from "../ports.ts";
 import type { BbLinkRowKind } from "../model.ts";
 import { normalizeListId, type DevClass } from "../dev-notify.ts";
-import { RULES_MAX, RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, capVerdict, type Rule } from "../mail-rules.ts";
+import { RULES_MAX, RULE_READY_DAYS, RULE_RUNS_KEEP_DAYS, RULE_THREADS_KEEP_DAYS, capVerdict, type Rule } from "../mail-rules.ts";
 import { INCIDENT_KEEP_DAYS } from "../alerts.ts";
 import { UNKNOWN_PROJECT_DAYS } from "../projects.ts";
 import { groupDevRows, pageDevGroups } from "../dev-groups.ts";
@@ -364,7 +364,9 @@ type StoreState = {
   bindings: Map<string, BindingRow>;
   incidents: Map<string, IncidentRow>;
   rules: Map<string, RuleRecord>;
-  ruleRuns: RuleRunRecord[];
+  ruleRuns: (RuleRunRecord & { messageKey: string })[];
+  /** bb thread id to its rule thread row (review C1): never dropped with mail. */
+  ruleThreads: Map<string, { ruleId: string; runId: string | null; createdAt: string }>;
 };
 
 type StoredTask = Omit<TaskRecord, "threadId">;
@@ -461,6 +463,7 @@ export class InMemoryMailStore implements MailStore {
     incidents: new Map(),
     rules: new Map(),
     ruleRuns: [],
+    ruleThreads: new Map(),
   };
   /** The installed AI scope and its excluded conversations: memory only, as SQLite's. */
   private aiScope: AiScope = OPEN_AI_SCOPE;
@@ -556,7 +559,8 @@ export class InMemoryMailStore implements MailStore {
     for (const key of [...this.state.conversationProjects.keys()]) {
       if (key.startsWith(`${id}\u0000`)) this.state.conversationProjects.delete(key);
     }
-    this.state.ruleRuns = this.state.ruleRuns.filter((run) => run.accountId !== id);
+    // Rule runs stay for the caps, without their messages (review C1).
+    for (const run of this.state.ruleRuns) if (run.accountId === id) run.messageId = null;
     this.dropOrphanTranslations();
   }
 
@@ -2772,7 +2776,9 @@ export class InMemoryMailStore implements MailStore {
   }
 
   insertRuleRun(row: NewRuleRun, caps: RuleCaps): "inserted" | "capped" | "duplicate" {
-    if (this.state.ruleRuns.some((run) => run.ruleId === row.ruleId && run.messageId === row.messageId)) return "duplicate";
+    const stored = this.state.rows.find((r) => r.id === row.messageId);
+    const messageKey = stored === undefined ? `id:${row.messageId}` : `${stored.accountId}:${stored.dedupKey}`;
+    if (this.state.ruleRuns.some((run) => run.ruleId === row.ruleId && run.messageKey === messageKey)) return "duplicate";
     let state: RuleRunState = row.state;
     if (row.state === "starting") {
       const at = Date.parse(row.createdAt);
@@ -2789,7 +2795,20 @@ export class InMemoryMailStore implements MailStore {
       };
       if (capVerdict(counts, caps) === "capped") state = "capped";
     }
-    this.state.ruleRuns.push({ ...row, state, bbThreadId: null, notifiedAt: null, updatedAt: row.createdAt });
+    this.state.ruleRuns.push({
+      id: row.id,
+      ruleId: row.ruleId,
+      accountId: row.accountId,
+      messageId: row.messageId,
+      threadId: row.threadId,
+      projectId: row.projectId ?? null,
+      messageKey,
+      state,
+      bbThreadId: null,
+      notifiedAt: null,
+      createdAt: row.createdAt,
+      updatedAt: row.createdAt,
+    });
     return state === "capped" ? "capped" : "inserted";
   }
 
@@ -2808,22 +2827,38 @@ export class InMemoryMailStore implements MailStore {
     const run = this.state.ruleRuns
       .filter((r) => r.bbThreadId === bbThreadId && (r.state === "starting" || r.state === "started"))
       .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))[0];
-    return run === undefined ? null : { ...run };
+    return run === undefined ? null : publicRun(run);
   }
 
   getRuleRun(id: string): RuleRunRecord | null {
     const run = this.state.ruleRuns.find((r) => r.id === id);
-    return run === undefined ? null : { ...run };
+    return run === undefined ? null : publicRun(run);
   }
 
   listRuleRuns(opts: { state?: RuleRunState; cursor?: string | null; limit: number }): { runs: RuleRunRecord[]; next: string | null } {
     const all = this.state.ruleRuns
-      .filter((run) => opts.state === undefined || run.state === opts.state)
+      .filter((run) => run.messageId !== null && (opts.state === undefined || run.state === opts.state))
       .sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? 1 : -1) : a.createdAt < b.createdAt ? 1 : -1));
     const offset = opts.cursor == null ? 0 : Number(opts.cursor);
-    const runs = all.slice(offset, offset + opts.limit).map((run) => ({ ...run }));
+    const runs = all.slice(offset, offset + opts.limit).map(publicRun);
     const next = offset + runs.length;
     return { runs, next: next < all.length ? String(next) : null };
+  }
+
+  staleStartingRuns(beforeIso: string): RuleRunRecord[] {
+    return this.state.ruleRuns
+      .filter((run) => run.state === "starting" && run.createdAt < beforeIso)
+      .sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? -1 : 1))
+      .map(publicRun);
+  }
+
+  addRuleThread(row: { bbThreadId: string; ruleId: string; runId: string | null; createdAt: string }): void {
+    if (this.state.ruleThreads.has(row.bbThreadId)) return;
+    this.state.ruleThreads.set(row.bbThreadId, { ruleId: row.ruleId, runId: row.runId, createdAt: row.createdAt });
+  }
+
+  isRuleThread(bbThreadId: string): boolean {
+    return this.state.ruleThreads.has(bbThreadId) || this.ruleRunByBbThread(bbThreadId) !== null;
   }
 
   failStaleStarts(beforeIso: string, nowIso: string): number {
@@ -2917,6 +2952,12 @@ export class InMemoryMailStore implements MailStore {
     const keptRuns = this.state.ruleRuns.filter((run) => run.createdAt >= runs);
     removed += this.state.ruleRuns.length - keptRuns.length;
     this.state.ruleRuns = keptRuns;
+    const ruleThreads = before(RULE_THREADS_KEEP_DAYS);
+    for (const [key, row] of [...this.state.ruleThreads]) {
+      if (row.createdAt >= ruleThreads) continue;
+      this.state.ruleThreads.delete(key);
+      removed++;
+    }
     const incidents = before(INCIDENT_KEEP_DAYS);
     for (const [key, row] of [...this.state.incidents]) {
       if (row.createdAt >= incidents) continue;
@@ -2939,9 +2980,9 @@ export class InMemoryMailStore implements MailStore {
     for (const task of this.state.tasks.values()) {
       if (task.messageId !== null && !ids.has(task.messageId)) task.messageId = null;
     }
-    // Slice 3g: links and rule runs go with their message.
+    // Slice 3g: links go with their message; rule runs stay without it (review C1).
     this.state.bbLinks = this.state.bbLinks.filter((link) => ids.has(link.messageId));
-    this.state.ruleRuns = this.state.ruleRuns.filter((run) => ids.has(run.messageId));
+    for (const run of this.state.ruleRuns) if (run.messageId !== null && !ids.has(run.messageId)) run.messageId = null;
   }
 
   /** The row landed in a junk-role folder: block never moves its dedup key again (spec resolution 17). */
@@ -3940,4 +3981,10 @@ export function composeHarness(options: { now?: string } = {}) {
     vaultReady: () => proposal.vaultOpen,
   };
   return Object.assign(harness, { ...deps, deps, drafts, sent, advance, sleeps, proposal, proposalDeps });
+}
+
+/** A stored rule run without the fake's dedup key. */
+function publicRun(run: RuleRunRecord & { messageKey: string }): RuleRunRecord {
+  const { messageKey: _key, ...rest } = run;
+  return rest;
 }
