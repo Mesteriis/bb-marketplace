@@ -20,7 +20,7 @@ recommendation, and the design below follows it.
 ## Owner's decisions
 
 Proposed by the builder on 2026-11-16. None is confirmed yet; each line is
-marked *(proposed — owner to confirm)*.
+marked *(owner, accepted 2026-11-16)*.
 
 1. **Scope of 3f:** thread summary (#22), question to the mail with links to
    the source messages (#60), tasks and deadlines with the owner choosing what
@@ -28,7 +28,7 @@ marked *(proposed — owner to confirm)*.
    redaction before any text reaches an agent or a model (#58), local
    categories (#66), morning digest (#68), reply reminder (#69), and the
    model editing a draft's text with the owner approving the diff (#90).
-   *(proposed — owner to confirm)* The owner asked for the whole group.
+   *(owner, accepted 2026-11-16)* The owner asked for the whole group.
 2. **Owner-click model features go through makosh-ai directly, not through an
    agent thread.** Summary, question, tasks, category suggestions, the digest
    summary and draft edits use the same provider-agnostic `Translator` port and
@@ -38,44 +38,44 @@ marked *(proposed — owner to confirm)*.
    provider sees only the framed, redacted text of that one request.
 3. **No new agent tools and no new agent-proposed changes in 3f.** Agents keep
    the 3c/3e tools; 3f puts all of them behind the access scope, the
-   redaction and the action log. *(proposed — owner to confirm)* Every 3f
+   redaction and the action log. *(owner, accepted 2026-11-16)* Every 3f
    feature is owner-initiated, so nothing new needs a 3c card; an agent
    variant can be added later with the card.
 4. **Secret redaction is always on, with no setting.** One-time codes,
    passwords, tokens (API keys, magic-link and reset-link tokens, private-key
    blocks) and card numbers are replaced by placeholders such as
    `[hidden one-time code]` in every text an agent or a model receives.
-   *(proposed — owner to confirm)* A switch would only make leaks possible;
+   *(owner, accepted 2026-11-16)* A switch would only make leaks possible;
    the owner reads the original in Mail.
 5. **AI access scope default: every account and folder except Spam and
    Trash.** Mail settings → **AI access** narrows it per account (all
    folders, chosen folders, or none) and excludes senders or domains. Spam and
    Trash are never in scope. Out-of-scope mail does not exist for agents, and
-   the AI buttons are disabled on it. *(proposed — owner to confirm)* It keeps
+   the AI buttons are disabled on it. *(owner, accepted 2026-11-16)* It keeps
    today's agent reach minus junk, and one scope covers agents and models.
 6. **The action log is always on and local.** Mail settings → **Agent
    activity** lists, per thread, which tool ran when, how many messages it
    returned, which message ids it touched and what it proposed or applied, and
    every owner-click model call (kind, provider, message ids). No mail text,
    no queries, no addresses. Kept 90 days, at most 20 000 rows, with **Clear**.
-   *(proposed — owner to confirm)* Ids and counts are harmless to keep and the
+   *(owner, accepted 2026-11-16)* Ids and counts are harmless to keep and the
    log is the owner's only view of what agents did.
 7. **Summary:** **Summarize** on a conversation in the reading pane; the
    result lists decisions, open questions and deadlines, each line citing the
    messages it comes from (clickable); cached locally per conversation and
-   content. *(proposed — owner to confirm)* Citations make a wrong summary
+   content. *(owner, accepted 2026-11-16)* Citations make a wrong summary
    checkable.
 8. **Question to the mail:** an **Ask** box in the Mail page. Two model
    calls: the first sees only the question and today's date and returns up to
    three search queries; the plugin runs them locally over in-scope mail; the
    second answers from at most 20 redacted excerpts and cites them as links.
-   Questions and answers are not stored. *(proposed — owner to confirm)* The
+   Questions and answers are not stored. *(owner, accepted 2026-11-16)* The
    provider never sees mail the local search did not pick.
 9. **Tasks:** **Find tasks** on a message or conversation; the model lists
    requests and dates with a quote as evidence; the owner ticks which to keep;
    kept tasks live in a local **Tasks** view of the Mail page (title, due date,
    done, link to the message). No Taskboard or calendar integration in 3f.
-   *(proposed — owner to confirm)* Local first; the Taskboard plugin is
+   *(owner, accepted 2026-11-16)* Local first; the Taskboard plugin is
    experimental and untracked.
 10. **Categories: off by default** (setting `mailCategories`). Four
     categories: bills, notifications, personal, newsletters. Local rules
@@ -114,7 +114,7 @@ marked *(proposed — owner to confirm)*.
     `ai.v1.providers` with the wrong field names, and maps makosh-ai's
     `<reason>: text` refusals (`busy`, `bridge_missing`, `pool_missing`)
     distinctly. Both are 3f tasks because every 3f model feature depends on
-    the adapter. *(proposed — owner to confirm)* Without the fix provider
+    the adapter. *(owner, accepted 2026-11-16)* Without the fix provider
     discovery fails on the installed makosh-ai.
 
 ## Goals
