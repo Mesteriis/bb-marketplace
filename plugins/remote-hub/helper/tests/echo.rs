@@ -1438,3 +1438,61 @@ fn c2_ssh_exit_255_reports_ssh_error() {
     assert_eq!(sig, None);
     assert_eq!(reason, "ssh_error");
 }
+
+// V1: environment CStrings must stay alive until execve reads them. A dropped
+// env owner would surface as garbage or missing values here.
+#[test]
+fn v1_env_values_reach_execve_intact() {
+    let mut h = start();
+    h.hello();
+
+    let mut env = HashMap::new();
+    env.insert("A".to_string(), "alpha".to_string());
+    env.insert("B".to_string(), "beta gamma".to_string());
+    env.insert("C".to_string(), "\u{03b4}".to_string());
+
+    h.send(&Request::OpenSsh {
+        id: 1,
+        cols: 80,
+        rows: 24,
+        program: "/usr/bin/env".to_string(),
+        argv: vec!["env".to_string()],
+        env,
+        cwd: None,
+    });
+    let sid = match h.read_response() {
+        Response::SessionOpened { session_id, .. } => session_id,
+        other => panic!("expected session.opened, got {other:?}"),
+    };
+    h.send(&Request::SessionCredit {
+        id: 2,
+        session_id: sid,
+        bytes: 1 << 20,
+    });
+    match h.read_response() {
+        Response::SessionCreditAck { .. } => {}
+        other => panic!("expected session.credit_ack, got {other:?}"),
+    }
+
+    let mut got = String::new();
+    for _ in 0..400 {
+        let (kind, payload) = h.read_frame();
+        if kind == FRAME_KIND_STREAM {
+            let rsid = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+            if rsid == sid {
+                got.push_str(&String::from_utf8_lossy(&payload[8..]));
+            }
+        }
+        if got.contains("A=alpha") && got.contains("B=beta gamma") && got.contains("C=\u{03b4}") {
+            break;
+        }
+    }
+
+    let mut lines: Vec<String> = got
+        .lines()
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines.sort();
+    assert_eq!(lines, vec!["A=alpha", "B=beta gamma", "C=\u{03b4}"]);
+}

@@ -29,6 +29,17 @@ pub struct SpawnSpec {
     pub allow_fds: Vec<i32>,
 }
 
+/// Owned argv/env strings and the null-terminated C pointers built from them.
+/// Keeping the owners and the pointers together fixes the previous dangling
+/// envp (the CStrings were dropped while execve still read them).
+struct ExecArgv {
+    prog: CString,
+    argv: Vec<CString>,
+    env: Vec<CString>,
+    c_args: Vec<*const libc::c_char>,
+    envp: Vec<*const libc::c_char>,
+}
+
 pub struct Session {
     pub id: u32,
     pub child: libc::pid_t,
@@ -337,11 +348,12 @@ impl SessionManager {
         self.open_session(spec, cols, rows, "ssh".to_string())
     }
 
-    fn build_exec_argv(&self, spec: &SpawnSpec) -> (CString, Vec<CString>, Vec<*const libc::c_char>, Vec<*const libc::c_char>) {
-        let mut c_args: Vec<*const libc::c_char> = spec.argv.iter().map(|a| a.as_ptr()).collect();
-        c_args.push(std::ptr::null());
-        // envp: KEY=VALUE strings
-        let env_strings: Vec<CString> = spec
+    /// Owning argv/env storage plus the C pointers built from it. The
+    /// pointers stay valid exactly as long as the returned value is alive, so
+    /// `open_session` keeps it alive until after fork/exec.
+    fn build_exec_argv(&self, spec: &SpawnSpec) -> ExecArgv {
+        let argv = spec.argv.clone();
+        let env: Vec<CString> = spec
             .env
             .iter()
             .map(|(k, v)| {
@@ -351,9 +363,17 @@ impl SessionManager {
                 CString::new(kv).expect("env has no NUL")
             })
             .collect();
-        let mut envp: Vec<*const libc::c_char> = env_strings.iter().map(|s| s.as_ptr()).collect();
+        let mut c_args: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
+        c_args.push(std::ptr::null());
+        let mut envp: Vec<*const libc::c_char> = env.iter().map(|s| s.as_ptr()).collect();
         envp.push(std::ptr::null());
-        (spec.program.clone(), spec.argv.clone(), c_args, envp)
+        ExecArgv {
+            prog: spec.program.clone(),
+            argv,
+            env,
+            c_args,
+            envp,
+        }
     }
 
     pub fn open_session(
@@ -363,7 +383,7 @@ impl SessionManager {
         rows: u16,
         kind: String,
     ) -> Result<u32, SessionError> {
-        let (prog, _argv, c_args, envp) = self.build_exec_argv(&spec);
+        let exec = self.build_exec_argv(&spec);
         let mut master: libc::c_int = -1;
         let mut slave: libc::c_int = -1;
         let mut winsize = libc::winsize {
@@ -471,7 +491,7 @@ impl SessionManager {
                 if let Some(cwd) = &spec.cwd {
                     libc::chdir(cwd.as_ptr());
                 }
-                libc::execve(prog.as_ptr(), c_args.as_ptr(), envp.as_ptr());
+                libc::execve(exec.prog.as_ptr(), exec.c_args.as_ptr(), exec.envp.as_ptr());
                 libc::_exit(127);
             }
         }
