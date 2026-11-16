@@ -97,6 +97,23 @@ function lowerSameLength(text: string): string {
   return out;
 }
 
+/**
+ * The text detection reads: full-width digits and colon become ASCII, one
+ * unit for one, so every index still points into the original.
+ */
+function normalizeForDetection(text: string): string {
+  let out = "";
+  let from = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if ((c >= 0xff10 && c <= 0xff19) || c === 0xff1a) {
+      out += text.slice(from, i) + String.fromCharCode(c - 0xfee0);
+      from = i + 1;
+    }
+  }
+  return from === 0 ? text : out + text.slice(from);
+}
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
 }
@@ -169,11 +186,37 @@ const CODE_WORDS: { word: string; whole: boolean }[] = [
   { word: "\u043f\u0440\u043e\u0432\u0435\u0440\u043e\u0447\u043d", whole: false },
 ];
 
+/** Words before "code" / "kod" that make it a non-secret code: "zip code", "error code". */
+const NOT_CODE_BEFORE = new Set(["zip", "postal", "post", "error"]);
+/** Words after it: "code of conduct", "kod tovara" (product code), "kod oshibki" (error code). */
+const NOT_CODE_AFTER = ["of conduct", "\u0442\u043e\u0432\u0430\u0440\u0430", "\u043e\u0448\u0438\u0431\u043a\u0438"];
+
+/** The ASCII word right before `index` (over spaces, '/' and '-'), at most 12 letters back. */
+function wordBefore(lower: string, index: number): string {
+  let end = index;
+  while (end > 0 && index - end < 3 && " /-".includes(lower[end - 1]!)) end--;
+  let start = end;
+  while (start > 0 && end - start < 12 && isLower(lower.charCodeAt(start - 1))) start--;
+  return lower.slice(start, end);
+}
+
+/** Code-word hits, without a "code" that names a zip, postal, error or product code or a code of conduct. */
+function codeWordHits(lower: string): Hit[] {
+  return findWords(lower, CODE_WORDS).filter((hit) => {
+    if (hit.word !== "code" && hit.word !== "\u043a\u043e\u0434") return true;
+    if (NOT_CODE_BEFORE.has(wordBefore(lower, hit.start))) return false;
+    let i = hit.end;
+    while (i < lower.length && i - hit.end < 3 && isSpace(lower.charCodeAt(i))) i++;
+    return !NOT_CODE_AFTER.some((after) => lower.startsWith(after, i) && !isWordChar(lower, i + after.length));
+  });
+}
+
 /** Credential labels (whole words); `token` ones hide as a token. */
 const CREDENTIAL_LABELS: { word: string; kind: SecretKind }[] = [
   { word: "passphrase", kind: "credential" },
   { word: "password", kind: "credential" },
   { word: "passwd", kind: "credential" },
+  { word: "pass", kind: "credential" },
   { word: "pwd", kind: "credential" },
   { word: "\u043f\u0430\u0440\u043e\u043b\u044c", kind: "credential" },
   { word: "pin", kind: "credential" },
@@ -475,7 +518,8 @@ function tokenRuns(text: string, urls: Range[], emails: Range[], spans: Span[]):
       const pieceEnd = atEnd ? end : i + 1;
       let core = pieceEnd;
       while (core > pieceStart && text.charCodeAt(core - 1) === 61) core--;
-      if (genericSecret(text, pieceStart, core)) spans.push({ start: pieceStart, end: pieceEnd, kind: "token" });
+      const commitHash = allHex(text, pieceStart, core) && wordBefore(lowerSameLength(text.slice(Math.max(0, pieceStart - 16), pieceStart)), Math.min(16, pieceStart)) === "commit";
+      if (!commitHash && genericSecret(text, pieceStart, core)) spans.push({ start: pieceStart, end: pieceEnd, kind: "token" });
       pieceStart = i + 1;
     }
   }
@@ -505,7 +549,26 @@ function secretParam(name: string, valueLength: number): boolean {
   const lower = name.toLowerCase();
   if (URL_PARAM_NAMES.has(lower)) return true;
   if (lower.includes("token") || lower.includes("code") || lower.includes("key")) return true;
-  return (lower === "t" || lower === "k") && valueLength >= 16;
+  return (lower === "t" && valueLength >= 6) || (lower === "k" && valueLength >= 16);
+}
+
+/** Path segments after which a short segment (6+ with a digit or mixed case) is a link secret. */
+const LINK_SEGMENTS = new Set(["reset", "verify", "confirm", "activate", "magic", "login", "r", "t"]);
+
+/** A short link secret: 6+ base64url characters with a digit, or with upper- and lower-case letters. */
+function shortLinkSecret(text: string, start: number, end: number): boolean {
+  if (end - start < 6) return false;
+  let digit = false;
+  let upper = false;
+  let lower = false;
+  for (let i = start; i < end; i++) {
+    const c = text.charCodeAt(i);
+    if (!isB64Url(c)) return false;
+    if (isDigit(c)) digit = true;
+    else if (isUpper(c)) upper = true;
+    else if (isLower(c)) lower = true;
+  }
+  return digit || (upper && lower);
 }
 
 /** A path segment that looks like a secret: 24+ generic, 32+ hexadecimal (UUIDs are found anywhere). */
@@ -532,14 +595,28 @@ function urls(text: string, spans: Span[]): Range[] {
     scheme.lastIndex = Math.max(end, start + m[0].length);
     ranges.push({ start, end });
     let i = start + m[0].length;
-    // Host: up to '/', '?' or '#'.
-    while (i < end && !"/?#".includes(text[i]!)) i++;
+    // Host: up to '/', '?' or '#'; user info before an '@' in it (its password, or all of it without one).
+    const hostStart = i;
+    let at = -1;
+    let colon = -1;
+    for (; i < end && !"/?#".includes(text[i]!); i++) {
+      if (text.charCodeAt(i) === 64) at = i;
+      else if (text.charCodeAt(i) === 58 && at < 0 && colon < 0) colon = i;
+    }
+    if (at > hostStart) {
+      const from = colon >= 0 && colon < at ? colon + 1 : hostStart;
+      if (at > from) spans.push({ start: from, end: at, kind: "token" });
+    }
     // Path segments.
+    let previous = "";
     while (i < end && text.charCodeAt(i) === 47) {
       const segStart = i + 1;
       let j = segStart;
       while (j < end && !"/?#".includes(text[j]!)) j++;
-      if (j - segStart >= 24 && secretSegment(text, segStart, j)) spans.push({ start: segStart, end: j, kind: "token" });
+      const commit = (previous === "commit" || previous === "commits") && allHex(text, segStart, j);
+      if (!commit && j - segStart >= 24 && secretSegment(text, segStart, j)) spans.push({ start: segStart, end: j, kind: "token" });
+      else if (LINK_SEGMENTS.has(previous) && shortLinkSecret(text, segStart, j)) spans.push({ start: segStart, end: j, kind: "token" });
+      previous = j - segStart <= 8 ? text.slice(segStart, j).toLowerCase() : "";
       i = j;
     }
     // Query and fragment parameters.
@@ -564,15 +641,23 @@ function urls(text: string, spans: Span[]): Range[] {
 
 type DigitSequence = { groups: Range[]; start: number; end: number; digits: number };
 
-/** Digit runs joined by one space or hyphen into sequences. */
+/** A space inside a grouped number: a space, a no-break space, a narrow no-break or a thin space. */
+const isGroupSpace = (c: number) => c === 32 || c === 0xa0 || c === 0x202f || c === 0x2009;
+
+/** Whether [from, to) joins two digit groups: one hyphen, or one or two group spaces. */
+function groupGap(text: string, from: number, to: number): boolean {
+  if (to - from === 1) return text.charCodeAt(from) === 45 || isGroupSpace(text.charCodeAt(from));
+  return to - from === 2 && isGroupSpace(text.charCodeAt(from)) && isGroupSpace(text.charCodeAt(from + 1));
+}
+
+/** Digit runs joined by one hyphen or one or two (no-break) spaces into sequences. */
 function digitSequences(text: string): DigitSequence[] {
   const out: DigitSequence[] = [];
   const digits = /[0-9]+/g;
   let current: DigitSequence | null = null;
   for (let m = digits.exec(text); m !== null; m = digits.exec(text)) {
     const group = { start: m.index, end: m.index + m[0].length };
-    const gapChar = text.charCodeAt(group.start - 1);
-    if (current !== null && current.end === group.start - 1 && (gapChar === 32 || gapChar === 45)) {
+    if (current !== null && groupGap(text, current.end, group.start)) {
       current.groups.push(group);
       current.end = group.end;
       current.digits += group.end - group.start;
@@ -665,7 +750,7 @@ function digitSecrets(
 ): void {
   const sequences = digitSequences(text);
   const cardWords = new Near(findWords(lower, CARD_WORDS), lines);
-  const codeWords = new Near(findWords(lower, CODE_WORDS), lines);
+  const codeWords = new Near(codeWordHits(lower), lines);
   const cvvWords = new Near(findWords(lower, CVV_WORDS), lines);
   const cards: Span[] = [];
 
@@ -718,7 +803,7 @@ function digitSecrets(
 
 /** 6-8 upper-case letters and digits with a digit and a letter, near a code word. */
 function alphanumericCodes(text: string, lower: string, lines: Lines, urlRanges: Range[], spans: Span[]): void {
-  const codeWords = new Near(findWords(lower, CODE_WORDS), lines);
+  const codeWords = new Near(codeWordHits(lower), lines);
   if (!codeWords.any) return;
   const word = /[A-Za-z0-9]+/g;
   for (let m = word.exec(text); m !== null; m = word.exec(text)) {
@@ -745,8 +830,56 @@ function alphanumericCodes(text: string, lower: string, lines: Lines, urlRanges:
 // ---------------------------------------------------------------------------
 
 const TRAILING_PUNCTUATION = new Set([46, 44, 59, 33, 63, 41]);
+/** The longest value a label hides. */
+const VALUE_MAX = 128;
+/** Opening quotes and their closing ones. */
+const QUOTES = new Map([
+  ['"', '"'],
+  ["'", "'"],
+  ["`", "`"],
+  ["\u201c", "\u201d"],
+  ["\u2018", "\u2019"],
+  ["\u00ab", "\u00bb"],
+]);
+/** Labels whose value may follow without a separator ("your new password Kx7pq2Lm"). */
+const BARE_LABELS = new Set(["password", "passwd", "passphrase", "\u043f\u0430\u0440\u043e\u043b\u044c"]);
 
-/** After a label and `:`, `=`, a dash or `is`: the next non-space run, on the same line or the next. */
+/** A run that reads as a secret, not a word: it holds a digit, a symbol or an inner upper-case letter. */
+function secretLooking(text: string, start: number, end: number): boolean {
+  if (end - start < 4) return false;
+  for (let i = start; i < end; i++) {
+    const c = text.charCodeAt(i);
+    if (isDigit(c) || (i > start && isUpper(c))) return true;
+    if (c < 128 && !isAsciiAlnum(c)) return true;
+  }
+  return false;
+}
+
+/** An issue key ("PROJ-1234"): upper-case letters or digits, a hyphen, digits. Not a secret. */
+function issueKey(text: string, start: number, end: number): boolean {
+  const dash = text.indexOf("-", start);
+  if (dash <= start || dash >= end - 1 || !isUpper(text.charCodeAt(start))) return false;
+  for (let i = start; i < dash; i++) if (!(isUpper(text.charCodeAt(i)) || isDigit(text.charCodeAt(i)))) return false;
+  for (let i = dash + 1; i < end; i++) if (!isDigit(text.charCodeAt(i))) return false;
+  return true;
+}
+
+/** End of the line holding `index` (before a CR), at most `max` characters on. */
+function lineEnd(text: string, index: number, max: number): number {
+  const limit = Math.min(text.length, index + max);
+  let i = index;
+  while (i < limit && text.charCodeAt(i) !== 10 && text.charCodeAt(i) !== 13) i++;
+  return i;
+}
+
+/**
+ * After a label and `:`, `=`, a dash or `is`: the value on the same line or
+ * the next non-blank one. A quoted value is hidden inside its quotes; a
+ * password (credential label) to the end of its line, at most 128
+ * characters; a key or token label's value is one run (an issue key such as
+ * PROJ-1234 is left). Without a separator a password label hides the next
+ * run only when it reads as a secret.
+ */
 function labelledValues(text: string, lower: string, urlRanges: Range[], spans: Span[]): void {
   const kinds = new Map(CREDENTIAL_LABELS.map((l) => [l.word, l.kind]));
   const hits = findWords(
@@ -755,6 +888,7 @@ function labelledValues(text: string, lower: string, urlRanges: Range[], spans: 
   );
   for (const hit of hits) {
     if (insideAny(urlRanges, hit.start)) continue;
+    const kind = kinds.get(hit.word) ?? "credential";
     let i = hit.end;
     while (i < text.length && isSpace(text.charCodeAt(i))) i++;
     const c = text[i];
@@ -764,19 +898,43 @@ function labelledValues(text: string, lower: string, urlRanges: Range[], spans: 
       i += 2;
       if (text[i] === ":") i++;
     } else {
+      // No separator: "your new password Kx7pq2Lm".
+      if (!BARE_LABELS.has(hit.word) || i === hit.end) continue;
+      const start = i;
+      while (i < text.length && !isWhite(text.charCodeAt(i)) && i - start < VALUE_MAX) i++;
+      let end = i;
+      while (end > start && TRAILING_PUNCTUATION.has(text.charCodeAt(end - 1))) end--;
+      if (secretLooking(text, start, end)) spans.push({ start, end, kind });
       continue;
     }
     while (i < text.length && isSpace(text.charCodeAt(i))) i++;
-    if (i < text.length && (text.charCodeAt(i) === 13 || text.charCodeAt(i) === 10)) {
-      if (text.charCodeAt(i) === 13) i++;
-      if (text.charCodeAt(i) === 10) i++;
-      while (i < text.length && isSpace(text.charCodeAt(i))) i++;
-    }
+    // The value under the label: over line breaks and blank lines, within LINE_WINDOW.
+    const breakFrom = i;
+    while (i < text.length && isWhite(text.charCodeAt(i)) && i - breakFrom < LINE_WINDOW) i++;
+    if (i > breakFrom && !text.slice(breakFrom, i).includes("\n")) i = breakFrom;
     const start = i;
-    while (i < text.length && !isWhite(text.charCodeAt(i))) i++;
-    let end = i;
+    const close = QUOTES.get(text[start] ?? "");
+    if (close !== undefined) {
+      const stop = lineEnd(text, start + 1, VALUE_MAX + 1);
+      let end = start + 1;
+      while (end < stop && text[end] !== close) end++;
+      if (end > start + 1 && end < stop) {
+        spans.push({ start: start + 1, end, kind });
+        continue;
+      }
+    }
+    let end: number;
+    if (kind === "credential") {
+      end = lineEnd(text, start, VALUE_MAX);
+      while (end > start && isWhite(text.charCodeAt(end - 1))) end--;
+    } else {
+      while (i < text.length && !isWhite(text.charCodeAt(i)) && i - start < VALUE_MAX) i++;
+      end = i;
+    }
     while (end > start && TRAILING_PUNCTUATION.has(text.charCodeAt(end - 1))) end--;
-    if (end > start) spans.push({ start, end, kind: kinds.get(hit.word) ?? "credential" });
+    if (end <= start) continue;
+    if (kind === "token" && issueKey(text, start, end)) continue;
+    spans.push({ start, end, kind });
   }
 }
 
@@ -792,10 +950,271 @@ function appPasswords(text: string, lower: string, lines: Lines, spans: Span[]):
       continue;
     }
     labels ??= new Near(
-      findWords(lower, [...CODE_WORDS, ...CREDENTIAL_LABELS.map((l) => ({ word: l.word, whole: true }))]),
+      [...codeWordHits(lower), ...findWords(lower, CREDENTIAL_LABELS.map((l) => ({ word: l.word, whole: true })))].sort(
+        (a, b) => a.start - b.start,
+      ),
       lines,
     );
     if (labels.has(start, end)) spans.push({ start, end, kind: "credential" });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// More shapes (review of slice 3f)
+// ---------------------------------------------------------------------------
+
+/** SendGrid keys, `SG.` and two base64url parts, hidden whole. */
+function sendgridKeys(text: string, spans: Span[]): void {
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf("SG.", from);
+    if (at < 0) return;
+    from = at + 3;
+    if (at > 0 && isB64Url(text.charCodeAt(at - 1))) continue;
+    let i = at + 3;
+    while (i < text.length && isB64Url(text.charCodeAt(i))) i++;
+    if (i - at - 3 < 16 || text.charCodeAt(i) !== 46) continue;
+    const second = ++i;
+    while (i < text.length && isB64Url(text.charCodeAt(i))) i++;
+    if (i - second < 16) continue;
+    spans.push({ start: at, end: i, kind: "token" });
+    from = i;
+  }
+}
+
+/** [A-Za-z0-9+/=._~-]: an HTTP credential's characters. */
+const isAuthChar = (c: number) => isB64Url(c) || c === 43 || c === 47 || c === 61 || c === 46 || c === 126;
+
+/**
+ * `Basic` / `Bearer` credentials: after "Authorization" on the same line any
+ * run of 4+, else a Bearer run of 16+ with a digit.
+ */
+function authSchemes(text: string, lower: string, spans: Span[]): void {
+  for (const hit of findWords(lower, [
+    { word: "basic", whole: true },
+    { word: "bearer", whole: true },
+  ])) {
+    let i = hit.end;
+    if (!isSpace(text.charCodeAt(i))) continue;
+    while (i < text.length && isSpace(text.charCodeAt(i)) && i - hit.end < 4) i++;
+    const start = i;
+    let digit = false;
+    while (i < text.length && isAuthChar(text.charCodeAt(i)) && i - start < 4_096) {
+      if (isDigit(text.charCodeAt(i))) digit = true;
+      i++;
+    }
+    let end = i;
+    while (end > start && text.charCodeAt(end - 1) === 46) end--;
+    const before = lower.slice(Math.max(0, hit.start - 20), hit.start);
+    const authorized = before.includes("authorization") && !before.includes("\n");
+    if ((authorized && end - start >= 4) || (hit.word === "bearer" && end - start >= 16 && digit)) {
+      spans.push({ start, end, kind: "token" });
+    }
+  }
+}
+
+/** ISO 13616 check: the first four characters moved to the end, letters as 10-35, mod 97 is 1. */
+function ibanValid(chars: string): boolean {
+  const moved = chars.slice(4) + chars.slice(0, 4);
+  let rest = 0;
+  for (const ch of moved) {
+    const c = ch.charCodeAt(0);
+    const value = isDigit(c) ? c - 48 : c - 55;
+    rest = value >= 10 ? (rest * 100 + value) % 97 : (rest * 10 + value) % 97;
+  }
+  return rest === 1;
+}
+
+/**
+ * IBANs: two upper-case letters, two digits and 11-30 upper-case letters or
+ * digits, in one run or in groups of up to four joined by one (no-break)
+ * space, that pass the mod-97 check. Hidden as an account number (card kind).
+ */
+function ibans(text: string, spans: Span[]): void {
+  const start = /[A-Z]{2}[0-9]{2}/g;
+  for (let m = start.exec(text); m !== null; m = start.exec(text)) {
+    const at = m.index;
+    if (isWordChar(text, at - 1)) continue;
+    let chars = "";
+    const ends: { length: number; end: number }[] = [];
+    let i = at;
+    let group = 0;
+    while (i < text.length && chars.length < 34) {
+      const c = text.charCodeAt(i);
+      if (isUpper(c) || isDigit(c)) {
+        chars += text[i];
+        group++;
+        i++;
+        continue;
+      }
+      if (isGroupSpace(c) && group > 0 && group <= 4 && (isUpper(text.charCodeAt(i + 1)) || isDigit(text.charCodeAt(i + 1)))) {
+        ends.push({ length: chars.length, end: i });
+        group = 0;
+        i++;
+        continue;
+      }
+      break;
+    }
+    // A run that goes on into a word keeps only the group boundaries before it.
+    if (!isWordChar(text, i) || chars.length >= 34) ends.push({ length: chars.length, end: i });
+    for (let k = ends.length - 1; k >= 0; k--) {
+      const { length, end } = ends[k]!;
+      if (length < 15) break;
+      if (ibanValid(chars.slice(0, length))) {
+        spans.push({ start: at, end, kind: "card" });
+        start.lastIndex = end;
+        break;
+      }
+    }
+  }
+}
+
+/** The longest line a list detector reads, and how many lines it reads. */
+const LIST_LINE_MAX = 400;
+const LIST_LINES_MAX = 30;
+
+/** The first non-blank line start after the line holding `index`, within LINE_WINDOW; -1 when none. */
+function nextFilledLine(text: string, index: number): number {
+  let i = index;
+  while (i < text.length && text.charCodeAt(i) !== 10) {
+    if (i - index > LIST_LINE_MAX) return -1;
+    i++;
+  }
+  const from = i;
+  while (i < text.length && isWhite(text.charCodeAt(i))) {
+    if (i - from > LINE_WINDOW) return -1;
+    i++;
+  }
+  if (i >= text.length) return -1;
+  // Back to the start of that line (its leading spaces are part of it).
+  while (i > from && text.charCodeAt(i - 1) !== 10) i--;
+  return i;
+}
+
+const SEED_LABELS: { word: string; whole: boolean }[] = [
+  { word: "seed phrase", whole: false },
+  { word: "recovery phrase", whole: false },
+  { word: "secret phrase", whole: false },
+  { word: "backup phrase", whole: false },
+  { word: "mnemonic", whole: false },
+  { word: "\u0441\u0438\u0434-\u0444\u0440\u0430\u0437", whole: false },
+  { word: "\u0444\u0440\u0430\u0437\u0430 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f", whole: false },
+];
+
+/** A seed line from `from` to its end: lower-case words, list numbers, dots, commas, parentheses. Its word count and trimmed span, or null. */
+function seedLine(text: string, from: number): { words: number; start: number; end: number; next: number } | null {
+  let words = 0;
+  let inWord = false;
+  let start = -1;
+  let last = -1;
+  let i = from;
+  for (; i < text.length && text.charCodeAt(i) !== 10; i++) {
+    if (i - from > LIST_LINE_MAX) return null;
+    const c = text.charCodeAt(i);
+    if (isLower(c)) {
+      if (!inWord) words++;
+      inWord = true;
+    } else if (isWhite(c) || isDigit(c) || c === 46 || c === 44 || c === 41) {
+      inWord = false;
+    } else {
+      return null;
+    }
+    if (!isWhite(c)) {
+      if (start < 0) start = i;
+      last = i + 1;
+    }
+  }
+  return words === 0 ? null : { words, start, end: last, next: i + 1 };
+}
+
+/** Seed phrases: 12+ lower-case words after a seed or recovery phrase label, on its line or the lines under it. */
+function seedPhrases(text: string, lower: string, spans: Span[]): void {
+  let scannedTo = 0;
+  for (const hit of findWords(lower, SEED_LABELS)) {
+    if (hit.start < scannedTo) continue;
+    let i = hit.end;
+    while (i < text.length && i - hit.end < 40 && !isLower(text.charCodeAt(i)) && text.charCodeAt(i) !== 10) i++;
+    const same = text.charCodeAt(i) === 10 ? null : seedLine(text, i);
+    if (same !== null && same.words >= 12) {
+      spans.push({ start: same.start, end: same.end, kind: "credential" });
+      scannedTo = same.end;
+      continue;
+    }
+    const found: Span[] = [];
+    let words = 0;
+    let line = nextFilledLine(text, hit.end);
+    for (let n = 0; line >= 0 && n < LIST_LINES_MAX && words < 24; n++) {
+      const read = seedLine(text, line);
+      if (read === null) break;
+      found.push({ start: read.start, end: read.end, kind: "credential" });
+      words += read.words;
+      line = read.next < text.length ? read.next : -1;
+    }
+    scannedTo = found.at(-1)?.end ?? hit.end;
+    if (words >= 12) spans.push(...found);
+  }
+}
+
+const RECOVERY_LABELS: { word: string; whole: boolean }[] = [
+  { word: "recovery code", whole: false },
+  { word: "backup code", whole: false },
+  { word: "\u0440\u0435\u0437\u0435\u0440\u0432\u043d\u044b\u0435 \u043a\u043e\u0434", whole: false },
+  { word: "\u043a\u043e\u0434\u044b \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f", whole: false },
+];
+
+/** The codes of one recovery-code line ("1. 4821 9930", "- ab3k-9xq2"), or null when the line is something else. */
+function recoveryLine(text: string, from: number): { codes: Range[]; next: number } | null {
+  const codes: Range[] = [];
+  let i = from;
+  let first = true;
+  while (i < text.length && text.charCodeAt(i) !== 10) {
+    if (i - from > LIST_LINE_MAX) return null;
+    const c = text.charCodeAt(i);
+    if (isWhite(c)) {
+      i++;
+      continue;
+    }
+    if (first && "-*\u2022".includes(text[i]!) && isWhite(text.charCodeAt(i + 1))) {
+      i++;
+      first = false;
+      continue;
+    }
+    const start = i;
+    let digit = false;
+    while (i < text.length && !isWhite(text.charCodeAt(i))) {
+      const d = text.charCodeAt(i);
+      if (isDigit(d)) digit = true;
+      else if (!(isAsciiAlnum(d) || d === 45)) break;
+      i++;
+    }
+    const marker = first && i < text.length && ".)".includes(text[i]!) && i - start <= 2 && digit;
+    if (marker) {
+      i++;
+      first = false;
+      continue;
+    }
+    if (i < text.length && !isWhite(text.charCodeAt(i))) return null;
+    if (i - start < 4 || i - start > 20 || !digit) return null;
+    codes.push({ start, end: i });
+    first = false;
+  }
+  return codes.length === 0 ? null : { codes, next: i + 1 };
+}
+
+/** Recovery or backup code lists: every code on the lines under such a label. */
+function recoveryCodes(text: string, lower: string, spans: Span[]): void {
+  let scannedTo = 0;
+  for (const hit of findWords(lower, RECOVERY_LABELS)) {
+    if (hit.start < scannedTo) continue;
+    let line = nextFilledLine(text, hit.end);
+    scannedTo = hit.end;
+    for (let n = 0; line >= 0 && n < LIST_LINES_MAX; n++) {
+      const read = recoveryLine(text, line);
+      if (read === null) break;
+      for (const code of read.codes) spans.push({ ...code, kind: "code" });
+      scannedTo = read.next;
+      line = read.next < text.length ? read.next : -1;
+    }
   }
 }
 
@@ -824,7 +1243,8 @@ function merge(spans: Span[]): Span[] {
 }
 
 /** All secret spans of a text, merged. */
-function detect(text: string, context: string): Span[] {
+function detect(original: string, context: string): Span[] {
+  const text = normalizeForDetection(original);
   const lower = lowerSameLength(text);
   const lines = new Lines(text);
   const spans: Span[] = [];
@@ -834,9 +1254,14 @@ function detect(text: string, context: string): Span[] {
   const urlRanges = urls(text, spans);
   tokenRuns(text, urlRanges, emailWords(text), spans);
   uuids(text, spans);
+  sendgridKeys(text, spans);
+  authSchemes(text, lower, spans);
+  ibans(text, spans);
+  seedPhrases(text, lower, spans);
+  recoveryCodes(text, lower, spans);
   labelledValues(text, lower, urlRanges, spans);
   appPasswords(text, lower, lines, spans);
-  const contextHasCodeWord = context !== "" && findWords(lowerSameLength(context), CODE_WORDS).length > 0;
+  const contextHasCodeWord = context !== "" && codeWordHits(lowerSameLength(normalizeForDetection(context))).length > 0;
   digitSecrets(text, lower, lines, urlRanges, contextHasCodeWord, spans);
   alphanumericCodes(text, lower, lines, urlRanges, spans);
   return merge(spans);
@@ -969,6 +1394,6 @@ export const AGENT_SEARCH_REFUSAL = "Agents cannot search for codes, numbers or 
 /** Agent search text that would match a secret: redactable text, or a run of 6+ digits. */
 export function agentSearchRefusal(freeText: string): string | null {
   if (freeText === "") return null;
-  if (/[0-9]{6}/.test(freeText)) return AGENT_SEARCH_REFUSAL;
+  if (/[0-9]{6}/.test(normalizeForDetection(freeText))) return AGENT_SEARCH_REFUSAL;
   return redactSecrets(freeText).text === freeText ? null : AGENT_SEARCH_REFUSAL;
 }

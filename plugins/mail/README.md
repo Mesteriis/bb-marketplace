@@ -501,15 +501,20 @@ only in the running job and is dropped when it ends.
 
 Every text that reaches an agent or a model passes one redaction: the tools,
 the CLI in a thread, mentions, **Hand to agent**, translation and every AI
-feature below. One-time codes (also split, prefixed or on the next line),
-passwords and app passwords next to their labels, API keys and tokens
-(GitHub, GitLab, Stripe, Slack, AWS and Google keys, `sk-` keys, JWTs, PEM blocks, long hex and
-UUID tokens, secret-looking URL parameters such as `token=` or `code=`), and
-card numbers (Luhn-checked) and CVVs next to a card become placeholders:
-`[hidden one-time code]`, `[hidden password]`, `[hidden token]`, `[hidden
-card number]`. The whole field is redacted before any cut, so a secret on a
-limit is still hidden. Dates, times, amounts, phone numbers, years and email
-addresses stay. Agents are told the placeholders are deliberate and never to
+feature below. One-time codes (also split, prefixed, full-width, or under
+their label across blank lines as HTML mail lays them out), recovery-code
+lists, passwords next to their labels (to the end of the line, or the quoted
+text), app passwords and seed phrases, API keys and tokens (GitHub, GitLab,
+Stripe, Slack, SendGrid, AWS and Google keys, `sk-` keys, JWTs, PEM blocks,
+`Authorization: Basic` and `Bearer` values, long hex and UUID tokens,
+secret-looking URL parameters such as `token=` or `code=`, short reset-link
+segments and passwords in a URL), card numbers (Luhn-checked) and CVVs next
+to a card, and IBANs (checksum-checked, shown as a card number) become
+placeholders: `[hidden one-time code]`, `[hidden password]`, `[hidden
+token]`, `[hidden card number]`. The whole field is redacted before any cut,
+so a secret on a limit is still hidden. Dates, times, amounts, phone numbers,
+years, email addresses, zip and error codes, issue keys such as `PROJ-1234`
+and commit hashes stay. Agents are told the placeholders are deliberate and never to
 ask you to paste a hidden value into the thread; they cannot search for
 codes or tokens either (a search matches only text they could read).
 

@@ -383,7 +383,8 @@ describe("slice 3f redaction in the renderers", () => {
       20_000,
     );
     expectNoSecret(out.text);
-    expect(out.hiddenCount).toBeGreaterThanOrEqual(12);
+    // A password hides to the end of its line, so the values after it on that line count once with it.
+    expect(out.hiddenCount).toBeGreaterThanOrEqual(8);
     expect(out.text).toMatch(/Hidden by Makosh Mail: .*\. Ask the owner to read them in Makosh Mail if you need them\./);
     expect(renderMessageForAgent(header(), body({ text: `Body ${ALL_CANARIES}` }), 20_000)).toContain("[hidden token]");
   });
@@ -426,12 +427,13 @@ describe("slice 3f redaction in the renderers", () => {
     const hits = renderSearchHitsCounted([hit]);
     expectNoSecret(hits.text);
     expect(hits.text).not.toContain("98765");
-    expect(hits.hiddenCount).toBe(5);
+    // The snippet's password hides to the end of the line, the token and the cut number with it.
+    expect(hits.hiddenCount).toBe(3);
     // The CLI's --json form: the same redaction, as fields.
     const json = agentHitsCounted([hit]);
     expectNoSecret(JSON.stringify(json));
     expect(JSON.stringify(json)).not.toContain("98765");
-    expect(json.hiddenCount).toBe(5);
+    expect(json.hiddenCount).toBe(3);
     expect(json.hits[0]).toMatchObject({ id: "m_7", threadId: "t_7", from: { address: "sender@example.org" } });
     const inbox = renderInboxForAgentCounted([
       {
