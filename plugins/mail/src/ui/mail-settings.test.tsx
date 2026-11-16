@@ -304,3 +304,47 @@ describe("MailSettings: Inbox (slice 3e)", () => {
     expect(onChangeSnoozeFolder).toHaveBeenCalledWith("acc-2");
   });
 });
+
+describe("MailSettings: AI features (slice 3f)", () => {
+  const ai = (overrides: Record<string, unknown> = {}) => ({
+    scope: { load: vi.fn(async () => ({ accounts: [], senders: [] })), save: vi.fn(), folders: vi.fn(async () => []) },
+    activity: { load: vi.fn(async () => ({ entries: [], next: null })), clear: vi.fn(async () => 0), onOpen: vi.fn() },
+    categoriesOn: true,
+    morningDigest: false,
+    digestTime: "08:00",
+    reminderDays: 3,
+    loadRules: vi.fn(async () => [
+      { id: "cr-1", kind: "address" as const, value: "billing@example.com", category: "bills" as const, createdAt: "2026-11-15T09:00:00.000Z" },
+    ]),
+    removeRule: vi.fn(async () => undefined),
+    onOpenAiSettings: vi.fn(),
+    ...overrides,
+  });
+
+  it("lists category rules with Remove, the Today and reminder state, and opens AI settings", async () => {
+    const ports = ai();
+    mount({ ai: ports as never, section: "ai" });
+    const rules = await screen.findByRole("list", { name: "Category rules" });
+    expect(within(rules).getByText("billing@example.com")).toBeTruthy();
+    expect(within(rules).getByText("Bills")).toBeTruthy();
+    fireEvent.click(within(rules).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(ports.removeRule).toHaveBeenCalledWith("cr-1"));
+    await waitFor(() => expect(screen.queryByText("billing@example.com")).toBeNull());
+    expect(screen.getByText("Off: the Today view still works when you open it.")).toBeTruthy();
+    expect(screen.getByText("Remind me after 3 days by default.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "AI settings\u2026" }));
+    expect(ports.onOpenAiSettings).toHaveBeenCalled();
+  });
+
+  it("with categories off there are no rules to load", async () => {
+    const ports = ai({ categoriesOn: false });
+    mount({ ai: ports as never, section: "ai" });
+    expect(await screen.findByText("Off.")).toBeTruthy();
+    expect(ports.loadRules).not.toHaveBeenCalled();
+  });
+
+  it("no AI tabs without the AI ports", () => {
+    mount();
+    expect(screen.queryByRole("tab", { name: "AI access" })).toBeNull();
+  });
+});

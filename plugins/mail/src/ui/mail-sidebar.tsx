@@ -44,6 +44,8 @@ export interface MailSidebarState {
   view: MailView;
   /** Sends not done yet, of the accounts in scope. */
   outbox: readonly OutboxRow[];
+  /** Slice 3f: the Today and Tasks entries with their counts (null while unknown), and the one open. */
+  pages?: { today: number | null; tasks: number | null; current: "today" | "tasks" | null };
 }
 
 export interface MailSidebarProps {
@@ -55,6 +57,48 @@ export interface MailSidebarProps {
   onSelectView: (view: MailView) => void;
   /** The gear in the rail footer: Mail settings (sending addresses, signatures, templates). */
   onOpenSettings?: () => void;
+  /** Today or Tasks (slice 3f). */
+  onSelectPage?: (page: "today" | "tasks") => void;
+}
+
+/** The Today and Tasks entries (slice 3f). */
+function PageRows({
+  pages,
+  onSelect,
+}: {
+  pages: NonNullable<MailSidebarState["pages"]>;
+  onSelect: (page: "today" | "tasks") => void;
+}) {
+  const rows = [
+    { page: "today" as const, label: "Today", icon: "Sun", count: pages.today, unit: "need a reply" },
+    { page: "tasks" as const, label: "Tasks", icon: "ListChecks", count: pages.tasks, unit: "open" },
+  ];
+  return (
+    <ul aria-label="Today and tasks" className="flex flex-col gap-px px-1.5 pb-1">
+      {rows.map((row) => (
+        <li key={row.page}>
+          <button
+            type="button"
+            aria-current={pages.current === row.page ? "page" : undefined}
+            onClick={() => onSelect(row.page)}
+            className={cn(
+              "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-sm text-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+              pages.current === row.page && "bg-state-active",
+            )}
+          >
+            <Icon name={row.icon} fallback="Check" className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <span className="min-w-0 flex-1 truncate">{row.label}</span>
+            {row.count !== null && row.count > 0 ? (
+              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                {row.count}
+                <span className="sr-only">{` ${row.unit}`}</span>
+              </span>
+            ) : null}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 function Notice({ children }: { children: string }) {
@@ -156,7 +200,7 @@ function OutboxRowButton({
   );
 }
 
-export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, onOpenSettings }: MailSidebarProps) {
+export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, onOpenSettings, onSelectPage }: MailSidebarProps) {
   const body = (() => {
     if (state === null) return <Notice>Loading mail…</Notice>;
     if (!state.vaultReady) return <Notice>Mail is not set up yet.</Notice>;
@@ -173,6 +217,9 @@ export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, o
           <AccountChooser state={state} onSelectAccount={onSelectAccount} />
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+          {state.pages !== undefined && onSelectPage !== undefined ? (
+            <PageRows pages={state.pages} onSelect={onSelectPage} />
+          ) : null}
           {state.unified ? (
             <UnifiedRail
               roles={state.roles}

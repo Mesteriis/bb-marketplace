@@ -267,6 +267,8 @@ export interface MailPageProps {
   inbox?: MailInboxPorts;
   /** Summaries, Ask, tasks, categories and reply reminders (slice 3f); absent: none of them. */
   ai?: MailAiPorts;
+  /** The Today or Tasks page (slice 3f), shown instead of the list and the conversation. */
+  page?: ReactNode;
 }
 
 function PageFrame({ children }: { children: ReactNode }) {
@@ -325,6 +327,13 @@ export function MailPage(props: MailPageProps) {
           ExternalLink={props.ExternalLink}
         />
       </PageFrame>
+    );
+  }
+  if (props.page !== undefined) {
+    return (
+      <div className="h-full min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto box-border w-full max-w-2xl px-4 pb-6 pt-3 md:px-5 md:pt-4">{props.page}</div>
+      </div>
     );
   }
   return <Mailbox {...props} status={status} />;

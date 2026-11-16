@@ -76,9 +76,9 @@ export function translationErrorText(error: TranslateErrorKind, provider: string
     case "pool_unavailable":
       return "Makosh AI cannot reach Account Pooler right now.";
     case "provider_unknown":
-      return `The translation provider '${p}' is not available in Makosh AI. Choose another in Translation settings.`;
+      return `The translation provider '${p}' is not available in Makosh AI. Choose another in AI settings.`;
     case "model_unknown":
-      return `The model '${m}' is not available for '${p}'. Choose another in Translation settings.`;
+      return `The model '${m}' is not available for '${p}'. Choose another in AI settings.`;
     case "auth":
       return "The provider refused the request (sign-in). Try later or choose another provider.";
     case "quota":
@@ -150,7 +150,7 @@ export function TranslationBlock({
           </Button>
         )}
         <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onSettings}>
-          Translation settings…
+          AI settings…
         </Button>
       </div>
       {running ? (
