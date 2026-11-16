@@ -206,10 +206,23 @@ export function createOneClickPoster(options: OneClickOptions): UnsubscribePoste
         let done = false;
         const timers: ReturnType<typeof setTimeout>[] = [];
         let cancel: () => void = () => {};
+        // The overall deadline outlives the outcome (review item 3): a
+        // response that trickles and never ends is destroyed at it, unless
+        // the drain cap or the response's end closed the socket first.
+        let socketOpen = false;
+        const deadline = setTimeout(() => {
+          cancel();
+          finish({ kind: "failed", reason: "timeout" });
+        }, ONE_CLICK_TOTAL_MS);
+        const closed = () => {
+          socketOpen = false;
+          clearTimeout(deadline);
+        };
         const finish = (outcome: PostOutcome) => {
           if (done) return;
           done = true;
           for (const timer of timers) clearTimeout(timer);
+          if (!socketOpen) clearTimeout(deadline);
           signal.removeEventListener("abort", onAbort);
           settle(outcome);
         };
@@ -232,10 +245,6 @@ export function createOneClickPoster(options: OneClickOptions): UnsubscribePoste
             cancel();
             finish({ kind: "failed", reason: "timeout" });
           }, ONE_CLICK_CONNECT_MS),
-          setTimeout(() => {
-            cancel();
-            finish({ kind: "failed", reason: "timeout" });
-          }, ONE_CLICK_TOTAL_MS),
         );
 
         resolve(host)
@@ -267,6 +276,8 @@ export function createOneClickPoster(options: OneClickOptions): UnsubscribePoste
               },
             });
             cancel = () => req.destroy();
+            socketOpen = true;
+            req.on("close", closed);
             req.on("socket", (socket) => {
               socket.once("secureConnect", () => {
                 connected = true;
@@ -278,8 +289,9 @@ export function createOneClickPoster(options: OneClickOptions): UnsubscribePoste
               let read = 0;
               response.on("data", (chunk: Buffer) => {
                 read += chunk.byteLength;
-                if (read > ONE_CLICK_DRAIN_BYTES) response.destroy();
+                if (read > ONE_CLICK_DRAIN_BYTES) req.destroy();
               });
+              response.on("end", () => req.destroy());
               response.on("error", () => {});
               finish(outcomeOf(response.statusCode ?? 0));
             });
