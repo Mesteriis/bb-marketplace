@@ -700,6 +700,8 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         if let Some(idx) = stdin_idx {
             let revents = fds[idx].revents;
             let hung_up = revents & (libc::POLLHUP | libc::POLLERR) != 0;
+            // Defensive on darwin (poll does not report POLLHUP while stdin events
+            // are 0): these hang-up branches are not covered by a test here.
             let read_now = (want_stdin && revents & libc::POLLIN != 0) || hung_up;
             if !reader.eof && read_now {
                 // The peer hung up but the ingress is still full: no more bytes

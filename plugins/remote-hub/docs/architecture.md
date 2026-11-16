@@ -86,11 +86,16 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   the client (`session.credit {sessionId, bytes}`); the helper never has more
   than the granted window of un-acked output in flight and stops reading that
   PTY when the window is exhausted. Echo sessions start with an unlimited
-  window; SSH sessions start at zero. The adapter owns one 256 KiB credit
-  window per attached socket: it grants the initial window on attach and
-  replenishes exactly the bytes it forwards to the renderer, so a bounded
-  window is always in flight while attached and nothing is granted while
-  detached (src/core/credit.ts).
+  window; SSH sessions start at zero. ONE bounded window per session, owned by
+  src/core/credit.ts. granted is total credit ever granted; consumed is total
+  live bytes received from the helper; each attached view tracks sentLive and
+  acked (acked <= sentLive). The oldest attached view is the owner, and only
+  the owner's ack produces a grant, clamped to sentLive - acked. Snapshot bytes
+  are never live and never acked. The invariant kept is
+  granted - consumed + (owner.sentLive - owner.acked) <= 262144 while a view is
+  attached. When the owner detaches, the oldest remaining view is promoted and
+  granted the remaining window. A renderer that never acks stalls its session
+  after 262144 bytes: that is intended backpressure.
 - Attach/detach semantics: one WebSocket per attached view, bound to a single
   session handle by a single-use attach token; closing the socket detaches the
   view but the session keeps running in the helper. service.attachStream takes

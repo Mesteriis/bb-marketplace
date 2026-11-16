@@ -1159,9 +1159,12 @@ fn a1_unparseable_control_body_is_non_fatal() {
     }
 }
 
-// A3: reach the hung_up && ingress-full path and prove no spin.
+// A3: while the outbox is full, stdin must leave the poll interest set so the
+// helper cannot spin on a half-close. The ingress-full mark_eof branch is
+// defensive and not reachable on darwin (see ipc.rs); this test does NOT cover
+// that branch.
 #[test]
-fn a3_ingress_full_hangup_does_not_spin() {
+fn a3_stdin_leaves_poll_interest_set_while_outbox_full() {
     let mut command = Command::new(env!("CARGO_BIN_EXE_remote-hub-helper"));
     command
         .stdin(Stdio::piped())
