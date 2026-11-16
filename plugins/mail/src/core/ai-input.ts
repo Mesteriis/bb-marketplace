@@ -6,6 +6,7 @@
 // keys, clamp strings, drop bad items and citations outside 1..n, and never
 // return raw output (resolution 13).
 import { htmlToText } from "./agent-text.ts";
+import { CATEGORIES } from "./categories.ts";
 import { sha256Hex } from "./compose.ts";
 import { removeControls, removeInvisible, truncateText } from "./html-entities.ts";
 import type { AiErrorKind, MailAddress } from "./model.ts";
@@ -662,7 +663,7 @@ export function parseTasks(output: string, n: number): AiParse<{ tasks: TaskSugg
 }
 
 /** The four local categories, or "none". */
-export const AI_CATEGORY_ANSWERS = ["bills", "notifications", "personal", "newsletters", "none"] as const;
+export const AI_CATEGORY_ANSWERS = [...CATEGORIES, "none"] as const;
 export type AiCategoryAnswer = (typeof AI_CATEGORY_ANSWERS)[number];
 
 export function parseCategories(output: string, n: number): AiParse<{ items: { n: number; category: AiCategoryAnswer }[] }> {

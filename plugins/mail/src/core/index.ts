@@ -43,3 +43,6 @@ export * from "./ai-scope.ts";
 export * from "./agent-log.ts";
 export * from "./ai-input.ts";
 export * from "./text-diff.ts";
+export * from "./categories.ts";
+export * from "./digest.ts";
+export * from "./reminders.ts";
