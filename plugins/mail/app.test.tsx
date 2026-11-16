@@ -3721,7 +3721,7 @@ describe("Inbox triage on the page (slice 3e)", () => {
       folderRpc({
         threads_list: () => ({ threads: [snoozed, threadB], nextCursor: null }),
         thread_get: () => ({ ...detailIn("INBOX"), thread: snoozed }),
-        message_unsnooze: () => ({ ok: true }),
+        message_unsnooze: () => ({ ok: true, pending: false }),
       }),
     );
     expect(await slot.findByText(/^until /)).toBeTruthy();

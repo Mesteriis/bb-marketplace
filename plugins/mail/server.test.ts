@@ -92,6 +92,7 @@ type LoadOptions = {
   /** The one-click POST (slice 3e). */
   poster?: UnsubscribePoster;
   queue?: ReturnType<typeof createAccountQueue>;
+  undoWaitMs?: number;
 };
 
 /**
@@ -150,6 +151,7 @@ async function load(options: LoadOptions = {}) {
     outboxIntervalMs: options.outboxIntervalMs,
     ...(options.poster === undefined ? {} : { poster: options.poster }),
     ...(options.queue === undefined ? {} : { queue: options.queue }),
+    ...(options.undoWaitMs === undefined ? {} : { undoWaitMs: options.undoWaitMs }),
   })(bb);
   return { ...host, gateway, clock, transport };
 }
@@ -4371,6 +4373,8 @@ function loadTriage(
     server?: (gateway: RawGateway) => void;
     settings?: Record<string, string | number | boolean>;
     poster?: FakePoster;
+    queue?: ReturnType<typeof createAccountQueue>;
+    undoWaitMs?: number;
   } = {},
 ) {
   const preset = options.preset ?? "icloud";
@@ -4383,6 +4387,8 @@ function loadTriage(
     });
   return load({
     settings: { vaultKey: COMPOSE_KEY, ...options.settings },
+    ...(options.queue === undefined ? {} : { queue: options.queue }),
+    ...(options.undoWaitMs === undefined ? {} : { undoWaitMs: options.undoWaitMs }),
     ...(options.poster === undefined ? {} : { poster: options.poster }),
     seed: (bb) => {
       seedMail(bb, { preset, folders, messages: (options.messages ?? []).map((m) => ({ folder: m.folder, message: fetched(m) })) });
@@ -4531,7 +4537,7 @@ describe("inbox triage: snooze (slice 3e)", () => {
     pushMove(host, "INBOX", "Work", [1, 2]);
     // The clock already started returning b: its move back is queued.
     sqlStore(host).updateSnooze(b, { state: "snoozed" }, NOW.toISOString());
-    expect(await call(host, "message_unsnooze", { messageIds: [b] })).toEqual({ ok: true });
+    expect(await call(host, "message_unsnooze", { messageIds: [b] })).toEqual({ ok: true, pending: false });
     expect(rowOf(host, b)).toMatchObject({ folder: "Work", movePending: "INBOX" });
 
     const result = await undo(host);
@@ -4541,6 +4547,24 @@ describe("inbox triage: snooze (slice 3e)", () => {
     expect(sqlStore(host).listSnoozes("acc_1", { limit: 10 })).toMatchObject([{ messageId: b, state: "returning" }]);
   });
 
+  it("Return now answers pending past the wait when a long round holds the account, and finishes after it (review item 9)", async () => {
+    const queue = createAccountQueue();
+    const host = await loadTriage({ messages: [{ folder: "INBOX", uid: 1 }], queue, undoWaitMs: 20 });
+    sqlStore(host).setSnoozeFolder("acc_1", "Work");
+    const id = messageIdAt(host, "INBOX", 1);
+    await snooze(host, [id]);
+    pushMove(host, "INBOX", "Work", [1]);
+    sqlStore(host).updateSnooze(id, { state: "snoozed" }, NOW.toISOString());
+    let release!: () => void;
+    const held = queue.run("acc_1", () => new Promise<void>((resolve) => (release = resolve)));
+    expect(await call(host, "message_unsnooze", { messageIds: [id] })).toEqual({ ok: true, pending: true });
+    expect(rowOf(host, id)).toMatchObject({ folder: "Work", movePending: null });
+    release();
+    await held;
+    await vi.waitFor(() => expect(rowOf(host, id)).toMatchObject({ folder: "Work", movePending: "INBOX" }));
+    expect(sqlStore(host).listSnoozes("acc_1", { limit: 10 })).toMatchObject([{ state: "returning" }]);
+  });
+
   it("Return now moves a snoozed message back unread through the clock", async () => {
     const host = await loadTriage({ messages: [{ folder: "INBOX", uid: 1 }] });
     sqlStore(host).setSnoozeFolder("acc_1", "Work");
@@ -4548,11 +4572,11 @@ describe("inbox triage: snooze (slice 3e)", () => {
     await snooze(host, [id]);
     pushMove(host, "INBOX", "Work", [1]);
     sqlStore(host).updateSnooze(id, { state: "snoozed" }, NOW.toISOString());
-    expect(await call(host, "message_unsnooze", { messageIds: [id] })).toEqual({ ok: true });
+    expect(await call(host, "message_unsnooze", { messageIds: [id] })).toEqual({ ok: true, pending: false });
     expect(rowOf(host, id)).toMatchObject({ folder: "Work", movePending: "INBOX" });
     expect(desired(host, id).seen).toBe(0);
     expect(sqlStore(host).listSnoozes("acc_1", { limit: 10 })).toMatchObject([{ state: "returning", dueAt: NOW.toISOString() }]);
-    expect(await call(host, "message_unsnooze", { messageIds: ["unknown"] })).toEqual({ ok: false });
+    expect(await call(host, "message_unsnooze", { messageIds: ["unknown"] })).toEqual({ ok: false, pending: false });
   });
 });
 
