@@ -86,13 +86,13 @@ describe("Jira import bounds", () => {
 });
 
 describe("fetch scope and schema-safe import", () => {
-  it("rejects an empty Cloud scope", async () => {
+  it("accepts an empty connection scope for assigned work", async () => {
     const { connDeps, sync } = makeDeps(async () => jsonResponse({ issues: [], nextPageToken: null }));
     const connection = createConnection(
       { name: "J", edition: "cloud", baseUrl: "https://example.atlassian.net", email: "m@e.com", projectKey: "", jql: "", credential: "tok" },
       connDeps,
     );
-    await expect(fetchIssues(connection.id, sync)).rejects.toMatchObject({ kind: "invalid" });
+    await expect(fetchIssues(connection.id, sync)).resolves.toMatchObject({ imported: 0 });
   });
 
   it("imported tasks satisfy the tasks_list output schema", async () => {

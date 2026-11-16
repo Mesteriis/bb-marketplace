@@ -15,7 +15,6 @@ import {
   DESCRIPTION_MAX,
   ID_MAX,
   ISSUE_KEY_MAX,
-  JIRA_FETCH_MAX,
   JIRA_PAGE_MAX,
   LABELS_MAX,
   LABEL_MAX,
@@ -273,7 +272,7 @@ export interface JiraClient {
   readonly edition: "cloud" | "server";
   /** The authenticated user, to test a connection. */
   myself(): Promise<string>;
-  /** All issues matching the JQL, up to maxResults (default JIRA_FETCH_MAX). */
+  /** All issues matching the JQL, up to maxResults when explicitly supplied; otherwise all pages. */
   listIssues(jql: string, options?: { maxResults?: number }): Promise<JiraIssuePage>;
   getTransitions(issueKey: string): Promise<JiraTransitionView[]>;
   transition(issueKey: string, transitionId: string): Promise<void>;
@@ -289,13 +288,14 @@ export function createJiraClient(auth: JiraAuth, fetchFn: FetchLike = fetch): Ji
       return bounded(data.displayName, NAME_MAX, bounded(data.name, NAME_MAX, "authenticated"));
     },
     async listIssues(jql, options) {
-      const maxResults = Math.max(1, Math.min(options?.maxResults ?? JIRA_FETCH_MAX, JIRA_FETCH_MAX));
+      const maxResults = Math.max(1, options?.maxResults ?? Number.POSITIVE_INFINITY);
       const pageSize = Math.min(JIRA_PAGE_MAX, maxResults);
       const out: JiraIssueSummary[] = [];
       let pageToken: string | null = null;
       let startAt = 0;
       let total: number | null = null;
       let truncated = false;
+      const seenTokens = new Set<string>();
       for (;;) {
         const page = await searchPage(auth, jql, pageSize, pageToken, startAt, fetchFn);
         if (total === null) total = page.total;
@@ -314,8 +314,14 @@ export function createJiraClient(auth: JiraAuth, fetchFn: FetchLike = fetch): Ji
           break;
         }
         if (!more) break;
-        if (auth.edition === "cloud") pageToken = page.nextPageToken;
-        else startAt += page.issues.length;
+        if (auth.edition === "cloud") {
+          if (seenTokens.has(page.nextPageToken!)) throw new DomainError("http", "Jira pagination repeated a page token");
+          seenTokens.add(page.nextPageToken!);
+          pageToken = page.nextPageToken;
+        } else {
+          if (page.issues.length === 0) throw new DomainError("http", "Jira pagination made no progress");
+          startAt += page.issues.length;
+        }
       }
       return { issues: out.slice(0, maxResults), total, truncated };
     },

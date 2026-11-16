@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
-import { deleteBoard } from "../../core/board.ts";
+import { createTask, deleteBoard } from "../../core/board.ts";
 import { createConnection, deleteConnection } from "../../core/connections.ts";
 import type { FetchLike } from "../../core/jira.ts";
 import { fetchIssues } from "../../core/sync.ts";
@@ -74,4 +74,27 @@ describe("fetch interrupted by lifecycle deletes (real SQLite)", () => {
     expect(store.listColumns(board.id).map((column) => column.name)).toEqual(["To do", "In progress", "Done"]);
     expect(store.listTasks(board.id)).toHaveLength(0);
   });
+});
+
+
+it("refresh hides reassigned issues without deleting cached work or local tasks (SQLite)", async () => {
+  let keys = ["WEB-1", "API-2"];
+  const { store, boardDeps, connDeps, sync } = makeDeps(async () => json({
+    issues: keys.map((key) => issue(key, key, "To do")), nextPageToken: null,
+  }));
+  const connection = cloud(connDeps);
+  await fetchIssues(connection.id, sync);
+  const board = store.listBoards()[0];
+  const original = store.listTasks(board.id).find((task) => task.originKey === "WEB-1")!;
+  const local = createTask({ boardId: board.id, title: "Keep local" }, boardDeps);
+  keys = ["API-2"];
+  await fetchIssues(connection.id, sync);
+  expect(store.getTask(original.id)?.inScope).toBe(false);
+  expect(store.getTask(original.id)?.title).toBe("WEB-1");
+  expect(store.getTask(local.id)?.inScope).toBe(true);
+  expect(store.listTasks(board.id).filter((task) => task.inScope !== false).map((task) => task.title).sort()).toEqual(["API-2", "Keep local"]);
+  keys = ["WEB-1", "API-2"];
+  await fetchIssues(connection.id, sync);
+  expect(store.getTask(original.id)?.inScope).toBe(true);
+  expect(store.listTasks(board.id)).toHaveLength(3);
 });

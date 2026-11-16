@@ -108,6 +108,7 @@ export const taskSchema = z
     createdAt: z.string().min(1),
     updatedAt: z.string().min(1),
     sortOrder: z.number().int(),
+    inScope: z.boolean().optional(),
   })
   .strict();
 export type Task = z.infer<typeof taskSchema>;

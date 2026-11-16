@@ -12,10 +12,12 @@ and work both in one List and Kanban view.
   account email + API token against an `https://<site>.atlassian.net` URL;
   Server uses a personal access token and a configurable HTTPS URL with a
   context path.
-- **Fetch issues** pulls a JQL result into the board as jira-origin tasks and
-  appends a column for each Jira status, up to **200 issues per run** (more
-  available is reported, not fetched). Local and Jira tasks coexist; every
-  Jira task keeps its issue key.
+- **Fetch issues** loads all issues assigned to the authenticated Jira user
+  across every project, paging through the complete result. No project or JQL
+  is required at connection time; older saved project scopes are ignored.
+  List and Kanban group issues by project key, with a project filter.
+  Issues reassigned elsewhere disappear after refresh; their cached records,
+  development runs and time history are preserved. Local tasks remain separate.
 - **Transitions**: move a Jira task through its real workflow from the status
   menu or the transitions list in details. A rejected move rolls back the
   optimistic change.
@@ -36,7 +38,7 @@ and work both in one List and Kanban view.
 - **Connections** manager: add, edit, test, delete and **Fetch** each
   connection (no pre-bound board required). Credentials are write-only and
   never sent to the frontend.
-- **Search and filters** by text, origin, status and label in both views, and a
+- **Search and filters** by text, project, origin, status and label in both views, and a
   **Board settings** editor for renaming and reordering columns.
 - Imported Jira descriptions are shown read-only; Jira titles and bodies are
   never edited from the cache.

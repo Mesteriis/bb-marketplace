@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-makosh-taskboard",
   "version": "0.1.0",
-  "description": "Local task CRUD plus Jira Cloud and Server/Data Center boards in one focused List and Kanban view.",
+  "description": "Local tasks and your assigned Jira issues across projects, with List/Kanban boards, development threads and time tracking.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -29,7 +29,7 @@
   },
   "bb": {
     "name": "Makosh Taskboard [Experimental]",
-    "description": "Local task CRUD plus Jira Cloud and Server/Data Center boards in one focused List and Kanban view.",
+    "description": "Local tasks and your assigned Jira issues across projects, with List/Kanban boards, development threads and time tracking.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

@@ -50,6 +50,7 @@ function demoJiraFetch(): FetchLike {
         issues: [
           issue("DEMO-101", "Ship mobile onboarding", "To do", ["mobile", "growth"], "Onboard new users in three clear steps."),
           issue("DEMO-102", "Migrate auth to OIDC", "In progress", ["security"], "Replace the legacy session store with OIDC."),
+          issue("API-201", "Improve API error handling", "To do", ["platform"], "Return actionable errors to API clients."),
           issue("DEMO-103", "Deprecate legacy API", "Done", ["platform"], "Mark the v1 endpoints deprecated and document the migration."),
         ],
         nextPageToken: null,

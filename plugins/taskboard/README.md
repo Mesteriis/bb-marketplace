@@ -17,9 +17,12 @@ Kanban view.
 - **List and Kanban** — ordered columns, drag-and-drop and a keyboard-accessible
   status menu, and a details panel that becomes a full overlay on narrow
   panels.
-- **Fetch issues** — imports a JQL result into the board as jira-origin tasks
-  and appends a column for each Jira status. Local and Jira tasks coexist;
-  every Jira task keeps its origin key.
+- **Fetch issues** — fetches all issues assigned to the authenticated user
+  across Jira projects, without selecting a project or entering JQL. All pages
+  are loaded, including results beyond 200 issues. List and Kanban group tasks
+  by project key and offer a project filter. Previous connection scopes are
+  ignored. Reassigned issues are hidden on refresh while their cached records,
+  development runs and time history remain intact. Local tasks stay separate.
 - **Transitions** — move a Jira task through its real workflow. A transition
   Jira rejects rolls back the optimistic move.
 - **Connections** — add, edit, test and delete connections. Credentials are

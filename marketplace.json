@@ -1256,7 +1256,7 @@
     {
       "id": "makosh-taskboard",
       "displayName": "Makosh Taskboard [Experimental]",
-      "description": "Local task CRUD plus Jira Cloud and Server/Data Center boards in one focused List and Kanban view.",
+      "description": "Local tasks and your assigned Jira issues across projects, with List/Kanban boards, development threads and time tracking.",
       "icon": {
         "url": "./plugins/taskboard/assets/icon.svg"
       },

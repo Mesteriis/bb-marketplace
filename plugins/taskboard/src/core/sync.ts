@@ -101,6 +101,7 @@ function upsertFromIssue(board: Board, column: Column, issue: JiraIssueSummary, 
   if (existing !== undefined) {
     const next: Task = {
       ...existing,
+      inScope: true,
       title,
       status: column.id,
       originUrl: issue.url,
@@ -120,6 +121,7 @@ function upsertFromIssue(board: Board, column: Column, issue: JiraIssueSummary, 
     description: issue.description,
     status: column.id,
     origin: "jira",
+    inScope: true,
     originKey: issue.key,
     originUrl: issue.url,
     labels: issue.labels,
@@ -132,11 +134,8 @@ function upsertFromIssue(board: Board, column: Column, issue: JiraIssueSummary, 
   return true;
 }
 
-export function defaultJql(connection: { projectKey: string; jql: string }): string {
-  const jql = connection.jql.trim();
-  if (jql !== "") return jql;
-  const projectKey = connection.projectKey.trim();
-  return projectKey === "" ? "" : "project = " + JSON.stringify(projectKey);
+export function defaultJql(_connection: { projectKey: string; jql: string }): string {
+  return "assignee = currentUser() ORDER BY project ASC, updated DESC";
 }
 
 export async function fetchIssues(
@@ -146,9 +145,6 @@ export async function fetchIssues(
   const connection = deps.store.getConnection(connectionId);
   if (connection === null) throw new DomainError("not_found", "Connection not found");
   const jql = defaultJql(connection);
-  if (connection.edition === "cloud" && jql === "") {
-    throw new DomainError("invalid", "Cloud connections need a project key or JQL to scope the fetch");
-  }
   return serialize(connectionKey(connectionId), () => fetchIssuesInner(connectionId, jql, deps));
 }
 
@@ -184,6 +180,12 @@ async function fetchIssuesInner(
 
   let imported = 0;
   deps.store.transaction(() => {
+    if (!truncated) {
+      const keys = new Set(issues.map((issue) => issue.key));
+      for (const task of deps.store.listTasks(board.id)) {
+        if (task.origin === "jira" && !keys.has(task.originKey ?? "")) deps.store.saveTask({ ...task, inScope: false });
+      }
+    }
     for (const issue of issues) {
       const column = columnForStatus(board.id, issue.statusName, columns, deps);
       if (upsertFromIssue(board, column, issue, deps)) imported += 1;
