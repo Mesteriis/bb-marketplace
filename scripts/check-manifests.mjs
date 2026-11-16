@@ -15,7 +15,7 @@ const root = resolve(
 );
 const REPOSITORY_LICENSE = "MIT";
 const subtrees = JSON.parse(readFileSync(join(root, "subtrees.json"), "utf8")).plugins;
-const importedDirectories = new Set([...subtrees.map((p) => p.prefix), "plugins/makosh-ai"]);
+const importedDirectories = new Set([...subtrees.map((p) => p.prefix), "plugins/makosh-ai", "plugins/navigation"]);
 const RESERVED_MARKETPLACE_NAMES = ["bb-official", "bb-community"];
 const DESCRIPTION_LIMIT = 140;
 const OVERVIEW_LIMIT = 4000;

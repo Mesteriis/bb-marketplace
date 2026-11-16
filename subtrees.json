@@ -566,6 +566,18 @@
       "upstreamRemote": "upstream-mcp-hub"
     },
     {
+      "id": "meetings",
+      "prefix": "plugins/meetings",
+      "upstream": "https://github.com/AiXenix/bb-plugin-meetings.git",
+      "upstreamSubdir": ".",
+      "upstreamRevision": "641c6b719c3491e7c617969a7c42426f8d70f4cd",
+      "fork": "https://github.com/Mesteriis/bb-plugin-meetings.git",
+      "branch": "marketplace/meetings",
+      "commit": "e3417cfdb6f47a5e92886dea3ce7e18265819d39",
+      "remote": "plugin-meetings",
+      "upstreamRemote": "upstream-meetings"
+    },
+    {
       "id": "memory-explorer",
       "prefix": "plugins/memory-explorer",
       "upstream": "https://github.com/d-asensio/bb-plugin-memory-explorer.git",
