@@ -6,6 +6,10 @@
     {
       "name": "mail",
       "source": "./plugins/mail"
+    },
+    {
+      "name": "taskboard",
+      "source": "./plugins/taskboard"
     }
   ]
 }

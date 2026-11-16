@@ -36,6 +36,29 @@
           "tagPrefix": "mail/"
         }
       }
+    },
+    {
+      "id": "makosh-taskboard",
+      "displayName": "Makosh Taskboard [Experimental]",
+      "description": "Local task CRUD plus Jira Cloud and Server/Data Center boards in one focused List and Kanban view.",
+      "tags": [
+        "tasks",
+        "kanban",
+        "jira"
+      ],
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/makosh-bb.git",
+          "subdir": "plugins/taskboard",
+          "range": "^0.1.0",
+          "tagPrefix": "taskboard/"
+        }
+      }
     }
   ]
 }
