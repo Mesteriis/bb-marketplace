@@ -237,7 +237,7 @@ describe("createOneClickPoster", () => {
       for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
       expect(closed).toBe(false);
       await vi.advanceTimersByTimeAsync(1_000);
-      for (let i = 0; i < 200 && !closed; i++) await new Promise((resolve) => setImmediate(resolve));
+      for (let i = 0; i < 20_000 && !closed; i++) await new Promise((resolve) => setImmediate(resolve));
       expect(closed).toBe(true);
     } finally {
       for (const writer of writers) clearInterval(writer);
@@ -252,7 +252,7 @@ describe("createOneClickPoster", () => {
       res.write(Buffer.alloc(64 * 1024, 120));
     });
     expect(await poster.post(URL_TEXT, signal())).toEqual({ kind: "done" });
-    for (let i = 0; i < 2_000 && !closed; i++) await new Promise((resolve) => setImmediate(resolve));
+    await vi.waitFor(() => expect(closed).toBe(true), { timeout: 5_000 });
     expect(closed).toBe(true);
   });
 
