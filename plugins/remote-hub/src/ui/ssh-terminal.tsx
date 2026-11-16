@@ -28,6 +28,7 @@ export function SshTerminal(props: SshTerminalProps) {
     if (container === null) return;
     let disposed = false;
     let errored = false;
+    let live = false;
 
     // xterm 5.5 parses colours through a canvas, so CSS var() strings fail;
     // resolve the theme tokens here and pass real colour strings.
@@ -81,7 +82,11 @@ export function SshTerminal(props: SshTerminalProps) {
         } catch {
           return;
         }
-        if (msg.type === "closed") {
+        if (msg.type === "snapshot") {
+          live = false;
+        } else if (msg.type === "live") {
+          live = true;
+        } else if (msg.type === "closed") {
           props.onStateChange?.("closed", {
             exitCode: msg.exitCode ?? null,
             signal: msg.signal ?? null,
@@ -94,7 +99,9 @@ export function SshTerminal(props: SshTerminalProps) {
       }
       const bytes = new Uint8Array(event.data);
       terminal.write(bytes, () => {
-        if (!disposed && socket.readyState === WebSocket.OPEN) {
+        // Ack only live bytes (after {type:"live"}); snapshot bytes are replay
+        // and must never be acknowledged.
+        if (live && !disposed && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: "ack", bytes: bytes.byteLength }));
         }
       });

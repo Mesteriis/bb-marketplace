@@ -1,49 +1,99 @@
-// Host-free per-session credit window. The helper never reads more than the
-// granted window of PTY output, and an SSH session starts with zero credit.
-// ONE bounded window is owned per session by the service: outstanding
-// (granted - acknowledged) never exceeds CREDIT_WINDOW_BYTES. The renderer
-// acknowledges consumption from xterm's write callback, and the service
-// replenishes only on ack. Snapshot/replay bytes are never acked.
-
+// Host-free per-session credit window (stage 2a). ONE window per session:
+// outstanding (granted - consumed) plus the owner view's unacked live bytes
+// never exceeds CREDIT_WINDOW_BYTES while a view is attached.
+//
+// - granted: total credit ever granted to the helper for this session.
+// - consumed: total live bytes the service received from the helper.
+// - per view: sentLive (live bytes sent to that view since it attached) and
+//   acked (live bytes that view acknowledged), acked <= sentLive.
+// - owner: the oldest attached view. Only the owner's ack produces a grant.
+//   When the owner detaches, the oldest remaining view is promoted.
+// - snapshot bytes are not live: they change neither sentLive nor consumed and
+//   are never acked.
 export const CREDIT_WINDOW_BYTES = 262_144;
 
-export interface CreditWindow {
-  /** This view became the credit owner; returns bytes to grant now. */
-  attach(): number;
-  /** The owning view detached; no further acks are honoured. */
-  detach(): void;
-  /** The renderer acknowledged N bytes; returns bytes to grant to the helper. */
-  ack(bytes: number): number;
-  readonly outstanding: number;
+interface View {
+  sentLive: number;
+  acked: number;
 }
 
-export function createCreditWindow(): CreditWindow {
-  let outstanding = 0;
-  let everAttached = false;
-  let attached = false;
+export interface CreditState {
+  attach(viewId: string): number;
+  detach(viewId: string): number;
+  onConsumed(bytes: number): void;
+  onLiveSent(viewId: string, bytes: number): void;
+  ack(viewId: string, bytes: number): number;
+  granted(): number;
+  consumed(): number;
+  outstanding(viewId: string): number;
+  size(): number;
+  owner(): string | null;
+}
+
+export function createCreditState(): CreditState {
+  let granted = 0;
+  let consumed = 0;
+  const views = new Map<string, View>();
+  let owner: string | null = null;
+
+  const promote = (): string | null => {
+    for (const id of views.keys()) {
+      owner = id;
+      return id;
+    }
+    owner = null;
+    return null;
+  };
+
+  const addGrant = (bytes: number): number => {
+    if (bytes > 0) granted += bytes;
+    return bytes;
+  };
+
   return {
-    attach() {
-      attached = true;
-      if (!everAttached) {
-        everAttached = true;
-        outstanding = CREDIT_WINDOW_BYTES;
-        return CREDIT_WINDOW_BYTES;
+    attach(viewId) {
+      const isFirst = views.size === 0;
+      views.set(viewId, { sentLive: 0, acked: 0 });
+      if (isFirst) {
+        owner = viewId;
+        return granted === 0 ? addGrant(CREDIT_WINDOW_BYTES) : 0;
       }
-      // Re-attach resumes acking but never adds a second window.
+      if (owner === null) owner = viewId;
       return 0;
     },
-    detach() {
-      attached = false;
+    detach(viewId) {
+      const wasOwner = owner === viewId;
+      views.delete(viewId);
+      if (!wasOwner) return 0;
+      const newOwner = promote();
+      if (newOwner === null) return 0;
+      const v = views.get(newOwner)!;
+      const outstanding = v.sentLive - v.acked;
+      return addGrant(Math.max(0, CREDIT_WINDOW_BYTES - (granted - consumed) - outstanding));
     },
-    ack(bytes) {
-      if (!attached || bytes <= 0) return 0;
-      outstanding = Math.max(0, outstanding - bytes);
-      const replenish = Math.min(bytes, CREDIT_WINDOW_BYTES - outstanding);
-      outstanding += replenish;
-      return replenish;
+    onConsumed(bytes) {
+      consumed += bytes;
     },
-    get outstanding() {
-      return outstanding;
+    onLiveSent(viewId, bytes) {
+      const v = views.get(viewId);
+      if (v !== undefined) v.sentLive += bytes;
     },
+    ack(viewId, bytes) {
+      if (!Number.isInteger(bytes) || bytes <= 0) return 0;
+      const v = views.get(viewId);
+      if (v === undefined) return 0;
+      const clamped = Math.min(bytes, v.sentLive - v.acked);
+      if (clamped <= 0) return 0;
+      v.acked += clamped;
+      return owner === viewId ? addGrant(clamped) : 0;
+    },
+    granted: () => granted,
+    consumed: () => consumed,
+    outstanding: (viewId) => {
+      const v = views.get(viewId);
+      return v === undefined ? 0 : v.sentLive - v.acked;
+    },
+    size: () => views.size,
+    owner: () => owner,
   };
 }

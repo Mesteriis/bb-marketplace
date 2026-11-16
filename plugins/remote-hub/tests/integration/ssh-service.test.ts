@@ -1,6 +1,6 @@
 // Node integration for Remote Hub: drives the REAL registerStreamSocket route
-// handlers against the real Rust helper (a fake bb.http + fake socket + acks
-// from a fake renderer). No manual credit anywhere.
+// handlers against the real Rust helper (a fake bb.http + fake socket + a fake
+// renderer that acks only live bytes per the X1 protocol).
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -10,8 +10,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HelperProcess } from "../../src/adapters/bb/helper-process.ts";
-import { createCreditWindow } from "../../src/core/credit.ts";
-import type { SessionHandle } from "../../src/core/rpc.ts";
 import { createRemoteHubService, type RemoteHubService } from "../../src/adapters/bb/service.ts";
 import { registerStreamSocket } from "../../src/adapters/bb/stream-socket.ts";
 
@@ -86,18 +84,31 @@ function wireSocket(service: RemoteHubService): (url: string) => SocketHandlers 
     http: { experimental_websocket(_path: string, h: typeof captured) { captured = h; } },
   };
   registerStreamSocket(bb as never, { service });
-  return (url: string) => captured!( { url: new URL(url) } );
+  return (url: string) => captured!({ url: new URL(url) });
 }
 
 async function drainAndAck(socket: FakeSocket, handlers: SocketHandlers, needle: string, timeoutMs = 10_000): Promise<string> {
   const decoder = new TextDecoder();
   let out = "";
-  const acked = new Set<Uint8Array>();
+  const processed = new Set<number>();
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    for (const data of socket.sent) {
-      if (data instanceof Uint8Array && !acked.has(data)) {
-        acked.add(data);
+    let live = false;
+    for (let i = 0; i < socket.sent.length; i++) {
+      if (processed.has(i)) continue;
+      const data = socket.sent[i];
+      if (typeof data === "string") {
+        processed.add(i);
+        let msg: { type?: string };
+        try {
+          msg = JSON.parse(data);
+        } catch {
+          continue;
+        }
+        if (msg.type === "live") live = true;
+        else if (msg.type === "snapshot") live = false;
+      } else if (data instanceof Uint8Array && live) {
+        processed.add(i);
         out += decoder.decode(data, { stream: true });
         handlers.onMessage(socket, JSON.stringify({ type: "ack", bytes: data.byteLength }));
       }
@@ -167,8 +178,7 @@ describe.skipIf(!runDocker)("ssh service integration through the real socket han
     const target = { host: "127.0.0.1", port, configFile: cfg, knownHostsFile: knownHosts, identityFile: key, extraOptions: [] as string[] };
     const handle = await service.sshOpen(target, 80, 24);
     const token = service.sessionAttach(handle);
-    const wire = wireSocket(service);
-    const handlers = wire("ws://bb/api/attach?attach=" + token);
+    const handlers = wireSocket(service)("ws://bb/api/attach?attach=" + token);
     const socket = makeSocket();
     await handlers.onOpen(socket);
     handlers.onMessage(socket, new TextEncoder().encode("printf 'h\u00e9llo-ok'\n"));
@@ -182,8 +192,7 @@ describe.skipIf(!runDocker)("ssh service integration through the real socket han
     const target = { host: "127.0.0.1", port, configFile: cfg, knownHostsFile: emptyKh, identityFile: key, extraOptions: [] as string[] };
     const handle = await service.sshOpen(target, 80, 24);
     const token = service.sessionAttach(handle);
-    const wire = wireSocket(service);
-    const handlers = wire("ws://bb/api/attach?attach=" + token);
+    const handlers = wireSocket(service)("ws://bb/api/attach?attach=" + token);
     const socket = makeSocket();
     await handlers.onOpen(socket);
     const out = await drainAndAck(socket, handlers, "Are you sure you want to continue connecting");
@@ -199,77 +208,22 @@ describe.skipIf(!runDocker)("ssh service integration through the real socket han
   });
 });
 
-// A small test-only harness around HelperProcess for a free-form (test-hooks)
-// session. The credit window logic is the real createCreditWindow; only the
-// service wiring around it is reimplemented, so the production service never
-// accepts program/argv/env from a caller.
-function rawSessionService(hp: HelperProcess, handle: SessionHandle): RemoteHubService {
-  const credit = createCreditWindow();
-  let ownerId: string | null = null;
-  const listeners = new Set<(data: Uint8Array) => void>();
-  hp.onSessionOutput((sessionId, data) => {
-    if (sessionId === handle.sessionId) {
-      for (const cb of listeners) cb(data);
-    }
-  });
-  return {
-    consumeAttachToken: () => ({ sessionId: handle.sessionId, generation: handle.generation }),
-    sessionList: () => [
-      { generation: handle.generation, sessionId: handle.sessionId, kind: "ssh", state: "running", exitCode: null, signal: null, reason: null },
-    ],
-    attachStream: () => ({
-      snapshot: hp.scrollbackSnapshot(handle.sessionId),
-      subscribe: (cb) => {
-        listeners.add(cb);
-        return () => listeners.delete(cb);
-      },
-    }),
-    subscribeSessionEnd: () => () => {},
-    onHelperExit: () => () => {},
-    creditAttach: (_h, attachId) => {
-      if (ownerId === null) {
-        ownerId = attachId;
-        return { grant: credit.attach(), isOwner: true };
-      }
-      return { grant: 0, isOwner: false };
-    },
-    creditDetach: (_h, attachId) => {
-      if (ownerId === attachId) {
-        ownerId = null;
-        credit.detach();
-      }
-    },
-    creditAck: (_h, attachId, bytes) => (ownerId === attachId ? credit.ack(bytes) : 0),
-    sessionCredit: (h, bytes) => hp.credit(h, bytes),
-    sessionResize: (h, cols, rows) => hp.resize(h, cols, rows),
-    sessionTerminalInput: (h, data) => {
-      hp.writeInput(h.sessionId, data);
-      return Promise.resolve();
-    },
-    helperStatus: async () => ({ version: "0.1.0", pid: 0, platform: "test", sessionCount: 1, alive: true }),
-    echoOpen: async () => handle,
-    echoInput: async () => ({ output: "", truncated: false }),
-    echoClose: async () => ({ closed: true }),
-    sshOpen: async () => handle,
-    sessionClose: async () => ({ exitCode: null, signal: null, reason: "exited" }),
-    sessionAttach: () => "",
-    sessionScrollback: async () => hp.scrollbackSnapshot(handle.sessionId),
-    subscribeSession: () => () => {},
-    stop: () => hp.stop(),
-  } as RemoteHubService;
-}
-
-describe.skipIf(!enabled)("credit flow through the real socket (test-hooks)", () => {
+describe.skipIf(!enabled)("credit flow through the real service wiring (test-hooks)", () => {
   it("receives PROBE-42 from /bin/sh with only renderer acks", async () => {
     const hp = await spawnHelper(HELPER);
-    const handle = await hp.openSsh(
-      { program: "/bin/sh", argv: ["sh", "-c", "echo PROBE-$((6*7))"], env: { TERM: "xterm-256color" } },
-      80,
-      24,
-    );
-    const service = rawSessionService(hp, handle);
-    const wire = wireSocket(service);
-    const handlers = wire("ws://bb/api/attach?attach=probe");
+    const service = createRemoteHubService({
+      startHelper: async () => hp,
+      env: process.env as Record<string, string | undefined>,
+      openSshRaw: (helper) =>
+        helper.openSsh(
+          { program: "/bin/sh", argv: ["sh", "-c", "echo PROBE-$((6*7))"], env: { TERM: "xterm-256color" } },
+          80,
+          24,
+        ),
+    });
+    const handle = await service.sshOpenTest(80, 24);
+    const token = service.sessionAttach(handle);
+    const handlers = wireSocket(service)("ws://bb/api/attach?attach=" + token);
     const socket = makeSocket();
     await handlers.onOpen(socket);
     const out = await drainAndAck(socket, handlers, "PROBE-42");

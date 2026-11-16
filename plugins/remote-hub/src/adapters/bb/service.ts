@@ -3,7 +3,7 @@
 // RPC surface wraps. Host-free of the BB SDK (only the adapter), so it is
 // unit-testable with an injected startHelper factory.
 import { AttachTokens, ATTACH_TOKEN_TTL_MS, type Clock } from "../../core/attach.ts";
-import { createCreditWindow } from "../../core/credit.ts";
+import { createCreditState, type CreditState } from "../../core/credit.ts";
 import { buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
 import { HelperProcess, HelperStatus, HelperRuntimeError } from "./helper-process.ts";
 import type { SessionHandle } from "../../core/rpc.ts";
@@ -25,6 +25,8 @@ export interface RemoteHubServiceDeps {
   startHelper: () => Promise<HelperProcess>;
   env?: Record<string, string | undefined>;
   clock?: Clock;
+  /** Test-only opener for a raw spawn spec (used by the integration suite against a test-hooks helper). */
+  openSshRaw?: (helper: HelperProcess, cols: number, rows: number) => Promise<SessionHandle>;
 }
 
 export interface RemoteHubService {
@@ -33,6 +35,7 @@ export interface RemoteHubService {
   echoInput(handle: SessionHandle, data: string): Promise<{ output: string; truncated: boolean }>;
   echoClose(handle: SessionHandle): Promise<{ closed: boolean }>;
   sshOpen(target: SshTarget, cols: number, rows: number): Promise<SessionHandle>;
+  sshOpenTest(cols: number, rows: number): Promise<SessionHandle>;
   sessionList(): SessionInfo[];
   sessionClose(handle: SessionHandle): Promise<{ exitCode: number | null; signal: number | null; reason: string }>;
   sessionAttach(handle: SessionHandle): string;
@@ -42,9 +45,11 @@ export interface RemoteHubService {
     snapshot: Uint8Array;
     subscribe: (cb: (data: Uint8Array) => void) => () => void;
   };
-  creditAttach(handle: SessionHandle, attachId: string): { grant: number; isOwner: boolean };
-  creditDetach(handle: SessionHandle, attachId: string): void;
+  creditAttach(handle: SessionHandle, attachId: string): number;
+  creditDetach(handle: SessionHandle, attachId: string): number;
+  creditLiveSent(handle: SessionHandle, attachId: string, bytes: number): void;
   creditAck(handle: SessionHandle, attachId: string, bytes: number): number;
+  creditState(handle: SessionHandle): CreditState | undefined;
   subscribeSession(handle: SessionHandle, cb: (data: Uint8Array) => void): () => void;
   subscribeSessionEnd(
     handle: SessionHandle,
@@ -66,8 +71,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   let starting: Promise<HelperProcess> | null = null;
   const sessions = new Map<string, SessionInfo>();
   const listeners = new Map<string, Set<(data: Uint8Array) => void>>();
-  const credits = new Map<string, ReturnType<typeof createCreditWindow>>();
-  const creditOwners = new Map<string, string>();
+  const credits = new Map<string, CreditState>();
   const sessionEndListeners = new Map<string, Set<(info: { exitCode: number | null; signal: number | null; reason: string }) => void>>();
   const attachTokens = new AttachTokens(ATTACH_TOKEN_TTL_MS, deps.clock);
   const helperExitCallbacks = new Set<() => void>();
@@ -84,6 +88,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       sessions.delete(key);
       sessionEndListeners.delete(key);
       listeners.delete(key);
+      credits.delete(key);
     }, EVICT_CLOSED_AFTER_MS);
   };
 
@@ -112,9 +117,6 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
               for (const key of Array.from(credits.keys())) {
                 if (key.startsWith(generation + ":")) credits.delete(key);
               }
-              for (const key of Array.from(creditOwners.keys())) {
-                if (key.startsWith(generation + ":")) creditOwners.delete(key);
-              }
               for (const key of Array.from(sessions.keys())) {
                 if (key.startsWith(generation + ":")) maybeEvictClosed(key);
               }
@@ -138,6 +140,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
             maybeEvictClosed(key);
           });
           started.onSessionOutput((sessionId, data) => {
+            credits.get(generation + ":" + sessionId)?.onConsumed(data.byteLength);
             const set = listeners.get(generation + ":" + sessionId);
             if (set !== undefined) {
               for (const cb of set) cb(data);
@@ -191,6 +194,21 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       await process.close(handle);
       sessions.delete(keyOf(handle));
       return { closed: true };
+    },
+    async sshOpenTest(cols, rows) {
+      if (deps.openSshRaw === undefined) throw new Error("sshOpenTest requires a test opener");
+      const hp = await start();
+      const handle = await deps.openSshRaw(hp, cols, rows);
+      sessions.set(keyOf(handle), {
+        generation: handle.generation,
+        sessionId: handle.sessionId,
+        kind: "ssh",
+        state: "running",
+        exitCode: null,
+        signal: null,
+        reason: null,
+      });
+      return handle;
     },
     async sshOpen(target, cols, rows) {
       const hp = await start();
@@ -275,32 +293,30 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         },
       };
     },
+    creditState(handle) {
+      return credits.get(keyOf(handle));
+    },
     creditAttach(handle, attachId) {
       requireGeneration(handle);
       const key = keyOf(handle);
-      let window = credits.get(key);
-      if (window === undefined) {
-        window = createCreditWindow();
-        credits.set(key, window);
+      let state = credits.get(key);
+      if (state === undefined) {
+        state = createCreditState();
+        credits.set(key, state);
       }
-      const owner = creditOwners.get(key);
-      if (owner === undefined) {
-        creditOwners.set(key, attachId);
-        return { grant: window.attach(), isOwner: true };
-      }
-      return { grant: 0, isOwner: false };
+      return state.attach(attachId);
     },
     creditDetach(handle, attachId) {
       const key = keyOf(handle);
-      if (creditOwners.get(key) === attachId) {
-        creditOwners.delete(key);
-        credits.get(key)?.detach();
-      }
+      return credits.get(key)?.detach(attachId) ?? 0;
+    },
+    creditLiveSent(handle, attachId, bytes) {
+      const key = keyOf(handle);
+      credits.get(key)?.onLiveSent(attachId, bytes);
     },
     creditAck(handle, attachId, bytes) {
       const key = keyOf(handle);
-      if (creditOwners.get(key) !== attachId) return 0;
-      return credits.get(key)?.ack(bytes) ?? 0;
+      return credits.get(key)?.ack(attachId, bytes) ?? 0;
     },
     subscribeSession(handle, cb) {
       requireGeneration(handle);
