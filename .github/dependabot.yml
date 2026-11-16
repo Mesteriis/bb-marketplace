@@ -18,6 +18,10 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
     # Most devDependencies mirror what the BB host provides at runtime, and
     # `bb plugin types` repins them with the SDK. Dependabot updates only what
     # the plugin bundles or uses as tooling.

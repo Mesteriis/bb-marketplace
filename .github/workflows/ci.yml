@@ -1,78 +1,92 @@
 name: CI
-
 on:
   push:
     branches: [main]
   pull_request:
-
-permissions: {}
-
+  workflow_dispatch:
+    inputs:
+      full_audit:
+        description: Check every plugin (includes upstream compatibility failures)
+        type: boolean
+        default: false
+permissions:
+  contents: read
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 env:
-  # The BB CLI that builds the plugins. Raise it together with engines.bb.
   BB_APP_VERSION: "0.49.0"
-
 jobs:
   manifests:
-    name: Manifests
+    name: Catalog and CI tests
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 10
     outputs:
-      plugins: ${{ steps.list.outputs.plugins }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      has_plugins: ${{ steps.matrix.outputs.has_plugins }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .nvmrc
-      - name: Check that the manifests agree
-        run: node scripts/check-manifests.mjs
-      - name: List plugin directories
-        id: list
-        run: |
-          node -e '
-            const { plugins } = require("./.bb/plugins.json");
-            const dirs = plugins.map((plugin) => plugin.source.replace(/^\.\//, ""));
-            console.log("plugins=" + JSON.stringify(dirs));
-          ' >> "$GITHUB_OUTPUT"
-
+      - run: node scripts/check-manifests.mjs
+      - run: node scripts/check-subtrees.mjs
+      - run: node --test scripts/*.test.mjs
+      - id: matrix
+        name: Select affected packages
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          FULL_AUDIT: ${{ inputs.full_audit || false }}
+        run: node scripts/ci-matrix.mjs
   plugin:
-    name: ${{ matrix.directory }}
+    name: Check ${{ matrix.directory }}
     needs: manifests
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    if: needs.manifests.outputs.has_plugins == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
-      matrix:
-        directory: ${{ fromJSON(needs.manifests.outputs.plugins) }}
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.manifests.outputs.matrix) }}
     defaults:
       run:
         working-directory: ${{ matrix.directory }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .nvmrc
-          cache: npm
-          cache-dependency-path: ${{ matrix.directory }}/package-lock.json
-      - name: Install dependencies
-        run: npm ci
-      - name: Typecheck
-        run: npm run typecheck
-      - name: Test
-        run: npm test
-      - name: Cache the BB build toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.bb/plugins/toolchain-*
-          key: bb-toolchain-${{ runner.os }}-${{ env.BB_APP_VERSION }}
-      - name: Build with the BB CLI
-        run: npx --yes --package "bb-app@${BB_APP_VERSION}" -- bb plugin build
+      - name: Require reproducible dependencies
+        run: test -f package-lock.json || { echo '::error::Add package-lock.json for this independent package'; exit 1; }
+      - run: npm ci
+      - name: Run package checks
+        shell: bash
+        run: |
+          if node -e 'process.exit(require("./package.json").scripts?.check ? 0 : 1)'; then
+            npm run check
+          else
+            npm run typecheck --if-present
+            npm run test --if-present
+          fi
+      - name: Build using the package recipe
+        run: npm exec --yes --package "bb-app@${BB_APP_VERSION}" --call 'npm run build --if-present'
+  result:
+    name: CI result
+    if: always()
+    needs: [manifests, plugin]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require all applicable checks
+        env:
+          CATALOG: ${{ needs.manifests.result }}
+          PACKAGES: ${{ needs.plugin.result }}
+        run: |
+          test "$CATALOG" = success
+          test "$PACKAGES" = success || test "$PACKAGES" = skipped
