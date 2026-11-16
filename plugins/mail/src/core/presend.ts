@@ -1,16 +1,22 @@
-// The pre-send check (slice 3d): four advisory issues the composer shows
-// in "Before you send" and the agent card lists. Nothing here refuses a
+// The pre-send check (slice 3d): advisory issues the composer shows in
+// "Before you send" and the agent card lists. Slice 3g adds files attached
+// from BB and text that looks like it holds a secret. Nothing here refuses a
 // send. Pure.
 import { renderDoc, type ComposeBlock, type ComposeDoc } from "./compose-doc.ts";
 import { forwardSubject, replySubject } from "./compose-subjects.ts";
 import type { ComposeKind } from "./model.ts";
+import { hiddenTotal, redactSecrets } from "./redact.ts";
 
 export type PresendIssue =
   /** `phrase`: the matched words, from the owner's own text or subject. */
   | { kind: "attachment_mentioned"; phrase: string }
   | { kind: "empty_subject" }
   | { kind: "outside_conversation"; addresses: string[] }
-  | { kind: "new_recipients"; addresses: string[] };
+  | { kind: "new_recipients"; addresses: string[] }
+  /** Slice 3g: files attached from BB projects or threads; `origins` de-duplicated, in order. */
+  | { kind: "bb_files"; count: number; origins: string[] }
+  /** Slice 3g: values redaction would hide in the owner's own text. */
+  | { kind: "looks_secret"; count: number };
 
 export type PresendInput = {
   kind: ComposeKind;
@@ -32,6 +38,8 @@ export type PresendInput = {
    * no longer stored) searches it always.
    */
   inheritedSubject: string | null;
+  /** Slice 3g: one display label per attachment taken from BB ("project api"); absent or empty for none. */
+  bbOrigins?: readonly string[];
 };
 
 /** What quoteHeaderText writes above a forwarded message. */
@@ -123,7 +131,8 @@ function mentionIn(text: string): string | null {
 const lower = (address: string) => address.trim().toLowerCase();
 
 /**
- * The issues, in the order attachment, subject, outside, new. A reply or
+ * The issues, in the order attachment, subject, outside, new, BB files,
+ * secret-like text. A reply or
  * reply all with a stored source is checked against its conversation only:
  * its participants are never "new" (spec resolution 5). Own addresses are
  * never listed.
@@ -150,6 +159,10 @@ export function presendIssues(input: PresendInput): PresendIssue[] {
     const fresh = recipients.filter((address) => !sentTo.has(address));
     if (fresh.length > 0) issues.push({ kind: "new_recipients", addresses: fresh });
   }
+  const origins = input.bbOrigins ?? [];
+  if (origins.length > 0) issues.push({ kind: "bb_files", count: origins.length, origins: [...new Set(origins)] });
+  const hidden = hiddenTotal(redactSecrets(ownText(input.doc, input.kind)).counts);
+  if (hidden > 0) issues.push({ kind: "looks_secret", count: hidden });
   return issues;
 }
 

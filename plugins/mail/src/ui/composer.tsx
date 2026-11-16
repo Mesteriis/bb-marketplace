@@ -659,6 +659,10 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         if (field !== "To") setShowCopies(true);
         return () => within(`input[role="combobox"][aria-label="${field}"]`)?.focus();
       }
+      case "bb_files":
+      case "looks_secret":
+        // The dialog closes; the owner checks the attachments or the text.
+        return undefined;
     }
   };
 

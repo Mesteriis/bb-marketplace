@@ -238,3 +238,38 @@ describe("cardChecks", () => {
     expect(cardChecks(issues).map((i) => i.kind)).toEqual(["attachment_mentioned", "empty_subject", "outside_conversation"]);
   });
 });
+
+describe("presendIssues: slice 3g kinds", () => {
+  const base = {
+    kind: "new" as ComposeKind,
+    subject: "Plan",
+    doc: docFromLines(["Hello"]),
+    attachmentCount: 0,
+    recipients: ["bob@example.org"],
+    own: new Set(["anna@example.com"]),
+    sentTo: new Set(["bob@example.org"]),
+    conversation: null as ReadonlySet<string> | null,
+    inheritedSubject: null as string | null,
+  };
+  // Made up, joined at run time.
+  const TOKEN = ["ghp", "InventedToken0123456789abcdefXYZ"].join("_");
+
+  it("lists files from BB by origin only when there are any", () => {
+    expect(presendIssues({ ...base, attachmentCount: 3, bbOrigins: [] })).toEqual([]);
+    expect(presendIssues({ ...base, attachmentCount: 3, bbOrigins: ["project api", "thread Fix", "project api"] })).toEqual([
+      { kind: "bb_files", count: 3, origins: ["project api", "thread Fix"] },
+    ]);
+  });
+
+  it("warns when the owner's text holds something redaction would hide, not the quote", () => {
+    expect(presendIssues({ ...base, doc: docFromLines([`Here is my token ${TOKEN}`, "and the code 482913"]) })).toEqual([
+      { kind: "looks_secret", count: 2 },
+    ]);
+    expect(presendIssues({ ...base, kind: "reply", doc: docFromLines(["Thanks"], [`token ${TOKEN}`]) })).toEqual([]);
+  });
+
+  it("puts the new kinds after the 3d ones", () => {
+    const issues = presendIssues({ ...base, subject: "", doc: docFromLines([`attached ${TOKEN}`]), bbOrigins: ["project api"] });
+    expect(issues.map((i) => i.kind)).toEqual(["attachment_mentioned", "empty_subject", "bb_files", "looks_secret"]);
+  });
+});

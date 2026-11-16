@@ -681,6 +681,8 @@ export const presendIssueSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("empty_subject") }),
   z.object({ kind: z.literal("outside_conversation"), addresses: z.array(z.string()) }),
   z.object({ kind: z.literal("new_recipients"), addresses: z.array(z.string()) }),
+  z.object({ kind: z.literal("bb_files"), count: z.number().int(), origins: z.array(z.string()) }),
+  z.object({ kind: z.literal("looks_secret"), count: z.number().int() }),
 ]);
 
 /** What the confirmation card shows: the whole message, server-built. */

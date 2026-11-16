@@ -31,6 +31,13 @@ export function presendIssueText(issue: PresendIssue): { text: string; fix: stri
       return { text: `Not in this conversation: ${issue.addresses.join(", ")}`, fix: "Check recipients" };
     case "new_recipients":
       return { text: `You have not written to ${issue.addresses.join(", ")} before.`, fix: "Check recipients" };
+    case "bb_files":
+      return {
+        text: `${issue.count} ${issue.count === 1 ? "file" : "files"} from BB: ${issue.origins.join(", ")}`,
+        fix: "Check attachments",
+      };
+    case "looks_secret":
+      return { text: `The text looks like it holds a password, token or code (${issue.count})`, fix: "Check the text" };
   }
 }
 
