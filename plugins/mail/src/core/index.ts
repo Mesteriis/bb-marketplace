@@ -46,3 +46,6 @@ export * from "./text-diff.ts";
 export * from "./categories.ts";
 export * from "./digest.ts";
 export * from "./reminders.ts";
+export { sanitizeFileName, safeContentType } from "./file-names.ts";
+export * from "./project-paths.ts";
+export * from "./projects.ts";
