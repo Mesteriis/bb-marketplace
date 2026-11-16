@@ -21,7 +21,7 @@ const OUTBOX_CAP: usize = 4 * 1024 * 1024;
 /// tail) always fits without crossing OUTBOX_CAP.
 const OUTBOX_RESERVE: usize = 512 * 1024;
 /// Bounded ingress buffer for stdin frames not yet dispatched.
-const INGRESS_CAP: usize = 1024 * 1024;
+const INGRESS_CAP: usize = MAX_FRAME_BODY_BYTES + 4;
 
 static SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -60,6 +60,10 @@ fn set_nonblocking(fd: RawFd) {
         let flags = libc::fcntl(fd, libc::F_GETFL);
         libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
     }
+}
+
+fn last_errno() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 fn set_cloexec(fd: RawFd) {
@@ -324,8 +328,10 @@ fn pollfd(fd: RawFd, events: libc::c_short) -> libc::pollfd {
     }
 }
 
-/// Best-effort non-blocking flush of the outbox to stdout.
-fn flush_stdout(outbox: &mut VecDeque<u8>) {
+/// Best-effort non-blocking flush of the outbox to stdout. Returns true when
+/// stdout failed fatally (EPIPE or any error other than EAGAIN/EINTR), meaning
+/// the client is gone and the helper must tear everything down.
+fn flush_stdout(outbox: &mut VecDeque<u8>) -> bool {
     while !outbox.is_empty() {
         let (a, b) = outbox.as_slices();
         let n = if !a.is_empty() {
@@ -334,14 +340,18 @@ fn flush_stdout(outbox: &mut VecDeque<u8>) {
             unsafe { libc::write(1, b.as_ptr() as *const libc::c_void, b.len()) }
         };
         if n < 0 {
-            let err = io::Error::last_os_error();
-            if err.kind() == io::ErrorKind::Interrupted {
+            let errno = last_errno();
+            if errno == libc::EINTR {
                 continue;
             }
-            return; // EAGAIN or a real error: retry next iteration
+            if errno == libc::EAGAIN {
+                return false;
+            }
+            return true; // EPIPE or another non-transient error
         }
         outbox.drain(..n as usize);
     }
+    false
 }
 
 /// Owns the SessionManager and reaps every child on ANY exit path, including a
@@ -377,6 +387,10 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
     install_handler(libc::SIGCHLD, on_sigchld);
 
     let generation = random_generation();
+    #[cfg(feature = "test-hooks")]
+    let keep_finished = std::env::var("REMOTE_HUB_KEEP_FINISHED").is_ok();
+    #[cfg(not(feature = "test-hooks"))]
+    let keep_finished = false;
     let mut guard = CleanupGuard {
         manager: SessionManager::new(echo_argv),
     };
@@ -391,7 +405,11 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
             break;
         }
 
-        flush_stdout(&mut outbox);
+        if flush_stdout(&mut outbox) {
+            // The client is gone (stdout closed): tear down every child.
+            SHUTDOWN.store(true, Ordering::SeqCst);
+            break;
+        }
 
         let session_fds = guard.manager.fds();
         let mut fds: Vec<libc::pollfd> = Vec::with_capacity(3 + session_fds.len());
@@ -455,7 +473,9 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                     }
                 }
                 PollRole::Stdout => {
-                    flush_stdout(&mut outbox);
+                    if flush_stdout(&mut outbox) {
+                        SHUTDOWN.store(true, Ordering::SeqCst);
+                    }
                 }
                 PollRole::Session(sid) => {
                     if revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
@@ -493,23 +513,28 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         }
 
         // Finished sessions (child reaped, PTY done, output drained): notify.
-        for session_id in guard.manager.remove_finished() {
+        for session_id in guard.manager.remove_finished(keep_finished) {
             outbox.extend(protocol::encode_response(&Response::SessionClosed {
                 id: None,
                 session_id,
             }));
         }
 
-        // stdin: read more (POLLIN or a hangup that still has buffered data),
-        // then drain buffered frames.
-        if !reader.eof && want_stdin && (fds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0) {
-            if let Err(e) = reader.fill(0) {
-                outbox.extend(protocol::encode_response(&Response::Error {
-                    id: None,
-                    code: "read_failed".to_string(),
-                    message: e,
-                }));
-                SHUTDOWN.store(true, Ordering::SeqCst);
+        // stdin: read more (POLLIN while we want input, or a hangup that still
+        // has buffered data even when the outbox is full), then drain frames.
+        {
+            let revents = fds[0].revents;
+            let hung_up = revents & (libc::POLLHUP | libc::POLLERR) != 0;
+            let read_now = (want_stdin && revents & libc::POLLIN != 0) || hung_up;
+            if !reader.eof && read_now {
+                if let Err(e) = reader.fill(0) {
+                    outbox.extend(protocol::encode_response(&Response::Error {
+                        id: None,
+                        code: "read_failed".to_string(),
+                        message: e,
+                    }));
+                    SHUTDOWN.store(true, Ordering::SeqCst);
+                }
             }
         }
         while outbox.len() + OUTBOX_RESERVE <= OUTBOX_CAP {

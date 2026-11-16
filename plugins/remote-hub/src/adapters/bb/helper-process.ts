@@ -483,6 +483,9 @@ export class HelperProcess {
       const resp = await this.request({ type: "ping" } as RequestMessage, 3_000);
       return resp.type === "pong";
     } catch {
+      // A helper that cannot answer ping is effectively dead: kill it and
+      // clear the cache (reuses the S5 fail path) so the next call restarts.
+      this.fail(new HelperRuntimeError("helper_exited", "helper did not answer ping"), true);
       return false;
     }
   }

@@ -9,6 +9,7 @@ import {
   type ControlMessage,
 } from "../../core/protocol.ts";
 import { createRemoteHubService } from "./service.ts";
+import { rpcSchemas } from "../../core/rpc.ts";
 import {
   HANDSHAKE_TIMEOUT_MS,
   HELPER_BIN_NAME,
@@ -129,6 +130,33 @@ describe("helper-process (pure parts)", () => {
 });
 
 describe("helper-process (lifecycle)", () => {
+  // T1: the zod schema rejects 262 145 bytes of input data before it is written.
+  it("rejects 262 145 bytes of session input at the schema", () => {
+    const result = rpcSchemas.echo_input.input.safeParse({
+      generation: "a".repeat(32),
+      sessionId: 1,
+      data: "x".repeat(262_145),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // T1: a helper that never answers ping is killed and the next call restarts.
+  it(
+    "kills a helper that never answers ping and restarts a fresh one",
+    async () => {
+      const spawns: FakeChild[] = [];
+      const service = createRemoteHubService({
+        startHelper: () => HelperProcess.spawn("bin", fakeSpawnWithHello(spawns)),
+      });
+      const status = await service.helperStatus();
+      expect(status.alive).toBe(false);
+      expect(spawns[0].kills).toContain("SIGTERM");
+      expect(spawns[0].stdinEnded.value).toBe(true);
+      await service.helperStatus();
+      expect(spawns.length).toBe(2);
+    },
+    10_000,
+  );
   // R4 + S7(a): a dead helper is marked, rejects immediately, and a new start
   // sends only hello.
   it("marks a dead helper and starts a fresh one without replaying input", async () => {

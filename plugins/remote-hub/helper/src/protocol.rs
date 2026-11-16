@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
-pub const MAX_FRAME_BODY_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_FRAME_BODY_BYTES: usize = 4 * 1024 * 1024;
 pub const FRAME_KIND_CONTROL: u8 = 0x01;
 pub const FRAME_KIND_STREAM: u8 = 0x02;
 pub const STREAM_HEADER_BYTES: usize = 8;

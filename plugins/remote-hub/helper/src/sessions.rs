@@ -98,36 +98,89 @@ fn is_transient_errno(errno: i32) -> bool {
 /// The fds above 2 currently open in this process, listed from /dev/fd. Built
 /// in the parent so the child can close exactly the open ones without any
 /// allocation between fork and exec.
-fn open_fds_above_two() -> Vec<i32> {
+fn open_fds_above_two() -> Result<Vec<i32>, SessionError> {
     let mut fds: Vec<i32> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir("/dev/fd") {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            if let Some(name) = name.to_str() {
-                if let Ok(n) = name.parse::<i32>() {
-                    if n > 2 {
-                        fds.push(n);
+    match std::fs::read_dir("/dev/fd") {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if let Some(name) = name.to_str() {
+                    if let Ok(n) = name.parse::<i32>() {
+                        if n > 2 {
+                            fds.push(n);
+                        }
                     }
                 }
             }
         }
+        Err(e) => {
+            return Err(SessionError::Sys {
+                step: "fd_enumeration",
+                errno: e.raw_os_error().unwrap_or(0),
+            });
+        }
     }
     fds.sort_unstable();
     fds.dedup();
-    fds
+    Ok(fds)
 }
 
-fn set_cloexec(fd: RawFd) {
+fn set_cloexec(fd: RawFd) -> Result<(), SessionError> {
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFD);
-        libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+        if flags < 0 {
+            return Err(SessionError::Sys { step: "fcntl", errno: last_errno() });
+        }
+        if libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) < 0 {
+            return Err(SessionError::Sys { step: "fcntl", errno: last_errno() });
+        }
+    }
+    Ok(())
+}
+
+fn set_nonblocking(fd: RawFd) -> Result<(), SessionError> {
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 {
+            return Err(SessionError::Sys { step: "fcntl", errno: last_errno() });
+        }
+        if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+            return Err(SessionError::Sys { step: "fcntl", errno: last_errno() });
+        }
+    }
+    Ok(())
+}
+
+/// Block every signal in the calling (parent) thread around fork so the child
+/// cannot run a handler that belongs to the helper. Stores the previous mask.
+fn block_all_signals(old_mask: &mut libc::sigset_t) {
+    unsafe {
+        let mut all: libc::sigset_t = std::mem::zeroed();
+        libc::sigfillset(&mut all);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &all, old_mask);
     }
 }
 
-fn set_nonblocking(fd: RawFd) {
+fn restore_signal_mask(old_mask: &libc::sigset_t) {
+    unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, old_mask, std::ptr::null_mut()) };
+}
+
+/// Child-side, before exec: reset every disposition to SIG_DFL and unblock all
+/// signals. Async-signal-safe (only sigaction/sigemptyset/pthread_sigmask).
+fn reset_signals_and_unblock() {
     unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFL);
-        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = libc::SIG_DFL;
+        libc::sigemptyset(&mut sa.sa_mask);
+        sa.sa_flags = 0;
+        let mut sig = 1;
+        while sig < 32 {
+            libc::sigaction(sig, &sa, std::ptr::null_mut());
+            sig += 1;
+        }
+        let mut empty: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut empty);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut());
     }
 }
 
@@ -221,25 +274,33 @@ impl SessionManager {
                 errno: openpty_errno,
             });
         }
-        set_cloexec(master);
-        set_cloexec(slave);
-        set_nonblocking(master);
+        set_cloexec(master)?;
+        set_cloexec(slave)?;
+        set_nonblocking(master)?;
 
         // Raw mode is applied to the slave by the parent, before fork, so no
         // input is ever processed in canonical/ECHO mode (which would double
         // the echo and translate newlines).
         unsafe {
             let mut tio: libc::termios = std::mem::zeroed();
-            libc::tcgetattr(slave, &mut tio);
+            if libc::tcgetattr(slave, &mut tio) != 0 {
+                return Err(SessionError::Sys { step: "termios", errno: last_errno() });
+            }
             libc::cfmakeraw(&mut tio);
-            libc::tcsetattr(slave, libc::TCSANOW, &tio);
+            if libc::tcsetattr(slave, libc::TCSANOW, &tio) != 0 {
+                return Err(SessionError::Sys { step: "termios", errno: last_errno() });
+            }
         }
 
         // List the fds the child will inherit (before fork) so the child can
         // close exactly the open ones, including any non-CLOEXEC fd it got from
         // its parent.
-        let inherited = open_fds_above_two();
+        let inherited = open_fds_above_two()?;
 
+        // Block every signal around fork so the child never runs a helper
+        // handler (e.g. writing S into the signal pipe) before exec.
+        let mut old_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+        block_all_signals(&mut old_mask);
         let mut pid: libc::pid_t;
         let mut fork_errno = 0;
         let mut fork_attempts = 0;
@@ -260,16 +321,18 @@ impl SessionManager {
                 libc::close(master);
                 libc::close(slave);
             }
+            restore_signal_mask(&old_mask);
             return Err(SessionError::Sys {
                 step: "fork",
                 errno: fork_errno,
             });
         }
         if pid == 0 {
-            // Child: new session, the slave as controlling terminal, raw mode,
-            // stdin/stdout/stderr to the slave, then exec the echo command.
-            // No allocation here: prog/c_args/inherited were built by the
-            // parent.
+            // Child: default dispositions, unblocked signals, the slave as
+            // controlling terminal, raw mode, stdin/stdout/stderr to the slave,
+            // then exec. No allocation here: prog/c_args/inherited were built
+            // by the parent.
+            reset_signals_and_unblock();
             unsafe {
                 libc::setsid();
                 libc::ioctl(slave, libc::TIOCSCTTY as libc::c_ulong, 0);
@@ -289,7 +352,8 @@ impl SessionManager {
             }
         }
 
-        // Parent keeps the master and closes the slave.
+        // Parent restores its signal mask and keeps the master, closes slave.
+        restore_signal_mask(&old_mask);
         unsafe { libc::close(slave) };
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
@@ -436,6 +500,8 @@ impl SessionManager {
                 if session.child == r && !session.child_exited {
                     session.child_exited = true;
                     newly.push(session.id);
+                    #[cfg(feature = "test-hooks")]
+                    eprintln!("helper-reaped pid={r}");
                 }
             }
         }
@@ -443,8 +509,10 @@ impl SessionManager {
     }
 
     /// Terminate and reap live children whose PTY is already done, then remove
-    /// sessions that are fully finished (child reaped, PTY done, output drained).
-    pub fn remove_finished(&mut self) -> Vec<u32> {
+    /// sessions that are fully finished (child reaped, PTY done, output
+    /// drained). With keep=true (test hook) orphans are still terminated but
+    /// finished sessions stay open for an explicit close.
+    pub fn remove_finished(&mut self, keep: bool) -> Vec<u32> {
         // No orphan: a live child whose PTY closed still gets terminated+reaped.
         let orphans: Vec<u32> = self
             .sessions
@@ -457,6 +525,9 @@ impl SessionManager {
                 terminate_orphan(session.child);
                 session.child_exited = true;
             }
+        }
+        if keep {
+            return Vec::new();
         }
         let ids: Vec<u32> = self
             .sessions
@@ -479,7 +550,7 @@ impl SessionManager {
         let mut session = self.sessions.remove(&id)?;
         let mut all = std::mem::take(&mut session.pending_out);
         loop {
-            if all.len() >= PENDING_OUTPUT_CAP {
+            if all.len() >= 2 * PENDING_OUTPUT_CAP {
                 break;
             }
             let mut buf = [0u8; READ_CHUNK];
@@ -498,7 +569,13 @@ impl SessionManager {
         } else {
             all.chunks(READ_CHUNK).map(|c| c.to_vec()).collect()
         };
-        terminate_child(session.child, session.master);
+        if session.child_exited {
+            // Already reaped by reap(): only close the master; never signal a
+            // pid that may have been reused.
+            unsafe { libc::close(session.master) };
+        } else {
+            terminate_child(session.child, session.master);
+        }
         Some((base_seq, chunks))
     }
 
@@ -507,7 +584,11 @@ impl SessionManager {
         let ids: Vec<u32> = self.sessions.keys().copied().collect();
         for id in ids {
             if let Some(session) = self.sessions.remove(&id) {
-                kill_and_reap(session.child, session.master);
+                if session.child_exited {
+                    unsafe { libc::close(session.master) };
+                } else {
+                    kill_and_reap(session.child, session.master);
+                }
             }
         }
     }
@@ -525,6 +606,8 @@ fn terminate_child(pid: libc::pid_t, master: RawFd) {
 /// Terminate and reap a live child (and its process group) without touching
 /// its master fd.
 fn terminate_orphan(pid: libc::pid_t) {
+    #[cfg(feature = "test-hooks")]
+    eprintln!("helper-signal pid={pid} sig=SIGTERM");
     unsafe {
         libc::kill(pid, libc::SIGTERM);
         libc::kill(-pid, libc::SIGTERM);
@@ -544,6 +627,8 @@ fn terminate_orphan(pid: libc::pid_t) {
 
 /// Immediate SIGKILL teardown for shutdown.
 fn kill_and_reap(pid: libc::pid_t, master: RawFd) {
+    #[cfg(feature = "test-hooks")]
+    eprintln!("helper-signal pid={pid} sig=SIGKILL");
     unsafe {
         libc::close(master);
         libc::kill(pid, libc::SIGKILL);

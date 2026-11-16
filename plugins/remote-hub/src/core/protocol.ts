@@ -13,7 +13,7 @@ import { z } from "zod";
 
 export const PROTOCOL_VERSION = 1;
 /** Largest body (everything after the 4-byte length prefix) the codec accepts. */
-export const MAX_FRAME_BODY_BYTES = 16 * 1024 * 1024; // 16 MiB
+export const MAX_FRAME_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB
 export const FRAME_KIND_CONTROL = 0x01;
 export const FRAME_KIND_STREAM = 0x02;
 /** Stream frame header bytes after the kind byte: sessionId (u32) + seq (u32). */

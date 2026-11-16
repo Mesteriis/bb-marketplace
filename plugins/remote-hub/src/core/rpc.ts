@@ -28,7 +28,7 @@ export const rpcSchemas = {
     output: sessionHandleSchema,
   },
   echo_input: {
-    input: sessionHandleSchema.extend({ data: z.string().min(1).max(1_048_576) }),
+    input: sessionHandleSchema.extend({ data: z.string().min(1).max(262_144) }),
     output: z.object({ output: z.string(), truncated: z.boolean() }),
   },
   echo_close: {

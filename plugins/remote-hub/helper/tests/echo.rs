@@ -4,6 +4,7 @@
 //! invalid frames, fd hygiene, output draining and child-visible resize).
 use std::io::{Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use remote_hub_helper::protocol::{
@@ -161,30 +162,40 @@ fn pid_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
-/// Cumulative CPU seconds of a process, from ps -o time=.
+/// Cumulative CPU seconds of a process, from ps -o time=. Panics if ps fails
+/// or the output is malformed, so a failed measurement can never read as 0.
 fn cpu_seconds(pid: u32) -> f64 {
     let out = Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "time="])
         .output()
-        .expect("ps");
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        .expect("spawn ps");
+    assert!(
+        out.status.success(),
+        "ps failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8(out.stdout).expect("ps output is utf8");
+    let s = s.trim();
     let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() >= 2 {
-        let min: f64 = parts[0].trim().parse().unwrap_or(0.0);
-        let sec: f64 = parts[1].trim().parse().unwrap_or(0.0);
-        min * 60.0 + sec
-    } else {
-        0.0
-    }
+    assert!(parts.len() >= 2, "malformed ps time output: {s:?}");
+    let min: f64 = parts[0].trim().parse().expect("ps minutes");
+    let sec: f64 = parts[1].trim().parse().expect("ps seconds");
+    min * 60.0 + sec
 }
 
-/// Resident set size in KiB, from ps -o rss=.
+/// Resident set size in KiB, from ps -o rss=. Panics on a failed measurement.
 fn rss_kb(pid: u32) -> i64 {
     let out = Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "rss="])
         .output()
-        .expect("ps");
-    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+        .expect("spawn ps");
+    assert!(
+        out.status.success(),
+        "ps failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8(out.stdout).expect("ps output is utf8");
+    s.trim().parse().expect("ps rss")
 }
 
 /// The numeric fds a process has open, from lsof -p.
@@ -614,7 +625,7 @@ fn s2_bounded_under_control_flood() {
 // consecutive sequence numbers, before session.closed.
 #[test]
 fn s3_close_emits_queued_output_before_closed() {
-    let script = "awk 'BEGIN{for(i=0;i<300000;i++)printf \"A\"}'; sleep 30";
+    let script = "awk 'BEGIN{for(i=0;i<786432;i++)printf \"%08d\", i}'; sleep 30";
     let mut helper = start_with_args(&["--echo-command", "/bin/sh", "-c", script]);
     helper.hello();
     let (sid, pid) = helper.open();
@@ -622,11 +633,12 @@ fn s3_close_emits_queued_output_before_closed() {
 
     helper.send(&Request::SessionClose { id: 1, session_id: sid });
 
-    let literal = "A".repeat(300_000).into_bytes();
+    let literal: String = (0..786432).map(|i| format!("{i:08}")).collect();
+    let literal = literal.into_bytes();
     let mut bytes: Vec<u8> = Vec::new();
     let mut seqs: Vec<u32> = Vec::new();
     let mut closed = false;
-    for _ in 0..2000 {
+    for _ in 0..20_000 {
         let (kind, payload) = helper.read_frame();
         if kind == FRAME_KIND_STREAM {
             let rsid = u32::from_le_bytes(payload[0..4].try_into().unwrap());
@@ -687,25 +699,37 @@ fn s9_child_does_not_inherit_sibling_fds() {
 // all open, echo their own literal line, and are all reaped on shutdown.
 #[test]
 fn s5_concurrent_sessions_across_helpers() {
-    let mut helpers: Vec<Helper> = (0..8).map(|_| start()).collect();
-    for h in helpers.iter_mut() {
-        h.hello();
-    }
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            std::thread::spawn(|| {
+                let mut h = start();
+                h.hello();
+                let mut sessions = Vec::new();
+                for _ in 0..8 {
+                    h.send(&Request::OpenEcho {
+                        id: 100,
+                        cols: 80,
+                        rows: 24,
+                    });
+                    match h.read_response() {
+                        Response::SessionOpened {
+                            session_id, pid, ..
+                        } => sessions.push((session_id, pid)),
+                        other => panic!("expected session.opened, got {other:?}"),
+                    }
+                }
+                (h, sessions)
+            })
+        })
+        .collect();
 
+    let mut helpers: Vec<Helper> = Vec::new();
     let mut sessions: Vec<(usize, u32, u32)> = Vec::new(); // (helper index, session id, child pid)
-    for (hi, h) in helpers.iter_mut().enumerate() {
-        for _ in 0..8 {
-            h.send(&Request::OpenEcho {
-                id: 100,
-                cols: 80,
-                rows: 24,
-            });
-            match h.read_response() {
-                Response::SessionOpened {
-                    session_id, pid, ..
-                } => sessions.push((hi, session_id, pid)),
-                other => panic!("expected session.opened, got {other:?}"),
-            }
+    for (hi, handle) in handles.into_iter().enumerate() {
+        let (h, ss) = handle.join().expect("helper thread joined");
+        helpers.push(h);
+        for (sid, pid) in ss {
+            sessions.push((hi, sid, pid));
         }
     }
     assert_eq!(sessions.len(), 64);
@@ -715,15 +739,20 @@ fn s5_concurrent_sessions_across_helpers() {
         helpers[*hi].send(&Request::SessionInput {
             id: 200 + n as u64,
             session_id: *sid,
-            data: line,
+            data: line.clone(),
         });
         match helpers[*hi].read_response() {
             Response::SessionInputAck { .. } => {}
             other => panic!("expected session.input_ack, got {other:?}"),
         }
-        let needle = format!("s-{n}");
-        let echoed = helpers[*hi].read_until_stream_contains(*sid, &needle);
-        assert!(echoed.contains(&needle), "session {n} echo missing: {echoed:?}");
+        let mut got: Vec<u8> = Vec::new();
+        while got.len() < line.len() {
+            let (rsid, _seq, data) = helpers[*hi].read_stream();
+            if rsid == *sid {
+                got.extend_from_slice(&data);
+            }
+        }
+        assert_eq!(String::from_utf8(got).unwrap(), line, "session {n} echo mismatch");
     }
 
     let child_pids: Vec<u32> = sessions.iter().map(|(_, _, pid)| *pid).collect();
@@ -734,10 +763,230 @@ fn s5_concurrent_sessions_across_helpers() {
         children.push(child);
     }
     for child in children.iter_mut() {
-        let status = wait_timeout(child, Duration::from_secs(5)).expect("helper did not exit");
+        let status = wait_timeout(child, Duration::from_secs(20)).expect("helper did not exit");
         assert_eq!(status.code(), Some(0));
     }
     for pid in child_pids {
         assert!(!pid_alive(pid), "child {pid} still alive after shutdown");
     }
+}
+
+// T1: a frame larger than the 256 KiB input window is refused promptly and the
+// helper keeps answering.
+#[test]
+fn t1_oversized_input_is_rejected_and_helper_survives() {
+    let mut helper = start();
+    helper.hello();
+    let (sid, _pid) = helper.open();
+    helper.send(&Request::SessionInput {
+        id: 1,
+        session_id: sid,
+        data: "x".repeat(1_100_067),
+    });
+    match helper.read_response() {
+        Response::Error { code, .. } => assert_eq!(code, "input_overflow"),
+        other => panic!("expected input_overflow, got {other:?}"),
+    }
+    helper.send(&Request::Ping { id: 9 });
+    match helper.read_response() {
+        Response::Pong { id } => assert_eq!(id, 9),
+        other => panic!("expected pong 9, got {other:?}"),
+    }
+}
+
+// T1 boundary: exactly 262 144 ASCII bytes are accepted and echoed in full.
+#[test]
+fn t1_input_boundary_262144_ascii() {
+    let mut helper = start();
+    helper.hello();
+    let (sid, _pid) = helper.open();
+    let data = "x".repeat(262_144);
+    helper.send(&Request::SessionInput {
+        id: 1,
+        session_id: sid,
+        data: data.clone(),
+    });
+    match helper.read_response() {
+        Response::SessionInputAck { .. } => {}
+        other => panic!("expected session.input_ack, got {other:?}"),
+    }
+    let mut got: Vec<u8> = Vec::new();
+    while got.len() < data.len() {
+        let (rsid, _seq, chunk) = helper.read_stream();
+        if rsid == sid {
+            got.extend_from_slice(&chunk);
+        }
+    }
+    assert_eq!(got, data.into_bytes());
+}
+
+// T1 boundary: 262 145 bytes is input_overflow.
+#[test]
+fn t1_input_262145_overflow() {
+    let mut helper = start();
+    helper.hello();
+    let (sid, _pid) = helper.open();
+    helper.send(&Request::SessionInput {
+        id: 1,
+        session_id: sid,
+        data: "x".repeat(262_145),
+    });
+    match helper.read_response() {
+        Response::Error { code, .. } => assert_eq!(code, "input_overflow"),
+        other => panic!("expected input_overflow, got {other:?}"),
+    }
+}
+
+// T1 boundary: a multibyte payload of exactly 262 144 bytes (é x 131 072) is
+// accepted.
+#[test]
+fn t1_input_boundary_multibyte() {
+    let mut helper = start();
+    helper.hello();
+    let (sid, _pid) = helper.open();
+    let data = "é".repeat(131_072);
+    helper.send(&Request::SessionInput {
+        id: 1,
+        session_id: sid,
+        data: data.clone(),
+    });
+    match helper.read_response() {
+        Response::SessionInputAck { .. } => {}
+        other => panic!("expected session.input_ack, got {other:?}"),
+    }
+    let mut got: Vec<u8> = Vec::new();
+    while got.len() < 262_144 {
+        let (rsid, _seq, chunk) = helper.read_stream();
+        if rsid == sid {
+            got.extend_from_slice(&chunk);
+        }
+    }
+    assert_eq!(got, data.into_bytes());
+}
+
+// T2: a client that dies while the outbox is full (stdout unread, both pipes
+// closed) must not leave the helper or its child alive.
+#[test]
+fn t2_client_death_with_full_outbox_exits() {
+    let mut helper = start_with_args(&["--echo-command", "/usr/bin/yes"]);
+    helper.hello();
+    let (_sid, pid) = helper.open();
+    std::thread::sleep(Duration::from_secs(2)); // fill the outbox without reading
+    drop(helper.stdin);
+    drop(helper.stdout);
+    let status = wait_timeout(&mut helper.child, Duration::from_secs(5)).expect("helper did not exit");
+    assert_eq!(status.code(), Some(0));
+    assert!(!pid_alive(pid), "child {pid} still alive");
+}
+
+// T3: children do not inherit the helper's ignored SIGPIPE.
+#[test]
+fn t3_child_sigpipe_is_default() {
+    let mut helper = start_with_args(&["--echo-command", "/bin/sh", "-c", "yes | head -n 1; echo rc=$?"]);
+    helper.hello();
+    let (sid, _pid) = helper.open();
+    let echoed = helper.read_until_stream_contains(sid, "rc=0");
+    assert!(echoed.contains("rc=0"), "missing rc=0: {echoed:?}");
+    assert!(!echoed.contains("Broken pipe"), "SIGPIPE ignored: {echoed:?}");
+
+    let mut helper2 = start_with_args(&["--echo-command", "/bin/sh", "-c", "trap -p PIPE; echo done"]);
+    helper2.hello();
+    let (sid2, _pid2) = helper2.open();
+    let echoed2 = helper2.read_until_stream_contains(sid2, "done");
+    assert!(echoed2.contains("done"), "missing done: {echoed2:?}");
+    assert!(!echoed2.contains("PIPE"), "SIGPIPE still ignored: {echoed2:?}");
+}
+
+// T4: close() must not signal a child that reap() already collected.
+#[test]
+fn t4_close_does_not_signal_reaped_child() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_remote-hub-helper"));
+    command
+        .args(["--echo-command", "/usr/bin/true"])
+        .env("REMOTE_HUB_KEEP_FINISHED", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn helper");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+
+    let seen = Arc::new(Mutex::new(String::new()));
+    let seen2 = seen.clone();
+    let reader = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match stderr.read(&mut buf) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    let mut g = seen2.lock().unwrap();
+                    g.push_str(&String::from_utf8_lossy(&buf[..n]));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+    });
+
+    send_req(&mut stdin, &Request::Hello {
+        protocol: PROTOCOL_VERSION,
+    });
+    match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+        Response::HelloAck { .. } => {}
+        other => panic!("expected hello_ack, got {other:?}"),
+    }
+    send_req(&mut stdin, &Request::OpenEcho {
+        id: 100,
+        cols: 80,
+        rows: 24,
+    });
+    let (sid, pid) = match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+        Response::SessionOpened {
+            session_id, pid, ..
+        } => (session_id, pid),
+        other => panic!("expected session.opened, got {other:?}"),
+    };
+
+    // Wait until the helper has reaped the child (the session stays open via
+    // the test hook), instead of guessing with a fixed sleep.
+    let reap_marker = format!("helper-reaped pid={pid}");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let got = seen.lock().unwrap();
+        if got.contains(&reap_marker) || Instant::now() >= deadline {
+            break;
+        }
+        drop(got);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        seen.lock().unwrap().contains(&reap_marker),
+        "helper did not reap the child: {}",
+        seen.lock().unwrap()
+    );
+
+    send_req(&mut stdin, &Request::SessionClose { id: 1, session_id: sid });
+    loop {
+        let (kind, payload) = read_frame_io(&mut stdout);
+        if kind == FRAME_KIND_CONTROL {
+            if let Response::SessionClosed { session_id, .. } = decode_response(&payload).unwrap() {
+                assert_eq!(session_id, sid);
+                break;
+            }
+        }
+    }
+
+    drop(stdin);
+    drop(stdout);
+    let status = wait_timeout(&mut child, Duration::from_secs(20)).expect("helper did not exit");
+    assert_eq!(status.code(), Some(0));
+    reader.join().expect("stderr reader joined");
+
+    let err = seen.lock().unwrap();
+    assert!(
+        !err.contains(&format!("helper-signal pid={pid}")),
+        "helper signalled a reaped child: {err}"
+    );
+    assert!(!pid_alive(pid), "child {pid} still alive");
 }
