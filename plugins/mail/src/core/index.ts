@@ -39,3 +39,5 @@ export * from "./snooze.ts";
 export * from "./triage.ts";
 export { removeControls, removeInvisible } from "./html-entities.ts";
 export * from "./redact.ts";
+export * from "./ai-scope.ts";
+export * from "./agent-log.ts";

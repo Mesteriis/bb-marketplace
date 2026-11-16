@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CONTACT_BODY_CHARS,
   NO_BULK_HEADERS,
   classifyBulk,
   correspondenceOf,
@@ -8,6 +9,7 @@ import {
   pickSendingAccount,
   queryWords,
   rankContacts,
+  messageTextMask,
   textMask,
   type BulkHeaders,
   type ContactMessage,
@@ -277,5 +279,21 @@ describe("own addresses by account (slice 3d)", () => {
     const history = correspondenceOf(messages, ["carl@example.net"], WITH_ALIAS);
     expect(history).toEqual([{ accountId: "acc_1", lastReceived: null, lastSent: "2026-06-01T00:00:00.000Z" }]);
     expect(pickSendingAccount(WITH_ALIAS, history)).toBe("acc_1");
+  });
+});
+
+describe("messageTextMask over redacted text (slice 3f)", () => {
+  it("never matches a secret, and still matches ordinary words", () => {
+    const words = ["482913", "garden", "canarytoken"];
+    const token = "ghp_" + "CanaryToken0123456789abcdefXYZ";
+    expect(messageTextMask("Your sign-in code", "Code 482913", `Garden club ${token}`, words)).toBe(0b010);
+    expect(messageTextMask("Code 482913 inside", null, null, ["482913"])).toBe(0);
+    expect(messageTextMask("Plain", "plain words", "Garden", ["garden"])).toBe(1);
+  });
+
+  it("redacts the body before its cut", () => {
+    const token = "ghp_" + "CanaryToken0123456789abcdefXYZ";
+    const body = `${"w ".repeat((CONTACT_BODY_CHARS - 10) / 2)}${token}`;
+    expect(messageTextMask(null, null, body, ["ghp"])).toBe(0);
   });
 });

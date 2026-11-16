@@ -7,6 +7,7 @@ import { z } from "zod";
 import { htmlToText } from "./agent-text.ts";
 import { sha256Hex } from "./compose.ts";
 import { removeInvisible, truncateText } from "./html-entities.ts";
+import { redactSecrets, type SecretKind } from "./redact.ts";
 import type { translateErrorKindSchema } from "./model.ts";
 
 /** Characters of subject plus body sent to the model. */
@@ -18,7 +19,7 @@ export const TRANSLATE_MAX_TOKENS = 8_192;
 export const TRANSLATION_CACHE_ROWS = 5_000;
 export const TRANSLATE_RATE_PER_HOUR = 30;
 /** Part of the cache key: a prompt change refreshes every cached translation. */
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // Port
@@ -132,21 +133,30 @@ const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
  * What the model gets: "Subject: …", a blank line, then the plain body (the
  * stored text, else the HTML as text). No From, To, Cc, date, folder,
  * account or attachment names. Control characters other than line feed and
- * tab are removed; cut at TRANSLATE_INPUT_CHARS on a code-point boundary.
+ * tab are removed; secrets are redacted over the whole text (slice 3f), then
+ * it is cut at TRANSLATE_INPUT_CHARS on a code-point boundary. With
+ * `restore`, the placeholders are numbered and tagged and the map back is
+ * returned (for the job's memory only).
  */
 export function translationSource(
   subject: string,
   body: { text: string | null; html: string | null },
-): { text: string; truncated: boolean } {
+  options: { restore?: boolean; tag?: string } = {},
+): { text: string; truncated: boolean; restore: Map<string, string> | null; counts: Record<SecretKind, number> } {
   const plain = body.text !== null && body.text !== ""
     ? body.text
     : body.html !== null
       ? htmlToText(body.html)
       : "";
   const oneLine = subject.replace(/\r\n?|\n/g, " ").replace(CONTROLS, "");
-  const full = `Subject: ${oneLine}\n\n${plain.replace(/\r\n?/g, "\n").replace(CONTROLS, "")}`;
-  if (full.length <= TRANSLATE_INPUT_CHARS) return { text: full, truncated: false };
-  return { text: truncateText(full, TRANSLATE_INPUT_CHARS), truncated: true };
+  const raw = `Subject: ${oneLine}\n\n${plain.replace(/\r\n?/g, "\n").replace(CONTROLS, "")}`;
+  const { text: full, restore, counts } = redactSecrets(raw, {
+    context: subject,
+    ...(options.restore === true ? { restore: true } : {}),
+    ...(options.tag !== undefined ? { tag: options.tag } : {}),
+  });
+  if (full.length <= TRANSLATE_INPUT_CHARS) return { text: full, truncated: false, restore, counts };
+  return { text: truncateText(full, TRANSLATE_INPUT_CHARS), truncated: true, restore, counts };
 }
 
 /** A fresh 16-hex nonce for one prompt. */

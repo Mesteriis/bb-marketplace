@@ -3,6 +3,8 @@
 // Cc); an address written inside a message's text never becomes a contact.
 // Bulk mail (mailing lists, newsletters, automated senders) is left out.
 import type { BulkHeaders, MailAddress } from "./model.ts";
+import { maskSnippetTail, redactSecrets } from "./redact.ts";
+import { SNIPPET_LENGTH } from "./snippet.ts";
 
 export type { BulkHeaders };
 
@@ -85,14 +87,32 @@ export function textMask(text: string, words: readonly string[]): number {
   return mask;
 }
 
-/** The text mask of one message: its subject, snippet and the first CONTACT_BODY_CHARS of its body. */
+/** Body characters redacted past the cut, so a secret straddling it is still recognised. */
+const CONTACT_REDACT_MARGIN = 512;
+
+/**
+ * The text mask of one message: its subject, snippet and the first
+ * CONTACT_BODY_CHARS of its body, over redacted text (slice 3f): a word
+ * counts only when it matches the raw text and still matches once secrets
+ * are hidden, so a contact is never found by a secret in their mail. The
+ * redaction runs only for rows the raw text matched.
+ */
 export function messageTextMask(
   subject: string | null,
   snippet: string | null,
   bodyText: string | null,
   words: readonly string[],
 ): number {
-  return textMask(`${subject ?? ""}\n${snippet ?? ""}\n${(bodyText ?? "").slice(0, CONTACT_BODY_CHARS)}`, words);
+  const raw = textMask(`${subject ?? ""}\n${snippet ?? ""}\n${(bodyText ?? "").slice(0, CONTACT_BODY_CHARS)}`, words);
+  if (raw === 0) return 0;
+  const context = subject ?? "";
+  const body = redactSecrets((bodyText ?? "").slice(0, CONTACT_BODY_CHARS + CONTACT_REDACT_MARGIN), { context }).text;
+  const redacted = [
+    redactSecrets(context).text,
+    maskSnippetTail(snippet ?? "", context, SNIPPET_LENGTH).text,
+    body.slice(0, CONTACT_BODY_CHARS),
+  ].join("\n");
+  return raw & textMask(redacted, words);
 }
 
 /** Newest stored messages a lookup reads. */
