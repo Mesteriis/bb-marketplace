@@ -14,6 +14,8 @@ const root = resolve(
   process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), ".."),
 );
 const REPOSITORY_LICENSE = "MIT";
+const subtrees = JSON.parse(readFileSync(join(root, "subtrees.json"), "utf8")).plugins;
+const importedDirectories = new Set([...subtrees.map((p) => p.prefix), "plugins/makosh-ai"]);
 const RESERVED_MARKETPLACE_NAMES = ["bb-official", "bb-community"];
 const DESCRIPTION_LIMIT = 140;
 const OVERVIEW_LIMIT = 4000;
@@ -112,6 +114,16 @@ function checkPlugin(entry) {
   }
   if (!VERSION.test(manifest.version ?? "")) {
     problem(where, "version must be X.Y.Z");
+  }
+  if (importedDirectories.has(directory)) {
+    const bb = manifest.bb ?? {};
+    for (const field of ["name", "description"]) {
+      if (typeof bb[field] !== "string" || !bb[field].trim()) problem(where, `bb.${field} is missing`);
+    }
+    for (const field of ["server", "app", "host"]) {
+      if (typeof bb[field] === "string" && !isFile(join(directory, bb[field]))) problem(where, `bb.${field} points at a missing file`);
+    }
+    return { name: entry.name, directory, id: derivePluginId(manifest.name), version: manifest.version, displayName: bb.name, description: bb.description };
   }
   if (manifest.license !== REPOSITORY_LICENSE) {
     problem(where, `license must be "${REPOSITORY_LICENSE}", the repository license`);
@@ -232,14 +244,11 @@ function checkCatalog(plugins) {
     if (git.subdir !== plugin.directory) {
       problem(at, `source.git.subdir must be "${plugin.directory}"`);
     }
-    if (git.tagPrefix !== `${plugin.name}/`) {
-      problem(at, `source.git.tagPrefix must be "${plugin.name}/"`);
+    if (git.ref !== "main" || git.range !== undefined || git.tagPrefix !== undefined) {
+      problem(at, "this aggregate catalog must track the main branch explicitly");
     }
-    const inRange = satisfiesCaret(plugin.version, git.range ?? "");
-    if (inRange === null) {
-      problem(at, "source.git.range must be a caret range such as ^0.1.0");
-    } else if (!inRange) {
-      problem(at, `source.git.range ${git.range} does not admit version ${plugin.version}`);
+    if (git.url !== "https://github.com/Mesteriis/bb-marketplace.git") {
+      problem(at, "source must point to the maintained aggregate");
     }
   }
   for (const plugin of plugins) {

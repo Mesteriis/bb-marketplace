@@ -1,15 +1,363 @@
 {
   "$schema": "https://getbb.app/schemas/plugins.schema.json",
   "schemaVersion": 1,
-  "name": "makosh",
+  "name": "bb-marketplace",
   "plugins": [
+    {
+      "name": "account-pool-balanced",
+      "source": "./plugins/account-pool-balanced"
+    },
+    {
+      "name": "action-topbar",
+      "source": "./plugins/action-topbar"
+    },
+    {
+      "name": "agent-icons",
+      "source": "./plugins/agent-icons"
+    },
+    {
+      "name": "agent-instructions",
+      "source": "./plugins/agent-instructions"
+    },
+    {
+      "name": "agent-plugins",
+      "source": "./plugins/agent-plugins"
+    },
+    {
+      "name": "agent-traces",
+      "source": "./plugins/agent-traces"
+    },
+    {
+      "name": "agentation",
+      "source": "./plugins/agentation"
+    },
+    {
+      "name": "ai-usage",
+      "source": "./plugins/ai-usage"
+    },
+    {
+      "name": "android-emulator",
+      "source": "./plugins/android-emulator"
+    },
+    {
+      "name": "animation",
+      "source": "./plugins/animation"
+    },
+    {
+      "name": "app-preview",
+      "source": "./plugins/app-preview"
+    },
+    {
+      "name": "at-plugin",
+      "source": "./plugins/at-plugin"
+    },
+    {
+      "name": "automation-groups",
+      "source": "./plugins/automation-groups"
+    },
+    {
+      "name": "autorouter",
+      "source": "./plugins/autorouter"
+    },
+    {
+      "name": "bb-github-pr-dashboard",
+      "source": "./plugins/bb-github-pr-dashboard"
+    },
+    {
+      "name": "beautiful-chat",
+      "source": "./plugins/beautiful-chat"
+    },
+    {
+      "name": "chat-sidebar",
+      "source": "./plugins/chat-sidebar"
+    },
+    {
+      "name": "codex-realtime",
+      "source": "./plugins/codex-realtime"
+    },
+    {
+      "name": "context-health",
+      "source": "./plugins/context-health"
+    },
+    {
+      "name": "copy-session-id",
+      "source": "./plugins/copy-session-id"
+    },
+    {
+      "name": "cua-driver",
+      "source": "./plugins/cua-driver"
+    },
+    {
+      "name": "desktop-browser-agent",
+      "source": "./plugins/desktop-browser-agent"
+    },
+    {
+      "name": "dev-bar",
+      "source": "./plugins/dev-bar"
+    },
+    {
+      "name": "dev-servers",
+      "source": "./plugins/dev-servers"
+    },
+    {
+      "name": "dictation-shortcuts",
+      "source": "./plugins/dictation-shortcuts"
+    },
+    {
+      "name": "diff-review",
+      "source": "./plugins/diff-review"
+    },
+    {
+      "name": "docker",
+      "source": "./plugins/docker"
+    },
+    {
+      "name": "dockside",
+      "source": "./plugins/dockside"
+    },
+    {
+      "name": "file-gateway",
+      "source": "./plugins/file-gateway"
+    },
+    {
+      "name": "firstmate-crew",
+      "source": "./plugins/firstmate-crew"
+    },
+    {
+      "name": "genui",
+      "source": "./plugins/genui"
+    },
+    {
+      "name": "gh-copilot",
+      "source": "./plugins/gh-copilot"
+    },
+    {
+      "name": "gigaam",
+      "source": "./plugins/gigaam"
+    },
+    {
+      "name": "git-history",
+      "source": "./plugins/git-history"
+    },
+    {
+      "name": "gitea",
+      "source": "./plugins/gitea"
+    },
+    {
+      "name": "github-actions",
+      "source": "./plugins/github-actions"
+    },
+    {
+      "name": "gtd-sidebar",
+      "source": "./plugins/gtd-sidebar"
+    },
+    {
+      "name": "handoff",
+      "source": "./plugins/handoff"
+    },
+    {
+      "name": "hooks",
+      "source": "./plugins/hooks"
+    },
+    {
+      "name": "hotspot",
+      "source": "./plugins/hotspot"
+    },
+    {
+      "name": "image-preview",
+      "source": "./plugins/image-preview"
+    },
+    {
+      "name": "impromptu-ui",
+      "source": "./plugins/impromptu-ui"
+    },
+    {
+      "name": "inline-review",
+      "source": "./plugins/inline-review"
+    },
+    {
+      "name": "kodaforge",
+      "source": "./plugins/kodaforge"
+    },
+    {
+      "name": "launchd-jobs",
+      "source": "./plugins/launchd-jobs"
+    },
     {
       "name": "mail",
       "source": "./plugins/mail"
     },
     {
+      "name": "makosh-ai",
+      "source": "./plugins/makosh-ai"
+    },
+    {
+      "name": "markdown-editor",
+      "source": "./plugins/markdown-editor"
+    },
+    {
+      "name": "mcp-hub",
+      "source": "./plugins/mcp-hub"
+    },
+    {
+      "name": "memory-explorer",
+      "source": "./plugins/memory-explorer"
+    },
+    {
+      "name": "model-pricing",
+      "source": "./plugins/model-pricing"
+    },
+    {
+      "name": "next-prompt",
+      "source": "./plugins/next-prompt"
+    },
+    {
+      "name": "next-step",
+      "source": "./plugins/next-step"
+    },
+    {
+      "name": "notifications-pro",
+      "source": "./plugins/notifications-pro"
+    },
+    {
+      "name": "plan-progress",
+      "source": "./plugins/plan-progress"
+    },
+    {
+      "name": "plannotator",
+      "source": "./plugins/plannotator"
+    },
+    {
+      "name": "plugin-updates",
+      "source": "./plugins/plugin-updates"
+    },
+    {
+      "name": "project-instructions",
+      "source": "./plugins/project-instructions"
+    },
+    {
+      "name": "prompt-shaper",
+      "source": "./plugins/prompt-shaper"
+    },
+    {
+      "name": "read-aloud",
+      "source": "./plugins/read-aloud"
+    },
+    {
+      "name": "read-aloud-local",
+      "source": "./plugins/read-aloud-local"
+    },
+    {
+      "name": "ru",
+      "source": "./plugins/ru"
+    },
+    {
+      "name": "scott-secrets",
+      "source": "./plugins/scott-secrets"
+    },
+    {
+      "name": "session-history",
+      "source": "./plugins/session-history"
+    },
+    {
+      "name": "sidebar",
+      "source": "./plugins/sidebar"
+    },
+    {
+      "name": "skills",
+      "source": "./plugins/skills"
+    },
+    {
+      "name": "skills-sync",
+      "source": "./plugins/skills-sync"
+    },
+    {
+      "name": "source-control",
+      "source": "./plugins/source-control"
+    },
+    {
+      "name": "specs",
+      "source": "./plugins/specs"
+    },
+    {
+      "name": "sql",
+      "source": "./plugins/sql"
+    },
+    {
+      "name": "steel-browser",
+      "source": "./plugins/steel-browser"
+    },
+    {
+      "name": "subagents",
+      "source": "./plugins/subagents"
+    },
+    {
       "name": "taskboard",
       "source": "./plugins/taskboard"
+    },
+    {
+      "name": "team",
+      "source": "./plugins/team"
+    },
+    {
+      "name": "telegram",
+      "source": "./plugins/telegram"
+    },
+    {
+      "name": "terminal-jobs",
+      "source": "./plugins/terminal-jobs"
+    },
+    {
+      "name": "terminals",
+      "source": "./plugins/terminals"
+    },
+    {
+      "name": "thread-images",
+      "source": "./plugins/thread-images"
+    },
+    {
+      "name": "tokenomics",
+      "source": "./plugins/tokenomics"
+    },
+    {
+      "name": "tree-sidebar",
+      "source": "./plugins/tree-sidebar"
+    },
+    {
+      "name": "tree-sidebar-local",
+      "source": "./plugins/tree-sidebar-local"
+    },
+    {
+      "name": "ultragoal",
+      "source": "./plugins/ultragoal"
+    },
+    {
+      "name": "unified-inbox",
+      "source": "./plugins/unified-inbox"
+    },
+    {
+      "name": "visual-workflows",
+      "source": "./plugins/visual-workflows"
+    },
+    {
+      "name": "voice-mode",
+      "source": "./plugins/voice-mode"
+    },
+    {
+      "name": "wiki",
+      "source": "./plugins/wiki"
+    },
+    {
+      "name": "wikilinks",
+      "source": "./plugins/wikilinks"
+    },
+    {
+      "name": "workspaces",
+      "source": "./plugins/workspaces"
+    },
+    {
+      "name": "worktree-ports",
+      "source": "./plugins/worktree-ports"
     }
   ]
 }

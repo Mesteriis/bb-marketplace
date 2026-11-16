@@ -1,4 +1,8 @@
-# Makosh for BB
+# BB Marketplace
+
+Personal BB marketplace maintained by [Mesteriis](https://github.com/Mesteriis). Independent plugins retain their upstream identity and licenses. Makosh packages remain a separate family inside this collection.
+
+See [subtree maintenance](docs/subtree-maintenance.md) and [subtrees.json](subtrees.json).
 
 Plugins of the Makosh family for [BB](https://github.com/get-bb/bb), the agent
 IDE. They bring personal communication into the IDE: you read and answer it
@@ -27,24 +31,18 @@ You need BB 0.49 or later.
 From a clone:
 
 ```sh
-git clone https://github.com/Mesteriis/makosh-bb.git
-cd makosh-bb/plugins/mail
+git clone https://github.com/Mesteriis/bb-marketplace.git
+cd bb-marketplace/plugins/mail
 npm install
 bb plugin install .
 ```
 
-From a release tag, once the first one exists:
+
+Or through this marketplace:
 
 ```sh
-bb plugin install git:https://github.com/Mesteriis/makosh-bb.git@^0.1.0 --plugin mail --tag-prefix mail/
-```
-
-Or through the Makosh marketplace, which lists every plugin of this
-repository:
-
-```sh
-bb marketplace add git:github.com/Mesteriis/makosh-bb@main
-bb plugin install makosh-mail@makosh
+bb marketplace add git:github.com/Mesteriis/bb-marketplace@main
+bb plugin install makosh-mail@mesteriis
 ```
 
 BB plugins run with full trust. Read what you install.
@@ -53,7 +51,7 @@ BB plugins run with full trust. Read what you install.
 
 ```text
 .bb/plugins.json     BB collection manifest: the plugins of this repository
-marketplace.json     BB marketplace "makosh": store entries and tag ranges
+marketplace.json     BB marketplace "mesteriis": entries tracking main
 icons/               Icons the marketplace entries use
 plugins/<name>/      One self-contained plugin each (own package.json and lockfile)
 scripts/             Manifest and release checks
