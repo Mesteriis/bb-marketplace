@@ -48,6 +48,26 @@ describe("redactSecrets: one-time codes", () => {
     expect(hidden("Your code:\n482913\nThanks")).toBe(`Your code:\n${PLACEHOLDER.code}\nThanks`);
   });
 
+  it("hides a code under its label across blank lines and CRLF (HTML paragraphs, headings)", () => {
+    const html = `Enter this code to finish signing in:\n\n604185\n\nThanks`;
+    expect(hidden(html)).toBe(`Enter this code to finish signing in:\n\n${PLACEHOLDER.code}\n\nThanks`);
+    expect(hidden("Your code:\n\n518327\n")).toBe(`Your code:\n\n${PLACEHOLDER.code}\n`);
+    expect(hidden(`${RU_YOUR_CODE}:\r\n\r\n927460\r\n`)).toBe(`${RU_YOUR_CODE}:\r\n\r\n${PLACEHOLDER.code}\r\n`);
+    expect(hidden("Your verification code\n\nUse it within ten minutes.\n\n604185")).toBe(
+      `Your verification code\n\nUse it within ten minutes.\n\n${PLACEHOLDER.code}`,
+    );
+    expect(hidden("Your code:\n\n482 913")).toBe(`Your code:\n\n${PLACEHOLDER.code}`);
+    expect(hidden("Your code:\n12 34 56\n")).toBe(`Your code:\n${PLACEHOLDER.code}\n`);
+  });
+
+  it("does not reach past two non-empty lines or 200 characters", () => {
+    const far = "Your code:\n\nLine one.\n\nLine two.\n\n604185";
+    expect(hidden(far)).toBe(far);
+    const long = `Your code:\n\n${"\n".repeat(10)}${" ".repeat(220)}\n604185`;
+    expect(hidden(long)).toBe(long);
+    expect(hidden("Room 12 34 56")).toBe("Room 12 34 56");
+  });
+
   it("hides split and prefixed codes", () => {
     expect(hidden("Your code is 123 456")).toBe(`Your code is ${PLACEHOLDER.code}`);
     expect(hidden("Your code is 123-456")).toBe(`Your code is ${PLACEHOLDER.code}`);

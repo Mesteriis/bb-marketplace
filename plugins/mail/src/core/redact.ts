@@ -51,6 +51,11 @@ export const PLACEHOLDER: Record<SecretKind, string> = {
 
 /** How close (in characters) a value must be to its keyword. */
 const WINDOW = 80;
+/**
+ * How far (in characters) a value on a later line may be from its label when
+ * blank lines (HTML paragraphs and headings become them) lie between.
+ */
+const LINE_WINDOW = 200;
 /** The subject-context rule looks at the start of the body only. */
 const CONTEXT_SCAN = 2_000;
 
@@ -102,7 +107,7 @@ function escapeRegExp(text: string): string {
 
 class Lines {
   private readonly starts: number[] = [0];
-  constructor(text: string) {
+  constructor(private readonly text: string) {
     for (let i = text.indexOf("\n"); i >= 0; i = text.indexOf("\n", i + 1)) this.starts.push(i + 1);
   }
   /** The 0-based line of an index. */
@@ -118,6 +123,23 @@ class Lines {
   }
   start(line: number): number {
     return this.starts[line] ?? Infinity;
+  }
+  /** A line of whitespace only (a CR of a CRLF counts as whitespace). */
+  blank(line: number): boolean {
+    const end = Math.min(this.start(line + 1), this.text.length);
+    for (let i = this.start(line); i < end; i++) if (!isWhite(this.text.charCodeAt(i))) return false;
+    return true;
+  }
+  /**
+   * Whether `above` is the first non-blank line before `line`, or (with
+   * `skip` 1) the second: the lines between are blank but for `skip`.
+   */
+  within(above: number, line: number, skip: number): boolean {
+    let nonBlank = 0;
+    for (let l = line - 1; l > above; l--) {
+      if (!this.blank(l) && ++nonBlank > skip) return false;
+    }
+    return true;
   }
 }
 
@@ -209,9 +231,11 @@ class Near {
 
   /**
    * A hit within WINDOW characters of [start, end), on the same line, or on
-   * the line just above the span (a value under its label).
+   * the line just above the span (a value under its label). Across blank
+   * lines, the first non-blank line above counts within LINE_WINDOW; with
+   * `alone` (the value stands alone on its line) the second one does too.
    */
-  has(start: number, end: number, window = WINDOW): boolean {
+  has(start: number, end: number, window = WINDOW, alone = false): boolean {
     if (this.hits.length === 0) return false;
     const line = this.lines.of(start);
     // The last hit starting at or before `start`, then a few on each side.
@@ -225,10 +249,12 @@ class Near {
     for (let i = Math.max(0, lo - 2); i <= Math.min(this.hits.length - 1, lo + 2); i++) {
       const hit = this.hits[i]!;
       const gap = hit.end <= start ? start - hit.end : hit.start >= end ? hit.start - end : 0;
-      if (gap > window) continue;
+      if (gap > Math.max(window, LINE_WINDOW)) continue;
       const hitLine = this.lines.of(hit.start);
-      if (hitLine === line) return true;
-      if (hit.end <= start && hitLine === line - 1) return true;
+      if (gap <= window && hitLine === line) return true;
+      if (hit.end > start || hitLine >= line) continue;
+      if (gap <= window && hitLine === line - 1) return true;
+      if (gap <= LINE_WINDOW && this.lines.within(hitLine, line, alone ? 1 : 0)) return true;
     }
     return false;
   }
@@ -673,18 +699,19 @@ function digitSecrets(
     }
 
     const single = groups === 1 && length >= 4 && length <= 8;
+    const alone = aloneOnLine(text, start, end);
+    // Split codes: two groups of 3-4 ("482 913"), or alone on a line 2-4 groups of 2-4 ("12 34 56").
     const split =
-      groups === 2 &&
-      sequence.groups.every((g) => g.end - g.start >= 3 && g.end - g.start <= 4) &&
       length >= 6 &&
-      length <= 8;
+      length <= 8 &&
+      ((groups === 2 && sequence.groups.every((g) => g.end - g.start >= 3 && g.end - g.start <= 4)) ||
+        (alone && groups >= 2 && groups <= 4 && sequence.groups.every((g) => g.end - g.start >= 2 && g.end - g.start <= 4)));
     if (!single && !split) continue;
     const codeStart = single ? letterPrefix(text, start) : start;
     const line = lines.of(start);
     if (single && isYear(text, start, end) && !codeWords.onLine(line)) continue;
-    const near = codeWords.has(codeStart, end);
-    const byContext =
-      single && contextHasCodeWord && start < CONTEXT_SCAN && aloneOnLine(text, start, end);
+    const near = codeWords.has(codeStart, end, WINDOW, alone);
+    const byContext = single && contextHasCodeWord && start < CONTEXT_SCAN && alone;
     if (near || byContext) spans.push({ start: codeStart, end, kind: "code" });
   }
 }

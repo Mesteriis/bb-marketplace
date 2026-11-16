@@ -5185,10 +5185,17 @@ const CANARY = {
   snippet: "sk-Inv3ntedCanaryKey9xYz77Qq",
   attachment: "AKIAQWERTYUIOPASDFGH",
   template: "Tq9vLm3xZp",
+  /** One-time codes under their label across blank lines (HTML heading, plain text, Russian with CRLF). */
+  htmlCode: "583014",
+  plainCode: "270519",
+  russianCode: "946027",
 };
 /** Plain text of the out-of-scope messages (a folder outside the scope, an excluded sender): never on an agent path. */
 const OUTSIDE = ["zebra", "Quokka", "quokka@example.com", "pelican", "Pelican", "excluded.example.net"];
 const CANARIES = [...Object.values(CANARY), "4111111111111111", ...OUTSIDE];
+
+/** The AI scope of the canary account; `codes` also seeds INBOX 3-5, sign-in mails with a code under its label. */
+type CanaryScope = { folders?: string[]; mode?: "none"; codes?: boolean };
 
 /**
  * acc_1 with SMTP, INBOX, Drafts, Sent and Work, AI access to INBOX, Sent and
@@ -5196,7 +5203,7 @@ const CANARIES = [...Object.values(CANARY), "4111111111111111", ...OUTSIDE];
  * canary in its subject, From name, body, snippet and attachment name; Work 1
  * is outside the folders; INBOX 2 comes from the excluded domain.
  */
-function seedCanary(bb: BbPluginApi, scope: { folders?: string[]; mode?: "none" } = {}): void {
+function seedCanary(bb: BbPluginApi, scope: CanaryScope = {}): void {
   seedCompose(bb);
   const store = createSqliteStore(bb.storage.database());
   store.saveFolders("acc_1", [
@@ -5218,6 +5225,19 @@ function seedCanary(bb: BbPluginApi, scope: { folders?: string[]; mode?: "none" 
       bodyText: "Invented pelican body",
     }),
   ]);
+  if (scope.codes === true) store.upsertMessages("acc_1", "INBOX", [
+    makeFetchedMessage(3, {
+      subject: "Sign in to Acme",
+      bodyText: null,
+      bodyHtml: `<p>Enter this code to finish signing in:</p><h1>${CANARY.htmlCode}</h1><p>Acme footer</p>`,
+    }),
+    makeFetchedMessage(4, { subject: "Sign in to Acme", bodyText: `Hello,\n\nYour code:\n\n${CANARY.plainCode}\n\nThe Acme team` }),
+    makeFetchedMessage(5, {
+      // "Vhod v akkaunt" (sign in to the account); the body says "Vash kod:" (your code).
+      subject: "\u0412\u0445\u043e\u0434 \u0432 \u0430\u043a\u043a\u0430\u0443\u043d\u0442",
+      bodyText: `\u0412\u0430\u0448 \u043a\u043e\u0434:\r\n\r\n${CANARY.russianCode}\r\n\r\nAcme`,
+    }),
+  ]);
   store.upsertMessages("acc_1", "Work", [
     makeFetchedMessage(1, {
       messageId: "outside-1@example.org",
@@ -5237,7 +5257,7 @@ function seedCanary(bb: BbPluginApi, scope: { folders?: string[]; mode?: "none" 
   );
 }
 
-function loadCanary(settings: Record<string, string | number | boolean> = {}, scope: { folders?: string[]; mode?: "none" } = {}) {
+function loadCanary(settings: Record<string, string | number | boolean> = {}, scope: CanaryScope = {}) {
   return load({
     settings: { vaultKey: COMPOSE_KEY, agentTools: true, agentPropose: true, agentTriage: true, ...settings },
     seed: (bb) => seedCanary(bb, scope),
@@ -5248,9 +5268,15 @@ function loadCanary(settings: Record<string, string | number | boolean> = {}, sc
 
 const canaryIds = (host: Host) => ({
   inside: messageIdAt(host, "INBOX", 1),
+  /** In-scope sign-in mails whose code sits under its label after a blank line. */
+  codes: [3, 4, 5].filter((uid) => hasMessageAt(host, "INBOX", uid)).map((uid) => messageIdAt(host, "INBOX", uid)),
   excluded: messageIdAt(host, "INBOX", 2),
   outside: messageIdAt(host, "Work", 1),
 });
+
+function hasMessageAt(host: Host, folder: string, uid: number): boolean {
+  return host.bb.storage.database().prepare("SELECT 1 FROM messages WHERE folder = ? AND uid = ?").get(folder, uid) !== undefined;
+}
 
 function agentLogRows(host: Host): Record<string, unknown>[] {
   return host.bb.storage.database().prepare("SELECT * FROM agent_log ORDER BY seq").all() as Record<string, unknown>[];
@@ -5272,7 +5298,12 @@ async function runCardTool(host: Host, name: string, params: unknown): Promise<u
 function toolFixtures(ids: ReturnType<typeof canaryIds>): Record<string, unknown[]> {
   return {
     mail_search: [{ query: "Invented" }, { query: "zebra" }, { query: "pelican" }, { query: "from:quokka" }],
-    mail_read: [{ messageId: ids.inside }, { messageId: ids.outside }, { messageId: ids.excluded }],
+    mail_read: [
+      { messageId: ids.inside },
+      { messageId: ids.outside },
+      { messageId: ids.excluded },
+      ...ids.codes.map((messageId) => ({ messageId })),
+    ],
     mail_contacts: [{ query: "example" }, { query: "pelican" }, { query: "quokka" }, { query: "zebra" }],
     mail_inbox: [{}, { unreadOnly: true }],
     mail_templates: [{}],
@@ -5292,7 +5323,7 @@ function toolFixtures(ids: ReturnType<typeof canaryIds>): Record<string, unknown
 const CLI_FIXTURES = (ids: ReturnType<typeof canaryIds>): Record<string, string[][]> => ({
   accounts: [[]],
   search: [["Invented"], ["zebra"], ["pelican"]],
-  read: [[ids.inside], [ids.outside], [ids.excluded]],
+  read: [[ids.inside], [ids.outside], [ids.excluded], ...ids.codes.map((id) => [id])],
   sync: [[]],
   remove: [["acc_1"]],
 });
@@ -5328,7 +5359,7 @@ async function canaryOutputs(host: Host): Promise<string[]> {
   for (const query of ["Invented", "zebra", "pelican", "login code"]) {
     outputs.push(JSON.stringify(await provider!.search({ trigger: "@", query, projectId: null, threadId: null })));
   }
-  for (const id of [ids.inside, ids.outside, ids.excluded]) {
+  for (const id of [ids.inside, ids.outside, ids.excluded, ...ids.codes]) {
     outputs.push((await provider!.resolve(id)).context);
     outputs.push(
       await host.harness.behavior
@@ -5353,7 +5384,8 @@ function expectNoCanary(host: Host, outputs: string[]): void {
 
 describe("agent paths: scope, redaction and the log (slice 3f)", () => {
   it("the canary test: no secret and no out-of-scope text reaches any agent path, the log, logs or realtime", async () => {
-    const host = await loadCanary();
+    const host = await loadCanary({}, { codes: true });
+    expect(canaryIds(host).codes).toHaveLength(3);
     await call(host, "template_save", { name: "Invented template", doc: { type: "doc", content: [para(`Template password: ${CANARY.template}`)] } });
 
     const outputs = await canaryOutputs(host);
