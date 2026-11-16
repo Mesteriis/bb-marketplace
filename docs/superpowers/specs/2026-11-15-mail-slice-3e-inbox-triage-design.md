@@ -1196,3 +1196,12 @@ These override the sections above. Items marked *(owner)* were decided by the ow
     - A **returning** row (a `newInbox` row whose dedup key already had another row in the account before the insert: mail the owner moved back into the Inbox on the phone, from Archive or elsewhere, or a second copy) is never moved by block rules. The owner put it there.
     - A snooze return is the plugin's own move back and is never moved by block rules either.
     - Automatic block moves therefore apply to `newInbox` rows that are not returning, minus resolution 17's Spam skip. `block_add` with `moveExisting` is the owner's explicit request and is unchanged.
+
+## Resolutions after the review
+
+These override the sections and resolutions above (review of 2026-11-16).
+
+1. **Snoozed mail older than the sync window is kept.**
+   - A folder's first sync (no sync state) and a UIDVALIDITY reset keep looking for these rows before `finishFolderReset` deletes what is still detached: every row of a never-synced folder (a move re-homed it there), every row with a live snooze, and every row with a queued move. Each is fetched first at the uid it had, then searched by Message-ID (`findByMessageId`), and reattached when the message found is its own (same Gmail id or Message-ID), whatever its date. A row found nowhere is deleted with its snooze, as before; a row with neither id keeps 3d's limit.
+   - A queued move whose row a reset pushed out of the window therefore keeps its row and its move; only a message gone from the server is reported as a dropped move.
+   - `snooze_folder_create` and `snooze_folder_use` seed the folder's sync state from STATUS when it has none (`lastUid = UIDNEXT − 1`), so its first round is incremental, never a reset. Seeding is best effort; a failure is logged by kind and the round's reset protection still applies.

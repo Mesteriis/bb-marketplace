@@ -294,6 +294,11 @@ export interface MailStore {
   /** Deletes rows still detached; returns how many. */
   finishFolderReset(accountId: string, folder: string): number;
   /**
+   * The folder's detached rows (uid NULL: a reset or a move without UIDPLUS)
+   * with what can reattach them: the Message-ID and the Gmail message id.
+   */
+  detachedRows(accountId: string, folder: string): { id: string; messageId: string | null; gmMsgId: string | null }[];
+  /**
    * `inserted`: ids of rows created (not reattached by Message-ID, not
    * re-homed by a move). `returning`: the inserted ids whose (account, dedup
    * key) already had another row before the insert (slice 3e). Writes

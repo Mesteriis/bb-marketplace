@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ImapAuthError } from "./ports.ts";
 import { INBOX, syncAccount, type SyncDeps } from "./sync.ts";
+import { planSnoozes } from "./snooze.ts";
 import {
   FixedClock,
   IdentityVault,
@@ -1011,16 +1012,9 @@ describe("syncAccount fix round 1", () => {
     await syncAccount(deps, ACCOUNT_ID, OPTIONS);
     const movedId = idByUid(store, INBOX, 1);
     store.queueMove([movedId], "Archive");
-    // Renumbered, and message 1 is now outside the window by its internal date.
-    const [m1, m2] = gateway.mailbox.messages;
-    gateway.mailbox = {
-      uidValidity: 8,
-      uidNext: 3,
-      messages: [
-        { ...m1!, uid: 1, date: hoursAgo(24 * 40) },
-        { ...m2!, uid: 2 },
-      ],
-    };
+    // Renumbered, and message 1 is gone from the server.
+    const [, m2] = gateway.mailbox.messages;
+    gateway.mailbox = { uidValidity: 8, uidNext: 3, messages: [{ ...m2!, uid: 2 }] };
 
     const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
 
@@ -1029,6 +1023,31 @@ describe("syncAccount fix round 1", () => {
     expect(store.getAccount(ACCOUNT_ID)?.lastError).toBe(
       "INBOX was renumbered by the server; 1 queued move(s) were dropped",
     );
+  });
+
+  it("a queued move whose row a uidvalidity reset pushes out of the window keeps its row and its move", async () => {
+    const { store, gateway, deps } = setupWithArchive(2);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const movedId = idByUid(store, INBOX, 1);
+    store.queueMove([movedId], "Archive");
+    // Renumbered, and message 1 is now outside the window by its internal date.
+    const [m1, m2] = gateway.mailbox.messages;
+    gateway.mailbox = {
+      uidValidity: 8,
+      uidNext: 6,
+      messages: [
+        { ...m1!, uid: 4, date: hoursAgo(24 * 40) },
+        { ...m2!, uid: 5 },
+      ],
+    };
+
+    const outcome = await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+
+    expect(outcome).toMatchObject({ status: "ok", movesCancelled: [] });
+    expect(uidOf(store, movedId)).toBe(4);
+    expect(store.pendingMoves(ACCOUNT_ID, INBOX).map((m) => m.id)).toEqual([movedId]);
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(store.getMessage(movedId)).toMatchObject({ folder: "Archive" });
   });
 
   it("a never-synced folder holding re-homed rows starts with a reset", async () => {
@@ -1554,5 +1573,102 @@ describe("slice-3e sync", () => {
     gateway.removeFolder("Archive");
     await syncAccount(deps, ACCOUNT_ID, { ...OPTIONS, only: "inbox" });
     expect(store.getAccount(ACCOUNT_ID)!.snoozeFolder).toBe("Archive");
+  });
+});
+
+describe("snoozed mail outside the sync window (review item 1)", () => {
+  const DAY = 86_400_000;
+  const at = (days: number) => new Date(NOW.getTime() + days * DAY);
+  const depsAt = (base: SyncDeps, now: Date): SyncDeps => ({ ...base, clock: new FixedClock(now) });
+
+  /** One stored Inbox message that is 60 days old by the time it is snoozed. */
+  async function snoozedOldMessage(options: { uidMap?: boolean } = {}) {
+    const old = makeFetchedMessage(1, { date: new Date(NOW.getTime() - 20 * DAY).toISOString() });
+    const { store, gateway, deps } = setup({ uidValidity: 7, uidNext: 2, messages: [old] });
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const id = idByUid(store, INBOX, 1);
+    const later = at(40);
+    expect((await syncAccount(depsAt(deps, later), ACCOUNT_ID, OPTIONS)).status).toBe("ok");
+    expect(store.getMessage(id)).not.toBeNull();
+    // The owner confirms the folder: CREATE, the listing saved, the path stored.
+    gateway.addFolder({ path: "Snoozed", name: "Snoozed", specialUse: null }, { uidValidity: 3, uidNext: 1, messages: [] });
+    store.saveFolders(ACCOUNT_ID, await gateway.listFolders({} as never));
+    store.setSnoozeFolder(ACCOUNT_ID, "Snoozed");
+    if (options.uidMap === false) gateway.moveUidMap = false;
+    expect(store.queueMove([id], "Snoozed")).not.toBeNull();
+    const dueAt = new Date(later.getTime() + DAY).toISOString();
+    store.createSnoozes([{ messageId: id, accountId: ACCOUNT_ID, returnTo: INBOX, dueAt, state: "moving" }], later.toISOString());
+    return { store, gateway, deps, id, later };
+  }
+
+  const ctxAt = (store: InMemoryMailStore, now: Date) => ({
+    snoozeFolder: "Snoozed",
+    inbox: INBOX,
+    folders: store.listFolders(ACCOUNT_ID),
+    now,
+  });
+
+  it("a never-synced snooze folder keeps the re-homed row and its snooze, and the message returns on time", async () => {
+    const { store, gateway, deps, id, later } = await snoozedOldMessage();
+
+    expect(await syncAccount(depsAt(deps, later), ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok", removed: 0 });
+    expect(store.getMessage(id)).toMatchObject({ folder: "Snoozed" });
+    expect(idsIn(store, "Snoozed")).toEqual([{ uid: 1, id }]);
+    expect(store.listSnoozes(ACCOUNT_ID, { limit: 10 })).toHaveLength(1);
+    expect(planSnoozes(store.snoozeViews(ACCOUNT_ID, 10), ctxAt(store, later)).map((s) => s.kind)).toEqual(["to_snoozed"]);
+    store.updateSnooze(id, { state: "snoozed" }, later.toISOString());
+
+    // More rounds before it is due: still tracked.
+    const hourLater = new Date(later.getTime() + 3_600_000);
+    expect(await syncAccount(depsAt(deps, hourLater), ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok", removed: 0 });
+    expect(planSnoozes(store.snoozeViews(ACCOUNT_ID, 10), ctxAt(store, hourLater)).map((s) => s.kind)).toEqual(["wait"]);
+
+    // Due: the return is planned and the move back lands it in the Inbox.
+    const due = new Date(later.getTime() + 86_400_000);
+    const [step] = planSnoozes(store.snoozeViews(ACCOUNT_ID, 10), ctxAt(store, due));
+    expect(step).toMatchObject({ kind: "return", to: INBOX });
+    store.queueMove([id], INBOX);
+    store.updateSnooze(id, { state: "returning" }, due.toISOString());
+    expect(await syncAccount(depsAt(deps, due), ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok" });
+    expect(store.getMessage(id)).toMatchObject({ folder: INBOX });
+    expect(planSnoozes(store.snoozeViews(ACCOUNT_ID, 10), ctxAt(store, due)).map((s) => s.kind)).toEqual(["done"]);
+    expect(gateway.mailbox.messages).toHaveLength(1);
+  });
+
+  it("a snoozed row moved without a uid map is reattached by Message-ID outside the window", async () => {
+    const { store, deps, id, later } = await snoozedOldMessage({ uidMap: false });
+
+    expect(await syncAccount(depsAt(deps, later), ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok", removed: 0 });
+    expect(idsIn(store, "Snoozed")).toEqual([{ uid: 1, id }]);
+    expect(store.listSnoozes(ACCOUNT_ID, { limit: 10 })).toHaveLength(1);
+  });
+
+  it("a later UIDVALIDITY change of the snooze folder keeps the snoozed row by Message-ID", async () => {
+    const { store, gateway, deps, id, later } = await snoozedOldMessage();
+    await syncAccount(depsAt(deps, later), ACCOUNT_ID, OPTIONS);
+    store.updateSnooze(id, { state: "snoozed" }, later.toISOString());
+    const box = gateway.mailboxes.get("Snoozed")!;
+    // The server renumbers the folder; an unrelated old message takes uid 1.
+    const moved = box.messages[0]!;
+    box.uidValidity = 4;
+    box.messages = [
+      makeFetchedMessage(1, { messageId: "other@example.org", date: moved.date }),
+      { ...moved, uid: 9 },
+    ];
+    box.uidNext = 10;
+
+    expect(await syncAccount(depsAt(deps, later), ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok", removed: 0 });
+    expect(idsIn(store, "Snoozed")).toEqual([{ uid: 9, id }]);
+    expect(store.listSnoozes(ACCOUNT_ID, { limit: 10 })).toMatchObject([{ messageId: id, state: "snoozed" }]);
+  });
+
+  it("a snoozed row the server no longer has still goes with its snooze after a reset", async () => {
+    const { store, gateway, deps, id, later } = await snoozedOldMessage();
+    await syncAccount(depsAt(deps, later), ACCOUNT_ID, OPTIONS);
+    const box = gateway.mailboxes.get("Snoozed")!;
+    box.uidValidity = 4;
+    box.messages = [];
+    expect(await syncAccount(depsAt(deps, later), ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok", removed: 1 });
+    expect(store.getMessage(id)).toBeNull();
   });
 });

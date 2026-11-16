@@ -4424,8 +4424,11 @@ describe("inbox triage: snooze (slice 3e)", () => {
       await expect(call(host, "snooze_folder_use", { accountId: "acc_1", path }), path).rejects.toMatchObject({ code: "invalid" });
     }
     await expect(call(host, "snooze_folder_use", { accountId: "acc_1", path: "Nope" })).rejects.toMatchObject({ code: "not_found" });
+    expect(sqlStore(host).getSyncState("acc_1", "Work")).toBeNull();
     expect(await call(host, "snooze_folder_use", { accountId: "acc_1", path: "Work" })).toEqual({ ok: true });
     expect(sqlStore(host).getAccount("acc_1")!.snoozeFolder).toBe("Work");
+    // A folder not synced yet gets its state from STATUS (review item 1).
+    expect(sqlStore(host).getSyncState("acc_1", "Work")).toMatchObject({ uidValidity: 1, lastUid: 0 });
   });
 
   it("refuses mail outside the Inbox and a time out of range", async () => {
@@ -4636,6 +4639,40 @@ describe("inbox triage: owner only and server writes (slice 3e)", () => {
     expect(sqlStore(host).listBlockRules()).toEqual([]);
     expect(sqlStore(host).getAccount("acc_1")!.snoozeFolder).toBeNull();
     expect(movePending(host, id)).toBeNull();
+  });
+
+  it("snoozing mail older than the sync window keeps it tracked in a new folder (review item 1)", async () => {
+    const DAY = 86_400_000;
+    const host = await load({
+      settings: { vaultKey: generateVaultKey() },
+      server: (gateway) => {
+        gateway.deliver({ subject: "Invented old note", date: new Date(NOW.getTime() - 20 * DAY).toISOString() });
+      },
+    });
+    const account = (await host.harness.behavior.callRpc("accounts_add", NEW_ACCOUNT)) as { id: string };
+    const first = host.harness.behavior.runService("sync");
+    await vi.waitFor(() => expect(logText(host)).toContain(`sync ${account.id}: ok`));
+    first.controller.abort();
+    await first.done;
+    const old = messageIdAt(host, "INBOX", 2);
+    // Forty days on the message is sixty days old, outside the 30-day window.
+    const later = new Date(NOW.getTime() + 40 * DAY);
+    host.clock.set(later);
+    await call(host, "snooze_folder_create", { accountId: account.id });
+    // The new folder starts with sync state, so its first round is no reset.
+    expect(sqlStore(host).getSyncState(account.id, "Snoozed")).toMatchObject({ uidValidity: 1, lastUid: 0 });
+    const until = new Date(later.getTime() + DAY).toISOString();
+    await call(host, "message_snooze", { messageIds: [old], folder: "INBOX", until });
+    const again = host.harness.behavior.runService("sync");
+    await vi.waitFor(() => expect(sqlStore(host).getMessage(old)).toMatchObject({ folder: "Snoozed" }));
+    await vi.waitFor(() =>
+      expect(host.harness.inspection.logEntries.filter((l) => l.message.startsWith(`sync ${account.id}: ok`))).toHaveLength(2),
+    );
+    again.controller.abort();
+    await again.done;
+    expect(sqlStore(host).getMessage(old)).toMatchObject({ folder: "Snoozed" });
+    expect(sqlStore(host).rawRef(old)).toMatchObject({ folder: "Snoozed", uid: 1 });
+    expect(sqlStore(host).listSnoozes(account.id, { limit: 10 })).toMatchObject([{ messageId: old, returnTo: "INBOX", dueAt: until }]);
   });
 
   it("snooze and block reach the server as moves only: no \\Deleted, no EXPUNGE", async () => {
