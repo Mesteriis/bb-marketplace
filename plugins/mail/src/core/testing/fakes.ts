@@ -1887,6 +1887,18 @@ export class InMemoryMailStore implements MailStore {
       .map((row) => ({ uid: row.uid, from: { ...row.message.from } }));
   }
 
+  /** Gmail: whether the message's All Mail copy is inside the scope (spec resolution 17). */
+  private allMailCopyInScope(row: { accountId: string; dedupKey: string; id: string }): boolean {
+    return this.state.rows.some(
+      (c) =>
+        c.id !== row.id &&
+        c.accountId === row.accountId &&
+        c.dedupKey === row.dedupKey &&
+        this.roleOf(c.accountId, c.folder) === "all" &&
+        this.inAiScope(c),
+    );
+  }
+
   inboxMessages(accountId: string | null, opts: { unreadOnly: boolean; limit: number; scoped?: boolean }): InboxMessage[] {
     const rows = this.state.rows.filter(
       (r) =>
@@ -1895,7 +1907,7 @@ export class InMemoryMailStore implements MailStore {
         r.movePending === null &&
         this.roleOf(r.accountId, r.folder) === "inbox" &&
         (!opts.unreadOnly || !r.isRead) &&
-        (opts.scoped !== true || this.inAiScope(r)),
+        (opts.scoped !== true || this.inAiScope(r) || this.allMailCopyInScope(r)),
     );
     return this.onePerKey(rows, (r) => `${r.accountId}\u0000${r.dedupKey}`)
       .sort((a, b) => oldestFirst(b, a))

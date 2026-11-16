@@ -983,6 +983,15 @@ const SCOPE_ROLE = `COALESCE((SELECT sf.special_use FROM folders sf WHERE sf.acc
 /** True for a row (alias m) inside the installed AI access scope (slice 3f). */
 const IN_AI_SCOPE = `mail_ai_in_scope(m.account_id, m.folder, ${SCOPE_ROLE}, m.from_address, m.to_json, m.cc_json, m.thread_id) = 1`;
 
+/**
+ * True for a row (alias m) inside the scope, or whose Gmail All Mail copy is
+ * (spec resolution 17: a message is shared when any of its labels or All
+ * Mail is chosen).
+ */
+const IN_AI_SCOPE_OR_ALL_MAIL = `(${IN_AI_SCOPE} OR EXISTS (
+  SELECT 1 FROM messages c WHERE c.account_id = m.account_id AND c.dedup_key = m.dedup_key AND c.id <> m.id
+    AND ${IN_ALL_MAIL.replace(/\bm\./g, "c.")} AND ${IN_AI_SCOPE.replace(/\bm\./g, "c.")}))`;
+
 /** What a contact lookup reads of a message (alias m, folder alias f). */
 const CONTACT_COLUMNS = `m.account_id, m.dedup_key, m.date, m.from_name, m.from_address, m.to_json, m.cc_json,
   m.bulk, ${ROW_ROLE} AS role`;
@@ -4153,7 +4162,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         params.push(accountId);
       }
       if (opts.unreadOnly) where.push("m.is_read = 0");
-      if (opts.scoped === true) where.push(IN_AI_SCOPE);
+      if (opts.scoped === true) where.push(IN_AI_SCOPE_OR_ALL_MAIL);
       params.push(opts.limit);
       const rows = db
         .prepare(

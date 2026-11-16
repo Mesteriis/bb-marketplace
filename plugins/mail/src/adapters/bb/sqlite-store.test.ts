@@ -4128,6 +4128,19 @@ describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
       expect(s.inboxMessages("acc_1", { unreadOnly: false, limit: 50 })).toHaveLength(4);
     });
 
+    it("lists a Gmail Inbox message whose in-scope copy is its All Mail copy (chosen folders)", () => {
+      s.saveFolders("acc_2", [...FOLDERS_3F, { path: "[Gmail]/All Mail", name: "All Mail", delimiter: "/", specialUse: "all", selectable: true }]);
+      s.upsertMessages("acc_2", "[Gmail]/All Mail", [makeFetchedMessage(9, { messageId: "other-account@example.org" })]);
+      thread("acc_2");
+      s.setAiScope(aiScope([["acc_2", { mode: "folders", folders: ["[Gmail]/All Mail"] }]]));
+      const inboxCopy = idIn(INBOX, 1, "acc_2");
+      expect(s.scopedMessage(inboxCopy)).not.toBeNull();
+      expect(s.inboxMessages("acc_2", { unreadOnly: false, limit: 50, scoped: true }).map((m) => m.id)).toEqual([inboxCopy]);
+      // A copy in Spam or Trash never lends its scope: only All Mail does.
+      s.setAiScope(aiScope([["acc_2", { mode: "folders", folders: ["Archive"] }]]));
+      expect(s.inboxMessages("acc_2", { unreadOnly: false, limit: 50, scoped: true })).toEqual([]);
+    });
+
     it("picks the in-scope copy before the dedup and answers an out-of-scope id as unknown", () => {
       s.setAiScope(aiScope());
       const archived = idIn("Archive", 10);

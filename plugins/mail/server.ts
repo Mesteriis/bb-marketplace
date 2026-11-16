@@ -3869,7 +3869,9 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
       const rows = triageRowStates(store, askedIds, nowIso);
       let outOfScope = false;
       for (const id of [...rows.keys()]) {
-        if (store.scopedMessage(id)?.id !== id) {
+        // In scope: this copy, or (Gmail, chosen folders) its All Mail copy, as mail_read and mail_inbox judge it.
+        const scoped = store.scopedMessage(id);
+        if (scoped === null || (scoped.id !== id && roleOfFolder(store, scoped.accountId, scoped.folder) !== "all")) {
           rows.delete(id);
           outOfScope = true;
         }

@@ -5195,8 +5195,12 @@ const CANARY = {
 const OUTSIDE = ["zebra", "Quokka", "quokka@example.com", "pelican", "Pelican", "excluded.example.net"];
 const CANARIES = [...Object.values(CANARY), "4111111111111111", ...OUTSIDE];
 
-/** The AI scope of the canary account; `codes` also seeds INBOX 3-5, sign-in mails with a code under its label. */
-type CanaryScope = { folders?: string[]; mode?: "none"; codes?: boolean };
+/**
+ * The AI scope of the canary account; `codes` also seeds INBOX 3-5, sign-in
+ * mails with a code under its label; `allMail` adds a Gmail All Mail folder
+ * holding a copy of INBOX 1.
+ */
+type CanaryScope = { folders?: string[]; mode?: "none"; codes?: boolean; allMail?: boolean };
 
 /**
  * acc_1 with SMTP, INBOX, Drafts, Sent and Work, AI access to INBOX, Sent and
@@ -5212,7 +5216,9 @@ function seedCanary(bb: BbPluginApi, scope: CanaryScope = {}): void {
     { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true },
     { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true },
     { path: "Work", name: "Work", delimiter: "/", specialUse: null, selectable: true },
+    ...(scope.allMail === true ? [{ path: "[Gmail]/All Mail", name: "All Mail", delimiter: "/", specialUse: "all" as const, selectable: true }] : []),
   ]);
+  if (scope.allMail === true) store.upsertMessages("acc_1", "[Gmail]/All Mail", [makeFetchedMessage(40, { messageId: "msg-1@example.org" })]);
   store.upsertMessages("acc_1", "INBOX", [
     makeFetchedMessage(1, {
       subject: `Invented login code ${CANARY.subject}`,
@@ -5459,6 +5465,16 @@ describe("agent paths: scope, redaction and the log (slice 3f)", () => {
     const outcomes = agentLogRows(host).map((row) => row.outcome);
     expect(outcomes).toContain("refused_scope");
     expect(outcomes).toContain("refused_invalid");
+  });
+
+  it("Gmail chosen folders: mail_inbox and mail_triage accept an Inbox message whose All Mail copy is shared", async () => {
+    const host = await loadCanary({}, { folders: ["[Gmail]/All Mail"], allMail: true });
+    const { inside, excluded } = canaryIds(host);
+    const inbox = toolText(await host.harness.behavior.callAgentTool("mail_inbox", {}, { threadId: CANARY_THREAD }));
+    expect(inbox).toContain(inside);
+    expect(inbox).not.toContain(excluded);
+    await runCardTool(host, "mail_triage", { items: [{ messageId: inside, action: "archive" }] });
+    expect(agentLogRows(host).filter((row) => row.tool === "triage").map((row) => row.outcome)).toEqual(["cancelled"]);
   });
 
   it("search refuses codes, numbers and tokens and keeps only hits whose redacted text still matches", async () => {
