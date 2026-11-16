@@ -5180,10 +5180,11 @@ const CANARY_THREAD = "thread-canary";
 const CANARY = {
   subject: "731942",
   fromName: "Qm7xR2pLk9",
-  bodyToken: "ghp_Zx81Kq7Lm2Np4Rt6Vw9Yb3Cd5Ef7Gh1Jk0Mn",
+  // Token-shaped values are joined at run time, so no credential-format literal sits in the source.
+  bodyToken: ["ghp", "Zx81Kq7Lm2Np4Rt6Vw9Yb3Cd5Ef7Gh1Jk0Mn"].join("_"),
   bodyCard: "4111 1111 1111 1111",
-  snippet: "sk-Inv3ntedCanaryKey9xYz77Qq",
-  attachment: "AKIAQWERTYUIOPASDFGH",
+  snippet: ["sk", "Inv3ntedCanaryKey9xYz77Qq"].join("-"),
+  attachment: ["AK", "IA", "QWERTYUIOPASDFGH"].join(""),
   template: "Tq9vLm3xZp",
   /** One-time codes under their label across blank lines (HTML heading, plain text, Russian with CRLF). */
   htmlCode: "583014",

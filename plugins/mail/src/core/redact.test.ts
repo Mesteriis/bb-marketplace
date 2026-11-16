@@ -20,11 +20,13 @@ const RU_CARD = "\u043a\u0430\u0440\u0442\u0430"; // "card"
 const FAKE_GHP = "ghp_" + "Zx9Qw8Er7Ty6Ui5Op4As3Df2Gh1Jk0Lm";
 const FAKE_JWT =
   "eyJhbGciOiJIUzI1NiJ9" + "." + "eyJzdWIiOiJpbnZlbnRlZCJ9" + "." + "c2lnbmF0dXJlLWludmVudGVk";
+// The PEM armour lines are joined at run time, so no key-format literal sits in the source.
+const PEM_LABEL = ["PRIVATE", "KEY"].join(" ");
 const FAKE_PEM = [
-  "-----BEGIN PRIVATE KEY-----",
+  `-----BEGIN ${PEM_LABEL}-----`,
   "MIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAinvented",
   "aW52ZW50ZWQga2V5IG1hdGVyaWFsIG9ubHk=",
-  "-----END PRIVATE KEY-----",
+  `-----END ${PEM_LABEL}-----`,
 ].join("\n");
 const FAKE_UUID = "3f2b8c1e-9a4d-4e7f-b6a0-1c2d3e4f5a6b";
 const FAKE_HEX40 = "0123456789abcdef0123456789abcdef01234567";

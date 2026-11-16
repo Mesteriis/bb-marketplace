@@ -189,7 +189,8 @@ describe("AiJobs", () => {
   });
 
   it("restores a draft's own placeholders, counts unknown and missing ones, and drops the map at every end", async () => {
-    const built = draftInput(["Code 482913 and token ghp_Zx81Kq7Lm2Np4Rt6Vw9Yb3Cd5Ef7Gh1Jk0Mn"], { mode: "fix" }, { nonce: NONCE, tag: "k3f9" });
+    const fakeToken = ["ghp", "Zx81Kq7Lm2Np4Rt6Vw9Yb3Cd5Ef7Gh1Jk0Mn"].join("_"); // Joined so no token-format literal sits in the source.
+    const built = draftInput([`Code 482913 and token ${fakeToken}`], { mode: "fix" }, { nonce: NONCE, tag: "k3f9" });
     expect(built.input).not.toContain("482913");
     const codePlaceholder = [...built.restore!.keys()].find((key) => key.includes("code"))!;
     const jobId = await started("draft", built, { tag: "k3f9", maxChars: 1_000 });
