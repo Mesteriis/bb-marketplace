@@ -1476,3 +1476,15 @@ commit `80783998`.
     (resolution 9). Elements 0–11 are pinned today
     (`sqlite-store.test.ts` 755–778, `MIGRATIONS.slice(0, 12)`); element 12
     exists unpinned. The docs task pins `MIGRATIONS.slice(0, 14)`.
+
+## Resolutions after the review
+
+- History steps (overrides "oldest fetched message" in the Design section):
+  `history_since` moves to the start of the step's date range, never to a
+  header date. A step that had more than 500 new messages, or stopped early
+  (cancel or time budget), leaves `history_since` where it was and runs the
+  same days again; it does not count as an empty step.
+- Conversation loads store their rows as `kept = 'search'`, so they expire
+  like server-search hits unless opened, back in the window, or covered by a
+  history step.
+- The other review fixes are listed in the plan's "Review fixes" section.
