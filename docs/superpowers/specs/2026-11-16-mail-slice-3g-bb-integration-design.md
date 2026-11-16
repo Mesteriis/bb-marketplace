@@ -3,7 +3,7 @@
 Status: builder's design, proposed to the owner on 2026-11-16. The owner
 asked for the whole backlog group to be closed and accepts sensible defaults;
 every decision in "Owner's decisions" below is a proposal marked
-*(proposed — owner to confirm)*. It follows 3a (organize and read), 3b (write
+*(owner, accepted 2026-11-16)*. It follows 3a (organize and read), 3b (write
 and send), 3c (agent proposals and translation), 3d (sending polish), 3e
 (inbox triage) and 3f (agent and mail), all on `feat/mail-imap-slice`.
 Everything in the slice-1, slice-2 and 3a–3f specs holds unless this document
@@ -22,7 +22,7 @@ recommendation, and the design below follows it.
 ## Owner's decisions
 
 Proposed by the builder on 2026-11-16; each line is marked
-*(proposed — owner to confirm)* with a one-line rationale.
+*(owner, accepted 2026-11-16)* with a one-line rationale.
 
 1. **Scope of 3g:** mail → BB thread or task (#21), attachment → project
    working tree (#57), project file or thread file as an attachment (#56), a
@@ -30,7 +30,7 @@ Proposed by the builder on 2026-11-16; each line is marked
    PR / issue links (#36), code blocks when reading and writing (#51), patch
    from mail → working tree through the owner (#78), alert mail → incident
    thread (#80), correspondence bound to a project (#81) and mail rules that
-   prepare or start agent threads (#82). *(proposed — owner to confirm)* The
+   prepare or start agent threads (#82). *(owner, accepted 2026-11-16)* The
    owner asked for the whole "BB integration" group.
 2. **One builder for every text that leaves Mail for BB.** Thread prompts,
    task titles and descriptions, incident and rule prompts are built by one
@@ -38,7 +38,7 @@ Proposed by the builder on 2026-11-16; each line is marked
    `redactSecrets`, always the AI access scope (out-of-scope mail cannot be
    handed to BB; the buttons are disabled), always framed by
    `UNTRUSTED_NOTICE`, and every hand-off is written to the agent log (ids and
-   counts only). *(proposed — owner to confirm)* A thread prompt or a
+   counts only). *(owner, accepted 2026-11-16)* A thread prompt or a
    Taskboard description reaches an agent exactly like `mail_read` does, so it
    gets the same guard.
 3. **A thread starts only on the owner's click.** **New thread…** opens a
@@ -46,7 +46,7 @@ Proposed by the builder on 2026-11-16; each line is marked
    (`bb.sdk.threads.spawn` in the chosen project, project-default
    environment and permission mode, linked back to the mail through plugin
    metadata); **Edit in composer** opens BB's new-thread composer prefilled
-   instead (no link back). *(proposed — owner to confirm)* The dialog is the
+   instead (no link back). *(owner, accepted 2026-11-16)* The dialog is the
    approval, and the link lets Mail and the thread point at each other.
 4. **Tasks go to the owner's Taskboard when it is there, else to Mail's own
    Tasks.** **Make a task…** creates a task on a local Taskboard board
@@ -60,7 +60,7 @@ Proposed by the builder on 2026-11-16; each line is marked
    setting; any folder inside the tree may be picked) with the sanitized file
    name, mode `0644`, never over an existing file without the owner choosing
    **Replace** in a conflict dialog (**Keep both** is the default). Nothing is
-   opened, unpacked or executed. *(proposed — owner to confirm)* Files land
+   opened, unpacked or executed. *(owner, accepted 2026-11-16)* Files land
    where agents can read them, with no way out of the tree and no silent
    overwrite.
 6. **Project and thread files become attachments only by the owner's pick.**
@@ -82,14 +82,14 @@ Proposed by the builder on 2026-11-16; each line is marked
    sender and subject (no model) and grouped by repository with counts and
    the latest failures; Today (3f) gains one line; the list header gains a
    **Hide dev notifications** filter. On by default (setting
-   `devNotifications`). *(proposed — owner to confirm)* It is local,
+   `devNotifications`). *(owner, accepted 2026-11-16)* It is local,
    read-only and changes nothing on the server.
 9. **Links to repositories, PRs and issues are recognised, never followed by
    themselves.** Only `https:` GitHub and GitLab URLs, and tracker URLs on a
    host of one of the owner's project remotes, are listed under a message,
    mapped to a BB project by its git remote; actions are **Open** (BB's
    browser preference), **Open project** and **New thread…** (compose
-   prefilled; the owner sends). *(proposed — owner to confirm)* A link is
+   prefilled; the owner sends). *(owner, accepted 2026-11-16)* A link is
    shown by its real URL, so the anchor text cannot disguise it.
 10. **Code blocks are shown with BB's own highlighter and kept when writing.**
     Plain-text mail: fenced, indented, diff and log blocks render with BB's
@@ -105,14 +105,14 @@ Proposed by the builder on 2026-11-16; each line is marked
     the project with the `.patch` file as input and an instruction to run
     `git apply --check`, apply, show `git diff --stat`, and not commit or run
     project scripts. Patches touching `.git/`, absolute paths or `..` are
-    refused. *(proposed — owner to confirm)* BB's agent and review UI already
+    refused. *(owner, accepted 2026-11-16)* BB's agent and review UI already
     show every change before it is kept; a worktree keeps the owner's
     checkout untouched.
 12. **An alert opens an incident thread on the owner's click, once per
     alert.** Monitoring mail shows an alert card; **Open incident thread**
     starts a thread with the redacted alert fields; a later mail of the same
     alert (resolved, re-fired) offers **Add to incident thread** (the owner's
-    click sends it into that thread). *(proposed — owner to confirm)* One
+    click sends it into that thread). *(owner, accepted 2026-11-16)* One
     alert, one thread; nothing starts without a click unless a rule (#82)
     says so.
 13. **Correspondence is bound to a project by the owner.** A conversation's
@@ -120,7 +120,7 @@ Proposed by the builder on 2026-11-16; each line is marked
     list / repository** creates a binding rule that applies to new and
     existing mail; dev links suggest a project (outlined chip) but bind only
     on a click. Bound mail shows in a Mail **Projects** view and in a **Mail**
-    section of BB's thread Info tab. *(proposed — owner to confirm)* It puts
+    section of BB's thread Info tab. *(owner, accepted 2026-11-16)* It puts
     a project's mail next to its threads without changing BB.
 14. **Mail rules that start threads are off by default and capped.** A
     master switch `mailRules` (off); each rule matches new in-scope mail by
@@ -136,12 +136,12 @@ Proposed by the builder on 2026-11-16; each line is marked
     read-only-intended thread the owner created the rule for.
 15. **No BB patches, no host entry, no terminal.** 3g uses only the plugin
     SDK areas named in "Code, SDK and host facts"; where an API is missing the
-    fallback is named there. *(proposed — owner to confirm)* It follows the
+    fallback is named there. *(owner, accepted 2026-11-16)* It follows the
     BB-native UI direction and keeps the plugin free of host-side execution.
 16. **What 3g sends outside the machine:** nothing new. Thread prompts go to
     the owner's agent provider only when a thread runs, exactly as a typed
     prompt would; Taskboard is local; no new IMAP write, SMTP send or HTTP
-    request. *(proposed — owner to confirm)* README and `PLUGIN_OVERVIEW.md`
+    request. *(owner, accepted 2026-11-16)* README and `PLUGIN_OVERVIEW.md`
     list each path in "What goes to your AI provider".
 
 ## Goals
