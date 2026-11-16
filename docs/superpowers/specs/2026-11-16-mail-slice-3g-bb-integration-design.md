@@ -1244,3 +1244,10 @@ These override the sections above. Items marked *(owner defaults)* were decided 
     - The thread action's `group` is a real BB group: `experimental_THREAD_ACTION_GROUPS.organize` (`"2_organize"`), not `"share"`.
     - Output keys never match `/pass|secret|seal|key/i` (`contract.test.ts` 35): the secret-like flag is `sensitiveName`, the alert fingerprint `alertRef`, the patch hash `patchRef`.
     - `Shift+N`, `Shift+K` and `g n` against BB's global shortcuts are checked in the live check; a conflict moves the Mail binding, not BB's.
+
+## Resolutions after the review
+
+C2. **Patch parsing stays linear on hostile mail** (review finding, refines "Patches").
+   - `commitMessageOf` cuts the `Subject:` line (and its one folded continuation) to 998 characters before anything reads it, and the `[PATCH ...]` prefix is dropped by a scan, not a regular expression: after leading spaces, a `[` whose `]` is at most 200 characters on and whose inside holds `PATCH` (any case). `patchFileName` uses the same scan.
+   - `thread_get` no longer parses a patch body: `patchSummary` counts `diff --git` headers (else bare `---`/`+++`/`@@` diffs) and the `+`/`-` lines after the first header in one pass. `patch_view` keeps the full parse.
+   - A test feeds a 1 MB subject of `[` and `PATCH` words (and of spaces) and requires each parse to finish in under 200 ms.

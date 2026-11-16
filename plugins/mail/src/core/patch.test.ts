@@ -7,6 +7,7 @@ import {
   patchFileName,
   patchFromBody,
   patchRef,
+  patchSummary,
 } from "./patch.ts";
 
 const lines = (...rows: string[]) => rows.join("\n");
@@ -212,6 +213,36 @@ describe("parsePatch", () => {
     expect(parsed.refused).toBeNull();
     const warned = paths.filter((path) => parsed.warnings.some((warning) => warning.endsWith(`: ${path}`)));
     expect(warned).toEqual(paths.slice(0, -1));
+  });
+});
+
+describe("hostile subjects and bodies", () => {
+  const diff = fileDiff("src/a.ts");
+  const hostile = (subject: string) => lines(`From ${SHA} Mon Sep 17 00:00:00 2001`, `Subject: ${subject}`, "", "---", diff);
+  const room = PATCH_MAX_BYTES - 200 - diff.length;
+
+  it("reads a 1 MB subject of brackets and PATCH words in linear time", () => {
+    for (const subject of ["[" + "PATCH".repeat(Math.floor(room / 5)), " ".repeat(room) + "[x", "[" + "PATCH ".repeat(Math.floor(room / 6))]) {
+      const started = performance.now();
+      const parsed = parsePatch(hostile(subject));
+      expect(performance.now() - started).toBeLessThan(200);
+      expect(parsed.refused).toBeNull();
+      // The subject is cut to one header line (998 characters).
+      expect((parsed.commitMessage ?? "").length).toBeLessThanOrEqual(998);
+    }
+  });
+
+  it("still drops a [PATCH n/m] prefix and leaves other brackets", () => {
+    expect(parsePatch(hostile("[PATCH v2 1/3] Fix it")).commitMessage).toBe("Fix it");
+    expect(parsePatch(hostile("[RFC] Fix it")).commitMessage).toBe("[RFC] Fix it");
+    expect(parsePatch(hostile(`[${"x".repeat(250)} PATCH] Fix it`)).commitMessage).toBe(`[${"x".repeat(250)} PATCH] Fix it`);
+  });
+
+  it("patchSummary counts files and lines without parsing", () => {
+    expect(patchSummary(FORMAT_PATCH)).toEqual({ files: 1, added: 1, removed: 1 });
+    const started = performance.now();
+    patchSummary(hostile("[" + "PATCH".repeat(Math.floor(room / 5))));
+    expect(performance.now() - started).toBeLessThan(200);
   });
 });
 

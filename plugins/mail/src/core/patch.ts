@@ -63,6 +63,40 @@ export function patchFromBody(text: string): string | null {
   return null;
 }
 
+/**
+ * File and line counts for thread_get, in one pass without the full parse
+ * (patch_view parses): "diff --git" headers (else bare ---/+++/@@ diffs),
+ * and +/- lines after the first header.
+ */
+export function patchSummary(text: string): { files: number; added: number; removed: number } {
+  const lines = splitLines(text);
+  let files = 0;
+  let added = 0;
+  let removed = 0;
+  let inDiff = false;
+  let git = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith("diff --git ")) {
+      if (!git) files = 0;
+      git = true;
+      inDiff = true;
+      files++;
+      continue;
+    }
+    if (!git && bareDiffAt(lines, i)) {
+      inDiff = true;
+      files++;
+      i++;
+      continue;
+    }
+    if (!inDiff || line.startsWith("+++ ") || line.startsWith("--- ")) continue;
+    if (line.startsWith("+")) added++;
+    else if (line.startsWith("-") && line !== "-- ") removed++;
+  }
+  return { files, added, removed };
+}
+
 const C_ESCAPES: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
 
 /** A C-style quoted path (git's core.quotePath form) unescaped; null when it cannot be read. */
@@ -167,10 +201,23 @@ function newWork(oldPath: string | null, newPath: string | null): Work {
 
 const MBOX_FROM = /^From [0-9a-f]{40} /;
 const HUNK = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
-const PATCH_PREFIX = /^\s*\[[^\]]*PATCH[^\]]*\]\s*/i;
+/** A header line is at most 998 characters (RFC 5322); a longer subject is cut before it is read. */
+const SUBJECT_MAX = 998;
+/** How far the closing "]" of a "[PATCH ...]" prefix may be. */
+const PREFIX_MAX = 200;
 /** "rename from <path>" / "copy from <path>" and their "to" lines. */
 const MOVE_SOURCE = /^(rename|copy) from (.+)$/;
 const MOVE_TARGET = /^(rename|copy) to (.+)$/;
+
+/** The subject without a leading "[... PATCH ...]" prefix; a scan, no regular expression (no backtracking). */
+function withoutPatchPrefix(subject: string): string {
+  const value = subject.trimStart();
+  if (!value.startsWith("[")) return value;
+  const close = value.indexOf("]", 1);
+  if (close === -1 || close > PREFIX_MAX) return value;
+  if (!value.slice(1, close).toUpperCase().includes("PATCH")) return value;
+  return value.slice(close + 1).trimStart();
+}
 
 function commitMessageOf(preamble: readonly string[]): string | null {
   let lines = [...preamble];
@@ -180,14 +227,16 @@ function commitMessageOf(preamble: readonly string[]): string | null {
     let i = 1;
     for (; i < lines.length && lines[i] !== ""; i++) {
       const line = lines[i]!;
-      if (/^Subject:/i.test(line)) subject = line.slice("Subject:".length).trim();
-      else if (subject !== null && /^[ \t]/.test(line) && /^Subject:/i.test(lines[i - 1] ?? "")) subject += ` ${line.trim()}`;
+      if (/^Subject:/i.test(line)) subject = line.slice("Subject:".length, SUBJECT_MAX).trim();
+      else if (subject !== null && /^[ \t]/.test(line) && /^Subject:/i.test(lines[i - 1] ?? "")) {
+        subject = `${subject} ${line.slice(0, SUBJECT_MAX).trim()}`.slice(0, SUBJECT_MAX);
+      }
     }
     lines = lines.slice(i + 1);
   }
   const end = lines.findIndex((line) => line === "---");
   const body = (end === -1 ? lines : lines.slice(0, end)).join("\n").trim();
-  const title = subject === null ? "" : subject.replace(PATCH_PREFIX, "").trim();
+  const title = subject === null ? "" : withoutPatchPrefix(subject).trim();
   const message = [title, body].filter((part) => part !== "").join("\n\n");
   return message === "" ? null : message;
 }
@@ -401,9 +450,7 @@ export function patchRef(bytes: Uint8Array): Promise<string> {
 export function patchFileName(date: string | null, subject: string): string {
   const time = date === null ? NaN : Date.parse(date);
   const day = Number.isFinite(time) ? new Date(time).toISOString().slice(0, 10) : "";
-  const words = subject
-    .slice(0, 1_000)
-    .replace(PATCH_PREFIX, "")
+  const words = withoutPatchPrefix(subject.slice(0, 1_000))
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/g, "");

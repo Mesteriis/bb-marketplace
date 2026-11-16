@@ -44,6 +44,7 @@ import {
   parsePatch,
   patchFileName,
   patchFromBody,
+  patchSummary,
   patchPrompt,
   patchRef,
   redactSecrets,
@@ -1194,13 +1195,9 @@ export function createBbRpc(deps: BbRpcDeps) {
       const source = linkSource(header);
       const fromBody = patchFromBody(source.plain);
       let patch: MessageHeader["patch"] = null;
+      // Counted in one cheap pass; patch_view parses it in full (spec, resolutions after the review C2).
       if (fromBody !== null) {
-        const parsed = parsePatch(fromBody);
-        patch = {
-          files: parsed.files.length,
-          added: parsed.files.reduce((sum, file) => sum + file.added, 0),
-          removed: parsed.files.reduce((sum, file) => sum + file.removed, 0),
-        };
+        patch = patchSummary(fromBody);
       } else if (header.attachments.some((part) => !part.isInline && isPatchAttachment(part))) {
         // Counted when the owner opens it (patch_view fetches the attachment).
         patch = { files: 0, added: 0, removed: 0 };
