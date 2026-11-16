@@ -204,7 +204,50 @@ describe("trustOf", () => {
     const msg = gmailMessage({
       extraTop: [ar("mx.google.com", "dkim=fail (bad signature) header.i=@example.com header.s=sel1 header.b=AbCdEf12")],
     });
-    expect(trustOf(msg, "gmail", "example.com", "u.example.com")).toBe("no_dkim");
+    expect(trustOf(msg, "gmail", "example.com", "u.example.com")).toBe("not_covered");
+  });
+
+  it("treats any non-pass answer for the same signature in a counted header as a conflict (review item 4)", () => {
+    for (const result of ["fail", "neutral", "temperror", "permerror", "policy", "none"]) {
+      const msg = gmailMessage({
+        extraTop: [ar("mx.google.com", `dkim=${result} (invented) header.i=@example.com header.s=sel1 header.b=AbCdEf12`)],
+      });
+      expect(trustOf(msg, "gmail", "example.com", "u.example.com"), result).toBe("not_covered");
+    }
+    // "dkim=none" with no signature named contradicts every pass.
+    const none = gmailMessage({ extraTop: [ar("mx.google.com", "dkim=none")] });
+    expect(trustOf(none, "gmail", "example.com", "u.example.com")).toBe("not_covered");
+    // A non-pass answer about another signature is no conflict.
+    const other = gmailMessage({
+      extraTop: [ar("mx.google.com", "dkim=neutral (body hash) header.i=@esp.example.net header.s=esp1 header.b=ZzZz")],
+    });
+    expect(trustOf(other, "gmail", "example.com", "u.example.com")).toBe("covered");
+  });
+
+  it("a forged pass inside the provider block next to the real neutral answer is not trusted (the reviewer's probe)", () => {
+    const L = (key: string, value: string) => h(key, value);
+    const forged = [
+      L("Delivered-To", "o@example.org"),
+      L("Received", "by 2002:a"),
+      L("X-Google-Smtp-Source", "x"),
+      L("X-Received", "y"),
+      L("ARC-Seal", "i=1"),
+      L("ARC-Message-Signature", "i=1"),
+      L("ARC-Authentication-Results", "i=1; mx.google.com; dkim=pass"),
+      L("Return-Path", "<b@bank.example>"),
+      L("Received", "from x by mx.google.com"),
+      L("Received-SPF", "pass"),
+      L("Authentication-Results", "mx.google.com; dkim=neutral (no key) header.i=@bank.example header.s=zz header.b=QQQQQQQQ; spf=pass"),
+      L("Authentication-Results", "mx.google.com; dkim=pass header.i=@bank.example header.s=zz header.b=QQQQQQQQ"),
+      L("DKIM-Signature", "v=1; d=bank.example; s=zz; h=from:list-unsubscribe:list-unsubscribe-post; b=QQQQQQQQxx"),
+      L("From", "news@bank.example"),
+      L("List-Unsubscribe", "<https://evil.example/u>"),
+      L("List-Unsubscribe-Post", "List-Unsubscribe=One-Click"),
+    ];
+    const from = { name: "Bank", address: "news@bank.example" };
+    const info = unsubscribeInfoOf(forged, "gmail", from);
+    expect(info?.trust).toBe("not_covered");
+    expect(info && offeredMethods(info, from.address).oneClick).toBeNull();
   });
 
   it("chooses the signature by s= and b= among two", () => {

@@ -386,7 +386,10 @@ export function trustOf(
   const signatures = linesNamed(headers, "dkim-signature").map((line) => parseSignature(line.value));
   const results = counted.flatMap((ar) => ar.dkim);
   const passes = results.filter((r) => r.result === "pass");
-  const fails = results.filter((r) => r.result === "fail");
+  // Any other answer (fail, neutral, temperror, permerror, policy, none) is a
+  // conflict for the signature it names; one naming none contradicts every
+  // pass (review item 4).
+  const others = results.filter((r) => r.result !== "pass");
   if (passes.length === 0) return "no_dkim";
 
   const from = asciiDomain(fromDomain);
@@ -399,7 +402,10 @@ export function trustOf(
       continue;
     }
     const chosen = candidates[0] as number;
-    if (fails.some((fail) => candidatesOf(fail, signatures).includes(chosen))) continue;
+    if (others.some((other) => other.signer === null || candidatesOf(other, signatures).includes(chosen))) {
+      best = "not_covered";
+      continue;
+    }
     const signature = signatures[chosen] as Signature;
     const covers = signature.h.includes("list-unsubscribe") && signature.h.includes("list-unsubscribe-post");
     const d = signature.d as string;
