@@ -74,6 +74,8 @@ export interface SyncOptions {
    * setting); Spam and Trash rows are never classified. Absent: off.
    */
   classify?: boolean;
+  /** Hosts of the BB projects' remotes: a self-hosted GitLab or Jenkins sender counts only from these (or with its own List-Id). */
+  devHosts?: readonly string[];
 }
 
 export type SyncOutcome =
@@ -116,6 +118,8 @@ type FolderContext = {
   preset: AccountPreset;
   /** Slice 3g: classification is on and the folder is not Spam or Trash. */
   classifyDev: boolean;
+  /** The project remotes' hosts the classifier vouches for. */
+  devHosts: ReadonlySet<string>;
   /** Set for an Inbox-role folder: its incremental fetch collects inserted rows here. */
   collect: { newInbox: string[]; returning: string[] } | null;
   /** Every row inserted this round in any folder, reconcile backfill included (slice 3f). */
@@ -208,6 +212,7 @@ export async function syncAccount(
         const context: FolderContext = {
           preset: account.preset,
           classifyDev: options.classify === true && folder.specialUse !== "junk" && folder.specialUse !== "trash",
+          devHosts: new Set((options.devHosts ?? []).map((host) => host.toLowerCase())),
           collect: folder.specialUse === "inbox" ? collected : null,
           inserted,
         };
@@ -691,7 +696,7 @@ async function reattachKept(
   accountId: string,
   path: string,
   kept: ReadonlyMap<string, number | null>,
-  context: Pick<FolderContext, "preset" | "classifyDev">,
+  context: Pick<FolderContext, "preset" | "classifyDev" | "devHosts">,
   batchSize: number,
   inserted: string[],
 ): Promise<number> {
@@ -780,7 +785,7 @@ async function reconcile(
  * local dev class when classification is on for the folder. Nothing here
  * writes to the server.
  */
-function prepareMessage(message: FetchedMessage, context: Pick<FolderContext, "preset" | "classifyDev">): FetchedMessage {
+function prepareMessage(message: FetchedMessage, context: Pick<FolderContext, "preset" | "classifyDev" | "devHosts">): FetchedMessage {
   let out = withUnsubscribe(message, context.preset);
   if (context.classifyDev) {
     // The store keeps the List-Id itself, from the same bulk headers.
@@ -792,6 +797,7 @@ function prepareMessage(message: FetchedMessage, context: Pick<FolderContext, "p
       subject: message.subject,
       headers,
       listId,
+      knownHosts: context.devHosts,
     });
     out = { ...out, dev };
   }

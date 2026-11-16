@@ -1291,3 +1291,8 @@ P5. **compose_attach_bb checks the path itself** (review, refines "Project file 
    - Before any BB call, a path holding a backslash or a `..` segment is refused `invalid` ("This path climbs out of the folder, is absolute or holds a backslash"), and so is an absolute project path (`/…` or a drive letter). A thread storage path may stay absolute: BB's storage listing answers paths next to `storageRootPath`, and the adapter already reads only inside that root (unchanged).
 
 P6. **The task text is built inside the refusal handler for both targets** (review nit). `task_from_mail` reads the excerpt and builds the Taskboard or the local text in one `try`: a scope refusal is logged `refused_scope` and any builder error answers a fixed refusal, never an unhandled error.
+
+P4. **The dev classifier vouches for self-hosted senders** (review, refines "Dev notifications").
+   - `classifyDev` takes `knownHosts`, the hosts of the BB projects' remotes (refreshed with the daily purge, which also runs at start-up, and passed to sync as `devHosts` and to the dev backfill). A self-hosted GitLab (an `X-GitLab-Project-Path` header or a `gitlab@` sender outside gitlab.com) and a `jenkins@` sender count only when the sender's domain is one of those hosts or the List-Id names the sender's own domain (`<list>.<domain>`). gitlab.com and the fixed CI domains are unchanged.
+   - An Alertmanager-style subject (`[FIRING…]` / `[RESOLVED]`) from an `alert…`/`grafana…`/`prometheus…`/`monitor…` sender outside the known monitoring domains counts only with a List-Id of the sender's domain. The known monitoring domains are unchanged.
+   - The classes stay grouping only (forged headers still group mail); this narrows what a forged sender can make a rule see.

@@ -260,7 +260,7 @@ export function createSyncLoop(
       // Rows synced while classification was off wait for the backfill again.
       if (syncOptions.classify !== true) devRowsLeft = true;
       if (target === "all" && syncOptions.classify === true && !signal.aborted && devRowsLeft) {
-        const dev = devBackfill(guarded.store);
+        const dev = devBackfill(guarded.store, syncOptions.devHosts === undefined ? {} : { devHosts: syncOptions.devHosts });
         devRowsLeft = dev.more;
         if (dev.checked > 0) log(`backfill dev: checked ${dev.checked}, classified ${dev.classified}`);
       }

@@ -544,6 +544,9 @@ writes to the mail server, sends mail, runs a command or makes a web request.
   last 7 days by repository, with CI failures, the latest failure and the
   project, and **Mark read** / **Archive** with Undo. Recognised on this
   computer at sync from headers, sender and subject (`devNotifications`, on);
+  a self-hosted GitLab or Jenkins sender counts only from the host of a BB
+  project's remote or with a List-Id of its own domain, and an alert from a
+  domain that is not a known monitoring service only with such a List-Id;
   **Hide dev notifications** in the list. Today shows "Dev: N CI failures".
 - **Links**: repository, PR, issue, commit and CI links of a message, listed
   by their real URL with **Open**, **Open project** and **New thread…** in the

@@ -21,7 +21,8 @@ export type DevBackfillOutcome = {
   more: boolean;
 };
 
-export function devBackfill(store: MailStore, options: { budget?: number } = {}): DevBackfillOutcome {
+export function devBackfill(store: MailStore, options: { budget?: number; devHosts?: readonly string[] } = {}): DevBackfillOutcome {
+  const hosts = new Set((options.devHosts ?? []).map((host) => host.toLowerCase()));
   const budget = Math.max(0, options.budget ?? DEV_BACKFILL_BUDGET);
   const outcome: DevBackfillOutcome = { checked: 0, classified: 0, more: false };
   try {
@@ -31,7 +32,7 @@ export function devBackfill(store: MailStore, options: { budget?: number } = {})
     for (let i = 0; i < taken.length; i += DEV_BACKFILL_BATCH) {
       const batch = taken.slice(i, i + DEV_BACKFILL_BATCH).map((row) => ({
         id: row.id,
-        dev: classifyDevFromStored({ from: row.from, subject: row.subject }),
+        dev: classifyDevFromStored({ from: row.from, subject: row.subject }, hosts),
       }));
       store.transaction(() => store.setDevClass(batch));
       outcome.checked += batch.length;

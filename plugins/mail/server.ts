@@ -1168,6 +1168,12 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       log: (line) => bb.log.info(line),
     };
 
+    /**
+     * Hosts of the BB projects' remotes, refreshed with the daily purge (and
+     * at start-up): the dev classifier takes a self-hosted GitLab or Jenkins
+     * sender only from these, or with a List-Id of its own domain.
+     */
+    let devHosts: string[] = [];
     // Always registered; without a key no password can be sealed or opened, so
     // rounds do nothing until one is saved.
     const loop = createSyncLoop(
@@ -1178,6 +1184,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         intervalMinutes: clampInterval(current.syncIntervalMinutes),
         // Slice 3g: dev notifications judged at sync, older rows by the dev backfill after full rounds.
         classify: current.devNotifications,
+        devHosts,
       }),
       {
         log: (line) => bb.log.info(line),
@@ -1405,7 +1412,9 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       // Bindings to projects BB no longer has go after 30 days; unknown when BB does not answer.
       let known: string[] | null = null;
       try {
-        known = (await projectDirectory.list()).map((project) => project.id);
+        const listed = await projectDirectory.list();
+        known = listed.map((project) => project.id);
+        devHosts = [...new Set(listed.flatMap((project) => (project.remote === null ? [] : [project.remote.host.toLowerCase()])))];
       } catch {
         known = null;
       }

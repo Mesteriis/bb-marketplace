@@ -72,8 +72,23 @@ describe("classifyDev: GitLab", () => {
         subject: "Failed pipeline for main | demo | abc1234",
         headers: headers({ "X-GitLab-Project-Path": "Group/Sub/Demo", "X-GitLab-Pipeline-Status": "failed", "X-GitLab-Pipeline-Id": "88" }),
         listId: null,
+        knownHosts: new Set(["gitlab.example.com"]),
       }),
     ).toEqual({ source: "gitlab", repo: "gitlab.example.com/group/sub/demo", kind: "ci", state: "failed", ref: "88" });
+  });
+
+  it("takes a self-hosted GitLab only from a project remote's host or with a List-Id of that host", () => {
+    const mail = {
+      from: "gitlab@gitlab.example.com",
+      subject: "Failed pipeline for main | demo | abc1234",
+      headers: headers({ "X-GitLab-Project-Path": "group/demo", "X-GitLab-Pipeline-Status": "failed" }),
+    };
+    expect(classifyDev({ ...mail, listId: null })).toBeNull();
+    expect(classifyDev({ ...mail, listId: null, knownHosts: new Set(["git.other.example"]) })).toBeNull();
+    expect(classifyDev({ ...mail, listId: "demo.group.gitlab.example.com" })).toMatchObject({ source: "gitlab", kind: "ci" });
+    // A forged GitLab header from anyone else is ordinary mail.
+    expect(classifyDev({ ...mail, from: "someone@elsewhere.example", listId: "demo.group.gitlab.example.com" })).toBeNull();
+    expect(classifyDev({ ...mail, from: "gitlab@elsewhere.example", listId: null, knownHosts: new Set(["gitlab.example.com"]) })).toBeNull();
   });
 
   it("maps gitlab.com senders to gitlab.com and reads merge requests and issues", () => {
@@ -110,10 +125,15 @@ describe("classifyDev: other CI and monitoring", () => {
       state: "failed",
       ref: "123",
     });
-    expect(classifyDev({ from: "jenkins@ci.example.com", subject: "Build fixed: demo #9", headers: null, listId: null })).toMatchObject({
+    expect(
+      classifyDev({ from: "jenkins@ci.example.com", subject: "Build fixed: demo #9", headers: null, listId: null, knownHosts: new Set(["ci.example.com"]) }),
+    ).toMatchObject({ source: "ci", state: "passed" });
+    expect(classifyDev({ from: "jenkins@ci.example.com", subject: "Build fixed: demo #9", headers: null, listId: "builds.ci.example.com" })).toMatchObject({
       source: "ci",
-      state: "passed",
     });
+    // "jenkins@" anywhere else is ordinary mail.
+    expect(classifyDev({ from: "jenkins@ci.example.com", subject: "Build fixed: demo #9", headers: null, listId: null })).toBeNull();
+    expect(classifyDev({ from: "jenkins@ci.example.com", subject: "Build fixed: demo #9", headers: null, listId: "news.other.example" })).toBeNull();
   });
 
   it("reads alerts as firing or resolved with the provider as the repo", () => {
@@ -121,8 +141,13 @@ describe("classifyDev: other CI and monitoring", () => {
       classifyDev({ from: "alerts@grafana.net", subject: "[FIRING:2] HighErrorRate api prod", headers: null, listId: null }),
     ).toEqual({ source: "monitoring", repo: "grafana", kind: "alert", state: "firing", ref: null });
     expect(
-      classifyDev({ from: "alertmanager@ops.example.com", subject: "[RESOLVED] HighErrorRate", headers: null, listId: null }),
+      classifyDev({ from: "alertmanager@ops.example.com", subject: "[RESOLVED] HighErrorRate", headers: null, listId: "alerts.ops.example.com" }),
     ).toMatchObject({ source: "monitoring", repo: "alertmanager", state: "resolved" });
+    // An Alertmanager-like subject from an unknown domain needs a List-Id of that domain.
+    expect(classifyDev({ from: "alertmanager@ops.example.com", subject: "[RESOLVED] HighErrorRate", headers: null, listId: null })).toBeNull();
+    expect(
+      classifyDev({ from: "alertmanager@ops.example.com", subject: "[FIRING:1] HighErrorRate", headers: null, listId: "alerts.elsewhere.example" }),
+    ).toBeNull();
     expect(
       classifyDev({ from: "no-reply@pagerduty.com", subject: "[#1234] Triggered: Disk full on db-1", headers: null, listId: null }),
     ).toMatchObject({ repo: "pagerduty", state: "firing", ref: "1234" });

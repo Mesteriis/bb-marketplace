@@ -51,6 +51,12 @@ export type DevInput = {
   headers: DevHeaders | null;
   /** normalizeListId's value, or null. */
   listId: string | null;
+  /**
+   * Hosts of the BB projects' remotes (lower case). A self-hosted GitLab or
+   * a Jenkins sender counts only from one of them, or with a List-Id of its
+   * own domain.
+   */
+  knownHosts?: ReadonlySet<string>;
 };
 
 const LIST_ID_MAX = 200;
@@ -80,6 +86,16 @@ function addressParts(from: string): { local: string; domain: string } {
 
 function domainIs(domain: string, base: string): boolean {
   return domain === base || domain.endsWith(`.${base}`);
+}
+
+/** The List-Id names the sender's own domain (a list run by that service). */
+function listOfDomain(listId: string | null, domain: string): boolean {
+  return listId !== null && domain !== "" && domainIs(listId, domain);
+}
+
+/** A sender outside the fixed service domains is taken only from a project remote's host or with its own List-Id. */
+function vouched(input: DevInput, domain: string): boolean {
+  return (domain !== "" && input.knownHosts?.has(domain) === true) || listOfDomain(input.listId, domain);
 }
 
 /** "failed", "passed" or "cancelled" from fixed words of a CI subject or status. */
@@ -137,7 +153,10 @@ function classifyGitlab(input: DevInput): DevClass | null {
   const { local, domain } = addressParts(input.from);
   const path = header(input.headers, "X-GitLab-Project-Path");
   if (path === null && local !== "gitlab") return null;
-  const host = domainIs(domain, "gitlab.com") ? "gitlab.com" : domain;
+  const gitlabCom = domainIs(domain, "gitlab.com");
+  // The header and "gitlab@" can be sent by anyone: a self-hosted GitLab must be vouched for (review).
+  if (!gitlabCom && !vouched(input, domain)) return null;
+  const host = gitlabCom ? "gitlab.com" : domain;
   const repoPath = path === null ? null : path.toLowerCase().replace(/^\/+|\/+$/g, "");
   const repo = repoPath === null || repoPath === "" || host === "" ? null : `${host}/${repoPath}`;
   const base = { source: "gitlab" as const, repo };
@@ -157,7 +176,7 @@ const CI_DOMAINS = ["circleci.com", "buildkite.com", "travis-ci.com", "travis-ci
 
 function classifyCi(input: DevInput): DevClass | null {
   const { local, domain } = addressParts(input.from);
-  if (!CI_DOMAINS.some((base) => domainIs(domain, base)) && local !== "jenkins") return null;
+  if (!CI_DOMAINS.some((base) => domainIs(domain, base)) && !(local === "jenkins" && vouched(input, domain))) return null;
   const slash = SLASH_REPO.exec(input.subject);
   const ref = /#(\d{1,12})\b/.exec(input.subject)?.[1] ?? null;
   return {
@@ -198,7 +217,13 @@ function alertState(subject: string): DevState {
 function classifyMonitoring(input: DevInput): DevClass | null {
   const { local, domain } = addressParts(input.from);
   let provider = MONITORING_DOMAINS.find(([base]) => domainIs(domain, base))?.[1] ?? null;
-  if (provider === null && ALERTMANAGER_SUBJECT.test(input.subject) && /alert|grafana|prometheus|monitor/.test(local)) {
+  // Outside the known domains, an Alertmanager-style subject counts only with a List-Id of the sender's domain (review).
+  if (
+    provider === null &&
+    ALERTMANAGER_SUBJECT.test(input.subject) &&
+    /alert|grafana|prometheus|monitor/.test(local) &&
+    listOfDomain(input.listId, domain)
+  ) {
     provider = local.includes("grafana") ? "grafana" : "alertmanager";
   }
   if (provider === null) return null;
@@ -211,7 +236,7 @@ export function classifyDev(input: DevInput): DevClass | null {
   return classifyGithub(input) ?? classifyGitlab(input) ?? classifyCi(input) ?? classifyMonitoring(input);
 }
 
-/** For rows synced before 3g: From and subject only (no headers, no List-Id). */
-export function classifyDevFromStored(row: { from: string; subject: string }): DevClass | null {
-  return classifyDev({ from: row.from, subject: row.subject, headers: null, listId: null });
+/** For rows synced before 3g: From and subject only (no headers, no List-Id), and the project remotes' hosts. */
+export function classifyDevFromStored(row: { from: string; subject: string }, knownHosts?: ReadonlySet<string>): DevClass | null {
+  return classifyDev({ from: row.from, subject: row.subject, headers: null, listId: null, ...(knownHosts === undefined ? {} : { knownHosts }) });
 }

@@ -41,6 +41,16 @@ describe("devBackfill", () => {
     expect(store.getMessage(idOf(store, "INBOX", 1))!.dev).toMatchObject({ source: "github" });
   });
 
+  it("takes a Jenkins sender only from a project remote's host", () => {
+    const store = setup();
+    const jenkins = (uid: number, domain: string) =>
+      makeFetchedMessage(uid, { date: day(uid), from: { name: "Jenkins", address: `jenkins@${domain}` }, subject: "Build failed: demo #9" });
+    store.upsertMessages("acc_1", "INBOX", [jenkins(1, "ci.example.com"), jenkins(2, "ci.other.example")]);
+    expect(devBackfill(store, { devHosts: ["CI.example.com"] })).toMatchObject({ checked: 2, classified: 1 });
+    expect(store.getMessage(idOf(store, "INBOX", 1))!.dev).toMatchObject({ source: "ci", state: "failed" });
+    expect(store.getMessage(idOf(store, "INBOX", 2))!.dev).toBeNull();
+  });
+
   it("leaves Spam alone and takes DEV_BACKFILL_BUDGET rows by default", () => {
     const store = setup();
     store.upsertMessages("acc_1", "Spam", [ci(1, 1)]);

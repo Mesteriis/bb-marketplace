@@ -1735,7 +1735,8 @@ describe("slice 3g: dev classification and List-Id at sync", () => {
         { key: "x-gitlab-pipeline-id", value: "88" },
       ],
     });
-    await syncAccount(deps, ACCOUNT_ID, CLASSIFY);
+    // A self-hosted GitLab counts only from a project remote's host (review).
+    await syncAccount(deps, ACCOUNT_ID, { ...CLASSIFY, devHosts: ["GitLab.example.com"] });
     expect(store.getMessage(idByUid(store, INBOX, pipeline.uid))!.dev).toEqual({
       source: "gitlab",
       repo: "gitlab.example.com/group/sub/demo",
@@ -1743,6 +1744,13 @@ describe("slice 3g: dev classification and List-Id at sync", () => {
       state: "failed",
       ref: "88",
     });
+    const unknown = gateway.deliver({
+      from: { name: null, address: "gitlab@git.unknown.example" },
+      subject: "Failed pipeline for main | demo | abc1234",
+      devHeaders: [{ key: "x-gitlab-project-path", value: "group/demo" }],
+    });
+    await syncAccount(deps, ACCOUNT_ID, { ...CLASSIFY, devHosts: ["gitlab.example.com"] });
+    expect(store.getMessage(idByUid(store, INBOX, unknown.uid))!.dev).toBeNull();
   });
 
   it("leaves Spam rows unclassified, and classifies nothing with classification off", async () => {
