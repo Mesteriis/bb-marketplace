@@ -135,6 +135,7 @@ describe("addAccount", () => {
       lastError: null,
       authFailed: false,
       smtpConfigured: true,
+      snoozeFolder: null,
     });
     expect(JSON.stringify(account)).not.toContain(PASSWORD);
     const stored = store.getAccount("acc_new_1")!;
@@ -405,7 +406,8 @@ describe("toPublicAccount", () => {
     const account = toPublicAccount(stored);
     expect("passwordSealed" in account).toBe(false);
     expect(JSON.stringify(account)).not.toContain("sealed-secret");
-    const { passwordSealed: _omitted, smtp: _smtp, sentCopy: _sentCopy, signature: _signature, snoozeFolder: _snooze, ...rest } = stored;
+    const { passwordSealed: _omitted, smtp: _smtp, sentCopy: _sentCopy, signature: _signature, ...rest } = stored;
+    // The snooze folder's path shows in Mail settings (slice 3e).
     expect(account).toEqual({ ...rest, smtpConfigured: false });
   });
 

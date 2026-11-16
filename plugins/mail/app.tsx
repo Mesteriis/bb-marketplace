@@ -31,6 +31,7 @@ import type {
   Folder,
   IdentityView,
   MAIL_CHANGED_CHANNEL as MailChangedChannel,
+  NEW_MAIL_CHANNEL as NewMailChannel,
   MessageAction,
   MessageHeader,
   NewAccountInput,
@@ -41,10 +42,12 @@ import type {
   StatusView,
   ThreadDetail,
 } from "./src/core/index.ts";
-import type { UnsubscribeInfoView } from "./src/core/model.ts";
+import type { BlockRuleView, UnsubscribeInfoView } from "./src/core/model.ts";
 import { isRoleMoveAction, roleFolders } from "./src/core/actions.ts";
 // undo.ts imports only actions.ts: no zod reaches the bundle (checked on build).
 import { UNDO_TOAST_MS, undoResultText, undoToastText, type UndoAction } from "./src/core/undo.ts";
+// snooze.ts imports only types: no zod reaches the bundle.
+import { snoozeFolderName } from "./src/core/snooze.ts";
 import type { ComposerPorts, ComposeWarningKind } from "./src/ui/composer.tsx";
 import type { SmtpSettingsInput } from "./src/ui/smtp-dialog.tsx";
 import type { DetailsState } from "./src/ui/details-panel.tsx";
@@ -76,9 +79,13 @@ import {
   parseDraftSubPath,
   parseThreadSubPath,
   parseViewSubPath,
+  threadSubPath,
   viewSubPath,
   type ThreadLink,
 } from "./src/ui/routes.ts";
+import { NEW_MAIL_TOAST_MS, newMailToastPlan } from "./src/ui/new-mail-toasts.ts";
+import { TriageCard, type TriageViewResult } from "./src/ui/triage-card.tsx";
+import { TriageRow } from "./src/ui/triage-row.tsx";
 import { AgentSendCard, type ProposalViewResult } from "./src/ui/agent-send-card.tsx";
 import { AgentSendRow } from "./src/ui/agent-send-row.tsx";
 import type { ReadingTranslation } from "./src/ui/reading-pane.tsx";
@@ -104,6 +111,7 @@ import type { BlockChoice } from "./src/ui/block-dialog.tsx";
 // at runtime: a value import of the core would bundle its zod schemas.
 const MAIL_CHANGED_CHANNEL: typeof MailChangedChannel = "mail-changed";
 const OUTBOX_CHANGED_CHANNEL: typeof OutboxChangedChannel = "outbox-changed";
+const NEW_MAIL_CHANNEL: typeof NewMailChannel = "mail-new";
 /** The Undo window when a row's sendAfter is not known yet. */
 const UNDO_WINDOW_MS = 10_000;
 /** How often a running translation is polled while the page is visible. */
@@ -330,7 +338,8 @@ type PageCommand =
   | { kind: "compose" }
   | { kind: "account"; choice: string }
   | { kind: "view"; view: MailView }
-  | { kind: "settings" };
+  | { kind: "settings" }
+  | { kind: "thread"; link: ThreadLink };
 
 /**
  * What the Mail page and its sidebar share while both are mounted (they are
@@ -371,6 +380,21 @@ const mailPageLink = (() => {
           update();
         },
       };
+    },
+    /** A Mail page is mounted. */
+    mounted: () => pages.length > 0,
+    /**
+     * A mounted Mail page is visible and lists an Inbox (spec "Toast"): its
+     * list updates by itself, so no new-mail toast is needed.
+     */
+    showsInbox(): boolean {
+      const state = shown;
+      if (state === null) return false;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return false;
+      const view = state.view;
+      if (view.kind === "role") return view.role === "inbox";
+      const folder = (state.folders ?? []).find((f) => f.accountId === view.accountId && f.path === view.path);
+      return folder !== undefined ? folder.specialUse === "inbox" : view.path.toUpperCase() === "INBOX";
     },
     /** False when no page took the command. */
     send(command: PageCommand): boolean {
@@ -1815,24 +1839,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     threadIds: string[];
     until: string;
   } | null>(null);
-  const [askFolders, setAskFolders] = useState<Folder[] | null>(null);
-  const askAccountId = folderAsk?.pending[0]?.accountId ?? null;
-  useEffect(() => {
-    setAskFolders(null);
-    if (askAccountId === null) return;
-    let live = true;
-    rpc.call("folders_list", { accountId: askAccountId }).then(
-      ({ folders: listed }) => {
-        if (live) setAskFolders(listed);
-      },
-      () => {
-        if (live) setAskFolders([]);
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [askAccountId, rpc]);
+  const askFolders = useAccountFolders(folderAsk?.pending[0]?.accountId ?? null);
 
   const snoozeThreads = useCallback(
     async (threadIds: string[], until: string) => {
@@ -2200,13 +2207,40 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     void loadIdentities();
     void loadTemplates();
   }, [accountIds, loadIdentities, loadTemplates, status?.vaultReady]);
+  /** Blocked senders for Mail settings (slice 3e); null while they load. */
+  const [blockRules, setBlockRules] = useState<BlockRuleView[] | null>(null);
+  const loadBlockRules = useCallback(async () => {
+    try {
+      setBlockRules((await rpc.call("block_list", {})).rules);
+    } catch {
+      setBlockRules((prev) => prev ?? []);
+    }
+  }, [rpc]);
   const openSettings = useCallback(
     (section: SettingsSection) => {
       setSettings({ open: true, section });
       void loadIdentities();
       void loadTemplates();
+      void loadBlockRules();
     },
-    [loadIdentities, loadTemplates],
+    [loadBlockRules, loadIdentities, loadTemplates],
+  );
+  /** Mail settings' Change… for an account's snooze folder. */
+  const [settingsFolder, setSettingsFolder] = useState<SnoozeFolderRequest | null>(null);
+  const settingsFolders = useAccountFolders(settingsFolder?.accountId ?? null);
+  const changeSnoozeFolder = useCallback(
+    (accountId: string) => {
+      const target = accounts.find((a) => a.id === accountId);
+      if (target === undefined) return;
+      setSettings((prev) => ({ ...prev, open: false }));
+      setSettingsFolder({
+        accountId,
+        accountLabel: target.email,
+        proposedName: snoozeFolderName(target.preset),
+        current: target.snoozeFolder ?? null,
+      });
+    },
+    [accounts],
   );
   const settingsDialog = (
     <MailSettings
@@ -2244,6 +2278,12 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         setSettings((prev) => ({ ...prev, open: false }));
         setSmtpAccountId(accountId);
       }}
+      blockRules={blockRules}
+      onUnblock={async (id) => {
+        await rpc.call("block_remove", { id });
+        await loadBlockRules();
+      }}
+      onChangeSnoozeFolder={changeSnoozeFolder}
     />
   );
 
@@ -2289,6 +2329,9 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         return;
       case "settings":
         openSettings("addresses");
+        return;
+      case "thread":
+        navigate.toPluginPanel("mail", { subPath: threadSubPath(command.link.accountId, command.link.threadId) });
         return;
     }
   };
@@ -2403,6 +2446,21 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       }}
       onCancel={() => setFolderAsk(null)}
     />
+    <SnoozeFolderDialog
+      request={settingsFolder}
+      folders={settingsFolders}
+      onCreate={async (accountId) => {
+        await rpc.call("snooze_folder_create", { accountId });
+        setSettingsFolder(null);
+        void loadStatus();
+      }}
+      onUse={async (accountId, path) => {
+        await rpc.call("snooze_folder_use", { accountId, path });
+        setSettingsFolder(null);
+        void loadStatus();
+      }}
+      onCancel={() => setSettingsFolder(null)}
+    />
     <TranslationSettings
       open={translateSettingsOpen}
       onOpenChange={translateSettingsChanged}
@@ -2416,9 +2474,110 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   );
 }
 
+/** One account's folders, for a folder picker; null while they load (or with no account). */
+function useAccountFolders(accountId: string | null): Folder[] | null {
+  const rpc = useRpc<typeof rpcContract>();
+  const [folders, setFolders] = useState<Folder[] | null>(null);
+  useEffect(() => {
+    setFolders(null);
+    if (accountId === null) return;
+    let live = true;
+    rpc.call("folders_list", { accountId }).then(
+      ({ folders: listed }) => {
+        if (live) setFolders(listed);
+      },
+      () => {
+        if (live) setFolders([]);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [accountId, rpc]);
+  return folders;
+}
+
+// ---- New-mail toasts (slice 3e) ----
+
+/** Tokens already toasted in this window: a repeated signal never stacks a second toast. */
+const toastedTokens = new Set<string>();
+const TOASTED_TOKENS_KEPT = 50;
+
+function newMailToken(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const { token } = payload as { token?: unknown };
+  return typeof token === "string" && token !== "" && token.length <= 64 ? token : null;
+}
+
+type Navigate = ReturnType<typeof useBbNavigate>;
+
+/** The senders behind a token as a toast with Open; any failure shows nothing. */
+async function showNewMail(
+  rpc: ReturnType<typeof useRpc<typeof rpcContract>>,
+  token: string,
+  navigate: { current: Navigate | null },
+): Promise<void> {
+  try {
+    const { items, more } = await rpc.call("new_mail_get", { token });
+    const plan = newMailToastPlan(items, more, mailPageLink.showsInbox());
+    if (plan === null) return;
+    const subPath = threadSubPath(plan.open.accountId, plan.open.threadId);
+    // Without BB's navigation (spec resolution 23), Open goes through a mounted Mail page, or is left out.
+    const canOpen = navigate.current !== null || mailPageLink.mounted();
+    const open = () => {
+      try {
+        if (navigate.current !== null) navigate.current.toPluginPanel("mail", { subPath });
+        else mailPageLink.send({ kind: "thread", link: plan.open });
+      } catch {
+        // Nothing to open.
+      }
+    };
+    toast(plan.title, {
+      id: `makosh-mail-new-${token}`,
+      description: plan.description,
+      duration: NEW_MAIL_TOAST_MS,
+      ...(canOpen ? { action: { label: "Open", onClick: open } } : {}),
+    });
+  } catch {
+    // Expired token, a refusal, or no toast host: the badge carries on.
+  }
+}
+
+/**
+ * New-mail toasts in every BB window (spec "Toast"): mounted inside the
+ * badge hook, which the host runs whether or not the Mail page is open.
+ * Every step is caught, so a toast failure never takes the badge with it
+ * (spec resolution 23); navigate sits in a ref, outside the subscription.
+ */
+function useNewMailToasts(): void {
+  const rpc = useRpc<typeof rpcContract>();
+  let navigate: Navigate | null = null;
+  try {
+    navigate = useBbNavigate();
+  } catch {
+    navigate = null;
+  }
+  const navigateRef = useRef<Navigate | null>(navigate);
+  navigateRef.current = navigate;
+  const rpcRef = useRef(rpc);
+  rpcRef.current = rpc;
+  useRealtime(NEW_MAIL_CHANNEL, (payload) => {
+    try {
+      const token = newMailToken(payload);
+      if (token === null || toastedTokens.has(token)) return;
+      toastedTokens.add(token);
+      while (toastedTokens.size > TOASTED_TOKENS_KEPT) toastedTokens.delete(toastedTokens.values().next().value!);
+      void showNewMail(rpcRef.current, token, navigateRef);
+    } catch {
+      // The badge carries on.
+    }
+  });
+}
+
 /** The nav entry's unread count, kept current by the same realtime signal. */
 function useUnreadBadge(): ExperimentalBadge | null {
   const rpc = useRpc<typeof rpcContract>();
+  useNewMailToasts();
   const [count, setCount] = useState(0);
   const refresh = useCallback(() => {
     rpc.call("status_get", null).then(
@@ -2540,6 +2699,78 @@ function AgentSendTimelineRow({ payload }: PluginTimelineRendererProps) {
   );
 }
 
+// ---- Agent triage (slice 3e) ----
+
+/** The triage card's payload: the batch id and content hash, nothing else (the server sets it). */
+function triagePayload(payload: unknown): { batchId: string; contentHash: string } | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const { batchId, contentHash } = payload as Record<string, unknown>;
+  return typeof batchId === "string" && batchId !== "" && typeof contentHash === "string" ? { batchId, contentHash } : null;
+}
+
+/** The settled row's payload: `{ batchId }`. */
+function settledBatchId(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const { batchId } = payload as Record<string, unknown>;
+  return typeof batchId === "string" && batchId !== "" ? batchId : null;
+}
+
+/**
+ * The inbox-actions card in an agent's thread: a thin adapter. The submit
+ * value carries the batch id, the content hash, this view's token and the
+ * ticked positions (under 2 KiB: at most 50 positions and a few accounts).
+ */
+function AgentTriageInteraction({ interaction, submit, cancel }: PluginPendingInteractionProps) {
+  const rpc = useRpc<typeof rpcContract>();
+  const form = experimental_useQuestionFormHost();
+  const ids = triagePayload(interaction.payload);
+  const batchId = ids?.batchId ?? null;
+  const contentHash = ids?.contentHash ?? null;
+  const load = useCallback(async (): Promise<TriageViewResult> => {
+    if (batchId === null || contentHash === null) return { state: "gone" };
+    return rpc.call("triage_view", { batchId, contentHash });
+  }, [batchId, contentHash, rpc]);
+  const registerAction = useCallback(
+    (handler: (action: string) => boolean) => form.registerActionHandler(handler),
+    [form],
+  );
+  return (
+    <TriageCard
+      load={load}
+      submit={async (selection, viewToken) => {
+        if (ids === null) return;
+        await submit({
+          action: "apply",
+          batchId: ids.batchId,
+          contentHash: ids.contentHash,
+          viewToken,
+          approved: selection.approved,
+          createSnoozeFolder: selection.createSnoozeFolder,
+        });
+      }}
+      cancel={cancel}
+      registerAction={registerAction}
+    />
+  );
+}
+
+/** A settled triage card's row: what ran, with Undo while the batch's record lives. */
+function AgentTriageTimelineRow({ payload }: PluginTimelineRendererProps) {
+  const rpc = useRpc<typeof rpcContract>();
+  const batchId = settledBatchId(payload);
+  const [version, setVersion] = useState(0);
+  useDebouncedRealtime(MAIL_CHANGED_CHANNEL, () => setVersion((n) => n + 1));
+  const status = useCallback(async () => {
+    if (batchId === null) throw new Error("not_found");
+    return rpc.call("triage_status", { batchId });
+  }, [batchId, rpc]);
+  const undo = useCallback(async () => {
+    if (batchId === null) return "Nothing to undo";
+    return undoResultText(await rpc.call("action_undo", { undoId: batchId }));
+  }, [batchId, rpc]);
+  return <TriageRow status={status} undo={undo} version={version} />;
+}
+
 // The default export must be definePluginApp(...); BB interprets it after
 // loading the bundle. navPanel adds a page to the left sidebar, routed at
 // /plugins/makosh-mail/mail; while it is open, BB's sidebar shows the mail
@@ -2558,4 +2789,7 @@ export default definePluginApp((app) => {
   // its settled row in the thread timeline.
   app.slots.pendingInteraction({ id: "agent-send", component: AgentSendInteraction });
   app.slots.experimental_timelineRenderer({ kind: "makosh-mail/agent-send", component: AgentSendTimelineRow });
+  // The inbox-actions card mail_triage opens (rendererId "agent-triage"), and its settled row.
+  app.slots.pendingInteraction({ id: "agent-triage", component: AgentTriageInteraction });
+  app.slots.experimental_timelineRenderer({ kind: "makosh-mail/agent-triage", component: AgentTriageTimelineRow });
 });
