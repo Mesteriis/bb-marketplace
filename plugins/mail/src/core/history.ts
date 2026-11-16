@@ -26,12 +26,14 @@ export function historyRange(state: { historySince: string | null; syncedSince: 
 
 /**
  * Where loaded history starts after a step: the range start when the step
- * fetched all of its new messages (or none), else the oldest fetched
- * message's date, so the next step continues from there.
+ * fetched all of its new messages (or found none); null (history_since
+ * stays) when it had more than HISTORY_STEP_MAX or stopped early, so the
+ * same range runs again and its stored uids are skipped. Never a header
+ * date: uid order need not be date order, so the oldest fetched message
+ * says nothing about what the step left out.
  */
-export function nextHistorySince(range: HistoryRange, fetchedOldest: string | null, newCount: number): string {
-  if (newCount <= HISTORY_STEP_MAX || fetchedOldest === null) return range.from;
-  return fetchedOldest;
+export function nextHistorySince(range: HistoryRange, step: { newCount: number; stopped: boolean }): string | null {
+  return step.stopped || step.newCount > HISTORY_STEP_MAX ? null : range.from;
 }
 
 /** The list's note after `count` empty steps in a row, or null. */

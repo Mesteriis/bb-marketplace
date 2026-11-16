@@ -377,24 +377,23 @@ export function createServerJobs(deps: ServerJobsDeps): ServerJobs {
     context: PrepareContext,
     signal: TaskSignal,
     max: number,
-  ): Promise<{ left: number[]; oldest: string | null; stored: number; processed: number; insertable: number }> {
+  ): Promise<{ left: number[]; stored: number; processed: number; insertable: number }> {
     const accountId = run.accountId;
     const status = await session.status();
     const insertable = jobInsertable(uids, store.getSyncState(accountId, path), status.uidValidity);
     run.skipped += insertable.skipped;
     if (insertable.reason !== undefined) {
       run.reason ??= insertable.reason;
-      return { left: [], oldest: null, stored: 0, processed: 0, insertable: 0 };
+      return { left: [], stored: 0, processed: 0, insertable: 0 };
     }
     const todo = insertable.uids.slice(0, max);
     let left = insertable.uids.slice(max);
-    let oldest: string | null = null;
     let stored = 0;
     for (let i = 0; i < todo.length; i += limits.batch) {
       const stop = signal.stop();
       if (stop !== null) {
         left = [...todo.slice(i), ...left];
-        throw Object.assign(new TaskEnd(stop), { left, oldest });
+        throw Object.assign(new TaskEnd(stop), { left });
       }
       const batch = todo.slice(i, i + limits.batch);
       let messages: FetchedMessage[] = await session.fetchMessages(batch);
@@ -411,7 +410,6 @@ export function createServerJobs(deps: ServerJobsDeps): ServerJobs {
           ),
         );
       }
-      for (const m of messages) if (m.date !== null && (oldest === null || m.date < oldest)) oldest = m.date;
       let matched: string[] = [];
       if (kept === "search") {
         const keys = messages.map((m) => dedupKeyOf(m.gmMsgId, m.messageId, m.size, "")).filter((k) => !k.startsWith("id:"));
@@ -437,7 +435,7 @@ export function createServerJobs(deps: ServerJobsDeps): ServerJobs {
       stored += prepared.length;
       if (prepared.length > 0) rebuildThreads(accountId);
     }
-    return { left, oldest, stored, processed: todo.length, insertable: insertable.uids.length };
+    return { left, stored, processed: todo.length, insertable: insertable.uids.length };
   }
 
   /** Uids of the folder already stored here: they are not fetched again. */
@@ -537,7 +535,6 @@ export function createServerJobs(deps: ServerJobsDeps): ServerJobs {
     const key = `${accountId}\u0000${folder}`;
     const historySince = store.historyState(accountId, folder)?.historySince ?? null;
     const range = historyRange({ historySince, syncedSince: state.syncedSince }, deps.settings().historyStepDays);
-    let oldest: string | null = null;
     let newCount = 0;
     let completed = false;
     try {
@@ -551,7 +548,6 @@ export function createServerJobs(deps: ServerJobsDeps): ServerJobs {
         const done = await fetchInto(job, run, session, folder, fresh, "history", context, signal, HISTORY_STEP_MAX);
         if (run.reason === "changed") return;
         newCount = done.insertable;
-        oldest = done.oldest;
         completed = true;
         // Server hits this step covers become history (spec resolution 7): fetched again, they keep their ids.
         const matched = new Set(uids);
@@ -563,19 +559,18 @@ export function createServerJobs(deps: ServerJobsDeps): ServerJobs {
         if (covered.length > 0) await fetchInto(job, run, session, folder, covered, "history", context, signal, covered.length);
       });
     } catch (error) {
-      oldest = (error as { oldest?: string | null }).oldest ?? oldest;
-      if (error instanceof TaskEnd && oldest !== null) {
-        // Stopped midway: the next step continues from the oldest message stored.
-        store.setHistorySince(accountId, folder, oldest);
-        job.history = { accountId, folder, since: oldest, emptySteps: emptySteps.get(key) ?? 0 };
-      }
+      // Stopped midway: history_since stays and the step is not an empty one;
+      // the next step runs the same range, skipping what was stored.
+      if (error instanceof TaskEnd) job.history = { accountId, folder, since: historySince, emptySteps: emptySteps.get(key) ?? 0 };
       throw error;
     }
-    if (!completed) {
+    const since = completed ? nextHistorySince(range, { newCount, stopped: false }) : null;
+    if (since === null) {
+      // Not run (the folder changed), or more than HISTORY_STEP_MAX new: the same range runs again.
+      if (completed) emptySteps.set(key, 0);
       job.history = { accountId, folder, since: historySince, emptySteps: emptySteps.get(key) ?? 0 };
       return;
     }
-    const since = nextHistorySince(range, oldest, newCount);
     store.setHistorySince(accountId, folder, since);
     const empty = newCount === 0 ? (emptySteps.get(key) ?? 0) + 1 : 0;
     emptySteps.set(key, empty);

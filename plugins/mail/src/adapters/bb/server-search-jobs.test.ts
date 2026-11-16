@@ -403,7 +403,7 @@ describe("history jobs", () => {
     expect(env.store.historyState(ACCOUNT, "INBOX")!.historySince).toBe(new Date(Date.parse(syncedSince) - 120 * DAY).toISOString());
   });
 
-  it("fetches at most 500 per step and continues from the oldest fetched message", async () => {
+  it("fetches at most 500 per step and runs the same range again until it is complete", async () => {
     const env = setup();
     await syncAccount(env.syncDeps, ACCOUNT, { windowDays: 30, batchSize: 50 });
     // 520 messages inside the next 30 days, delivered after the sync but numbered below last_uid.
@@ -419,13 +419,63 @@ describe("history jobs", () => {
     await jobs.settled(first.jobId);
     const view = jobs.poll(first.jobId)!;
     expect(view.accounts[0]!.fetched).toBe(500);
-    const oldestFetched = daysAgo(55 - 20 * 0.04);
-    expect(view.historySince).toBe(oldestFetched);
+    // Not advanced: history_since never comes from a header date.
+    expect(view).toMatchObject({ historySince: null, emptySteps: 0 });
+    expect(env.store.historyState(ACCOUNT, "INBOX")!.historySince).toBeNull();
     const second = jobs.startHistory(ACCOUNT, "INBOX");
     if (!("jobId" in second)) throw new Error("refused");
     await jobs.settled(second.jobId);
     expect(jobs.poll(second.jobId)!.accounts[0]!.fetched).toBe(20);
     expect(env.store.localFolderIndex(ACCOUNT, "INBOX", EPOCH)).toHaveLength(520);
+    expect(jobs.poll(second.jobId)!.historySince).toBe(new Date(Date.parse(state.syncedSince) - 30 * DAY).toISOString());
+  });
+
+  it("leaves no gap when uid order is not date order (newest dates on the lowest uids)", async () => {
+    const env = setup();
+    // 600 old messages 31 to 58 days old, the newest dates first (lowest uids), as in a folder filled by moves.
+    for (let i = 0; i < 600; i++) env.scripted.deliver({ date: daysAgo(31 + i * 0.045), subject: `Old ${i}`, messageId: `<moved-${i}@example.org>` });
+    env.scripted.deliver({ date: daysAgo(1), subject: "Recent", messageId: "<recent@example.org>" });
+    await syncAccount(env.syncDeps, ACCOUNT, { windowDays: 30, batchSize: 50 });
+    const { jobs } = jobsOf(env, readOnlyGuard(env.scripted).gateway);
+    for (let step = 0; step < 3; step++) {
+      const started = jobs.startHistory(ACCOUNT, "INBOX");
+      if (!("jobId" in started)) throw new Error("refused");
+      await jobs.settled(started.jobId);
+    }
+    expect(env.store.localFolderIndex(ACCOUNT, "INBOX", EPOCH)).toHaveLength(601);
+  });
+
+  it("a cancelled step does not move history_since and is not an empty step", async () => {
+    const env = setup();
+    deliverOld(env.scripted, 120, "INBOX", "Old", 40);
+    await syncAccount(env.syncDeps, ACCOUNT, { windowDays: 30, batchSize: 50 });
+    let jobId = "";
+    let fetches = 0;
+    const guarded = readOnlyGuard(env.scripted).gateway;
+    const gateway: ImapGateway = {
+      ...guarded,
+      async openFolder(config, path, options) {
+        const session = await guarded.openFolder(config, path, options);
+        return {
+          ...session,
+          fetchMessages: async (uids) => {
+            if (++fetches === 2) jobs.cancel(jobId);
+            return session.fetchMessages(uids);
+          },
+        };
+      },
+    };
+    const { jobs } = jobsOf(env, gateway);
+    const started = jobs.startHistory(ACCOUNT, "INBOX");
+    if (!("jobId" in started)) throw new Error("refused");
+    jobId = started.jobId;
+    await jobs.settled(jobId);
+    const view = jobs.poll(jobId)!;
+    expect(view.accounts[0]).toMatchObject({ reason: "cancelled" });
+    expect(view.accounts[0]!.fetched).toBeGreaterThan(0);
+    expect(view.accounts[0]!.fetched).toBeLessThan(120);
+    expect(view).toMatchObject({ historySince: null, emptySteps: 0 });
+    expect(env.store.historyState(ACCOUNT, "INBOX")!.historySince).toBeNull();
   });
 
   it("turns a server hit the step covers into history and refuses an unsynced folder", async () => {

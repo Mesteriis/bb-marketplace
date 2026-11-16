@@ -30,23 +30,25 @@ describe("historyRange", () => {
 describe("nextHistorySince", () => {
   const range = { from: "2026-09-17T00:00:00.000Z", before: "2026-10-17T00:00:00.000Z" };
 
-  it("moves to the range start when the step fetched everything", () => {
-    expect(nextHistorySince(range, "2026-09-20T08:00:00.000Z", 120)).toBe(range.from);
-    expect(nextHistorySince(range, "2026-09-20T08:00:00.000Z", HISTORY_STEP_MAX)).toBe(range.from);
-  });
-
-  it("moves to the oldest fetched message when the step had more than 500", () => {
-    expect(nextHistorySince(range, "2026-10-01T08:00:00.000Z", HISTORY_STEP_MAX + 1)).toBe("2026-10-01T08:00:00.000Z");
+  it("moves to the range start when the step fetched all of its new messages", () => {
+    expect(nextHistorySince(range, { newCount: 120, stopped: false })).toBe(range.from);
+    expect(nextHistorySince(range, { newCount: HISTORY_STEP_MAX, stopped: false })).toBe(range.from);
   });
 
   it("moves to the range start after an empty step", () => {
-    expect(nextHistorySince(range, null, 0)).toBe(range.from);
+    expect(nextHistorySince(range, { newCount: 0, stopped: false })).toBe(range.from);
   });
 
-  it("keeps the range start when the oldest date is missing on a full step", () => {
-    expect(nextHistorySince(range, null, 900)).toBe(range.from);
+  it("stays put when the step had more than 500 new messages: the same range runs again", () => {
+    expect(nextHistorySince(range, { newCount: HISTORY_STEP_MAX + 1, stopped: false })).toBeNull();
+    expect(nextHistorySince(range, { newCount: 900, stopped: false })).toBeNull();
+  });
+
+  it("stays put when the step stopped early", () => {
+    expect(nextHistorySince(range, { newCount: 10, stopped: true })).toBeNull();
   });
 });
+
 
 describe("emptyStepsNote", () => {
   it("speaks after three empty steps in a row", () => {
