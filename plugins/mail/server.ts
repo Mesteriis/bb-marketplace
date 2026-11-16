@@ -561,6 +561,11 @@ export const PLUGIN_CALLER_MESSAGE = "Only the owner's Mail page can change mail
 export const PASSWORD_NEEDED_MESSAGE = "This account needs its password re-entered";
 /** Role "all" (Gmail All Mail) stays under its account; All accounts does not merge it. */
 export const ALL_ROLE_MESSAGE = "All Mail is not a merged folder";
+/** Slice 3f methods whose server task has not landed yet. */
+export const NOT_AVAILABLE_MESSAGE = "Not available yet";
+const notYet = (): never => {
+  throw refuse("conflict", NOT_AVAILABLE_MESSAGE);
+};
 
 /**
  * Writes refuse other plugins calling through bb.sdk.plugins.callRpc (the
@@ -2547,6 +2552,31 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       // Inbox triage (slice 3e): the card's content and the thread row.
       triage_view: owner("triage_view", (input) => viewTriage(deps, input)),
       triage_status: owner("triage_status", ({ batchId }) => triageStatus(deps, batchId)),
+      // Agent and mail (slice 3f): owner only; the server tasks fill these in.
+      ai_start: owner("ai_start", notYet),
+      ai_poll: owner("ai_poll", notYet),
+      ai_cancel: owner("ai_cancel", notYet),
+      tasks_keep: owner("tasks_keep", notYet),
+      tasks_list: owner("tasks_list", notYet),
+      task_update: owner("task_update", notYet),
+      task_delete: owner("task_delete", notYet),
+      category_set: owner("category_set", notYet),
+      category_accept: owner("category_accept", notYet),
+      category_undo: owner("category_undo", notYet),
+      category_rule_add: owner("category_rule_add", notYet),
+      category_rule_remove: owner("category_rule_remove", notYet),
+      category_rules_list: owner("category_rules_list", notYet),
+      today_get: owner("today_get", notYet),
+      reply_dismiss: owner("reply_dismiss", notYet),
+      reminder_set: owner("reminder_set", notYet),
+      reminder_snooze: owner("reminder_snooze", notYet),
+      reminder_dismiss: owner("reminder_dismiss", notYet),
+      reminders_due: owner("reminders_due", notYet),
+      day_notice_get: owner("day_notice_get", notYet),
+      ai_scope_get: owner("ai_scope_get", notYet),
+      ai_scope_set: owner("ai_scope_set", notYet),
+      agent_log_list: owner("agent_log_list", notYet),
+      agent_log_clear: owner("agent_log_clear", notYet),
     },
     { experimental_discoverable: false },
   );

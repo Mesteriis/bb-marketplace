@@ -88,6 +88,7 @@ describe("syncAccount", () => {
       movesCancelled: [],
       newInbox: [],
       returning: [],
+      inserted: [],
     });
     const batches = fetchBatches(gateway);
     expect(batches.map((b) => b.length)).toEqual([50, 50, 20]);
@@ -666,6 +667,7 @@ describe("syncAccount over folders", () => {
       movesCancelled: [],
       newInbox: [],
       returning: [],
+      inserted: [],
     });
     expect(gateway.listFoldersCalls).toBe(1);
     expect(store.getSyncState(ACCOUNT_ID, INBOX)).toMatchObject({ uidValidity: 7, lastUid: 3 });

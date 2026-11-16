@@ -168,6 +168,8 @@ const threadA: ThreadSummary = {
   snippet: "Here is the draft we talked about",
   flagged: false,
   snoozedUntil: null,
+  category: null,
+  categorySuggestion: null,
 };
 
 const threadB: ThreadSummary = {
@@ -181,6 +183,8 @@ const threadB: ThreadSummary = {
   snippet: "Friday works",
   flagged: false,
   snoozedUntil: null,
+  category: null,
+  categorySuggestion: null,
 };
 
 function message(overrides: Partial<MessageHeader> & { id: string }): MessageHeader {
@@ -199,6 +203,8 @@ function message(overrides: Partial<MessageHeader> & { id: string }): MessageHea
     cc: [],
     attachments: [],
     draftId: null,
+    agentSubject: overrides.subject ?? "Quarterly plan",
+    inAiScope: true,
     ...overrides,
   };
 }

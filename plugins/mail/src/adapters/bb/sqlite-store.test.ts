@@ -143,6 +143,8 @@ describe("createSqliteStore", () => {
       snippet: "Second reply text",
       flagged: false,
       snoozedUntil: null,
+      category: null,
+      categorySuggestion: null,
     });
     expect(detail.messages[1]).toEqual({
       id: second,
@@ -162,6 +164,8 @@ describe("createSqliteStore", () => {
         { partId: "2", filename: "plan.txt", mimeType: "text/plain", size: 12, isInline: false },
       ],
       draftId: null,
+      agentSubject: "Re: Invented plan",
+      inAiScope: true,
     });
     expect(store.threadingInputs("acc_1")).toContainEqual({
       id: second,

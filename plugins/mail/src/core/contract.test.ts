@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
+import { AI_KINDS } from "./ai-input.ts";
 import {
+  AI_START_KINDS,
+  DAY_NOTICE_CHANNEL,
   MAIL_CHANGED_CHANNEL,
   NEW_MAIL_CHANNEL,
+  dayNoticePayloadSchema,
   OUTBOX_CHANGED_CHANNEL,
   headerAddressInput,
   newMailPayloadSchema,
@@ -98,6 +102,34 @@ const SLICE_3E_METHODS = [
   "triage_status",
 ] as const;
 
+/** The 24 owner-only methods slice 3f adds. */
+const SLICE_3F_METHODS = [
+  "ai_start",
+  "ai_poll",
+  "ai_cancel",
+  "tasks_keep",
+  "tasks_list",
+  "task_update",
+  "task_delete",
+  "category_set",
+  "category_accept",
+  "category_undo",
+  "category_rule_add",
+  "category_rule_remove",
+  "category_rules_list",
+  "today_get",
+  "reply_dismiss",
+  "reminder_set",
+  "reminder_snooze",
+  "reminder_dismiss",
+  "reminders_due",
+  "day_notice_get",
+  "ai_scope_get",
+  "ai_scope_set",
+  "agent_log_list",
+  "agent_log_clear",
+] as const;
+
 /** Header-injection payloads every header field must refuse. */
 const LINE_BREAKS = ["x\r\nBcc: eve@example.net", "x\nBcc: eve@example.net", "x\rX", "x\u0000y"];
 
@@ -118,13 +150,14 @@ function keysOf(schema: z.ZodType): string[] {
 }
 
 describe("rpcSchemas", () => {
-  it("declares exactly the slice-1 methods plus the slice-2, 3a, 3b, 3c, 3d and 3e additions", () => {
+  it("declares exactly the slice-1 methods plus the slice-2, 3a, 3b, 3c, 3d, 3e and 3f additions", () => {
     expect(Object.keys(rpcSchemas).sort()).toEqual(
       [
         ...COMPOSE_METHODS,
         ...SLICE_3C_METHODS,
         ...SLICE_3D_METHODS,
         ...SLICE_3E_METHODS,
+        ...SLICE_3F_METHODS,
         "status_get",
         "accounts_test",
         "accounts_add",
@@ -436,7 +469,7 @@ describe("slice-3b contract", () => {
 
   it("adds exactly 19 methods to the 17 before it", () => {
     expect(COMPOSE_METHODS).toHaveLength(19);
-    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS];
+    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(36);
   });
 
@@ -745,7 +778,7 @@ describe("slice-3c contract", () => {
 
   it("adds exactly 8 methods to the 36 before it", () => {
     expect(SLICE_3C_METHODS).toHaveLength(8);
-    const later: readonly string[] = [...SLICE_3D_METHODS, ...SLICE_3E_METHODS];
+    const later: readonly string[] = [...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(44);
     expect(COMPOSE_METHODS).toHaveLength(19);
   });
@@ -983,7 +1016,8 @@ describe("slice-3d contract", () => {
 
   it("adds exactly 11 methods to the 44 before it", () => {
     expect(SLICE_3D_METHODS).toHaveLength(11);
-    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3E_METHODS as readonly string[]).includes(m))).toHaveLength(55);
+    const later: readonly string[] = [...SLICE_3E_METHODS, ...SLICE_3F_METHODS];
+    expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(55);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
   });
@@ -1161,7 +1195,7 @@ describe("slice-3e contract", () => {
 
   it("adds exactly 14 methods to the 55 before it", () => {
     expect(SLICE_3E_METHODS).toHaveLength(14);
-    expect(Object.keys(rpcSchemas)).toHaveLength(69);
+    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3F_METHODS as readonly string[]).includes(m))).toHaveLength(69);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
     expect(SLICE_3D_METHODS).toHaveLength(11);
@@ -1293,5 +1327,166 @@ describe("slice-3e contract", () => {
     expect(newMailPayloadSchema.safeParse({ token: "abc", accountId: "a" }).success).toBe(false);
     expect(newMailPayloadSchema.safeParse({ token: "t".repeat(65) }).success).toBe(false);
     expect(newMailPayloadSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe("slice-3f contract", () => {
+  const parses = (method: keyof typeof rpcSchemas, input: unknown) =>
+    rpcSchemas[method].input.safeParse(input).success;
+  const outputs = (method: keyof typeof rpcSchemas, output: unknown) =>
+    rpcSchemas[method].output.safeParse(output).success;
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => `m${i}`);
+  const draft = { kind: "draft", draftId: "d", revision: 3, mode: "fix", paragraphs: ["Hello"] };
+
+  it("adds exactly 24 methods to the 69 before it", () => {
+    expect(SLICE_3F_METHODS).toHaveLength(24);
+    expect(Object.keys(rpcSchemas)).toHaveLength(93);
+    expect(COMPOSE_METHODS).toHaveLength(19);
+    expect(SLICE_3C_METHODS).toHaveLength(8);
+    expect(SLICE_3D_METHODS).toHaveLength(11);
+    expect(SLICE_3E_METHODS).toHaveLength(14);
+  });
+
+  it("offers every AI kind through ai_start", () => {
+    expect([...AI_START_KINDS].sort()).toEqual([...AI_KINDS].sort());
+  });
+
+  it("takes each ai_start variant and refuses unknown kinds and extra keys", () => {
+    expect(parses("ai_start", { kind: "summary", threadId: "t" })).toBe(true);
+    expect(parses("ai_start", { kind: "summary", threadId: "t", folder: "INBOX", force: true })).toBe(true);
+    expect(parses("ai_start", { kind: "tasks", messageId: "m" })).toBe(true);
+    expect(parses("ai_start", { kind: "tasks", threadId: "t", folder: "INBOX" })).toBe(true);
+    expect(parses("ai_start", { kind: "tasks", messageId: "m", threadId: "t" })).toBe(false);
+    expect(parses("ai_start", { kind: "ask", question: "When is the meeting?" })).toBe(true);
+    expect(parses("ai_start", { kind: "categories", messageIds: ["m"] })).toBe(true);
+    expect(parses("ai_start", { kind: "digest" })).toBe(true);
+    expect(parses("ai_start", draft)).toBe(true);
+    expect(parses("ai_start", { kind: "translate", messageId: "m" })).toBe(false);
+    expect(parses("ai_start", { kind: "digest", accountId: "a" })).toBe(false);
+    expect(parses("ai_start", { kind: "summary" })).toBe(false);
+  });
+
+  it("refuses empty and overlong ids in ai_start", () => {
+    const cases: [Record<string, unknown>, string][] = [
+      [{ kind: "summary" }, "threadId"],
+      [{ kind: "tasks" }, "messageId"],
+      [{ kind: "ask", question: "q" }, "accountId"],
+      [{ ...draft }, "draftId"],
+    ];
+    for (const [rest, key] of cases) {
+      expect(parses("ai_start", { ...rest, [key]: "x" }), key).toBe(true);
+      expect(parses("ai_start", { ...rest, [key]: "" }), key).toBe(false);
+      expect(parses("ai_start", { ...rest, [key]: "x".repeat(257) }), key).toBe(false);
+    }
+  });
+
+  it("bounds the question, the message list, paragraphs and the instruction", () => {
+    expect(parses("ai_start", { kind: "ask", question: "q".repeat(500) })).toBe(true);
+    expect(parses("ai_start", { kind: "ask", question: "q".repeat(501) })).toBe(false);
+    expect(parses("ai_start", { kind: "ask", question: "" })).toBe(false);
+    expect(parses("ai_start", { kind: "categories", messageIds: ids(50) })).toBe(true);
+    expect(parses("ai_start", { kind: "categories", messageIds: ids(51) })).toBe(false);
+    expect(parses("ai_start", { kind: "categories", messageIds: [] })).toBe(false);
+    expect(parses("ai_start", { ...draft, paragraphs: ids(500) })).toBe(true);
+    expect(parses("ai_start", { ...draft, paragraphs: ids(501) })).toBe(false);
+    expect(parses("ai_start", { ...draft, mode: "custom", instruction: "i".repeat(200) })).toBe(true);
+    expect(parses("ai_start", { ...draft, mode: "custom", instruction: "i".repeat(201) })).toBe(false);
+    expect(parses("ai_start", { ...draft, mode: "custom", instruction: "first\nsecond" })).toBe(false);
+    expect(parses("ai_start", { ...draft, mode: "poem" })).toBe(false);
+  });
+
+  it("bounds task picks, titles and due dates", () => {
+    const pick = { index: 0, title: "Send the report", due: "2026-11-20" };
+    expect(parses("tasks_keep", { jobId: "j", picks: [pick] })).toBe(true);
+    expect(parses("tasks_keep", { jobId: "j", picks: [{ ...pick, due: null }] })).toBe(true);
+    expect(parses("tasks_keep", { jobId: "j", picks: Array.from({ length: 20 }, (_, i) => ({ ...pick, index: i })) })).toBe(true);
+    expect(parses("tasks_keep", { jobId: "j", picks: Array.from({ length: 21 }, (_, i) => ({ ...pick, index: i % 20 })) })).toBe(false);
+    expect(parses("tasks_keep", { jobId: "j", picks: [] })).toBe(false);
+    expect(parses("tasks_keep", { jobId: "j", picks: [{ ...pick, title: "t".repeat(120) }] })).toBe(true);
+    expect(parses("tasks_keep", { jobId: "j", picks: [{ ...pick, title: "t".repeat(121) }] })).toBe(false);
+    expect(parses("tasks_keep", { jobId: "j", picks: [{ ...pick, title: "a\nb" }] })).toBe(false);
+    expect(parses("tasks_keep", { jobId: "j", picks: [{ ...pick, title: "" }] })).toBe(false);
+    for (const due of ["20.11.2026", "2026-11-20T00:00:00Z", "tomorrow", ""]) {
+      expect(parses("tasks_keep", { jobId: "j", picks: [{ ...pick, due }] }), due).toBe(false);
+      expect(parses("task_update", { id: "t", due }), due).toBe(false);
+    }
+    expect(parses("task_update", { id: "t", title: "New", due: null, done: true })).toBe(true);
+    expect(parses("task_update", { id: "t", title: "a\rb" })).toBe(false);
+  });
+
+  it("bounds category message lists at 200 and takes the four categories", () => {
+    expect(parses("category_set", { messageIds: ids(200), category: "bills" })).toBe(true);
+    expect(parses("category_set", { messageIds: ids(201), category: "bills" })).toBe(false);
+    expect(parses("category_set", { messageIds: ["m"], category: null })).toBe(true);
+    expect(parses("category_set", { messageIds: ["m"], category: "spam" })).toBe(false);
+    expect(parses("category_accept", { messageIds: ids(200) })).toBe(true);
+    expect(parses("category_accept", { messageIds: ids(201) })).toBe(false);
+    expect(parses("category_accept", { messageIds: [] })).toBe(false);
+    expect(parses("category_rule_add", { messageId: "m", kind: "domain", category: "newsletters" })).toBe(true);
+    expect(parses("category_rule_add", { messageId: "m", kind: "everyone", category: "newsletters" })).toBe(false);
+  });
+
+  it("takes reminder days 1 to 30, also on compose_send", () => {
+    for (const days of [1, 30]) {
+      expect(parses("reminder_set", { messageId: "m", days }), String(days)).toBe(true);
+      expect(parses("reminder_snooze", { id: "r", days }), String(days)).toBe(true);
+    }
+    for (const days of [0, 31, 2.5]) {
+      expect(parses("reminder_set", { messageId: "m", days }), String(days)).toBe(false);
+      expect(parses("reminder_snooze", { id: "r", days }), String(days)).toBe(false);
+    }
+    const send = { draftId: "d", baseRevision: 1, requestId: "8f14e45f-ceea-467a-9575-6ab4a1b2c3d4" };
+    expect(parses("compose_send", send)).toBe(true);
+    expect(parses("compose_send", { ...send, remindAfterDays: 3 })).toBe(true);
+    expect(parses("compose_send", { ...send, remindAfterDays: 0 })).toBe(false);
+    expect(parses("compose_send", { ...send, remindAfterDays: 31 })).toBe(false);
+  });
+
+  it("takes an optional day-notice token of at most 64 characters", () => {
+    expect(parses("day_notice_get", {})).toBe(true);
+    expect(parses("day_notice_get", { token: "t".repeat(64) })).toBe(true);
+    expect(parses("day_notice_get", { token: "t".repeat(65) })).toBe(false);
+    expect(parses("day_notice_get", { token: "" })).toBe(false);
+    expect(outputs("day_notice_get", { kind: "digest", replyCount: 2 })).toBe(true);
+    expect(
+      outputs("day_notice_get", { kind: "reminder", name: "Ada", address: "ada@example.org", accountId: "a", threadId: null }),
+    ).toBe(true);
+  });
+
+  it("bounds the scope senders at 1 000 and the log page at 100", () => {
+    const sender = (i: number) => ({ kind: "address", value: `s${i}@example.org` });
+    const senders = (n: number) => Array.from({ length: n }, (_, i) => sender(i));
+    expect(parses("ai_scope_set", { accounts: [{ accountId: "a", mode: "folders", folders: ["INBOX"] }], senders: senders(1_000) })).toBe(true);
+    expect(parses("ai_scope_set", { accounts: [], senders: senders(1_001) })).toBe(false);
+    expect(parses("ai_scope_set", { accounts: [{ accountId: "a", mode: "some" }], senders: [] })).toBe(false);
+    expect(parses("ai_scope_set", { accounts: [], senders: [{ kind: "address", value: "a@example.org\r\nBcc: x" }] })).toBe(false);
+    expect(parses("agent_log_list", { limit: 100 })).toBe(true);
+    expect(parses("agent_log_list", { limit: 101 })).toBe(false);
+    expect(parses("agent_log_list", { limit: 0 })).toBe(false);
+    expect(parses("agent_log_list", { threadId: "t", cursor: "12", limit: 20 })).toBe(true);
+  });
+
+  it("filters threads_list by category", () => {
+    const list = { scope: { kind: "account", accountId: "a", folder: "INBOX" }, cursor: null, limit: 50 };
+    expect(parses("threads_list", { ...list, filter: { category: "bills" } })).toBe(true);
+    expect(parses("threads_list", { ...list, filter: { category: "spam" } })).toBe(false);
+    expect(Object.keys(threadSummarySchema.shape)).toEqual(expect.arrayContaining(["category", "categorySuggestion"]));
+    expect(Object.keys(messageHeaderSchema.shape)).toEqual(expect.arrayContaining(["agentSubject", "inAiScope"]));
+  });
+
+  it("puts no credential-like key in any new output", () => {
+    for (const method of SLICE_3F_METHODS) {
+      const keys = keysOf(rpcSchemas[method].output);
+      expect(keys.length, method).toBeGreaterThan(0);
+      expect(keys.filter((key) => SECRET_KEY.test(key)), method).toEqual([]);
+    }
+  });
+
+  it("publishes mail-day with a token and nothing else", () => {
+    expect(DAY_NOTICE_CHANNEL).toBe("mail-day");
+    expect(dayNoticePayloadSchema.safeParse({ token: "abc" }).success).toBe(true);
+    expect(dayNoticePayloadSchema.safeParse({ token: "abc", kind: "digest" }).success).toBe(false);
+    expect(dayNoticePayloadSchema.safeParse({ token: "t".repeat(65) }).success).toBe(false);
+    expect(dayNoticePayloadSchema.safeParse({}).success).toBe(false);
   });
 });

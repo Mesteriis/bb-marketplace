@@ -3,6 +3,7 @@ import type { OutgoingAddress } from "./compose-address.ts";
 import { composeDocInputSchema, type ComposeDoc } from "./compose-doc.ts";
 import type { SignatureDoc } from "./compose-signature.ts";
 import type { HeaderLine, UnsubscribeInfo } from "./unsubscribe.ts";
+import { LOG_ACTORS, LOG_OUTCOMES, LOG_TOOLS } from "./agent-log.ts";
 
 /** Which server preset an account was set up with. */
 export const accountPresetSchema = z.enum(["icloud", "gmail", "other"]);
@@ -178,6 +179,10 @@ export const messageHeaderSchema = messageSummarySchema.extend({
   attachments: z.array(attachmentMetaSchema),
   /** The compose_drafts row whose server copy is this message, or null (drives Edit draft). */
   draftId: z.string().nullable(),
+  /** The subject with its secrets hidden (slice 3f): the Hand-to-agent chip label. */
+  agentSubject: z.string(),
+  /** Inside the AI access scope: AI buttons and Hand to agent are enabled. */
+  inAiScope: z.boolean(),
 });
 export type MessageHeader = z.infer<typeof messageHeaderSchema>;
 
@@ -197,6 +202,10 @@ export const threadSummarySchema = z.object({
   flagged: z.boolean(),
   /** The earliest snooze due time of the thread's rows in the viewed folder (slice 3e); null when none. */
   snoozedUntil: z.string().nullable(),
+  /** The latest member row's label in the view (slice 3f); null when none. */
+  category: categorySchema.nullable(),
+  /** The latest member row's suggestion (model, else local); null when none or categories are off. */
+  categorySuggestion: categorySchema.nullable(),
 });
 export type ThreadSummary = z.infer<typeof threadSummarySchema>;
 
@@ -735,6 +744,8 @@ export const threadFilterSchema = z.object({
   flagged: z.literal(true).optional(),
   attachments: z.literal(true).optional(),
   keep: z.string().min(1).max(256).optional(),
+  /** Slice 3f: a member row carries this label. */
+  category: categorySchema.optional(),
 });
 export type ThreadFilter = z.infer<typeof threadFilterSchema>;
 
@@ -849,3 +860,175 @@ export const triageViewSchema = z.object({
   expiresAt: z.string(),
 });
 export type TriageView = z.infer<typeof triageViewSchema>;
+
+// ---- Agent and mail (slice 3f). Output keys avoid the credential walker
+// ("hidden", not "secret"; no "key" or "token" key). ----
+
+/** A model's citation as the page links it: the frame number and the message it maps to. */
+export const aiCitationSchema = z.object({
+  n: z.number().int().min(1),
+  messageId: z.string(),
+  accountId: z.string(),
+  threadId: z.string(),
+});
+
+/** Notes on what reached the model: values hidden, messages outside AI access, messages dropped or cut, answer items not read. */
+export const aiNotesSchema = z.object({
+  hidden: z.number().int().min(0),
+  leftOut: z.number().int().min(0),
+  truncated: z.number().int().min(0),
+  unreadItems: z.number().int().min(0),
+});
+
+const aiItemSchema = z.object({ text: z.string(), messages: z.array(z.number().int()) });
+
+const aiResultBase = {
+  provider: z.string(),
+  model: z.string(),
+  cached: z.boolean(),
+  /** A cached summary whose conversation has new messages since. */
+  stale: z.boolean(),
+  notes: aiNotesSchema,
+  citations: z.array(aiCitationSchema),
+  /** ISO 8601. */
+  createdAt: z.string(),
+};
+
+/** One finished AI result, text only (rendered as plain text, never HTML). */
+export const aiResultViewSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("summary"),
+    ...aiResultBase,
+    decisions: z.array(aiItemSchema),
+    questions: z.array(aiItemSchema),
+    deadlines: z.array(aiItemSchema.extend({ date: z.string().nullable() })),
+  }),
+  z.object({
+    kind: z.literal("ask"),
+    ...aiResultBase,
+    answer: z.string(),
+    sources: z.array(z.number().int()),
+    found: z.boolean(),
+  }),
+  z.object({
+    kind: z.literal("tasks"),
+    ...aiResultBase,
+    tasks: z.array(
+      z.object({
+        index: z.number().int().min(0),
+        title: z.string(),
+        due: z.string().nullable(),
+        message: z.number().int(),
+        evidence: z.string(),
+        /** The evidence occurs in the message sent; a miss leaves the task unticked. */
+        evidenceFound: z.boolean(),
+      }),
+    ),
+  }),
+  z.object({
+    kind: z.literal("categories"),
+    ...aiResultBase,
+    items: z.array(z.object({ messageId: z.string(), category: categorySchema.nullable() })),
+  }),
+  z.object({
+    kind: z.literal("digest"),
+    ...aiResultBase,
+    items: z.array(z.object({ threadId: z.string(), gist: z.string() })),
+  }),
+  z.object({
+    kind: z.literal("draft"),
+    ...aiResultBase,
+    paragraphs: z.array(z.string()),
+    /** Placeholder-like text in the answer that was not this job's: kept as written. */
+    unknown: z.number().int().min(0),
+    /** Hidden values the answer dropped. */
+    missing: z.number().int().min(0),
+  }),
+]);
+export type AiResultView = z.infer<typeof aiResultViewSchema>;
+
+/** A kept task (slice 3f). `messageId` null: the message is no longer in Makosh Mail. */
+export const taskViewSchema = z.object({
+  id: z.string(),
+  accountId: z.string(),
+  messageId: z.string().nullable(),
+  threadId: z.string().nullable(),
+  title: z.string(),
+  /** YYYY-MM-DD. */
+  due: z.string().nullable(),
+  /** ISO 8601. */
+  doneAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type TaskView = z.infer<typeof taskViewSchema>;
+
+export const reminderStateSchema = z.enum(["queued", "waiting", "due", "answered", "dismissed"]);
+
+/** A reply reminder as the Waiting-for-a-reply strip shows it. */
+export const reminderViewSchema = z.object({
+  id: z.string(),
+  accountId: z.string(),
+  threadId: z.string().nullable(),
+  state: reminderStateSchema,
+  days: z.number().int(),
+  /** ISO 8601. */
+  sentAt: z.string().nullable(),
+  dueAt: z.string().nullable(),
+  /** The first To recipient of the sent copy, when it is stored. */
+  recipient: mailAddressSchema.nullable(),
+  subject: z.string(),
+});
+export type ReminderView = z.infer<typeof reminderViewSchema>;
+
+/** One agent-log row as the Agent activity view shows it: ids resolved to what the store holds now. */
+export const logEntryViewSchema = z.object({
+  seq: z.number().int(),
+  at: z.string(),
+  actor: z.enum(LOG_ACTORS),
+  tool: z.enum(LOG_TOOLS),
+  outcome: z.enum(LOG_OUTCOMES),
+  threadId: z.string().nullable(),
+  count: z.number().int().min(0),
+  hiddenCount: z.number().int().min(0),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  messages: z.array(
+    z.object({
+      id: z.string(),
+      /** Null: no longer in Makosh Mail. */
+      subject: z.string().nullable(),
+      from: z.string().nullable(),
+      date: z.string().nullable(),
+      accountId: z.string().nullable(),
+      threadId: z.string().nullable(),
+    }),
+  ),
+});
+export type LogEntryView = z.infer<typeof logEntryViewSchema>;
+
+export const aiScopeModeSchema = z.enum(["all", "folders", "none"]);
+
+/** What Improve asks for (slice 3f). */
+export const draftModeSchema = z.enum(["fix", "shorter", "formal", "friendly", "custom"]);
+
+/** The AI access scope with stale folder paths marked. */
+export const aiScopeViewSchema = z.object({
+  accounts: z.array(
+    z.object({
+      accountId: z.string(),
+      mode: aiScopeModeSchema,
+      folders: z.array(z.object({ path: z.string(), found: z.boolean() })),
+    }),
+  ),
+  senders: z.array(z.object({ kind: blockKindSchema, value: z.string() })),
+});
+export type AiScopeView = z.infer<typeof aiScopeViewSchema>;
+
+export const categoryRuleViewSchema = z.object({
+  id: z.string(),
+  kind: blockKindSchema,
+  value: z.string(),
+  category: categorySchema,
+  createdAt: z.string(),
+});
+export type CategoryRuleView = z.infer<typeof categoryRuleViewSchema>;

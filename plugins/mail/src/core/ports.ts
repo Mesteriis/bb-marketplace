@@ -50,6 +50,12 @@ import type { ComposeDoc } from "./compose-doc.ts";
 import type { SignatureDoc } from "./compose-signature.ts";
 import type { AliasRow, InboundRow, SendCheck } from "./identities.ts";
 import type { UndoRow } from "./undo.ts";
+import type { AccountScope, AiScope } from "./ai-scope.ts";
+import type { LogEntry, LogOutcome } from "./agent-log.ts";
+import type { Category, CategoryRule, CategorySource, PreviousLabel } from "./categories.ts";
+import type { AiCategoryAnswer } from "./ai-input.ts";
+import type { ReplyCandidate } from "./digest.ts";
+import type { ReminderState } from "./reminders.ts";
 
 export interface ImapConfig {
   host: string;
@@ -423,7 +429,8 @@ export interface MailStore {
   getThread(threadId: string, folder: string): ThreadDetail | null;
   getMessage(messageId: string): MessageHeader | null;
   getBody(messageId: string): MessageBody | null;
-  search(query: ParsedQuery, accountId: string | null, limit: number): MessageSummary[];
+  /** `scoped` (slice 3f, agent paths): only rows inside the AI scope, before the dedup picks one per message. */
+  search(query: ParsedQuery, accountId: string | null, limit: number, opts?: { scoped: boolean }): MessageSummary[];
   /** Distinct unread messages (by dedup key) in Inbox folders. */
   unreadCount(accountId: string | null): number;
   /** Upserts the folders; drops folders not listed, with their rows; returns removed paths. */
@@ -640,9 +647,11 @@ export interface MailStore {
   /**
    * People the owner corresponds with whose name, address or exchanged mail
    * match the query, best first (rankContacts). Header addresses only; junk,
-   * trash and bulk mail are left out. Local only.
+   * trash and bulk mail are left out. Local only. `scoped` (slice 3f): mail
+   * outside the AI scope is neither returned nor counted, excluded addresses
+   * never return, and the topic match runs over redacted text.
    */
-  contacts(query: string, limit: number): Contact[];
+  contacts(query: string, limit: number, opts?: { scoped: boolean }): Contact[];
   /** Per account, the latest personal mail received from and sent to any of the addresses (correspondenceOf); junk and trash left out. */
   correspondence(addresses: string[]): AccountCorrespondence[];
   getTranslation(messageId: string, targetLanguage: string): TranslationRecord | null;
@@ -781,7 +790,7 @@ export interface MailStore {
    * mail_inbox (slice 3e): attached Inbox-role messages not moving, one per
    * (account, dedup key), newest first; `accountId` null: every account.
    */
-  inboxMessages(accountId: string | null, opts: { unreadOnly: boolean; limit: number }): InboxMessage[];
+  inboxMessages(accountId: string | null, opts: { unreadOnly: boolean; limit: number; scoped?: boolean }): InboxMessage[];
   /** Upsert by (account, list key). */
   putUnsubscribe(row: UnsubscribeRecord): void;
   /** A mailto request follows its outbox row: sets the state of the row with this outbox id; false when none. */
@@ -807,7 +816,199 @@ export interface MailStore {
    * deletes the outbox row (only from a `states` state) and its draft.
    */
   cancelSendPurpose(outboxId: string, states: OutboxState[]): { cancelled: boolean };
+
+  // ---- Agent and mail (slice 3f) ----
+
+  /**
+   * Installs the scope agent paths read (the SQL function mail_ai_in_scope)
+   * and rebuilds the excluded conversations from its sender rules.
+   */
+  setAiScope(scope: AiScope): void;
+  /** The installed scope (absent accounts are mode "all"). */
+  getAiScope(): AiScope;
+  /** The stored scope rows, as setAiScope wants them (read at start). */
+  loadAiScope(): AiScope;
+  /** Replaces the stored scope rows in one transaction; the caller installs it with setAiScope. */
+  putAiScope(
+    accounts: { accountId: string; scope: AccountScope }[],
+    senders: { kind: "address" | "domain"; value: string }[],
+    nowIso: string,
+  ): void;
+  /** Rebuilds the excluded conversations after a sync round (new rows may add one). */
+  refreshExcludedThreads(): void;
+  /** The message when one of its copies is inside the scope (that copy), else null: an out-of-scope id is unknown. */
+  scopedMessage(messageId: string): MessageHeader | null;
+
+  /** Appends one content-free row; returns its seq. */
+  appendAgentLog(entry: LogEntry): number;
+  /** Moves every row of a proposal or triage batch to its final outcome and count; returns how many changed. */
+  updateAgentLog(refId: string, outcome: LogOutcome, count: number): number;
+  /** Newest first; `cursor` is the last seq of the previous page. */
+  listAgentLog(opts: { threadId?: string; cursor?: string | null; limit: number }): {
+    entries: (LogEntry & { seq: number })[];
+    next: string | null;
+  };
+  /** Deletes every row; returns how many. */
+  clearAgentLog(): number;
+  /** Deletes rows before `beforeIso` and beyond the newest `maxRows`; returns how many. */
+  purgeAgentLog(beforeIso: string, maxRows: number): number;
+
+  getAiResult(kind: "summary", subjectId: string): AiResultRecord | null;
+  /** Upsert by (kind, subject id). Throws when the result is over AI_RESULT_MAX_BYTES. */
+  putAiResult(row: AiResultRecord): void;
+
+  /** Stores kept tasks; `full` when the open tasks would pass TASKS_OPEN_MAX (nothing stored then). */
+  keepTasks(rows: NewTask[]): { kept: number } | { full: true };
+  /** Open tasks (overdue, dated, then undated) or done ones (latest first); `cursor` from the previous page. */
+  listTasks(opts: { done: boolean; cursor?: string | null; limit: number }): { tasks: TaskRecord[]; next: string | null };
+  getTask(id: string): TaskRecord | null;
+  updateTask(id: string, patch: { title?: string; due?: string | null; done?: boolean }, nowIso: string): boolean;
+  deleteTask(id: string): boolean;
+  /** Open tasks due before `today` (overdue) and on it. */
+  taskCounts(today: string): { overdue: number; today: number };
+
+  /**
+   * Labels the messages' (account, dedup key) with `category` (null clears),
+   * one transaction; unknown ids are skipped. `previous` holds what each key
+   * had before, for the undo.
+   */
+  setCategories(messageIds: string[], category: Category | null, source: CategorySource, nowIso: string): { previous: PreviousLabel[] };
+  /** Puts the labels back as they were (null: none), one transaction. */
+  restoreCategories(previous: PreviousLabel[], nowIso: string): void;
+  /** Each known id's label and model suggestion. */
+  categoriesOf(messageIds: string[]): Map<string, { category: Category | null; source: CategorySource | null; suggestion: AiCategoryAnswer | null }>;
+  /** Replaces the model suggestion of each message's (account, dedup key). */
+  putCategorySuggestions(rows: { messageId: string; category: AiCategoryAnswer }[], nowIso: string): void;
+  listCategoryRules(): CategoryRule[];
+  /** Inserts, or returns the existing rule for (kind, value) with `created: false`; `full` at CATEGORY_RULES_MAX. */
+  addCategoryRule(
+    kind: CategoryRule["kind"],
+    value: string,
+    category: Category,
+    id: string,
+    nowIso: string,
+  ): { rule: CategoryRule; created: boolean } | { full: true };
+  removeCategoryRule(id: string): boolean;
+
+  /** The latest message of each conversation with one dated at or after `sinceIso`, newest first, at most `limit`. */
+  replyCandidates(sinceIso: string, limit: number): ReplyCandidate[];
+  /** dismissalKey(accountId, dedupKey) of every dismissal. */
+  replyDismissals(): Set<string>;
+  dismissReply(accountId: string, dedupKey: string, nowIso: string): void;
+  getDigest(day: string): DigestRecord | null;
+  /** Insert; false when the day already has a row. */
+  putDigest(row: DigestRecord): boolean;
+  markDigestNotified(day: string, nowIso: string): boolean;
+
+  /** `full` at REMINDERS_LIVE_MAX live reminders (queued, waiting, due); nothing stored then. */
+  createReminder(row: NewReminder): { created: true } | { full: true };
+  /** The queued reminder of the outbox row turns waiting, sent now, due after its days; returns it, or null. */
+  bindReminder(outboxId: string, sentAtIso: string): ReminderRecord | null;
+  deleteReminderForOutbox(outboxId: string): number;
+  getReminder(id: string): ReminderRecord | null;
+  /** By due time (null last); `dueBefore` keeps those due at or before it. */
+  listReminders(opts: { states: ReminderState[]; dueBefore?: string; limit: number }): ReminderRecord[];
+  updateReminder(
+    id: string,
+    patch: { state?: ReminderState; days?: number; dueAt?: string | null; threadId?: string | null; notifiedAt?: string | null },
+    nowIso: string,
+  ): boolean;
+  /** Stored rows dated after `afterIso` whose In-Reply-To or References hold one of the ids (any spelling with or without <>). */
+  answeringRows(rfcMessageIds: string[], afterIso: string): AnsweringRow[];
+  /** The thread of the account's stored copy with this Message-ID, or null. */
+  sentCopyThread(accountId: string, rfcMessageId: string): string | null;
+
+  /**
+   * The daily purge (slice 3f): labels and suggestions without a row of their
+   * dedup key, ai_results of gone threads, digests and reply dismissals older
+   * than 60 days, answered reminders older than ANSWERED_KEEP_DAYS, and the
+   * agent log by age and count.
+   */
+  purgeDaily(nowIso: string): number;
 }
+
+/** A cached AI result (slice 3f): summaries only. */
+export type AiResultRecord = {
+  kind: "summary";
+  /** The thread id. */
+  subjectId: string;
+  accountId: string;
+  sourceSha256: string;
+  provider: string;
+  model: string;
+  /** The parsed output as JSON, at most AI_RESULT_MAX_BYTES. */
+  resultJson: string;
+  notesJson: string;
+  /** ISO 8601. */
+  createdAt: string;
+};
+
+/** Largest stored AI result. */
+export const AI_RESULT_MAX_BYTES = 64 * 1024;
+/** Most open tasks kept. */
+export const TASKS_OPEN_MAX = 2_000;
+
+export type NewTask = {
+  id: string;
+  accountId: string;
+  messageId: string;
+  dedupKey: string;
+  title: string;
+  /** YYYY-MM-DD. */
+  due: string | null;
+  /** ISO 8601. */
+  createdAt: string;
+};
+
+export type TaskRecord = Omit<NewTask, "messageId"> & {
+  /** Null once the message went away. */
+  messageId: string | null;
+  /** The message's thread, when it is stored. */
+  threadId: string | null;
+  doneAt: string | null;
+  updatedAt: string;
+};
+
+export type DigestRecord = {
+  /** Server-local YYYY-MM-DD. */
+  day: string;
+  builtAt: string;
+  since: string;
+  replyCount: number;
+  noticeCount: number;
+  notifiedAt: string | null;
+};
+
+export type NewReminder = {
+  id: string;
+  accountId: string;
+  /** While queued. */
+  outboxId: string | null;
+  /** The sent Message-ID. */
+  rfcMessageId: string;
+  threadId: string | null;
+  days: number;
+  sentAt: string | null;
+  dueAt: string | null;
+  state: ReminderState;
+  createdAt: string;
+};
+
+export type ReminderRecord = NewReminder & { updatedAt: string; notifiedAt: string | null };
+
+/** A stored row as reminders judge it (core `answers`). */
+export type AnsweringRow = {
+  id: string;
+  accountId: string;
+  threadId: string | null;
+  /** The row's own Message-ID. */
+  messageId: string | null;
+  inReplyTo: string | null;
+  references: string[];
+  date: string | null;
+  bulk: boolean | null;
+  fromAddress: string;
+};
 
 /** One Inbox message as mail_inbox lists it (slice 3e). */
 export type InboxMessage = MessageSummary & {
