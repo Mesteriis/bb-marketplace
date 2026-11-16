@@ -4,6 +4,7 @@
 // through the ports, so src/ui stays host-free.
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ProjectListItem, RuleRunView } from "../core/contract.ts";
+import { devLinkInstruction } from "../core/dev-links.ts";
 import type { MessageHeader, ThreadDetail } from "../core/model.ts";
 import { BbThreadDialog, type BbThreadRequest } from "./bb-thread-dialog.tsx";
 import { errorText, type BbCall, type CodeRenderers } from "./bb-ports.ts";
@@ -125,7 +126,7 @@ export function useBbDialogs(bb: MailBbPorts | undefined, detail: ThreadDetail |
         setThread({
           messageId: message.id,
           projectId: link.projectId ?? projectId,
-          instruction: `Look at ${link.url}`,
+          instruction: devLinkInstruction(link),
           inAiScope: true,
           hasAttachments: false,
         });

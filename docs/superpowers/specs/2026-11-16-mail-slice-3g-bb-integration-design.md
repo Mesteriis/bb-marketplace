@@ -1254,3 +1254,7 @@ C2. **Patch parsing stays linear on hostile mail** (review finding, refines "Pat
 
 C6. **Warnings hold under mnemonic diff prefixes** (review finding, refines resolution 12).
    - `readPath` still drops only `a/` and `b/`. Name warnings are read on the path as written and again on it without its first segment, so `c/`, `w/`, `i/`, `o/` (git's `diff.mnemonicPrefix`) or any other one-segment prefix pair still warns for `.github/workflows/`, `.gitlab-ci.yml` and the rest, as does a diff with no prefix. The second reading can only add a warning. Refusals already check every segment.
+
+C3. **Dev links carry a normalized URL only** (review finding, refines "Dev links").
+   - A candidate (plain-text URL or href) holding any whitespace or control character is dropped, never cleaned: URL parsing would silently remove a newline and keep the text after it. A kept link is stored as `URL.href` with the fragment dropped, https only, no credentials, at most 300 characters; duplicates are judged on that form.
+   - The thread dialog's prefilled instruction for a link is `devLinkInstruction(link)`: "Look at <normalized URL>" passed through `redactSecrets`, so a token in a query string is hidden before the owner sees or sends it.

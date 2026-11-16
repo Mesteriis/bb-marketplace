@@ -3,10 +3,15 @@
 // to BB projects by their remotes. The shown text is always the URL itself,
 // never the anchor text. Pure.
 import { sameRepo, type RepoRef } from "./projects.ts";
+import { redactSecrets } from "./redact.ts";
 
 export const DEV_LINKS_MAX = 20;
 /** Longest URL looked at. */
 const URL_MAX = 2_000;
+/** Longest stored (normalized) URL; a longer one is not a dev link. */
+export const DEV_LINK_URL_MAX = 300;
+/** Whitespace (any) and control characters: an href holding one is dropped, never cleaned. */
+const UNSAFE_IN_URL = /[\s\u0000-\u001f\u007f-\u009f]/u;
 
 export const DEV_LINK_KINDS = [
   "repo", "pr", "issue", "commit", "run", "release", "compare", "mr", "pipeline", "tracker",
@@ -91,8 +96,13 @@ function forgeShape(host: string, segments: string[], remoteHosts: ReadonlySet<s
   return github !== null && github.kind !== "repo" ? github : gitlabShape(host, segments);
 }
 
+/**
+ * A candidate URL read and normalized: https only, no whitespace or control
+ * characters (URL parsing would silently drop a newline), no credentials,
+ * the fragment dropped, stored as URL.href of at most 300 characters.
+ */
 function parse(raw: string): { url: string; host: string; segments: string[] } | null {
-  if (raw.length > URL_MAX || !/^https:\/\//i.test(raw)) return null;
+  if (raw.length > URL_MAX || !/^https:\/\//i.test(raw) || UNSAFE_IN_URL.test(raw)) return null;
   let parsed: URL;
   try {
     parsed = new URL(raw);
@@ -100,8 +110,17 @@ function parse(raw: string): { url: string; host: string; segments: string[] } |
     return null;
   }
   if (parsed.protocol !== "https:" || parsed.username !== "" || parsed.password !== "") return null;
+  parsed.hash = "";
+  const url = parsed.href;
+  if (url.length > DEV_LINK_URL_MAX || UNSAFE_IN_URL.test(url)) return null;
   const segments = parsed.pathname.split("/").filter((segment) => segment !== "");
-  return { url: raw, host: parsed.hostname.toLowerCase(), segments };
+  return { url, host: parsed.hostname.toLowerCase(), segments };
+}
+
+/** The thread dialog's prefilled instruction for a dev link: the normalized URL, secrets hidden. */
+export function devLinkInstruction(link: Pick<DevLink, "url">): string {
+  const safe = link.url.length > DEV_LINK_URL_MAX || UNSAFE_IN_URL.test(link.url) ? "" : link.url;
+  return redactSecrets(`Look at ${safe}`).text;
 }
 
 /**
@@ -127,7 +146,10 @@ export function devLinks(text: string, hrefs: readonly string[], remotes: readon
       candidates.push(url);
     }
   }
-  const parsed = candidates.map(parse).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+  const normalized = new Set<string>();
+  const parsed = candidates
+    .map(parse)
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null && !normalized.has(entry.url) && normalized.add(entry.url) !== null);
   const isBrowse = (segments: string[]) => segments.length === 2 && segments[0] === "browse" && TRACKER_KEY.test(segments[1]!);
   const forge = parsed.map((entry) => ({
     entry,
