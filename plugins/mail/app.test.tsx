@@ -3668,7 +3668,7 @@ describe("Inbox triage on the page (slice 3e)", () => {
   const unsubInfo = (overrides: Record<string, unknown> = {}) => ({
     methods: {
       oneClick: { host: "news.example.com" },
-      mailto: { address: "leave@example.com", subject: "unsubscribe", foreignDomain: false },
+      mailto: { address: "leave@example.com", subject: "unsubscribe", body: "", hiddenChars: 0, foreignDomain: false },
     },
     trust: "covered",
     listName: "Invented Weekly",
@@ -4065,7 +4065,10 @@ describe("New-mail toasts, settings and agent triage (slice 3e)", () => {
       folder: "Inbox",
       available: true,
       reason: null,
-      unsubscribe: position === 3 ? { method: "mailto", host: null, address: "leave@example.com" } : null,
+      unsubscribe:
+        position === 3
+          ? { method: "mailto", host: null, address: "leave@example.com", mailto: { subject: "unsubscribe", body: "", hiddenChars: 0, foreignDomain: false } }
+          : null,
     })),
     needsFolder: [],
     expiresAt: "2026-11-17T10:00:00.000Z",

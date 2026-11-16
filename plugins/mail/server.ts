@@ -1972,7 +1972,12 @@ async function unsubscribeOnce(
   if (account === null) throw refuse("not_found", "Unknown message");
   if (account.authFailed) throw refuse("conflict", PASSWORD_NEEDED_MESSAGE);
   if (deps.queueDeps.undone.has(input.requestId)) throw new ComposeError("undone");
-  const plan = planUnsubscribe(composeDeps, input.messageId, info.mailto);
+  // Exactly the text the dialog and the triage card showed (review item 5).
+  const plan = planUnsubscribe(composeDeps, input.messageId, {
+    address: offered.mailto.address,
+    subject: offered.mailto.subject,
+    body: offered.mailto.body,
+  });
   const { draftId } = await createComposeDraft(composeDeps, plan, { origin: "owner", proposalId: null, purpose: "unsubscribe" });
   let queued: { outboxId: string };
   try {
@@ -3016,8 +3021,11 @@ async function viewTriage(
         if (item.action === "unsubscribe" && message !== null) {
           const info = store.getUnsubscribeInfo(item.messageId);
           const offered = info === null ? null : offeredMethods(info, message.from.address);
-          if (offered?.oneClick) unsubscribe = { method: "one_click", host: offered.oneClick.host, address: null };
-          else if (offered?.mailto) unsubscribe = { method: "mailto", host: null, address: offered.mailto.address };
+          if (offered?.oneClick) unsubscribe = { method: "one_click", host: offered.oneClick.host, address: null, mailto: null };
+          else if (offered?.mailto) {
+            const { address, subject, body, hiddenChars, foreignDomain } = offered.mailto;
+            unsubscribe = { method: "mailto", host: null, address, mailto: { subject, body, hiddenChars, foreignDomain } };
+          }
         }
         return {
           position: item.position,

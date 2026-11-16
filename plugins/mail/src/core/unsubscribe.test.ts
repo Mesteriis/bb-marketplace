@@ -6,6 +6,7 @@ import {
   TRUSTED_AUTHSERV,
   UNSUBSCRIBE_HEADER_FIELDS,
   UNSUBSCRIBE_INFO_MAX_BYTES,
+  mailtoText,
   offeredMethods,
   parseListUnsubscribe,
   trustOf,
@@ -461,10 +462,25 @@ describe("offeredMethods", () => {
     expect(offeredMethods(base, "news@example.com").mailto).toEqual({
       address: "leave@example.com",
       subject: "unsubscribe",
+      body: "",
+      hiddenChars: 0,
       foreignDomain: false,
     });
     expect(offeredMethods(base, "news@mail.example.com").mailto?.foreignDomain).toBe(false);
     expect(offeredMethods(base, "news@example.org").mailto?.foreignDomain).toBe(true);
     expect(offeredMethods({ ...base, mailto: null }, "news@example.com").mailto).toBeNull();
+  });
+
+  it("offers the exact subject and body the email will carry, hidden characters taken out and counted (review item 5)", () => {
+    const sneaky = { ...base, mailto: { address: "leave@example.com", subject: "stop\u200b now", body: "Please\u202e remove\nme\u2060" } };
+    expect(offeredMethods(sneaky, "news@example.com").mailto).toEqual({
+      address: "leave@example.com",
+      subject: "stop now",
+      body: "Please remove\nme",
+      hiddenChars: 3,
+      foreignDomain: false,
+    });
+    // An all-hidden subject falls back to the default the email would use.
+    expect(mailtoText({ address: "a@example.com", subject: "\u200b", body: "" }).subject).toBe("unsubscribe");
   });
 });

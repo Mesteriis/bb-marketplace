@@ -746,7 +746,10 @@ export type UnsubscribeState = z.infer<typeof unsubscribeStateSchema>;
 export const unsubscribeInfoViewSchema = z.object({
   methods: z.object({
     oneClick: z.object({ host: z.string() }).nullable(),
-    mailto: z.object({ address: z.string(), subject: z.string(), foreignDomain: z.boolean() }).nullable(),
+    /** `subject` and `body` are exactly what the email carries: plain text, hidden characters taken out (review item 5). */
+    mailto: z
+      .object({ address: z.string(), subject: z.string(), body: z.string(), hiddenChars: z.number().int(), foreignDomain: z.boolean() })
+      .nullable(),
   }),
   trust: unsubscribeTrustSchema,
   listName: z.string().nullable(),
@@ -807,9 +810,19 @@ export const triageItemViewSchema = z.object({
   /** False when the message moved or went away since the agent proposed it. */
   available: z.boolean(),
   reason: z.string().nullable(),
-  /** Unsubscribe items: the method offered now and where it goes. */
+  /**
+   * Unsubscribe items: the method offered now and where it goes; for the
+   * email, exactly what it carries (review item 5).
+   */
   unsubscribe: z
-    .object({ method: z.enum(["one_click", "mailto"]), host: z.string().nullable(), address: z.string().nullable() })
+    .object({
+      method: z.enum(["one_click", "mailto"]),
+      host: z.string().nullable(),
+      address: z.string().nullable(),
+      mailto: z
+        .object({ subject: z.string(), body: z.string(), hiddenChars: z.number().int(), foreignDomain: z.boolean() })
+        .nullable(),
+    })
     .nullable(),
 });
 export type TriageItemView = z.infer<typeof triageItemViewSchema>;

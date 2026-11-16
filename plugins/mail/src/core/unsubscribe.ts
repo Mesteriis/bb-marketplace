@@ -464,8 +464,25 @@ export function unsubscribeInfoOf(
 
 export type OfferedMethods = {
   oneClick: { host: string } | null;
-  mailto: { address: string; subject: string; foreignDomain: boolean } | null;
+  mailto: { address: string; subject: string; body: string; hiddenChars: number; foreignDomain: boolean } | null;
 };
+
+/**
+ * The subject and body a mailto unsubscribe sends, exactly as the dialog
+ * and the triage card show them (review item 5): plain text with invisible
+ * characters taken out (revealHidden), and how many were taken out. A
+ * subject left empty is the default the email would carry.
+ */
+export function mailtoText(mailto: NonNullable<UnsubscribeInfo["mailto"]>): { subject: string; body: string; hiddenChars: number } {
+  const subject = revealHidden(mailto.subject);
+  const body = revealHidden(mailto.body);
+  const shownSubject = subject.shown.trim();
+  return {
+    subject: shownSubject === "" ? DEFAULT_SUBJECT : shownSubject,
+    body: body.shown,
+    hiddenChars: subject.hidden + body.hidden,
+  };
+}
 
 /**
  * What the page may offer. One-click only when it is covered; the mailto is
@@ -480,7 +497,7 @@ export function offeredMethods(info: UnsubscribeInfo, fromAddress: string): Offe
     const to = asciiDomain(domainOfAddress(info.mailto.address));
     const from = asciiDomain(domainOfAddress(fromAddress));
     const foreignDomain = to === null || from === null || !isSameOrParent(to, from);
-    mailto = { address: info.mailto.address, subject: info.mailto.subject, foreignDomain };
+    mailto = { address: info.mailto.address, ...mailtoText(info.mailto), foreignDomain };
   }
   return { oneClick, mailto };
 }

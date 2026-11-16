@@ -4102,7 +4102,10 @@ function loadUnsubscribe(options: { info?: UnsubscribeInfo; poster?: FakePoster;
 }
 
 type UnsubView = {
-  methods: { oneClick: { host: string } | null; mailto: { address: string; subject: string; foreignDomain: boolean } | null };
+  methods: {
+    oneClick: { host: string } | null;
+    mailto: { address: string; subject: string; body: string; hiddenChars: number; foreignDomain: boolean } | null;
+  };
   trust: string;
   listName: string | null;
   already: { state: string; at: string } | null;
@@ -4116,7 +4119,7 @@ describe("inbox triage: unsubscribe (slice 3e)", () => {
     expect(info).toEqual({
       methods: {
         oneClick: { host: "unsub.example.com" },
-        mailto: { address: "leave@example.com", subject: "unsubscribe", foreignDomain: false },
+        mailto: { address: "leave@example.com", subject: "unsubscribe", body: "Invented removal request", hiddenChars: 0, foreignDomain: false },
       },
       trust: "covered",
       listName: "Invented Weekly",
@@ -4139,7 +4142,7 @@ describe("inbox triage: unsubscribe (slice 3e)", () => {
     release();
     await held;
     const info = await pending;
-    expect(info.methods).toEqual({ oneClick: null, mailto: { address: "leave@example.com", subject: "stop", foreignDomain: false } });
+    expect(info.methods).toEqual({ oneClick: null, mailto: { address: "leave@example.com", subject: "stop", body: "", hiddenChars: 0, foreignDomain: false } });
     expect(info.trust).toBe("untrusted_provider");
     const [session] = host.gateway.sessions;
     expect(session).toMatchObject({ path: "INBOX", readOnly: true, closed: true });
@@ -4213,6 +4216,21 @@ describe("inbox triage: unsubscribe (slice 3e)", () => {
       );
     }
     expect(poster.urls).toEqual([]);
+  });
+
+  it("mailto sends exactly the subject and body the dialog shows, hidden characters taken out (review item 5)", async () => {
+    const host = await loadUnsubscribe({
+      info: { ...UNSUB_INFO, oneClick: false, mailto: { address: "leave@example.com", subject: "stop\u200b now", body: "Invented\u202e removal\nrequest" } },
+    });
+    const id = messageIdAt(host, "INBOX", 1);
+    const shown = ((await call(host, "unsubscribe_info", { messageId: id })) as UnsubView).methods.mailto;
+    expect(shown).toEqual({ address: "leave@example.com", subject: "stop now", body: "Invented removal\nrequest", hiddenChars: 2, foreignDomain: false });
+    await call(host, "unsubscribe_run", { messageId: id, method: "mailto", requestId: REQ_A });
+    const draft = sqlStore(host).getDraft(sqlStore(host).getOutbox(REQ_A)!.draftId!)!;
+    expect(draft.subject).toBe("stop now");
+    const doc = JSON.stringify(draft.doc);
+    expect(doc).toContain("Invented removal");
+    expect(doc).not.toMatch(/\u200b|\u202e/);
   });
 
   it("mailto queues a hidden owner draft with Undo, never a Drafts copy, and its request follows the outbox", async () => {
@@ -4983,7 +5001,7 @@ describe("inbox triage: agent tools (slice 3e)", () => {
     const host = await loadAgentTriage({ poster });
     const t = await triageCard(host, { items: [{ messageId: inboxId(host, 5), action: "unsubscribe" }] });
     const view = await triageView(host, t);
-    expect(view.view.items[0]!.unsubscribe).toEqual({ method: "one_click", host: "unsub.example.com", address: null });
+    expect(view.view.items[0]!.unsubscribe).toEqual({ method: "one_click", host: "unsub.example.com", address: null, mailto: null });
     const { result } = await answerTriage(host, t, applyValue(t, view.viewToken, [0]));
     expect(poster.urls).toEqual([UNSUB_URL]);
     expect(toolText(result)).toContain("unsubscribe requested for 1");
