@@ -614,3 +614,26 @@ Run on 2026-11-16 by batch A, Node v24.20.0, `bb plugin build` with BB's toolcha
 **Session lead decisions on the Task 0 follow-ups (2026-11-16).**
 - The single inert `napi-rs` string in `dist/app.js` (pdf.js's Node-only `NodeCanvasFactory`) is accepted. Task 12's check stands: `dist/server.js` 0, `dist/app.js` exactly 1, `skia` 0.
 - Because the worker's V8 heap limit does not bound buffer memory, PDFs get a lower file cap for text extraction: **5 MB** (`ATTACHMENT_TEXT_CAPS.pdfFile` in `src/core/attachment-text.ts`, defined in Task 2). Other attachment types keep the general 10 MB cap. Task 8 enforces it.
+
+## Batch D deviations
+
+Recorded by batch E (2026-11-16); batch D's code is unchanged by this note.
+
+- New store methods beyond Task 4: `clearWindowKept`, `keptIds`, `idsByDedupKey`.
+- `ServerCriteria` gained `threadId` (Gmail conversation loads) and `headers` (References / Message-ID searches).
+- A history step covers `[history_since, window start)`.
+- Gmail labels are fetched on every Gmail session, not only on All Mail.
+- `createImapflowGateway` takes a `createClient` option (tests).
+
+## Batch E deviations
+
+- **Store:** one new method, `copiesIn(folder, messageIds)`: a message's copy in a folder (by dedup key) with its uid. `labels_change` and label undo resolve All Mail uids with it.
+- **Jobs:** `ServerJobs.cancelAll()` was added. The server cancels every job on dispose. Jobs and the indexer write through a store proxy that refuses every call once the plugin stopped.
+- **RPC code:** the slice 3h handlers live in `src/adapters/bb/slice-3h-rpc.ts` (`createSlice3hRpc`). `server.ts` wraps each in `owner3h` (plugin callers refused, then fixed-text refusals).
+- **View tickets** are minted with kind `view` on the existing `/download` route. The route sniffs the bytes, serves the sniffed raster or PDF type, and serves text as `text/plain` with a detected charset, cut to 2 MB. A mismatch answers `409` with the body `not_viewable`. Over the cap after the fetch it answers `409` with `too_large`. SVG and over-cap files are refused when the ticket is minted (`NOT_VIEWABLE_MESSAGE`, `VIEW_TOO_LARGE_MESSAGE`).
+- **Attachment charset:** postal-mime does not report a part's charset. Text attachments are read as UTF-8 when valid, else as windows-1252 (`charsetOf`).
+- **Indexer caps:** a part over a file or message cap gets a `skipped/too_large` row, so it does not stay pending. A fetch that fails for an account-level reason writes no row (`RetryLater`). Other fetch or part mismatches are `failed/unreadable`.
+- **Gmail for folder rules** is `preset === "gmail"` or a `\All` folder under `[Gmail]` / `[Google Mail]`. Folder rules have no session to ask.
+- **Delimiter:** `Folder` carries no delimiter, so name checks read it from the stored paths. Rename and delete use the fresh listing's delimiter inside the queue.
+- **Kept rows:** `promoteKept` is added to `compose_prepare` (reply and reply all) and to `conversation_project_set` (bind). The store already promotes on open, flags, moves and snoozes.
+- **Shell limit:** the new writes and fetching RPCs are named in `skills/mail/SKILL.md`. README's "The shell limit" section is Task 12's.
