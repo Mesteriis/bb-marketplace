@@ -476,3 +476,69 @@ describe("slice 3h: quotes, own marks and dark mail", () => {
     );
   });
 });
+
+describe("slice 3i: trackers and link cleaning", () => {
+  const PIXEL = '<img src="https://mailtrack.io/trace/open.png" alt="">';
+  const TINY = '<img src="https://images.example.org/t.png" width="1" height="1">';
+  const PHOTO = '<img src="https://images.example.org/photo.png" alt="photo">';
+
+  it("removes trackers in allowed mode and counts them apart from blocked images", () => {
+    const allowed = sanitizeEmailHtml(`<p>Hi</p>${PIXEL}${TINY}${PHOTO}`, { remoteImages: true });
+    expect(allowed.trackers).toBe(2);
+    expect(allowed.html).not.toContain("mailtrack.io");
+    expect(allowed.html).not.toContain("t.png");
+    expect(allowed.html).toContain('src="https://images.example.org/photo.png"');
+    expect(allowed.blockedRemoteImages).toBe(false);
+
+    const hidden = sanitizeEmailHtml(`<p>Hi</p>${PIXEL}${TINY}${PHOTO}`, { remoteImages: false });
+    expect(hidden.trackers).toBe(2);
+    expect(hidden.blockedRemoteImages).toBe(true);
+    expect(hidden.html).not.toContain("mailtrack.io");
+  });
+
+  it("a message whose only remote images are trackers has nothing to show", () => {
+    const hidden = sanitizeEmailHtml(`<p>Hi</p>${PIXEL}`, { remoteImages: false });
+    expect(hidden.trackers).toBe(1);
+    expect(hidden.blockedRemoteImages).toBe(false);
+  });
+
+  it("the HOSTILE fixture's pixel.gif stays a normal image in allowed mode", () => {
+    const allowed = sanitizeEmailHtml(HOSTILE, { remoteImages: true });
+    expect(allowed.trackers).toBe(0);
+    expect(allowed.html).toContain('src="https://tracker.example.org/pixel.gif"');
+  });
+
+  it("a quote followed by a pixel is marked as without the pixel", () => {
+    const quoted = '<div class="gmail_quote">old text</div>';
+    const withPixel = sanitizeEmailHtml(`${quoted}${PIXEL}`, { remoteImages: true });
+    const without = sanitizeEmailHtml(quoted, { remoteImages: true });
+    expect(withPixel.quotes).toBe(without.quotes);
+  });
+
+  it("cleans hrefs with Mail's marks, and drops marks the mail brings", () => {
+    const html =
+      '<a href="https://shop.example.com/sale?utm_source=x&amp;id=7&amp;fbclid=y#top">sale</a>' +
+      '<a href="https://www.google.com/url?q=https%3A%2F%2Fexample.net%2Fpage&amp;sa=D">wrapped</a>' +
+      '<a href="https://example.org/plain" data-mk-cleaned="9">plain</a>';
+    const doc = new DOMParser().parseFromString(sanitizeEmailHtml(html, { remoteImages: false, cleanLinks: true }).html, "text/html");
+    const [sale, wrapped, plain] = Array.from(doc.querySelectorAll("a"));
+    expect(sale?.getAttribute("href")).toBe("https://shop.example.com/sale?id=7#top");
+    expect(sale?.getAttribute("data-mk-cleaned")).toBe("2");
+    expect(wrapped?.getAttribute("href")).toBe("https://example.net/page");
+    expect(wrapped?.hasAttribute("data-mk-unwrapped")).toBe(true);
+    expect(plain?.getAttribute("href")).toBe("https://example.org/plain");
+    expect(plain?.hasAttribute("data-mk-cleaned")).toBe(false);
+  });
+
+  it("leaves links alone without cleanLinks", () => {
+    const html = '<a href="https://shop.example.com/sale?utm_source=x">sale</a>';
+    expect(sanitizeEmailHtml(html, { remoteImages: false }).html).toContain("utm_source=x");
+    expect(sanitizeEmailHtml(html, { remoteImages: false, cleanLinks: false }).html).toContain("utm_source=x");
+  });
+
+  it("the plain view prints cleaned URLs", () => {
+    const html = '<p><a href="https://shop.example.com/sale?utm_source=x&amp;id=7">sale</a></p>';
+    expect(htmlToPlainText(html, { cleanLinks: true })).toBe("sale <https://shop.example.com/sale?id=7>");
+    expect(htmlToPlainText(html)).toContain("utm_source=x");
+  });
+});

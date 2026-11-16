@@ -60,6 +60,8 @@ export interface SettingsSearchPorts {
     mailView: "original" | "plain";
     darkMail: "adapt" | "original";
     hideQuotes: boolean;
+    /** Slice 3i: Remove tracking from links I open (absent: on). */
+    cleanLinks?: boolean;
   };
   loadStatus: () => Promise<AttachmentTextStatus>;
   retry: () => Promise<void>;
@@ -140,6 +142,7 @@ export function SearchSection({ search, hint }: { search: SettingsSearchPorts; h
         <p className="text-muted-foreground">{`Show mail as: ${v.mailView === "plain" ? "Plain text" : "Original"}`}</p>
         <p className="text-muted-foreground">{`Mail in dark mode: ${v.darkMail === "adapt" ? "Adapt colors" : "Original colors"}`}</p>
         <p className="text-muted-foreground">{`Hide quoted text in replies: ${v.hideQuotes ? "On" : "Off"}`}</p>
+        <p className="text-muted-foreground">{`Remove tracking from links I open: ${v.cleanLinks !== false ? "On" : "Off"}`}</p>
       </section>
       <p className="text-xs text-muted-foreground">{hint}</p>
     </div>

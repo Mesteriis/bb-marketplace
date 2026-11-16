@@ -10,6 +10,7 @@ import { quoteRanges } from "../core/quotes.ts";
 import { declaresDarkSupport, htmlToPlainText, isAllowedLinkUrl, sanitizeEmailHtml } from "./sanitize.ts";
 import type { CodeRenderers } from "./bb-ports.ts";
 import { BodyParts, HtmlCodeBlocks } from "./code-blocks.tsx";
+import type { LinkHover } from "./link-status.tsx";
 
 /** Slice 3h: the fold of quoted text, in a plain body and under an HTML frame. */
 export const SHOW_QUOTES_TEXT = "\u00b7\u00b7\u00b7 Show quoted text";
@@ -22,8 +23,17 @@ export interface MessageFrameProps {
   body: MessageBody;
   /** Accessible name of the frame, e.g. "Message from Ada". */
   title: string;
-  /** Called with an http(s) or mailto URL the owner clicked. */
-  onOpenLink: (url: string) => void;
+  /** Called with an http(s) or mailto URL the owner clicked, and the link's visible text (slice 3i). */
+  onOpenLink: (url: string, text?: string | null) => void;
+  /** Slice 3i: the link under the pointer or focus, for the status line; null when none. */
+  onLinkHover?: (link: LinkHover | null) => void;
+  /** Slice 3i: the cleanLinks setting (default on): hrefs are cleaned when sanitized. */
+  cleanLinks?: boolean;
+  /**
+   * Slice 3i: why this sender's images are not loaded automatically (part A
+   * resolution 5), or null. Set, the bar says so and offers no Always show.
+   */
+  imagesHeld?: string | null;
   /**
    * Render https: images: the sender is allowed, or the owner chose Show
    * images for this message. `body.remoteImagesAllowed` counts too.
@@ -109,6 +119,28 @@ function closestAnchor(target: EventTarget | null): Element | null {
   return typeof node?.closest === "function" ? node.closest("a, area") : null;
 }
 
+/** Longest visible link text passed on; cleanLink reads at most 300 characters. */
+const LINK_TEXT_MAX = 1_000;
+
+/** An anchor's visible text, whitespace collapsed; null for none. */
+function anchorText(anchor: Element): string | null {
+  const text = (anchor.textContent ?? "").slice(0, LINK_TEXT_MAX * 4).replace(/\s+/g, " ").trim().slice(0, LINK_TEXT_MAX);
+  return text === "" ? null : text;
+}
+
+/** What the status line needs about an anchor; null when it opens nothing. */
+function hoverOf(anchor: Element | null): LinkHover | null {
+  const href = anchor?.getAttribute("href") ?? null;
+  if (anchor === null || href === null || !isAllowedLinkUrl(href)) return null;
+  const removed = Number(anchor.getAttribute("data-mk-cleaned") ?? "0");
+  return {
+    href,
+    text: anchorText(anchor),
+    removed: Number.isFinite(removed) && removed > 0 ? removed : 0,
+    unwrapped: anchor.hasAttribute("data-mk-unwrapped"),
+  };
+}
+
 export function MessageFrame({
   body,
   title,
@@ -124,6 +156,9 @@ export function MessageFrame({
   dark = false,
   quotesShown = true,
   onToggleQuotes,
+  onLinkHover,
+  cleanLinks = true,
+  imagesHeld = null,
 }: MessageFrameProps) {
   const showRemote = remoteImages || body.remoteImagesAllowed;
   // Dark support is read from the raw HTML (the sanitizer drops meta); it is never rendered.
@@ -131,13 +166,13 @@ export function MessageFrame({
   const sanitized = useMemo(
     () =>
       body.html !== null
-        ? sanitizeEmailHtml(body.html, { remoteImages: showRemote, ...(dark ? { dark: true, darkSupported } : {}) })
+        ? sanitizeEmailHtml(body.html, { remoteImages: showRemote, cleanLinks, ...(dark ? { dark: true, darkSupported } : {}) })
         : null,
-    [body.html, showRemote, dark, darkSupported],
+    [body.html, showRemote, dark, darkSupported, cleanLinks],
   );
 
   if (view === "plain") {
-    const text = body.text !== null && body.text.trim() !== "" ? body.text : body.html !== null ? htmlToPlainText(sanitizeEmailHtml(body.html, { remoteImages: false }).html) : "";
+    const text = body.text !== null && body.text.trim() !== "" ? body.text : body.html !== null ? htmlToPlainText(sanitizeEmailHtml(body.html, { remoteImages: false, cleanLinks }).html, { cleanLinks }) : "";
     return text.trim() !== "" ? (
       <PlainBody text={text} renderers={renderers} quotesShown={quotesShown} {...(onToggleQuotes !== undefined ? { onToggleQuotes } : {})} />
     ) : (
@@ -155,14 +190,20 @@ export function MessageFrame({
 
   return (
     <div className="flex flex-col gap-2">
-      {!showRemote && sanitized.blockedRemoteImages ? (
+      {!showRemote && (sanitized.blockedRemoteImages || sanitized.trackers > 0) ? (
         <ImagesBar
+          blocked={sanitized.blockedRemoteImages}
+          trackers={sanitized.trackers}
+          held={imagesHeld}
           senderAddress={senderAddress}
           onShowImages={onShowImages}
           onAlwaysShowImages={onAlwaysShowImages}
         />
       ) : null}
-      {senderTrusted && senderAddress !== null ? (
+      {showRemote && sanitized.trackers > 0 ? (
+        <p className="px-1 text-xs text-muted-foreground">{`Images shown \u00b7 ${trackersText(sanitized.trackers)} blocked`}</p>
+      ) : null}
+      {senderTrusted && senderAddress !== null && imagesHeld === null ? (
         <div
           role="region"
           aria-label="Trusted sender"
@@ -178,6 +219,7 @@ export function MessageFrame({
         srcDoc={sanitized.html}
         title={title}
         onOpenLink={onOpenLink}
+        {...(onLinkHover !== undefined ? { onLinkHover } : {})}
         quotesShown={sanitized.quotes === 0 || onToggleQuotes === undefined || quotesShown}
       />
       {sanitized.quotes > 0 && onToggleQuotes !== undefined ? <QuoteToggle shown={quotesShown} onToggle={onToggleQuotes} /> : null}
@@ -191,11 +233,24 @@ export function MessageFrame({
   );
 }
 
+/** "1 tracker", "2 trackers". */
+export function trackersText(count: number): string {
+  return count === 1 ? "1 tracker" : `${count} trackers`;
+}
+
 function ImagesBar({
+  blocked,
+  trackers,
+  held,
   senderAddress,
   onShowImages,
   onAlwaysShowImages,
 }: {
+  /** Show images would reveal something (trackers never count). */
+  blocked: boolean;
+  trackers: number;
+  /** Slice 3i: why this sender's images wait, or null. */
+  held: string | null;
   senderAddress: string | null;
   onShowImages: () => void;
   onAlwaysShowImages: () => void;
@@ -207,11 +262,26 @@ function ImagesBar({
       className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-muted px-2 py-1 text-xs text-muted-foreground"
     >
       <Icon name="EyeOff" className="size-3.5 shrink-0" aria-hidden />
-      <span className="min-w-0 flex-1">Images are hidden to protect your privacy.</span>
-      <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onShowImages}>
-        Show images
-      </Button>
-      {senderAddress !== null ? (
+      <span className="min-w-0 flex-1">
+        {!blocked ? (
+          <span>{`Remote images: this message has ${trackersText(trackers)}; they stay blocked.`}</span>
+        ) : (
+          <>
+            <span>
+              {held !== null
+                ? `Images from this sender are not loaded automatically because ${held}.`
+                : "Images are hidden to protect your privacy."}
+            </span>
+            {trackers > 0 ? <span>{` This message has ${trackersText(trackers)}; they stay blocked.`}</span> : null}
+          </>
+        )}
+      </span>
+      {blocked ? (
+        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onShowImages}>
+          Show images
+        </Button>
+      ) : null}
+      {blocked && held === null && senderAddress !== null ? (
         <Button
           variant="ghost"
           size="sm"
@@ -241,11 +311,13 @@ function HtmlFrame({
   srcDoc,
   title,
   onOpenLink,
+  onLinkHover,
   quotesShown = true,
 }: {
   srcDoc: string;
   title: string;
-  onOpenLink: (url: string) => void;
+  onOpenLink: (url: string, text?: string | null) => void;
+  onLinkHover?: (link: LinkHover | null) => void;
   quotesShown?: boolean;
 }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -258,15 +330,22 @@ function HtmlFrame({
   const detachRef = useRef<(() => void) | null>(null);
   const [height, setHeight] = useState(INITIAL_HEIGHT);
 
+  const hoverRef = useRef(onLinkHover);
+  hoverRef.current = onLinkHover;
+
   useEffect(() => {
     openLinkRef.current = onOpenLink;
   }, [onOpenLink]);
 
   // Every load (first render and each new srcDoc) gets a fresh document, so
-  // the listener and the size observer are attached again each time.
+  // the listeners and the size observer are attached again each time. Slice
+  // 3i (part B I1): this is the one load handler and `detachRef` the one
+  // detach for every listener on the frame's document.
   const handleLoad = useCallback(() => {
     detachRef.current?.();
     detachRef.current = null;
+    // A new document: the status line names nothing of the old one.
+    hoverRef.current?.(null);
     const frame = frameRef.current;
     const doc = frame?.contentDocument;
     if (!frame || !doc) return;
@@ -283,11 +362,26 @@ function HtmlFrame({
       if (anchor === null) return;
       event.preventDefault();
       const href = anchor.getAttribute("href");
-      if (href !== null && isAllowedLinkUrl(href)) openLinkRef.current(href);
+      if (href !== null && isAllowedLinkUrl(href)) openLinkRef.current(href, anchorText(anchor));
+    };
+    // Slice 3i: the status line follows the hovered or focused link.
+    const onOver = (event: Event) => {
+      const anchor = closestAnchor(event.target);
+      if (anchor !== null) hoverRef.current?.(hoverOf(anchor));
+    };
+    const onOut = (event: Event) => {
+      const anchor = closestAnchor(event.target);
+      if (anchor === null) return;
+      const next = closestAnchor((event as MouseEvent | FocusEvent).relatedTarget ?? null);
+      if (next !== anchor) hoverRef.current?.(null);
     };
 
     doc.addEventListener("click", onClick);
     doc.addEventListener("auxclick", onClick);
+    doc.addEventListener("mouseover", onOver);
+    doc.addEventListener("focusin", onOver);
+    doc.addEventListener("mouseout", onOut);
+    doc.addEventListener("focusout", onOut);
     let observer: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined") {
       observer = new ResizeObserver(measure);
@@ -299,6 +393,10 @@ function HtmlFrame({
     detachRef.current = () => {
       doc.removeEventListener("click", onClick);
       doc.removeEventListener("auxclick", onClick);
+      doc.removeEventListener("mouseover", onOver);
+      doc.removeEventListener("focusin", onOver);
+      doc.removeEventListener("mouseout", onOut);
+      doc.removeEventListener("focusout", onOut);
       observer?.disconnect();
     };
   }, []);

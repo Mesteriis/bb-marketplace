@@ -272,7 +272,8 @@ export interface MailPageProps {
   onSelectThread: (threadId: string, messageId: string | null, accountId: string) => void;
   onCloseThread: () => void;
   onToggleMessage: (messageId: string) => void;
-  onOpenLink: (url: string) => void;
+  /** A link the owner opened, with its visible text when it came from a message body (slice 3i). */
+  onOpenLink: (url: string, text?: string | null) => void;
   onHandToAgent: (message: MessageHeader) => void;
   /** Checked conversations of the list. */
   selection: ReadonlySet<string>;
@@ -297,6 +298,8 @@ export interface MailPageProps {
   details: DetailsState | null;
   onOpenDetails: (message: MessageHeader) => void;
   onCloseDetails: () => void;
+  /** Slice 3i: Details' Check again (sender_check_refresh with force); absent: not offered. */
+  onCheckSender?: (messageId: string) => Promise<void>;
   onCopy: (text: string) => Promise<boolean>;
   onDownloadEml: (message: MessageHeader) => void;
   onDownloadAttachment: (message: MessageHeader, attachment: AttachmentMeta) => void;
@@ -1530,6 +1533,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         onCopy={props.onCopy}
         onCloseAutoFocus={restoreFocus}
         onAfterCloseAutoFocus={afterClose}
+        {...(props.onCheckSender !== undefined ? { onCheckAgain: props.onCheckSender } : {})}
       />
       <SmtpDialog
         account={status.accounts.find((a) => a.id === props.smtpAccountId) ?? null}

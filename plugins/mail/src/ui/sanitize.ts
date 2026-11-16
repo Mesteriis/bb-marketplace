@@ -6,7 +6,9 @@
 // When the owner allows remote images, `https:` `<img src>` is the one
 // remote load kept; everything else stays blocked.
 import DOMPurify from "dompurify";
+import { cleanLink } from "../core/link-clean.ts";
 import { isAttribution } from "../core/quotes.ts";
+import { isTrackerImage } from "./trackers.ts";
 
 /** The policy inside every rendered message: only data: images, only inline styles. */
 export const EMAIL_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'";
@@ -26,6 +28,13 @@ export interface SanitizeOptions {
   dark?: boolean;
   /** Slice 3h: declaresDarkSupport() of the raw HTML. */
   darkSupported?: boolean;
+  /**
+   * Slice 3i: rewrite each kept link through core cleanLink (the cleanLinks
+   * setting). A rewritten anchor carries Mail's own `data-mk-cleaned="n"`
+   * (parameters removed) and `data-mk-unwrapped` marks. Absent or false:
+   * links stay as the mail wrote them (reply and forward quoting).
+   */
+  cleanLinks?: boolean;
 }
 
 export interface SanitizedEmail {
@@ -33,10 +42,14 @@ export interface SanitizedEmail {
   html: string;
   /**
    * Default mode only: an `<img>` whose src allowed mode would keep (https:)
-   * was removed, so Show images would reveal something. Always false in
-   * allowed mode; srcset, CSS url(), backgrounds and http: never count.
+   * was removed, so Show images would reveal something. Trackers never
+   * count (slice 3i): a message whose only remote images are trackers has
+   * nothing to show. Always false in allowed mode; srcset, CSS url(),
+   * backgrounds and http: never count.
    */
   blockedRemoteImages: boolean;
+  /** Slice 3i: remote tracking pixels removed, in both modes (ui/trackers.ts). */
+  trackers: number;
   /** Slice 3h: quoted blocks marked with `data-mk-quote` (hidden until the parent shows them). */
   quotes: number;
 }
@@ -410,7 +423,7 @@ let purifier: Purifier | null = null;
  * The call in progress. DOMPurify runs its hooks synchronously inside
  * sanitize(), so the hooks read the mode and report what they blocked here.
  */
-const run = { remoteImages: false, blockedRemoteImages: false };
+const run = { remoteImages: false, blockedRemoteImages: false, trackers: [] as Element[] };
 
 function emailPurifier(): Purifier {
   if (purifier !== null) return purifier;
@@ -433,9 +446,15 @@ function emailPurifier(): Purifier {
     const src = node.getAttribute("src");
     if (src !== null && !isRasterDataUrl(src)) {
       // The one predicate for remote images: allowed mode keeps exactly what
-      // default mode reports as blocked.
+      // default mode reports as blocked, trackers excepted (slice 3i: they
+      // load in neither mode and are counted on their own).
       const remoteImage = node.nodeName.toLowerCase() === "img" && isHttpsUrl(src);
-      if (remoteImage && run.remoteImages) {
+      if (remoteImage && isTrackerImage(node)) {
+        // Slice 3i: a pixel never loads and is removed after the walk, so
+        // quote marking decides as for the mail without it.
+        run.trackers.push(node);
+        node.removeAttribute("src");
+      } else if (remoteImage && run.remoteImages) {
         node.setAttribute("referrerpolicy", "no-referrer");
       } else {
         if (remoteImage) run.blockedRemoteImages = true;
@@ -461,6 +480,7 @@ function emailPurifier(): Purifier {
 export function sanitizeEmailHtml(html: string, options: SanitizeOptions): SanitizedEmail {
   run.remoteImages = options.remoteImages;
   run.blockedRemoteImages = false;
+  run.trackers = [];
   let body: HTMLElement;
   try {
     // The body DOMPurify built (RETURN_DOM gives its <body>): quotes are
@@ -474,6 +494,10 @@ export function sanitizeEmailHtml(html: string, options: SanitizeOptions): Sanit
   } finally {
     run.remoteImages = false;
   }
+  const trackers = run.trackers.length;
+  for (const pixel of run.trackers) pixel.remove();
+  run.trackers = [];
+  if (options.cleanLinks === true) cleanAnchors(body);
   const quotes = markQuotes(body);
   const csp = options.remoteImages ? EMAIL_CSP_REMOTE_IMAGES : EMAIL_CSP;
   const darkStyle = options.dark === true ? DARK_SCHEME_STYLE + (options.darkSupported === true ? "" : DARK_ADAPT_STYLE) : "";
@@ -486,19 +510,42 @@ export function sanitizeEmailHtml(html: string, options: SanitizeOptions): Sanit
       `<style>${BASE_STYLE}${darkStyle}</style>` +
       `</head><body>${body.innerHTML}</body></html>`,
     blockedRemoteImages: run.blockedRemoteImages,
+    trackers,
     quotes,
   };
 }
 
 /**
+ * Slice 3i: every kept link through core cleanLink with its visible text.
+ * A link cleanLink refuses loses its href; a changed one gets Mail's marks,
+ * which the mail cannot bring (incoming data-mk-* attributes are dropped).
+ */
+function cleanAnchors(body: HTMLElement): void {
+  for (const anchor of Array.from(body.querySelectorAll("a[href], area[href]"))) {
+    const href = anchor.getAttribute("href") ?? "";
+    const clean = cleanLink(href, textOf(anchor), { clean: true });
+    if (clean === null) {
+      anchor.removeAttribute("href");
+      continue;
+    }
+    if (clean.url === href) continue;
+    anchor.setAttribute("href", clean.url);
+    anchor.setAttribute("data-mk-cleaned", String(clean.removedParams));
+    if (clean.unwrapped) anchor.setAttribute("data-mk-unwrapped", "");
+  }
+}
+
+/**
  * Slice 3h: a sanitized body as plain text for Show plain text when the mail
  * has no text part: block elements end lines and links read `text <url>`.
+ * Slice 3i: with `cleanLinks` the `<url>`s are cleaned (core cleanLink).
  */
-export function htmlToPlainText(html: string): string {
+export function htmlToPlainText(html: string, options: { cleanLinks?: boolean } = {}): string {
   const doc = new DOMParser().parseFromString(`<!doctype html><html><body>${html}</body></html>`, "text/html");
   for (const element of Array.from(doc.querySelectorAll("script, style, head, title"))) element.remove();
   for (const link of Array.from(doc.querySelectorAll("a[href]"))) {
-    const href = link.getAttribute("href") ?? "";
+    const written = link.getAttribute("href") ?? "";
+    const href = options.cleanLinks === true ? (cleanLink(written, textOf(link), { clean: true })?.url ?? written) : written;
     const text = textOf(link);
     if (isAllowedLinkUrl(href) && text !== href && !href.startsWith("mailto:")) link.append(` <${href}>`);
   }

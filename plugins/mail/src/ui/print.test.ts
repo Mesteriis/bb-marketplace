@@ -49,6 +49,19 @@ describe("printDocument", () => {
     expect(escapeHtml(`"'`)).toBe("&quot;&#39;");
   });
 
+  it("slice 3i: prints cleaned links, and no remote-image note for trackers only", () => {
+    const html = printDocument(
+      [{ header, body: body({ html: '<p><a href="https://shop.example.com/sale?utm_source=x&amp;id=7">sale</a></p><img src="https://mailtrack.io/trace/o.png">' }) }],
+      "x",
+    );
+    expect(html).toContain('href="https://shop.example.com/sale?id=7"');
+    expect(html).not.toContain("utm_source");
+    expect(html).not.toContain("mailtrack.io");
+    expect(html).not.toContain(REMOTE_NOT_PRINTED_TEXT);
+    const kept = printDocument([{ header, body: body({ html: '<a href="https://shop.example.com/?utm_source=x">s</a>' }) }], "x", { cleanLinks: false });
+    expect(kept).toContain("utm_source=x");
+  });
+
   it("names the saved file by date and subject", () => {
     const name = printFileName(new Date(2026, 10, 16), "Plan Q4/Q1");
     expect(name).toBe("2026-11-16 Plan Q4 Q1.html");

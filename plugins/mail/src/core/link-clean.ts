@@ -5,7 +5,7 @@
 // judges the final target: text that names another site, a host that mixes
 // alphabets or imitates a known domain, a listed click-tracking redirect.
 // Nothing is fetched; a redirect that hides its target is only named.
-import { asciiDomainOf, orgDomain } from "./sender-check.ts";
+import { asciiDomainOf, orgDomain } from "./sender-basics.ts";
 import { hostMixesAlphabets, isLookalikeHost, type KnownDomains } from "./sender-disguise.ts";
 import { isTrackingRedirectHost } from "./trackers.ts";
 

@@ -31,6 +31,8 @@ import { PatchCard } from "./patch-dialog.tsx";
 import { ProjectChip, type AlwaysChoice } from "./project-chip.tsx";
 import { LabelChips } from "./label-chips.tsx";
 import { RelatedMail } from "./related-mail.tsx";
+import { LinkStatusLine, type LinkHover } from "./link-status.tsx";
+import { CryptoChip, cryptoPlaceholder, imagesHeldReason, RECEIPT_TEXT, securityOf, SenderWarnings } from "./sender-warnings.tsx";
 
 export type BodyState =
   | { status: "loading" }
@@ -44,7 +46,8 @@ export interface ReadingPaneProps {
   expandedIds: ReadonlySet<string>;
   bodies: Readonly<Record<string, BodyState>>;
   onToggleMessage: (messageId: string) => void;
-  onOpenLink: (url: string) => void;
+  /** A link the owner opened, with its visible text when it came from a message body (slice 3i). */
+  onOpenLink: (url: string, text?: string | null) => void;
   onHandToAgent: (message: MessageHeader) => void;
   /** Back to the list; the button shows only when the page is one column wide. */
   onBack: () => void;
@@ -111,6 +114,8 @@ export interface ReadingSlice3h {
   dark: boolean;
   /** hideQuotes. */
   hideQuotes: boolean;
+  /** Slice 3i: the cleanLinks setting (absent: on). */
+  cleanLinks?: boolean;
   /** Expand all / Collapse all (`;`): null until used on this conversation. */
   quotesAll: boolean | null;
   onExpandAll: () => void;
@@ -296,8 +301,10 @@ function formatSize(bytes: number): string {
 
 interface ImageProps {
   remoteImages: boolean;
-  /** The sender is allowed during this page session. */
+  /** The sender is allowed during this page session (and its images may load by themselves). */
   senderAllowed: boolean;
+  /** Slice 3i: why this sender's images do not load by themselves, or null. */
+  held: string | null;
   onShowImages: () => void;
   onAlwaysShowImages: () => void;
   onStopImages: () => void;
@@ -312,16 +319,21 @@ function MessageBodyView({
   renderers,
   view,
   dark = false,
+  onLinkHover,
+  cleanLinks,
 }: {
   state: BodyState | undefined;
   title: string;
   senderAddress: string | null;
-  onOpenLink: (url: string) => void;
+  onOpenLink: (url: string, text?: string | null) => void;
   images: ImageProps;
   renderers?: CodeRenderers;
   /** Slice 3h. */
   view?: MessageView;
   dark?: boolean;
+  /** Slice 3i. */
+  onLinkHover?: (link: LinkHover | null) => void;
+  cleanLinks?: boolean;
 }) {
   if (state === undefined || state.status === "loading") {
     return <LoadingState label="Loading message…" />;
@@ -344,6 +356,9 @@ function MessageBodyView({
       onAlwaysShowImages={images.onAlwaysShowImages}
       senderTrusted={images.senderAllowed || state.body.remoteImagesAllowed}
       onStopImages={images.onStopImages}
+      imagesHeld={images.held}
+      {...(onLinkHover !== undefined ? { onLinkHover } : {})}
+      {...(cleanLinks !== undefined ? { cleanLinks } : {})}
       {...(renderers !== undefined ? { renderers } : {})}
       {...(view !== undefined
         ? {
@@ -434,6 +449,7 @@ function MessageItem({
   highlighted = false,
   bb,
   projectId = null,
+  onLinkHover,
 }: {
   message: MessageHeader;
   expanded: boolean;
@@ -441,7 +457,7 @@ function MessageItem({
   /** Name of the folder this copy lives in when it is not the one viewed. */
   otherFolder: string | null;
   onToggle: () => void;
-  onOpenLink: (url: string) => void;
+  onOpenLink: (url: string, text?: string | null) => void;
   images: ImageProps;
   onToggleFlag: () => void;
   onDetails: () => void;
@@ -459,8 +475,12 @@ function MessageItem({
   /** Slice 3h. */
   r3?: ReadingSlice3h;
   view?: MessageView;
+  /** Slice 3i: the status line's link. */
+  onLinkHover?: (link: LinkHover | null) => void;
 }) {
   const sender = addressLabel(message.from);
+  const security = securityOf(message);
+  const placeholder = cryptoPlaceholder(security.crypto);
   const senderAddress = message.from.address.trim() !== "" ? message.from.address : null;
   const attachments = message.attachments.filter((a) => !a.isInline);
   const inline = message.attachments.filter((a) => a.isInline);
@@ -496,6 +516,7 @@ function MessageItem({
                 {otherFolder}
               </span>
             ) : null}
+            {security.crypto !== null ? <CryptoChip crypto={security.crypto} /> : null}
             {message.date !== null ? (
               <time dateTime={message.date} className="shrink-0 text-xs text-muted-foreground">
                 {formatFullDate(message.date)}
@@ -534,6 +555,8 @@ function MessageItem({
       </div>
       {expanded ? (
         <div className="flex flex-col gap-3 px-3 pb-3">
+          <SenderWarnings message={message} />
+          {security.receiptRequested ? <p className="text-xs text-muted-foreground">{RECEIPT_TEXT}</p> : null}
           {translation}
           {bb !== undefined ? (
             <DevLinksStrip
@@ -560,15 +583,23 @@ function MessageItem({
           {bb !== undefined && message.patch != null ? (
             <PatchCard patch={message.patch} onReview={() => bb.onReviewPatch(message)} />
           ) : null}
-          <MessageBodyView
-            state={body}
-            title={`Message from ${sender}`}
-            senderAddress={senderAddress}
-            onOpenLink={onOpenLink}
-            images={images}
-            {...(bb !== undefined ? { renderers: bb.renderers } : {})}
-            {...(view !== undefined ? { view, dark: r3?.dark === true } : {})}
-          />
+          {placeholder !== null ? (
+            <p role="note" className="rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-muted-foreground">
+              {placeholder}
+            </p>
+          ) : (
+            <MessageBodyView
+              state={body}
+              title={`Message from ${sender}`}
+              senderAddress={senderAddress}
+              onOpenLink={onOpenLink}
+              images={images}
+              {...(bb !== undefined ? { renderers: bb.renderers } : {})}
+              {...(view !== undefined ? { view, dark: r3?.dark === true } : {})}
+              {...(onLinkHover !== undefined ? { onLinkHover } : {})}
+              {...(r3?.cleanLinks !== undefined ? { cleanLinks: r3.cleanLinks } : {})}
+            />
+          )}
           {attachments.length > 0 ? (
             <ul aria-label="Attachments" className="flex flex-wrap gap-2">
               {attachments.map((attachment) => (
@@ -664,6 +695,10 @@ export function ReadingPane(props: ReadingPaneProps) {
   const r3 = props.reading3h;
   const threadKey = detail?.thread.id ?? null;
   const [switched, setSwitched] = useState<Switches>(() => noSwitches(threadKey));
+  // Slice 3i: the link under the pointer or focus, for this conversation only.
+  const [hover, setHover] = useState<{ thread: string | null; link: LinkHover | null }>({ thread: null, link: null });
+  const hovered = hover.thread === threadKey ? hover.link : null;
+  const onLinkHover = (link: LinkHover | null) => setHover({ thread: threadKey, link });
   const own = switched.thread === threadKey ? switched : noSwitches(threadKey);
   const viewOf = (message: MessageHeader): MessageView | undefined => {
     if (r3 === undefined) return undefined;
@@ -946,6 +981,9 @@ export function ReadingPane(props: ReadingPaneProps) {
       ) : null}
       {(single !== null ? [single] : messages).map((message) => {
         const sender = message.from.address.trim().toLowerCase();
+        // Slice 3i (part A resolution 5): an always-show sender's images wait for a clean check.
+        const held = imagesHeldReason(message);
+        const listed = props.imageSenders.has(sender);
         return (
           <MessageItem
             key={message.id}
@@ -956,8 +994,10 @@ export function ReadingPane(props: ReadingPaneProps) {
             onToggle={() => props.onToggleMessage(message.id)}
             onOpenLink={props.onOpenLink}
             images={{
-              remoteImages: props.remoteImageIds.has(message.id) || props.imageSenders.has(sender),
-              senderAllowed: props.imageSenders.has(sender),
+              remoteImages: props.remoteImageIds.has(message.id) || (listed && held === null),
+              senderAllowed: listed && held === null,
+              // "Not run yet" says something only for a sender the owner allowed.
+              held: held !== null && (listed || securityOf(message).check.state !== "unknown") ? held : null,
               onShowImages: () => props.onShowImages(message.id),
               onAlwaysShowImages: () => props.onAlwaysShowImages(message),
               onStopImages: () => props.onStopImages(message),
@@ -971,12 +1011,14 @@ export function ReadingPane(props: ReadingPaneProps) {
             highlighted={highlight?.messageId === message.id}
             {...(props.bb !== undefined ? { bb: props.bb, projectId: detail.project?.id ?? null } : {})}
             {...(r3 !== undefined ? { r3, view: viewOf(message)! } : {})}
+            onLinkHover={onLinkHover}
           />
         );
       })}
       {r3 !== undefined && messages.length > 0 ? (
         <RelatedMail messageId={messages.at(-1)!.id} load={r3.related.load} onOpen={r3.related.onOpen} />
       ) : null}
+      <LinkStatusLine hover={hovered} cleanLinks={r3?.cleanLinks !== false} />
     </div>
   );
 }

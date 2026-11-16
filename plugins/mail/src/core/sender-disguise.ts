@@ -7,7 +7,8 @@
 // addresses in ASCII (punycode) form only, to be shown as data.
 import type { MailAddress } from "./model.ts";
 import { decodePunycodeLabel } from "./punycode.ts";
-import { addressDomain, asciiDomainOf, orgDomain, type SenderCheckBasis, type SenderCheckState } from "./sender-check.ts";
+import { addressDomain, asciiDomainOf, orgDomain, type SenderCheckState } from "./sender-basics.ts";
+import type { SenderCheckBasis } from "./sender-check.ts";
 
 export type DisguiseWarning =
   | { kind: "reply_to_elsewhere"; addresses: string[] }

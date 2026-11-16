@@ -382,6 +382,7 @@ describe("AgentSendCard: identity, template, signature and checks (slice 3d)", (
           { kind: "attachment_mentioned", phrase: "attached" },
           { kind: "empty_subject" },
           { kind: "outside_conversation", addresses: ["bo@example.org"] },
+          { kind: "reply_to_elsewhere", addresses: ["help@example.net"] },
         ],
       }),
     );
@@ -390,6 +391,8 @@ describe("AgentSendCard: identity, template, signature and checks (slice 3d)", (
       "You wrote “attached”, but nothing is attached.",
       "The subject is empty.",
       "Not in this conversation: bo@example.org",
+      // Slice 3i: the agent send card shows the Reply-To warning too.
+      "Reply-To differs from the sender: help@example.net",
     ]);
     await passDwell();
     expect(sendButton().disabled).toBe(false);

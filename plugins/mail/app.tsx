@@ -162,6 +162,11 @@ import { LabelsDialog, type LabelsRequest } from "./src/ui/labels-dialog.tsx";
 import { FILES_PAGE, FilesView, type FilesFilter } from "./src/ui/files-view.tsx";
 import { AttachmentViewer, viewerShows, type ViewerHost, type ViewRequest } from "./src/ui/attachment-viewer.tsx";
 import { printDocument, printFileName, printHtml, type PrintMessage } from "./src/ui/print.ts";
+// Slice 3i: the link checks import zod-free core modules only (no zod in the page bundle).
+import { cleanLink, type CleanLink } from "./src/core/link-clean.ts";
+import { addressDomain } from "./src/core/sender-basics.ts";
+import { buildKnownDomains } from "./src/core/sender-disguise.ts";
+import { LinkDialog } from "./src/ui/link-status.tsx";
 import type { SettingsSearchPorts } from "./src/ui/mail-settings.tsx";
 // The page-side pdf.js engine: pdf.js loads lazily, in a blob: worker only.
 import { browserPdfEngine } from "./src/adapters/bb/pdf-page.ts";
@@ -191,6 +196,11 @@ const SYNC_INDICATOR_MS = 60_000;
 const ACTION_CHUNK = 200;
 /** One toast for the undo of the last action, replaced by the next. */
 const UNDO_TOAST_ID = "mail-undo";
+/** Slice 3i: how long a conversation stays open before its unknown sender checks are fetched (part B I3). */
+const SENDER_CHECK_DELAY_MS = 600;
+/** sender_check_refresh takes at most this many ids. */
+const SENDER_CHECK_BATCH = 50;
+
 /** "Moving back…" gives way to the result at the next mail-changed, or after this long. */
 const MOVING_BACK_MAX_MS = 10_000;
 /** thread_get calls in flight at once while a selection's messages are collected. */
@@ -552,6 +562,11 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const routeView = route.current.view;
 
   const accounts = status?.accounts ?? [];
+  // Slice 3i: the owner's own domains count as known for the link dialog's lookalike check.
+  const ownEmails = useRef<string[]>([]);
+  ownEmails.current = accounts.map((a) => a.email);
+  const cleanLinksOn = useRef(true);
+  const [linkAsk, setLinkAsk] = useState<CleanLink | null>(null);
   // A view in the URL picks its scope: a merged role is All accounts, and a
   // folder of another account than the chosen one is that account. An
   // account chosen on this route wins until the route changes.
@@ -1518,6 +1533,67 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     [rpc],
   );
 
+  /** Slice 3i: a body fetched again in place (no loading state), after its sender check changed. */
+  const refreshBody = useCallback(
+    async (messageId: string) => {
+      try {
+        const body = await rpc.call("message_body", { messageId });
+        setReading((prev) =>
+          prev.bodies[messageId]?.status !== "ready" ? prev : { ...prev, bodies: { ...prev.bodies, [messageId]: { status: "ready", body } } },
+        );
+      } catch {
+        // The body on screen stays; the next open fetches it again.
+      }
+    },
+    [rpc],
+  );
+
+  /** Slice 3i: Details' Check again: the forced refresh, then the thread and Details again. */
+  const checkSenderAgain = useCallback(
+    async (messageId: string) => {
+      await rpc.call("sender_check_refresh", { messageIds: [messageId], force: true });
+      const threadId = latest.current.reading.threadId;
+      if (threadId !== null) await loadThread(threadId, null);
+      const message = latest.current.reading.detail?.messages.find((m) => m.id === messageId);
+      if (message !== undefined) {
+        void refreshBody(messageId);
+        await openDetails(message);
+      }
+    },
+    [loadThread, openDetails, refreshBody, rpc],
+  );
+
+  // Slice 3i (part B I3, I7): expanded messages whose sender check is
+  // `unknown` (synced before 3i) are judged once the conversation has stayed
+  // open briefly; each message once per page session, never stacked or
+  // collapsed ones. A result that lands after the owner moved on is stored
+  // and shown next time.
+  const checkRequested = useRef(new Set<string>());
+  useEffect(() => {
+    const { threadId, detail, expandedIds } = reading;
+    if (threadId === null || detail === null) return;
+    const ids = detail.messages
+      .filter((m) => expandedIds.has(m.id) && (m.senderCheck?.state ?? "unknown") === "unknown" && !checkRequested.current.has(m.id))
+      .map((m) => m.id)
+      .slice(0, SENDER_CHECK_BATCH);
+    if (ids.length === 0) return;
+    const timer = setTimeout(() => {
+      if (latest.current.reading.threadId !== threadId) return;
+      for (const id of ids) checkRequested.current.add(id);
+      rpc.call("sender_check_refresh", { messageIds: ids }).then(
+        ({ refreshed }) => {
+          if (refreshed === 0 || latest.current.reading.threadId !== threadId) return;
+          void loadThread(threadId, null);
+          for (const id of ids) void refreshBody(id);
+        },
+        () => {
+          // Stays unknown: images wait and Details offers Check again.
+        },
+      );
+    }, SENDER_CHECK_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [loadThread, reading.detail, reading.expandedIds, reading.threadId, refreshBody, rpc]);
+
   const closeDetails = useCallback(() => {
     requests.current.details++;
     setDetails(null);
@@ -1584,11 +1660,37 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     }
   }, [rpc, scopeKey, searchAccount, stopSyncing]);
 
-  const openLink = useCallback(
+  const goToUrl = useCallback(
     (url: string) => {
       if (!navigate.openUrl(url)) toast.error("This link cannot be opened here.");
     },
     [navigate],
+  );
+  /**
+   * Slice 3i: the one choke point for every link Mail opens (part A
+   * resolutions 9 and 10). core cleanLink refuses what is not http(s) or
+   * mailto, cleans the URL when the setting is on, and asks first for text
+   * that names another site, mixed alphabets or a lookalike of a domain the
+   * owner writes to. PDF, alert and dev links pass no text.
+   */
+  const openLink = useCallback(
+    (url: string, text: string | null = null) => {
+      const likes = (latest.current.reading.detail?.messages ?? []).flatMap((m) =>
+        (m.warnings ?? []).flatMap((w) => (w.kind === "lookalike" ? [w.like] : [])),
+      );
+      const own = ownEmails.current.map(addressDomain).filter((d): d is string => d !== null);
+      const clean = cleanLink(url, text, { clean: cleanLinksOn.current, known: buildKnownDomains([...own, ...likes]) });
+      if (clean === null) {
+        toast.error("This link cannot be opened here.");
+        return;
+      }
+      if (clean.needsDialog) {
+        setLinkAsk(clean);
+        return;
+      }
+      goToUrl(clean.url);
+    },
+    [goToUrl],
   );
 
   // Preferred: a mail mention pill in the new-thread draft, resolved by the
@@ -2446,11 +2548,13 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   // ---- Slice 3f: plugin settings the page reads, and Mail settings' AI tabs ----
 
   const pluginSettings = useSettings().values;
+  cleanLinksOn.current = pluginSettings?.cleanLinks !== false;
   // Slice 3h: the reading settings and the Search and reading tab.
   const readingSettings = {
     mailView: pluginSettings?.mailView === "plain" ? ("plain" as const) : ("original" as const),
     darkMail: pluginSettings?.darkMail === "original" ? ("original" as const) : ("adapt" as const),
     hideQuotes: pluginSettings?.hideQuotes !== false,
+    cleanLinks: pluginSettings?.cleanLinks !== false,
   };
   const settingsSearch = useMemo<SettingsSearchPorts>(
     () => ({
@@ -2461,6 +2565,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         mailView: pluginSettings?.mailView === "plain" ? "plain" : "original",
         darkMail: pluginSettings?.darkMail === "original" ? "original" : "adapt",
         hideQuotes: pluginSettings?.hideQuotes !== false,
+        cleanLinks: pluginSettings?.cleanLinks !== false,
       },
       loadStatus: () => rpc.call("attachment_text_status", {}),
       retry: async () => {
@@ -2473,6 +2578,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     [
       pluginSettings?.darkMail,
       pluginSettings?.hideQuotes,
+      pluginSettings?.cleanLinks,
       pluginSettings?.historyStepDays,
       pluginSettings?.indexAttachmentText,
       pluginSettings?.mailView,
@@ -3622,7 +3728,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         return;
       }
       const subject = messages[0]!.subject;
-      const html = printDocument(printable, subject);
+      const html = printDocument(printable, subject, { cleanLinks: cleanLinksOn.current });
       if (await printHtml(html)) return;
       const save = () => {
         const fileName = printFileName(new Date(), subject);
@@ -3675,6 +3781,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       mailView: readingSettings.mailView,
       dark: codeTheme.mode === "dark" && readingSettings.darkMail === "adapt",
       hideQuotes: readingSettings.hideQuotes,
+      cleanLinks: readingSettings.cleanLinks,
       onPrint: (messages) => void printMessages(messages),
       conversation: {
         state: conversationJob !== null && conversationJob.threadId === reading.threadId ? conversationJob.state : "idle",
@@ -3847,6 +3954,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       details={details}
       onOpenDetails={(message) => void openDetails(message)}
       onCloseDetails={closeDetails}
+      onCheckSender={checkSenderAgain}
       onCopy={copy}
       onDownloadEml={(message) => void download(message, null)}
       onDownloadAttachment={(message, attachment) => void download(message, attachment)}
@@ -3886,6 +3994,14 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       bb={mailBb}
       slice3h={slice3hPorts}
       {...(shownContent !== undefined ? { page: shownContent } : {})}
+    />
+    <LinkDialog
+      link={linkAsk}
+      onOpen={(link) => {
+        setLinkAsk(null);
+        goToUrl(link.url);
+      }}
+      onCancel={() => setLinkAsk(null)}
     />
     <UnsubscribeDialog
       request={unsubscribeAsk === null ? null : { info: unsubscribeAsk.info, method: unsubscribeAsk.method }}

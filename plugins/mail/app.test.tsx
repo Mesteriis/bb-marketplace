@@ -884,8 +884,13 @@ describe("Remote images", () => {
   });
 
   it("Always show allows the sender, then shows the images", async () => {
+    // Slice 3i: a judged sender (an unknown check waits for its refresh, part A resolution 5).
+    const judged: ThreadDetail = {
+      ...detailA,
+      messages: detailA.messages.map((m) => ({ ...m, senderCheck: { state: "unchecked" as const, summary: null } })),
+    };
     const slot = render(
-      folderRpc({ ...withImage(false), images_allow_sender: () => ({ address: "ada@example.org" }) }),
+      folderRpc({ ...withImage(false), thread_get: () => judged, images_allow_sender: () => ({ address: "ada@example.org" }) }),
     );
 
     fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
@@ -5294,5 +5299,201 @@ describe("Apple keys and reading flow", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(callsTo(slot, "message_action")).toHaveLength(0);
     expect(callsTo(slot, "thread_get")).toHaveLength(0);
+  });
+});
+
+describe("Slice 3i: sender checks, images and links", () => {
+  const IMAGE = "https://images.example.org/invented.png";
+  const judged = (state: "ok" | "failed" | "unchecked" | "unknown", extra: Partial<MessageHeader> = {}): ThreadDetail => ({
+    ...detailA,
+    messages: detailA.messages.map((m) => ({ ...m, senderCheck: { state, summary: state === "failed" ? "DMARC failed" : null }, ...extra })),
+  });
+  const withImage = {
+    message_body: ({ messageId }: { messageId: string }) => ({
+      messageId,
+      text: null,
+      html: `<p>Body of ${messageId}</p><img src="${IMAGE}" alt="pic">`,
+      htmlTruncated: false,
+      remoteImagesAllowed: false,
+    }),
+  };
+  const srcdoc = async (slot: ReturnType<typeof render>) =>
+    ((await slot.findByTitle("Message from Ada Example")) as HTMLIFrameElement).getAttribute("srcdoc") ?? "";
+
+  async function openA(slot: ReturnType<typeof render>) {
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+  }
+
+  /** Puts one link in the loaded frame and clicks it, as the owner would. */
+  async function clickLink(slot: ReturnType<typeof render>, href: string, text: string) {
+    const iframe = (await slot.findByTitle("Message from Ada Example")) as HTMLIFrameElement;
+    fireEvent.load(iframe);
+    const doc = iframe.contentDocument!;
+    const anchor = doc.createElement("a");
+    anchor.setAttribute("href", href);
+    anchor.textContent = text;
+    doc.body.replaceChildren(anchor);
+    const win = doc.defaultView as Window & typeof globalThis;
+    anchor.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }));
+  }
+  const opened = (slot: ReturnType<typeof render>) =>
+    slot.inspection.navigateCalls.flatMap((call) => (call.method === "openUrl" ? [call.url] : []));
+
+  it("a link core cleanLink refuses never reaches openUrl", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok") }));
+    await openA(slot);
+    await clickLink(slot, `https://example.org/${"a".repeat(9000)}`, "long");
+    await waitFor(() => expect(toasts.error).toEqual(["This link cannot be opened here."]));
+    expect(opened(slot)).toEqual([]);
+  });
+
+  it("opens a plain link cleaned, with no dialog", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok") }));
+    await openA(slot);
+    await clickLink(slot, "https://shop.example.com/sale?utm_source=x&id=7", "the sale");
+    await waitFor(() => expect(opened(slot)).toEqual(["https://shop.example.com/sale?id=7"]));
+    expect(slot.queryByRole("dialog")).toBeNull();
+  });
+
+  it("a deceptive link asks first: Cancel opens nothing, Open opens the cleaned URL", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok") }));
+    await openA(slot);
+    await clickLink(slot, "https://login.evil.example.net/x?utm_medium=y", "www.example.com");
+    const dialog = await slot.findByRole("dialog", { name: "Open example.net?" });
+    expect(dialog.textContent).toContain("This link says www.example.com but opens example.net.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+    expect(opened(slot)).toEqual([]);
+
+    await clickLink(slot, "https://login.evil.example.net/x?utm_medium=y", "www.example.com");
+    fireEvent.click(within(await slot.findByRole("dialog", { name: "Open example.net?" })).getByRole("button", { name: "Open" }));
+    await waitFor(() => expect(opened(slot)).toEqual(["https://login.evil.example.net/x"]));
+  });
+
+  it("a listed tracking redirect opens on the first click", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok") }));
+    await openA(slot);
+    await clickLink(slot, "https://u1.ct.sendgrid.net/ls/click?upn=abc", "www.example.com");
+    await waitFor(() => expect(opened(slot)).toEqual(["https://u1.ct.sendgrid.net/ls/click?upn=abc"]));
+    expect(slot.queryByRole("dialog")).toBeNull();
+  });
+
+  it("the status line shows where a hovered link goes", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok") }));
+    await openA(slot);
+    const iframe = (await slot.findByTitle("Message from Ada Example")) as HTMLIFrameElement;
+    fireEvent.load(iframe);
+    const doc = iframe.contentDocument!;
+    doc.body.innerHTML = '<a id="l" href="https://shop.example.com/sale" data-mk-cleaned="3">sale</a>';
+    const win = doc.defaultView as Window & typeof globalThis;
+    doc.getElementById("l")!.dispatchEvent(new win.MouseEvent("mouseover", { bubbles: true }));
+    expect((await slot.findByRole("status", { name: "Link address" })).textContent).toBe(
+      "\u2192 https://shop.example.com/sale (3 tracking parameters removed)",
+    );
+    doc.getElementById("l")!.dispatchEvent(new win.MouseEvent("mouseout", { bubbles: true }));
+    await waitFor(() => expect(slot.queryByRole("status", { name: "Link address" })).toBeNull());
+  });
+
+  for (const [name, detail, reason] of [
+    ["a failed check", judged("failed"), "the sender check failed"],
+    ["a lookalike", judged("ok", { warnings: [{ kind: "lookalike", domain: "examp1e.org", like: "example.org" }] }), "the domain looks like another"],
+    ["a name that shows another address", judged("ok", { warnings: [{ kind: "name_shows_address", shown: "ceo@example.com", actual: "ada@example.org" }] }), "the name shows another address"],
+  ] as const) {
+    it(`${name}: no automatic images and no Always show; Show images still loads`, async () => {
+      const slot = render(folderRpc({ ...withImage, thread_get: () => detail }));
+      await openA(slot);
+      expect(await slot.findByText(`Images from this sender are not loaded automatically because ${reason}.`)).toBeTruthy();
+      expect(slot.queryByRole("button", { name: /Always show/ })).toBeNull();
+      expect(await srcdoc(slot)).not.toContain(IMAGE);
+      fireEvent.click(slot.getByRole("button", { name: "Show images" }));
+      await waitFor(async () => expect(await srcdoc(slot)).toContain(`src="${IMAGE}"`));
+    });
+  }
+
+  it("an always-show sender's unknown message waits for its check", async () => {
+    const slot = render(folderRpc({ ...withImage, thread_get: () => judged("unknown"), images_allow_sender: () => ({ address: "ada@example.org" }) }));
+    await openA(slot);
+    fireEvent.click(await slot.findByRole("button", { name: "Always show from ada@example.org" }));
+    expect(await slot.findByText("Images from this sender are not loaded automatically because the sender check has not run yet.")).toBeTruthy();
+    expect(await srcdoc(slot)).not.toContain(IMAGE);
+  });
+
+  it("shows the failed-check strip, the warning lines and the receipt note", async () => {
+    const slot = render(
+      folderRpc({
+        thread_get: () =>
+          judged("failed", { receiptRequested: true, warnings: [{ kind: "reply_to_elsewhere", addresses: ["help@example.net"] }] }),
+      }),
+    );
+    await openA(slot);
+    const strip = await slot.findByRole("note", { name: "Sender not verified" });
+    expect(strip.textContent).toContain("could not confirm this came from example.org (DMARC failed)");
+    expect(slot.getByRole("list", { name: "Sender warnings" }).textContent).toBe("Replies go to help@example.net, not to example.org.");
+    expect(slot.getByText("The sender asked for a read receipt. Makosh Mail does not send receipts.")).toBeTruthy();
+  });
+
+  it("an encrypted message shows the placeholder and its chip, and loads no body frame", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok", { crypto: { kind: "pgp_encrypted", opaque: false } }) }));
+    await openA(slot);
+    expect(await slot.findByText("This message is encrypted. Open it in a mail client that has your key.")).toBeTruthy();
+    expect(slot.getAllByText("Encrypted (PGP)").length).toBeGreaterThan(0);
+    expect(slot.queryByTitle("Message from Ada Example")).toBeNull();
+  });
+
+  it("Details shows Authenticity, and Check again forces a refresh and reloads", async () => {
+    const source = {
+      headers: [["From", "Ada Example <ada@example.org>"]] as [string, string][],
+      structure: ["text/plain"],
+      size: 10,
+      uid: 7,
+      folder: "INBOX",
+      accountEmail: "owner@example.org",
+      authenticity: { authserv: "mx.example.org", lines: ["SPF pass (example.org)", "DMARC pass (example.org)"] },
+    };
+    const slot = render(
+      folderRpc({
+        thread_get: () => judged("ok"),
+        message_source: () => source,
+        sender_check_refresh: () => ({ refreshed: 1, failed: 0 }),
+      }),
+    );
+    await openA(slot);
+    fireEvent.click(await slot.findByRole("button", { name: "Details" }));
+    const dialog = await slot.findByRole("dialog", { name: "Message details" });
+    expect((await within(dialog).findByRole("group", { name: "Authenticity" })).textContent).toContain(
+      "Authenticity (from mx.example.org): SPF pass (example.org) \u00b7 DMARC pass (example.org)",
+    );
+    const threadCalls = callsTo(slot, "thread_get").length;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check again" }));
+    await waitFor(() =>
+      expect(callsTo(slot, "sender_check_refresh").map((call) => call.input)).toEqual([{ messageIds: ["m-new"], force: true }]),
+    );
+    await waitFor(() => expect(callsTo(slot, "thread_get").length).toBe(threadCalls + 1));
+    await waitFor(() => expect(callsTo(slot, "message_source")).toHaveLength(2));
+  });
+
+  it("refreshes an unknown expanded message once after 600 ms, not when another conversation opened first", async () => {
+    const judgedB: ThreadDetail = { thread: threadB, project: null, projectSuggestion: null, messages: [message({ id: "m-b", threadId: "th-b", senderCheck: { state: "ok", summary: null } })] };
+    const slot = render(
+      folderRpc({
+        thread_get: ({ threadId }: { threadId: string }) => (threadId === "th-b" ? judgedB : judged("unknown")),
+        sender_check_refresh: () => ({ refreshed: 0, failed: 0 }),
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    fireEvent.click(slot.getByRole("button", { name: /Lunch/ }));
+    await slot.findByRole("heading", { name: "Lunch" });
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(callsTo(slot, "sender_check_refresh")).toHaveLength(0);
+
+    fireEvent.click(slot.getByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    await waitFor(() => expect(callsTo(slot, "sender_check_refresh").map((call) => call.input)).toEqual([{ messageIds: ["m-new"] }]), {
+      timeout: 2000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(callsTo(slot, "sender_check_refresh")).toHaveLength(1);
   });
 });

@@ -50,11 +50,15 @@ function headerRow(label: string, value: string): string {
   return value === "" ? "" : `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`;
 }
 
-/** The sanitized body of one message, without its document wrapper. */
-function bodyHtml(body: MessageBody | null): { html: string; blocked: boolean } {
+/**
+ * The sanitized body of one message, without its document wrapper. `blocked`
+ * is the sanitizer's non-tracker flag (slice 3i): a message with only
+ * tracking pixels gets no "not printed" note.
+ */
+function bodyHtml(body: MessageBody | null, cleanLinks: boolean): { html: string; blocked: boolean } {
   if (body === null) return { html: "<p class=\"mk-note\">This message was not loaded.</p>", blocked: false };
   if (body.html !== null) {
-    const sanitized = sanitizeEmailHtml(body.html, { remoteImages: false });
+    const sanitized = sanitizeEmailHtml(body.html, { remoteImages: false, cleanLinks });
     const start = sanitized.html.indexOf("<body>") + "<body>".length;
     const end = sanitized.html.lastIndexOf("</body>");
     return { html: sanitized.html.slice(start, end), blocked: sanitized.blockedRemoteImages };
@@ -67,10 +71,13 @@ export interface PrintMessage {
   body: MessageBody | null;
 }
 
-/** One printable document for `messages` (oldest first). */
-export function printDocument(messages: readonly PrintMessage[], title: string): string {
+/**
+ * One printable document for `messages` (oldest first). Slice 3i: links are
+ * cleaned like the frame's unless the cleanLinks setting is off.
+ */
+export function printDocument(messages: readonly PrintMessage[], title: string, options: { cleanLinks?: boolean } = {}): string {
   const sections = messages.map(({ header, body }) => {
-    const { html, blocked } = bodyHtml(body);
+    const { html, blocked } = bodyHtml(body, options.cleanLinks !== false);
     const date = header.date === null ? "" : new Date(header.date).toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" });
     return (
       '<section class="mk-message"><table class="mk-head">' +

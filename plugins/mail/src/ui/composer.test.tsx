@@ -613,6 +613,16 @@ describe("Composer: identities, signatures, checks and templates (slice 3d)", ()
     expect(ports.send).not.toHaveBeenCalled();
   });
 
+  it("slice 3i: Before you send lists a Reply-To that goes elsewhere", async () => {
+    const ports = checkPorts([{ kind: "reply_to_elsewhere", addresses: ["help@example.net"] }]);
+    mount({}, ports as never);
+    addRecipient();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    const dialog = await screen.findByRole("dialog", { name: "Before you send" });
+    expect(dialog.textContent).toContain("Reply-To differs from the sender: help@example.net");
+    expect(ports.send).not.toHaveBeenCalled();
+  });
+
   const TEMPLATES = [
     { id: "tpl-1", name: "Thanks", doc: { type: "doc", content: [p("Thank you, made-up text.")] }, updatedAt: "2026-11-10T09:00:00.000Z" },
     { id: "tpl-2", name: "Follow-up", doc: { type: "doc", content: [p("Following up, invented.")] }, updatedAt: "2026-11-10T09:00:00.000Z" },

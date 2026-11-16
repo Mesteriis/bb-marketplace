@@ -359,7 +359,7 @@ describe("Search and reading (slice 3h)", () => {
       <SearchSection
         hint="hint"
         search={{
-          values: { historyStepDays: 30, serverSearchKeepDays: 14, indexAttachmentText: true, mailView: "original", darkMail: "adapt", hideQuotes: true },
+          values: { historyStepDays: 30, serverSearchKeepDays: 14, indexAttachmentText: true, mailView: "original", darkMail: "adapt", hideQuotes: true, cleanLinks: false },
           loadStatus: async () => status,
           retry,
           clear,
@@ -367,6 +367,7 @@ describe("Search and reading (slice 3h)", () => {
       />,
     );
     expect(await screen.findByText(attachmentTextLine(status))).toBeTruthy();
+    expect(screen.getByText("Remove tracking from links I open: Off")).toBeTruthy();
     expect(attachmentTextLine(status)).toBe("Attachment text: 1240 indexed \u00b7 18 skipped (too large or unreadable) \u00b7 indexing\u2026");
     fireEvent.click(screen.getByRole("button", { name: "Retry failed" }));
     await waitFor(() => expect(retry).toHaveBeenCalled());
@@ -390,5 +391,6 @@ describe("Search and reading (slice 3h)", () => {
     expect(await screen.findByText("Attachment text index is full")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry failed" })).toBeNull();
     expect(screen.getByText("Show mail as: Plain text")).toBeTruthy();
+    expect(screen.getByText("Remove tracking from links I open: On")).toBeTruthy();
   });
 });
