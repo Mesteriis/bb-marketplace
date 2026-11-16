@@ -242,12 +242,15 @@ describe("credit window X1 (real service + real socket)", () => {
   it("scenario 6: acking snapshot bytes grants nothing", async () => {
     const { helper, service, wire } = makeServiceAndSocket();
     const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+    helper.scrollback = new Uint8Array(100_000).fill(65);
     const token = service.sessionAttach(handle);
     const socket = makeSocket();
     const handlers = wire("ws://x/attach?attach=" + token);
     await handlers.onOpen(socket);
-    // A buggy renderer acks the (empty) snapshot length.
-    handlers.onMessage(socket, JSON.stringify({ type: "ack", bytes: 0 }));
+    // Snapshot bytes are not live: outstanding for this view is still 0.
+    expect(service.creditState(handle)!.outstanding(token)).toBe(0);
+    // A buggy renderer acks the snapshot bytes (they are not live).
+    handlers.onMessage(socket, JSON.stringify({ type: "ack", bytes: 100_000 }));
     await flush();
     await flush();
     expect(helper.creditFrames.map((f) => f.bytes)).toEqual([262_144]);
