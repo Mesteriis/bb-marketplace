@@ -178,8 +178,13 @@ export async function queueSend(
     origin: DraftOrigin;
     /** An agent send: the From the owner confirmed; a different From actually used is `conflict`. */
     expectFrom?: { name: string | null; address: string };
+    /**
+     * A reply reminder (slice 3f): created `queued` in the same transaction as
+     * the outbox row; skipped (`reminder: false`) at the live cap.
+     */
+    remind?: { id: string; days: number };
   },
-): Promise<{ outboxId: string; sendAfter: string }> {
+): Promise<{ outboxId: string; sendAfter: string; reminder?: boolean }> {
   if (deps.undone.has(input.requestId)) throw new ComposeError("undone");
   const repeated = deps.store.getOutbox(input.requestId);
   if (repeated !== null) {
@@ -211,7 +216,9 @@ export async function queueSend(
 
   const mime = await deps.builder.build(message);
   const now = deps.clock.now();
-  const queued = deps.store.queueOutbox(
+  let reminder: boolean | undefined;
+  const queued = deps.store.transaction(() => {
+    const result = deps.store.queueOutbox(
     {
       id: input.requestId,
       accountId: account.id,
@@ -227,10 +234,27 @@ export async function queueSend(
       createdAt: now.toISOString(),
     },
     input.baseRevision,
-  );
+    );
+    if (input.remind !== undefined && !("conflict" in result) && result.created) {
+      const created = deps.store.createReminder({
+        id: input.remind.id,
+        accountId: account.id,
+        outboxId: result.row.id,
+        rfcMessageId: result.row.messageId,
+        threadId: null,
+        days: input.remind.days,
+        sentAt: null,
+        dueAt: null,
+        state: "queued",
+        createdAt: now.toISOString(),
+      });
+      reminder = "created" in created;
+    }
+    return result;
+  });
   if ("conflict" in queued) throw new ComposeError("conflict");
   if (queued.created) publish(deps, queued.row, "queued");
-  return { outboxId: queued.row.id, sendAfter: queued.row.sendAfter };
+  return { outboxId: queued.row.id, sendAfter: queued.row.sendAfter, ...(reminder === undefined ? {} : { reminder }) };
 }
 
 /**

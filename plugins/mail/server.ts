@@ -41,7 +41,17 @@ import { createImapflowGateway, parseMail } from "./src/adapters/bb/imapflow-gat
 import { MAKOSH_AI_PLUGIN_ID, createMakoshAiTranslator } from "./src/adapters/bb/makosh-ai-translator.ts";
 import { TranslateJobRefusal, TranslateJobs } from "./src/adapters/bb/translate-jobs.ts";
 import { AiJobRefusal, AiJobs, type AiFinished, type AiJobContext } from "./src/adapters/bb/ai-jobs.ts";
-import { needsReplyNow } from "./src/adapters/bb/day-clock.ts";
+import {
+  DayNoticeBook,
+  afterRoundAi,
+  createDayClock,
+  digestSince,
+  needsReplyNow,
+  replyArrived,
+  sinceCountsNow,
+  takeDayNotice,
+  type DayClock,
+} from "./src/adapters/bb/day-clock.ts";
 import { createMimeBuilder } from "./src/adapters/bb/mime-builder.ts";
 import { createOriginalReader } from "./src/adapters/bb/original-reader.ts";
 import { createOutboxWorker, type OutboxWorker } from "./src/adapters/bb/outbox-worker.ts";
@@ -162,6 +172,14 @@ import {
   type NewTask,
   type PreviousLabel,
   type TaskRecord,
+  AI_SCOPE_SENDERS_MAX,
+  DAY_NOTICE_CHANNEL,
+  dueAt,
+  reminderToastName,
+  staleScopeFolders,
+  type AccountScope,
+  type DayNoticePayload,
+  type ReminderRecord,
   type ThreadSummary,
   hitStillMatches,
   logEntry,
@@ -633,11 +651,6 @@ export const PLUGIN_CALLER_MESSAGE = "Only the owner's Mail page can change mail
 export const PASSWORD_NEEDED_MESSAGE = "This account needs its password re-entered";
 /** Role "all" (Gmail All Mail) stays under its account; All accounts does not merge it. */
 export const ALL_ROLE_MESSAGE = "All Mail is not a merged folder";
-/** Slice 3f methods whose server task has not landed yet. */
-export const NOT_AVAILABLE_MESSAGE = "Not available yet";
-const notYet = (): never => {
-  throw refuse("conflict", NOT_AVAILABLE_MESSAGE);
-};
 
 /**
  * Writes refuse other plugins calling through bb.sdk.plugins.callRpc (the
@@ -1054,6 +1067,8 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
             bb.log.warn(`AI scope refresh failed (${errorKind(error)})`);
           }
           afterRound(newMailDeps, accountId, outcome, only);
+          // Category rules and reply reminders over the round's new rows (slice 3f).
+          afterRoundAi({ store, clock, categoriesOn: () => current.mailCategories, log: (line) => bb.log.info(line) }, accountId, outcome);
           idle.firstRoundOk(accountId);
         },
         onRoundEnd: (accountId) => {
@@ -1220,15 +1235,48 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     });
     bb.onDispose(() => aiJobs.dispose());
 
+    // The day clock (slice 3f): Today's digest and due reminders; tokens only on realtime.
+    const dayNotices = new DayNoticeBook(() => randomBytes(18).toString("base64url"));
+    const dayClock: DayClock = createDayClock({
+      store,
+      settings: () => ({
+        morningDigest: current.morningDigest,
+        digestTime: current.digestTime,
+        quietHours: current.quietHours,
+        mailCategories: current.mailCategories,
+      }),
+      publish: (token) => bb.realtime.publish(DAY_NOTICE_CHANNEL, { token } satisfies DayNoticePayload),
+      book: dayNotices,
+      clock,
+      isReady: () => vault !== null,
+      log: (line) => bb.log.info(line),
+    });
+    const purgeDaily = () => {
+      purgeProposals();
+      try {
+        const purged = store.purgeDaily(clock.now().toISOString());
+        if (purged > 0) bb.log.info(`daily purge removed ${purged} rows`);
+      } catch (error) {
+        bb.log.warn(`daily purge failed (${errorKind(error)})`);
+      }
+    };
+
     bb.background.service("sync", {
       start: async (signal) => {
-        const daily = setInterval(purgeProposals, PURGE_INTERVAL_MS);
+        purgeDaily();
+        const daily = setInterval(purgeDaily, PURGE_INTERVAL_MS);
         const sweep = setInterval(() => {
           jobs.sweep();
           aiJobs.sweep();
         }, JOB_SWEEP_MS);
         try {
-          await Promise.all([loop.start(signal), worker.start(signal), idle.start(signal), snoozeClock.start(signal)]);
+          await Promise.all([
+            loop.start(signal),
+            worker.start(signal),
+            idle.start(signal),
+            snoozeClock.start(signal),
+            dayClock.start(signal),
+          ]);
         } finally {
           clearInterval(daily);
           clearInterval(sweep);
@@ -2291,6 +2339,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   };
   const nowIso = () => composeDeps.clock.now().toISOString();
   const ai = createAiRpc(deps, ownerDraft);
+  const day = createDayRpc(deps, ai.withCategories);
   // No method is published as discoverable, and none (message_action and the
   // image methods included) is exposed as a tool, CLI command or mention. They
   // are still reachable by anything that can call local plugin RPC as a client,
@@ -2519,10 +2568,17 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         const draft = ownerDraft(input.draftId);
         if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
         if (store.getAccount(draft.accountId)?.authFailed) throw refuse("conflict", PASSWORD_NEEDED_MESSAGE);
-        const queued = await queueSend(deps.queueDeps, { ...input, origin: "owner" });
+        const { remindAfterDays, ...send } = input;
+        // A reply reminder is created with the outbox row, in its transaction (slice 3f).
+        const queued = await queueSend(deps.queueDeps, {
+          ...send,
+          origin: "owner",
+          ...(remindAfterDays === undefined ? {} : { remind: { id: `rem_${randomUUID()}`, days: remindAfterDays } }),
+        });
+        if (queued.reminder === false) log("reminder not kept: the live cap is reached");
         deps.uploads.dropDraft(input.draftId);
         deps.worker.wake(draft.accountId);
-        return queued;
+        return { outboxId: queued.outboxId, sendAfter: queued.sendAfter };
       }),
       outbox_list: owner("outbox_list", ({ accountId }) => ({
         rows: store.listOutbox(accountId).map((row) =>
@@ -2810,17 +2866,18 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { ok: true as const };
       }),
       category_rules_list: owner("category_rules_list", () => ({ rules: store.listCategoryRules() })),
-      today_get: owner("today_get", notYet),
-      reply_dismiss: owner("reply_dismiss", notYet),
-      reminder_set: owner("reminder_set", notYet),
-      reminder_snooze: owner("reminder_snooze", notYet),
-      reminder_dismiss: owner("reminder_dismiss", notYet),
-      reminders_due: owner("reminders_due", notYet),
-      day_notice_get: owner("day_notice_get", notYet),
-      ai_scope_get: owner("ai_scope_get", notYet),
-      ai_scope_set: owner("ai_scope_set", notYet),
-      agent_log_list: owner("agent_log_list", notYet),
-      agent_log_clear: owner("agent_log_clear", notYet),
+      // Slice 3f: Today, reply reminders, day notices, AI access and the agent log.
+      today_get: owner("today_get", () => day.today()),
+      reply_dismiss: owner("reply_dismiss", ({ threadId }) => day.dismiss(threadId)),
+      reminder_set: owner("reminder_set", ({ messageId, days }) => day.setReminder(messageId, days)),
+      reminder_snooze: owner("reminder_snooze", ({ id, days }) => day.snooze(id, days)),
+      reminder_dismiss: owner("reminder_dismiss", ({ id }) => day.dismissReminder(id)),
+      reminders_due: owner("reminders_due", () => ({ reminders: day.dueReminders() })),
+      day_notice_get: owner("day_notice_get", () => day.notice()),
+      ai_scope_get: owner("ai_scope_get", () => aiScopeView(store)),
+      ai_scope_set: owner("ai_scope_set", (input) => day.setScope(input)),
+      agent_log_list: owner("agent_log_list", (input) => day.logList(input)),
+      agent_log_clear: owner("agent_log_clear", () => ({ removed: store.clearAgentLog() })),
     },
     { experimental_discoverable: false },
   );
@@ -4376,6 +4433,235 @@ function createAiRpc(deps: RpcDeps, ownerDraft: (draftId: string) => DraftRecord
   }
 
   return { start, poll, keepTasks, setCategory, acceptCategory, undoCategory, addRule, withCategories };
+}
+
+// ---------------------------------------------------------------------------
+// Today, reply reminders, day notices, AI access scope and the agent log
+// (slice 3f). Local only: no model call, no server write.
+// ---------------------------------------------------------------------------
+
+export const REMINDER_NOT_SENT_MESSAGE = "Reply reminders are set on sent messages";
+export const REMINDERS_FULL_MESSAGE = "You have the most reply reminders Makosh Mail keeps; dismiss some first";
+export const NO_DAY_NOTICE_MESSAGE = "No notice is waiting";
+const REMINDERS_SHOWN = 100;
+const TASKS_DUE_READ = 500;
+/** A logged id no longer stored: the view says "(no longer in Makosh Mail)". */
+const GONE_FROM_MAIL = null;
+
+function bareMessageId(id: string | null): string {
+  const text = (id ?? "").trim();
+  return text.startsWith("<") && text.endsWith(">") ? text.slice(1, -1).trim() : text;
+}
+
+/** The stored sent copy of a reminder: the Sent-role row of its thread with that Message-ID. */
+function sentCopy(store: MailStore, reminder: ReminderRecord): MessageHeader | null {
+  const threadId = store.sentCopyThread(reminder.accountId, reminder.rfcMessageId) ?? reminder.threadId;
+  if (threadId === null) return null;
+  const wanted = bareMessageId(reminder.rfcMessageId);
+  const thread = store.getThread(threadId, "INBOX");
+  return thread?.messages.find((m) => bareMessageId(store.rawRef(m.id)?.messageId ?? null) === wanted) ?? null;
+}
+
+function reminderView(store: MailStore, reminder: ReminderRecord) {
+  const copy = sentCopy(store, reminder);
+  return {
+    id: reminder.id,
+    accountId: reminder.accountId,
+    threadId: copy?.threadId ?? reminder.threadId,
+    state: reminder.state,
+    days: reminder.days,
+    sentAt: reminder.sentAt,
+    dueAt: reminder.dueAt,
+    recipient: copy?.to[0] ?? null,
+    subject: copy?.subject ?? "",
+  };
+}
+
+/** The AI access scope as Mail settings shows it: stale folder paths marked "not found". */
+function aiScopeView(store: MailStore) {
+  const scope = store.loadAiScope();
+  const listings = new Map(store.listAccounts().map((a) => [a.id, store.listFolders(a.id).map((f) => f.path)]));
+  const stale = new Set(staleScopeFolders(scope, listings).map((s) => `${s.accountId}\u0000${s.path}`));
+  return {
+    accounts: store.listAccounts().map((account) => {
+      const mode = scope.accounts.get(account.id) ?? { mode: "all" as const };
+      return {
+        accountId: account.id,
+        mode: mode.mode,
+        folders: mode.mode === "folders" ? mode.folders.map((path) => ({ path, found: !stale.has(`${account.id}\u0000${path}`) })) : [],
+      };
+    }),
+    senders: [
+      ...[...scope.senders.addresses].map((value) => ({ kind: "address" as const, value })),
+      ...[...scope.senders.domains].map((value) => ({ kind: "domain" as const, value })),
+    ],
+  };
+}
+
+function createDayRpc(deps: RpcDeps, withCategories: (threads: ThreadSummary[], folder: string) => ThreadSummary[]) {
+  const { store } = deps;
+  const clock = deps.composeDeps.clock;
+  const nowIso = () => clock.now().toISOString();
+
+  function today() {
+    const now = clock.now();
+    const day = localDay(now);
+    const threads = needsReplyNow(store, now).flatMap((candidate) => {
+      const thread = store.getThread(candidate.threadId, "INBOX")?.thread;
+      return thread === undefined ? [] : [thread];
+    });
+    const since = digestSince(store, now);
+    const tasksDue = store
+      .listTasks({ done: false, limit: TASKS_DUE_READ })
+      .tasks.filter((task) => task.due !== null && task.due <= day)
+      .map(taskView);
+    return {
+      needsReply: withCategories(threads, "INBOX"),
+      waiting: dueReminders(),
+      tasksDue,
+      since: { ...sinceCountsNow(store, since, deps.categoriesOn()), from: since },
+      digestDay: store.getDigest(day)?.day ?? null,
+    };
+  }
+
+  function dueReminders() {
+    return store.listReminders({ states: ["due"], limit: REMINDERS_SHOWN }).map((r) => reminderView(store, r));
+  }
+
+  function dismiss(threadId: string): { ok: true } {
+    const latest = store.getThread(threadId, "INBOX")?.messages.at(-1);
+    const row = latest === undefined ? undefined : store.notifyRows([latest.id], nowIso())[0];
+    if (row === undefined) throw refuse("not_found", "Unknown thread");
+    store.dismissReply(row.accountId, row.dedupKey, nowIso());
+    return { ok: true };
+  }
+
+  function setReminder(messageId: string, days: number): { id: string } {
+    const message = store.getMessage(messageId);
+    if (message === null) throw refuse("not_found", "Unknown message");
+    const rfc = store.rawRef(messageId)?.messageId ?? null;
+    if (roleOfFolder(store, message.accountId, message.folder) !== "sent" || rfc === null || message.date === null) {
+      throw refuse("invalid", REMINDER_NOT_SENT_MESSAGE);
+    }
+    const at = nowIso();
+    const id = `rem_${randomUUID()}`;
+    const created = store.createReminder({
+      id,
+      accountId: message.accountId,
+      outboxId: null,
+      rfcMessageId: rfc,
+      threadId: message.threadId,
+      days,
+      sentAt: message.date,
+      dueAt: dueAt(message.date, days),
+      state: "waiting",
+      createdAt: at,
+    });
+    if ("full" in created) throw refuse("conflict", REMINDERS_FULL_MESSAGE);
+    // A reply already stored answers it at once (spec resolution 7).
+    replyArrived(store, at, undefined, [store.getReminder(id)!]);
+    return { id };
+  }
+
+  function live(id: string): ReminderRecord {
+    const reminder = store.getReminder(id);
+    if (reminder === null || (reminder.state !== "waiting" && reminder.state !== "due")) throw refuse("not_found", "Unknown reminder");
+    return reminder;
+  }
+
+  function snooze(id: string, days: number): { ok: true } {
+    live(id);
+    const at = nowIso();
+    store.updateReminder(id, { state: "waiting", days, dueAt: dueAt(at, days), notifiedAt: null }, at);
+    return { ok: true };
+  }
+
+  function dismissReminder(id: string): { ok: true } {
+    live(id);
+    store.updateReminder(id, { state: "dismissed" }, nowIso());
+    return { ok: true };
+  }
+
+  function notice() {
+    const taken = takeDayNotice(store, clock.now());
+    if (taken === null) throw refuse("not_found", NO_DAY_NOTICE_MESSAGE);
+    if (taken.kind === "digest") return { kind: "digest" as const, replyCount: taken.replyCount };
+    const copy = sentCopy(store, taken.reminder);
+    const to = copy?.to[0] ?? { name: null, address: "" };
+    return {
+      kind: "reminder" as const,
+      name: reminderToastName(to.name, to.address),
+      address: to.address,
+      accountId: taken.reminder.accountId,
+      threadId: copy?.threadId ?? taken.reminder.threadId,
+    };
+  }
+
+  function setScope(input: {
+    accounts: { accountId: string; mode: "all" | "folders" | "none"; folders?: string[] }[];
+    senders: { kind: "address" | "domain"; value: string }[];
+  }) {
+    const known = new Set(store.listAccounts().map((a) => a.id));
+    const accounts: { accountId: string; scope: AccountScope }[] = [];
+    for (const entry of input.accounts) {
+      if (!known.has(entry.accountId)) throw refuse("invalid", "Unknown account");
+      const scope: AccountScope =
+        entry.mode === "folders" ? { mode: "folders", folders: [...new Set(entry.folders ?? [])] } : { mode: entry.mode };
+      accounts.push({ accountId: entry.accountId, scope });
+    }
+    if (input.senders.length > AI_SCOPE_SENDERS_MAX) throw refuse("invalid", "Too many excluded senders");
+    const senders = input.senders.map((sender) => {
+      try {
+        return { kind: sender.kind, value: normalizeBlockValue(sender.kind, sender.value) };
+      } catch {
+        throw refuse("invalid", sender.kind === "address" ? "Not a valid address" : "Not a valid domain");
+      }
+    });
+    store.putAiScope(accounts, senders, nowIso());
+    // Agent paths follow the change at once.
+    store.setAiScope(store.loadAiScope());
+    return aiScopeView(store);
+  }
+
+  function logList(input: { threadId?: string; cursor?: string | null; limit: number }) {
+    const page = store.listAgentLog({
+      ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+      cursor: input.cursor ?? null,
+      limit: input.limit,
+    });
+    return {
+      entries: page.entries.map((entry) => ({
+        seq: entry.seq,
+        at: entry.at,
+        actor: entry.actor,
+        tool: entry.tool,
+        outcome: entry.outcome,
+        threadId: entry.threadId,
+        count: entry.count,
+        hiddenCount: entry.hiddenCount,
+        provider: entry.provider,
+        model: entry.model,
+        // Resolved now, for the owner's eyes only; the log itself holds ids.
+        messages: entry.messageIds.map((id) => {
+          const header = store.getMessage(id);
+          if (header === null) {
+            return { id, subject: GONE_FROM_MAIL, from: GONE_FROM_MAIL, date: GONE_FROM_MAIL, accountId: GONE_FROM_MAIL, threadId: GONE_FROM_MAIL };
+          }
+          return {
+            id,
+            subject: revealHidden(header.subject).shown,
+            from: revealHidden(formatSender(header.from)).shown,
+            date: header.date,
+            accountId: header.accountId,
+            threadId: header.threadId,
+          };
+        }),
+      })),
+      next: page.next,
+    };
+  }
+
+  return { today, dueReminders, dismiss, setReminder, snooze, dismissReminder, notice, setScope, logList };
 }
 
 const jsonOption = { json: { type: "boolean", description: "Emit machine-readable JSON" } } as const;
