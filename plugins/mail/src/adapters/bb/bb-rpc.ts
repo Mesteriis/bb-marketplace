@@ -253,17 +253,38 @@ function baseName(path: string): string {
 
 /** In-flight keys: a second start for the same key refuses (spec resolution 13). */
 export class InFlight {
-  private readonly keys = new Set<string>();
+  /** Key to the time it frees (Infinity while its work runs). */
+  private readonly keys = new Map<string, number>();
+  /**
+   * `holdMs` keeps the key taken that long after the work succeeded (a
+   * double click right after is refused too); `now` reads the clock for it.
+   */
+  constructor(
+    private readonly refusal: string = BB_REFUSAL_TEXT.in_flight,
+    private readonly holdMs = 0,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
+
   async run<T>(key: string, work: () => Promise<T>): Promise<T> {
-    if (this.keys.has(key)) throw refuse("conflict", BB_REFUSAL_TEXT.in_flight);
-    this.keys.add(key);
+    const until = this.keys.get(key);
+    if (until !== undefined && until > this.now()) throw refuse("conflict", this.refusal);
+    this.keys.set(key, Infinity);
+    let done = false;
     try {
-      return await work();
+      const result = await work();
+      done = true;
+      return result;
     } finally {
-      this.keys.delete(key);
+      // Held only after a success: a refused or failed try may be retried at once.
+      if (done && this.holdMs > 0) this.keys.set(key, this.now() + this.holdMs);
+      else this.keys.delete(key);
+      for (const [other, free] of this.keys) if (free <= this.now()) this.keys.delete(other);
     }
   }
 }
+
+/** How long a task or an incident update for one message stays refused after it was made. */
+export const REPEAT_HOLD_MS = 5_000;
 
 /** The message and its body as the BB text builders read them. */
 export function bbMessage(store: MailStore, header: MessageHeader): BbMessage {
@@ -650,6 +671,8 @@ export function createBbRpc(deps: BbRpcDeps) {
   const saveEnabled = deps.saveEnabled ?? SAVE_TO_PROJECT_ENABLED;
   const nowIso = () => clock.now().toISOString();
   const starts = new InFlight();
+  /** task_from_mail and incident_append, by message id (review). */
+  const repeats = new InFlight(BB_REFUSAL_TEXT.busy, REPEAT_HOLD_MS, () => clock.now().getTime());
   let lastBoardId: string | null = null;
 
   function message(messageId: string): MessageHeader {
@@ -962,79 +985,81 @@ export function createBbRpc(deps: BbRpcDeps) {
     excerpt: boolean;
   }) {
     const header = message(input.messageId);
-    const common = {
-      subject: header.subject,
-      title: input.title,
-      ...(input.note === undefined ? {} : { note: input.note }),
-      sender: header.from,
-      date: header.date,
-      inAiScope: header.inAiScope,
-      excerpt: input.excerpt ? bbMessage(store, header) : null,
-    };
-    if (input.target.kind === "taskboard") {
-      let text;
-      try {
-        text = taskText({ ...common, target: "taskboard" });
-      } catch (error) {
-        if (error instanceof BbTextOutOfScope) {
-          deps.agentLog({ actor: "owner_bb", tool: "bb_task", outcome: "refused_scope", messageIds: [header.id] });
+    return repeats.run(`task:${header.id}`, async () => {
+      const common = {
+        subject: header.subject,
+        title: input.title,
+        ...(input.note === undefined ? {} : { note: input.note }),
+        sender: header.from,
+        date: header.date,
+        inAiScope: header.inAiScope,
+        excerpt: input.excerpt ? bbMessage(store, header) : null,
+      };
+      if (input.target.kind === "taskboard") {
+        let text;
+        try {
+          text = taskText({ ...common, target: "taskboard" });
+        } catch (error) {
+          if (error instanceof BbTextOutOfScope) {
+            deps.agentLog({ actor: "owner_bb", tool: "bb_task", outcome: "refused_scope", messageIds: [header.id] });
+          }
+          throw bbRefusal(error, deps.log, "task_from_mail");
         }
-        throw bbRefusal(error, deps.log, "task_from_mail");
+        const boardId = input.target.boardId;
+        const created = await deps.tasks.create(boardId, text.title, text.description);
+        if ("unavailable" in created) {
+          deps.agentLog({ actor: "owner_bb", tool: "bb_task", outcome: "failed", messageIds: [header.id] });
+          return { kind: "unavailable" as const, reason: created.unavailable };
+        }
+        if ("uncertain" in created) {
+          // Sent, but no answer read: never offer a second (local) copy.
+          deps.agentLog({ actor: "owner_bb", tool: "bb_task", outcome: "failed", messageIds: [header.id] });
+          throw refuse("conflict", created.uncertain);
+        }
+        if ("refused" in created) {
+          deps.agentLog({ actor: "owner_bb", tool: "bb_task", outcome: "refused_invalid", messageIds: [header.id] });
+          throw refuse("conflict", `Taskboard: ${created.refused}`);
+        }
+        lastBoardId = boardId;
+        link({
+          accountId: header.accountId,
+          messageId: header.id,
+          threadId: header.threadId,
+          kind: "taskboard_task",
+          targetId: created.taskId,
+          projectId: null,
+          extra: boardId,
+        });
+        deps.agentLog({
+          actor: "owner_bb",
+          tool: "bb_task",
+          outcome: "ok",
+          messageIds: [header.id],
+          count: 1,
+          hiddenCount: text.hidden,
+          refId: created.taskId,
+        });
+        return { kind: "taskboard" as const, taskId: created.taskId };
       }
-      const boardId = input.target.boardId;
-      const created = await deps.tasks.create(boardId, text.title, text.description);
-      if ("unavailable" in created) {
-        deps.agentLog({ actor: "owner_bb", tool: "bb_task", outcome: "failed", messageIds: [header.id] });
-        return { kind: "unavailable" as const, reason: created.unavailable };
-      }
-      if ("uncertain" in created) {
-        // Sent, but no answer read: never offer a second (local) copy.
-        deps.agentLog({ actor: "owner_bb", tool: "bb_task", outcome: "failed", messageIds: [header.id] });
-        throw refuse("conflict", created.uncertain);
-      }
-      if ("refused" in created) {
-        deps.agentLog({ actor: "owner_bb", tool: "bb_task", outcome: "refused_invalid", messageIds: [header.id] });
-        throw refuse("conflict", `Taskboard: ${created.refused}`);
-      }
-      lastBoardId = boardId;
-      link({
-        accountId: header.accountId,
-        messageId: header.id,
-        threadId: header.threadId,
-        kind: "taskboard_task",
-        targetId: created.taskId,
-        projectId: null,
-        extra: boardId,
-      });
-      deps.agentLog({
-        actor: "owner_bb",
-        tool: "bb_task",
-        outcome: "ok",
-        messageIds: [header.id],
-        count: 1,
-        hiddenCount: text.hidden,
-        refId: created.taskId,
-      });
-      return { kind: "taskboard" as const, taskId: created.taskId };
-    }
-    const text = taskText({ ...common, target: "local" });
-    const row = store.notifyRows([header.id], nowIso())[0];
-    if (row === undefined) throw refuse("not_found", UNKNOWN_MESSAGE_TEXT);
-    const id = `task_${deps.newId()}`;
-    const kept = store.keepTasks([
-      {
-        id,
-        accountId: header.accountId,
-        messageId: header.id,
-        dedupKey: row.dedupKey,
-        title: text.title,
-        due: input.target.due ?? null,
-        createdAt: nowIso(),
-        note: text.description,
-      },
-    ]);
-    if ("full" in kept) throw refuse("conflict", "You have the most open tasks Makosh Mail keeps; finish or delete some first");
-    return { kind: "local" as const, taskId: id };
+      const text = taskText({ ...common, target: "local" });
+      const row = store.notifyRows([header.id], nowIso())[0];
+      if (row === undefined) throw refuse("not_found", UNKNOWN_MESSAGE_TEXT);
+      const id = `task_${deps.newId()}`;
+      const kept = store.keepTasks([
+        {
+          id,
+          accountId: header.accountId,
+          messageId: header.id,
+          dedupKey: row.dedupKey,
+          title: text.title,
+          due: input.target.due ?? null,
+          createdAt: nowIso(),
+          note: text.description,
+        },
+      ]);
+      if ("full" in kept) throw refuse("conflict", "You have the most open tasks Makosh Mail keeps; finish or delete some first");
+      return { kind: "local" as const, taskId: id };
+    });
   }
 
   // ---- Attachments into a project ----
@@ -1581,27 +1606,29 @@ export function createBbRpc(deps: BbRpcDeps) {
 
   async function incidentAppend(input: { messageId: string }) {
     const header = scopedAlertMessage(input.messageId);
-    const alert = await alertOfMessage(header);
-    if (alert === null) throw refuse("invalid", NOT_ALERT_TEXT);
-    const row = store.incidentFor(alert.ref);
-    if (row === null) throw refuse("not_found", NO_INCIDENT_TEXT);
-    if (!appendable(row, clock.now())) throw refuse("conflict", INCIDENT_OLD_TEXT);
-    const thread = await incidentThread(row.bbThreadId);
-    if (thread === "unknown") throw refuse("conflict", BB_PORT_TEXT.failed);
-    if (thread === null || thread.archived) throw refuse("conflict", INCIDENT_GONE_TEXT);
-    let text;
-    try {
-      text = incidentUpdate(alert.parts, bbMessage(store, header));
-      // Queued when the thread is running: an update never interrupts a turn.
-      await threads.send(row.bbThreadId, text.text);
-    } catch (error) {
-      deps.agentLog({ actor: "owner_bb", tool: "incident", outcome: "failed", messageIds: [header.id] });
-      throw bbRefusal(error, deps.log, "incident_append");
-    }
-    store.touchIncident(alert.ref, nowIso());
-    link({ accountId: header.accountId, messageId: header.id, threadId: header.threadId, kind: "incident", targetId: row.bbThreadId, projectId: row.projectId, extra: null });
-    deps.agentLog({ actor: "owner_bb", tool: "incident", outcome: "ok", messageIds: [header.id], count: 1, hiddenCount: text.hidden, refId: row.bbThreadId });
-    return { bbThreadId: row.bbThreadId };
+    return repeats.run(`append:${header.id}`, async () => {
+      const alert = await alertOfMessage(header);
+      if (alert === null) throw refuse("invalid", NOT_ALERT_TEXT);
+      const row = store.incidentFor(alert.ref);
+      if (row === null) throw refuse("not_found", NO_INCIDENT_TEXT);
+      if (!appendable(row, clock.now())) throw refuse("conflict", INCIDENT_OLD_TEXT);
+      const thread = await incidentThread(row.bbThreadId);
+      if (thread === "unknown") throw refuse("conflict", BB_PORT_TEXT.failed);
+      if (thread === null || thread.archived) throw refuse("conflict", INCIDENT_GONE_TEXT);
+      let text;
+      try {
+        text = incidentUpdate(alert.parts, bbMessage(store, header));
+        // Queued when the thread is running: an update never interrupts a turn.
+        await threads.send(row.bbThreadId, text.text);
+      } catch (error) {
+        deps.agentLog({ actor: "owner_bb", tool: "incident", outcome: "failed", messageIds: [header.id] });
+        throw bbRefusal(error, deps.log, "incident_append");
+      }
+      store.touchIncident(alert.ref, nowIso());
+      link({ accountId: header.accountId, messageId: header.id, threadId: header.threadId, kind: "incident", targetId: row.bbThreadId, projectId: row.projectId, extra: null });
+      deps.agentLog({ actor: "owner_bb", tool: "incident", outcome: "ok", messageIds: [header.id], count: 1, hiddenCount: text.hidden, refId: row.bbThreadId });
+      return { bbThreadId: row.bbThreadId };
+    });
   }
 
   // ---- Project binding (Task 11) ----

@@ -6312,6 +6312,25 @@ describe("slice 3g: tasks from mail", () => {
     expect(agentLogRows(host).at(-1)).toMatchObject({ actor: "owner_bb", tool: "bb_task", outcome: "ok", ref_id: "tb_1" });
   });
 
+  it("a second task from the same message while one is made, or just after, is refused", async () => {
+    const { host, messageId } = await loadBb();
+    let release: () => void = () => {};
+    host.harness.sdk.stub("plugins.callRpc", () => new Promise((resolve) => (release = () => resolve({ task: { id: "tb_1" } }))));
+    const input = { messageId, target: { kind: "taskboard", boardId: "b_1" }, title: "Invented", excerpt: false };
+    const first = call(host, "task_from_mail", input);
+    await vi.waitFor(() => expect(sdkCalls(host, "plugins.callRpc")).toHaveLength(1));
+    await expect(call(host, "task_from_mail", input)).rejects.toThrow(BB_REFUSAL_TEXT.busy);
+    await expect(call(host, "task_from_mail", { ...input, target: { kind: "local" } })).rejects.toThrow(BB_REFUSAL_TEXT.busy);
+    release();
+    await expect(first).resolves.toEqual({ kind: "taskboard", taskId: "tb_1" });
+    // A double click right after is still refused; a few seconds later it is a new task.
+    await expect(call(host, "task_from_mail", input)).rejects.toThrow(BB_REFUSAL_TEXT.busy);
+    host.clock.set(new Date(NOW.getTime() + 10_000));
+    host.harness.sdk.stub("plugins.callRpc", async () => ({ task: { id: "tb_2" } }));
+    await expect(call(host, "task_from_mail", input)).resolves.toEqual({ kind: "taskboard", taskId: "tb_2" });
+    expect(sdkCalls(host, "plugins.callRpc")).toHaveLength(2);
+  });
+
   it("after a create was sent and Taskboard did not answer, says it may exist and offers no local task", async () => {
     const { host, messageId } = await loadBb();
     host.harness.sdk.stub("plugins.callRpc", async () => {
@@ -6842,6 +6861,8 @@ describe("slice 3g: alerts and incident threads", () => {
     expect(send.input[0]!.mentions).toEqual([]);
     expect(bbLinkRows(host).map((row) => row.kind)).toEqual(["incident", "incident"]);
 
+    // Past the repeat hold of the update just made.
+    host.clock.set(new Date(NOW.getTime() + 10_000));
     host.harness.sdk.stub("threads.list", async (args: { archived?: boolean }) => (args.archived === true ? [sdkThread("bb_t1", { archivedAt: 5 })] : []));
     await expect(call(host, "incident_append", { messageId: ids[6] })).rejects.toThrow("archived or deleted");
     host.harness.sdk.stub("threads.list", async (args: { archived?: boolean }) => (args.archived === true ? [] : [sdkThread("bb_t1")]));
@@ -6876,6 +6897,21 @@ describe("slice 3g: alerts and incident threads", () => {
     const { host, ids } = await loadDev();
     await expect(call(host, "incident_start", { messageId: ids[5], projectId: "api", promptRef: SHA_SHOWN })).rejects.toThrow(BB_REFUSAL_TEXT.prompt_changed);
     expect(sdkCalls(host, "threads.spawn")).toEqual([]);
+  });
+
+  it("a second append of the same mail while one runs, or just after, is refused", async () => {
+    const sdk = bbSdk({ threads: [sdkThread("bb_t1")] });
+    const { host, ids } = await loadDev({ sdk });
+    await call(host, "incident_start", { messageId: ids[5], projectId: "api" });
+    let release: () => void = () => {};
+    host.harness.sdk.stub("threads.send", () => new Promise((resolve) => (release = () => resolve({}))));
+    const first = call(host, "incident_append", { messageId: ids[6] });
+    await vi.waitFor(() => expect(sdkCalls(host, "threads.send")).toHaveLength(1));
+    await expect(call(host, "incident_append", { messageId: ids[6] })).rejects.toThrow(BB_REFUSAL_TEXT.busy);
+    release();
+    await first;
+    await expect(call(host, "incident_append", { messageId: ids[6] })).rejects.toThrow(BB_REFUSAL_TEXT.busy);
+    expect(sdkCalls(host, "threads.send")).toHaveLength(1);
   });
 
   it("a second start for the same alert while one runs is refused", async () => {

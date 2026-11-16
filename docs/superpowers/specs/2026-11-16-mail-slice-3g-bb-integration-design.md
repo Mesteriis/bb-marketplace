@@ -1279,3 +1279,6 @@ C1. **The rule-thread gate and the caps outlive the mail** (review finding, repl
 
 P2. **A Taskboard create that may have happened is never copied locally** (review, refines resolution 16).
    - `TaskTarget.create` answers `unavailable` only when nothing reached Taskboard: it is not installed or turned off, `plugins.list` failed, or `callRpc` failed with a code BB raises before running the handler (`unknown_method`, `forbidden`, `invalid_json`, `invalid_input`). After `task_create` was sent, any other error (a timeout, a transport error) or a malformed answer is `uncertain`: `task_from_mail` refuses `conflict` "Taskboard may have created it; check the board", logs `failed`, and the dialog offers no local task.
+
+P1. **One task and one incident update per click** (review, extends resolution 13).
+   - `task_from_mail` and `incident_append` keep their own in-flight set keyed by message id; a second call while one runs, or within 5 seconds after one succeeded (`REPEAT_HOLD_MS`, by the plugin clock; a refused or failed try may be retried at once), refuses `conflict` "Already working on this message; try again in a moment". A Taskboard task and a local task from the same message share the key.

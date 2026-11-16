@@ -184,6 +184,7 @@ export const BB_REFUSAL_TEXT = {
   save_disabled: "Saving attachments into a project is turned off in this version: BB could not confirm the file stays inside the project",
   no_result: "This thread has no result yet",
   prompt_changed: "The prompt changed; review it again",
+  busy: "Already working on this message; try again in a moment",
 } as const;
 
 /** The owner's instruction for a BB thread. */
