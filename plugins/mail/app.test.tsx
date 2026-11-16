@@ -3764,7 +3764,8 @@ describe("Inbox triage on the page (slice 3e)", () => {
       }),
     );
     await openA(slot);
-    expect(callsTo(slot, "unsubscribe_info")[0]?.input).toEqual({ messageId: "m-new" });
+    // unsubscribe_info is fetched after the message opens, not with it.
+    await waitFor(() => expect(callsTo(slot, "unsubscribe_info")[0]?.input).toEqual({ messageId: "m-new" }));
     fireEvent.click(await slot.findByRole("button", { name: "Unsubscribe" }));
     const dialog = within(await slot.findByRole("dialog"));
     expect(dialog.getByText("One click to news.example.com")).toBeTruthy();
