@@ -42,6 +42,7 @@ import {
   SendError,
   UNDO_MS,
   UNTRUSTED_NOTICE,
+  AI_START_KINDS,
 } from "./src/core/index.ts";
 import { createHash } from "node:crypto";
 import type {
@@ -2935,6 +2936,11 @@ class MakoshAiStub {
   readonly starts: { providerId: string; body: Record<string, unknown> }[] = [];
   readonly cancels: string[] = [];
   readonly models: { providerId: string; projectId?: string }[] = [];
+  /** Plain answers for the next streams, in order (wrapped as SSE); empty: `answer`. */
+  readonly queue: string[] = [];
+  /** When set, answers the next stream from its own request (then cleared). */
+  respond: ((request: Record<string, unknown>) => string) | null = null;
+  private readonly byStream = new Map<string, string | null>();
   private streams = 0;
 
   sdk() {
@@ -2953,10 +2959,16 @@ class MakoshAiStub {
           if (method === "ai.v1.start") {
             if (this.startError !== null) throw this.startError;
             this.starts.push(args as never);
-            return outputSchema.parse({ streamId: `00000000-0000-4000-8000-00000000000${++this.streams}` });
+            const streamId = `00000000-0000-4000-8000-${String(++this.streams).padStart(12, "0")}`;
+            const respond = this.respond;
+            this.respond = null;
+            const queued = respond === null ? this.queue.shift() : respond(args);
+            this.byStream.set(streamId, queued === undefined ? this.answer : sse(queued));
+            return outputSchema.parse({ streamId });
           }
           if (method === "ai.v1.read") {
-            if (this.answer === null) {
+            const answer = this.byStream.has(args.streamId as string) ? this.byStream.get(args.streamId as string)! : this.answer;
+            if (answer === null) {
               await new Promise<void>((_, reject) => signal?.addEventListener("abort", () => reject(new Error("aborted"))));
             }
             if (args.cursor === 0) {
@@ -2965,7 +2977,7 @@ class MakoshAiStub {
                 cursor: 1,
                 status: 200,
                 contentType: null,
-                data: Buffer.from(this.answer!, "utf8").toString("base64"),
+                data: Buffer.from(answer as string, "utf8").toString("base64"),
               });
             }
             return outputSchema.parse({ state: "done", status: 200, contentType: null });
@@ -5477,5 +5489,267 @@ describe("agent paths: scope, redaction and the log (slice 3f)", () => {
     expect(agentLogRows(host).map((row) => [row.actor, row.tool, row.thread_id, row.hidden_count])).toEqual([
       ["mention", "mention", null, 5],
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AI on the owner's click (slice 3f): ai_start per kind, tasks, categories
+// ---------------------------------------------------------------------------
+
+type AiPoll = { state: string; phase?: string; error?: string; provider?: string; model?: string; result?: Record<string, unknown> & { kind: string } };
+
+function loadAi(ai = new MakoshAiStub(), settings: Record<string, string | number | boolean> = {}, scope: { folders?: string[]; mode?: "none" } = {}) {
+  return load({
+    settings: { vaultKey: COMPOSE_KEY, agentTools: true, agentPropose: true, agentTriage: true, mailCategories: true, ...settings },
+    seed: (bb) => seedCanary(bb, scope),
+    server: composeServer,
+    outboxIntervalMs: 5,
+    sdk: ai.sdk() as never,
+  });
+}
+
+/** Starts an AI request and polls it to its end; a cached answer comes back as is. */
+async function aiToEnd(host: Host, input: Record<string, unknown>): Promise<AiPoll & { jobId?: string; cached?: Record<string, unknown> }> {
+  const started = (await call(host, "ai_start", input)) as { jobId?: string; cached?: Record<string, unknown> };
+  if (started.cached !== undefined) return { state: "done", cached: started.cached };
+  let last: AiPoll | null = null;
+  await vi.waitFor(async () => {
+    last = (await call(host, "ai_poll", { jobId: started.jobId })) as AiPoll;
+    expect(last.state).not.toBe("running");
+  });
+  return { ...last!, jobId: started.jobId! };
+}
+
+const threadOfId = (host: Host, id: string) =>
+  (host.bb.storage.database().prepare("SELECT thread_id FROM messages WHERE id = ?").get(id) as { thread_id: string }).thread_id;
+
+/** An owner draft whose text holds the subject canary; returns what Improve sends. */
+async function canaryDraft(host: Host) {
+  const { draftId } = (await call(host, "compose_new", { accountId: "acc_1" })) as { draftId: string };
+  const text = `Please use code ${CANARY.subject} today.`;
+  const saved = (await call(host, "compose_save", {
+    draftId,
+    baseRevision: 1,
+    accountId: "acc_1",
+    to: [TO],
+    cc: [],
+    bcc: [],
+    subject: "Invented draft",
+    doc: { type: "doc", content: [para(text), { type: "blockquote", content: [para("Invented quoted zebra")] }] },
+  })) as { revision: number };
+  return { draftId, revision: saved.revision, paragraphs: [text] };
+}
+
+const SUMMARY_ANSWER = '{"decisions":[{"text":"Invented decision","messages":[1]}],"questions":[],"deadlines":[]}';
+
+describe("AI on the owner's click (slice 3f)", () => {
+  it("the canary test over every ai_start kind and translation: model inputs hold placeholders, no canary, nothing out of scope", async () => {
+    const ai = new MakoshAiStub();
+    const host = await loadAi(ai);
+    const ids = canaryIds(host);
+    const draft = await canaryDraft(host);
+    const fixtures: Record<string, { input: Record<string, unknown>; answers: string[] }[]> = {
+      summary: [{ input: { kind: "summary", threadId: threadOfId(host, ids.inside) }, answers: [SUMMARY_ANSWER] }],
+      tasks: [
+        { input: { kind: "tasks", messageId: ids.inside }, answers: ['{"tasks":[]}'] },
+        { input: { kind: "tasks", threadId: threadOfId(host, ids.inside) }, answers: ['{"tasks":[]}'] },
+      ],
+      ask: [
+        {
+          input: { kind: "ask", question: "What did the Invented note say?" },
+          answers: ['{"queries":["Invented","zebra","pelican"]}', '{"answer":"Invented answer","sources":[1],"found":true}'],
+        },
+      ],
+      categories: [{ input: { kind: "categories", messageIds: [ids.inside, ids.outside, ids.excluded] }, answers: ['{"items":[{"n":1,"category":"bills"}]}'] }],
+      digest: [{ input: { kind: "digest" }, answers: ['{"items":[{"n":1,"gist":"Invented gist"}]}'] }],
+      draft: [
+        {
+          input: { kind: "draft", draftId: draft.draftId, revision: draft.revision, mode: "fix", paragraphs: draft.paragraphs },
+          answers: ["__echo__"],
+        },
+      ],
+    };
+    const owner: unknown[] = [];
+    for (const kind of AI_START_KINDS) {
+      expect(fixtures[kind], `a fixture for ai_start ${kind}`).toBeDefined();
+      for (const fixture of fixtures[kind]!) {
+        const before = ai.starts.length;
+        if (fixture.answers[0] === "__echo__") {
+          // The model keeps the numbered placeholder it was given; the owner's poll gets the code back.
+          ai.respond = (request) => {
+            const tagged = /\[hidden one-time code 1 [a-z0-9]{4}\]/.exec(JSON.stringify(request))![0];
+            return JSON.stringify({ paragraphs: [`Please use code ${tagged} today.`] });
+          };
+          const done = await aiToEnd(host, fixture.input);
+          expect(done.result).toMatchObject({ kind: "draft", paragraphs: [draft.paragraphs[0]], unknown: 0, missing: 0 });
+          continue;
+        }
+        ai.queue.push(...fixture.answers);
+        const done = await aiToEnd(host, fixture.input);
+        expect(done.state, kind).toBe("done");
+        owner.push(done);
+      }
+    }
+    ai.answer = sse(TRANSLATED);
+    await translateToEnd(host, ids.inside);
+    await expect(call(host, "translate_start", { messageId: ids.outside, targetLanguage: "ru" })).rejects.toThrow("Outside AI access");
+
+    const inputs = JSON.stringify(ai.starts);
+    for (const canary of CANARIES) expect(inputs, `model input ${canary}`).not.toContain(canary);
+    expect(inputs).toContain("[hidden");
+    expectNoCanary(host, []);
+    // The owner_ai rows carry the setting values and no content.
+    const rows = agentLogRows(host).filter((row) => row.actor === "owner_ai");
+    expect(new Set(rows.map((row) => row.tool))).toEqual(
+      new Set(["ai_summary", "ai_tasks", "ai_ask", "ai_categories", "ai_digest", "ai_draft", "ai_translate"]),
+    );
+    expect(rows.every((row) => row.provider === "" && row.model === "")).toBe(true);
+    expect(owner.length).toBeGreaterThan(0);
+  });
+
+  it("summary: a cached answer, stale after a new message, force re-runs; out of scope is refused", async () => {
+    const ai = new MakoshAiStub();
+    const host = await loadAi(ai);
+    const { inside, outside } = canaryIds(host);
+    const threadId = threadOfId(host, inside);
+    ai.queue.push(SUMMARY_ANSWER);
+    const first = await aiToEnd(host, { kind: "summary", threadId });
+    expect(first.result).toMatchObject({
+      kind: "summary",
+      cached: false,
+      decisions: [{ text: "Invented decision", messages: [1] }],
+      citations: [{ n: 1, messageId: inside, accountId: "acc_1", threadId }],
+      provider: "claude-code",
+      model: "invented-model-a",
+    });
+    const hit = await aiToEnd(host, { kind: "summary", threadId });
+    expect(hit.cached).toMatchObject({ cached: true, stale: false, decisions: [{ text: "Invented decision", messages: [1] }] });
+    expect(ai.starts).toHaveLength(1);
+    host.bb.storage.database().prepare("UPDATE messages SET body_text = 'Invented changed body' WHERE id = ?").run(inside);
+    const stale = await aiToEnd(host, { kind: "summary", threadId });
+    expect(stale.cached).toMatchObject({ cached: true, stale: true });
+    ai.queue.push(SUMMARY_ANSWER);
+    const forced = await aiToEnd(host, { kind: "summary", threadId, force: true });
+    expect(forced.result).toMatchObject({ cached: false });
+    expect(ai.starts).toHaveLength(2);
+    await expect(call(host, "ai_start", { kind: "summary", threadId: threadOfId(host, outside) })).rejects.toThrow("Outside AI access");
+    await expect(call(host, "ai_start", { kind: "tasks", messageId: outside })).rejects.toThrow("Outside AI access");
+    await expect(call(host, "ai_start", { kind: "tasks", messageId: "no-such-id" })).rejects.toThrow("Unknown message");
+  });
+
+  it("ask: plans, searches in scope and answers with linked sources, or says not found", async () => {
+    const ai = new MakoshAiStub();
+    const host = await loadAi(ai);
+    const { inside } = canaryIds(host);
+    ai.queue.push('{"queries":["login code"]}', '{"answer":"Invented answer","sources":[1,7],"found":true}');
+    const found = await aiToEnd(host, { kind: "ask", question: "Did anyone send a login code?" });
+    expect(found.result).toMatchObject({ kind: "ask", answer: "Invented answer", sources: [1], found: true });
+    expect((found.result!.citations as { messageId: string }[]).map((c) => c.messageId)).toEqual([inside]);
+    ai.queue.push('{"queries":["nothing matches this"]}', '{"answer":"","sources":[],"found":false}');
+    const missing = await aiToEnd(host, { kind: "ask", question: "Invented unrelated question?" });
+    expect(missing.result).toMatchObject({ kind: "ask", found: false, sources: [] });
+  });
+
+  it("tasks: an evidence miss stays unticked; Keep stores the picks with edited titles", async () => {
+    const ai = new MakoshAiStub();
+    const host = await loadAi(ai);
+    const { inside } = canaryIds(host);
+    ai.queue.push(
+      JSON.stringify({
+        tasks: [
+          { title: "Invented reply", due: "2026-11-20", message: 1, evidence: "hello, invented NOTE" },
+          { title: "Invented made up", due: null, message: 1, evidence: "words not in the mail" },
+        ],
+      }),
+    );
+    const done = await aiToEnd(host, { kind: "tasks", messageId: inside });
+    expect((done.result!.tasks as { evidenceFound: boolean }[]).map((t) => t.evidenceFound)).toEqual([true, false]);
+    await expect(call(host, "tasks_keep", { jobId: "nope", picks: [{ index: 0, title: "x", due: null }] })).rejects.toThrow("no longer available");
+    await expect(call(host, "tasks_keep", { jobId: done.jobId, picks: [{ index: 5, title: "x", due: null }] })).rejects.toThrow("Unknown task");
+    expect(await call(host, "tasks_keep", { jobId: done.jobId, picks: [{ index: 0, title: "Invented edited", due: "2026-11-21" }] })).toEqual({ kept: 1 });
+    const { tasks } = (await call(host, "tasks_list", { done: false })) as { tasks: { id: string; title: string; due: string; messageId: string; threadId: string }[] };
+    expect(tasks).toEqual([expect.objectContaining({ title: "Invented edited", due: "2026-11-21", messageId: inside, threadId: threadOfId(host, inside) })]);
+    await call(host, "task_update", { id: tasks[0]!.id, done: true });
+    expect(((await call(host, "tasks_list", { done: true })) as { tasks: unknown[] }).tasks).toHaveLength(1);
+    await call(host, "task_delete", { id: tasks[0]!.id });
+    await expect(call(host, "task_delete", { id: tasks[0]!.id })).rejects.toThrow("Unknown task");
+  });
+
+  it("categories: suggestions never become labels until accepted; set, accept and undo; rules refuse public domains", async () => {
+    const ai = new MakoshAiStub();
+    const host = await loadAi(ai);
+    const { inside } = canaryIds(host);
+    ai.queue.push('{"items":[{"n":1,"category":"bills"}]}');
+    await aiToEnd(host, { kind: "categories", messageIds: [inside] });
+    const threads = await listThreads(host, "INBOX");
+    const row = threads.find((t) => t.id === threadOfId(host, inside))!;
+    expect(row).toMatchObject({ category: null, categorySuggestion: "bills" });
+    const accepted = (await call(host, "category_accept", { messageIds: [inside] })) as { changed: number; undoId: string };
+    expect(accepted.changed).toBe(1);
+    expect((await listThreads(host, "INBOX")).find((t) => t.id === row.id)!.category).toBe("bills");
+    await call(host, "category_undo", { undoId: accepted.undoId });
+    expect((await listThreads(host, "INBOX")).find((t) => t.id === row.id)!.category).toBeNull();
+    await expect(call(host, "category_undo", { undoId: accepted.undoId })).rejects.toThrow("no longer be undone");
+    const set = (await call(host, "category_set", { messageIds: [inside], category: "personal" })) as { changed: number };
+    expect(set.changed).toBe(1);
+    // ivy@example.com: example.com is not a public mail domain here, but gmail.com is.
+    host.bb.storage.database().prepare("UPDATE messages SET from_address = 'someone@gmail.com' WHERE id = ?").run(inside);
+    await expect(call(host, "category_rule_add", { messageId: inside, kind: "domain", category: "bills" })).rejects.toThrow("public mail domain");
+    const { rule } = (await call(host, "category_rule_add", { messageId: inside, kind: "address", category: "bills" })) as { rule: { id: string; value: string } };
+    expect(rule.value).toBe("someone@gmail.com");
+    expect(((await call(host, "category_rules_list", {})) as { rules: unknown[] }).rules).toHaveLength(1);
+    await call(host, "category_rule_remove", { id: rule.id });
+    expect(((await call(host, "category_rules_list", {})) as { rules: unknown[] }).rules).toEqual([]);
+
+    const off = await loadAi(new MakoshAiStub(), { mailCategories: false });
+    await expect(call(off, "category_set", { messageIds: [canaryIds(off).inside], category: "bills" })).rejects.toThrow("Categories are off");
+    expect((await listThreads(off, "INBOX")).every((t) => t.category === null && t.categorySuggestion === null)).toBe(true);
+  });
+
+  it("draft: refuses a changed revision or text, an unknown draft and an over-long text before any model call", async () => {
+    const ai = new MakoshAiStub();
+    const host = await loadAi(ai);
+    const draft = await canaryDraft(host);
+    const input = { kind: "draft", draftId: draft.draftId, revision: draft.revision, mode: "fix", paragraphs: draft.paragraphs };
+    await expect(call(host, "ai_start", { ...input, revision: draft.revision + 1 })).rejects.toThrow("The draft changed");
+    await expect(call(host, "ai_start", { ...input, paragraphs: ["Something else"] })).rejects.toThrow("The draft changed");
+    await expect(call(host, "ai_start", { ...input, draftId: "no-such-draft" })).rejects.toThrow();
+    const long = ["x".repeat(4_001), "y".repeat(4_000)];
+    const big = (await call(host, "compose_save", {
+      draftId: draft.draftId,
+      baseRevision: draft.revision,
+      accountId: "acc_1",
+      to: [TO],
+      cc: [],
+      bcc: [],
+      subject: "Invented draft",
+      doc: { type: "doc", content: long.map(para) },
+    })) as { revision: number };
+    await expect(call(host, "ai_start", { ...input, revision: big.revision, paragraphs: long })).rejects.toThrow(
+      "Improve works on up to 8 000 characters",
+    );
+    expect(ai.starts).toEqual([]);
+  });
+
+  it("every 3f write and AI method refuses another plugin", async () => {
+    const host = await loadAi();
+    const inputs: [string, unknown][] = [
+      ["ai_start", { kind: "digest" }],
+      ["ai_poll", { jobId: "j" }],
+      ["ai_cancel", { jobId: "j" }],
+      ["tasks_keep", { jobId: "j", picks: [{ index: 0, title: "t", due: null }] }],
+      ["tasks_list", { done: false }],
+      ["task_update", { id: "t", done: true }],
+      ["task_delete", { id: "t" }],
+      ["category_set", { messageIds: ["m"], category: "bills" }],
+      ["category_accept", { messageIds: ["m"] }],
+      ["category_undo", { undoId: "u" }],
+      ["category_rule_add", { messageId: "m", kind: "address", category: "bills" }],
+      ["category_rule_remove", { id: "r" }],
+      ["category_rules_list", {}],
+    ];
+    for (const [method, input] of inputs) {
+      await expect(host.harness.behavior.callRpc(method, input, asPlugin), method).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    }
   });
 });

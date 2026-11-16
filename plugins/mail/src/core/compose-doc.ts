@@ -141,6 +141,32 @@ export function normalizeDoc(input: DocNodeInput): ComposeDoc {
   return { type: "doc", content: content.length > 0 ? content : [{ type: "paragraph" }] };
 }
 
+/**
+ * The owner's own text as Improve sends it (slice 3f, spec resolution 8):
+ * the blocks before the first blockquote or signature node, one string per
+ * paragraph with hardBreak lines joined by "\n", a list as one paragraph
+ * with its items as lines. `marks` says whether that range holds any inline
+ * mark (bold, italic, underline, link), which Apply drops.
+ */
+export function ownerParagraphs(doc: ComposeDoc): { paragraphs: string[]; marks: boolean } {
+  const paragraphs: string[] = [];
+  let marks = false;
+  const text = (paragraph: ComposeParagraph) =>
+    (paragraph.content ?? [])
+      .map((inline) => {
+        if (inline.type === "hardBreak") return "\n";
+        if ((inline.marks ?? []).length > 0) marks = true;
+        return inline.text;
+      })
+      .join("");
+  for (const block of doc.content) {
+    if (block.type === "blockquote" || block.type === "signature") break;
+    if (block.type === "paragraph") paragraphs.push(text(block));
+    else paragraphs.push(flattenParagraphs(block.content).map(text).join("\n"));
+  }
+  return { paragraphs, marks };
+}
+
 /** Every paragraph of the blocks, in order: lists and quotes are opened up. */
 export function flattenParagraphs(list: (ComposeBlock | ComposeListItem | ComposeSignature)[]): ComposeParagraph[] {
   return list.flatMap((block) =>
