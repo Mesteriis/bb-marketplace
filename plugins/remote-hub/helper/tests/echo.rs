@@ -1716,6 +1716,10 @@ fn w4_hup_does_not_block_the_loop() {
         other => panic!("expected session.opened, got {other:?}"),
     };
 
+    // Let the 50 perl children finish their 300 ms sleep and close; the echo
+    // latency is then measured against a helper that is reaping, not one still
+    // forking 50 children.
+    std::thread::sleep(Duration::from_millis(500));
     let deadline = Instant::now() + Duration::from_millis(3000);
     let mut closed: HashMap<u32, (Option<i32>, Option<i32>)> = HashMap::new();
     let mut echo_buf = String::new();
