@@ -272,7 +272,7 @@ def main():
         for hp in _HELPERS:
             hp.terminate()
         if cid is not None:
-            subprocess.call(["docker", "rm", "-f", cid])
+            subprocess.call(["docker", "rm", "-f", cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -324,13 +324,15 @@ def cases(tmp, port, key, known_hosts, cfg):
     h5.credit(sid5, 1 << 20)
     out5 = h5.read_until(sid5, b"Are you sure you want to continue connecting", timeout=15)
     assert b"Are you sure you want to continue connecting" in out5, out5
-    h5.input_bytes(sid5, b"printf 'pre-answer-marker\\n'\n")
-    time.sleep(0.5)
+    # The remote shell must not have started: a successful login prints the
+    # Alpine motd and a shell prompt, and neither may appear before answering.
+    assert b"Welcome to Alpine" not in out5, out5
+    assert b"~#" not in out5, out5
     h5.input_bytes(sid5, b"no\n")
     collected5, closed5 = h5.collect_until_closed(sid5)
     assert closed5 is not None and closed5.get("exitCode") == 255, closed5
     assert closed5.get("reason") == "ssh_error", closed5
-    assert b"pre-answer-marker" not in collected5, collected5
+    assert b"Welcome to Alpine" not in collected5, collected5
     assert os.path.getsize(empty_kh) == 0
 
     mark('6')
