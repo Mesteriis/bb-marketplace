@@ -6,7 +6,7 @@ import imapflowFetch from "imapflow/lib/commands/fetch.js";
 import { compiler as imapCompiler, parser as imapParser } from "imapflow/lib/handler/imap-handler.js";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ImapAuthError, LIST_HEADER_FIELDS, UNSUBSCRIBE_HEADER_FIELDS, trustOf } from "../../core/index.ts";
+import { HEADER_LINES_TRUNCATED, ImapAuthError, LIST_HEADER_FIELDS, UNSUBSCRIBE_HEADER_FIELDS, trustOf, unsubscribeInfoOf } from "../../core/index.ts";
 import {
   LIST_HEADERS_QUERY,
   WATCH_LOGOUT_CAP_MS,
@@ -1255,11 +1255,26 @@ describe("toFetchedMessage unsubscribe headers", () => {
     expect(fetched.unsubscribeHeaders).toBeUndefined();
   });
 
-  it("matches header names in any case and keeps at most 64 lines", () => {
+  it("matches header names in any case and keeps at most 64 lines plus the truncation mark", () => {
     const headers = Array.from({ length: 80 }, (_, i) => ({ key: i === 0 ? "List-Unsubscribe" : "received", originalKey: "Received", value: `v${i}` }));
     const fetched = toFetchedMessage(imapMessage(), { headers, headerLines: [], attachments: [] } as unknown as Email);
-    expect(fetched.unsubscribeHeaders).toHaveLength(64);
+    expect(fetched.unsubscribeHeaders).toHaveLength(65);
     expect(fetched.unsubscribeHeaders?.[0]).toEqual({ key: "list-unsubscribe", value: "v0" });
+    expect(fetched.unsubscribeHeaders?.at(-1)).toEqual(HEADER_LINES_TRUNCATED);
+  });
+
+  it("carries a second List-Unsubscribe past the cap, so the repeat rule sees it (review item 2)", () => {
+    const headers = [
+      { key: "list-unsubscribe", value: "<https://u.example.com/x>" },
+      ...Array.from({ length: 70 }, (_, i) => ({ key: "received", value: `hop ${i}` })),
+      { key: "list-unsubscribe", value: "<https://evil.example/u>" },
+      { key: "list-unsubscribe-post", value: "List-Unsubscribe=One-Click" },
+    ];
+    const fetched = toFetchedMessage(imapMessage(), { headers, headerLines: [], attachments: [] } as unknown as Email);
+    const lines = fetched.unsubscribeHeaders ?? [];
+    expect(lines.filter((line) => line.key === "list-unsubscribe")).toHaveLength(2);
+    expect(lines.filter((line) => line.key === "list-unsubscribe-post")).toHaveLength(1);
+    expect(unsubscribeInfoOf(lines, "gmail", { name: null, address: "news@u.example.com" })).toMatchObject({ trust: "not_covered", oneClick: false });
   });
 });
 
