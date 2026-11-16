@@ -6312,6 +6312,17 @@ describe("slice 3g: tasks from mail", () => {
     expect(agentLogRows(host).at(-1)).toMatchObject({ actor: "owner_bb", tool: "bb_task", outcome: "ok", ref_id: "tb_1" });
   });
 
+  it("after a create was sent and Taskboard did not answer, says it may exist and offers no local task", async () => {
+    const { host, messageId } = await loadBb();
+    host.harness.sdk.stub("plugins.callRpc", async () => {
+      throw new Error("timed out");
+    });
+    const input = { messageId, target: { kind: "taskboard", boardId: "b_1" }, title: "Invented", excerpt: false };
+    await expect(call(host, "task_from_mail", input)).rejects.toThrow("Taskboard may have created it; check the board");
+    expect(agentLogRows(host).at(-1)).toMatchObject({ actor: "owner_bb", tool: "bb_task", outcome: "failed" });
+    expect(((await call(host, "tasks_list", { done: false })) as { tasks: unknown[] }).tasks).toEqual([]);
+  });
+
   it("shows Taskboard's own refusals, and offers the local task when it does not answer", async () => {
     const { host, messageId } = await loadBb();
     host.harness.sdk.stub("plugins.callRpc", async () => {
@@ -6319,10 +6330,15 @@ describe("slice 3g: tasks from mail", () => {
     });
     const input = { messageId, target: { kind: "taskboard", boardId: "b_1" }, title: "Invented", excerpt: false };
     await expect(call(host, "task_from_mail", input)).rejects.toThrow("Taskboard: ");
+    host.harness.sdk.stub("plugins.list", async () => {
+      throw new Error("BB did not answer");
+    });
+    // Nothing was sent to Taskboard: the local task is offered.
+    expect(await call(host, "task_from_mail", input)).toEqual({ kind: "unavailable", reason: "Taskboard did not answer" });
+    host.harness.sdk.stub("plugins.list", async () => ({ plugins: [{ id: "makosh-taskboard", enabled: true }] }));
     host.harness.sdk.stub("plugins.callRpc", async () => {
       throw new Error("plugin not found");
     });
-    expect(await call(host, "task_from_mail", input)).toEqual({ kind: "unavailable", reason: "Taskboard did not answer" });
     expect(await call(host, "task_targets", {})).toMatchObject({ taskboard: null, reason: "Taskboard did not answer" });
     host.harness.sdk.stub("plugins.list", async () => ({ plugins: [] }));
     expect(await call(host, "task_targets", {})).toMatchObject({ taskboard: null, reason: "Taskboard is not installed or is turned off" });

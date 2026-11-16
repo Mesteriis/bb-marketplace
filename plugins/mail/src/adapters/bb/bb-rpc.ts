@@ -987,6 +987,11 @@ export function createBbRpc(deps: BbRpcDeps) {
         deps.agentLog({ actor: "owner_bb", tool: "bb_task", outcome: "failed", messageIds: [header.id] });
         return { kind: "unavailable" as const, reason: created.unavailable };
       }
+      if ("uncertain" in created) {
+        // Sent, but no answer read: never offer a second (local) copy.
+        deps.agentLog({ actor: "owner_bb", tool: "bb_task", outcome: "failed", messageIds: [header.id] });
+        throw refuse("conflict", created.uncertain);
+      }
       if ("refused" in created) {
         deps.agentLog({ actor: "owner_bb", tool: "bb_task", outcome: "refused_invalid", messageIds: [header.id] });
         throw refuse("conflict", `Taskboard: ${created.refused}`);

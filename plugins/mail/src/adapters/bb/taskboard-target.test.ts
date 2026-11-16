@@ -1,7 +1,7 @@
 import { experimental_PluginRpcCallError } from "@get-bb/plugin-sdk";
 import { createFakeSdk } from "@get-bb/plugin-sdk/testing";
 import { describe, expect, it } from "vitest";
-import { TASKBOARD_NOT_INSTALLED, TASKBOARD_PLUGIN_ID, TASKBOARD_UNAVAILABLE, createTaskboardTarget } from "./taskboard-target.ts";
+import { TASKBOARD_MAYBE_CREATED, TASKBOARD_NOT_INSTALLED, TASKBOARD_PLUGIN_ID, TASKBOARD_UNAVAILABLE, createTaskboardTarget } from "./taskboard-target.ts";
 
 function target(options: { plugins?: { id: string; enabled: boolean }[]; callRpc?: (args: { method: string; input?: unknown }) => unknown }) {
   const { sdk, harness } = createFakeSdk({
@@ -63,7 +63,17 @@ describe("createTaskboardTarget", () => {
     });
   });
 
-  it("maps Taskboard's refusals to their message and every other error to unavailable", async () => {
+  it("after task_create was sent, a timeout or a malformed answer is uncertain, never unavailable", async () => {
+    const { taskboard } = target({
+      callRpc: () => {
+        throw new Error("timed out");
+      },
+    });
+    expect(await taskboard.create("b", "t", "d")).toEqual({ uncertain: TASKBOARD_MAYBE_CREATED });
+    expect(await target({ callRpc: () => ({ task: {} }) }).taskboard.create("b", "t", "d")).toEqual({ uncertain: TASKBOARD_MAYBE_CREATED });
+  });
+
+  it("maps Taskboard's refusals to their message and a call BB refused to unavailable", async () => {
     for (const code of ["not_found", "invalid", "conflict"] as const) {
       const { taskboard } = target({
         callRpc: () => {
@@ -75,7 +85,6 @@ describe("createTaskboardTarget", () => {
     for (const error of [
       new experimental_PluginRpcCallError({ code: "unknown_method", message: "no such method" }),
       new experimental_PluginRpcCallError({ code: "forbidden", message: "no" }),
-      new Error("anything"),
     ]) {
       const { taskboard } = target({
         callRpc: () => {
@@ -84,6 +93,5 @@ describe("createTaskboardTarget", () => {
       });
       expect(await taskboard.create("b", "t", "d")).toEqual({ unavailable: TASKBOARD_UNAVAILABLE });
     }
-    expect(await target({ callRpc: () => ({ task: {} }) }).taskboard.create("b", "t", "d")).toEqual({ unavailable: TASKBOARD_UNAVAILABLE });
   });
 });

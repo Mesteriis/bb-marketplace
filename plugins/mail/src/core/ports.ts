@@ -1180,7 +1180,12 @@ export interface BbThreads {
 /** Taskboard as a task target (adapter: bb.sdk.plugins.callRpc). Never throws. */
 export interface TaskTarget {
   boards(): Promise<{ boards: { id: string; name: string }[] } | { unavailable: string }>;
-  create(boardId: string, title: string, description: string): Promise<{ taskId: string } | { refused: string } | { unavailable: string }>;
+  /** `unavailable`: nothing was sent; `uncertain`: sent, no answer read (the task may exist). */
+  create(
+    boardId: string,
+    title: string,
+    description: string,
+  ): Promise<{ taskId: string } | { refused: string } | { unavailable: string } | { uncertain: string }>;
 }
 
 /** Re-exported for the adapters. */
