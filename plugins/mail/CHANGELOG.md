@@ -8,6 +8,33 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Inbox tools (slice 3e). Instant new mail: one read-only IMAP IDLE
+  connection per account on the Inbox while BB runs (`instantMail`, on by
+  default) starts an Inbox-only sync within seconds of a change.
+- New-mail toasts in every BB window for unread Inbox mail from people you
+  write to (not bulk, not your own, not blocked, at most 6 hours old): the
+  sender's name and address with **Open**, never the subject.
+  `notifyNewMail` and `quietHours` (the BB server's clock) control them.
+- **Unsubscribe** in the reading pane for list mail (never in Spam or
+  Trash), confirmed with the privacy cost: an RFC 8058 one-click POST on
+  Gmail when its Authentication-Results vouch for a DKIM signature covering
+  the list headers, else an unsubscribe email through the Outbox with Undo
+  ("Unsubscribe request", never in Drafts). Then **Archive all from this
+  list**, never automatic.
+- **Snooze** (`b`, toolbar, selection bar): presets or a date and time; the
+  first snooze in an account asks before creating its "Snoozed" folder
+  ("Snoozed (Makosh)" on Gmail) or choosing one; mail comes back unread while
+  BB runs, with Undo and **Return now**.
+- **Block** an address or a domain (not public providers): global rules
+  that move matching new Inbox mail to Spam after each sync, optionally with
+  the stored Inbox mail; never moves mail you took out of Spam or moved back
+  yourself. **Blocked senders** with Unblock and each account's snoozed
+  folder in Mail settings → Inbox.
+- Quick filters **Unread**, **Flagged**, **Attachments** above the list.
+- Agent triage behind `agentTriage` (off by default): `mail_inbox`,
+  `mail_read` and `mail_triage` propose up to 50 Inbox actions on a card
+  where the owner ticks what runs; the thread row shows what ran with Undo.
+
 - Sending addresses (slice 3d): **Mail settings** (the gear in the mail rail)
   lists each account's own address and the aliases added by hand or from
   suggestions found in inbound mail (`Delivered-To`, `X-Original-To`, To and
@@ -156,6 +183,13 @@ All notable changes to Makosh Mail are recorded here. The format follows
 - The `d/<draftId>` page route opens a draft in the composer.
 
 ### Changed
+
+- Server writes now also include one `CREATE` per account of the snooze
+  folder on the owner's confirmation, and moves by snooze, its return, block
+  rules and approved triage items. The one outbound web request is the
+  confirmed one-click unsubscribe POST. Nothing more is deleted or expunged.
+- The shell-access note now also names `unsubscribe_run`, `block_add`,
+  `snooze_folder_create` and answering the inbox-actions card.
 
 - The plugin's server writes are now `\Seen` and `\Flagged` added or
   removed and moves, all on the owner's click or key. Agents gain nothing:

@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-makosh-mail",
   "version": "0.1.0",
-  "description": "Reads, sorts, sends and translates iCloud, Gmail and IMAP mail with aliases, signatures, templates and Undo; agents propose mail to confirm.",
+  "description": "Reads, snoozes, blocks, sends and translates iCloud, Gmail and IMAP mail with Undo; agents propose mail and inbox actions to confirm.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,7 @@
   },
   "bb": {
     "name": "Makosh Mail [Experimental]",
-    "description": "Reads, sorts, sends and translates iCloud, Gmail and IMAP mail with aliases, signatures, templates and Undo; agents propose mail to confirm.",
+    "description": "Reads, snoozes, blocks, sends and translates iCloud, Gmail and IMAP mail with Undo; agents propose mail and inbox actions to confirm.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
