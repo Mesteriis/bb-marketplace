@@ -72,6 +72,33 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   errnos (EAGAIN/EINTR/ENXIO, positive or negative); the observed failure is a
   transient errno -6 (-ENXIO) from plain `openpty` on macOS under parallel
   load, cause not established.
+
+## Stage 2a — one real SSH session
+
+- Terminal path decision: Remote Hub uses its own PTY (helper `openpty`) plus
+  xterm.js in the plugin tab. The BB terminal API is NOT used because it
+  launches its own process by argv and offers no way to attach a foreign PTY
+  master, which would make BB, not SessionManager, the owner of the session
+  (bb-plugin-sdk.d.ts:18759, :18802, :19377). SessionManager in the helper owns
+  every session regardless of React mount; detaching a view never ends it.
+- Per-session flow control (credit): each session has a byte window granted by
+  the client (`session.credit {sessionId, bytes}`); the helper never has more
+  than the granted window of un-acked output in flight and stops reading that
+  PTY when the window is exhausted. Echo sessions start with an unlimited
+  window; SSH sessions start at zero and are driven by the attach socket.
+- Attach/detach semantics: one WebSocket per attached view, bound to a single
+  session handle by a single-use attach token; closing the socket detaches the
+  view but the session keeps running in the helper. Re-attach sends a bounded
+  scrollback snapshot (last 1 MiB, owned by the TS adapter) before live bytes.
+- Binary WebSocket facts (bb-plugin-sdk.d.ts:20446-20484):
+  `bb.http.experimental_websocket(path, handler, { auth })` registers a route in
+  the `/http/` namespace; a GET upgrades only with `Upgrade: websocket`.
+  `ExperimentalPluginWebSocket.send(data: string | Uint8Array)` is binary-capable
+  and `onMessage` receives `string | Uint8Array`. `PluginHttpAuthMode` is
+  `"local" | "none" | "token"`; the SDK gives no per-connection origin or
+  session-scope check, so Remote Hub adds its own single-use attach token and
+  per-session binding on top. Auth and origin checks are not exercised in a
+  live BB server in this stage.
 - RDP image frames: not in this stage; nothing is claimed about them yet.
 
 ## 4. Where metadata, secrets, keys and trust records live
