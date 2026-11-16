@@ -161,7 +161,7 @@ impl Helper {
     }
 
     fn read_until_closed_status(&mut self, sid: u32) -> (Option<i32>, Option<i32>, String) {
-        for _ in 0..400 {
+        for _ in 0..4000 {
             let (kind, payload) = self.read_frame();
             if kind == FRAME_KIND_CONTROL {
                 if let Response::SessionClosed {
@@ -172,7 +172,9 @@ impl Helper {
                     ..
                 } = decode_response(&payload).unwrap()
                 {
-                    assert_eq!(session_id, sid);
+                    if session_id != sid {
+                        continue; // another concurrent session closed first
+                    }
                     return (exit_code, signal, reason);
                 }
             }
@@ -1591,6 +1593,103 @@ fn v9_normal_exit_is_not_misread_as_orphan() {
     for _ in 0..200 {
         let (sid, _pid) = h.open();
         let (code, sig, _reason) = h.read_until_closed_status(sid);
+        assert_eq!(code, Some(7));
+        assert_eq!(sig, None);
+    }
+}
+
+// W4/F11: a zero-credit ssh session whose PTY hangs up must not spin the
+// event loop, and a normal child that lives briefly after closing its tty must
+// still report its real exit status.
+#[test]
+fn w4_hup_does_not_block_the_loop() {
+    let mut h = start();
+    h.hello();
+
+    let mut ssh_sids = Vec::new();
+    for _ in 0..50 {
+        h.send(&Request::OpenSsh {
+            id: 1,
+            cols: 80,
+            rows: 24,
+            program: "/bin/sh".to_string(),
+            argv: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "exec >/dev/null 2>&1 </dev/null; sleep 0.3; exit 7".to_string(),
+            ],
+            env: HashMap::new(),
+            cwd: None,
+        });
+        match h.read_response() {
+            Response::SessionOpened { session_id, .. } => ssh_sids.push(session_id),
+            other => panic!("expected session.opened, got {other:?}"),
+        }
+    }
+
+    h.send(&Request::OpenEcho {
+        id: 2,
+        cols: 80,
+        rows: 24,
+    });
+    let echo_sid = match h.read_response() {
+        Response::SessionOpened { session_id, .. } => session_id,
+        other => panic!("expected session.opened, got {other:?}"),
+    };
+
+    let deadline = Instant::now() + Duration::from_millis(3000);
+    let mut closed: HashMap<u32, (Option<i32>, Option<i32>)> = HashMap::new();
+    let mut echo_buf = String::new();
+    let mut n = 0u64;
+    while Instant::now() < deadline {
+        let line = format!("ping-{n}\n");
+        let t0 = Instant::now();
+        h.send(&Request::SessionInput {
+            id: 100 + n,
+            session_id: echo_sid,
+            data: line,
+        });
+        let needle = format!("ping-{n}");
+        let mut acked = false;
+        let mut echoed = false;
+        while !(acked && echoed) {
+            let (kind, payload) = h.read_frame();
+            if kind == FRAME_KIND_CONTROL {
+                match decode_response(&payload).unwrap() {
+                    Response::SessionInputAck { .. } => acked = true,
+                    Response::SessionClosed {
+                        session_id,
+                        exit_code,
+                        signal,
+                        ..
+                    } => {
+                        closed.insert(session_id, (exit_code, signal));
+                    }
+                    _ => {}
+                }
+            } else {
+                let rsid = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+                if rsid == echo_sid {
+                    echo_buf.push_str(&String::from_utf8_lossy(&payload[8..]));
+                    if echo_buf.contains(&needle) {
+                        echoed = true;
+                    }
+                }
+            }
+        }
+        assert!(
+            t0.elapsed() < Duration::from_millis(100),
+            "echo round trip took {:?}",
+            t0.elapsed()
+        );
+        n += 1;
+    }
+
+    for sid in ssh_sids {
+        let (code, sig) = closed
+            .get(&sid)
+            .copied()
+            .unwrap_or_else(|| panic!("session {sid} never closed ({} total)", closed.len()));
         assert_eq!(code, Some(7));
         assert_eq!(sig, None);
     }

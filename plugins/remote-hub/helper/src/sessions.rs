@@ -19,6 +19,9 @@ pub const WRITE_CHUNK: usize = 64 * 1024;
 /// How long to wait for the PTY to reach EOF after the direct child exits
 /// before the process group is reaped (lingering descendants).
 pub const LINGER_GRACE: Duration = Duration::from_secs(2);
+/// How long an EOF/HUP without a reaped child may wait before the child is
+/// treated as an orphan (checked on later event-loop iterations, never slept).
+pub const REAP_GRACE: Duration = Duration::from_millis(1000);
 
 /// A validated child spawn: built before fork, never through a shell.
 pub struct SpawnSpec {
@@ -55,6 +58,7 @@ pub struct Session {
     pub signal: Option<i32>,
     pub close_reason: Option<String>,
     pub child_exited_at: Option<Instant>,
+    pub reap_deadline: Option<Instant>,
     pub kind: String,
 }
 
@@ -517,6 +521,7 @@ impl SessionManager {
                 signal: None,
                 close_reason: None,
                 child_exited_at: None,
+                reap_deadline: None,
                 kind,
             },
         );
@@ -605,10 +610,12 @@ impl SessionManager {
                 return Ok(0);
             }
             session.pty_done = true;
+            session.reap_deadline = Some(Instant::now() + REAP_GRACE);
             return Err(SessionError::Sys { step: "read", errno });
         }
         if n == 0 {
             session.pty_done = true;
+            session.reap_deadline = Some(Instant::now() + REAP_GRACE);
             return Ok(0);
         }
         session.pending_out.extend_from_slice(&buf[..n as usize]);
@@ -649,34 +656,19 @@ impl SessionManager {
                 newly.push(id);
             }
         }
-        // V9: the kernel closes the slave before the child is a zombie, so a
-        // PTY that just reached EOF may not be reapable in the same instant. Wait
-        // a bounded 200 ms before remove_finished misreads the child as an orphan
-        // and SIGTERMs its process group.
-        let eof_unreaped: Vec<libc::pid_t> = self
-            .sessions
-            .values()
-            .filter(|s| s.pty_done && !s.child_exited)
-            .map(|s| s.child)
-            .collect();
-        for pid in eof_unreaped {
-            let deadline = Instant::now() + Duration::from_millis(200);
-            let mut status: libc::c_int = 0;
-            loop {
-                let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-                if r == pid {
-                    if let Some(id) = self.reap_one(pid, status) {
-                        newly.push(id);
-                    }
-                    break;
-                }
-                if r < 0 || Instant::now() >= deadline {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(2));
+        newly
+    }
+
+    /// A POLLHUP/POLLERR on a session PTY that is not being read (e.g. zero
+    /// credit) must still mark the PTY done, or poll would re-report the hangup
+    /// forever and spin the loop.
+    pub fn mark_hup(&mut self, id: u32) {
+        if let Some(session) = self.sessions.get_mut(&id) {
+            if !session.pty_done {
+                session.pty_done = true;
+                session.reap_deadline = Some(Instant::now() + REAP_GRACE);
             }
         }
-        newly
     }
 
     pub fn remove_finished(&mut self, keep: bool) -> Vec<(u32, Option<i32>, Option<i32>, String)> {
@@ -684,6 +676,7 @@ impl SessionManager {
             .sessions
             .values()
             .filter(|s| s.pty_done && !s.child_exited)
+            .filter(|s| s.reap_deadline.map(|d| d <= Instant::now()).unwrap_or(true))
             .map(|s| s.id)
             .collect();
         for id in orphans {

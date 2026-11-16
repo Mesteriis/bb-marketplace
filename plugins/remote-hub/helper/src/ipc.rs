@@ -644,8 +644,11 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                     }
                 }
                 PollRole::Session(sid) => {
-                    if revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                    if revents & libc::POLLIN != 0 {
                         let _ = guard.manager.read_output(*sid);
+                    }
+                    if revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                        guard.manager.mark_hup(*sid);
                     }
                     if revents & libc::POLLOUT != 0 {
                         let _ = guard.manager.write_pending_input(*sid);
