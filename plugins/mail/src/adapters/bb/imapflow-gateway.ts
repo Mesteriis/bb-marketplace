@@ -11,7 +11,12 @@
 // (copyMessages; it adds, never removes). Slice 3e adds the IDLE watch
 // (watchFolder: its own read-only EXAMINE connection, no session, no
 // command beyond IDLE and imapflow's keepalive NOOP) and the CREATE of one
-// snooze folder after the owner's confirmation (createFolder).
+// snooze folder after the owner's confirmation (createFolder). Slice 3h adds
+// the owner's folder RENAME / DELETE / SUBSCRIBE / UNSUBSCRIBE (each on a
+// fresh connection with nothing selected, so imapflow never sends CLOSE,
+// which would expunge; DELETE of a non-Gmail folder only after STATUS
+// reports it empty on the same connection), STORE X-GM-LABELS on Gmail
+// (setLabels), and read-only UID SEARCH by Mail's criteria (searchServer).
 // Errors leaving this file are rebuilt from codes: imapflow errors can carry
 // server responses and the sent command, so their text is never passed on.
 import { ImapFlow } from "imapflow";
@@ -21,7 +26,9 @@ import type {
   ImapFlowOptions,
   ListResponse,
   MessageAddressObject,
+  SearchObject,
 } from "imapflow";
+import { specialUse } from "imapflow/lib/special-use.js";
 import PostalMime from "postal-mime";
 import { normalizeMessageId } from "../../core/headers.ts";
 import type { Address, Attachment, Email, RawEmail } from "postal-mime";
@@ -48,12 +55,16 @@ import {
   type MailAddress,
   type RemoteFolder,
   type SpecialUse,
+  type ServerCriteria,
   type WatchEnd,
+  SERVER_SEARCH_CAPS,
 } from "../../core/index.ts";
 
 export interface ImapflowGatewayOptions {
   /** Receives one safe line per connection error; never message or credential text. */
   logger?: (line: string) => void;
+  /** Builds the client of a session-less command (tests pass a stub); defaults to imapflow. */
+  createClient?: (options: ImapFlowOptions) => ImapFlow;
 }
 
 const MESSAGE_QUERY: FetchQueryObject = {
@@ -70,6 +81,9 @@ const MESSAGE_QUERY: FetchQueryObject = {
 };
 
 const FLAGS_QUERY: FetchQueryObject = { uid: true, flags: true, emailId: true };
+
+/** X-GM-LABELS only (slice 3h): a FETCH of labels sets no flag. */
+const LABELS_QUERY: FetchQueryObject = { uid: true, labels: true };
 
 /**
  * The bulk backfill: imapflow 2.11 sends `headers: [...]` as
@@ -93,9 +107,6 @@ export class SafeImapError extends Error {
     this.name = "SafeImapError";
   }
 }
-
-/** What a slice 3h command answers until Task 5 implements it. */
-const NOT_YET = "Not available yet";
 
 /** What a session needs from an imapflow client; tests pass a stub. */
 export type SessionClient = Pick<
@@ -134,7 +145,8 @@ export function createImapflowGateway(options: ImapflowGatewayOptions = {}): Ima
   const log = options.logger ?? (() => {});
 
   async function connect(config: ImapConfig): Promise<ImapFlow> {
-    const client = new ImapFlow(toImapflowOptions(config));
+    const imapflowOptions = toImapflowOptions(config);
+    const client = options.createClient?.(imapflowOptions) ?? new ImapFlow(imapflowOptions);
     // An unhandled 'error' event would crash the host process.
     client.on("error", (error: unknown) => log(`imap connection error: ${describeImapError(error).message}`));
     try {
@@ -200,23 +212,173 @@ export function createImapflowGateway(options: ImapflowGatewayOptions = {}): Ima
       }
     },
 
-    // Slice 3h folder writes: Task 3 stubs; Task 5 implements them.
-    async renameFolder() {
-      throw new SafeImapError("RenameFailed", NOT_YET);
+    // Slice 3h folder writes: a fresh connection with nothing selected, logout after.
+    async renameFolder(config, from, to) {
+      const client = await connect(config);
+      try {
+        return await renameFolderWith(client, from, to);
+      } finally {
+        await logoutQuietly(client);
+      }
     },
-    async folderStatus() {
-      throw new SafeImapError("StatusFailed", NOT_YET);
+    async folderStatus(config, path) {
+      const client = await connect(config);
+      try {
+        return await folderStatusWith(client, path);
+      } finally {
+        await logoutQuietly(client);
+      }
     },
-    async deleteFolder() {
-      throw new SafeImapError("DeleteFailed", NOT_YET);
+    async deleteFolder(config, path, deleteOptions) {
+      const client = await connect(config);
+      try {
+        await deleteFolderWith(client, path, deleteOptions);
+      } finally {
+        await logoutQuietly(client);
+      }
     },
-    async setSubscribed() {
-      throw new SafeImapError("SubscribeFailed", NOT_YET);
+    async setSubscribed(config, path, subscribed) {
+      const client = await connect(config);
+      try {
+        await setSubscribedWith(client, path, subscribed);
+      } finally {
+        await logoutQuietly(client);
+      }
     },
-    namedLikeSpecialUse() {
-      return false;
-    },
+    namedLikeSpecialUse,
   };
+}
+
+/**
+ * Whether imapflow would read a folder of this name as special use when the
+ * server has no SPECIAL-USE flags (spec resolution 18): its exact localized
+ * names, then decorated ones ("Sent Mail").
+ */
+export function namedLikeSpecialUse(name: string): boolean {
+  return specialUse(false, { name, flags: new Set<string>() }).flag !== null;
+}
+
+/** What the session-less folder commands need from an imapflow client; tests pass a stub. */
+export type FolderOpsClient = Pick<
+  ImapFlow,
+  "mailbox" | "mailboxRename" | "mailboxDelete" | "mailboxSubscribe" | "mailboxUnsubscribe" | "status"
+>;
+
+/**
+ * imapflow runs CLOSE (which expunges \Deleted mail) before RENAME or DELETE
+ * of the selected mailbox. These commands run only with nothing selected;
+ * a selected mailbox refuses before any command.
+ */
+function assertNothingSelected(client: Pick<FolderOpsClient, "mailbox">, code: string): void {
+  if (client.mailbox) throw new SafeImapError(code);
+}
+
+/** A refusal as the command's code; a refused login stays an auth error. Never the server's text. */
+function folderOpError(error: unknown, code: string): Error {
+  const mapped = describeImapError(error);
+  return mapped instanceof ImapAuthError ? mapped : new SafeImapError(code);
+}
+
+/** RENAME `from` to `to`: the new path, or "RenameFailed". */
+export async function renameFolderWith(client: FolderOpsClient, from: string, to: string): Promise<{ path: string }> {
+  assertNothingSelected(client, "RenameFailed");
+  let result: Awaited<ReturnType<ImapFlow["mailboxRename"]>> | undefined;
+  try {
+    result = await client.mailboxRename(from, to);
+  } catch (error) {
+    throw folderOpError(error, "RenameFailed");
+  }
+  if (!result || typeof result.newPath !== "string") throw new SafeImapError("RenameFailed");
+  return { path: result.newPath };
+}
+
+/** STATUS (MESSAGES UIDVALIDITY) of one folder, or "StatusFailed". Selects nothing. */
+export async function folderStatusWith(
+  client: Pick<FolderOpsClient, "status">,
+  path: string,
+): Promise<{ messages: number; uidValidity: number }> {
+  let result: Awaited<ReturnType<ImapFlow["status"]>> | undefined;
+  try {
+    result = await client.status(path, { messages: true, uidValidity: true });
+  } catch (error) {
+    throw folderOpError(error, "StatusFailed");
+  }
+  if (!result || typeof result.messages !== "number") throw new SafeImapError("StatusFailed");
+  return { messages: result.messages, uidValidity: Number(result.uidValidity ?? 0) };
+}
+
+/**
+ * DELETE of one folder with nothing selected. `expectEmpty`: STATUS first
+ * on the same connection and "NotEmpty" (nothing deleted) above 0 messages;
+ * without it (a Gmail label folder, spec resolution 5) DELETE only.
+ */
+export async function deleteFolderWith(
+  client: FolderOpsClient,
+  path: string,
+  options: { expectEmpty: boolean },
+): Promise<void> {
+  assertNothingSelected(client, "DeleteFailed");
+  if (options.expectEmpty) {
+    const { messages } = await folderStatusWith(client, path);
+    if (messages > 0) throw new SafeImapError("NotEmpty");
+    assertNothingSelected(client, "DeleteFailed");
+  }
+  let result: Awaited<ReturnType<ImapFlow["mailboxDelete"]>> | undefined;
+  try {
+    result = await client.mailboxDelete(path);
+  } catch (error) {
+    throw folderOpError(error, "DeleteFailed");
+  }
+  if (!result) throw new SafeImapError("DeleteFailed");
+}
+
+/** SUBSCRIBE or UNSUBSCRIBE, or "SubscribeFailed". */
+export async function setSubscribedWith(client: FolderOpsClient, path: string, subscribed: boolean): Promise<void> {
+  let done: boolean;
+  try {
+    done = subscribed ? await client.mailboxSubscribe(path) : await client.mailboxUnsubscribe(path);
+  } catch (error) {
+    throw folderOpError(error, "SubscribeFailed");
+  }
+  if (done !== true) throw new SafeImapError("SubscribeFailed");
+}
+
+const DAY_START = "T00:00:00.000Z";
+
+/** One criteria object without NOT and Gmail's raw query as imapflow's SearchObject. */
+function plainSearchObject(criteria: ServerCriteria): SearchObject {
+  const query: SearchObject = {};
+  for (const key of ["text", "from", "to", "cc", "subject"] as const) {
+    const value = criteria[key];
+    if (typeof value === "string" && value !== "") query[key] = value;
+  }
+  if (criteria.since !== undefined) query.since = new Date(`${criteria.since}${DAY_START}`);
+  if (criteria.before !== undefined) query.before = new Date(`${criteria.before}${DAY_START}`);
+  if (criteria.larger !== undefined) query.larger = criteria.larger;
+  if (criteria.smaller !== undefined) query.smaller = criteria.smaller;
+  if (criteria.seen !== undefined) query.seen = criteria.seen;
+  if (criteria.flagged !== undefined) query.flagged = criteria.flagged;
+  return query;
+}
+
+/**
+ * Mail's criteria as imapflow's SearchObject, or null when nothing would be
+ * sent. On Gmail with `gmailRaw` only X-GM-RAW is sent; elsewhere the raw
+ * query is dropped (imapflow refuses it without X-GM-EXT-1). Negations are
+ * ANDed: NOT a, NOT b is sent as NOT (OR a b).
+ */
+export function toSearchObject(criteria: ServerCriteria, gmail: boolean): SearchObject | null {
+  if (gmail && typeof criteria.gmailRaw === "string" && criteria.gmailRaw !== "") return { gmraw: criteria.gmailRaw };
+  const query = plainSearchObject(criteria);
+  const negated = (criteria.not ?? []).map(plainSearchObject).filter((entry) => Object.keys(entry).length > 0);
+  if (negated.length === 1) query.not = negated[0]!;
+  else if (negated.length > 1) query.not = { or: negated };
+  return Object.keys(query).length > 0 ? query : null;
+}
+
+/** X-GM-LABELS of a fetched message as a list, or undefined when the server sent none. */
+function labelsOf(message: Pick<FetchMessageObject, "labels">): string[] | undefined {
+  return message.labels instanceof Set ? [...message.labels] : undefined;
 }
 
 /** What a watch needs from an imapflow client; tests pass a stub. Nothing here writes. */
@@ -421,6 +583,17 @@ export function createSession(
     return found;
   }
 
+  const isGmail = () => client.capabilities?.has("X-GM-EXT-1") === true;
+
+  async function fetchLabelsOf(uids: number[]): Promise<{ uid: number; labels: string[] }[]> {
+    if (uids.length === 0 || !isGmail()) return [];
+    const found: { uid: number; labels: string[] }[] = [];
+    for await (const message of client.fetch(uids, LABELS_QUERY, { uid: true })) {
+      found.push({ uid: message.uid, labels: labelsOf(message) ?? [] });
+    }
+    return found;
+  }
+
   return {
     status: guarded(async () => {
       const mailbox = client.mailbox;
@@ -445,7 +618,8 @@ export function createSession(
     fetchMessages: guarded(async (uids: number[]) => {
       if (uids.length === 0) return [];
       const messages: FetchedMessage[] = [];
-      for await (const message of client.fetch(uids, MESSAGE_QUERY, { uid: true })) {
+      const query = isGmail() ? { ...MESSAGE_QUERY, labels: true } : MESSAGE_QUERY;
+      for await (const message of client.fetch(uids, query, { uid: true })) {
         let parsed: Email;
         try {
           parsed = await parse(message.source ?? "");
@@ -463,14 +637,17 @@ export function createSession(
 
     fetchFlags: guarded(async (uids: number[]) => {
       if (uids.length === 0) return [];
-      const flags: { uid: number; seen: boolean; flagged: boolean; gmMsgId: string | null }[] =
+      const flags: { uid: number; seen: boolean; flagged: boolean; gmMsgId: string | null; labels?: string[] }[] =
         [];
-      for await (const message of client.fetch(uids, FLAGS_QUERY, { uid: true })) {
+      const query = isGmail() ? { ...FLAGS_QUERY, labels: true } : FLAGS_QUERY;
+      for await (const message of client.fetch(uids, query, { uid: true })) {
+        const labels = labelsOf(message);
         flags.push({
           uid: message.uid,
           seen: message.flags?.has("\\Seen") ?? false,
           flagged: message.flags?.has("\\Flagged") ?? false,
           gmMsgId: nonEmpty(message.emailId),
+          ...(labels === undefined ? {} : { labels }),
         });
       }
       return flags;
@@ -631,14 +808,32 @@ export function createSession(
       }
     }),
 
-    // Slice 3h: Task 3 stubs; Task 5 implements them.
-    searchServer: async () => {
-      throw new SafeImapError("SearchFailed", NOT_YET);
-    },
-    fetchLabels: async () => [],
-    setLabels: async () => {
-      throw new SafeImapError("LabelsRefused", NOT_YET);
-    },
+    // Read-only UID SEARCH by Mail's criteria (slice 3h); the newest uids, newest first.
+    searchServer: guarded(async (criteria: ServerCriteria) => {
+      const query = toSearchObject(criteria, isGmail());
+      if (query === null) return [];
+      const uids = await searchUids(client, query);
+      return [...new Set(uids)].sort((a, b) => b - a).slice(0, SERVER_SEARCH_CAPS.uidsPerFolder);
+    }),
+
+    fetchLabels: guarded(fetchLabelsOf),
+
+    // STORE +X-GM-LABELS / -X-GM-LABELS (Gmail, read-write), then what the server now reports.
+    setLabels: guarded(async (uids: number[], change: { add: string[]; remove: string[] }) => {
+      if (readOnly) throw new SafeImapError("ReadOnly", "IMAP error (mailbox is read-only)");
+      if (!isGmail()) throw new SafeImapError("LabelsRefused");
+      if (uids.length === 0) return [];
+      // imapflow resolves false when the server refuses the STORE (commands/store.js).
+      if (change.add.length > 0) {
+        const added = await client.messageFlagsAdd(uids, change.add, { uid: true, useLabels: true });
+        if (!added) throw new SafeImapError("LabelsRefused");
+      }
+      if (change.remove.length > 0) {
+        const removed = await client.messageFlagsRemove(uids, change.remove, { uid: true, useLabels: true });
+        if (!removed) throw new SafeImapError("LabelsRefused");
+      }
+      return fetchLabelsOf(uids);
+    }),
     close: () => logoutQuietly(client),
   };
 }
@@ -676,7 +871,7 @@ async function searchUids(
   return result;
 }
 
-async function logoutQuietly(client: SessionClient): Promise<void> {
+async function logoutQuietly(client: Pick<ImapFlow, "logout" | "close">): Promise<void> {
   try {
     await client.logout();
   } catch {
@@ -820,6 +1015,7 @@ export function toFetchedMessage(message: FetchMessageObject, parsed: Email): Fe
     deliveredTo: toDeliveredTo(parsed),
     unsubscribeHeaders: toUnsubscribeHeaders(parsed),
     devHeaders: toDevHeaders(parsed),
+    ...(message.labels instanceof Set ? { gmLabels: [...message.labels] } : {}),
   };
 }
 

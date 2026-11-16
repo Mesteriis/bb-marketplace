@@ -434,6 +434,11 @@ export type FetchedMessage = {
    * Absent: not classified (classification off, or Spam and Trash).
    */
   dev?: DevClass | null;
+  /**
+   * Slice 3h: X-GM-LABELS as the server sent them (system labels included).
+   * Present only on Gmail sessions (X-GM-EXT-1); sync stores them.
+   */
+  gmLabels?: string[];
 };
 
 /** A folder as the server lists it. */

@@ -127,6 +127,7 @@ import type {
 } from "../ports.ts";
 import type { BbLinkRowKind } from "../model.ts";
 import type { AttachmentTextRow, FilesFilter, SavedSearchRow, SearchOptions, SenderStats } from "../ports.ts";
+import { SERVER_SEARCH_CAPS, type ServerCriteria } from "../server-search.ts";
 import type { AttachmentMatch, FileRow, KeptState, SearchCondition, SearchCursor } from "../model.ts";
 import { excerptAround, type AttachmentCandidate } from "../attachment-text.ts";
 import { RELATED_CANDIDATES_MAX, type RelatedCandidate } from "../related.ts";
@@ -449,9 +450,6 @@ function snippetOf(message: FetchedMessage): string {
 function translationKey(messageId: string, targetLanguage: string): string {
   return `${messageId}\u0000${targetLanguage}`;
 }
-
-/** What a slice 3h gateway command answers until Task 5 implements it. */
-const NOT_YET = "Not available yet";
 
 export class InMemoryMailStore implements MailStore {
   private state: StoreState = {
@@ -4022,7 +4020,47 @@ export type SessionCall = {
   messageId?: string;
   guard?: { messageId: string; size: number };
   fields?: string[];
+  /** Slice 3h: searchServer's criteria. */
+  criteria?: ServerCriteria;
+  /** Slice 3h: setLabels' change. */
+  labels?: { add: string[]; remove: string[] };
 };
+
+/** One session-less folder command (slice 3h), with the mailbox selected at the time (always none). */
+export type FolderOp = {
+  op: "rename" | "status" | "delete" | "subscribe" | "unsubscribe";
+  path: string;
+  to?: string;
+  expectEmpty?: boolean;
+  selected: string | null;
+};
+
+/** Lower-case names the fake reads as special use (a small stand-in for imapflow's tables). */
+const FAKE_SPECIAL_NAMES = new Set(["trash", "sent", "sent mail", "sent items", "drafts", "junk", "spam", "archive", "deleted items"]);
+
+/** Whether a fake message matches Mail's criteria (X-GM-RAW is not interpreted: it matches). */
+function matchesCriteria(message: FetchedMessage, internalDate: string | null, criteria: ServerCriteria): boolean {
+  const has = (haystack: string | null | undefined, needle: string) =>
+    (haystack ?? "").toLowerCase().includes(needle.toLowerCase());
+  const addresses = (list: MailAddress[]) => list.map((a) => `${a.name ?? ""} ${a.address}`).join(" ");
+  if (criteria.text !== undefined) {
+    const all = [message.subject, message.bodyText, addresses([message.from]), addresses(message.to)].join(" ");
+    if (!has(all, criteria.text)) return false;
+  }
+  if (criteria.from !== undefined && !has(addresses([message.from]), criteria.from)) return false;
+  if (criteria.to !== undefined && !has(addresses(message.to), criteria.to)) return false;
+  if (criteria.cc !== undefined && !has(addresses(message.cc), criteria.cc)) return false;
+  if (criteria.subject !== undefined && !has(message.subject, criteria.subject)) return false;
+  const day = (internalDate ?? message.date ?? "").slice(0, 10);
+  if (criteria.since !== undefined && day !== "" && day < criteria.since) return false;
+  if (criteria.before !== undefined && day !== "" && day >= criteria.before) return false;
+  if (criteria.larger !== undefined && !(message.size > criteria.larger)) return false;
+  if (criteria.smaller !== undefined && !(message.size < criteria.smaller)) return false;
+  if (criteria.seen !== undefined && message.seen !== criteria.seen) return false;
+  if (criteria.flagged !== undefined && message.flagged !== criteria.flagged) return false;
+  for (const negated of criteria.not ?? []) if (matchesCriteria(message, internalDate, negated)) return false;
+  return true;
+}
 
 export type OpenedSession = {
   path: string;
@@ -4207,25 +4245,70 @@ export class ScriptedImapGateway implements ImapGateway {
     return { path: name, created: true };
   }
 
-  // Slice 3h folder writes: Task 3 stubs; Task 5 gives them behaviour.
-  async renameFolder(_config: ImapConfig, _from: string, _to: string): Promise<{ path: string }> {
-    throw new Error(NOT_YET);
+  // Slice 3h folder writes: each is a fresh connection with nothing selected.
+  /** Every session-less folder command, in order. */
+  readonly folderOps: FolderOp[] = [];
+  /** A refusal per command ("rename", "status", "delete", "subscribe"); kept until cleared. */
+  readonly refuseFolderOp = new Map<"rename" | "status" | "delete" | "subscribe", Error>();
+  /** Server SEARCH answers per path (slice 3h); unset paths match by criteria. */
+  readonly searchAnswers = new Map<string, number[]>();
+
+  private folderOp(op: FolderOp): void {
+    this.folderOps.push(op);
+    if (this.openFailure) throw this.openFailure;
   }
 
-  async folderStatus(_config: ImapConfig, _path: string): Promise<{ messages: number; uidValidity: number }> {
-    throw new Error(NOT_YET);
+  async renameFolder(_config: ImapConfig, from: string, to: string): Promise<{ path: string }> {
+    this.folderOp({ op: "rename", path: from, to, selected: null });
+    const refusal = this.refuseFolderOp.get("rename");
+    if (refusal) throw refusal;
+    if (!this.folders.some((f) => f.path === from)) throw imapError("RenameFailed");
+    const renamed = (path: string) => {
+      if (path === from) return to;
+      const delimiter = this.folders.find((f) => f.path === from)?.delimiter ?? "/";
+      return delimiter !== "" && path.startsWith(`${from}${delimiter}`) ? `${to}${path.slice(from.length)}` : path;
+    };
+    this.folders = this.folders.map((f) => {
+      const path = renamed(f.path);
+      return path === f.path ? f : { ...f, path, name: path === to ? (to.split(f.delimiter || "/").pop() ?? to) : f.name };
+    });
+    for (const [path, box] of [...this.mailboxes]) {
+      const next = renamed(path);
+      if (next === path) continue;
+      this.mailboxes.delete(path);
+      this.mailboxes.set(next, box);
+    }
+    return { path: to };
   }
 
-  async deleteFolder(_config: ImapConfig, _path: string, _options: { expectEmpty: boolean }): Promise<void> {
-    throw new Error(NOT_YET);
+  async folderStatus(_config: ImapConfig, path: string): Promise<{ messages: number; uidValidity: number }> {
+    this.folderOp({ op: "status", path, selected: null });
+    const refusal = this.refuseFolderOp.get("status");
+    if (refusal) throw refusal;
+    const box = this.mailboxes.get(path);
+    if (!box) throw imapError("StatusFailed");
+    return { messages: box.messages.length, uidValidity: box.uidValidity };
   }
 
-  async setSubscribed(_config: ImapConfig, _path: string, _subscribed: boolean): Promise<void> {
-    throw new Error(NOT_YET);
+  async deleteFolder(_config: ImapConfig, path: string, options: { expectEmpty: boolean }): Promise<void> {
+    this.folderOp({ op: "delete", path, expectEmpty: options.expectEmpty, selected: null });
+    const refusal = this.refuseFolderOp.get("delete");
+    if (refusal) throw refusal;
+    if (!this.folders.some((f) => f.path === path)) throw imapError("DeleteFailed");
+    if (options.expectEmpty && (this.mailboxes.get(path)?.messages.length ?? 0) > 0) throw imapError("NotEmpty");
+    this.removeFolder(path);
   }
 
-  namedLikeSpecialUse(_name: string): boolean {
-    return false;
+  async setSubscribed(_config: ImapConfig, path: string, subscribed: boolean): Promise<void> {
+    this.folderOp({ op: subscribed ? "subscribe" : "unsubscribe", path, selected: null });
+    const refusal = this.refuseFolderOp.get("subscribe");
+    if (refusal) throw refusal;
+    if (!this.folders.some((f) => f.path === path)) throw imapError("SubscribeFailed");
+    this.folders = this.folders.map((f) => (f.path === path ? { ...f, subscribed } : f));
+  }
+
+  namedLikeSpecialUse(name: string): boolean {
+    return FAKE_SPECIAL_NAMES.has(name.trim().toLowerCase());
   }
 
   async listFolders(_config: ImapConfig): Promise<RemoteFolder[]> {
@@ -4303,7 +4386,11 @@ export class ScriptedImapGateway implements ImapGateway {
         record({ method: "fetchMessages", uids: [...uids] });
         return uids.flatMap((uid) => {
           const message = box().messages.find((m) => m.uid === uid);
-          return message ? [structuredClone(message)] : [];
+          if (!message) return [];
+          const copy = structuredClone(message);
+          // Labels are reported only on Gmail sessions, as imapflow asks for them only there.
+          if (!this.gmail) delete copy.gmLabels;
+          return [copy];
         });
       },
       fetchListHeaders: async (uids) => {
@@ -4324,9 +4411,9 @@ export class ScriptedImapGateway implements ImapGateway {
         record({ method: "fetchFlags", uids: [...uids] });
         return uids.flatMap((uid) => {
           const message = box().messages.find((m) => m.uid === uid);
-          return message
-            ? [{ uid, seen: message.seen, flagged: message.flagged, gmMsgId: message.gmMsgId }]
-            : [];
+          if (!message) return [];
+          const flags = { uid, seen: message.seen, flagged: message.flagged, gmMsgId: message.gmMsgId };
+          return [this.gmail && message.gmLabels !== undefined ? { ...flags, labels: [...message.gmLabels] } : flags];
         });
       },
       markSeen: async (uids) => {
@@ -4433,13 +4520,40 @@ export class ScriptedImapGateway implements ImapGateway {
         messages.splice(index, 1);
         this.expunged.push({ path, uid });
       },
-      // Slice 3h: Task 3 stubs; Task 5 gives them behaviour.
-      searchServer: async () => {
-        throw new Error(NOT_YET);
+      // Slice 3h: read-only server search and Gmail labels.
+      searchServer: async (criteria) => {
+        record({ method: "searchServer", criteria: structuredClone(criteria) });
+        const scripted = this.searchAnswers.get(path);
+        const found =
+          scripted ??
+          box()
+            .messages.filter((m) => matchesCriteria(m, box().internalDates?.get(m.uid) ?? null, criteria))
+            .map((m) => m.uid);
+        return [...new Set(found)].sort((a, b) => b - a).slice(0, SERVER_SEARCH_CAPS.uidsPerFolder);
       },
-      fetchLabels: async () => [],
-      setLabels: async () => {
-        throw new Error(NOT_YET);
+      fetchLabels: async (uids) => {
+        record({ method: "fetchLabels", uids: [...uids] });
+        if (!this.gmail) return [];
+        return uids.flatMap((uid) => {
+          const message = box().messages.find((m) => m.uid === uid);
+          return message ? [{ uid, labels: [...(message.gmLabels ?? [])] }] : [];
+        });
+      },
+      setLabels: async (uids, change) => {
+        record({ method: "setLabels", uids: [...uids], labels: { add: [...change.add], remove: [...change.remove] } });
+        if (options.readOnly) throw imapError("ReadOnly");
+        if (!this.gmail) throw imapError("LabelsRefused");
+        const changed: { uid: number; labels: string[] }[] = [];
+        for (const uid of uids) {
+          const message = box().messages.find((m) => m.uid === uid);
+          if (!message) continue;
+          const labels = new Set(message.gmLabels ?? []);
+          for (const label of change.add) labels.add(label);
+          for (const label of change.remove) labels.delete(label);
+          message.gmLabels = [...labels];
+          changed.push({ uid, labels: [...labels] });
+        }
+        return changed;
       },
       close: async () => {
         opened.closed = true;

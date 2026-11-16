@@ -145,9 +145,10 @@ export interface FolderSession {
    * LIST_HEADER_FIELDS.
    */
   fetchHeaderFields(uids: number[], fields: readonly string[]): Promise<{ uid: number; block: Uint8Array }[]>;
+  /** `labels` (slice 3h): X-GM-LABELS, present only on Gmail sessions. */
   fetchFlags(
     uids: number[],
-  ): Promise<{ uid: number; seen: boolean; flagged: boolean; gmMsgId: string | null }[]>;
+  ): Promise<{ uid: number; seen: boolean; flagged: boolean; gmMsgId: string | null; labels?: string[] }[]>;
   /**
    * Throws on a read-only session.
    * @deprecated Sync pushes \Seen with setFlags; kept until the gateway drops it.
@@ -213,8 +214,9 @@ export interface FolderSession {
   /**
    * UID SEARCH by Mail's criteria (slice 3h): X-GM-RAW when the session is
    * Gmail and `gmailRaw` is set, else the IMAP criteria. At most
-   * SERVER_SEARCH_CAPS.uidsPerFolder uids (the newest). Throws SafeImapError
-   * "SearchFailed" when the server refuses.
+   * SERVER_SEARCH_CAPS.uidsPerFolder uids, the newest, newest first; none
+   * when there is no criterion to send. Throws SafeImapError "SearchFailed"
+   * when the server refuses.
    */
   searchServer(criteria: ServerCriteria): Promise<number[]>;
   /** X-GM-LABELS of the uids (Gmail only; BODY.PEEK not involved: a FETCH of labels sets no flag). */
