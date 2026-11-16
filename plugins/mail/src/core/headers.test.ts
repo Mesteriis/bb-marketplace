@@ -242,7 +242,9 @@ describe("adversarial input (fix round 1)", () => {
     let lines: string[] = [];
     const ms = timed(() => (lines = describeStructure(raw)));
     expect(lines).toHaveLength(192);
-    expect(ms).toBeLessThan(1000);
+    // A rescan per part is orders of magnitude slower; the loose bound only
+    // keeps a loaded machine (parallel suite) from failing a linear run.
+    expect(ms).toBeLessThan(3000);
   });
 
   it("caps the number of header pairs", () => {
