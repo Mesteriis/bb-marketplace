@@ -23,6 +23,7 @@ import {
   renderSource,
   PROPOSE_OFF_INSTRUCTIONS,
   UNSUBSCRIBE_NOT_OFFERED_MESSAGE,
+  DIGEST_TIME_PATTERN,
 } from "./server.ts";
 import { MIGRATIONS, createSqliteStore } from "./src/adapters/bb/sqlite-store.ts";
 import { createAccountQueue } from "./src/adapters/bb/account-queue.ts";
@@ -5747,6 +5748,193 @@ describe("AI on the owner's click (slice 3f)", () => {
       ["category_rule_add", { messageId: "m", kind: "address", category: "bills" }],
       ["category_rule_remove", { id: "r" }],
       ["category_rules_list", {}],
+    ];
+    for (const [method, input] of inputs) {
+      await expect(host.harness.behavior.callRpc(method, input, asPlugin), method).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Today, reminders, day notices, AI access and the agent log (slice 3f)
+// ---------------------------------------------------------------------------
+
+const DAY_SECRETS = ["ivy@example.com", "ana@example.com", "Invented login", "Invented harvest", "Ivy", "Ana"];
+
+function dayLeaks(host: Host): string {
+  return JSON.stringify([host.harness.inspection.logEntries, host.harness.inspection.realtimeSignals]);
+}
+
+/** Runs the sync service briefly: the day clock ticks once at start. */
+async function tickService(host: Host): Promise<void> {
+  const service = host.harness.behavior.runService("sync");
+  await new Promise((r) => setTimeout(r, 30));
+  service.controller.abort();
+  await service.done;
+}
+
+/** A Sent copy to Ana on the server, dated `date` (a round stores it); returns its uid. */
+function deliverSent(host: Host, date: string, messageId: string): number {
+  return host.gateway.deliver(
+    {
+      messageId,
+      date,
+      subject: "Invented harvest question",
+      from: { name: "Owner", address: "owner@example.org" },
+      to: [{ name: "Ana Example", address: "ana@example.com" }],
+    },
+    "Sent",
+  ).uid;
+}
+
+describe("Today, reminders, notices, scope and the log (slice 3f)", () => {
+  it("defines the 3f settings with their defaults and the digest time pattern", async () => {
+    const host = await load();
+    const descriptors = host.harness.inspection.registrations.settingsDescriptors as Record<string, { default?: unknown; label: string }>;
+    expect(descriptors.mailCategories).toMatchObject({ default: false, label: "Sort mail into categories (local labels)" });
+    expect(descriptors.morningDigest).toMatchObject({ default: false, label: "Show a daily Today digest" });
+    expect(descriptors.digestTime).toMatchObject({ default: "08:00", label: "Today digest time (this computer's time)" });
+    expect(descriptors.replyReminderDays).toMatchObject({ default: 3, label: "Default days for reply reminders" });
+    for (const ok of ["00:00", "08:00", "23:59"]) expect(DIGEST_TIME_PATTERN.test(ok)).toBe(true);
+    for (const bad of ["24:00", "8:00", "08:60", "", "08:00-09:00"]) expect(DIGEST_TIME_PATTERN.test(bad)).toBe(false);
+  });
+
+  it("Today lists the conversations that need a reply; No reply needed removes one", async () => {
+    const host = await loadAi();
+    const { inside } = canaryIds(host);
+    const today = (await call(host, "today_get", {})) as { needsReply: { id: string }[]; since: { from: string }; digestDay: string | null; tasksDue: unknown[]; waiting: unknown[] };
+    const threadId = threadOfId(host, inside);
+    expect(today.needsReply.map((t) => t.id)).toContain(threadId);
+    expect(today).toMatchObject({ digestDay: null, tasksDue: [], waiting: [] });
+    expect(today.since.from).toBe(new Date(NOW.getTime() - 86_400_000).toISOString());
+    await call(host, "reply_dismiss", { threadId });
+    const after = (await call(host, "today_get", {})) as { needsReply: { id: string }[] };
+    expect(after.needsReply.map((t) => t.id)).not.toContain(threadId);
+    await expect(call(host, "reply_dismiss", { threadId: "no-such-thread" })).rejects.toThrow("Unknown thread");
+  });
+
+  it("a reminder from compose_send is queued with the outbox row, bound on done, and dropped by Undo", async () => {
+    const host = await loadCompose();
+    const { draftId, revision } = await savedDraft(host);
+    await call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID, remindAfterDays: 2 });
+    const store = sqlStore(host);
+    const [queued] = store.listReminders({ states: ["queued"], limit: 10 });
+    expect(queued).toMatchObject({ outboxId: REQUEST_ID, days: 2, rfcMessageId: store.getOutbox(REQUEST_ID)!.messageId });
+
+    const service = host.harness.behavior.runService("sync");
+    host.clock.set(new Date(NOW.getTime() + UNDO_MS));
+    await vi.waitFor(() => expect(outboxStates(host)).toContain("done"));
+    service.controller.abort();
+    await service.done;
+    expect(store.getReminder(queued!.id)).toMatchObject({ state: "waiting", outboxId: null, sentAt: new Date(NOW.getTime() + UNDO_MS).toISOString() });
+
+    const again = await savedDraft(host);
+    const undoId = "6f1c2a52-3b5e-4f0a-9c1d-2e7b8a9c0d1f";
+    await call(host, "compose_send", { draftId: again.draftId, baseRevision: again.revision, requestId: undoId, remindAfterDays: 3 });
+    expect(store.listReminders({ states: ["queued"], limit: 10 })).toHaveLength(1);
+    await call(host, "outbox_cancel", { id: undoId });
+    expect(store.listReminders({ states: ["queued"], limit: 10 })).toEqual([]);
+    expect(dayLeaks(host)).not.toContain("ana@example.com");
+  });
+
+  it("reminder_set on a Sent message: answered by a stored reply, else due, notified once, snoozed and dismissed", async () => {
+    const host = await loadCompose();
+    const answeredUid = deliverSent(host, "2026-11-01T09:00:00.000Z", "sent-1@example.org");
+    const quietUid = deliverSent(host, "2026-11-05T09:00:00.000Z", "sent-2@example.org");
+    host.gateway.deliver({ date: "2026-11-02T09:00:00.000Z", inReplyTo: "<sent-1@example.org>", from: { name: "Ana", address: "ana@example.com" } });
+    await tickService(host);
+    const answered = (await call(host, "reminder_set", { messageId: messageIdAt(host, "Sent", answeredUid), days: 3 })) as { id: string };
+    expect(sqlStore(host).getReminder(answered.id)!.state).toBe("answered");
+
+    const quiet = messageIdAt(host, "Sent", quietUid);
+    const { id } = (await call(host, "reminder_set", { messageId: quiet, days: 1 })) as { id: string };
+    await expect(call(host, "reminder_set", { messageId: messageIdAt(host, "INBOX", 1), days: 3 })).rejects.toThrow(
+      "Reply reminders are set on sent messages",
+    );
+    await tickService(host);
+    expect(sqlStore(host).getReminder(id)!.state).toBe("due");
+    const due = (await call(host, "reminders_due", {})) as { reminders: Record<string, unknown>[] };
+    expect(due.reminders).toEqual([
+      expect.objectContaining({ id, state: "due", recipient: { name: "Ana Example", address: "ana@example.com" }, subject: "Invented harvest question" }),
+    ]);
+    const signals = host.harness.inspection.realtimeSignals.filter((s) => s.channel === "mail-day");
+    expect(signals).toHaveLength(1);
+    expect(Object.keys(signals[0]!.payload as object)).toEqual(["token"]);
+    const notice = await call(host, "day_notice_get", { token: (signals[0]!.payload as { token: string }).token });
+    expect(notice).toEqual({ kind: "reminder", name: "Ana Example", address: "ana@example.com", accountId: "acc_1", threadId: threadOfId(host, quiet) });
+    await expect(call(host, "day_notice_get", {})).rejects.toThrow("No notice is waiting");
+
+    await call(host, "reminder_snooze", { id, days: 2 });
+    expect(sqlStore(host).getReminder(id)).toMatchObject({ state: "waiting", notifiedAt: null });
+    await call(host, "reminder_dismiss", { id });
+    expect(sqlStore(host).getReminder(id)!.state).toBe("dismissed");
+    await expect(call(host, "reminder_dismiss", { id })).rejects.toThrow("Unknown reminder");
+    expect(dayLeaks(host)).not.toContain("ana@example.com");
+    expect(dayLeaks(host)).not.toContain("Invented harvest");
+  });
+
+  it("the digest notice: built by the clock, announced with a token, shown once to a window opened later", async () => {
+    const host = await loadAi(new MakoshAiStub(), { morningDigest: true, digestTime: "00:00" });
+    await tickService(host);
+    const signals = host.harness.inspection.realtimeSignals.filter((s) => s.channel === "mail-day");
+    expect(signals).toHaveLength(1);
+    const today = (await call(host, "today_get", {})) as { digestDay: string | null };
+    expect(today.digestDay).not.toBeNull();
+    // No token: a window opened later still gets the oldest unshown notice.
+    expect(await call(host, "day_notice_get", {})).toEqual({ kind: "digest", replyCount: 2 });
+    await expect(call(host, "day_notice_get", {})).rejects.toThrow("No notice is waiting");
+    for (const secret of DAY_SECRETS) expect(dayLeaks(host)).not.toContain(secret);
+  });
+
+  it("AI access: set and get round-trip with stale folders marked, and agent paths follow at once", async () => {
+    const host = await loadAi(new MakoshAiStub(), {}, { folders: ["INBOX", "Gone"] });
+    const { inside } = canaryIds(host);
+    expect(await call(host, "ai_scope_get", {})).toEqual({
+      accounts: [{ accountId: "acc_1", mode: "folders", folders: [{ path: "INBOX", found: true }, { path: "Gone", found: false }] }],
+      senders: [{ kind: "domain", value: "excluded.example.net" }],
+    });
+    const read = async () => toolText(await host.harness.behavior.callAgentTool("mail_read", { messageId: inside }, { threadId: CANARY_THREAD }));
+    expect(await read()).toContain(UNTRUSTED_NOTICE);
+    const set = await call(host, "ai_scope_set", { accounts: [{ accountId: "acc_1", mode: "none" }], senders: [{ kind: "address", value: "Ivy@Example.com" }] });
+    expect(set).toEqual({ accounts: [{ accountId: "acc_1", mode: "none", folders: [] }], senders: [{ kind: "address", value: "ivy@example.com" }] });
+    expect(await read()).toContain("No message with this id");
+    await expect(call(host, "ai_scope_set", { accounts: [{ accountId: "acc_9", mode: "all" }], senders: [] })).rejects.toThrow("Unknown account");
+    await expect(call(host, "ai_scope_set", { accounts: [], senders: [{ kind: "domain", value: "not a domain" }] })).rejects.toThrow("Not a valid domain");
+    await call(host, "ai_scope_set", { accounts: [], senders: [] });
+    expect(await read()).toContain(UNTRUSTED_NOTICE);
+  });
+
+  it("the agent log list resolves ids at read time, says when one is gone, and clears", async () => {
+    const host = await loadAi();
+    const { inside, excluded } = canaryIds(host);
+    await host.harness.behavior.callAgentTool("mail_read", { messageId: inside }, { threadId: CANARY_THREAD });
+    await host.harness.behavior.callAgentTool("mail_inbox", {}, { threadId: CANARY_THREAD });
+    host.bb.storage.database().prepare("DELETE FROM messages WHERE id = ?").run(excluded);
+    const page = (await call(host, "agent_log_list", { limit: 1 })) as { entries: { tool: string; messages: { id: string; subject: string | null }[] }[]; next: string | null };
+    expect(page.entries.map((e) => e.tool)).toEqual(["inbox"]);
+    expect(page.next).not.toBeNull();
+    const rest = (await call(host, "agent_log_list", { limit: 10, cursor: page.next })) as typeof page;
+    expect(rest.entries[0]).toMatchObject({ tool: "read", messages: [{ id: inside, subject: `Invented login code ${CANARY.subject}` }] });
+    const byThread = (await call(host, "agent_log_list", { limit: 10, threadId: CANARY_THREAD })) as typeof page;
+    expect(byThread.entries).toHaveLength(2);
+    expect(await call(host, "agent_log_clear", {})).toEqual({ removed: 2 });
+    expect(((await call(host, "agent_log_list", { limit: 10 })) as typeof page).entries).toEqual([]);
+  });
+
+  it("every Today, reminder, notice, scope and log method refuses another plugin", async () => {
+    const host = await loadAi();
+    const inputs: [string, unknown][] = [
+      ["today_get", {}],
+      ["reply_dismiss", { threadId: "t" }],
+      ["reminder_set", { messageId: "m", days: 3 }],
+      ["reminder_snooze", { id: "r", days: 3 }],
+      ["reminder_dismiss", { id: "r" }],
+      ["reminders_due", {}],
+      ["day_notice_get", {}],
+      ["ai_scope_get", {}],
+      ["ai_scope_set", { accounts: [], senders: [] }],
+      ["agent_log_list", { limit: 10 }],
+      ["agent_log_clear", {}],
     ];
     for (const [method, input] of inputs) {
       await expect(host.harness.behavior.callRpc(method, input, asPlugin), method).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
