@@ -40,7 +40,7 @@ const FORBIDDEN_OPTIONS: readonly RegExp[] = [
 /** The explicit -o allowlist; empty means no -o is allowed. */
 const ALLOWED_OPTIONS: readonly string[] = [];
 
-const SHELL_METACHARS = /[\s\x00-\x1f=;&|\`$<>*?!\\"'()\[\]{}~]/;
+const SHELL_METACHARS = /[\s\x00-\x1f\x7f-\x9f=;&|\`$<>*?!\\"'()\[\]{}~]/;
 
 function invalid(code: string, message: string): never {
   throw new SshArgError(code, message);
@@ -52,11 +52,16 @@ function assertToken(value: string, field: string): void {
   if (SHELL_METACHARS.test(value)) invalid("invalid_" + field, field + " contains a disallowed character");
 }
 
+function hasDotSegment(value: string): boolean {
+  return value.split("/").some((seg) => seg === "." || seg === "..");
+}
+
 function assertAbsolutePath(value: string, field: string): void {
   if (!value.startsWith("/")) invalid("invalid_" + field, field + " must be an absolute path");
   // Paths are separate argv entries, never interpolated into a shell string,
-  // so spaces are safe; only control characters are rejected.
-  if (/[\x00-\x1f]/.test(value)) invalid("invalid_" + field, field + " contains a control character");
+  // so spaces are safe; control characters and dot segments are rejected.
+  if (/[\x00-\x1f\x7f-\x9f]/.test(value)) invalid("invalid_" + field, field + " contains a control character");
+  if (hasDotSegment(value)) invalid("invalid_" + field, field + " must not contain . or .. path segments");
 }
 
 function isDevNull(path: string): boolean {

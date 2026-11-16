@@ -115,6 +115,24 @@
       "error": "invalid_knownHostsFile"
     },
     {
+      "name": "config-dot-segment",
+      "target": { "host": "example.com", "configFile": "/tmp/./cfg", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-F", "/tmp/./cfg", "--", "example.com"],
+      "error": "invalid_configFile"
+    },
+    {
+      "name": "knownhosts-dot-segment",
+      "target": { "host": "example.com", "knownHostsFile": "/dev/./null", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-o", "UserKnownHostsFile=/dev/./null", "--", "example.com"],
+      "error": "invalid_knownHostsFile"
+    },
+    {
+      "name": "host-del-control",
+      "target": { "host": "exa\u007fmple", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "--", "exa\u007fmple"],
+      "error": "invalid_host"
+    },
+    {
       "name": "non-ascii-host",
       "target": { "host": "münich.example", "extraOptions": [] },
       "argv": ["ssh", "-tt", "--", "münich.example"],

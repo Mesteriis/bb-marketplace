@@ -112,6 +112,20 @@ describe("stream-socket snapshot/live ordering (W3)", () => {
   });
 });
 
+describe("stream-socket stored closed replay (W5)", () => {
+  it("replays the stored closed status and closes 4000", async () => {
+    const { handlers } = makeHarness({
+      sessionList: vi.fn().mockReturnValue([
+        { generation: "a".repeat(32), sessionId: 1, kind: "ssh", state: "closed", exitCode: 7, signal: null, reason: "exited" },
+      ]),
+    });
+    const socket = makeSocket();
+    await handlers.onOpen(socket);
+    expect(socket.sent).toContain(JSON.stringify({ type: "closed", exitCode: 7, signal: null, reason: "exited" }));
+    expect(socket.closed[0]?.code).toBe(4000);
+  });
+});
+
 describe("stream-socket subscription leak (V7)", () => {
   it("unsubscribes when the socket closes after open", async () => {
     const unsubscribe = vi.fn();

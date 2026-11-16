@@ -2,8 +2,12 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const xtermArgs: Array<{ theme?: { background: string; foreground: string }; fontFamily?: string }> = [];
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
+    constructor(opts: { theme?: { background: string; foreground: string }; fontFamily?: string }) {
+      xtermArgs.push(opts);
+    }
     open() {}
     loadAddon() {}
     write() {}
@@ -53,6 +57,7 @@ beforeEach(() => {
   (globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeWebSocket;
   (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = FakeResizeObserver;
   FakeWebSocket.instances = [];
+  xtermArgs.length = 0;
 });
 
 afterEach(() => {
@@ -121,7 +126,8 @@ describe("SshPage state transitions", () => {
     const socket = FakeWebSocket.instances[0];
     expect(socket.sent).toContain(JSON.stringify({ type: "resize", cols: 80, rows: 24 }));
   });
-});  it("a rejected reattach shows error, not a stuck connecting state", async () => {
+
+  it("a rejected reattach shows error, not a stuck connecting state", async () => {
     const { onAttach } = await connectAndRun();
     onAttach.mockRejectedValueOnce(new Error("session_not_found"));
     fireEvent.click(screen.getByText("Reattach"));
@@ -142,3 +148,26 @@ describe("SshPage state transitions", () => {
     });
     expect(screen.getByTestId("ssh-state").textContent).toContain("closed");
   });
+
+  it("keeps error sticky across the following close", async () => {
+    await connectAndRun();
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => {
+      socket.onerror?.();
+    });
+    await act(async () => {
+      socket.onclose?.({ code: 1006 });
+    });
+    expect(screen.getByTestId("ssh-state").textContent).toContain("error");
+  });
+
+  it("resolves theme colours via getComputedStyle", async () => {
+    vi.stubGlobal("getComputedStyle", () => ({
+      getPropertyValue: (k: string) =>
+        ({ "--canvas": "#111111", "--ink": "#eeeeee", "--font-terminal": "mono" })[k] ?? "",
+    }));
+    await connectAndRun();
+    expect(xtermArgs[0]?.theme).toEqual({ background: "#111111", foreground: "#eeeeee" });
+    expect(xtermArgs[0]?.fontFamily).toBe("mono");
+  });
+});

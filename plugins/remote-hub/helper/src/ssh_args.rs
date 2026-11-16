@@ -26,8 +26,12 @@ fn token_ok(s: &str) -> bool {
     !s.is_empty() && !s.starts_with('-') && !has_shell_metachar(s)
 }
 
+fn has_dot_segment(s: &str) -> bool {
+    s.split('/').any(|seg| seg == "." || seg == "..")
+}
+
 fn absolute_path_ok(s: &str) -> bool {
-    s.starts_with('/') && !s.chars().any(|c| c.is_control())
+    s.starts_with('/') && !s.chars().any(|c| c.is_control()) && !has_dot_segment(s)
 }
 
 fn env_key_ok(key: &str) -> bool {
