@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { docFromLines, type ComposeDoc, type ComposeParagraph } from "./compose-doc.ts";
 import type { ComposeKind } from "./model.ts";
-import { attachmentMention, cardChecks, inheritedSubject, ownText, presendIssues, type PresendIssue } from "./presend.ts";
+import { attachmentMention, bbOriginLabels, cardChecks, inheritedSubject, ownText, presendIssues, type PresendIssue } from "./presend.ts";
 
 const para = (value: string): ComposeParagraph =>
   value === "" ? { type: "paragraph" } : { type: "paragraph", content: [{ type: "text", text: value }] };
@@ -271,5 +271,18 @@ describe("presendIssues: slice 3g kinds", () => {
   it("puts the new kinds after the 3d ones", () => {
     const issues = presendIssues({ ...base, subject: "", doc: docFromLines([`attached ${TOKEN}`]), bbOrigins: ["project api"] });
     expect(issues.map((i) => i.kind)).toEqual(["attachment_mentioned", "empty_subject", "bb_files", "looks_secret"]);
+  });
+});
+
+describe("bbOriginLabels (slice 3g)", () => {
+  it("labels BB attachments by project name or as a thread, and leaves uploads out", () => {
+    const names = new Map([["p1", "Invented api"]]);
+    expect(
+      bbOriginLabels(
+        [{ origin: "bb:project:p1" }, { origin: "bb:project:gone" }, { origin: "bb:thread:t1" }, { origin: null }, {}],
+        names,
+      ),
+    ).toEqual(["project Invented api", "a BB project", "a BB thread"]);
+    expect(bbOriginLabels([{ origin: "bb:project:p1" }])).toEqual(["a BB project"]);
   });
 });

@@ -707,7 +707,7 @@ export function attachmentRoom(store: MailStore, draftId: string): number {
 export function addComposeAttachment(
   store: MailStore,
   draftId: string,
-  file: { fileName: string; mimeType: string; size: number; sha256: string; data: Uint8Array },
+  file: { fileName: string; mimeType: string; size: number; sha256: string; data: Uint8Array; origin?: string | null },
 ) {
   const draft = store.getDraft(draftId);
   if (draft === null) throw new ComposeError("not_found");

@@ -166,6 +166,32 @@ export function presendIssues(input: PresendInput): PresendIssue[] {
   return issues;
 }
 
+/**
+ * The pre-send label of an attachment taken from BB (slice 3g): "project
+ * <name>" (the project's name when known), "a BB thread", or null for an
+ * upload. The origin itself is never sent.
+ */
+export function bbOriginLabel(origin: string | null | undefined, projectNames?: ReadonlyMap<string, string>): string | null {
+  if (origin === null || origin === undefined) return null;
+  if (origin.startsWith("bb:project:")) {
+    const name = projectNames?.get(origin.slice("bb:project:".length));
+    return name === undefined || name.trim() === "" ? "a BB project" : `project ${name}`;
+  }
+  if (origin.startsWith("bb:thread:")) return "a BB thread";
+  return null;
+}
+
+/** The labels of a draft's attachments taken from BB, one per attachment. */
+export function bbOriginLabels(
+  attachments: readonly { origin?: string | null }[],
+  projectNames?: ReadonlyMap<string, string>,
+): string[] {
+  return attachments.flatMap((attachment) => {
+    const label = bbOriginLabel(attachment.origin, projectNames);
+    return label === null ? [] : [label];
+  });
+}
+
 /** The agent card's checks: it flags new addresses on its own (3c), so `new_recipients` is left out. */
 export function cardChecks(issues: PresendIssue[]): PresendIssue[] {
   return issues.filter((issue) => issue.kind !== "new_recipients");

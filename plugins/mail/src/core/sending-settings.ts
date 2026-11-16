@@ -14,7 +14,7 @@ import {
 } from "./identities.ts";
 import type { DraftRecord, StoredAccount } from "./model.ts";
 import type { MailStore } from "./ports.ts";
-import { inheritedSubject, presendIssues, type PresendIssue } from "./presend.ts";
+import { bbOriginLabels, inheritedSubject, presendIssues, type PresendIssue } from "./presend.ts";
 import { normalizeTemplate, templateName, templateNameKey } from "./templates.ts";
 
 /**
@@ -201,15 +201,22 @@ export function deleteTemplate(store: MailStore, id: string): { ok: true } {
  * The advisory issues of the saved draft (spec "Pre-send check"); `conflict`
  * when the page's revision is not the saved one. Never refuses a send.
  */
-export function checkDraft(store: MailStore, draft: DraftRecord, baseRevision: number): PresendIssue[] {
+export function checkDraft(
+  store: MailStore,
+  draft: DraftRecord,
+  baseRevision: number,
+  projectNames?: ReadonlyMap<string, string>,
+): PresendIssue[] {
   if (draft.revision !== baseRevision) throw new ComposeError("conflict");
   const recipients = [...draft.to, ...draft.cc, ...draft.bcc].map((a) => a.address);
   const reply = draft.kind === "reply" || draft.kind === "reply_all";
+  const attachments = store.listAttachments(draft.id);
   return presendIssues({
     kind: draft.kind,
     subject: draft.subject,
     doc: draft.doc,
-    attachmentCount: store.listAttachments(draft.id).length,
+    attachmentCount: attachments.length,
+    bbOrigins: bbOriginLabels(attachments, projectNames),
     recipients,
     own: new Set(ownAddresses(store)),
     sentTo: store.addressesSentTo(recipients),

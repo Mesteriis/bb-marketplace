@@ -64,6 +64,10 @@ import { NewMailBook } from "./src/adapters/bb/new-mail-book.ts";
 import { createSnoozeClock, type SnoozeClock } from "./src/adapters/bb/snooze-clock.ts";
 import { ONE_CLICK_TOTAL_MS, UnsubscribeRate, createOneClickPoster } from "./src/adapters/bb/one-click.ts";
 import { createVault, generateVaultKey } from "./src/adapters/bb/vault.ts";
+import { createProjectDirectory } from "./src/adapters/bb/bb-projects.ts";
+import { createBbThreads } from "./src/adapters/bb/bb-threads.ts";
+import { createTaskboardTarget } from "./src/adapters/bb/taskboard-target.ts";
+import { bbRefusal, createBbRpc, type BbSettings } from "./src/adapters/bb/bb-rpc.ts";
 import { describeStructure, headerLines, readHeaders } from "./src/core/headers.ts";
 import {
   IdentityRefusal,
@@ -272,6 +276,10 @@ import {
   type TriageRowState,
   type TriageView,
   BB_REFUSAL_TEXT,
+  projectFolder,
+  type BbThreads,
+  type ProjectDirectory,
+  type TaskTarget,
 } from "./src/core/index.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
@@ -398,6 +406,8 @@ export interface MailPluginOverrides {
   undoWaitMs?: number;
   /** The one-click unsubscribe POST (slice 3e); tests pass a fake. */
   poster?: UnsubscribePoster;
+  /** Saving into a project's working tree (slice 3g, SAVE_TO_PROJECT_ENABLED); tests turn it off. */
+  saveToProjectEnabled?: boolean;
 }
 
 /** action_undo waits this long for the account tasks, then answers `pending` (spec "Execution"). */
@@ -525,7 +535,41 @@ function defineSettings(bb: BbPluginApi) {
       default: 3,
       experimental_schema: z.number().int().min(1).max(30),
     },
+    // Slice 3g.
+    attachmentFolder: {
+      type: "string",
+      label: "Folder for attachments saved into a project",
+      description: "Relative to the project's folder; no folder that starts with a dot.",
+      default: ATTACHMENT_FOLDER_DEFAULT,
+      experimental_schema: projectFolderSetting(),
+    },
+    patchFolder: {
+      type: "string",
+      label: "Folder for patches saved into a project",
+      default: PATCH_FOLDER_DEFAULT,
+      experimental_schema: projectFolderSetting(),
+    },
+    taskTarget: {
+      type: "select",
+      label: "Make a task in",
+      options: ["auto", "taskboard", "local"],
+      experimental_optionLabels: { auto: "Taskboard when available", taskboard: "Taskboard", local: "Mail's own tasks" },
+      default: "auto",
+    },
   });
+}
+
+export const ATTACHMENT_FOLDER_DEFAULT = "mail-attachments";
+export const PATCH_FOLDER_DEFAULT = "mail-patches";
+
+/** A project-relative folder setting, checked like a save's folder. */
+function projectFolderSetting() {
+  return z.string().refine((value) => projectFolder(value).ok, "Must be a folder inside the project, not starting with a dot");
+}
+
+/** A folder setting, its default when the stored value is no longer valid. */
+function folderOr(value: string, fallback: string): string {
+  return projectFolder(value).ok ? value : fallback;
 }
 
 /** The digest time setting: HH:MM on a 24-hour clock. */
@@ -1324,7 +1368,20 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     });
 
     const tickets = new TicketBook<DownloadRequest>(clock);
+    // Slice 3g: BB projects, threads and Taskboard, over bb.sdk only.
+    const projectDirectory = createProjectDirectory(bb.sdk, { now: () => clock.now().getTime() });
+    const bbThreads = createBbThreads(bb.sdk);
+    const taskTarget = createTaskboardTarget(bb.sdk);
     const rpcDeps: RpcDeps = {
+      projects: projectDirectory,
+      bbThreads,
+      taskTarget,
+      saveToProjectEnabled: overrides.saveToProjectEnabled,
+      bbSettings: () => ({
+        attachmentFolder: folderOr(current.attachmentFolder, ATTACHMENT_FOLDER_DEFAULT),
+        patchFolder: folderOr(current.patchFolder, PATCH_FOLDER_DEFAULT),
+        taskTarget: current.taskTarget === "taskboard" || current.taskTarget === "local" ? current.taskTarget : "auto",
+      }),
       agentTriage: () => current.agentTriage,
       poster: overrides.poster ?? createOneClickPoster({ clock }),
       unsubscribeRate: new UnsubscribeRate(clock),
@@ -1395,6 +1452,12 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
 }
 
 type RpcDeps = {
+  /** Slice 3g: BB projects and working trees, threads, Taskboard and the owner's settings for them. */
+  projects: ProjectDirectory;
+  bbThreads: BbThreads;
+  taskTarget: TaskTarget;
+  saveToProjectEnabled: boolean | undefined;
+  bbSettings: () => BbSettings;
   store: MailStore;
   accountDeps: AccountDeps;
   composeDeps: ComposeDeps;
@@ -2374,6 +2437,44 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const nowIso = () => composeDeps.clock.now().toISOString();
   const ai = createAiRpc(deps, ownerDraft);
   const day = createDayRpc(deps, ai.withCategories);
+  const bbRpc = createBbRpc({
+    store,
+    clock: composeDeps.clock,
+    newId: randomUUID,
+    projects: deps.projects,
+    threads: deps.bbThreads,
+    tasks: deps.taskTarget,
+    rawDeps: deps.rawDeps,
+    composeDeps,
+    ownerDraft,
+    settings: deps.bbSettings,
+    agentLog: deps.agentLog,
+    publishChanged,
+    log,
+    ...(deps.saveToProjectEnabled === undefined ? {} : { saveEnabled: deps.saveToProjectEnabled }),
+  });
+  /** A slice 3g owner method: plugin callers refused first; BB failures as fixed texts. */
+  function ownerBb<I, O>(method: string, run: (input: I) => O | Promise<O>) {
+    return async (input: I, context: ExperimentalPluginRpcHandlerContext): Promise<O> => {
+      refusePluginCaller(context);
+      try {
+        return await run(input);
+      } catch (error) {
+        if (error instanceof experimental_PluginRpcRefusal || error instanceof ComposeError || error instanceof AiError) {
+          throw composeRefusal(error, log, method);
+        }
+        throw bbRefusal(error, log, method);
+      }
+    };
+  }
+  /** Project names for the pre-send labels of BB attachments; empty when BB does not answer. */
+  const projectNames = async (): Promise<Map<string, string>> => {
+    try {
+      return new Map((await deps.projects.list()).map((project) => [project.id, project.name]));
+    } catch {
+      return new Map();
+    }
+  };
   // No method is published as discoverable, and none (message_action and the
   // image methods included) is exposed as a tool, CLI command or mention. They
   // are still reachable by anything that can call local plugin RPC as a client,
@@ -2443,10 +2544,10 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         if (page === null) throw refuse("invalid", ALL_ROLE_MESSAGE);
         return { ...page, threads: ai.withCategories(page.threads, scope.kind === "account" ? scope.folder : "INBOX") };
       },
-      thread_get: ({ threadId, folder }) => {
+      thread_get: async ({ threadId, folder }) => {
         const thread = store.getThread(threadId, folder);
         if (thread === null) throw refuse("not_found", "Unknown thread");
-        return thread;
+        return bbRpc.withBbLinks(thread);
       },
       // cid: images come inline as data: URLs, so the page fetches nothing for them.
       message_body: ({ messageId }) => {
@@ -2750,9 +2851,11 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       template_save: owner("template_save", (input) => saveTemplate(store, input, `tpl_${randomUUID()}`, nowIso())),
       template_delete: owner("template_delete", ({ id }) => deleteTemplate(store, id)),
       // Advisory only: the page sends anyway when this fails in any way.
-      compose_check: owner("compose_check", ({ draftId, baseRevision }) => ({
-        issues: checkDraft(store, ownerDraft(draftId), baseRevision),
-      })),
+      compose_check: owner("compose_check", async ({ draftId, baseRevision }) => {
+        const draft = ownerDraft(draftId);
+        const origins = store.listAttachments(draftId).some((attachment) => attachment.origin !== null);
+        return { issues: checkDraft(store, draft, baseRevision, origins ? await projectNames() : undefined) };
+      }),
       action_undo: owner("action_undo", ({ undoId }) => runUndo(deps, undoId, (line) => bb.log.info(line))),
       // Slice 3e: wired in the server tasks; until then every call refuses.
       new_mail_get: ({ token }, context) => {
@@ -2921,19 +3024,19 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       ai_scope_set: owner("ai_scope_set", (input) => day.setScope(input)),
       agent_log_list: owner("agent_log_list", (input) => day.logList(input)),
       agent_log_clear: owner("agent_log_clear", () => ({ removed: store.clearAgentLog() })),
-      // Slice 3g: wired in Tasks 10-12; until then every method refuses (plugin callers first).
-      projects_list: notYet3g,
-      bb_thread_prepare: notYet3g,
-      bb_thread_start: notYet3g,
-      task_targets: notYet3g,
-      task_from_mail: notYet3g,
-      attachment_save: notYet3g,
-      project_files: notYet3g,
-      project_folders: notYet3g,
-      thread_files: notYet3g,
-      bb_threads_recent: notYet3g,
-      compose_attach_bb: notYet3g,
-      draft_from_bb: notYet3g,
+      // Slice 3g (owner only, like every compose method). Tasks 11-12 wire the rest; until then they refuse.
+      projects_list: ownerBb("projects_list", () => bbRpc.projectsList()),
+      bb_thread_prepare: ownerBb("bb_thread_prepare", (input) => bbRpc.threadPrepare(input)),
+      bb_thread_start: ownerBb("bb_thread_start", (input) => bbRpc.threadStart(input)),
+      task_targets: ownerBb("task_targets", () => bbRpc.taskTargets()),
+      task_from_mail: ownerBb("task_from_mail", (input) => bbRpc.taskFromMail(input)),
+      attachment_save: ownerBb("attachment_save", (input) => bbRpc.attachmentSave(input)),
+      project_files: ownerBb("project_files", (input) => bbRpc.projectFiles(input)),
+      project_folders: ownerBb("project_folders", (input) => bbRpc.projectFolders(input)),
+      thread_files: ownerBb("thread_files", (input) => bbRpc.threadFiles(input)),
+      bb_threads_recent: ownerBb("bb_threads_recent", (input) => bbRpc.threadsRecent(input)),
+      compose_attach_bb: ownerBb("compose_attach_bb", (input) => bbRpc.composeAttachBb(input)),
+      draft_from_bb: ownerBb("draft_from_bb", (input) => bbRpc.draftFromBb(input)),
       dev_digest_get: notYet3g,
       patch_view: notYet3g,
       patch_save: notYet3g,
