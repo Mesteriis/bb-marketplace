@@ -67,6 +67,8 @@ import {
   type InboundRow,
   type SendCheck,
 } from "../../core/identities.ts";
+import { OPEN_AI_SCOPE } from "../../core/ai-scope.ts";
+import { redactSecrets } from "../../core/redact.ts";
 import { TEMPLATES_MAX } from "../../core/templates.ts";
 import type { UndoRow } from "../../core/undo.ts";
 import { cleanSnippet, needsSnippetRepair, snippetOf } from "../../core/snippet.ts";
@@ -1141,6 +1143,8 @@ function toThread(row: ThreadRow, flagged: boolean, snoozedUntil: string | null 
     snippet: row.snippet,
     flagged,
     snoozedUntil,
+    category: null,
+    categorySuggestion: null,
   };
 }
 
@@ -1399,6 +1403,8 @@ export function createSqliteStore(db: Database.Database): MailStore {
       cc: JSON.parse(row.cc_json) as MailAddress[],
       attachments: attachmentsOf.all(row.id).map(toAttachment),
       draftId: row.uid === null ? null : (draftByServerCopy.get(row.account_id, row.folder, row.uid)?.id ?? null),
+      agentSubject: redactSecrets(row.subject).text,
+      inAiScope: true,
     };
   }
 
@@ -3856,6 +3862,132 @@ export function createSqliteStore(db: Database.Database): MailStore {
         deleteDraftRows(draft.id);
         return { cancelled: true };
       });
+    },
+
+    // ---- Agent and mail (slice 3f): stubs until the store task ----
+
+    setAiScope() {
+      throw new Error("Not available yet");
+    },
+    getAiScope() {
+      return OPEN_AI_SCOPE;
+    },
+    loadAiScope() {
+      return OPEN_AI_SCOPE;
+    },
+    putAiScope() {
+      throw new Error("Not available yet");
+    },
+    refreshExcludedThreads() {
+      throw new Error("Not available yet");
+    },
+    scopedMessage() {
+      return null;
+    },
+    appendAgentLog() {
+      throw new Error("Not available yet");
+    },
+    updateAgentLog() {
+      throw new Error("Not available yet");
+    },
+    listAgentLog() {
+      return { entries: [], next: null };
+    },
+    clearAgentLog() {
+      throw new Error("Not available yet");
+    },
+    purgeAgentLog() {
+      throw new Error("Not available yet");
+    },
+    getAiResult() {
+      return null;
+    },
+    putAiResult() {
+      throw new Error("Not available yet");
+    },
+    keepTasks() {
+      throw new Error("Not available yet");
+    },
+    listTasks() {
+      return { tasks: [], next: null };
+    },
+    getTask() {
+      return null;
+    },
+    updateTask() {
+      throw new Error("Not available yet");
+    },
+    deleteTask() {
+      throw new Error("Not available yet");
+    },
+    taskCounts() {
+      return { overdue: 0, today: 0 };
+    },
+    setCategories() {
+      throw new Error("Not available yet");
+    },
+    restoreCategories() {
+      throw new Error("Not available yet");
+    },
+    categoriesOf() {
+      return new Map();
+    },
+    putCategorySuggestions() {
+      throw new Error("Not available yet");
+    },
+    listCategoryRules() {
+      return [];
+    },
+    addCategoryRule() {
+      throw new Error("Not available yet");
+    },
+    removeCategoryRule() {
+      throw new Error("Not available yet");
+    },
+    replyCandidates() {
+      return [];
+    },
+    replyDismissals() {
+      return new Set();
+    },
+    dismissReply() {
+      throw new Error("Not available yet");
+    },
+    getDigest() {
+      return null;
+    },
+    putDigest() {
+      throw new Error("Not available yet");
+    },
+    markDigestNotified() {
+      throw new Error("Not available yet");
+    },
+    createReminder() {
+      throw new Error("Not available yet");
+    },
+    bindReminder() {
+      throw new Error("Not available yet");
+    },
+    deleteReminderForOutbox() {
+      throw new Error("Not available yet");
+    },
+    getReminder() {
+      return null;
+    },
+    listReminders() {
+      return [];
+    },
+    updateReminder() {
+      throw new Error("Not available yet");
+    },
+    answeringRows() {
+      return [];
+    },
+    sentCopyThread() {
+      return null;
+    },
+    purgeDaily() {
+      throw new Error("Not available yet");
     },
   };
   return store;

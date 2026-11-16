@@ -92,6 +92,8 @@ export type SyncOutcome =
       newInbox: string[];
       /** The `newInbox` rows whose dedup key already had another row in the account. */
       returning: string[];
+      /** Rows inserted this round in every folder (slice 3f: reply reminders check them); empty until the post-round task. */
+      inserted: string[];
     }
   | {
       status: "error";
@@ -244,6 +246,7 @@ export async function syncAccount(
       movesCancelled: progress.movesCancelled,
       newInbox: collected.newInbox,
       returning: collected.returning,
+      inserted: [],
     };
   } catch (error) {
     const authFailed = error instanceof ImapAuthError;

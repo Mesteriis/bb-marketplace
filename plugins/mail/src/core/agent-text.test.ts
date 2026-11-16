@@ -34,6 +34,8 @@ function header(overrides: Partial<MessageHeader> = {}): MessageHeader {
       { partId: "1", filename: "plan.pdf", mimeType: "application/pdf", size: 1234, isInline: false },
     ],
     draftId: null,
+    agentSubject: overrides.subject ?? "Invented subject",
+    inAiScope: true,
     ...overrides,
   };
 }

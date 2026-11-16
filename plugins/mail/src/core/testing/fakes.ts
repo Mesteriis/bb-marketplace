@@ -101,7 +101,18 @@ import type {
   TriageBatchRecord,
   TriageItemRecord,
   UnsubscribeRecord,
+  AiResultRecord,
+  AnsweringRow,
+  DigestRecord,
+  ReminderRecord,
+  TaskRecord,
 } from "../ports.ts";
+import { OPEN_AI_SCOPE, type AiScope } from "../ai-scope.ts";
+import type { LogEntry } from "../agent-log.ts";
+import type { AiCategoryAnswer } from "../ai-input.ts";
+import type { Category, CategoryRule, CategorySource, PreviousLabel } from "../categories.ts";
+import type { ReplyCandidate } from "../digest.ts";
+import { redactSecrets } from "../redact.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1943,6 +1954,172 @@ export class InMemoryMailStore implements MailStore {
     return { cancelled: true };
   }
 
+  // ---- Agent and mail (slice 3f): stubs until the store task ----
+
+  setAiScope(_scope: AiScope): void {
+    throw new Error("Not available yet");
+  }
+
+  getAiScope(): AiScope {
+    return OPEN_AI_SCOPE;
+  }
+
+  loadAiScope(): AiScope {
+    return OPEN_AI_SCOPE;
+  }
+
+  putAiScope(): void {
+    throw new Error("Not available yet");
+  }
+
+  refreshExcludedThreads(): void {
+    throw new Error("Not available yet");
+  }
+
+  scopedMessage(_messageId: string): MessageHeader | null {
+    return null;
+  }
+
+  appendAgentLog(_entry: LogEntry): number {
+    throw new Error("Not available yet");
+  }
+
+  updateAgentLog(): number {
+    throw new Error("Not available yet");
+  }
+
+  listAgentLog(): { entries: (LogEntry & { seq: number })[]; next: string | null } {
+    return { entries: [], next: null };
+  }
+
+  clearAgentLog(): number {
+    throw new Error("Not available yet");
+  }
+
+  purgeAgentLog(): number {
+    throw new Error("Not available yet");
+  }
+
+  getAiResult(): AiResultRecord | null {
+    return null;
+  }
+
+  putAiResult(): void {
+    throw new Error("Not available yet");
+  }
+
+  keepTasks(): { kept: number } | { full: true } {
+    throw new Error("Not available yet");
+  }
+
+  listTasks(): { tasks: TaskRecord[]; next: string | null } {
+    return { tasks: [], next: null };
+  }
+
+  getTask(): TaskRecord | null {
+    return null;
+  }
+
+  updateTask(): boolean {
+    throw new Error("Not available yet");
+  }
+
+  deleteTask(): boolean {
+    throw new Error("Not available yet");
+  }
+
+  taskCounts(): { overdue: number; today: number } {
+    return { overdue: 0, today: 0 };
+  }
+
+  setCategories(): { previous: PreviousLabel[] } {
+    throw new Error("Not available yet");
+  }
+
+  restoreCategories(): void {
+    throw new Error("Not available yet");
+  }
+
+  categoriesOf(): Map<string, { category: Category | null; source: CategorySource | null; suggestion: AiCategoryAnswer | null }> {
+    return new Map();
+  }
+
+  putCategorySuggestions(): void {
+    throw new Error("Not available yet");
+  }
+
+  listCategoryRules(): CategoryRule[] {
+    return [];
+  }
+
+  addCategoryRule(): { rule: CategoryRule; created: boolean } | { full: true } {
+    throw new Error("Not available yet");
+  }
+
+  removeCategoryRule(): boolean {
+    throw new Error("Not available yet");
+  }
+
+  replyCandidates(): ReplyCandidate[] {
+    return [];
+  }
+
+  replyDismissals(): Set<string> {
+    return new Set();
+  }
+
+  dismissReply(): void {
+    throw new Error("Not available yet");
+  }
+
+  getDigest(): DigestRecord | null {
+    return null;
+  }
+
+  putDigest(): boolean {
+    throw new Error("Not available yet");
+  }
+
+  markDigestNotified(): boolean {
+    throw new Error("Not available yet");
+  }
+
+  createReminder(): { created: true } | { full: true } {
+    throw new Error("Not available yet");
+  }
+
+  bindReminder(): ReminderRecord | null {
+    throw new Error("Not available yet");
+  }
+
+  deleteReminderForOutbox(): number {
+    throw new Error("Not available yet");
+  }
+
+  getReminder(): ReminderRecord | null {
+    return null;
+  }
+
+  listReminders(): ReminderRecord[] {
+    return [];
+  }
+
+  updateReminder(): boolean {
+    throw new Error("Not available yet");
+  }
+
+  answeringRows(): AnsweringRow[] {
+    return [];
+  }
+
+  sentCopyThread(): string | null {
+    return null;
+  }
+
+  purgeDaily(): number {
+    throw new Error("Not available yet");
+  }
+
   /** Translations and snoozes follow their message: dropped with every removed row (as SQLite deleteRows). */
   private dropOrphanTranslations(): void {
     const ids = new Set(this.state.rows.map((r) => r.id));
@@ -2221,6 +2398,9 @@ export class InMemoryMailStore implements MailStore {
       cc: row.message.cc.map((a) => ({ ...a })),
       attachments: row.message.attachments.map((a) => ({ ...a })),
       draftId: row.uid === null ? null : this.draftForServerCopy(row.accountId, row.folder, row.uid),
+
+      agentSubject: redactSecrets(row.message.subject).text,
+      inAiScope: true,
     };
   }
 
@@ -2256,6 +2436,9 @@ export class InMemoryMailStore implements MailStore {
       snippet: snippetOf(latest.message),
       flagged: rows.some((r) => inScope(r) && r.isFlagged),
       snoozedUntil: this.snoozedUntil(rows.filter(inScope)),
+
+      category: null,
+      categorySuggestion: null,
     };
   }
 

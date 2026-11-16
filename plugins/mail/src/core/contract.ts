@@ -36,6 +36,16 @@ import {
   triageBatchStateSchema,
   triageViewSchema,
   unsubscribeInfoViewSchema,
+  aiErrorKindSchema,
+  aiResultViewSchema,
+  aiScopeModeSchema,
+  aiScopeViewSchema,
+  categoryRuleViewSchema,
+  categorySchema,
+  logEntryViewSchema,
+  reminderViewSchema,
+  taskViewSchema,
+  draftModeSchema,
 } from "./model.ts";
 import { languageTagSchema } from "./translate.ts";
 
@@ -110,6 +120,42 @@ const undoSkipReasonSchema = z.enum(["moved_elsewhere", "gone", "folder_gone", "
 const messageIdList = z.array(idInput).min(1).max(200);
 /** A new-mail token: what the realtime signal carries. */
 const newMailToken = z.string().min(1).max(64);
+
+// ---- Agent and mail (slice 3f) ----
+
+/** A calendar date "YYYY-MM-DD". */
+const dayInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+/** A one-line task title, 1-120 characters. */
+const taskTitleInput = z.string().min(1).max(120).refine(noLineBreaks, NO_LINE_BREAKS);
+/** Reminder days. */
+const reminderDaysInput = z.number().int().min(1).max(30);
+/** A paging cursor handed back by the server. */
+const cursorInput = z.string().min(1).max(256);
+
+/** What ai_start takes: one strict variant per request (two for tasks: one message or a conversation). */
+const aiStartInput = z.union([
+  z.strictObject({ kind: z.literal("summary"), threadId: idInput, folder: idInput.optional(), force: z.boolean().optional() }),
+  z.strictObject({ kind: z.literal("tasks"), messageId: idInput }),
+  z.strictObject({ kind: z.literal("tasks"), threadId: idInput, folder: idInput.optional() }),
+  z.strictObject({ kind: z.literal("ask"), question: z.string().min(1).max(500), accountId: idInput.optional() }),
+  z.strictObject({ kind: z.literal("categories"), messageIds: z.array(idInput).min(1).max(50) }),
+  z.strictObject({ kind: z.literal("digest") }),
+  z.strictObject({
+    kind: z.literal("draft"),
+    draftId: idInput,
+    revision: z.number().int().min(0),
+    mode: draftModeSchema,
+    instruction: z.string().min(1).max(200).refine(noLineBreaks, NO_LINE_BREAKS).optional(),
+    paragraphs: z.array(z.string().max(8_000)).max(500),
+  }),
+]);
+
+/** The kinds ai_start offers, read from its input union (the canary test runs each). */
+export const AI_START_KINDS: readonly string[] = [
+  ...new Set(aiStartInput.options.map((option) => option.shape.kind.value)),
+];
+
+const dayNoticeToken = z.string().min(1).max(64);
 
 /** The result of one (account, source folder) group of a message_action batch. */
 const actionGroupSchema = z.object({
@@ -356,6 +402,8 @@ export const rpcSchemas = {
       draftId: idInput,
       baseRevision: z.number().int().min(0),
       requestId: z.uuid(),
+      /** Slice 3f: remind the owner when no reply came within these days. */
+      remindAfterDays: reminderDaysInput.optional(),
     }),
     output: z.object({ outboxId: z.string(), sendAfter: z.string() }),
   },
@@ -665,6 +713,164 @@ export const rpcSchemas = {
       undoable: z.boolean(),
     }),
   },
+
+  // ---- Agent and mail (slice 3f). Owner only, like 3b-3e: every write
+  // refuses plugin callers, none is discoverable, none is a tool, CLI or
+  // mention. Model calls start only here, on the owner's click. ----
+
+  /** A cached summary, or a job to poll. Refusals: out_of_scope, rate_limited, conflict, not_found, AI error kinds. */
+  ai_start: {
+    input: aiStartInput,
+    output: z.union([z.object({ cached: aiResultViewSchema }), z.object({ jobId: z.string() })]),
+  },
+  /** The result travels only here (never realtime or logs). */
+  ai_poll: {
+    input: z.object({ jobId: idInput }),
+    output: z.object({
+      state: z.enum(["running", "done", "failed", "cancelled"]),
+      phase: z.enum(["planning", "reading", "writing"]).optional(),
+      result: aiResultViewSchema.optional(),
+      error: aiErrorKindSchema.optional(),
+      /** makosh-ai's own refusal text, sanitized; only with pool_unavailable. */
+      gatewayMessage: z.string().optional(),
+      provider: z.string().optional(),
+      model: z.string().optional(),
+    }),
+  },
+  ai_cancel: {
+    input: z.object({ jobId: idInput }),
+    output: z.object({ cancelled: z.boolean() }),
+  },
+  /** Keeps picked tasks of a finished tasks job of this server process. */
+  tasks_keep: {
+    input: z.object({
+      jobId: idInput,
+      picks: z
+        .array(z.object({ index: z.number().int().min(0).max(19), title: taskTitleInput, due: dayInput.nullable() }))
+        .min(1)
+        .max(20),
+    }),
+    output: z.object({ kept: z.number().int().min(0) }),
+  },
+  tasks_list: {
+    input: z.object({ done: z.boolean(), cursor: cursorInput.nullable().optional() }),
+    output: z.object({ tasks: z.array(taskViewSchema), next: z.string().nullable() }),
+  },
+  task_update: {
+    input: z.object({ id: idInput, title: taskTitleInput.optional(), due: dayInput.nullable().optional(), done: z.boolean().optional() }),
+    output: okOutput,
+  },
+  task_delete: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+  /** Local labels only (no IMAP); `undoId` for the toast's Undo. */
+  category_set: {
+    input: z.object({ messageIds: messageIdList, category: categorySchema.nullable() }),
+    output: z.object({ changed: z.number().int().min(0), undoId: z.string().nullable() }),
+  },
+  /** Accepts the suggestion shown: the model's, else the local one. */
+  category_accept: {
+    input: z.object({ messageIds: messageIdList }),
+    output: z.object({ changed: z.number().int().min(0), undoId: z.string().nullable() }),
+  },
+  category_undo: {
+    input: z.object({ undoId: idInput }),
+    output: okOutput,
+  },
+  /** "Always for this sender": the message's From address or domain (never a public mail domain). */
+  category_rule_add: {
+    input: z.object({ messageId: idInput, kind: blockKindSchema, category: categorySchema }),
+    output: z.object({ rule: categoryRuleViewSchema }),
+  },
+  category_rule_remove: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+  category_rules_list: {
+    input: z.object({}),
+    output: z.object({ rules: z.array(categoryRuleViewSchema) }),
+  },
+  /** The Today view: local lists only. */
+  today_get: {
+    input: z.object({}),
+    output: z.object({
+      needsReply: z.array(threadSummarySchema),
+      waiting: z.array(reminderViewSchema),
+      tasksDue: z.array(taskViewSchema),
+      since: z.object({
+        notifications: z.number().int().min(0),
+        newsletters: z.number().int().min(0),
+        bills: z.number().int().min(0),
+        bulk: z.number().int().min(0),
+        personal: z.number().int().min(0),
+        /** ISO 8601: the previous digest, or 24 hours ago. */
+        from: z.string(),
+      }),
+      digestDay: z.string().nullable(),
+    }),
+  },
+  /** "No reply needed": by the conversation's latest message. */
+  reply_dismiss: {
+    input: z.object({ threadId: idInput }),
+    output: okOutput,
+  },
+  /** On a stored Sent-role message. */
+  reminder_set: {
+    input: z.object({ messageId: idInput, days: reminderDaysInput }),
+    output: z.object({ id: z.string() }),
+  },
+  reminder_snooze: {
+    input: z.object({ id: idInput, days: reminderDaysInput }),
+    output: okOutput,
+  },
+  reminder_dismiss: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+  reminders_due: {
+    input: z.object({}),
+    output: z.object({ reminders: z.array(reminderViewSchema) }),
+  },
+  /** The oldest unshown notice of today, marked shown; `not_found` when none. */
+  day_notice_get: {
+    input: z.object({ token: dayNoticeToken.optional() }),
+    output: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("digest"), replyCount: z.number().int().min(0) }),
+      z.object({
+        kind: z.literal("reminder"),
+        name: z.string(),
+        address: z.string(),
+        accountId: z.string(),
+        threadId: z.string().nullable(),
+      }),
+    ]),
+  },
+  ai_scope_get: {
+    input: z.object({}),
+    output: aiScopeViewSchema,
+  },
+  ai_scope_set: {
+    input: z.object({
+      accounts: z
+        .array(z.object({ accountId: idInput, mode: aiScopeModeSchema, folders: z.array(idInput).max(1_000).optional() }))
+        .max(100),
+      senders: z.array(z.object({ kind: blockKindSchema, value: addressInput.refine(noLineBreaks, NO_LINE_BREAKS) })).max(1_000),
+    }),
+    output: aiScopeViewSchema,
+  },
+  agent_log_list: {
+    input: z.object({
+      threadId: idInput.optional(),
+      cursor: cursorInput.nullable().optional(),
+      limit: z.number().int().min(1).max(100),
+    }),
+    output: z.object({ entries: z.array(logEntryViewSchema), next: z.string().nullable() }),
+  },
+  agent_log_clear: {
+    input: z.object({}),
+    output: z.object({ removed: z.number().int().min(0) }),
+  },
 } as const;
 
 /** Realtime channel the server publishes on when stored mail changes. */
@@ -693,3 +899,10 @@ export const NEW_MAIL_CHANNEL = "mail-new";
 /** Payload on NEW_MAIL_CHANNEL: a token for new_mail_get, nothing else. */
 export const newMailPayloadSchema = z.strictObject({ token: newMailToken });
 export type NewMailPayload = z.infer<typeof newMailPayloadSchema>;
+
+/** Realtime channel the server publishes on when a Today or reminder notice waits (slice 3f). */
+export const DAY_NOTICE_CHANNEL = "mail-day";
+
+/** Payload on DAY_NOTICE_CHANNEL: a token, nothing else. */
+export const dayNoticePayloadSchema = z.strictObject({ token: dayNoticeToken });
+export type DayNoticePayload = z.infer<typeof dayNoticePayloadSchema>;

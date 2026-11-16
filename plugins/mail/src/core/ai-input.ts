@@ -9,7 +9,7 @@ import { htmlToText } from "./agent-text.ts";
 import { CATEGORIES } from "./categories.ts";
 import { sha256Hex } from "./compose.ts";
 import { removeControls, removeInvisible, truncateText } from "./html-entities.ts";
-import type { AiErrorKind, MailAddress } from "./model.ts";
+import { draftModeSchema, type AiErrorKind, type MailAddress } from "./model.ts";
 import { redactSecrets, hiddenTotal, type Redaction } from "./redact.ts";
 
 // ---------------------------------------------------------------------------
@@ -409,7 +409,7 @@ export function digestInput(latest: readonly AiSourceMessage[], options: BuildOp
   );
 }
 
-export const DRAFT_MODES = ["fix", "shorter", "formal", "friendly", "custom"] as const;
+export const DRAFT_MODES = draftModeSchema.options;
 export type DraftMode = (typeof DRAFT_MODES)[number];
 
 const DRAFT_TASK: Record<Exclude<DraftMode, "custom">, string> = {
