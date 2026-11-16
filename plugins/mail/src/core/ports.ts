@@ -1129,6 +1129,8 @@ export interface MailStore {
    * `kept_at` are cleared. Returns how many rows changed.
    */
   clearWindowKept(accountId: string, folder: string, sinceIso: string): number;
+  /** One stored row id per dedup key of the account that has one (server search dedups fetched hits by it). */
+  idsByDedupKey(accountId: string, keys: readonly string[]): Map<string, string>;
   /** Ids of the folder's rows with this `kept` state, attached or not (a reset looks for `opened` ones, spec resolution 16). */
   keptIds(accountId: string, folder: string, kept: KeptState): string[];
   /** Rows dated before the window whose `kept` is history or search. */

@@ -3129,6 +3129,17 @@ export class InMemoryMailStore implements MailStore {
     return changed;
   }
 
+  idsByDedupKey(accountId: string, keys: readonly string[]): Map<string, string> {
+    const found = new Map<string, string>();
+    for (const key of keys) {
+      const row = this.state.rows
+        .filter((r) => r.accountId === accountId && r.dedupKey === key)
+        .sort((a, b) => a.id.localeCompare(b.id))[0];
+      if (row !== undefined) found.set(key, row.id);
+    }
+    return found;
+  }
+
   keptIds(accountId: string, folder: string, kept: KeptState): string[] {
     return this.folderRows(accountId, folder)
       .filter((row) => row.kept === kept)
@@ -4079,6 +4090,16 @@ function matchesCriteria(message: FetchedMessage, internalDate: string | null, c
   if (criteria.smaller !== undefined && !(message.size < criteria.smaller)) return false;
   if (criteria.seen !== undefined && message.seen !== criteria.seen) return false;
   if (criteria.flagged !== undefined && message.flagged !== criteria.flagged) return false;
+  if (criteria.threadId !== undefined && message.gmThreadId !== criteria.threadId) return false;
+  if (criteria.headers !== undefined && criteria.headers.length > 0) {
+    const headerOf = (name: string): string => {
+      const lower = name.toLowerCase();
+      if (lower === "message-id") return message.messageId ?? "";
+      if (lower === "references") return [...message.references, message.inReplyTo ?? ""].join(" ");
+      return "";
+    };
+    if (!criteria.headers.some((h) => headerOf(h.name).includes(h.value))) return false;
+  }
   for (const negated of criteria.not ?? []) if (matchesCriteria(message, internalDate, negated)) return false;
   return true;
 }

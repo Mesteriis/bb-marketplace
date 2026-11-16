@@ -5613,6 +5613,13 @@ describe("slice-3h kept rows (SQLite)", () => {
     expect(store.getMessage(idOf(store, 1))!.kept).toBe("opened");
     expect(store.clearWindowKept("acc_1", INBOX, "2026-10-17T00:00:00.000Z")).toBe(0);
   });
+
+  it("finds one stored id per dedup key of the account", () => {
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1, { gmMsgId: "1789000000000000301" })]);
+    const found = store.idsByDedupKey("acc_1", ["gm:1789000000000000301", "gm:1789000000000000302"]);
+    expect([...found]).toEqual([["gm:1789000000000000301", idOf(store, 1)]]);
+    expect(store.idsByDedupKey("acc_2", ["gm:1789000000000000301"]).size).toBe(0);
+  });
 });
 
 describe("slice-3h folders (SQLite)", () => {

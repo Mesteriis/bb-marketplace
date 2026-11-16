@@ -1385,6 +1385,8 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       clock,
       isReady: () => vault !== null,
       log: (line) => bb.log.info(line),
+      // Slice 3h: the daily expiry of server-search hits wakes the lists.
+      mailChanged: publishChanged,
     });
     const ruleDeps: RuleDeps = {
       store,

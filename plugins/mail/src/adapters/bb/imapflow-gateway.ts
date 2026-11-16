@@ -358,6 +358,10 @@ function plainSearchObject(criteria: ServerCriteria): SearchObject {
   if (criteria.smaller !== undefined) query.smaller = criteria.smaller;
   if (criteria.seen !== undefined) query.seen = criteria.seen;
   if (criteria.flagged !== undefined) query.flagged = criteria.flagged;
+  if (typeof criteria.threadId === "string" && criteria.threadId !== "") query.threadId = criteria.threadId;
+  const headers = (criteria.headers ?? []).filter((h) => h.name !== "" && h.value !== "").map((h) => ({ header: { [h.name]: h.value } }));
+  if (headers.length === 1) query.header = headers[0]!.header;
+  else if (headers.length > 1) query.or = headers;
   return query;
 }
 

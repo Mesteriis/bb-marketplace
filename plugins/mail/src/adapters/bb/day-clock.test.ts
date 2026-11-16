@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { localDay, type SyncOutcome } from "../../core/index.ts";
 import { FixedClock, InMemoryMailStore, makeFetchedMessage, makeStoredAccount } from "../../core/testing/fakes.ts";
 import { DayNoticeBook, afterRoundAi, createDayClock, replyArrived, takeDayNotice, type DayClockSettings } from "./day-clock.ts";
@@ -196,6 +196,47 @@ const ok = (fields: Partial<Extract<SyncOutcome, { status: "ok" }>>): Extract<Sy
   returning: [],
   inserted: [],
   ...fields,
+});
+
+describe("server hit expiry (slice 3h)", () => {
+  it("deletes server hits kept over 14 days once a day, never opened or history rows, and wakes the account", () => {
+    const keptAt = new Date();
+    store.upsertMessages("acc_1", "INBOX", [makeFetchedMessage(11, { date: at(6, 0, 1).toISOString() })], { kept: "search" });
+    store.upsertMessages("acc_1", "INBOX", [makeFetchedMessage(12, { date: at(6, 0, 1).toISOString() })], { kept: "search" });
+    store.upsertMessages("acc_1", "INBOX", [makeFetchedMessage(13, { date: at(6, 0, 1).toISOString() })], { kept: "history" });
+    const opened = idOf("INBOX", 12);
+    store.promoteKept([opened]);
+    const woken: string[] = [];
+    const clockAt = (days: number) => new FixedClock(new Date(keptAt.getTime() + days * 86_400_000));
+    const make = (c: FixedClock, keepDays?: number) =>
+      createDayClock({
+        store,
+        settings: () => ({ ...settings, ...(keepDays === undefined ? {} : { serverSearchKeepDays: keepDays }) }),
+        publish: () => {},
+        book,
+        clock: c,
+        isReady: () => true,
+        log: (line) => lines.push(line),
+        mailChanged: (accountId) => woken.push(accountId),
+      });
+    make(clockAt(13)).tick();
+    expect(idOf("INBOX", 11)).toBeTruthy();
+    const late = clockAt(15);
+    const later = make(late);
+    later.tick();
+    expect(store.localFolderIndex("acc_1", "INBOX", "1970-01-01T00:00:00.000Z").map((e) => e.uid)).toEqual([1, 12, 13]);
+    expect(store.getMessage(opened)!.kept).toBe("opened");
+    expect(woken).toEqual(["acc_1"]);
+    expect(lines).toContain("server hits: 1 expired");
+    // Once a day: a second tick the same day does not run it again.
+    store.upsertMessages("acc_1", "INBOX", [makeFetchedMessage(14, { date: at(6, 0, 1).toISOString() })], { kept: "search" });
+    const spy = vi.spyOn(store, "expireSearchRows");
+    later.tick();
+    expect(spy).not.toHaveBeenCalled();
+    // The setting shortens the keep time.
+    make(clockAt(2), 1).tick();
+    expect(spy).toHaveBeenCalledWith(expect.any(String), 1);
+  });
 });
 
 describe("after a round", () => {

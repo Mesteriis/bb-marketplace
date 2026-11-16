@@ -1551,6 +1551,24 @@ describe("slice 3h: searchServer", () => {
     });
   });
 
+  it("sends a thread id, one header, or several headers ORed", () => {
+    expect(toSearchObject({ threadId: "1789000000000000001" }, true)).toEqual({ threadId: "1789000000000000001" });
+    expect(toSearchObject({ headers: [{ name: "Message-ID", value: "<a@example.org>" }] }, false)).toEqual({
+      header: { "Message-ID": "<a@example.org>" },
+    });
+    expect(
+      toSearchObject(
+        {
+          headers: [
+            { name: "References", value: "<a@example.org>" },
+            { name: "Message-ID", value: "<a@example.org>" },
+          ],
+        },
+        false,
+      ),
+    ).toEqual({ or: [{ header: { References: "<a@example.org>" } }, { header: { "Message-ID": "<a@example.org>" } }] });
+  });
+
   it("sends X-GM-RAW only on Gmail, and nothing at all for empty criteria", () => {
     const criteria = { text: "plan", gmailRaw: '"plan" has:attachment' };
     expect(toSearchObject(criteria, true)).toEqual({ gmraw: '"plan" has:attachment' });

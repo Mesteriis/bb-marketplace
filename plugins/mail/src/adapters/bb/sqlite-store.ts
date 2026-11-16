@@ -5994,6 +5994,18 @@ export function createSqliteStore(db: Database.Database): MailStore {
         .run(accountId, folder, since).changes;
     },
 
+    idsByDedupKey(accountId, keys) {
+      const one = db.prepare<[string, string], { id: string }>(
+        "SELECT id FROM messages WHERE account_id = ? AND dedup_key = ? ORDER BY id LIMIT 1",
+      );
+      const found = new Map<string, string>();
+      for (const key of new Set(keys)) {
+        const row = one.get(accountId, key);
+        if (row !== undefined) found.set(key, row.id);
+      }
+      return found;
+    },
+
     keptIds(accountId, folder, kept) {
       return db
         .prepare<[string, string, string], { id: string }>(

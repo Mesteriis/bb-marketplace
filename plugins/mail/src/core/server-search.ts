@@ -31,6 +31,10 @@ export type ServerCriteria = {
   not?: ServerCriteria[];
   /** Gmail's X-GM-RAW; used only when the session reports Gmail. */
   gmailRaw?: string;
+  /** X-GM-THRID / THREADID (conversation loads on Gmail). */
+  threadId?: string;
+  /** Header matches, any of them (OR): conversation loads by References and Message-ID. */
+  headers?: { name: string; value: string }[];
 };
 
 export type ServerSearchPlan =

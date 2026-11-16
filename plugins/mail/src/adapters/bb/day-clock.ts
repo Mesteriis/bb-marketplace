@@ -8,6 +8,10 @@
 // only: it never scans references (resolution 7) and never calls a model.
 // Beside it, the post-round step labels new mail by the owner's category
 // rules and clears reminders a round's new rows answer.
+//
+// Slice 3h: once a day (the first tick of each local day) the clock deletes,
+// locally, server-search hits kept longer than serverSearchKeepDays (14 by
+// default); opened and history rows never expire. It logs the count only.
 import {
   REMINDERS_LIVE_MAX,
   REPLY_CLOCK_SKEW_MS,
@@ -286,7 +290,17 @@ export function takeDayNotice(store: MailStore, now: Date, quietHours = ""): Day
 // The clock
 // ---------------------------------------------------------------------------
 
-export type DayClockSettings = { morningDigest: boolean; digestTime: string; quietHours: string; mailCategories: boolean };
+export type DayClockSettings = {
+  morningDigest: boolean;
+  digestTime: string;
+  quietHours: string;
+  mailCategories: boolean;
+  /** Slice 3h: days a server-search hit is kept (default SERVER_SEARCH_KEEP_DAYS). */
+  serverSearchKeepDays?: number;
+};
+
+/** Days a server-search hit the owner never touched is kept. */
+export const SERVER_SEARCH_KEEP_DAYS = 14;
 
 export interface DayClockDeps {
   store: MailStore;
@@ -297,6 +311,8 @@ export interface DayClockDeps {
   clock: Clock;
   isReady: () => boolean;
   log?: (line: string) => void;
+  /** Slice 3h: an account whose rows the expiry deleted (the lists refresh). */
+  mailChanged?: (accountId: string) => void;
 }
 
 export interface DayClock {
@@ -331,6 +347,24 @@ export function createDayClock(deps: DayClockDeps): DayClock {
 
   /** Whether the last tick fell inside quiet hours. */
   let wasQuiet = false;
+  /** The local day the server-hit expiry last ran. */
+  let expiredOn: string | null = null;
+
+  function expireServerHits(now: Date, day: string, keepDays: number | undefined): void {
+    if (expiredOn === day) return;
+    expiredOn = day;
+    const days = keepDays !== undefined && Number.isFinite(keepDays) && keepDays >= 1 ? Math.floor(keepDays) : SERVER_SEARCH_KEEP_DAYS;
+    const { removed, accounts } = deps.store.expireSearchRows(now.toISOString(), days);
+    if (removed === 0) return;
+    log(`server hits: ${removed} expired`);
+    for (const accountId of accounts) {
+      try {
+        deps.mailChanged?.(accountId);
+      } catch {
+        // A broken notifier must not stop the clock.
+      }
+    }
+  }
 
   function tickOnce(): void {
     const { store } = deps;
@@ -343,6 +377,8 @@ export function createDayClock(deps: DayClockDeps): DayClock {
     const due = store.listReminders({ states: ["waiting"], dueBefore: nowIso, limit: REMINDERS_LIVE_MAX });
     for (const reminder of due) store.updateReminder(reminder.id, { state: "due" }, nowIso);
     if (due.length > 0) log(`reminders: ${due.length} due`);
+
+    expireServerHits(now, day, settings.serverSearchKeepDays);
 
     if (settings.morningDigest) {
       const minutes = parseDigestTime(settings.digestTime);
