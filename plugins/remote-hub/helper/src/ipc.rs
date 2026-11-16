@@ -244,6 +244,14 @@ fn handle(
     }
 }
 
+/// A stdin frame error: fatal means the stream is out of step and the helper
+/// must shut down; invalid means the frame was well-framed but unparseable, so
+/// the stream is still in step and the helper keeps running.
+enum FrameError {
+    Fatal(String),
+    Invalid(String),
+}
+
 /// Incremental reader over the helper's stdin (non-blocking): buffers whatever
 /// read(2) returns, bounded by INGRESS_CAP, and yields full control frames.
 struct FrameReader {
@@ -299,32 +307,30 @@ impl FrameReader {
         self.eof = true;
     }
 
-    fn try_take(&mut self) -> Result<Option<Request>, String> {
+    fn try_take(&mut self) -> Result<Option<Request>, FrameError> {
         if self.buf.len() < 4 {
             return Ok(None);
         }
         let body_len = u32::from_le_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
         if body_len > MAX_FRAME_BODY_BYTES {
-            return Err(format!(
+            return Err(FrameError::Fatal(format!(
                 "frame body length {body_len} exceeds the {MAX_FRAME_BODY_BYTES} byte limit"
-            ));
+            )));
         }
         if body_len < 1 {
-            return Err("frame body length 0 is invalid".to_string());
+            return Err(FrameError::Fatal("frame body length 0 is invalid".to_string()));
         }
         if self.buf.len() < 4 + body_len {
             return Ok(None);
         }
         let frame: Vec<u8> = self.buf.drain(..4 + body_len).collect();
         if frame[4] != FRAME_KIND_CONTROL {
-            return Err(format!("unexpected frame kind {}", frame[4]));
+            return Err(FrameError::Fatal(format!("unexpected frame kind {}", frame[4])));
         }
-        if frame.len() < 6 {
-            return Err("empty control body".to_string());
+        match serde_json::from_slice(&frame[5..]) {
+            Ok(req) => Ok(Some(req)),
+            Err(e) => Err(FrameError::Invalid(format!("invalid control frame: {e}"))),
         }
-        let req = serde_json::from_slice(&frame[5..])
-            .map_err(|e| format!("invalid control frame: {e}"))?;
-        Ok(Some(req))
     }
 }
 
@@ -582,7 +588,15 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                     }
                 },
                 Ok(None) => break,
-                Err(message) => {
+                Err(FrameError::Invalid(message)) => {
+                    // Well-framed but unparseable body: answer and keep running.
+                    outbox.extend(protocol::encode_response(&Response::Error {
+                        id: None,
+                        code: "invalid_frame".to_string(),
+                        message,
+                    }));
+                }
+                Err(FrameError::Fatal(message)) => {
                     outbox.extend(protocol::encode_response(&Response::Error {
                         id: None,
                         code: "invalid_frame".to_string(),

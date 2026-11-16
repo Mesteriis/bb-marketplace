@@ -41,10 +41,28 @@ export const openEchoRequestSchema = z.object({
 /** Maximum UTF-8 bytes a single session.input may carry (matches Rust PENDING_INPUT_CAP). */
 export const MAX_SESSION_INPUT_BYTES = 262_144;
 
+/** True when the string contains no unpaired UTF-16 surrogates. */
+function isWellFormedUtf16(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      // High surrogate must be followed by a low surrogate.
+      if (i + 1 >= value.length) return false;
+      const next = value.charCodeAt(i + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      i++;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false; // lone low surrogate
+    }
+  }
+  return true;
+}
+
 /** Host-free validator shared by the IPC protocol and the BB RPC schema. */
 export const sessionInputDataSchema = z
   .string()
   .min(1)
+  .refine(isWellFormedUtf16, { message: "session input must be well-formed UTF-16" })
   .refine((value) => new TextEncoder().encode(value).length <= MAX_SESSION_INPUT_BYTES, {
     message: "session input exceeds " + MAX_SESSION_INPUT_BYTES + " UTF-8 bytes",
   });

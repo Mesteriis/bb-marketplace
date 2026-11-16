@@ -142,6 +142,23 @@ describe("helper-process (lifecycle)", () => {
     expect(sessionInputDataSchema.safeParse("é".repeat(131_073)).success).toBe(false);
   });
 
+  // A1: lone surrogates are rejected before anything reaches the helper.
+  it("rejects lone UTF-16 surrogates", () => {
+    expect(sessionInputDataSchema.safeParse("\ud800").success).toBe(false);
+    expect(sessionInputDataSchema.safeParse("a\udc00b").success).toBe(false);
+  });
+
+  it("rejects a lone surrogate at the adapter without writing to stdin", async () => {
+    const fake = makeFakeChild();
+    const spawn: HelperSpawn = () => {
+      setImmediate(() => fake.child.stdout.push(helloAck(GEN_A)));
+      return fake.child as unknown as ChildProcessWithoutNullStreams;
+    };
+    const hp = await HelperProcess.spawn("bin", spawn);
+    await expect(hp.input({ generation: GEN_A, sessionId: 1 }, "\ud800")).rejects.toBeTruthy();
+    expect(fake.writes.length).toBe(1); // only hello
+  });
+
   it("rejects 262 145 bytes of session input at the schema", () => {
     const result = rpcSchemas.echo_input.input.safeParse({
       generation: "a".repeat(32),

@@ -3,6 +3,7 @@
 //! stage-1 repair regressions (signal separation, bounded non-blocking IO,
 //! invalid frames, fd hygiene, output draining and child-visible resize).
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -1072,5 +1073,100 @@ fn u3_half_close_does_not_spin() {
         }
     }
     let status = wait_timeout(&mut helper.child, Duration::from_secs(5)).expect("helper did not exit");
+    assert_eq!(status.code(), Some(0));
+}
+
+// A1: a well-framed but unparseable control body is answered and the helper
+// keeps running.
+#[test]
+fn a1_unparseable_control_body_is_non_fatal() {
+    let mut helper = start();
+    helper.hello();
+    let (_sid, _pid) = helper.open();
+
+    let body = br#"{"type":"session.input","id":1,"sessionId":1,"data":"\ud800"}"#;
+    let mut frame = vec![0x01u8];
+    frame.extend_from_slice(body);
+    let mut raw = Vec::with_capacity(4 + frame.len());
+    raw.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+    raw.extend_from_slice(&frame);
+    helper.send_raw(&raw);
+
+    match helper.read_response() {
+        Response::Error { code, .. } => assert_eq!(code, "invalid_frame"),
+        other => panic!("expected invalid_frame, got {other:?}"),
+    }
+    helper.send(&Request::Ping { id: 5 });
+    match helper.read_response() {
+        Response::Pong { id } => assert_eq!(id, 5),
+        other => panic!("expected pong 5, got {other:?}"),
+    }
+}
+
+// A3: reach the hung_up && ingress-full path and prove no spin.
+#[test]
+fn a3_ingress_full_hangup_does_not_spin() {
+    let Helper {
+        mut child,
+        mut stdin,
+        mut stdout,
+    } = start();
+    send_req(&mut stdin, &Request::Hello {
+        protocol: PROTOCOL_VERSION,
+    });
+    match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+        Response::HelloAck { .. } => {}
+        other => panic!("expected hello_ack, got {other:?}"),
+    }
+    let helper_pid = child.id();
+
+    // Non-blocking stdin so the writer stops when the helper is full.
+    unsafe {
+        let fd = stdin.as_raw_fd();
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+    }
+
+    let writer = std::thread::spawn(move || {
+        let mut id = 0u64;
+        let mut total = 0usize;
+        loop {
+            let frame = encode_request(&Request::Ping { id });
+            match stdin.write(&frame) {
+                Ok(n) => {
+                    total += n;
+                    id += 1;
+                    if n < frame.len() {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("stdin write: {e}"),
+            }
+        }
+        // stdin drops here, closing the helper's stdin.
+        total
+    });
+    let written = writer.join().expect("writer joined");
+    assert!(
+        written > 64 * 1024,
+        "writer only wrote {written} bytes before blocking"
+    );
+
+    let t0 = cpu_seconds(helper_pid);
+    std::thread::sleep(Duration::from_secs(2));
+    let t1 = cpu_seconds(helper_pid);
+    assert!(t1 - t0 < 0.5, "helper spun: {} s CPU over 2 s", t1 - t0);
+
+    let mut buf = [0u8; 65536];
+    loop {
+        match stdout.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    let status = wait_timeout(&mut child, Duration::from_secs(5)).expect("helper did not exit");
     assert_eq!(status.code(), Some(0));
 }

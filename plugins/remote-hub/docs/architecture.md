@@ -64,8 +64,8 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   PTY only while its pending output has room, reads stdin only while the outbox
   has room, polls stdout POLLOUT while the outbox is non-empty, and treats an
   EPIPE or any non-transient stdout error as fatal shutdown. `session.close`
-  drains at most 512 KiB (the 256 KiB pending-output bound plus one 256 KiB
-  PTY read) and drops the rest. The remaining limit is the single shared stdout
+  drains up to 512 KiB plus one 64 KiB read (the 256 KiB pending-output bound
+  plus a final read), and drops the rest. The remaining limit is the single shared stdout
   pipe: a stalled reader stalls every session, which stage 2 will revisit with
   a per-session binary WebSocket.
 - openpty retry: `openpty` is retried a bounded 8 times on transient
