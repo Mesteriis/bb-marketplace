@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { MessageBody, MessageHeader, MessageSummary } from "./model.ts";
 import {
   UNTRUSTED_NOTICE,
+  agentHitsCounted,
   hitStillMatches,
   htmlToText,
   redactedSubject,
@@ -426,6 +427,12 @@ describe("slice 3f redaction in the renderers", () => {
     expectNoSecret(hits.text);
     expect(hits.text).not.toContain("98765");
     expect(hits.hiddenCount).toBe(5);
+    // The CLI's --json form: the same redaction, as fields.
+    const json = agentHitsCounted([hit]);
+    expectNoSecret(JSON.stringify(json));
+    expect(JSON.stringify(json)).not.toContain("98765");
+    expect(json.hiddenCount).toBe(5);
+    expect(json.hits[0]).toMatchObject({ id: "m_7", threadId: "t_7", from: { address: "sender@example.org" } });
     const inbox = renderInboxForAgentCounted([
       {
         id: "m_1",

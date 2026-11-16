@@ -1317,16 +1317,16 @@ describe("makosh-mail server", () => {
       seed: (bb) =>
         seedMail(bb, {
           preset: "gmail",
-          folders: GMAIL_FOLDERS,
+          folders: [...GMAIL_FOLDERS, { path: "[Gmail]/Starred", name: "Starred" }],
           messages: [
             {
-              folder: "[Gmail]/Spam",
+              folder: "[Gmail]/Starred",
               message: makeFetchedMessage(1, { subject: "Invented prize", bodyText: "Invented win" }),
             },
           ],
         }),
     });
-    const messageId = messageIdAt(host, "[Gmail]/Spam", 1);
+    const messageId = messageIdAt(host, "[Gmail]/Starred", 1);
     const [provider] = host.harness.inspection.registrations.mentionProviders;
 
     const outputs = [
@@ -1339,9 +1339,9 @@ describe("makosh-mail server", () => {
       (await host.harness.behavior.runCli(["search", "prize"])).stdout,
     ];
 
-    for (const text of outputs) expect(text).toMatch(/(^|\n) *Folder: Spam\n/);
+    for (const text of outputs) expect(text).toMatch(/(^|\n) *Folder: Starred\n/);
     const items = await provider!.search({ trigger: "@", query: "prize", projectId: null, threadId: null });
-    expect(items[0]!.subtitle).toMatch(/ · Spam$/);
+    expect(items[0]!.subtitle).toMatch(/ · Starred$/);
   });
 });
 
@@ -5147,5 +5147,335 @@ describe("inbox triage: agent tools (slice 3e)", () => {
     );
     await expect(host.harness.behavior.callRpc("triage_status", { batchId: "b" }, asPlugin)).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
     expect(host.harness.inspection.registrations.experimental_publishedRpcMethods).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent paths (slice 3f): scope, redaction and the action log; the canary test
+// ---------------------------------------------------------------------------
+
+const CANARY_THREAD = "thread-canary";
+/** Invented secrets in the in-scope message: each must be hidden on every agent path. */
+const CANARY = {
+  subject: "731942",
+  fromName: "Qm7xR2pLk9",
+  bodyToken: "ghp_Zx81Kq7Lm2Np4Rt6Vw9Yb3Cd5Ef7Gh1Jk0Mn",
+  bodyCard: "4111 1111 1111 1111",
+  snippet: "sk-Inv3ntedCanaryKey9xYz77Qq",
+  attachment: "AKIAQWERTYUIOPASDFGH",
+  template: "Tq9vLm3xZp",
+};
+/** Plain text of the out-of-scope messages (a folder outside the scope, an excluded sender): never on an agent path. */
+const OUTSIDE = ["zebra", "Quokka", "quokka@example.com", "pelican", "Pelican", "excluded.example.net"];
+const CANARIES = [...Object.values(CANARY), "4111111111111111", ...OUTSIDE];
+
+/**
+ * acc_1 with SMTP, INBOX, Drafts, Sent and Work, AI access to INBOX, Sent and
+ * Drafts only and the domain excluded.example.net excluded. INBOX 1 carries a
+ * canary in its subject, From name, body, snippet and attachment name; Work 1
+ * is outside the folders; INBOX 2 comes from the excluded domain.
+ */
+function seedCanary(bb: BbPluginApi, scope: { folders?: string[]; mode?: "none" } = {}): void {
+  seedCompose(bb);
+  const store = createSqliteStore(bb.storage.database());
+  store.saveFolders("acc_1", [
+    { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+    { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true },
+    { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true },
+    { path: "Work", name: "Work", delimiter: "/", specialUse: null, selectable: true },
+  ]);
+  store.upsertMessages("acc_1", "INBOX", [
+    makeFetchedMessage(1, {
+      subject: `Invented login code ${CANARY.subject}`,
+      from: { name: `Ivy password: ${CANARY.fromName}`, address: "ivy@example.com" },
+      bodyText: `Hello, Invented note. Your token ${CANARY.bodyToken} and card ${CANARY.bodyCard} thanks`,
+      attachments: [{ partId: "2", filename: `${CANARY.attachment}.pdf`, mimeType: "application/pdf", size: 10, isInline: false }],
+    }),
+    makeFetchedMessage(2, {
+      subject: "Invented excluded pelican note",
+      from: { name: "Excluded Pelican", address: "boss@excluded.example.net" },
+      bodyText: "Invented pelican body",
+    }),
+  ]);
+  store.upsertMessages("acc_1", "Work", [
+    makeFetchedMessage(1, {
+      messageId: "outside-1@example.org",
+      subject: "Invented outside zebra memo",
+      from: { name: "Outsider Quokka", address: "quokka@example.com" },
+      bodyText: "Invented zebra body",
+    }),
+  ]);
+  bb.storage
+    .database()
+    .prepare("UPDATE messages SET snippet = ? WHERE folder = 'INBOX' AND uid = 1")
+    .run(`Reset key ${CANARY.snippet}`);
+  store.putAiScope(
+    [{ accountId: "acc_1", scope: scope.mode === "none" ? { mode: "none" } : { mode: "folders", folders: scope.folders ?? ["INBOX", "Sent", "Drafts"] } }],
+    [{ kind: "domain", value: "excluded.example.net" }],
+    NOW.toISOString(),
+  );
+}
+
+function loadCanary(settings: Record<string, string | number | boolean> = {}, scope: { folders?: string[]; mode?: "none" } = {}) {
+  return load({
+    settings: { vaultKey: COMPOSE_KEY, agentTools: true, agentPropose: true, agentTriage: true, ...settings },
+    seed: (bb) => seedCanary(bb, scope),
+    server: composeServer,
+    outboxIntervalMs: 5,
+  });
+}
+
+const canaryIds = (host: Host) => ({
+  inside: messageIdAt(host, "INBOX", 1),
+  excluded: messageIdAt(host, "INBOX", 2),
+  outside: messageIdAt(host, "Work", 1),
+});
+
+function agentLogRows(host: Host): Record<string, unknown>[] {
+  return host.bb.storage.database().prepare("SELECT * FROM agent_log ORDER BY seq").all() as Record<string, unknown>[];
+}
+
+/** Runs a card tool (mail_propose, mail_triage), cancels its card if one opens, and returns the tool's answer. */
+async function runCardTool(host: Host, name: string, params: unknown): Promise<unknown> {
+  const before = host.harness.inspection.pendingInteractions.length;
+  const result = host.harness.behavior.callAgentTool(name, params, { threadId: CANARY_THREAD });
+  const settled = await Promise.race([result.then(() => "done"), new Promise((resolve) => setTimeout(() => resolve("wait"), 200))]);
+  if (settled === "wait") {
+    await vi.waitFor(() => expect(host.harness.inspection.pendingInteractions.length).toBe(before + 1));
+    host.harness.behavior.cancelInteraction(host.harness.inspection.pendingInteractions.at(-1)!.id);
+  }
+  return result;
+}
+
+/** Each registered tool with its generic fixtures: an in-scope id, an out-of-scope one, an excluded one. */
+function toolFixtures(ids: ReturnType<typeof canaryIds>): Record<string, unknown[]> {
+  return {
+    mail_search: [{ query: "Invented" }, { query: "zebra" }, { query: "pelican" }, { query: "from:quokka" }],
+    mail_read: [{ messageId: ids.inside }, { messageId: ids.outside }, { messageId: ids.excluded }],
+    mail_contacts: [{ query: "example" }, { query: "pelican" }, { query: "quokka" }, { query: "zebra" }],
+    mail_inbox: [{}, { unreadOnly: true }],
+    mail_templates: [{}],
+    mail_propose: [
+      { kind: "reply", sourceMessageId: ids.inside, body: "Invented agent reply" },
+      { kind: "reply", sourceMessageId: ids.outside, body: "Invented agent reply" },
+      { kind: "forward", sourceMessageId: ids.excluded, to: ["ana@example.com"], body: "Invented agent forward" },
+    ],
+    mail_triage: [
+      { items: [{ messageId: ids.inside, action: "archive" }] },
+      { items: [{ messageId: ids.outside, action: "archive" }] },
+      { items: [{ messageId: ids.excluded, action: "mark_read" }] },
+    ],
+  };
+}
+
+const CLI_FIXTURES = (ids: ReturnType<typeof canaryIds>): Record<string, string[][]> => ({
+  accounts: [[]],
+  search: [["Invented"], ["zebra"], ["pelican"]],
+  read: [[ids.inside], [ids.outside], [ids.excluded]],
+  sync: [[]],
+  remove: [["acc_1"]],
+});
+
+/** Every agent path's output: tools (from the registry), CLI in a thread (text and --json), mentions, Hand to agent. */
+async function canaryOutputs(host: Host): Promise<string[]> {
+  const ids = canaryIds(host);
+  const outputs: string[] = [];
+  const tools = toolFixtures(ids);
+  for (const { name } of host.harness.inspection.registrations.agentTools) {
+    const fixtures = tools[name];
+    expect(fixtures, `a canary fixture for ${name}`).toBeDefined();
+    for (const params of fixtures!) {
+      const result =
+        name === "mail_propose" || name === "mail_triage"
+          ? await runCardTool(host, name, params)
+          : await host.harness.behavior.callAgentTool(name, params, { threadId: CANARY_THREAD });
+      outputs.push(toolText(result));
+    }
+  }
+  const cli = CLI_FIXTURES(ids);
+  for (const { name } of host.harness.inspection.registrations.cli!.commands) {
+    const fixtures = cli[name];
+    expect(fixtures, `a canary fixture for cli ${name}`).toBeDefined();
+    for (const args of fixtures!) {
+      for (const extra of [[], ["--json"]]) {
+        const result = await host.harness.behavior.runCli([name, ...args, ...extra], { threadId: CANARY_THREAD });
+        outputs.push(result.stdout, result.stderr);
+      }
+    }
+  }
+  const [provider] = host.harness.inspection.registrations.mentionProviders;
+  for (const query of ["Invented", "zebra", "pelican", "login code"]) {
+    outputs.push(JSON.stringify(await provider!.search({ trigger: "@", query, projectId: null, threadId: null })));
+  }
+  for (const id of [ids.inside, ids.outside, ids.excluded]) {
+    outputs.push((await provider!.resolve(id)).context);
+    outputs.push(
+      await host.harness.behavior
+        .callRpc("message_agent_text", { messageId: id })
+        .then((answer) => JSON.stringify(answer), (error: unknown) => String(error)),
+    );
+  }
+  return outputs;
+}
+
+function expectNoCanary(host: Host, outputs: string[]): void {
+  const surfaces = [
+    ...outputs,
+    JSON.stringify(agentLogRows(host)),
+    JSON.stringify(host.harness.inspection.logEntries),
+    JSON.stringify(host.harness.inspection.realtimeSignals),
+  ];
+  for (const canary of CANARIES) {
+    for (const surface of surfaces) expect(surface, `canary ${canary}`).not.toContain(canary);
+  }
+}
+
+describe("agent paths: scope, redaction and the log (slice 3f)", () => {
+  it("the canary test: no secret and no out-of-scope text reaches any agent path, the log, logs or realtime", async () => {
+    const host = await loadCanary();
+    await call(host, "template_save", { name: "Invented template", doc: { type: "doc", content: [para(`Template password: ${CANARY.template}`)] } });
+
+    const outputs = await canaryOutputs(host);
+
+    expectNoCanary(host, outputs);
+    // The in-scope message did reach the agent, with its secrets hidden.
+    const joined = outputs.join("\n");
+    expect(joined).toContain("[hidden one-time code]");
+    expect(joined).toContain("[hidden token]");
+    expect(joined).toContain("[hidden card number]");
+    expect(joined).toContain("[hidden password]");
+    expect(joined).toContain("Hidden by Makosh Mail");
+  });
+
+  it("every registered tool writes one log entry on success and on refusal", async () => {
+    const on = await loadCanary();
+    const ids = canaryIds(on);
+    const fixtures = toolFixtures(ids);
+    for (const { name } of on.harness.inspection.registrations.agentTools) {
+      const before = agentLogRows(on).length;
+      const params = fixtures[name]![0];
+      if (name === "mail_propose" || name === "mail_triage") await runCardTool(on, name, params);
+      else await on.harness.behavior.callAgentTool(name, params, { threadId: CANARY_THREAD });
+      const rows = agentLogRows(on).slice(before);
+      expect(rows, name).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ actor: "agent", thread_id: CANARY_THREAD });
+      expect(["ok", "empty", "cancelled"], name).toContain(rows[0]!.outcome);
+    }
+
+    const off = await loadCanary({ agentTools: false, agentPropose: false, agentTriage: false });
+    for (const { name } of off.harness.inspection.registrations.agentTools) {
+      const before = agentLogRows(off).length;
+      await off.harness.behavior.callAgentTool(name, fixtures[name]![0], { threadId: CANARY_THREAD });
+      const rows = agentLogRows(off).slice(before);
+      expect(rows, name).toHaveLength(1);
+      expect(rows[0]!.outcome, name).toBe("refused_off");
+    }
+  });
+
+  it("proposals and triage batches are logged as proposed, then updated to their outcome", async () => {
+    const host = await loadCanary();
+    const { inside } = canaryIds(host);
+    await runCardTool(host, "mail_propose", { kind: "reply", sourceMessageId: inside, body: "Invented agent reply" });
+    await runCardTool(host, "mail_triage", { items: [{ messageId: inside, action: "archive" }] });
+    const rows = agentLogRows(host);
+    expect(rows.map((row) => [row.tool, row.outcome])).toEqual([
+      ["propose", "cancelled"],
+      ["triage", "cancelled"],
+    ]);
+    expect(rows.every((row) => typeof row.ref_id === "string")).toBe(true);
+    expect(JSON.parse(String(rows[0]!.message_ids_json))).toEqual([inside]);
+  });
+
+  it("an out-of-scope id answers exactly as an unknown id on every tool, the mention and Hand to agent", async () => {
+    const host = await loadCanary();
+    const { outside, excluded } = canaryIds(host);
+    const [provider] = host.harness.inspection.registrations.mentionProviders;
+    const answers = async (id: string) => [
+      toolText(await host.harness.behavior.callAgentTool("mail_read", { messageId: id }, { threadId: CANARY_THREAD })),
+      toolText(await runCardTool(host, "mail_triage", { items: [{ messageId: id, action: "archive" }] })),
+      toolText(await runCardTool(host, "mail_propose", { kind: "reply", sourceMessageId: id, body: "Invented agent reply" })),
+      (await provider!.resolve(id)).context,
+      await host.harness.behavior.callRpc("message_agent_text", { messageId: id }).then(String, (error: unknown) => String(error)),
+      (await host.harness.behavior.runCli(["read", id], { threadId: CANARY_THREAD })).stderr.replace(id, "<id>"),
+    ];
+    const unknown = await answers("no-such-id");
+    expect(await answers(outside)).toEqual(unknown);
+    expect(await answers(excluded)).toEqual(unknown);
+    // Only the log tells them apart.
+    const outcomes = agentLogRows(host).map((row) => row.outcome);
+    expect(outcomes).toContain("refused_scope");
+    expect(outcomes).toContain("refused_invalid");
+  });
+
+  it("search refuses codes, numbers and tokens and keeps only hits whose redacted text still matches", async () => {
+    const host = await loadCanary();
+    const search = async (query: string) =>
+      toolText(await host.harness.behavior.callAgentTool("mail_search", { query }, { threadId: CANARY_THREAD }));
+    expect(await search(CANARY.subject)).toContain("Agents cannot search for codes, numbers or tokens");
+    expect(await search(`subject:${CANARY.subject}`)).toContain("Agents cannot search for codes");
+    expect(await search(CANARY.bodyToken)).toContain("Agents cannot search for codes");
+    // "4111" is too short to be refused but only matches the hidden card number.
+    expect(await search("4111")).toContain("No messages found.");
+    expect(await search("login code")).toContain(`Message id: ${canaryIds(host).inside}`);
+    const cli = await host.harness.behavior.runCli(["search", CANARY.subject], { threadId: CANARY_THREAD });
+    expect(cli.exitCode).toBe(1);
+    expect(cli.stderr).toContain("Agents cannot search for codes");
+    expect(agentLogRows(host).filter((row) => row.outcome === "refused_invalid").map((row) => row.tool)).toEqual([
+      "search",
+      "search",
+      "search",
+      "cli_search",
+    ]);
+  });
+
+  it("contacts never return or count excluded or out-of-scope correspondence", async () => {
+    const host = await loadCanary();
+    const text = toolText(await host.harness.behavior.callAgentTool("mail_contacts", { query: "example" }, { threadId: CANARY_THREAD }));
+    expect(text).toContain("ivy@example.com");
+    expect(text).not.toContain("boss@excluded.example.net");
+    expect(text).not.toContain("quokka@example.com");
+    expect(toolText(await host.harness.behavior.callAgentTool("mail_contacts", { query: "zebra" }, { threadId: CANARY_THREAD }))).toContain(
+      "No people found",
+    );
+  });
+
+  it("the CLI outside a thread writes no log entry; inside one it does", async () => {
+    const host = await loadCanary();
+    const { inside } = canaryIds(host);
+    await host.harness.behavior.runCli(["search", "Invented"]);
+    await host.harness.behavior.runCli(["read", inside]);
+    expect(agentLogRows(host)).toEqual([]);
+    await host.harness.behavior.runCli(["search", "Invented"], { threadId: CANARY_THREAD });
+    await host.harness.behavior.runCli(["read", inside], { threadId: CANARY_THREAD });
+    expect(agentLogRows(host).map((row) => [row.actor, row.tool, row.outcome, row.thread_id])).toEqual([
+      ["cli", "cli_search", "ok", CANARY_THREAD],
+      ["cli", "cli_read", "ok", CANARY_THREAD],
+    ]);
+  });
+
+  it("cli accounts shows an account with AI access none without its address", async () => {
+    const host = await loadCanary({}, { mode: "none" });
+    for (const extra of [[], ["--json"]]) {
+      const result = await host.harness.behavior.runCli(["accounts", ...extra], { threadId: CANARY_THREAD });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("acc_1");
+      expect(result.stdout).not.toContain("owner@example.org");
+      expect(result.stdout).not.toContain("example.org");
+    }
+    // Mode none: nothing of the account reaches an agent.
+    expect(toolText(await host.harness.behavior.callAgentTool("mail_inbox", {}, { threadId: CANARY_THREAD }))).toContain("No messages in the Inbox.");
+  });
+
+  it("mentions log with no thread; the mention picker offers in-scope mail with redacted titles", async () => {
+    const host = await loadCanary();
+    const [provider] = host.harness.inspection.registrations.mentionProviders;
+    const items = await provider!.search({ trigger: "@", query: "Invented", projectId: null, threadId: null });
+    expect(items.map((item) => item.id)).toEqual([canaryIds(host).inside]);
+    expect(items[0]!.title).toBe("Invented login code [hidden one-time code]");
+    expect(items[0]!.subtitle).toContain("[hidden password]");
+    await provider!.resolve(canaryIds(host).inside);
+    expect(agentLogRows(host).map((row) => [row.actor, row.tool, row.thread_id, row.hidden_count])).toEqual([
+      ["mention", "mention", null, 5],
+    ]);
   });
 });

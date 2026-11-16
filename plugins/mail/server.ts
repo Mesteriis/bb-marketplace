@@ -119,7 +119,6 @@ import {
   SmtpSettingsRefused,
   testSmtp,
   UNTRUSTED_NOTICE,
-  renderContacts,
   addAccount,
   flagChangeOf,
   inlineCidImages,
@@ -128,8 +127,19 @@ import {
   removeAccount,
   removeControls,
   removeInvisible,
-  renderMessageForAgent,
-  renderSearchHits,
+  agentHitsCounted,
+  agentSearchRefusal,
+  hitStillMatches,
+  logEntry,
+  plainBodyText,
+  redactSecrets,
+  redactedSubject,
+  renderContactsCounted,
+  renderInboxForAgentCounted,
+  renderMessageForAgentCounted,
+  renderSearchHitsCounted,
+  type LogEntryInput,
+  type LogOutcome,
   resolveActionDestination,
   resolveMoveDestination,
   roleFolders,
@@ -198,7 +208,6 @@ import {
   checkTriageCaps,
   isBulkRow,
   mailTriageParamsSchema,
-  renderInboxForAgent,
   revealHidden,
   triageContentHash,
   triageResultText,
@@ -223,6 +232,8 @@ export const REMOVE_IN_THREAD_MESSAGE =
   "Removing an account works only in the owner's own terminal, not inside an agent thread.";
 
 export const MESSAGE_GONE_CONTEXT = "This email is no longer available in Makosh Mail.";
+/** What an agent gets for an unknown id, and for an id outside the AI scope (never told apart). */
+export const UNKNOWN_MESSAGE_TEXT = "No message with this id in Makosh Mail.";
 
 const FETCH_BATCH_SIZE = 50;
 const AGENT_TEXT_CAP = 20_000;
@@ -696,15 +707,94 @@ function folderNames(store: MailStore): (message: { accountId: string; folder: s
   };
 }
 
-/** Agent text for one stored message, or null when there is no such message. Never marks it read. */
-function readForAgent(store: MailStore, messageId: string, maxChars: number): string | null {
-  const header = store.getMessage(messageId);
-  if (header === null) return null;
-  return renderMessageForAgent(header, store.getBody(messageId), maxChars, folderNames(store)(header));
+// ---- Agent paths (slice 3f): scope, redaction and the action log ----
+
+/** Writes one content-free agent-log row; a failure is logged by kind only and never stops the path. */
+type AgentLog = (input: LogEntryInput) => void;
+/** Moves a proposal's or triage batch's rows to their final outcome. */
+type AgentLogUpdate = (refId: string, outcome: LogOutcome, count: number) => void;
+
+function createAgentLog(
+  store: MailStore,
+  clock: Clock,
+  warn: (line: string) => void,
+): { log: AgentLog; update: AgentLogUpdate } {
+  return {
+    log: (input) => {
+      try {
+        store.appendAgentLog(logEntry(input, clock.now()));
+      } catch (error) {
+        warn(`agent log failed (${errorKind(error)})`);
+      }
+    },
+    update: (refId, outcome, count) => {
+      try {
+        store.updateAgentLog(refId, outcome, count);
+      } catch (error) {
+        warn(`agent log update failed (${errorKind(error)})`);
+      }
+    },
+  };
 }
 
-function searchText(store: MailStore, hits: MessageSummary[]): string {
-  return renderSearchHits(hits, folderNames(store));
+/** What an agent read gives: the redacted text, or "unknown" (an out-of-scope id answers as unknown, spec section "AI access scope"). */
+type AgentRead =
+  | { found: true; id: string; text: string; hiddenCount: number }
+  | { found: false; outOfScope: boolean };
+
+/**
+ * Agent text for one stored message, redacted. `scoped`: only a copy inside
+ * the AI scope is read (agent paths); an id outside it answers as unknown.
+ * Never marks the message read.
+ */
+function readForAgent(store: MailStore, messageId: string, maxChars: number, scoped = true): AgentRead {
+  const header = scoped ? store.scopedMessage(messageId) : store.getMessage(messageId);
+  if (header === null) return { found: false, outOfScope: scoped && store.getMessage(messageId) !== null };
+  const rendered = renderMessageForAgentCounted(header, store.getBody(header.id), maxChars, folderNames(store)(header));
+  return { found: true, id: header.id, ...rendered };
+}
+
+/** The log outcome of a read that found nothing. */
+function unknownOutcome(read: { outOfScope: boolean }): LogOutcome {
+  return read.outOfScope ? "refused_scope" : "refused_invalid";
+}
+
+/**
+ * An agent search: free text that would match a secret is refused; the
+ * store searches inside the AI scope; a hit is kept only when every free-text
+ * term still matches its redacted subject, sender or body (spec resolution 6).
+ */
+function agentSearch(
+  store: MailStore,
+  raw: string,
+  accountId: string | null,
+  limit: number,
+  scoped = true,
+): { refused: string } | { hits: MessageSummary[] } {
+  const parsed = parseQuery(raw);
+  const refused =
+    agentSearchRefusal(parsed.text.trim()) ?? (parsed.subject === undefined ? null : agentSearchRefusal(parsed.subject.trim()));
+  if (refused !== null) return { refused };
+  const terms = [parsed.text.trim(), parsed.subject?.trim() ?? ""].filter((term) => term !== "");
+  const hits = store.search(parsed, accountId, limit, { scoped });
+  if (terms.length === 0) return { hits };
+  return {
+    hits: hits.filter((hit) =>
+      hitStillMatches(
+        { subject: `${hit.subject}\n${hit.from.name ?? ""} ${hit.from.address}`, body: plainBodyText(store.getBody(hit.id)) },
+        terms,
+      ),
+    ),
+  };
+}
+
+function searchText(store: MailStore, hits: MessageSummary[]): { text: string; hiddenCount: number } {
+  return renderSearchHitsCounted(hits, folderNames(store));
+}
+
+/** An account with AI access "none" as the CLI shows it to agents: no address, username or server. */
+function hiddenAccount(account: Account): Account {
+  return { ...account, email: "", username: "", host: "", displayName: account.displayName === null ? null : redactedSubject(account.displayName) };
 }
 
 function describeAccount(account: Account): string {
@@ -712,7 +802,8 @@ function describeAccount(account: Account): string {
     ? "authentication failed"
     : (account.lastError ??
       (account.lastSyncAt ? `synced ${account.lastSyncAt}` : "not synced yet"));
-  return `${account.id}  ${account.email}  ${state}`;
+  const label = account.email === "" ? `${account.displayName ?? "(AI access off)"}` : account.email;
+  return `${account.id}  ${label}  ${state}`;
 }
 
 /** 1..1440 minutes, also for a value stored before the schema had a maximum. */
@@ -832,6 +923,13 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       bb.log.warn(`snippet repair failed (${errorKind(error)})`);
     }
     const clock: Clock = overrides.clock ?? { now: () => new Date() };
+    // The AI access scope agent paths read (slice 3f); the installed scope starts open.
+    try {
+      store.setAiScope(store.loadAiScope());
+    } catch (error) {
+      bb.log.warn(`AI scope load failed (${errorKind(error)})`);
+    }
+    const agentLog = createAgentLog(store, clock, (line) => bb.log.warn(line));
     const gateway =
       overrides.gateway ?? createImapflowGateway({ logger: (line) => bb.log.warn(line) });
     const publishChanged = (accountId: string | null) =>
@@ -885,6 +983,12 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         isReady: () => vault !== null,
         queue,
         onRoundOk: (accountId, outcome, only) => {
+          // New rows may add a conversation with an excluded sender (spec resolution 12).
+          try {
+            store.refreshExcludedThreads();
+          } catch (error) {
+            bb.log.warn(`AI scope refresh failed (${errorKind(error)})`);
+          }
           afterRound(newMailDeps, accountId, outcome, only);
           idle.firstRoundOk(accountId);
         },
@@ -1107,6 +1211,8 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       undoWaitMs: overrides.undoWaitMs ?? UNDO_WAIT_MS,
       idle,
       newMail,
+      agentLog: agentLog.log,
+      agentLogUpdate: agentLog.update,
     };
     registerRpc(bb, rpcDeps);
     registerDownloadRoute(bb, store, rawDeps, tickets);
@@ -1117,6 +1223,8 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       proposalDeps,
       worker,
       notQueued,
+      agentLog: agentLog.log,
+      agentLogUpdate: agentLog.update,
     });
     registerTriageTools(bb, rpcDeps);
     registerCli(bb, store, {
@@ -1125,6 +1233,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       publishChanged,
       vaultReady: () => vault !== null,
       agentTools: () => current.agentTools,
+      agentLog: agentLog.log,
     });
   };
 }
@@ -1170,6 +1279,9 @@ type RpcDeps = {
   snoozeClock: SnoozeClock;
   /** The owner's "Let agents propose inbox actions" setting (slice 3e). */
   agentTriage: () => boolean;
+  /** The content-free agent action log (slice 3f). */
+  agentLog: AgentLog;
+  agentLogUpdate: AgentLogUpdate;
 };
 
 /** What a download ticket stands for; the name and bytes are resolved again when it is used. */
@@ -2162,10 +2274,15 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       },
       // Hand to agent without a mention: the text goes into the owner's prompt.
       // Like the tools and mentions, it never marks the message read.
+      // Outside the AI scope it answers as an unknown message (spec resolution 4).
       message_agent_text: ({ messageId }) => {
-        const text = readForAgent(store, messageId, AGENT_TEXT_CAP);
-        if (text === null) throw refuse("not_found", "Unknown message");
-        return { text };
+        const read = readForAgent(store, messageId, AGENT_TEXT_CAP);
+        if (!read.found) {
+          deps.agentLog({ actor: "handoff", tool: "handoff", outcome: unknownOutcome(read) });
+          throw refuse("not_found", "Unknown message");
+        }
+        deps.agentLog({ actor: "handoff", tool: "handoff", outcome: "ok", messageIds: [read.id], count: 1, hiddenCount: read.hiddenCount });
+        return { text: read.text };
       },
       // The only path that marks mail read: the owner opened it in the Mail page
       // (other plugins are refused, like on every write).
@@ -2704,6 +2821,8 @@ type AgentSurfaceDeps = {
   proposalDeps: ProposalDeps;
   worker: OutboxWorker;
   notQueued: Map<string, NotQueuedReason>;
+  agentLog: AgentLog;
+  agentLogUpdate: AgentLogUpdate;
 };
 
 /** proposal_status's reason: a refused check is "changed"; a confirmed card that could not be queued says why. */
@@ -2747,18 +2866,51 @@ function registerProposeTool(bb: BbPluginApi, deps: AgentSurfaceDeps): void {
     presentation: { label: { pending: "Preparing an email for review", completed: "Proposed an email" } },
     parameters: mailProposeParamsSchema,
     execute: async (params, ctx) => {
+      const threadId = ctx.threadId;
+      const source = params.sourceMessageId;
+      const refused = (outcome: LogOutcome, text: string) => {
+        deps.agentLog({ actor: "agent", tool: "propose", outcome, threadId, messageIds: source === undefined ? [] : [source] });
+        return toolError(text);
+      };
       // A running session keeps the tools it started with: the setting is checked on every call.
-      if (!deps.agentPropose()) return toolError(new ProposalError("off").message);
+      if (!deps.agentPropose()) return refused("refused_off", new ProposalError("off").message);
+      // A source outside the AI scope answers as an unknown one (spec path 11).
+      if (source !== undefined && proposalDeps.store.getMessage(source) !== null && proposalDeps.store.scopedMessage(source) === null) {
+        return refused("refused_scope", new ProposalError("source_not_found").message);
+      }
       let created: { proposalId: string; contentHash: string };
       try {
         created = await proposeMail(proposalDeps, params, { threadId: ctx.threadId });
       } catch (error) {
-        if (error instanceof ProposalError) return toolError(error.message);
+        if (error instanceof ProposalError) {
+          return refused(error.kind.startsWith("caps:") ? "refused_caps" : "refused_invalid", error.message);
+        }
         bb.log.warn(`mail_propose failed (${errorKind(error)})`);
-        return toolError(PROPOSE_FAILED_MESSAGE);
+        return refused("failed", PROPOSE_FAILED_MESSAGE);
       }
       const { proposalId, contentHash } = created;
       bb.log.info(`proposal ${proposalId} pending`);
+      deps.agentLog({
+        actor: "agent",
+        tool: "propose",
+        outcome: "proposed",
+        threadId,
+        messageIds: source === undefined ? [] : [source],
+        count: 1,
+        refId: proposalId,
+      });
+      const answer = await settleProposal(proposalId, contentHash, ctx);
+      const final = proposalOutcome(answer);
+      deps.agentLogUpdate(proposalId, final, final === "sent" ? 1 : 0);
+      return answer;
+    },
+  });
+
+  async function settleProposal(
+    proposalId: string,
+    contentHash: string,
+    ctx: { threadId: string; signal: AbortSignal },
+  ): Promise<string> {
 
       // Each card's submit check runs once: the host calls describeSubmission
       // first, and the continuation below awaits the same promise. A submit
@@ -2864,12 +3016,20 @@ function registerProposeTool(bb: BbPluginApi, deps: AgentSurfaceDeps): void {
       deps.worker.wake(accountId);
       bb.log.info(`proposal ${proposalId} queued`);
       return AGENT_RESULT.sent;
-    },
-  });
+  }
+}
+
+/** The log outcome of mail_propose's answer. */
+function proposalOutcome(answer: string): LogOutcome {
+  if (answer === AGENT_RESULT.sent) return "sent";
+  if (answer === AGENT_RESULT.opened) return "opened";
+  if (answer === AGENT_RESULT.cancelled) return "cancelled";
+  if (answer === AGENT_RESULT.expired) return "expired";
+  return "failed";
 }
 
 function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSurfaceDeps): void {
-  const { agentTools } = deps;
+  const { agentTools, agentLog } = deps;
   bb.agents.registerTool({
     name: "mail_search",
     description:
@@ -2881,12 +3041,28 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
       accountId: z.string().optional(),
       limit: z.number().int().min(1).max(20).optional(),
     }),
-    execute: ({ query, accountId, limit }) => {
-      if (!agentTools()) return AGENT_MAIL_OFF_RESULT;
-      return searchText(
-        store,
-        store.search(parseQuery(query), accountId ?? null, limit ?? TOOL_SEARCH_DEFAULT),
-      );
+    execute: ({ query, accountId, limit }, ctx) => {
+      const threadId = ctx.threadId;
+      if (!agentTools()) {
+        agentLog({ actor: "agent", tool: "search", outcome: "refused_off", threadId });
+        return AGENT_MAIL_OFF_RESULT;
+      }
+      const found = agentSearch(store, query, accountId ?? null, limit ?? TOOL_SEARCH_DEFAULT);
+      if ("refused" in found) {
+        agentLog({ actor: "agent", tool: "search", outcome: "refused_invalid", threadId });
+        return toolError(found.refused);
+      }
+      const rendered = searchText(store, found.hits);
+      agentLog({
+        actor: "agent",
+        tool: "search",
+        outcome: found.hits.length === 0 ? "empty" : "ok",
+        threadId,
+        messageIds: found.hits.map((hit) => hit.id),
+        count: found.hits.length,
+        hiddenCount: rendered.hiddenCount,
+      });
+      return rendered.text;
     },
   });
   bb.agents.registerTool({
@@ -2899,15 +3075,21 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
       messageId: z.string().min(1),
       maxChars: z.number().int().min(1000).max(AGENT_TEXT_CAP).optional(),
     }),
-    execute: ({ messageId, maxChars }) => {
+    execute: ({ messageId, maxChars }, ctx) => {
+      const threadId = ctx.threadId;
       // Offered for triage too: the agent needs the text to judge (spec resolution 2).
-      if (!agentTools() && !deps.agentTriage()) return AGENT_MAIL_OFF_RESULT;
-      const text = readForAgent(store, messageId, maxChars ?? AGENT_TEXT_CAP);
-      if (text !== null) return text;
-      return {
-        content: [{ type: "text", text: "No message with this id in Makosh Mail." }],
-        isError: true,
-      };
+      if (!agentTools() && !deps.agentTriage()) {
+        agentLog({ actor: "agent", tool: "read", outcome: "refused_off", threadId });
+        return AGENT_MAIL_OFF_RESULT;
+      }
+      const read = readForAgent(store, messageId, maxChars ?? AGENT_TEXT_CAP);
+      if (read.found) {
+        agentLog({ actor: "agent", tool: "read", outcome: "ok", threadId, messageIds: [read.id], count: 1, hiddenCount: read.hiddenCount });
+        return read.text;
+      }
+      // Out of scope answers exactly as unknown; only the log tells them apart.
+      agentLog({ actor: "agent", tool: "read", outcome: unknownOutcome(read), threadId });
+      return toolError(UNKNOWN_MESSAGE_TEXT);
     },
   });
   bb.agents.registerTool({
@@ -2920,9 +3102,23 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
       query: z.string().min(1).max(QUERY_MAX),
       limit: z.number().int().min(1).max(CONTACTS_MAX).optional(),
     }),
-    execute: ({ query, limit }) => {
-      if (!agentTools() && !deps.agentPropose()) return AGENT_MAIL_OFF_RESULT;
-      return renderContacts(store.contacts(query, limit ?? CONTACTS_DEFAULT));
+    execute: ({ query, limit }, ctx) => {
+      const threadId = ctx.threadId;
+      if (!agentTools() && !deps.agentPropose()) {
+        agentLog({ actor: "agent", tool: "contacts", outcome: "refused_off", threadId });
+        return AGENT_MAIL_OFF_RESULT;
+      }
+      const contacts = store.contacts(query, limit ?? CONTACTS_DEFAULT, { scoped: true });
+      const rendered = renderContactsCounted(contacts);
+      agentLog({
+        actor: "agent",
+        tool: "contacts",
+        outcome: contacts.length === 0 ? "empty" : "ok",
+        threadId,
+        count: contacts.length,
+        hiddenCount: rendered.hiddenCount,
+      });
+      return rendered.text;
     },
   });
   // Registered tools and skills reach a thread only when configure selects them
@@ -2938,9 +3134,15 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
     instructions: TEMPLATES_INSTRUCTIONS,
     presentation: { label: { pending: "Listing reply templates", completed: "Listed reply templates" } },
     parameters: z.object({}),
-    execute: () => {
-      if (!deps.agentPropose()) return toolError(new ProposalError("off").message);
-      return JSON.stringify({ templates: templatesForAgent(store.listTemplates()) });
+    execute: (_params, ctx) => {
+      const threadId = ctx.threadId;
+      if (!deps.agentPropose()) {
+        agentLog({ actor: "agent", tool: "templates", outcome: "refused_off", threadId });
+        return toolError(new ProposalError("off").message);
+      }
+      const templates = templatesForAgent(store.listTemplates());
+      agentLog({ actor: "agent", tool: "templates", outcome: templates.length === 0 ? "empty" : "ok", threadId, count: templates.length });
+      return JSON.stringify({ templates });
     },
   });
   // mail_propose follows its own setting, independent of agentTools.
@@ -2964,19 +3166,29 @@ function registerAgentSurfaces(bb: BbPluginApi, store: MailStore, deps: AgentSur
   bb.ui.registerMentionProvider({
     id: "mail",
     label: "Mail",
+    // The chosen title lands in the thread transcript, so titles and
+    // subtitles are redacted and only in-scope mail is offered (spec resolution 4).
     search: ({ query }) => {
       const folderName = folderNames(store);
-      return store.search(parseQuery(query.slice(0, QUERY_MAX)), null, MENTION_LIMIT).map((hit) => ({
+      return store.search(parseQuery(query.slice(0, QUERY_MAX)), null, MENTION_LIMIT, { scoped: true }).map((hit) => ({
         id: hit.id,
-        title: oneLine(hit.subject) || "(no subject)",
-        subtitle: oneLine(`${formatSender(hit.from)} · ${shortDate(hit.date)} · ${folderName(hit)}`),
+        title: oneLine(redactedSubject(hit.subject)) || "(no subject)",
+        subtitle: oneLine(
+          `${formatSender({ name: hit.from.name === null ? null : redactSecrets(removeInvisible(hit.from.name)).text, address: hit.from.address })} · ${shortDate(hit.date)} · ${folderName(hit)}`,
+        ),
         icon: "Mail",
       }));
     },
-    // Throwing would block the owner's send, so a lost message resolves to a notice.
+    // Throwing would block the owner's send, so a lost or out-of-scope message resolves to a notice.
     resolve: (itemId) => {
       try {
-        return { context: readForAgent(store, itemId, AGENT_TEXT_CAP) ?? MESSAGE_GONE_CONTEXT };
+        const read = readForAgent(store, itemId, AGENT_TEXT_CAP);
+        if (!read.found) {
+          agentLog({ actor: "mention", tool: "mention", outcome: unknownOutcome(read) });
+          return { context: MESSAGE_GONE_CONTEXT };
+        }
+        agentLog({ actor: "mention", tool: "mention", outcome: "ok", messageIds: [read.id], count: 1, hiddenCount: read.hiddenCount });
+        return { context: read.text };
       } catch {
         bb.log.warn("mail mention could not be resolved");
         return { context: MESSAGE_GONE_CONTEXT };
@@ -3372,11 +3584,19 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
       unreadOnly: z.boolean().optional(),
       limit: z.number().int().min(1).max(INBOX_MAX).optional(),
     }),
-    execute: ({ accountId, unreadOnly, limit }) => {
-      if (!deps.agentTriage()) return toolError(TRIAGE_OFF_MESSAGE);
+    execute: ({ accountId, unreadOnly, limit }, ctx) => {
+      const threadId = ctx.threadId;
+      if (!deps.agentTriage()) {
+        deps.agentLog({ actor: "agent", tool: "inbox", outcome: "refused_off", threadId });
+        return toolError(TRIAGE_OFF_MESSAGE);
+      }
       const emails = new Map(store.listAccounts().map((account) => [account.id, account.email]));
-      const rows = store.inboxMessages(accountId ?? null, { unreadOnly: unreadOnly ?? false, limit: limit ?? INBOX_DEFAULT });
-      return renderInboxForAgent(
+      const rows = store.inboxMessages(accountId ?? null, {
+        unreadOnly: unreadOnly ?? false,
+        limit: limit ?? INBOX_DEFAULT,
+        scoped: true,
+      });
+      const rendered = renderInboxForAgentCounted(
         rows.map((row) => {
           const offered = row.unsubscribe === null ? null : offeredMethods(row.unsubscribe, row.from.address);
           return {
@@ -3394,6 +3614,16 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
           };
         }),
       );
+      deps.agentLog({
+        actor: "agent",
+        tool: "inbox",
+        outcome: rows.length === 0 ? "empty" : "ok",
+        threadId,
+        messageIds: rows.map((row) => row.id),
+        count: rows.length,
+        hiddenCount: rendered.hiddenCount,
+      });
+      return rendered.text;
     },
   });
   bb.agents.registerTool({
@@ -3404,19 +3634,35 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
     presentation: { label: { pending: "Preparing inbox actions for review", completed: "Proposed inbox actions" } },
     parameters: mailTriageParamsSchema,
     execute: async (params, ctx) => {
-      if (!deps.agentTriage()) return toolError(TRIAGE_OFF_MESSAGE);
+      const threadId = ctx.threadId;
+      const askedIds = params.items.map((item) => item.messageId);
+      const refused = (outcome: LogOutcome, text: string) => {
+        deps.agentLog({ actor: "agent", tool: "triage", outcome, threadId, messageIds: askedIds });
+        return toolError(text);
+      };
+      if (!deps.agentTriage()) return refused("refused_off", TRIAGE_OFF_MESSAGE);
       const now = clock.now();
       const nowIso = now.toISOString();
       let batchId: string;
       let contentHash: string;
+      // A row outside the AI scope is left out, so it is refused as an unknown id (spec path 10).
+      const rows = triageRowStates(store, askedIds, nowIso);
+      let outOfScope = false;
+      for (const id of [...rows.keys()]) {
+        if (store.scopedMessage(id)?.id !== id) {
+          rows.delete(id);
+          outOfScope = true;
+        }
+      }
+      let approvedCount = 0;
       try {
         const items = validateTriage(params.items, {
-          rows: triageRowStates(store, params.items.map((item) => item.messageId), nowIso),
+          rows,
           agentPropose: deps.agentPropose(),
           now,
         });
         const capped = checkTriageCaps(store.triageHistory(new Date(now.getTime() - TRIAGE_TTL_MS).toISOString()), ctx.threadId, now);
-        if (capped !== null) return toolError(capped);
+        if (capped !== null) return refused("refused_caps", capped);
         const summary = params.summary === undefined || params.summary.trim() === "" ? null : params.summary.trim();
         batchId = randomUUID();
         contentHash = await triageContentHash(items, summary);
@@ -3441,12 +3687,26 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
           })),
         );
       } catch (error) {
-        if (error instanceof TriageError) return toolError(error.message);
+        if (error instanceof TriageError) return refused(outOfScope ? "refused_scope" : "refused_invalid", error.message);
         bb.log.warn(`mail_triage failed (${errorKind(error)})`);
-        return toolError(TRIAGE_FAILED_MESSAGE);
+        return refused("failed", TRIAGE_FAILED_MESSAGE);
       }
       const log = (line: string) => bb.log.info(line);
       log(`triage ${batchId} pending`);
+      deps.agentLog({
+        actor: "agent",
+        tool: "triage",
+        outcome: "proposed",
+        threadId,
+        messageIds: askedIds,
+        count: askedIds.length,
+        refId: batchId,
+      });
+      const answer = (state: "expired" | "cancelled" | "changed" | "applied", items: Parameters<typeof triageResultText>[0]["items"]) => {
+        const outcome: LogOutcome = state === "changed" ? "failed" : state;
+        deps.agentLogUpdate(batchId, outcome, state === "applied" ? approvedCount : 0);
+        return triageResultText({ state, items });
+      };
       const settle = (to: "cancelled" | "expired" | "changed") =>
         store.transitionTriageBatch(batchId, ["pending", "confirming"], to, {}, clock.now().toISOString());
 
@@ -3457,7 +3717,7 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
         if (remaining <= 0) {
           settle("expired");
           log(`triage ${batchId} expired`);
-          return triageResultText({ state: "expired", items: [] });
+          return answer("expired", []);
         }
         let check: Promise<TriageCheck> | null = null;
         const decide = (value: unknown) => (check ??= checkTriageSubmit(deps, batchId, value));
@@ -3482,7 +3742,7 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
           await Promise.resolve(check).catch(() => undefined);
           settle("expired");
           bb.log.warn(`triage ${batchId} card failed (${errorKind(error)})`);
-          return triageResultText({ state: "expired", items: [] });
+          return answer("expired", []);
         }
         if (result.outcome === "cancelled") {
           // A check describeSubmission started finishes first; nothing runs on a cancel.
@@ -3490,24 +3750,25 @@ function registerTriageTools(bb: BbPluginApi, deps: RpcDeps): void {
           const expired = EXPIRED_REASONS.has(result.reason);
           settle(expired ? "expired" : "cancelled");
           log(`triage ${batchId} ${expired ? "expired" : "cancelled"} (${result.reason})`);
-          return triageResultText({ state: expired ? "expired" : "cancelled", items: [] });
+          return answer(expired ? "expired" : "cancelled", []);
         }
         try {
           decided = await decide(result.value);
         } catch (error) {
           settle("changed");
           bb.log.warn(`triage ${batchId} check failed (${errorKind(error)})`);
-          return triageResultText({ state: "changed", items: [] });
+          return answer("changed", []);
         }
         if (!("retry" in decided)) break;
         log(`triage ${batchId} opened elsewhere; card reopened`);
       }
       if (!("apply" in decided)) {
         log(`triage ${batchId} refused`);
-        return triageResultText({ state: "changed", items: [] });
+        return answer("changed", []);
       }
+      approvedCount = decided.apply.approved.length;
       const items = await applyTriage(deps, batchId, decided.apply, log);
-      return triageResultText({ state: "applied", items });
+      return answer("applied", items);
     },
   });
 }
@@ -3520,6 +3781,7 @@ type CliDeps = {
   publishChanged: (accountId: string | null) => void;
   vaultReady: () => boolean;
   agentTools: () => boolean;
+  agentLog: AgentLog;
 };
 
 function unknownAccount(accountId: string): PluginCliError {
@@ -3530,7 +3792,7 @@ function unknownAccount(accountId: string): PluginCliError {
 }
 
 function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
-  const { loop, agentTools } = deps;
+  const { loop, agentTools, agentLog } = deps;
   /**
    * Inside an agent thread (ctx.threadId, PluginCliContext in bb-plugin-sdk.d.ts:20554-20562)
    * mail and account data follow agentTools, like the tools; the owner's own
@@ -3553,7 +3815,12 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
           options: jsonOption,
           run: ({ options }, ctx) => {
             requireMailAccess(ctx);
-            const accounts = store.listAccounts().map(toPublicAccount);
+            // An account with AI access "none" is shown by id, label and state only (spec resolution 16).
+            const scope = store.getAiScope();
+            const accounts = store.listAccounts().map((stored) => {
+              const account = toPublicAccount(stored);
+              return scope.accounts.get(account.id)?.mode === "none" ? hiddenAccount(account) : account;
+            });
             if (options.json) return { exitCode: 0, stdout: json({ accounts }) };
             const lines =
               accounts.length > 0 ? accounts.map(describeAccount) : ["No accounts connected."];
@@ -3583,12 +3850,34 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
           },
           run: ({ positionals, options }, ctx) => {
             requireMailAccess(ctx);
+            const inThread = ctx.threadId !== undefined;
             const query = positionals.query.join(" ").slice(0, QUERY_MAX);
-            const hits = store.search(parseQuery(query), options.account ?? null, options.limit);
-            if (options.json) {
-              return { exitCode: 0, stdout: json({ notice: UNTRUSTED_NOTICE, hits }) };
+            // Inside an agent thread: the scope, the refusal and the post-filter of
+            // mail_search, and a log row; the owner's terminal is not logged (spec resolution 16).
+            const found = inThread
+              ? agentSearch(store, query, options.account ?? null, options.limit)
+              : { hits: store.search(parseQuery(query), options.account ?? null, options.limit) };
+            if ("refused" in found) {
+              agentLog({ actor: "cli", tool: "cli_search", outcome: "refused_invalid", threadId: ctx.threadId });
+              throw new PluginCliError(found.refused, { code: "search_refused" });
             }
-            return { exitCode: 0, stdout: `${searchText(store, hits)}\n` };
+            const { hits } = found;
+            const rendered = options.json ? agentHitsCounted(hits, folderNames(store)) : searchText(store, hits);
+            if (inThread) {
+              agentLog({
+                actor: "cli",
+                tool: "cli_search",
+                outcome: hits.length === 0 ? "empty" : "ok",
+                threadId: ctx.threadId,
+                messageIds: hits.map((hit) => hit.id),
+                count: hits.length,
+                hiddenCount: rendered.hiddenCount,
+              });
+            }
+            if ("hits" in rendered) {
+              return { exitCode: 0, stdout: json({ notice: UNTRUSTED_NOTICE, hits: rendered.hits }) };
+            }
+            return { exitCode: 0, stdout: `${rendered.text}\n` };
           },
         }),
         read: cliCommand({
@@ -3607,15 +3896,23 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
           run: ({ positionals, options }, ctx) => {
             requireMailAccess(ctx);
             const { messageId } = positionals;
-            const text = readForAgent(store, messageId, options["max-chars"]);
-            if (text === null) {
+            const inThread = ctx.threadId !== undefined;
+            const read = readForAgent(store, messageId, options["max-chars"], inThread);
+            if (inThread) {
+              agentLog(
+                read.found
+                  ? { actor: "cli", tool: "cli_read", outcome: "ok", threadId: ctx.threadId, messageIds: [read.id], count: 1, hiddenCount: read.hiddenCount }
+                  : { actor: "cli", tool: "cli_read", outcome: unknownOutcome(read), threadId: ctx.threadId },
+              );
+            }
+            if (!read.found) {
               throw new PluginCliError(`unknown message '${messageId}'`, {
                 code: "message_not_found",
                 hint: "Run `bb makosh-mail search <query>` to find message ids.",
               });
             }
-            if (options.json) return { exitCode: 0, stdout: json({ messageId, text }) };
-            return { exitCode: 0, stdout: `${text}\n` };
+            if (options.json) return { exitCode: 0, stdout: json({ messageId, text: read.text }) };
+            return { exitCode: 0, stdout: `${read.text}\n` };
           },
         }),
         sync: cliCommand({

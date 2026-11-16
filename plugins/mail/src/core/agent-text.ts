@@ -351,6 +351,37 @@ export function renderSearchHitsCounted(
   return { text: `${UNTRUSTED_NOTICE}\n${entries.join("\n")}`, hiddenCount: tally.total };
 }
 
+/** One search hit as the CLI's --json form gives it to an agent: the same redaction as renderSearchHits. */
+export type AgentHit = {
+  id: string;
+  accountId: string;
+  threadId: string;
+  date: string | null;
+  from: MailAddress;
+  subject: string;
+  folder: string;
+  snippet: string;
+};
+
+/** The JSON form of renderSearchHitsCounted: subject, From name and snippet redacted whole. */
+export function agentHitsCounted(
+  hits: MessageSummary[],
+  folderName: (hit: MessageSummary) => string = (hit) => hit.folder,
+): { hits: AgentHit[]; hiddenCount: number } {
+  const tally = new HiddenTally();
+  const out = hits.map((hit) => ({
+    id: hit.id,
+    accountId: hit.accountId,
+    threadId: hit.threadId,
+    date: hit.date,
+    from: { name: hit.from.name === null ? null : oneLine(tally.field(hit.from.name)), address: oneLine(hit.from.address) },
+    subject: oneLine(tally.field(hit.subject)),
+    folder: oneLine(folderName(hit)),
+    snippet: oneLine(tally.snippet(hit.snippet, hit.subject)),
+  }));
+  return { hits: out, hiddenCount: tally.total };
+}
+
 /** One mail_inbox entry (slice 3e): what the agent may judge an Inbox message by. */
 export type InboxEntry = {
   id: string;
@@ -425,6 +456,11 @@ export function renderContactsCounted(contacts: Contact[]): AgentRender {
  * A plain-text body keeps joiners (emoji sequences such as 👩‍💻 need them);
  * HTML-derived text already lost invisible characters in TextBuffer.
  */
+/** The plain text an agent path reads a body as (search post-filter, renderers). */
+export function plainBodyText(body: MessageBody | null): string {
+  return bodyText(body);
+}
+
 function bodyText(body: MessageBody | null): string {
   if (body === null) return "(body not available)";
   if (body.text !== null && body.text.trim() !== "") return body.text;

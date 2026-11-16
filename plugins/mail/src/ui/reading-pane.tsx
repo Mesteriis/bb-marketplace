@@ -376,6 +376,9 @@ function MessageItem({
   );
 }
 
+/** Why Hand to agent and the AI buttons are off for a message outside the AI access scope (slice 3f). */
+export const OUTSIDE_AI_ACCESS = "Outside AI access (Mail settings)";
+
 /** The message Hand to agent (and Reply, r, a, f) takes: the newest one open, else the newest. */
 export function messageToHand(messages: MessageHeader[], expandedIds: ReadonlySet<string>) {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -510,10 +513,12 @@ export function ReadingPane(props: ReadingPaneProps) {
         ) : null}
         <span className="flex-1" />
         {handed !== null ? (
-          <Button variant="ghost" size="sm" onClick={() => props.onHandToAgent(handed)}>
-            <Icon name="Bot" aria-hidden />
-            Hand to agent
-          </Button>
+          <span title={handed.inAiScope ? undefined : OUTSIDE_AI_ACCESS} className="inline-flex">
+            <Button variant="ghost" size="sm" disabled={!handed.inAiScope} onClick={() => props.onHandToAgent(handed)}>
+              <Icon name="Bot" aria-hidden />
+              Hand to agent
+            </Button>
+          </span>
         ) : null}
       </div>
       ) : null}
