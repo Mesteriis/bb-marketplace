@@ -1368,6 +1368,7 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
     if (count > 0) skipped.set(reason, (skipped.get(reason) ?? 0) + count);
   };
   let failed = 0;
+  const snoozeRows = new Set(runnable.flatMap((group) => (group.kind === "snooze" ? (group.snoozeIds ?? []) : [])));
   const rowsOf = (groups: UndoGroup[]) => new Map(store.undoRows(groups.flatMap((g) => g.ids)).map((row) => [row.id, row]));
   const foldersOf = (accountId: string) => store.listFolders(accountId);
   const changed = (accountId: string) => {
@@ -1413,9 +1414,23 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
   const retryLater = (step: Extract<UndoStep, { kind: "move_back" }>, ids: string[], use: UndoGroup["destinationUse"]) => {
     if (ids.length === 0) return;
     const { ruleId: _rule, ...rest } = record;
+    const kind = kindOf(step);
+    // A snooze put back keeps naming its rows, so a later Undo deletes them.
+    const snoozeIds = kind === "snooze" ? ids.filter((id) => snoozeRows.has(id)) : [];
     deps.undo.putBack({
       ...rest,
-      groups: [{ accountId: step.accountId, kind: kindOf(step), change: null, source: step.to, destination: step.from, destinationUse: use, ids }],
+      groups: [
+        {
+          accountId: step.accountId,
+          kind,
+          change: null,
+          source: step.to,
+          destination: step.from,
+          destinationUse: use,
+          ids,
+          ...(snoozeIds.length > 0 ? { snoozeIds } : {}),
+        },
+      ],
     });
   };
   /** The server could not be reached: counted as failed, and put back for another Undo. */
@@ -1492,21 +1507,29 @@ async function runUndo(deps: RpcDeps, undoId: string, log: (line: string) => voi
   const tasks = [...byAccount].map(([accountId, groups]) =>
     composeDeps.queue
       .run(accountId, async () => {
-        // A snooze's rows go first (spec "Undo for snooze and block"): the
-        // clock never returns a message the undo already moves back.
-        const snoozeIds = groups.flatMap((group) => (group.kind === "snooze" ? (group.snoozeIds ?? []) : []));
-        if (snoozeIds.length > 0) store.deleteSnoozes(snoozeIds);
         // Inside the account's task: a round may have pushed the move meanwhile.
         const rows = rowsOf(groups);
         const plan = planUndo({ ...record, groups }, rows, foldersOf);
         for (const entry of plan.skipped) skip(entry.reason, entry.count);
-        for (const step of plan.steps) {
-          if (step.kind === "cancel_pending") {
-            for (const id of store.cancelMove(step.ids, step.folder, step.destination)) restoredIds.add(id);
-          } else if (step.kind === "move_back") {
-            if (step.copyIfGmail) await copyBack(step, rows);
-            else queueBack(step);
+        try {
+          for (const step of plan.steps) {
+            if (step.kind === "cancel_pending") {
+              for (const id of store.cancelMove(step.ids, step.folder, step.destination)) restoredIds.add(id);
+            } else if (step.kind === "move_back") {
+              if (step.copyIfGmail) await copyBack(step, rows);
+              else queueBack(step);
+            }
           }
+        } finally {
+          // A snooze goes only once its move back is queued or its pending
+          // move cancelled, in the same queue task, so the clock never sees
+          // it in between (review item 6). A row skipped (moved elsewhere, a
+          // return already queued) or put back keeps its snooze: the return
+          // still happens.
+          const done = groups.flatMap((group) =>
+            group.kind === "snooze" ? (group.snoozeIds ?? []).filter((id) => restoredIds.has(id)) : [],
+          );
+          if (done.length > 0) store.deleteSnoozes(done);
         }
       })
       .catch((error: unknown) => {
