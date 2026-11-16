@@ -48,6 +48,10 @@ describe("PresendDialog", () => {
   it("lists BB files and secret-looking text (slice 3g)", () => {
     expect(presendIssueText({ kind: "bb_files", count: 2, origins: ["api", "Fix login"] }).text).toBe("2 files from BB: api, Fix login");
     expect(presendIssueText({ kind: "looks_secret", count: 2 }).text).toBe("The text looks like it holds a password, token or code (2)");
+    expect(presendIssueText({ kind: "reply_to_elsewhere", addresses: ["help@example.net"] })).toEqual({
+      text: "Reply-To differs from the sender: help@example.net",
+      fix: "Check recipients",
+    });
     render(<PresendDialog issues={[{ kind: "bb_files", count: 1, origins: ["api"] }, { kind: "looks_secret", count: 1 }]} onFix={vi.fn()} onBack={vi.fn()} onSendAnyway={vi.fn()} />);
     expect(screen.getByText("1 file from BB: api")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Check the text" })).toBeTruthy();

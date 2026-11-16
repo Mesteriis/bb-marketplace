@@ -286,3 +286,38 @@ describe("bbOriginLabels (slice 3g)", () => {
     expect(bbOriginLabels([{ origin: "bb:project:p1" }])).toEqual(["a BB project"]);
   });
 });
+
+describe("presendIssues: reply_to_elsewhere (slice 3i)", () => {
+  const reply = {
+    kind: "reply" as ComposeKind,
+    subject: "Re: Invoice",
+    doc: docFromLines(["Paid."]),
+    attachmentCount: 0,
+    recipients: ["help@example-support.net"],
+    own: new Set(["anna@example.com"]),
+    sentTo: new Set<string>(),
+    conversation: new Set(["billing@example.com", "help@example-support.net"]) as ReadonlySet<string>,
+    inheritedSubject: "Re: Invoice" as string | null,
+    replyToElsewhere: ["help@example-support.net"],
+  };
+
+  it("is raised for a reply that still goes to the flagged Reply-To", () => {
+    expect(presendIssues(reply)).toEqual([{ kind: "reply_to_elsewhere", addresses: ["help@example-support.net"] }]);
+    expect(presendIssues({ ...reply, kind: "reply_all", recipients: ["Help@Example-Support.net", "billing@example.com"] })).toEqual([
+      { kind: "reply_to_elsewhere", addresses: ["help@example-support.net"] },
+    ]);
+  });
+
+  it("clears when the owner edits the address out, and never for other kinds", () => {
+    expect(presendIssues({ ...reply, recipients: ["billing@example.com"] })).toEqual([]);
+    expect(presendIssues({ ...reply, replyToElsewhere: [] })).toEqual([]);
+    const { replyToElsewhere: _unused, ...withoutField } = reply;
+    expect(presendIssues(withoutField)).toEqual([]);
+    expect(presendIssues({ ...reply, kind: "forward", conversation: null, sentTo: new Set(["help@example-support.net"]) })).toEqual([]);
+  });
+
+  it("comes after the conversation check and before BB files", () => {
+    const issues = presendIssues({ ...reply, recipients: ["help@example-support.net", "eve@example.net"], bbOrigins: ["a BB thread"] });
+    expect(issues.map((issue) => issue.kind)).toEqual(["outside_conversation", "reply_to_elsewhere", "bb_files"]);
+  });
+});

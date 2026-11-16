@@ -16,7 +16,9 @@ export type PresendIssue =
   /** Slice 3g: files attached from BB projects or threads; `origins` de-duplicated, in order. */
   | { kind: "bb_files"; count: number; origins: string[] }
   /** Slice 3g: values redaction would hide in the owner's own text. */
-  | { kind: "looks_secret"; count: number };
+  | { kind: "looks_secret"; count: number }
+  /** Slice 3i: a reply still goes to the source's Reply-To that points away from its sender (ASCII addresses). */
+  | { kind: "reply_to_elsewhere"; addresses: string[] };
 
 export type PresendInput = {
   kind: ComposeKind;
@@ -40,6 +42,11 @@ export type PresendInput = {
   inheritedSubject: string | null;
   /** Slice 3g: one display label per attachment taken from BB ("project api"); absent or empty for none. */
   bbOrigins?: readonly string[];
+  /**
+   * Slice 3i: the source message's `reply_to_elsewhere` addresses (from
+   * `disguiseWarnings`); reply and reply all only. Absent or empty for none.
+   */
+  replyToElsewhere?: readonly string[];
 };
 
 /** What quoteHeaderText writes above a forwarded message. */
@@ -131,8 +138,8 @@ function mentionIn(text: string): string | null {
 const lower = (address: string) => address.trim().toLowerCase();
 
 /**
- * The issues, in the order attachment, subject, outside, new, BB files,
- * secret-like text. A reply or
+ * The issues, in the order attachment, subject, outside, new, Reply-To
+ * elsewhere, BB files, secret-like text. A reply or
  * reply all with a stored source is checked against its conversation only:
  * its participants are never "new" (spec resolution 5). Own addresses are
  * never listed.
@@ -158,6 +165,11 @@ export function presendIssues(input: PresendInput): PresendIssue[] {
     const sentTo = new Set([...input.sentTo].map(lower));
     const fresh = recipients.filter((address) => !sentTo.has(address));
     if (fresh.length > 0) issues.push({ kind: "new_recipients", addresses: fresh });
+  }
+  if (reply) {
+    const flagged = new Set((input.replyToElsewhere ?? []).map(lower));
+    const still = recipients.filter((address) => flagged.has(address));
+    if (still.length > 0) issues.push({ kind: "reply_to_elsewhere", addresses: still });
   }
   const origins = input.bbOrigins ?? [];
   if (origins.length > 0) issues.push({ kind: "bb_files", count: origins.length, origins: [...new Set(origins)] });

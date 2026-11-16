@@ -57,6 +57,12 @@ export type RuleRow = {
   subject: string;
   dev: DevClass | null;
   bulk: boolean;
+  /**
+   * Slice 3i: the stored sender check is `failed`. Such a message never
+   * matches, whatever the rule matches on (part A decision 5). Optional
+   * until the server passes it (plan Task 7).
+   */
+  senderFailed?: boolean;
 };
 
 const ADDRESS = /^[^\s@<>]{1,64}@[^\s@<>]{1,253}$/;
@@ -144,10 +150,11 @@ function devMatches(want: RuleDevMatch, dev: DevClass | null): boolean {
 /**
  * Whether an enabled rule matches a new message: every given field, words
  * whole and case-folded, a domain equal or a parent; bulk mail only for a
- * rule that matches on dev or list.
+ * rule that matches on dev or list; never a message whose sender check
+ * failed (slice 3i).
  */
 export function mailRuleMatches(rule: Rule, row: RuleRow): boolean {
-  if (!rule.enabled) return false;
+  if (!rule.enabled || row.senderFailed === true) return false;
   const match = rule.match;
   const from = match.from ?? [];
   const domains = match.domains ?? [];

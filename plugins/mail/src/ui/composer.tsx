@@ -655,7 +655,8 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       case "empty_subject":
         return () => rootRef.current?.ownerDocument.getElementById(`compose-subject-${draft.id}`)?.focus();
       case "outside_conversation":
-      case "new_recipients": {
+      case "new_recipients":
+      case "reply_to_elsewhere": {
         const wanted = new Set(issue.addresses.map((a) => a.toLowerCase()));
         setMarked(wanted);
         const holds = (field: Field) => field.chips.some((chip) => wanted.has(chipAddress(chip)));

@@ -38,6 +38,8 @@ export function presendIssueText(issue: PresendIssue): { text: string; fix: stri
       };
     case "looks_secret":
       return { text: `The text looks like it holds a password, token or code (${issue.count})`, fix: "Check the text" };
+    case "reply_to_elsewhere":
+      return { text: `Reply-To differs from the sender: ${issue.addresses.join(", ")}`, fix: "Check recipients" };
   }
 }
 

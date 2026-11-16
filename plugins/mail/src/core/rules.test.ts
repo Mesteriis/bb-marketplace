@@ -113,6 +113,15 @@ describe("mailRuleMatches", () => {
   });
 });
 
+describe("mailRuleMatches: sender check (slice 3i)", () => {
+  it("never matches a message whose sender check failed", () => {
+    expect(mailRuleMatches(rule(), row({ senderFailed: true }))).toBe(false);
+    expect(mailRuleMatches(rule({ match: { list: "demo.example-org.github.com" } }), row({ senderFailed: true }))).toBe(false);
+    expect(mailRuleMatches(rule({ match: { from: ["notifications@github.com"] } }), row({ bulk: false, senderFailed: true }))).toBe(false);
+    expect(mailRuleMatches(rule(), row({ senderFailed: false }))).toBe(true);
+  });
+});
+
 describe("ruleCandidates", () => {
   it("is newInbox minus returning, never inserted", () => {
     const outcome = { newInbox: ["m1", "m2", "m3"], returning: ["m2"], inserted: ["m1", "m2", "m3", "m9"] };
