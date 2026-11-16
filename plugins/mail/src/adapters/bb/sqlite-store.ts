@@ -1592,6 +1592,15 @@ export function createSqliteStore(db: Database.Database): MailStore {
       });
     },
 
+    detachedRows(accountId, folder) {
+      return db
+        .prepare<[string, string], { id: string; message_id: string | null; gm_msgid: string | null }>(
+          "SELECT id, message_id, gm_msgid FROM messages WHERE account_id = ? AND folder = ? AND uid IS NULL ORDER BY id",
+        )
+        .all(accountId, folder)
+        .map((row) => ({ id: row.id, messageId: row.message_id, gmMsgId: row.gm_msgid }));
+    },
+
     // Messages -------------------------------------------------------------
 
     upsertMessages(accountId, folder, messages: FetchedMessage[]) {

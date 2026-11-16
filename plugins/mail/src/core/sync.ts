@@ -34,6 +34,8 @@ import {
   type MailStore,
   type SecretVault,
 } from "./ports.ts";
+import { normalizeMessageId } from "./headers.ts";
+import { SNOOZES_MAX_PER_ACCOUNT } from "./snooze.ts";
 import { buildThreads } from "./threading.ts";
 import { unsubscribeInfoOf } from "./unsubscribe.ts";
 
@@ -546,6 +548,14 @@ async function syncFolder(
   // Moves still queued here when the reset starts; any whose row the reset
   // deletes (not reattached, outside the window) is reported as dropped.
   const queuedAtReset = resetting ? store.pendingMoves(accountId, path).map((m) => m.id) : [];
+  // Rows a first sync or a reset must not lose to the window (review item
+  // 1): every row of a never-synced folder (a move re-homed it here), a row
+  // with a live snooze, and a row with a queued move. They are looked for by
+  // uid and Message-ID before the reset deletes what is still detached.
+  const kept =
+    stored === null || resetting
+      ? keptAtReset(store, accountId, path, stored === null, queuedAtReset)
+      : new Map<string, number | null>();
   if (resetting) store.beginFolderReset(accountId, path);
   const initial = stored === null || resetting;
 
@@ -617,6 +627,7 @@ async function syncFolder(
   // Every successful round, not only the one that saw the change: a reset
   // round that failed midway has already saved the new UIDVALIDITY, so the
   // rows it detached are only cleaned up here.
+  if (kept.size > 0) fetched += await reattachKept(store, session, accountId, path, kept, context.preset, options.batchSize);
   const stillThere = queuedAtReset.filter((id) => store.getMessage(id) !== null);
   const resetRemoved = store.finishFolderReset(accountId, path);
   const droppedMoves = stillThere.filter((id) => store.getMessage(id) === null);
@@ -626,6 +637,79 @@ async function syncFolder(
     removed: reconciled.removed + resetRemoved,
     flagsChanged: reconciled.flagsChanged,
   };
+}
+
+/**
+ * The rows a first sync or a reset keeps looking for, by id with the uid
+ * they had (null: already detached; review item 1): all of a never-synced
+ * folder's rows, rows with a live snooze and rows with a queued move.
+ */
+function keptAtReset(
+  store: MailStore,
+  accountId: string,
+  path: string,
+  neverSynced: boolean,
+  queued: readonly string[],
+): Map<string, number | null> {
+  const wanted = new Set<string>(queued);
+  for (const snooze of store.listSnoozes(accountId, { limit: SNOOZES_MAX_PER_ACCOUNT })) wanted.add(snooze.messageId);
+  const kept = new Map<string, number | null>();
+  for (const row of store.detachedRows(accountId, path)) if (neverSynced || wanted.has(row.id)) kept.set(row.id, null);
+  for (const entry of store.localFolderIndex(accountId, path, EPOCH_ISO)) {
+    if (neverSynced || wanted.has(entry.id)) kept.set(entry.id, entry.uid);
+  }
+  return kept;
+}
+
+/**
+ * After a reset's window fetch: the kept rows still detached are looked for
+ * on the server, first at the uid they had, then by Message-ID, and
+ * reattached when the message found is theirs (same Gmail id or Message-ID).
+ * A row found nowhere stays detached and the reset deletes it. Returns how
+ * many messages were stored.
+ */
+async function reattachKept(
+  store: MailStore,
+  session: FolderSession,
+  accountId: string,
+  path: string,
+  kept: ReadonlyMap<string, number | null>,
+  preset: AccountPreset,
+  batchSize: number,
+): Promise<number> {
+  const detached = () => store.detachedRows(accountId, path).filter((row) => kept.has(row.id));
+  const ours = (message: FetchedMessage, rows: ReturnType<typeof detached>) =>
+    rows.some(
+      (row) =>
+        (row.gmMsgId !== null && message.gmMsgId === row.gmMsgId) ||
+        (row.messageId !== null && message.messageId !== null &&
+          normalizeMessageId(message.messageId) === normalizeMessageId(row.messageId)),
+    );
+  let stored = 0;
+  const attach = async (uids: number[]) => {
+    const attached = new Set(store.localFolderIndex(accountId, path, EPOCH_ISO).map((entry) => entry.uid));
+    const fresh = [...new Set(uids)].filter((uid) => !attached.has(uid));
+    for (let i = 0; i < fresh.length; i += batchSize) {
+      const rows = detached();
+      if (rows.length === 0) return;
+      const messages = (await session.fetchMessages(fresh.slice(i, i + batchSize)))
+        .filter((message) => ours(message, rows))
+        .map((message) => withUnsubscribe(message, preset));
+      if (messages.length === 0) continue;
+      store.transaction(() => store.upsertMessages(accountId, path, messages));
+      stored += messages.length;
+    }
+  };
+  await attach(detached().flatMap((row) => {
+    const uid = kept.get(row.id);
+    return uid === null || uid === undefined ? [] : [uid];
+  }));
+  const byMessageId: number[] = [];
+  for (const row of detached()) {
+    if (row.messageId !== null) byMessageId.push(...(await session.findByMessageId(row.messageId)));
+  }
+  await attach(byMessageId);
+  return stored;
 }
 
 /**

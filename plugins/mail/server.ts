@@ -148,6 +148,8 @@ import {
   type MailAddress,
   type MailChangedPayload,
   type MailStore,
+  type FolderSession,
+  type ImapConfig,
   type MailTransport,
   type MessageAction,
   type OutboxChangedPayload,
@@ -1728,12 +1730,47 @@ async function ensureSnoozeFolder(deps: RpcDeps, accountId: string, log: (line: 
         continue;
       }
       store.setSnoozeFolder(accountId, made.path);
+      await seedFolderState(deps, accountId, config, made.path, log);
       deps.publishChanged(accountId);
       log(`snooze ${accountId}: folder ${made.created ? "created" : "existing"}`);
       return made.path;
     }
     throw refuse("conflict", SNOOZE_CREATE_REFUSED_MESSAGE);
   });
+}
+
+/**
+ * Seeds a folder's sync state from its STATUS when it has none, so the
+ * snooze folder's first round is incremental and never a reset that could
+ * lose mail moved in before it (review item 1). Inside the account's queue.
+ * A failure is logged by kind and left to the round, whose reset keeps
+ * snoozed rows anyway.
+ */
+async function seedFolderState(
+  deps: RpcDeps,
+  accountId: string,
+  config: ImapConfig,
+  path: string,
+  log: (line: string) => void,
+): Promise<void> {
+  const { store, composeDeps } = deps;
+  if (store.getSyncState(accountId, path) !== null) return;
+  let session: FolderSession | null = null;
+  try {
+    session = await composeDeps.gateway.openFolder(config, path, { readOnly: true });
+    const status = await session.status();
+    if (store.getSyncState(accountId, path) === null) {
+      store.saveSyncState(accountId, path, {
+        uidValidity: status.uidValidity,
+        lastUid: Math.max(0, status.uidNext - 1),
+        syncedSince: composeDeps.clock.now().toISOString(),
+      });
+    }
+  } catch (error) {
+    log(`snooze ${accountId}: folder state not seeded (${errorKind(error)})`);
+  } finally {
+    if (session !== null) await session.close().catch(() => undefined);
+  }
 }
 
 /**
@@ -2407,7 +2444,7 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       snooze_folder_create: owner("snooze_folder_create", async ({ accountId }) => ({
         path: await ensureSnoozeFolder(deps, accountId, (line) => bb.log.info(line)),
       })),
-      snooze_folder_use: owner("snooze_folder_use", ({ accountId, path }) => {
+      snooze_folder_use: owner("snooze_folder_use", async ({ accountId, path }) => {
         if (store.getAccount(accountId) === null) throw refuse("not_found", "Unknown account");
         const folder = store.listFolders(accountId).find((f) => f.path === path);
         if (folder === undefined) throw refuse("not_found", "Unknown folder");
@@ -2415,6 +2452,14 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         if (!folder.selectable || (use !== null && SNOOZE_REFUSED_USES.has(use))) throw refuse("invalid", SNOOZE_FOLDER_REFUSED_MESSAGE);
         store.setSnoozeFolder(accountId, path);
         publishChanged(accountId);
+        // A folder not synced yet gets its state first (review item 1); best effort.
+        if (store.getSyncState(accountId, path) === null && deps.vaultReady()) {
+          await composeDeps.queue.run(accountId, async () => {
+            const fresh = store.getAccount(accountId);
+            if (fresh === null || fresh.authFailed) return;
+            await seedFolderState(deps, accountId, imapConfigOf(fresh, composeDeps.vault), path, (line) => bb.log.info(line));
+          });
+        }
         return { ok: true };
       }),
       // Block (slice 3e): global rules; moves only matching Inbox mail to Spam.

@@ -477,6 +477,12 @@ export class InMemoryMailStore implements MailStore {
     return before - this.state.rows.length;
   }
 
+  detachedRows(accountId: string, folder: string): { id: string; messageId: string | null; gmMsgId: string | null }[] {
+    return this.folderRows(accountId, folder)
+      .filter((r) => r.uid === null)
+      .map((r) => ({ id: r.id, messageId: r.message.messageId, gmMsgId: r.gmMsgId }));
+  }
+
   // Messages ---------------------------------------------------------------
 
   upsertMessages(accountId: string, folder: string, messages: FetchedMessage[]): { inserted: string[]; returning: string[] } {

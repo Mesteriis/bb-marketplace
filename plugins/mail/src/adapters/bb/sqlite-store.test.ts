@@ -327,6 +327,23 @@ describe("createSqliteStore", () => {
     expect(store.getMessage(id)?.subject).toBe("Invented moved");
   });
 
+  it("detachedRows lists the folder's detached rows with their Message-ID and Gmail id", () => {
+    store.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { messageId: "a@example.org", gmMsgId: "77" }),
+      makeFetchedMessage(2, { messageId: null }),
+    ]);
+    const [a, b] = [idOf(store, 1), idOf(store, 2)];
+    expect(store.detachedRows("acc_1", INBOX)).toEqual([]);
+    store.beginFolderReset("acc_1", INBOX);
+    expect(store.detachedRows("acc_1", INBOX).sort((x, y) => x.id.localeCompare(y.id))).toEqual(
+      [
+        { id: a, messageId: "a@example.org", gmMsgId: "77" },
+        { id: b, messageId: null, gmMsgId: null },
+      ].sort((x, y) => x.id.localeCompare(y.id)),
+    );
+    expect(store.detachedRows("acc_1", "Archive")).toEqual([]);
+  });
+
   it("finishFolderReset deletes rows that did not reappear", () => {
     store.upsertMessages("acc_1", INBOX, [
       makeFetchedMessage(1, {
