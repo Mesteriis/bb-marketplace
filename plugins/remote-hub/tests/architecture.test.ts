@@ -62,7 +62,7 @@ const core: Layer = {
 
 const ui: Layer = {
   directory: "src/ui",
-  packages: ["react"],
+  packages: ["react", "@xterm/xterm", "@xterm/addon-fit"],
   reachable: ["src/ui", "src/core"],
 };
 

@@ -47,20 +47,22 @@
     "test:integration": "python3 tests/integration/ssh-docker.py"
   },
   "dependencies": {
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/xterm": "5.5.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@get-bb/plugin-sdk": "0.6.132",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "typescript": "^5.7.0",
-    "vitest": "^5.1.0",
     "better-sqlite3": "^12.0.0",
     "hono": "^4.11.9",
-    "@types/better-sqlite3": "^7.6.12",
-    "@testing-library/react": "^16.3.3",
-    "@testing-library/dom": "^10.4.2",
-    "jsdom": "^26.1.0"
+    "jsdom": "^26.1.0",
+    "typescript": "^5.7.0",
+    "vitest": "^5.1.0"
   }
 }
