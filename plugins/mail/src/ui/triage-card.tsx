@@ -17,7 +17,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { shownText } from "./agent-send-card.tsx";
 import { formatFullDate, formatUntil, subjectOrPlaceholder } from "./thread-list.tsx";
-import { UNSUBSCRIBE_PRIVACY } from "./unsubscribe-dialog.tsx";
+import { FOREIGN_MAILTO_NOTE, MailtoPreview, UNSUBSCRIBE_PRIVACY } from "./unsubscribe-dialog.tsx";
 
 export type TriageAction = TriageItemView["action"];
 
@@ -342,6 +342,20 @@ function TriageItemRow({
               ? `One click to ${shownText(item.unsubscribe.host ?? "")}`
               : `An email to ${shownText(item.unsubscribe.address ?? "")}`}
           </p>
+        ) : null}
+        {item.action === "unsubscribe" && item.unsubscribe?.method === "mailto" && item.unsubscribe.mailto !== null ? (
+          <>
+            {item.unsubscribe.mailto.foreignDomain ? (
+              <p role="note" className="rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive">
+                {FOREIGN_MAILTO_NOTE}
+              </p>
+            ) : null}
+            <MailtoPreview
+              subject={item.unsubscribe.mailto.subject}
+              body={item.unsubscribe.mailto.body}
+              hiddenChars={item.unsubscribe.mailto.hiddenChars}
+            />
+          </>
         ) : null}
         {item.note !== null && item.note !== "" ? (
           <AgentNote>{shownText(item.note)}</AgentNote>

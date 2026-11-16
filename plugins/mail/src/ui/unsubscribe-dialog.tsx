@@ -1,6 +1,6 @@
 // "Unsubscribe from <list>?" (slice 3e): the one method the pane offers
-// (one click to the list's host, or an email to its address), and always the
-// privacy cost: unsubscribing confirms that this address is read. Cancel has
+// (one click to the list's host, or an email to its address with the exact
+// subject and body it sends), and always the privacy cost: unsubscribing confirms that this address is read. Cancel has
 // the focus, so Enter never unsubscribes by accident.
 import { useRef } from "react";
 import type { UnsubscribeInfoView } from "../core/model.ts";
@@ -23,6 +23,35 @@ export const UNSUBSCRIBE_PRIVACY =
   "Unsubscribing tells the sender this address is read. Do it only for lists you signed up for; for anything else use Spam or Block.";
 export const UNSUBSCRIBE_HIDDEN_HINT = "Use Spam or Block for mail you never signed up for";
 export const FOREIGN_MAILTO_NOTE = "This address is not at the sender's domain.";
+export const MAILTO_PREVIEW_LABEL = "The email that will be sent";
+
+/**
+ * The exact subject and body a mailto unsubscribe sends (review item 5), as
+ * plain text: never HTML, never a link; invisible characters were taken out
+ * on the server and are taken out again here, and their count is named.
+ */
+export function MailtoPreview({ subject, body, hiddenChars }: { subject: string; body: string; hiddenChars: number }) {
+  const text = shownText(body);
+  return (
+    <div role="group" aria-label={MAILTO_PREVIEW_LABEL} className="flex flex-col gap-1 rounded-md border border-border px-2 py-1.5 text-xs">
+      <p className="min-w-0 break-words">
+        <span className="text-muted-foreground">Subject: </span>
+        <span className="text-foreground">{shownText(subject)}</span>
+      </p>
+      {text === "" ? (
+        <p className="text-muted-foreground">(no text)</p>
+      ) : (
+        <p className="min-w-0 whitespace-pre-wrap break-words text-foreground">{text}</p>
+      )}
+      {hiddenChars > 0 ? (
+        <p role="note" className="text-destructive">
+          {hiddenChars === 1 ? "1 hidden character removed" : `${hiddenChars} hidden characters removed`} (invisible marks the
+          list put in the subject or the text).
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 /** The method Unsubscribe uses first: one click when offered, else the email; null when neither is. */
 export function preferredMethod(info: UnsubscribeInfoView | null): UnsubscribeMethod | null {
@@ -117,6 +146,7 @@ export function UnsubscribeDialog({
                 {FOREIGN_MAILTO_NOTE}
               </p>
             ) : null}
+            <MailtoPreview subject={mailto.subject} body={mailto.body} hiddenChars={mailto.hiddenChars} />
           </div>
         ) : null}
         <DialogFooter>

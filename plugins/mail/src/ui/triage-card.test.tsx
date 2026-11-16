@@ -37,7 +37,7 @@ const VIEW: TriageView = {
     item(2, "archive"),
     item(3, "mark_read"),
     item(4, "snooze", { accountId: "acc-2", accountEmail: "two@example.org" }),
-    item(5, "unsubscribe", { unsubscribe: { method: "one_click", host: "news.example.com", address: null } }),
+    item(5, "unsubscribe", { unsubscribe: { method: "one_click", host: "news.example.com", address: null, mailto: null } }),
     item(6, "spam", { available: false, reason: "Moved since the agent proposed it" }),
     item(7, "reply"),
   ],
@@ -146,6 +146,24 @@ describe("TriageCard", () => {
       expect(handler!("cancel")).toBe(true);
     });
     expect(cancel).toHaveBeenCalled();
+  });
+
+  it("an email unsubscribe shows the exact subject and body it sends and the foreign-domain note (review item 5)", async () => {
+    const mailtoItem = item(1, "unsubscribe", {
+      unsubscribe: {
+        method: "mailto",
+        host: null,
+        address: "leave@other.example.net",
+        mailto: { subject: "Remove me", body: "Invented removal line\nSecond line", hiddenChars: 1, foreignDomain: true },
+      },
+    });
+    await mount({ state: "ready", view: { ...VIEW, items: [mailtoItem], needsFolder: [] }, viewToken: "tok-1" });
+    expect(screen.getByText("An email to leave@other.example.net")).toBeTruthy();
+    const preview = screen.getByRole("group", { name: "The email that will be sent" });
+    expect(within(preview).getByText("Remove me")).toBeTruthy();
+    expect(within(preview).getByText(/Invented removal line/).textContent).toBe("Invented removal line\nSecond line");
+    expect(screen.getByText("This address is not at the sender's domain.")).toBeTruthy();
+    expect(screen.getByText(/1 hidden character removed/)).toBeTruthy();
   });
 
   it("a closed batch says so; a failed submit reloads the card for a new token", async () => {
