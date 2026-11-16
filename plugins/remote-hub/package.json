@@ -43,7 +43,8 @@
     "build:helper": "cargo build --release --locked --target aarch64-apple-darwin --manifest-path helper/Cargo.toml && mkdir -p bin && cp helper/target/aarch64-apple-darwin/release/remote-hub-helper bin/remote-hub-helper && chmod +x bin/remote-hub-helper",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test"
+    "check": "npm run typecheck && npm run test",
+    "test:integration": "python3 tests/integration/ssh-docker.py"
   },
   "dependencies": {
     "zod": "^4.6.5"

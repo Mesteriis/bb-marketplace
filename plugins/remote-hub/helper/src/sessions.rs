@@ -592,7 +592,13 @@ impl SessionManager {
                     session.child_exited = true;
                     session.exit_code = code;
                     session.signal = sig;
-                    session.close_reason = Some("exited".to_string());
+                    // ssh exits 255 for a closed interactive session; surface it
+                    // as ssh_error rather than a normal exit.
+                    session.close_reason = Some(if session.kind == "ssh" && code == Some(255) {
+                        "ssh_error".to_string()
+                    } else {
+                        "exited".to_string()
+                    });
                     session.child_exited_at = Some(Instant::now());
                     newly.push(session.id);
                     #[cfg(feature = "test-hooks")]
