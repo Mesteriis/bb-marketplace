@@ -15,6 +15,17 @@ import { MIGRATIONS, createSqliteStore } from "./sqlite-store.ts";
 
 const INBOX = "INBOX";
 const EPOCH = "1970-01-01T00:00:00.000Z";
+/** Bound for one timed store call (one page); generous against parallel load (spec 3f resolution 19). */
+const PAGE_MS = 250;
+/** Test timeout for tests that seed thousands of rows; seeding is never inside a timed span. */
+const SEEDING_TIMEOUT_MS = 60_000;
+
+/** Times one call alone. */
+function timeOne<T>(fn: () => T): { value: T; ms: number } {
+  const started = performance.now();
+  const value = fn();
+  return { value, ms: performance.now() - started };
+}
 
 /** Mirrors bb.storage.migrate: every statement, in order, in one transaction. */
 function migrate(db: Database.Database): void {
@@ -772,24 +783,23 @@ describe("slice-2 migrations (SQLite)", () => {
     expect(plan.join("\n")).not.toMatch(/CORRELATED/);
     expect(plan.join("\n")).toMatch(/LIST SUBQUERY|messages_folder_pending/);
 
+    // Each page call is timed alone (spec 3f resolution 19); seeding never is.
     for (const [folder, n] of folders) {
-      const started = performance.now();
       let cursor: string | null = null;
       let listed = 0;
       do {
-        const page = store.listThreads("acc_1", folder, cursor, 50);
+        const after: string | null = cursor;
+        const { value: page, ms } = timeOne((): ReturnType<MailStore["listThreads"]> => store.listThreads("acc_1", folder, after, 50));
+        // Generous bound against parallel load; measured locally in single-digit ms per page.
+        expect(ms, `${folder} page`).toBeLessThan(PAGE_MS);
         listed += page.threads.length;
         cursor = page.nextCursor;
       } while (cursor !== null && listed < 200);
-      // Generous bound against CI jitter; measured locally in single-digit ms per page.
-      expect(performance.now() - started).toBeLessThan(500);
       expect(listed).toBe(Math.min(n, 200));
     }
-    const started = performance.now();
-    store.listFolders("acc_1");
-    store.unreadCount(null);
-    expect(performance.now() - started).toBeLessThan(500);
-  });
+    expect(timeOne(() => store.listFolders("acc_1")).ms).toBeLessThan(PAGE_MS);
+    expect(timeOne(() => store.unreadCount(null)).ms).toBeLessThan(PAGE_MS);
+  }, SEEDING_TIMEOUT_MS);
 
   it("inline parts cascade with their message and the account", () => {
     store.upsertMessages("acc_1", INBOX, [
@@ -1340,15 +1350,15 @@ describe("slice-3a migration (SQLite)", () => {
       return prepare(sql);
     }) as typeof db.prepare;
 
-    const started = performance.now();
     let cursor: string | null = null;
     let listed = 0;
     do {
-      const page = store.listThreadsAll("inbox", cursor, 50);
+      const after: string | null = cursor;
+      const { value: page, ms } = timeOne((): ReturnType<MailStore["listThreadsAll"]> => store.listThreadsAll("inbox", after, 50));
+      expect(ms).toBeLessThan(PAGE_MS);
       listed += page.threads.length;
       cursor = page.nextCursor;
     } while (cursor !== null && listed < 200);
-    expect(performance.now() - started).toBeLessThan(500);
     expect(listed).toBe(200);
     db.prepare = prepare;
 
@@ -1365,7 +1375,7 @@ describe("slice-3a migration (SQLite)", () => {
       expect(plan).toMatch(/SCAN threads USING INDEX threads_last_date/);
       expect(plan).not.toMatch(/TEMP B-TREE/);
     }
-  });
+  }, SEEDING_TIMEOUT_MS);
 
   it("listThreadsAll keyset pages through equal dates across accounts without gaps or repeats", () => {
     store.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org" }));
