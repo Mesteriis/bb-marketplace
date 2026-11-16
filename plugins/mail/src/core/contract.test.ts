@@ -910,7 +910,10 @@ describe("slice-3c contract", () => {
     expect(
       rpcSchemas.translate_settings_get.output.safeParse({
         gateway: "ok",
-        providers: [{ id: "provider-a", displayName: "Provider A", available: true }],
+        providers: [
+          { id: "provider-a", displayName: "Provider A", available: true, reason: null },
+          { id: "provider-b", displayName: "Provider B", available: false, reason: "bridge_missing" },
+        ],
         models: null,
         current: { providerId: "", model: "", language: "ru" },
       }).success,
@@ -923,6 +926,14 @@ describe("slice-3c contract", () => {
         current: { providerId: "", model: "", language: "ru" },
       }).success,
     ).toBe(true);
+    expect(
+      rpcSchemas.translate_settings_get.output.safeParse({
+        gateway: "ok",
+        providers: [{ id: "provider-a", displayName: "Provider A", available: false, reason: "r".repeat(201) }],
+        models: null,
+        current: { providerId: "", model: "", language: "ru" },
+      }).success,
+    ).toBe(false);
     expect(rpcSchemas.translate_cancel.output.safeParse({ cancelled: true }).success).toBe(true);
     expect(rpcSchemas.translate_settings_set.output.safeParse({ ok: true }).success).toBe(true);
     expect(rpcSchemas.translate_clear.output.safeParse({ removed: 3 }).success).toBe(true);

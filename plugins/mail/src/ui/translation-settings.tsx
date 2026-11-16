@@ -1,4 +1,4 @@
-// Translation settings (slice 3c): which Makosh AI provider and model
+// AI settings (slice 3c, titled so in 3f): which Makosh AI provider and model
 // translate, into which language by default, and Clear translations. The
 // provider and model lists come from Makosh AI through the server; there is
 // no default provider or model in this code.
@@ -20,7 +20,7 @@ import { TRANSLATE_LANGUAGES } from "./translation-block.tsx";
 /** translate_settings_get's answer. */
 export interface TranslateSettingsData {
   gateway: string;
-  providers: { id: string; displayName: string; available: boolean }[];
+  providers: { id: string; displayName: string; available: boolean; reason: string | null }[];
   /** The current provider's models; null or empty: type the model id. */
   models: { model: string; displayName: string }[] | null;
   current: { providerId: string; model: string; language: string };
@@ -109,7 +109,7 @@ export function TranslationSettings({ open, onOpenChange, load, save, clear, onS
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md" onEscapeKeyDown={stopEscape}>
         <DialogHeader>
-          <DialogTitle>Translation settings</DialogTitle>
+          <DialogTitle>AI settings</DialogTitle>
           <DialogDescription>
             Translate sends the message's subject and text, never attachments or images, to the provider you
             choose in Makosh AI. Translations are kept on this computer until you clear them.
@@ -145,7 +145,12 @@ export function TranslationSettings({ open, onOpenChange, load, save, clear, onS
                 </SelectContent>
               </Select>
               {chosen !== null && !chosen.available ? (
-                <p className="text-xs text-destructive">This provider is not available in Makosh AI right now.</p>
+                <>
+                  <p className="text-xs text-destructive">This provider is not available in Makosh AI right now.</p>
+                  {chosen.reason !== null && chosen.reason !== "" ? (
+                    <p className="text-xs text-muted-foreground">{`Makosh AI: ${chosen.reason}`}</p>
+                  ) : null}
+                </>
               ) : null}
               <p className="text-xs text-muted-foreground">Other providers need a Makosh Mail update.</p>
             </div>

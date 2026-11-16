@@ -309,17 +309,84 @@ describe("createMakoshAiTranslator: errors and providers", () => {
     const ai = new FakeMakoshAi();
     const signal = new AbortController().signal;
     expect(await ai.translator().providers(signal)).toEqual([
-      { id: "claude-code", displayName: "Claude Code", available: true },
-      { id: "codex", displayName: "Codex", available: true },
+      { id: "claude-code", displayName: "Claude Code", available: true, reason: null },
+      { id: "codex", displayName: "Codex", available: true, reason: null },
     ]);
     ai.methods = [...ai.methods, "ai.v1.providers"];
+    // makosh-ai 0.1.0's ai.v1.providers shape (its contract), synthetic values.
     ai.providers = {
       providers: [
-        { providerId: "codex", displayName: "Codex", api: "openai-responses", available: false },
-        { providerId: "invented", displayName: "Invented", api: "invented-api", available: true },
+        { id: "claude-code", displayName: "Claude Code", apiFormat: "anthropic-messages", available: true },
+        { id: "codex", displayName: "Codex", apiFormat: "openai-responses", available: false, reason: "bridge_missing" },
+        { id: "invented", displayName: "Invented", apiFormat: "invented-api", available: true },
       ],
     };
-    expect(await ai.translator().providers(signal)).toEqual([{ id: "codex", displayName: "Codex", available: false }]);
+    expect(await ai.translator().providers(signal)).toEqual([
+      { id: "claude-code", displayName: "Claude Code", available: true, reason: null },
+      { id: "codex", displayName: "Codex", available: false, reason: "bridge_missing" },
+    ]);
+  });
+
+  it("pins makosh-ai's providers shape: the old mail-side shape is not read", async () => {
+    const ai = new FakeMakoshAi();
+    ai.methods = [...ai.methods, "ai.v1.providers"];
+    ai.providers = {
+      providers: [{ providerId: "codex", displayName: "Codex", api: "openai-responses", available: true }],
+    };
+    await expect(ai.translator().providers(new AbortController().signal)).rejects.toBeTruthy();
+  });
+
+  it("maps makosh-ai's reason prefixes; the kept text drops the prefix", async () => {
+    const cases = [
+      ["busy", "conflict", "busy"],
+      ["bridge_missing", "conflict", "pool_unavailable"],
+      ["pool_missing", "not_found", "pool_unavailable"],
+      ["too_large", "invalid", "too_large"],
+      ["forbidden_caller", "forbidden", "failed"],
+      ["stream_lost", "not_found", "failed"],
+      ["bad_cursor", "conflict", "failed"],
+    ] as const;
+    for (const [reason, code, kind] of cases) {
+      const ai = new FakeMakoshAi();
+      ai.startError = new experimental_PluginRpcCallError({ code, message: `${reason}: Invented gateway text.` });
+      const out = await run(ai);
+      expect(out.error?.kind, reason).toBe(kind);
+      if (kind === "pool_unavailable") expect(out.error?.gatewayMessage).toBe("Invented gateway text.");
+    }
+  });
+
+  it("a read that fails with stream_lost or bad_cursor is failed, never pool_unavailable", async () => {
+    for (const reason of ["stream_lost", "bad_cursor"] as const) {
+      const ai = new FakeMakoshAi();
+      const base = ai.callRpc;
+      const translator = createMakoshAiTranslator({
+        callRpc: async (args) => {
+          if (args.method === "ai.v1.read") {
+            throw new experimental_PluginRpcCallError({ code: "not_found", message: `${reason}: Invented.` });
+          }
+          return base(args);
+        },
+        discover: async () => ai.methods,
+        firstProjectId: async () => "p",
+      });
+      await expect(
+        translator.translate({ providerId: "codex", model: "m", ...PROMPT, maxOutputTokens: 1 }, () => {}, new AbortController().signal),
+      ).rejects.toMatchObject({ kind: "failed" });
+    }
+  });
+
+  it("an unknown prefix or none keeps the code mapping", async () => {
+    const unknownPrefix = new FakeMakoshAi();
+    unknownPrefix.startError = new experimental_PluginRpcCallError({ code: "conflict", message: "invented_reason: Text." });
+    const out = await run(unknownPrefix);
+    expect(out.error?.kind).toBe("pool_unavailable");
+    expect(out.error?.gatewayMessage).toBe("invented_reason: Text.");
+    const bare = new FakeMakoshAi();
+    bare.startError = new experimental_PluginRpcCallError({ code: "conflict", message: "Bridge not ready." });
+    expect((await run(bare)).error).toMatchObject({ kind: "pool_unavailable", gatewayMessage: "Bridge not ready." });
+    const gone = new FakeMakoshAi();
+    gone.startError = new experimental_PluginRpcCallError({ code: "unknown_method", message: "busy: gone" });
+    expect((await run(gone)).error?.kind).toBe("gateway_missing");
   });
 
   it("lists models with the first project's id, none without a project, and without projectId once providers are listed", async () => {
@@ -331,7 +398,7 @@ describe("createMakoshAiTranslator: errors and providers", () => {
     expect(await ai.translator().models("codex", signal)).toEqual([]);
     expect(ai.of("ai.v1.models")).toHaveLength(1);
     ai.methods = [...ai.methods, "ai.v1.providers"];
-    ai.providers = { providers: [{ providerId: "codex", displayName: "Codex", api: "openai-responses", available: true }] };
+    ai.providers = { providers: [{ id: "codex", displayName: "Codex", apiFormat: "openai-responses", available: true }] };
     await ai.translator().models("codex", signal);
     expect(ai.of("ai.v1.models").at(-1)).toEqual({ providerId: "codex" });
   });

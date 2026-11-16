@@ -382,14 +382,14 @@ function defineSettings(bb: BbPluginApi) {
     // first one Makosh AI offers.
     translateProvider: {
       type: "string",
-      label: "Translation provider",
+      label: "AI provider (Makosh AI)",
       description: "A Makosh AI provider id. Empty: the first available one.",
       default: "",
       experimental_schema: settingLine(64),
     },
     translateModel: {
       type: "string",
-      label: "Translation model",
+      label: "AI model",
       description: "A model id of that provider. Empty: the first model it lists.",
       default: "",
       experimental_schema: settingLine(200),
@@ -2377,11 +2377,16 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         const current = deps.translateSettings();
         const signal = AbortSignal.timeout(SETTINGS_LOOKUP_MS);
         const gateway = await deps.gateway.get({ fresh: true });
-        let providers: Awaited<ReturnType<Translator["providers"]>> = [];
+        let providers: { id: string; displayName: string; available: boolean; reason: string | null }[] = [];
         let models: { model: string; displayName: string }[] | null = null;
         if (gateway === "ok") {
           try {
-            providers = await deps.gateway.translator.providers(signal);
+            providers = (await deps.gateway.translator.providers(signal)).map((p) => ({
+              id: p.id,
+              displayName: p.displayName,
+              available: p.available,
+              reason: p.reason ?? null,
+            }));
           } catch {
             providers = [];
           }
