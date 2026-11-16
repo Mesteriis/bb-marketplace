@@ -305,7 +305,10 @@ export function createServerJobs(deps: ServerJobsDeps): ServerJobs {
     return "done";
   }
 
-  function configOf(accountId: string): { config: ImapConfig; context: PrepareContext } {
+  /** What judging a fetched message needs from the account; the folder's role is added per folder. */
+  type AccountContext = Omit<PrepareContext, "folderRole">;
+
+  function configOf(accountId: string): { config: ImapConfig; context: AccountContext } {
     const account = store.getAccount(accountId);
     if (account === null) throw new TaskEnd("connection_failed");
     if (account.authFailed) throw new TaskEnd("password_needed");
@@ -374,11 +377,14 @@ export function createServerJobs(deps: ServerJobsDeps): ServerJobs {
     path: string,
     uids: readonly number[],
     kept: "history" | "search",
-    context: PrepareContext,
+    accountContext: AccountContext,
     signal: TaskSignal,
     max: number,
   ): Promise<{ left: number[]; stored: number; processed: number; insertable: number }> {
     const accountId = run.accountId;
+    // Slice 3i (resolution 3): rows are judged with the role of the folder they land in.
+    const folderRole = store.listFolders(accountId).find((folder) => folder.path === path)?.specialUse ?? null;
+    const context: PrepareContext = { ...accountContext, folderRole };
     const status = await session.status();
     const insertable = jobInsertable(uids, store.getSyncState(accountId, path), status.uidValidity);
     run.skipped += insertable.skipped;

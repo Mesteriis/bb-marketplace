@@ -6,7 +6,15 @@ import imapflowFetch from "imapflow/lib/commands/fetch.js";
 import { compiler as imapCompiler, parser as imapParser } from "imapflow/lib/handler/imap-handler.js";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HEADER_LINES_TRUNCATED, ImapAuthError, LIST_HEADER_FIELDS, UNSUBSCRIBE_HEADER_FIELDS, trustOf, unsubscribeInfoOf } from "../../core/index.ts";
+import {
+  HEADER_LINES_TRUNCATED,
+  ImapAuthError,
+  LIST_HEADER_FIELDS,
+  RECEIPT_HEADERS,
+  UNSUBSCRIBE_HEADER_FIELDS,
+  trustOf,
+  unsubscribeInfoOf,
+} from "../../core/index.ts";
 import {
   LIST_HEADERS_QUERY,
   WATCH_LOGOUT_CAP_MS,
@@ -1283,6 +1291,41 @@ describe("toFetchedMessage unsubscribe headers", () => {
     expect(lines.filter((line) => line.key === "list-unsubscribe")).toHaveLength(2);
     expect(lines.filter((line) => line.key === "list-unsubscribe-post")).toHaveLength(1);
     expect(unsubscribeInfoOf(lines, "gmail", { name: null, address: "news@u.example.com" })).toMatchObject({ trust: "not_covered", oneClick: false });
+  });
+});
+
+describe("toFetchedMessage receipt request and content type (slice 3i, resolution 16)", () => {
+  const withHeader = (name: string) =>
+    TRIAGE_RAW.replace("Message-ID: <n-1@example.com>\r\n", `Message-ID: <n-1@example.com>\r\n${name}: news@example.com\r\n`);
+
+  it("sets receiptRequested for each receipt header, and leaves the kept unsubscribe lines unchanged", async () => {
+    const plain = toFetchedMessage(imapMessage({ source: Buffer.from(TRIAGE_RAW) }), await PostalMime.parse(TRIAGE_RAW));
+    expect(plain.receiptRequested).toBe(false);
+    for (const name of RECEIPT_HEADERS) {
+      const raw = withHeader(name);
+      const fetched = toFetchedMessage(imapMessage({ source: Buffer.from(raw) }), await PostalMime.parse(raw));
+      expect(fetched.receiptRequested, name).toBe(true);
+      expect(fetched.unsubscribeHeaders, name).toEqual(plain.unsubscribeHeaders);
+    }
+  });
+
+  it("keeps the top Content-Type as written, null without one", async () => {
+    const raw = TRIAGE_RAW.replace(
+      "Subject: Invented news\r\n",
+      'Subject: Invented news\r\nContent-Type: multipart/signed; protocol="application/pgp-signature"; boundary="b1"\r\n',
+    ).replace("Invented body.\r\n", "--b1\r\nContent-Type: text/plain\r\n\r\nInvented body.\r\n--b1--\r\n");
+    const fetched = toFetchedMessage(imapMessage({ source: Buffer.from(raw) }), await PostalMime.parse(raw));
+    expect(fetched.contentType).toMatch(/^multipart\/signed; protocol="application\/pgp-signature"/);
+    const headers = [{ key: "from", value: "a@example.org" }];
+    const bare = toFetchedMessage(imapMessage(), { headers, headerLines: [], attachments: [] } as unknown as Email);
+    expect(bare.contentType).toBeNull();
+    expect(bare.receiptRequested).toBe(false);
+  });
+
+  it("leaves both absent when the fetch read no headers", () => {
+    const fetched = toFetchedMessage(imapMessage({ source: undefined }), { headers: [], headerLines: [], attachments: [] });
+    expect(fetched.receiptRequested).toBeUndefined();
+    expect(fetched.contentType).toBeUndefined();
   });
 });
 

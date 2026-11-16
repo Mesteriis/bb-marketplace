@@ -500,6 +500,31 @@ describe("history jobs", () => {
   });
 });
 
+describe("slice 3i: jobs judge rows with their folder's role", () => {
+  it("a history step in Sent stores own checks, one in the Inbox judges the sender", async () => {
+    const env = setup();
+    env.scripted.addFolder({ path: "Sent", specialUse: "sent" });
+    for (const path of ["INBOX", "Sent"]) {
+      for (let i = 0; i < 2; i++) {
+        env.scripted.deliver({ date: daysAgo(45 + i), subject: `Old ${i}`, messageId: `<old-${path}-${i}@example.org>`, unsubscribeHeaders: [] }, path);
+      }
+    }
+    await syncAccount(env.syncDeps, ACCOUNT, { windowDays: 30, batchSize: 50 });
+    const { jobs } = jobsOf(env, readOnlyGuard(env.scripted).gateway);
+    const basisOf = async (folder: string) => {
+      const start = jobs.startHistory(ACCOUNT, folder);
+      if (!("jobId" in start)) throw new Error("refused");
+      await jobs.settled(start.jobId);
+      const ids = jobs.poll(start.jobId)!.messageIds;
+      expect(ids).toHaveLength(2);
+      return new Set(env.store.senderCheckRows(ids).map((row) => JSON.parse(row.senderCheckJson!).basis));
+    };
+    expect(await basisOf("Sent")).toEqual(new Set(["own"]));
+    // The preset trusts no authserv-id: the Inbox copies are judged, and read as "provider".
+    expect(await basisOf("INBOX")).toEqual(new Set(["provider"]));
+  });
+});
+
 describe("conversation jobs", () => {
   it("loads the rest of a conversation by its headers, at most 100 messages", async () => {
     const env = setup();

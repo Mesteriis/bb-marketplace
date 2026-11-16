@@ -1809,11 +1809,11 @@ describe("slice 3h: kept rows, history check and Gmail labels", () => {
     const message = makeFetchedMessage(1, {
       unsubscribeHeaders: [{ key: "list-unsubscribe", value: "<https://example.org/u>" }],
     });
-    const prepared = prepareMessage(message, { preset: "other", classifyDev: false, devHosts: new Set() });
+    const prepared = prepareMessage(message, { preset: "other", classifyDev: false, devHosts: new Set(), folderRole: "inbox" });
     expect(prepared.unsubscribe).not.toBeUndefined();
     expect(prepared).not.toHaveProperty("dev");
-    expect(prepareMessage(makeFetchedMessage(2), { preset: "other", classifyDev: false, devHosts: new Set() })).toEqual(makeFetchedMessage(2));
-    expect(prepareMessage(makeFetchedMessage(3), { preset: "other", classifyDev: true, devHosts: new Set() })).toHaveProperty("dev");
+    expect(prepareMessage(makeFetchedMessage(2), { preset: "other", classifyDev: false, devHosts: new Set(), folderRole: "inbox" })).toEqual(makeFetchedMessage(2));
+    expect(prepareMessage(makeFetchedMessage(3), { preset: "other", classifyDev: true, devHosts: new Set(), folderRole: "inbox" })).toHaveProperty("dev");
   });
 
   it("checks history rows only with historyCheck, then at most once a day", async () => {
@@ -1928,5 +1928,112 @@ describe("slice 3h: kept rows, history check and Gmail labels", () => {
     await syncAccount(deps, ACCOUNT_ID, OPTIONS);
     const id = idAt(store, 1)!;
     expect(store.gmLabels([id]).get(id)).toEqual([]);
+  });
+});
+
+describe("slice 3i: sender check, crypto and receipt at sync", () => {
+  const GMAIL = { preset: "gmail" as const, classifyDev: false, devHosts: new Set<string>() };
+  const line = (key: string, value: string) => ({ key: key.toLowerCase(), value });
+  /** Gmail's top block with one trusted Authentication-Results header, synthetic values. */
+  const gmailHeaders = (results: string, fromValue: string) => [
+    line("Received", "by 2002:a05:6000:1:b0:1 with SMTP id x; Mon, 16 Nov 2026 10:00:00 -0800"),
+    line("X-Google-Smtp-Source", "AGHT+synthetic"),
+    line("Authentication-Results", `mx.google.com;\r\n       ${results}`),
+    line("From", fromValue),
+  ];
+  const DMARC_FAIL = "dkim=none; spf=fail smtp.mailfrom=bounce@example.com; dmarc=fail (p=REJECT) header.from=example.com";
+  const githubCiFailed = {
+    from: { name: "GitHub", address: "notifications@github.com" },
+    subject: "[example-org/demo] Run failed: CI - main (abc1234)",
+    bulkHeaders: { listId: "Example <demo.example-org.github.com>", listUnsubscribe: null, precedence: "list", autoSubmitted: null },
+    devHeaders: [{ key: "x-github-reason", value: "ci_activity" }],
+    unsubscribeHeaders: gmailHeaders(
+      "dkim=none; spf=fail smtp.mailfrom=notifications@github.com; dmarc=fail (p=REJECT) header.from=github.com",
+      "GitHub <notifications@github.com>",
+    ),
+  };
+
+  it("judges the check, receipt and crypto only when the fetch read headers", () => {
+    expect(prepareMessage(makeFetchedMessage(1), { ...GMAIL, folderRole: "inbox" })).toEqual(makeFetchedMessage(1));
+    const prepared = prepareMessage(
+      makeFetchedMessage(2, {
+        from: { name: "Billing", address: "billing@example.com" },
+        unsubscribeHeaders: gmailHeaders("dmarc=pass header.from=example.com", "Billing <billing@example.com>"),
+        receiptRequested: true,
+        contentType: "text/plain; charset=utf-8",
+      }),
+      { ...GMAIL, folderRole: "inbox" },
+    );
+    expect(prepared.senderCheck).toMatchObject({ state: "ok", basis: "results", authserv: "mx.google.com" });
+    expect(prepared.receiptRequested).toBe(true);
+    expect(prepared.crypto).toBeNull();
+  });
+
+  it("gives a failed row no dev class, even with classification on", () => {
+    const prepared = prepareMessage(makeFetchedMessage(1, githubCiFailed), { ...GMAIL, classifyDev: true, folderRole: "inbox" });
+    expect(prepared.senderCheck?.state).toBe("failed");
+    expect(prepared.dev).toBeNull();
+    // The same mail with a passing check is a dev notification.
+    const passing = prepareMessage(
+      makeFetchedMessage(2, {
+        ...githubCiFailed,
+        unsubscribeHeaders: gmailHeaders("dkim=pass header.i=@github.com; dmarc=pass header.from=github.com", "GitHub <notifications@github.com>"),
+      }),
+      { ...GMAIL, classifyDev: true, folderRole: "inbox" },
+    );
+    expect(passing.dev).toMatchObject({ source: "github", kind: "ci" });
+  });
+
+  it("drops an encrypted message's bodies before the store, by type or by inline armor", () => {
+    const pgp = prepareMessage(
+      makeFetchedMessage(1, {
+        bodyText: "Invented readable text",
+        bodyHtml: "<p>Invented</p>",
+        contentType: 'multipart/encrypted; protocol="application/pgp-encrypted"; boundary="b"',
+        unsubscribeHeaders: [],
+      }),
+      { ...GMAIL, folderRole: "inbox" },
+    );
+    expect(pgp.crypto).toEqual({ kind: "pgp_encrypted", opaque: false });
+    expect(pgp.bodyText).toBeNull();
+    expect(pgp.bodyHtml).toBeNull();
+    const armor = prepareMessage(
+      makeFetchedMessage(2, { bodyText: "\n  -----BEGIN PGP MESSAGE-----\nhQEMA0invented\n", contentType: null, unsubscribeHeaders: [] }),
+      { ...GMAIL, folderRole: "inbox" },
+    );
+    expect(armor.crypto?.kind).toBe("pgp_encrypted");
+    expect(armor.bodyText).toBeNull();
+    // Signed mail keeps its text.
+    const signed = prepareMessage(
+      makeFetchedMessage(3, { contentType: 'multipart/signed; protocol="application/pgp-signature"', unsubscribeHeaders: [] }),
+      { ...GMAIL, folderRole: "inbox" },
+    );
+    expect(signed.crypto?.kind).toBe("pgp_signed");
+    expect(signed.bodyText).toBe("Invented body 3");
+  });
+
+  it("does not judge a Sent copy, but judges mail forged from an owner address into the Inbox", () => {
+    const own = { name: "Owner", address: "owner@example.com" };
+    const headers = gmailHeaders(DMARC_FAIL, "Owner <owner@example.com>");
+    const sent = prepareMessage(makeFetchedMessage(1, { from: own, unsubscribeHeaders: headers }), { ...GMAIL, folderRole: "sent" });
+    expect(sent.senderCheck).toMatchObject({ state: "unchecked", basis: "own" });
+    const forged = prepareMessage(makeFetchedMessage(2, { from: own, unsubscribeHeaders: headers }), { ...GMAIL, folderRole: "inbox" });
+    expect(forged.senderCheck).toMatchObject({ state: "failed", decidedBy: "dmarc" });
+  });
+
+  it("syncAccount passes each folder's role", async () => {
+    const { store, gateway, deps } = setup(mailbox(0));
+    store.saveAccount(makeStoredAccount({ id: ACCOUNT_ID, passwordSealed: PASSWORD, preset: "gmail" }));
+    gateway.addFolder({ path: "Sent", name: "Sent", specialUse: "sent" }, { uidValidity: 9, uidNext: 1, messages: [] });
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const from = { name: "Billing", address: "billing@example.com" };
+    const headers = gmailHeaders(DMARC_FAIL, "Billing <billing@example.com>");
+    const inboxCopy = gateway.deliver({ from, unsubscribeHeaders: headers });
+    const sentCopy = gateway.deliver({ from, unsubscribeHeaders: headers, messageId: "sent-1@example.org" }, "Sent");
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    const [inboxRow] = store.senderCheckRows([idByUid(store, INBOX, inboxCopy.uid)]);
+    const [sentRow] = store.senderCheckRows([idByUid(store, "Sent", sentCopy.uid)]);
+    expect(JSON.parse(inboxRow!.senderCheckJson!)).toMatchObject({ state: "failed" });
+    expect(JSON.parse(sentRow!.senderCheckJson!)).toMatchObject({ state: "unchecked", basis: "own" });
   });
 });

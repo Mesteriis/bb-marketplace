@@ -47,6 +47,8 @@ import { SNOOZES_MAX_PER_ACCOUNT } from "./snooze.ts";
 import { buildThreads } from "./threading.ts";
 import { unsubscribeInfoOf } from "./unsubscribe.ts";
 import { classifyDev, normalizeListId } from "./dev-notify.ts";
+import { cryptoKindOf, firstNonBlankLine, isEncrypted } from "./mail-crypto.ts";
+import { senderCheckOf } from "./sender-check.ts";
 
 export const INBOX = "INBOX";
 
@@ -139,10 +141,9 @@ export type PrepareContext = {
   devHosts: ReadonlySet<string>;
   /**
    * Slice 3i: the role of the folder being judged (not a `Folder`'s own
-   * field): Sent and Drafts copies are not sender-checked. Optional until
-   * every caller passes it (plan Task 5).
+   * field): Sent and Drafts copies are not sender-checked (resolution 3).
    */
-  folderRole?: SpecialUse | null;
+  folderRole: SpecialUse | null;
 };
 
 /** What one folder's sync needs beyond the session: how to judge headers, and where new Inbox rows go. */
@@ -240,6 +241,7 @@ export async function syncAccount(
           preset: account.preset,
           classifyDev: options.classify === true && folder.specialUse !== "junk" && folder.specialUse !== "trash",
           devHosts: new Set((options.devHosts ?? []).map((host) => host.toLowerCase())),
+          folderRole: folder.specialUse,
           collect: folder.specialUse === "inbox" ? collected : null,
           inserted,
         };
@@ -732,7 +734,7 @@ async function reattachKept(
   accountId: string,
   path: string,
   kept: ReadonlyMap<string, number | null>,
-  context: Pick<FolderContext, "preset" | "classifyDev" | "devHosts">,
+  context: PrepareContext,
   batchSize: number,
   inserted: string[],
 ): Promise<number> {
@@ -862,13 +864,17 @@ function storeLabels(
 }
 
 /**
- * The message as the store takes it: unsubscribe info, and (slice 3g) the
- * local dev class when classification is on for the folder. Nothing here
- * writes to the server. Slice 3h jobs call it with the same context, so
+ * The message as the store takes it: unsubscribe info, (slice 3g) the local
+ * dev class when classification is on for the folder, and (slice 3i) the
+ * sender check, signed or encrypted kind and receipt request. A failed check
+ * gets no dev class whatever the folder says (resolution 2); an encrypted
+ * body is dropped here, before the store sees it (resolution 6). Nothing
+ * here writes to the server. Slice 3h jobs call it with the same context, so
  * their rows are judged like synced rows (spec resolution 7).
  */
 export function prepareMessage(message: FetchedMessage, context: PrepareContext): FetchedMessage {
-  let out = withUnsubscribe(message, context.preset);
+  let out = withSecurity(withUnsubscribe(message, context.preset), context);
+  if (out.senderCheck?.state === "failed") return { ...out, dev: null };
   if (context.classifyDev) {
     // The store keeps the List-Id itself, from the same bulk headers.
     const listId = message.bulkHeaders === undefined ? null : normalizeListId(message.bulkHeaders.listId);
@@ -893,6 +899,26 @@ export function prepareMessage(message: FetchedMessage, context: PrepareContext)
 function withUnsubscribe(message: FetchedMessage, preset: AccountPreset): FetchedMessage {
   if (message.unsubscribeHeaders === undefined) return message;
   return { ...message, unsubscribe: unsubscribeInfoOf(message.unsubscribeHeaders, preset, message.from) };
+}
+
+/**
+ * Slice 3i: the sender check from the kept header lines (absent headers
+ * leave the stored check alone), and the crypto kind from the top
+ * Content-Type and the first non-blank text line (only when the fetch read
+ * headers). Encrypted bodies are nulled; the store then keeps an empty
+ * snippet and indexes nothing.
+ */
+function withSecurity(message: FetchedMessage, context: PrepareContext): FetchedMessage {
+  let out = message;
+  if (message.unsubscribeHeaders !== undefined) {
+    out = { ...out, senderCheck: senderCheckOf(message.unsubscribeHeaders, context.preset, message.from, { folderRole: context.folderRole }) };
+  }
+  if (message.contentType !== undefined) {
+    const crypto = cryptoKindOf(message.contentType, firstNonBlankLine(message.bodyText));
+    out = { ...out, crypto };
+    if (isEncrypted(crypto?.kind)) out = { ...out, bodyText: null, bodyHtml: null };
+  }
+  return out;
 }
 
 async function closeQuietly(session: FolderSession): Promise<void> {

@@ -42,6 +42,7 @@ import {
   UNSUBSCRIBE_HEADER_FIELDS,
   DEV_HEADER_FIELDS,
   capInlineParts,
+  receiptRequested,
   type AttachmentMeta,
   type BulkHeaders,
   type FetchedMessage,
@@ -1024,6 +1025,7 @@ export function toFetchedMessage(message: FetchMessageObject, parsed: Email): Fe
     deliveredTo: toDeliveredTo(parsed),
     unsubscribeHeaders: toUnsubscribeHeaders(parsed),
     devHeaders: toDevHeaders(parsed),
+    ...toSecurityFields(parsed),
     ...(message.labels instanceof Set ? { gmLabels: [...message.labels] } : {}),
   };
 }
@@ -1075,6 +1077,24 @@ function toUnsubscribeHeaders(parsed: Email): HeaderLine[] | undefined {
     out.push({ key, value: header.value });
   }
   return capHeaderLines(out);
+}
+
+/** The top Content-Type kept for the crypto check, at most this many characters. */
+const CONTENT_TYPE_MAX = 2_048;
+
+/**
+ * Slice 3i (resolution 16): whether the message asks for a read receipt and
+ * its top Content-Type, as separate fields; the kept unsubscribe lines are
+ * not touched, so trustOf's block end and the 64-line cap stay as they are.
+ * Both absent when the source had no headers.
+ */
+function toSecurityFields(parsed: Email): Pick<FetchedMessage, "receiptRequested" | "contentType"> {
+  if (parsed.headers.length === 0) return {};
+  const contentType = parsed.headers.find((header) => header.key.toLowerCase() === "content-type")?.value ?? null;
+  return {
+    receiptRequested: receiptRequested(parsed.headers),
+    contentType: contentType === null ? null : contentType.slice(0, CONTENT_TYPE_MAX),
+  };
 }
 
 /** Delivered-To / X-Original-To addresses kept per message (slice 3d). */
