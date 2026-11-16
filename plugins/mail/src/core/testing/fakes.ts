@@ -104,14 +104,18 @@ import type {
   AiResultRecord,
   AnsweringRow,
   DigestRecord,
+  NewReminder,
+  NewTask,
   ReminderRecord,
   TaskRecord,
 } from "../ports.ts";
-import { OPEN_AI_SCOPE, type AiScope } from "../ai-scope.ts";
-import type { LogEntry } from "../agent-log.ts";
+import { AI_RESULT_MAX_BYTES, TASKS_OPEN_MAX } from "../ports.ts";
+import { OPEN_AI_SCOPE, inAiScope, senderExcluded, type AccountScope, type AiScope } from "../ai-scope.ts";
+import { AGENT_LOG_IDS_MAX, AGENT_LOG_KEEP_DAYS, AGENT_LOG_ROWS_MAX, type LogEntry, type LogOutcome } from "../agent-log.ts";
 import type { AiCategoryAnswer } from "../ai-input.ts";
-import type { Category, CategoryRule, CategorySource, PreviousLabel } from "../categories.ts";
-import type { ReplyCandidate } from "../digest.ts";
+import { CATEGORY_RULES_MAX, type Category, type CategoryRule, type CategorySource, type PreviousLabel } from "../categories.ts";
+import { dismissalKey, type ReplyCandidate } from "../digest.ts";
+import { ANSWERED_KEEP_DAYS, REMINDERS_LIVE_MAX, dueAt, type ReminderState } from "../reminders.ts";
 import { redactSecrets } from "../redact.ts";
 
 // ---------------------------------------------------------------------------
@@ -311,7 +315,29 @@ type StoreState = {
   spamSeen: Map<string, string>;
   triageBatches: Map<string, TriageBatchRecord>;
   triageItems: TriageItemRecord[];
+  // Slice 3f.
+  scopeAccounts: Map<string, AccountScope>;
+  scopeSenders: { kind: "address" | "domain"; value: string }[];
+  agentLog: (LogEntry & { seq: number })[];
+  nextLogSeq: number;
+  /** By kind and subject id. */
+  aiResults: Map<string, AiResultRecord>;
+  tasks: Map<string, StoredTask>;
+  /** stateKey(accountId, dedupKey). */
+  categories: Map<string, { category: Category; source: CategorySource; setAt: string }>;
+  /** stateKey(accountId, dedupKey). */
+  categorySuggestions: Map<string, AiCategoryAnswer>;
+  categoryRules: CategoryRule[];
+  digests: Map<string, DigestRecord>;
+  /** stateKey(accountId, dedupKey) to dismissed at. */
+  replyDismissals: Map<string, string>;
+  reminders: Map<string, ReminderRecord>;
 };
+
+type StoredTask = Omit<TaskRecord, "threadId">;
+
+/** Digests and reply dismissals kept by the daily purge (as SQLite). */
+const DAY_ROWS_KEEP_DAYS = 60;
 
 type StoredComposeAttachment = ComposeAttachment & {
   draftId: string;
@@ -384,7 +410,22 @@ export class InMemoryMailStore implements MailStore {
     spamSeen: new Map(),
     triageBatches: new Map(),
     triageItems: [],
+    scopeAccounts: new Map(),
+    scopeSenders: [],
+    agentLog: [],
+    nextLogSeq: 1,
+    aiResults: new Map(),
+    tasks: new Map(),
+    categories: new Map(),
+    categorySuggestions: new Map(),
+    categoryRules: [],
+    digests: new Map(),
+    replyDismissals: new Map(),
+    reminders: new Map(),
   };
+  /** The installed AI scope and its excluded conversations: memory only, as SQLite's. */
+  private aiScope: AiScope = OPEN_AI_SCOPE;
+  private excludedThreads: ReadonlySet<string> = new Set();
 
   /** Runs fn; on a throw restores the state from before the call, like a rollback. */
   transaction<T>(fn: () => T): T {
@@ -461,6 +502,14 @@ export class InMemoryMailStore implements MailStore {
     for (const batchId of [...this.state.triageBatches.keys()]) {
       if (!withItems.has(batchId)) this.state.triageBatches.delete(batchId);
     }
+    // Slice 3f: the per-account rows; the log, sender rules, category rules and digests stay.
+    this.state.scopeAccounts.delete(id);
+    for (const [key, row] of [...this.state.aiResults]) if (row.accountId === id) this.state.aiResults.delete(key);
+    for (const [key, task] of [...this.state.tasks]) if (task.accountId === id) this.state.tasks.delete(key);
+    for (const map of [this.state.categories, this.state.categorySuggestions, this.state.replyDismissals] as Map<string, unknown>[]) {
+      for (const key of [...map.keys()]) if (key.startsWith(`${id}\u0000`)) map.delete(key);
+    }
+    for (const [key, row] of [...this.state.reminders]) if (row.accountId === id) this.state.reminders.delete(key);
     this.dropOrphanTranslations();
   }
 
@@ -819,7 +868,7 @@ export class InMemoryMailStore implements MailStore {
     };
   }
 
-  search(query: ParsedQuery, accountId: string | null, limit: number): MessageSummary[] {
+  search(query: ParsedQuery, accountId: string | null, limit: number, opts?: { scoped: boolean }): MessageSummary[] {
     const contains = (haystack: string | null | undefined, needle: string) =>
       (haystack ?? "").toLowerCase().includes(needle.toLowerCase());
     const after = query.after === undefined ? null : Date.parse(query.after);
@@ -827,6 +876,7 @@ export class InMemoryMailStore implements MailStore {
     const matches = this.state.rows
       .filter((r) => accountId === null || r.accountId === accountId)
       .filter((r) => r.movePending === null)
+      .filter((r) => opts?.scoped !== true || this.inAiScope(r))
       .filter((r) => {
         const m = r.message;
         const time = timeOf(m.date);
@@ -1315,7 +1365,8 @@ export class InMemoryMailStore implements MailStore {
     return removed;
   }
 
-  contacts(query: string, limit: number): Contact[] {
+  contacts(query: string, limit: number, opts?: { scoped: boolean }): Contact[] {
+    const scoped = opts?.scoped === true;
     const words = queryWords(query);
     if (words.length === 0 || limit <= 0) return [];
     const newestFirst = (a: Row, b: Row) => {
@@ -1327,6 +1378,7 @@ export class InMemoryMailStore implements MailStore {
       return tb - ta;
     };
     const messages = this.contactRows()
+      .filter((row) => !scoped || this.inAiScope(row))
       .sort(newestFirst)
       .slice(0, CONTACT_SCAN)
       .map((row) =>
@@ -1335,7 +1387,14 @@ export class InMemoryMailStore implements MailStore {
     const bulkSenders = new Set(
       this.state.rows.filter((r) => this.bulkOf(r) === true).map((r) => r.message.from.address.trim().toLowerCase()),
     );
-    return rankContacts(messages, words, ownerAddressSets(this.listAccounts(), this.state.identities), bulkSenders, limit);
+    const ranked = rankContacts(
+      messages,
+      words,
+      ownerAddressSets(this.listAccounts(), this.state.identities),
+      bulkSenders,
+      scoped ? Infinity : limit,
+    );
+    return scoped ? ranked.filter((c) => !senderExcluded([c.address], this.aiScope)).slice(0, limit) : ranked;
   }
 
   correspondence(addresses: string[]): AccountCorrespondence[] {
@@ -1828,14 +1887,15 @@ export class InMemoryMailStore implements MailStore {
       .map((row) => ({ uid: row.uid, from: { ...row.message.from } }));
   }
 
-  inboxMessages(accountId: string | null, opts: { unreadOnly: boolean; limit: number }): InboxMessage[] {
+  inboxMessages(accountId: string | null, opts: { unreadOnly: boolean; limit: number; scoped?: boolean }): InboxMessage[] {
     const rows = this.state.rows.filter(
       (r) =>
         (accountId === null || r.accountId === accountId) &&
         r.uid !== null &&
         r.movePending === null &&
         this.roleOf(r.accountId, r.folder) === "inbox" &&
-        (!opts.unreadOnly || !r.isRead),
+        (!opts.unreadOnly || !r.isRead) &&
+        (opts.scoped !== true || this.inAiScope(r)),
     );
     return this.onePerKey(rows, (r) => `${r.accountId}\u0000${r.dedupKey}`)
       .sort((a, b) => oldestFirst(b, a))
@@ -1954,170 +2014,478 @@ export class InMemoryMailStore implements MailStore {
     return { cancelled: true };
   }
 
-  // ---- Agent and mail (slice 3f): stubs until the store task ----
+  // ---- Agent and mail (slice 3f) ----------------------------------------
 
-  setAiScope(_scope: AiScope): void {
-    throw new Error("Not available yet");
+  setAiScope(scope: AiScope): void {
+    this.aiScope = scope;
+    this.refreshExcludedThreads();
   }
 
   getAiScope(): AiScope {
-    return OPEN_AI_SCOPE;
+    return this.aiScope;
   }
 
   loadAiScope(): AiScope {
-    return OPEN_AI_SCOPE;
+    const accounts = new Map<string, AccountScope>();
+    for (const [accountId, scope] of [...this.state.scopeAccounts].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+      accounts.set(accountId, structuredClone(scope));
+    }
+    const addresses = new Set<string>();
+    const domains = new Set<string>();
+    for (const sender of this.state.scopeSenders) (sender.kind === "domain" ? domains : addresses).add(sender.value);
+    return { accounts, senders: { addresses, domains } };
   }
 
-  putAiScope(): void {
-    throw new Error("Not available yet");
+  putAiScope(
+    accounts: { accountId: string; scope: AccountScope }[],
+    senders: { kind: "address" | "domain"; value: string }[],
+    _nowIso: string,
+  ): void {
+    this.state.scopeAccounts = new Map(accounts.map(({ accountId, scope }) => [accountId, structuredClone(scope)]));
+    const seen = new Set<string>();
+    this.state.scopeSenders = senders.filter((s) => {
+      const key = `${s.kind}\u0000${s.value}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   refreshExcludedThreads(): void {
-    throw new Error("Not available yet");
+    const { addresses, domains } = this.aiScope.senders;
+    if (addresses.size === 0 && domains.size === 0) {
+      this.excludedThreads = new Set();
+      return;
+    }
+    this.excludedThreads = new Set(
+      this.state.rows
+        .filter((r) => senderExcluded([r.message.from.address, ...r.message.to.map((a) => a.address), ...r.message.cc.map((a) => a.address)], this.aiScope))
+        .map((r) => r.threadId),
+    );
   }
 
-  scopedMessage(_messageId: string): MessageHeader | null {
-    return null;
+  /** The row is inside the installed AI scope (the SQLite mail_ai_in_scope). */
+  private inAiScope(row: Row): boolean {
+    return inAiScope(
+      {
+        accountId: row.accountId,
+        folder: row.folder,
+        folderRole: this.roleOf(row.accountId, row.folder),
+        fromAddress: row.message.from.address,
+        to: row.message.to.map((a) => a.address),
+        cc: row.message.cc.map((a) => a.address),
+        threadId: row.threadId,
+      },
+      this.aiScope,
+      this.excludedThreads,
+    );
   }
 
-  appendAgentLog(_entry: LogEntry): number {
-    throw new Error("Not available yet");
+  /** Some copy of the row's message is inside the AI scope. */
+  private anyCopyInScope(row: Row): boolean {
+    return this.state.rows.some((r) => r.accountId === row.accountId && r.dedupKey === row.dedupKey && this.inAiScope(r));
   }
 
-  updateAgentLog(): number {
-    throw new Error("Not available yet");
+  scopedMessage(messageId: string): MessageHeader | null {
+    const row = this.state.rows.find((r) => r.id === messageId);
+    if (!row) return null;
+    const order = new Map(this.state.rows.map((r, index) => [r, index]));
+    const copies = this.state.rows
+      .filter((r) => r.accountId === row.accountId && r.dedupKey === row.dedupKey && this.inAiScope(r))
+      .sort(
+        (a, b) =>
+          Number(b.id === messageId) - Number(a.id === messageId) ||
+          Number(this.isInbox(b.accountId, b.folder)) - Number(this.isInbox(a.accountId, a.folder)) ||
+          order.get(b)! - order.get(a)!,
+      );
+    return copies[0] ? this.header(copies[0]) : null;
   }
 
-  listAgentLog(): { entries: (LogEntry & { seq: number })[]; next: string | null } {
-    return { entries: [], next: null };
+  appendAgentLog(entry: LogEntry): number {
+    const seq = this.state.nextLogSeq++;
+    this.state.agentLog.push({ ...entry, messageIds: entry.messageIds.slice(0, AGENT_LOG_IDS_MAX), seq });
+    return seq;
+  }
+
+  updateAgentLog(refId: string, outcome: LogOutcome, count: number): number {
+    let changed = 0;
+    for (const entry of this.state.agentLog) {
+      if (entry.refId !== refId) continue;
+      entry.outcome = outcome;
+      entry.count = count;
+      changed++;
+    }
+    return changed;
+  }
+
+  listAgentLog(opts: { threadId?: string; cursor?: string | null; limit: number }): {
+    entries: (LogEntry & { seq: number })[];
+    next: string | null;
+  } {
+    const after = opts.cursor == null ? null : Number(opts.cursor);
+    const rows = this.state.agentLog
+      .filter((e) => opts.threadId === undefined || e.threadId === opts.threadId)
+      .filter((e) => after === null || !Number.isInteger(after) || e.seq < after)
+      .sort((a, b) => b.seq - a.seq);
+    const page = rows.slice(0, opts.limit).map((e) => structuredClone(e));
+    const last = page[page.length - 1];
+    return { entries: page, next: rows.length > opts.limit && last ? String(last.seq) : null };
   }
 
   clearAgentLog(): number {
-    throw new Error("Not available yet");
+    const removed = this.state.agentLog.length;
+    this.state.agentLog = [];
+    return removed;
   }
 
-  purgeAgentLog(): number {
-    throw new Error("Not available yet");
+  purgeAgentLog(beforeIso: string, maxRows: number): number {
+    const before = this.state.agentLog.length;
+    const kept = this.state.agentLog.filter((e) => e.at >= beforeIso).sort((a, b) => b.seq - a.seq).slice(0, Math.max(0, maxRows));
+    this.state.agentLog = kept.sort((a, b) => a.seq - b.seq);
+    return before - kept.length;
   }
 
-  getAiResult(): AiResultRecord | null {
-    return null;
+  getAiResult(kind: "summary", subjectId: string): AiResultRecord | null {
+    const row = this.state.aiResults.get(`${kind}\u0000${subjectId}`);
+    return row ? { ...row } : null;
   }
 
-  putAiResult(): void {
-    throw new Error("Not available yet");
+  putAiResult(row: AiResultRecord): void {
+    if (new TextEncoder().encode(row.resultJson).length > AI_RESULT_MAX_BYTES) throw new Error("AI result too large");
+    this.state.aiResults.set(`${row.kind}\u0000${row.subjectId}`, { ...row });
   }
 
-  keepTasks(): { kept: number } | { full: true } {
-    throw new Error("Not available yet");
+  keepTasks(rows: NewTask[]): { kept: number } | { full: true } {
+    const open = [...this.state.tasks.values()].filter((t) => t.doneAt === null).length;
+    if (open + rows.length > TASKS_OPEN_MAX) return { full: true };
+    for (const row of rows) {
+      this.state.tasks.set(row.id, { ...row, doneAt: null, updatedAt: row.createdAt });
+    }
+    return { kept: rows.length };
   }
 
-  listTasks(): { tasks: TaskRecord[]; next: string | null } {
-    return { tasks: [], next: null };
+  private taskRecord(task: StoredTask): TaskRecord {
+    const row = task.messageId === null ? undefined : this.state.rows.find((r) => r.id === task.messageId);
+    return { ...task, threadId: row?.threadId ?? null };
   }
 
-  getTask(): TaskRecord | null {
-    return null;
+  listTasks(opts: { done: boolean; cursor?: string | null; limit: number }): { tasks: TaskRecord[]; next: string | null } {
+    const offset = opts.cursor == null ? 0 : Math.max(0, Number(opts.cursor) || 0);
+    const cmp = (a: string | null, b: string | null) => (a === b ? 0 : a === null ? 1 : b === null ? -1 : a < b ? -1 : 1);
+    const rows = [...this.state.tasks.values()]
+      .filter((t) => (t.doneAt !== null) === opts.done)
+      .sort((a, b) =>
+        opts.done
+          ? cmp(b.doneAt, a.doneAt) || cmp(b.id, a.id)
+          : cmp(a.due, b.due) || cmp(a.createdAt, b.createdAt) || cmp(a.id, b.id),
+      );
+    const page = rows.slice(offset, offset + opts.limit).map((t) => this.taskRecord(t));
+    return { tasks: page, next: rows.length > offset + opts.limit ? String(offset + opts.limit) : null };
   }
 
-  updateTask(): boolean {
-    throw new Error("Not available yet");
+  getTask(id: string): TaskRecord | null {
+    const task = this.state.tasks.get(id);
+    return task ? this.taskRecord(task) : null;
   }
 
-  deleteTask(): boolean {
-    throw new Error("Not available yet");
+  updateTask(id: string, patch: { title?: string; due?: string | null; done?: boolean }, nowIso: string): boolean {
+    const task = this.state.tasks.get(id);
+    if (!task) return false;
+    if (patch.title !== undefined) task.title = patch.title;
+    if (patch.due !== undefined) task.due = patch.due;
+    if (patch.done !== undefined) task.doneAt = patch.done ? (task.doneAt ?? nowIso) : null;
+    task.updatedAt = nowIso;
+    return true;
   }
 
-  taskCounts(): { overdue: number; today: number } {
-    return { overdue: 0, today: 0 };
+  deleteTask(id: string): boolean {
+    return this.state.tasks.delete(id);
   }
 
-  setCategories(): { previous: PreviousLabel[] } {
-    throw new Error("Not available yet");
+  taskCounts(today: string): { overdue: number; today: number } {
+    const open = [...this.state.tasks.values()].filter((t) => t.doneAt === null && t.due !== null);
+    return { overdue: open.filter((t) => t.due! < today).length, today: open.filter((t) => t.due === today).length };
   }
 
-  restoreCategories(): void {
-    throw new Error("Not available yet");
+  setCategories(messageIds: string[], category: Category | null, source: CategorySource, nowIso: string): { previous: PreviousLabel[] } {
+    const previous: PreviousLabel[] = [];
+    const seen = new Set<string>();
+    for (const id of messageIds) {
+      const row = this.state.rows.find((r) => r.id === id);
+      if (!row) continue;
+      const key = stateKey(row.accountId, row.dedupKey);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const before = this.state.categories.get(key);
+      if (source === "rule" && before?.source === "owner") continue;
+      previous.push({
+        accountId: row.accountId,
+        dedupKey: row.dedupKey,
+        category: before?.category ?? null,
+        source: before?.source ?? null,
+      });
+      if (category === null) this.state.categories.delete(key);
+      else this.state.categories.set(key, { category, source, setAt: nowIso });
+    }
+    return { previous };
   }
 
-  categoriesOf(): Map<string, { category: Category | null; source: CategorySource | null; suggestion: AiCategoryAnswer | null }> {
-    return new Map();
+  restoreCategories(previous: PreviousLabel[], nowIso: string): void {
+    for (const label of previous) {
+      const key = stateKey(label.accountId, label.dedupKey);
+      if (label.category === null) this.state.categories.delete(key);
+      else this.state.categories.set(key, { category: label.category, source: label.source ?? "owner", setAt: nowIso });
+    }
   }
 
-  putCategorySuggestions(): void {
-    throw new Error("Not available yet");
+  categoriesOf(
+    messageIds: string[],
+  ): Map<string, { category: Category | null; source: CategorySource | null; suggestion: AiCategoryAnswer | null }> {
+    const out = new Map<string, { category: Category | null; source: CategorySource | null; suggestion: AiCategoryAnswer | null }>();
+    for (const id of messageIds) {
+      const row = this.state.rows.find((r) => r.id === id);
+      if (!row) continue;
+      const key = stateKey(row.accountId, row.dedupKey);
+      const label = this.state.categories.get(key);
+      out.set(id, {
+        category: label?.category ?? null,
+        source: label?.source ?? null,
+        suggestion: this.state.categorySuggestions.get(key) ?? null,
+      });
+    }
+    return out;
+  }
+
+  putCategorySuggestions(rows: { messageId: string; category: AiCategoryAnswer }[], _nowIso: string): void {
+    for (const { messageId, category } of rows) {
+      const row = this.state.rows.find((r) => r.id === messageId);
+      if (row) this.state.categorySuggestions.set(stateKey(row.accountId, row.dedupKey), category);
+    }
   }
 
   listCategoryRules(): CategoryRule[] {
-    return [];
+    return [...this.state.categoryRules]
+      .sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? -1 : 1))
+      .map((rule) => ({ ...rule }));
   }
 
-  addCategoryRule(): { rule: CategoryRule; created: boolean } | { full: true } {
-    throw new Error("Not available yet");
+  addCategoryRule(
+    kind: CategoryRule["kind"],
+    value: string,
+    category: Category,
+    id: string,
+    nowIso: string,
+  ): { rule: CategoryRule; created: boolean } | { full: true } {
+    const existing = this.state.categoryRules.find((r) => r.kind === kind && r.value === value);
+    if (existing) return { rule: { ...existing }, created: false };
+    if (this.state.categoryRules.length >= CATEGORY_RULES_MAX) return { full: true };
+    const rule: CategoryRule = { id, kind, value, category, createdAt: nowIso };
+    this.state.categoryRules.push(rule);
+    return { rule: { ...rule }, created: true };
   }
 
-  removeCategoryRule(): boolean {
-    throw new Error("Not available yet");
+  removeCategoryRule(id: string): boolean {
+    const before = this.state.categoryRules.length;
+    this.state.categoryRules = this.state.categoryRules.filter((r) => r.id !== id);
+    return this.state.categoryRules.length < before;
   }
 
-  replyCandidates(): ReplyCandidate[] {
-    return [];
+  replyCandidates(sinceIso: string, limit: number): ReplyCandidate[] {
+    const since = Date.parse(sinceIso);
+    const order = new Map(this.state.rows.map((r, index) => [r, index]));
+    const dated = this.state.rows.filter((r) => r.movePending === null && timeOf(r.message.date) !== null);
+    const threads = new Set(this.state.rows.filter((r) => (timeOf(r.message.date) ?? -Infinity) >= since).map((r) => r.threadId));
+    const latest = new Map<string, Row>();
+    for (const row of dated) {
+      if (!threads.has(row.threadId)) continue;
+      const current = latest.get(row.threadId);
+      if (current === undefined) {
+        latest.set(row.threadId, row);
+        continue;
+      }
+      const newer =
+        timeOf(row.message.date)! - timeOf(current.message.date)! ||
+        Number(this.isInbox(row.accountId, row.folder)) - Number(this.isInbox(current.accountId, current.folder)) ||
+        order.get(row)! - order.get(current)!;
+      if (newer > 0) latest.set(row.threadId, row);
+    }
+    return [...latest.values()]
+      .sort((a, b) => timeOf(b.message.date)! - timeOf(a.message.date)! || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+      .slice(0, limit)
+      .map((row) => {
+        const sent = this.state.rows
+          .filter((r) => r.threadId === row.threadId && this.roleOf(r.accountId, r.folder) === "sent")
+          .map((r) => timeOf(r.message.date))
+          .filter((time): time is number => time !== null);
+        return {
+          threadId: row.threadId,
+          accountId: row.accountId,
+          messageId: row.id,
+          dedupKey: row.dedupKey,
+          date: normalizeIso(row.message.date!)!,
+          folderRole: this.roleOf(row.accountId, row.folder),
+          fromAddress: row.message.from.address,
+          to: row.message.to.map((a) => a.address),
+          cc: row.message.cc.map((a) => a.address),
+          bulk: row.bulk,
+          lastSentAt: sent.length === 0 ? null : new Date(Math.max(...sent)).toISOString(),
+        };
+      });
   }
 
   replyDismissals(): Set<string> {
-    return new Set();
+    return new Set([...this.state.replyDismissals.keys()].map((key) => {
+      const [accountId, dedupKey] = key.split("\u0000") as [string, string];
+      return dismissalKey(accountId, dedupKey);
+    }));
   }
 
-  dismissReply(): void {
-    throw new Error("Not available yet");
+  dismissReply(accountId: string, dedupKey: string, nowIso: string): void {
+    this.state.replyDismissals.set(stateKey(accountId, dedupKey), nowIso);
   }
 
-  getDigest(): DigestRecord | null {
-    return null;
+  getDigest(day: string): DigestRecord | null {
+    const row = this.state.digests.get(day);
+    return row ? { ...row } : null;
   }
 
-  putDigest(): boolean {
-    throw new Error("Not available yet");
+  putDigest(row: DigestRecord): boolean {
+    if (this.state.digests.has(row.day)) return false;
+    this.state.digests.set(row.day, { ...row });
+    return true;
   }
 
-  markDigestNotified(): boolean {
-    throw new Error("Not available yet");
+  markDigestNotified(day: string, nowIso: string): boolean {
+    const row = this.state.digests.get(day);
+    if (!row || row.notifiedAt !== null) return false;
+    row.notifiedAt = nowIso;
+    return true;
   }
 
-  createReminder(): { created: true } | { full: true } {
-    throw new Error("Not available yet");
+  createReminder(row: NewReminder): { created: true } | { full: true } {
+    const live = [...this.state.reminders.values()].filter((r) => r.state === "queued" || r.state === "waiting" || r.state === "due");
+    if (live.length >= REMINDERS_LIVE_MAX) return { full: true };
+    this.state.reminders.set(row.id, { ...row, updatedAt: row.createdAt, notifiedAt: null });
+    return { created: true };
   }
 
-  bindReminder(): ReminderRecord | null {
-    throw new Error("Not available yet");
+  bindReminder(outboxId: string, sentAtIso: string): ReminderRecord | null {
+    const row = [...this.state.reminders.values()].find((r) => r.outboxId === outboxId && r.state === "queued");
+    if (!row) return null;
+    Object.assign(row, { state: "waiting", outboxId: null, sentAt: sentAtIso, dueAt: dueAt(sentAtIso, row.days), updatedAt: sentAtIso });
+    return { ...row };
   }
 
-  deleteReminderForOutbox(): number {
-    throw new Error("Not available yet");
+  deleteReminderForOutbox(outboxId: string): number {
+    let removed = 0;
+    for (const [id, row] of [...this.state.reminders]) {
+      if (row.outboxId !== outboxId) continue;
+      this.state.reminders.delete(id);
+      removed++;
+    }
+    return removed;
   }
 
-  getReminder(): ReminderRecord | null {
-    return null;
+  getReminder(id: string): ReminderRecord | null {
+    const row = this.state.reminders.get(id);
+    return row ? { ...row } : null;
   }
 
-  listReminders(): ReminderRecord[] {
-    return [];
+  listReminders(opts: { states: ReminderState[]; dueBefore?: string; limit: number }): ReminderRecord[] {
+    const cmp = (a: string | null, b: string | null) => (a === b ? 0 : a === null ? 1 : b === null ? -1 : a < b ? -1 : 1);
+    return [...this.state.reminders.values()]
+      .filter((r) => opts.states.includes(r.state))
+      .filter((r) => opts.dueBefore === undefined || (r.dueAt !== null && r.dueAt <= opts.dueBefore))
+      .sort((a, b) => cmp(a.dueAt, b.dueAt) || cmp(a.createdAt, b.createdAt) || cmp(a.id, b.id))
+      .slice(0, opts.limit)
+      .map((r) => ({ ...r }));
   }
 
-  updateReminder(): boolean {
-    throw new Error("Not available yet");
+  updateReminder(
+    id: string,
+    patch: { state?: ReminderState; days?: number; dueAt?: string | null; threadId?: string | null; notifiedAt?: string | null },
+    nowIso: string,
+  ): boolean {
+    const row = this.state.reminders.get(id);
+    if (!row) return false;
+    for (const key of ["state", "days", "dueAt", "threadId", "notifiedAt"] as const) {
+      if (patch[key] !== undefined) Object.assign(row, { [key]: patch[key] });
+    }
+    row.updatedAt = nowIso;
+    return true;
   }
 
-  answeringRows(): AnsweringRow[] {
-    return [];
+  answeringRows(rfcMessageIds: string[], afterIso: string): AnsweringRow[] {
+    const wanted = new Set(rfcMessageIds.map(normalizeMessageId).filter((id) => id !== ""));
+    if (wanted.size === 0) return [];
+    const after = Date.parse(afterIso);
+    const order = new Map(this.state.rows.map((r, index) => [r, index]));
+    return this.state.rows
+      .filter((r) => (timeOf(r.message.date) ?? -Infinity) > after)
+      .filter(
+        (r) =>
+          (r.message.inReplyTo !== null && wanted.has(normalizeMessageId(r.message.inReplyTo))) ||
+          r.message.references.some((ref) => wanted.has(normalizeMessageId(ref))),
+      )
+      .sort((a, b) => timeOf(a.message.date)! - timeOf(b.message.date)! || order.get(a)! - order.get(b)!)
+      .map((r) => ({
+        id: r.id,
+        accountId: r.accountId,
+        threadId: r.threadId,
+        messageId: r.message.messageId,
+        inReplyTo: r.message.inReplyTo,
+        references: [...r.message.references],
+        date: normalizeIso(r.message.date!),
+        bulk: r.bulk,
+        fromAddress: r.message.from.address,
+      }));
   }
 
-  sentCopyThread(): string | null {
-    return null;
+  sentCopyThread(accountId: string, rfcMessageId: string): string | null {
+    const wanted = normalizeMessageId(rfcMessageId);
+    if (wanted === "") return null;
+    const rows = this.state.rows.filter(
+      (r) => r.accountId === accountId && r.message.messageId !== null && normalizeMessageId(r.message.messageId) === wanted,
+    );
+    return rows[rows.length - 1]?.threadId ?? null;
   }
 
-  purgeDaily(): number {
-    throw new Error("Not available yet");
+  purgeDaily(nowIso: string): number {
+    const now = Date.parse(nowIso);
+    const before = (days: number) => new Date(now - days * 86_400_000).toISOString();
+    const keys = new Set(this.state.rows.map((r) => stateKey(r.accountId, r.dedupKey)));
+    let removed = 0;
+    for (const map of [this.state.categories, this.state.categorySuggestions] as Map<string, unknown>[]) {
+      for (const key of [...map.keys()]) {
+        if (keys.has(key)) continue;
+        map.delete(key);
+        removed++;
+      }
+    }
+    const threads = new Set(this.state.rows.map((r) => r.threadId));
+    for (const [key, row] of [...this.state.aiResults]) {
+      if (threads.has(row.subjectId)) continue;
+      this.state.aiResults.delete(key);
+      removed++;
+    }
+    const dayRows = before(DAY_ROWS_KEEP_DAYS);
+    for (const [day, row] of [...this.state.digests]) {
+      if (row.builtAt >= dayRows) continue;
+      this.state.digests.delete(day);
+      removed++;
+    }
+    for (const [key, at] of [...this.state.replyDismissals]) {
+      if (at >= dayRows) continue;
+      this.state.replyDismissals.delete(key);
+      removed++;
+    }
+    const answered = before(ANSWERED_KEEP_DAYS);
+    for (const [id, row] of [...this.state.reminders]) {
+      if (row.state !== "answered" || row.updatedAt >= answered) continue;
+      this.state.reminders.delete(id);
+      removed++;
+    }
+    return removed + this.purgeAgentLog(before(AGENT_LOG_KEEP_DAYS), AGENT_LOG_ROWS_MAX);
   }
 
   /** Translations and snoozes follow their message: dropped with every removed row (as SQLite deleteRows). */
@@ -2128,6 +2496,10 @@ export class InMemoryMailStore implements MailStore {
     }
     for (const id of [...this.state.snoozes.keys()]) {
       if (!ids.has(id)) this.state.snoozes.delete(id);
+    }
+    // A kept task outlives its message (slice 3f).
+    for (const task of this.state.tasks.values()) {
+      if (task.messageId !== null && !ids.has(task.messageId)) task.messageId = null;
     }
   }
 
@@ -2398,9 +2770,8 @@ export class InMemoryMailStore implements MailStore {
       cc: row.message.cc.map((a) => ({ ...a })),
       attachments: row.message.attachments.map((a) => ({ ...a })),
       draftId: row.uid === null ? null : this.draftForServerCopy(row.accountId, row.folder, row.uid),
-
       agentSubject: redactSecrets(row.message.subject).text,
-      inAiScope: true,
+      inAiScope: this.anyCopyInScope(row),
     };
   }
 
@@ -2436,9 +2807,19 @@ export class InMemoryMailStore implements MailStore {
       snippet: snippetOf(latest.message),
       flagged: rows.some((r) => inScope(r) && r.isFlagged),
       snoozedUntil: this.snoozedUntil(rows.filter(inScope)),
+      ...this.labelsOf(rows.filter((r) => inScope(r) && r.movePending === null)),
+    };
+  }
 
-      category: null,
-      categorySuggestion: null,
+  /** The label and model suggestion of the latest of these rows (undated as newest, then date, then id). */
+  private labelsOf(rows: Row[]): { category: Category | null; categorySuggestion: Category | null } {
+    const latest = [...rows].sort(oldestFirst).pop();
+    if (latest === undefined) return { category: null, categorySuggestion: null };
+    const key = stateKey(latest.accountId, latest.dedupKey);
+    const suggestion = this.state.categorySuggestions.get(key) ?? null;
+    return {
+      category: this.state.categories.get(key)?.category ?? null,
+      categorySuggestion: suggestion === null || suggestion === "none" ? null : suggestion,
     };
   }
 
@@ -2462,6 +2843,9 @@ export class InMemoryMailStore implements MailStore {
       if (filter?.unread === true && r.isRead) return false;
       if (filter?.flagged === true && !r.isFlagged) return false;
       if (filter?.attachments === true && !r.message.attachments.some((a) => !a.isInline)) return false;
+      if (filter?.category !== undefined && this.state.categories.get(stateKey(r.accountId, r.dedupKey))?.category !== filter.category) {
+        return false;
+      }
       return true;
     };
   }

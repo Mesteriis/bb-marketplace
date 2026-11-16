@@ -2,8 +2,22 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildThreads } from "../../core/threading.ts";
-import type { NewDraft, NewOutboxRow, RemoteFolder } from "../../core/model.ts";
-import type { MailStore, NewProposal, TranslationRecord } from "../../core/ports.ts";
+import type { AccountScope, AiScope } from "../../core/ai-scope.ts";
+import type { LogEntry } from "../../core/agent-log.ts";
+import { CATEGORY_RULES_MAX } from "../../core/categories.ts";
+import { dismissalKey } from "../../core/digest.ts";
+import type { NewDraft, NewOutboxRow, ParsedQuery, RemoteFolder } from "../../core/model.ts";
+import {
+  AI_RESULT_MAX_BYTES,
+  TASKS_OPEN_MAX,
+  type AiResultRecord,
+  type MailStore,
+  type NewProposal,
+  type NewReminder,
+  type NewTask,
+  type TranslationRecord,
+} from "../../core/ports.ts";
+import { REMINDERS_LIVE_MAX, dueAt } from "../../core/reminders.ts";
 import { TRANSLATION_CACHE_ROWS } from "../../core/translate.ts";
 import type { UnsubscribeInfo } from "../../core/unsubscribe.ts";
 import {
@@ -3318,7 +3332,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(10);
+    expect(MIGRATIONS).toHaveLength(11);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -3896,6 +3910,732 @@ describe.each(storeKinds)("slice-3e store semantics (%s)", (_kind, make) => {
       expect(s.getOutbox("out_unsub")).toBeNull();
       expect(s.getDraft("d_unsub")).toBeNull();
       expect(s.cancelSendPurpose("out_none", ["queued"])).toEqual({ cancelled: false });
+    });
+  });
+});
+
+// ---- Slice 3f: AI scope, agent log, AI results, tasks, categories, Today, reminders ----
+
+const FOLDERS_3F: RemoteFolder[] = [
+  { path: INBOX, name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true },
+  { path: "Spam", name: "Spam", delimiter: "/", specialUse: "junk", selectable: true },
+  { path: "Trash", name: "Trash", delimiter: "/", specialUse: "trash", selectable: true },
+  { path: "Archive", name: "Archive", delimiter: "/", specialUse: "archive", selectable: true },
+  { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true },
+  { path: "Projects", name: "Projects", delimiter: "/", specialUse: null, selectable: true },
+];
+
+function aiScope(
+  accounts: [string, AccountScope][] = [],
+  senders: { addresses?: string[]; domains?: string[] } = {},
+): AiScope {
+  return {
+    accounts: new Map(accounts),
+    senders: { addresses: new Set(senders.addresses ?? []), domains: new Set(senders.domains ?? []) },
+  };
+}
+
+const ALL_TEXT: ParsedQuery = { text: "" };
+
+function logInput(overrides: Partial<LogEntry> = {}): LogEntry {
+  return {
+    at: T0,
+    actor: "agent",
+    threadId: null,
+    tool: "search",
+    outcome: "ok",
+    messageIds: [],
+    count: 0,
+    hiddenCount: 0,
+    refId: null,
+    provider: null,
+    model: null,
+    ...overrides,
+  };
+}
+
+function reminderRow(overrides: Partial<NewReminder> = {}): NewReminder {
+  return {
+    id: "r_1",
+    accountId: "acc_1",
+    outboxId: "out_1",
+    rfcMessageId: "<sent-1@example.org>",
+    threadId: null,
+    days: 3,
+    sentAt: null,
+    dueAt: null,
+    state: "queued",
+    createdAt: T0,
+    ...overrides,
+  };
+}
+
+describe("slice-3f migration (SQLite)", () => {
+  it("element 10 on a 3e database adds the tables without REFERENCES; summaries have no category", () => {
+    const old = new Database(":memory:");
+    old.transaction(() => MIGRATIONS.slice(0, 10).forEach((s) => old.exec(s)))();
+    const legacy = createSqliteStore(old);
+    legacy.saveAccount(makeStoredAccount());
+    legacy.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+
+    old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
+
+    expect(MIGRATIONS).toHaveLength(11);
+    const migrated = createSqliteStore(old);
+    migrated.assignThreads("acc_1", new Map());
+    expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
+      expect.objectContaining({ category: null, categorySuggestion: null }),
+    ]);
+    const tables = [
+      "ai_scope_accounts",
+      "ai_scope_senders",
+      "agent_log",
+      "ai_results",
+      "mail_tasks",
+      "message_categories",
+      "category_suggestions",
+      "category_rules",
+      "digests",
+      "reply_dismissals",
+      "reply_reminders",
+    ];
+    const objects = old
+      .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`)
+      .all(...tables) as { name: string; sql: string }[];
+    expect(objects.map((o) => o.name).sort()).toEqual([...tables].sort());
+    for (const object of objects) expect(object.sql).not.toMatch(/REFERENCES/i);
+    const columns = (table: string) => (old.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+    expect(columns("digests")).toContain("notified_at");
+    expect(columns("reply_reminders")).toContain("notified_at");
+  });
+
+  it(
+    "one category-filter page stays fast at 5 000+ threads",
+    () => {
+      store.saveFolders("acc_1", FOLDERS_3F);
+      store.upsertMessages(
+        "acc_1",
+        INBOX,
+        Array.from({ length: 5_200 }, (_, i) =>
+          makeFetchedMessage(i + 1, {
+            messageId: `perf-${i}@example.org`,
+            date: new Date(Date.UTC(2026, 9, 1) + i * 60_000).toISOString(),
+          }),
+        ),
+      );
+      store.assignThreads("acc_1", new Map());
+      const ids = store.localFolderIndex("acc_1", INBOX, EPOCH).map((e) => e.id);
+      store.setCategories(ids.filter((_, i) => i % 7 === 0), "bills", "owner", T0);
+      const first = store.listThreads("acc_1", INBOX, null, 50, { category: "bills" });
+      const { value: page, ms } = timeOne(() => store.listThreads("acc_1", INBOX, first.nextCursor, 50, { category: "bills" }));
+      expect(ms).toBeLessThan(PAGE_MS);
+      expect(page.threads).toHaveLength(50);
+      expect(page.threads.every((t) => t.category === "bills")).toBe(true);
+      const { value: merged, ms: mergedMs } = timeOne(() => store.listThreadsAll("inbox", null, 50, { category: "bills" }));
+      expect(mergedMs).toBeLessThan(PAGE_MS);
+      expect(merged.threads).toHaveLength(50);
+    },
+    SEEDING_TIMEOUT_MS,
+  );
+
+  it("the SQL scope function picks up a new scope at once", () => {
+    store.saveFolders("acc_1", FOLDERS_3F);
+    store.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    expect(store.search(ALL_TEXT, null, 10, { scoped: true })).toHaveLength(1);
+    store.setAiScope(aiScope([["acc_1", { mode: "none" }]]));
+    expect(store.search(ALL_TEXT, null, 10, { scoped: true })).toHaveLength(0);
+    store.setAiScope(aiScope());
+    expect(store.search(ALL_TEXT, null, 10, { scoped: true })).toHaveLength(1);
+  });
+});
+
+describe.each(storeKinds)("slice-3f store semantics (%s)", (_kind, make) => {
+  let s: MailStore;
+  beforeEach(() => {
+    s = make();
+    s.saveAccount(makeStoredAccount());
+    s.saveAccount(makeStoredAccount({ id: "acc_2", email: "second@example.org", username: "second@example.org" }));
+    s.saveFolders("acc_1", FOLDERS_3F);
+    s.saveFolders("acc_2", FOLDERS_3F);
+  });
+  const idIn = (folder: string, uid: number, accountId = "acc_1") =>
+    s.localFolderIndex(accountId, folder, EPOCH).find((e) => e.uid === uid)!.id;
+  const thread = (accountId = "acc_1") => s.assignThreads(accountId, buildThreads(s.threadingInputs(accountId)));
+  const ids = (summaries: { id: string }[]) => summaries.map((m) => m.id).sort();
+
+  describe("AI access scope", () => {
+    beforeEach(() => {
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { from: { name: "Ada", address: "ada@example.org" } }),
+        makeFetchedMessage(5, { from: { name: "Ex", address: "ex@example.net" }, messageId: "ex-1@example.net" }),
+        makeFetchedMessage(6, { cc: [{ name: null, address: "someone@sub.blocked.example.com" }] }),
+        // A reply in the excluded sender's conversation, from someone else.
+        makeFetchedMessage(7, {
+          from: { name: "Bo", address: "bo@example.org" },
+          inReplyTo: "ex-1@example.net",
+          references: ["ex-1@example.net"],
+          subject: "Re: Invented subject 5",
+        }),
+      ]);
+      s.upsertMessages("acc_1", "Spam", [makeFetchedMessage(2)]);
+      s.upsertMessages("acc_1", "Trash", [makeFetchedMessage(3)]);
+      s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(4)]);
+      // One message in Archive and in Trash: the dedup must pick the in-scope copy.
+      s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(10, { messageId: "dup@example.org" })]);
+      s.upsertMessages("acc_1", "Trash", [makeFetchedMessage(11, { messageId: "dup@example.org" })]);
+      s.upsertMessages("acc_1", "Projects", [makeFetchedMessage(8)]);
+      s.upsertMessages("acc_2", INBOX, [makeFetchedMessage(1, { messageId: "other-account@example.org" })]);
+      thread("acc_1");
+      thread("acc_2");
+    });
+
+    it("leaves Spam and Trash out in every mode and keeps unscoped calls unchanged", () => {
+      s.setAiScope(aiScope());
+      const scoped = ids(s.search(ALL_TEXT, null, 50, { scoped: true }));
+      expect(scoped).not.toContain(idIn("Spam", 2));
+      expect(scoped).not.toContain(idIn("Trash", 3));
+      expect(scoped).toContain(idIn("Archive", 4));
+      expect(ids(s.search(ALL_TEXT, null, 50))).toContain(idIn("Spam", 2));
+      expect(s.getMessage(idIn("Spam", 2))!.inAiScope).toBe(false);
+      expect(s.getMessage(idIn(INBOX, 1))!.inAiScope).toBe(true);
+    });
+
+    it("applies the account modes and fails closed on a stale folder path", () => {
+      s.setAiScope(aiScope([["acc_1", { mode: "folders", folders: ["Archive", "Renamed"] }], ["acc_2", { mode: "none" }]]));
+      const scoped = ids(s.search(ALL_TEXT, null, 50, { scoped: true }));
+      expect(scoped).toEqual([idIn("Archive", 4), idIn("Archive", 10)].sort());
+      expect(s.scopedMessage(idIn(INBOX, 1, "acc_2"))).toBeNull();
+      s.setAiScope(aiScope([["acc_1", { mode: "folders", folders: ["Renamed"] }]]));
+      expect(s.search(ALL_TEXT, "acc_1", 50, { scoped: true })).toEqual([]);
+      expect(s.search(ALL_TEXT, "acc_2", 50, { scoped: true })).toHaveLength(1);
+    });
+
+    it("excludes a sender over From, To, Cc and the whole conversation", () => {
+      s.setAiScope(aiScope([], { addresses: ["ex@example.net"], domains: ["blocked.example.com"] }));
+      const scoped = ids(s.search(ALL_TEXT, "acc_1", 50, { scoped: true }));
+      expect(scoped).toContain(idIn(INBOX, 1));
+      expect(scoped).not.toContain(idIn(INBOX, 5));
+      expect(scoped).not.toContain(idIn(INBOX, 6));
+      expect(scoped).not.toContain(idIn(INBOX, 7));
+      expect(s.scopedMessage(idIn(INBOX, 7))).toBeNull();
+      expect(s.getMessage(idIn(INBOX, 7))!.inAiScope).toBe(false);
+      const inbox = s.inboxMessages("acc_1", { unreadOnly: false, limit: 50, scoped: true }).map((m) => m.id);
+      expect(inbox).toEqual([idIn(INBOX, 1)]);
+      expect(s.inboxMessages("acc_1", { unreadOnly: false, limit: 50 })).toHaveLength(4);
+    });
+
+    it("picks the in-scope copy before the dedup and answers an out-of-scope id as unknown", () => {
+      s.setAiScope(aiScope());
+      const archived = idIn("Archive", 10);
+      const trashed = idIn("Trash", 11);
+      expect(ids(s.search({ text: "" }, "acc_1", 50))).toContain(trashed);
+      const scoped = ids(s.search(ALL_TEXT, "acc_1", 50, { scoped: true }));
+      expect(scoped).toContain(archived);
+      expect(scoped).not.toContain(trashed);
+      expect(s.scopedMessage(trashed)!.id).toBe(archived);
+      expect(s.scopedMessage(archived)!.id).toBe(archived);
+      expect(s.getMessage(trashed)!.inAiScope).toBe(true);
+      expect(s.scopedMessage(idIn("Spam", 2))).toBeNull();
+      expect(s.scopedMessage("m_unknown")).toBeNull();
+    });
+
+    it("rebuilds the excluded conversations on refresh after new rows", () => {
+      s.setAiScope(aiScope([], { addresses: ["late@example.net"] }));
+      expect(s.scopedMessage(idIn(INBOX, 1))).not.toBeNull();
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(20, {
+          from: { name: "Late", address: "late@example.net" },
+          inReplyTo: "msg-1@example.org",
+          references: ["msg-1@example.org"],
+        }),
+      ]);
+      thread("acc_1");
+      s.refreshExcludedThreads();
+      expect(s.scopedMessage(idIn(INBOX, 1))).toBeNull();
+    });
+
+    it("stores the scope rows and loads them back", () => {
+      s.putAiScope(
+        [
+          { accountId: "acc_1", scope: { mode: "folders", folders: [INBOX, "Archive"] } },
+          { accountId: "acc_2", scope: { mode: "none" } },
+        ],
+        [
+          { kind: "address", value: "ex@example.net" },
+          { kind: "domain", value: "blocked.example.com" },
+        ],
+        T0,
+      );
+      const loaded = s.loadAiScope();
+      expect([...loaded.accounts]).toEqual([
+        ["acc_1", { mode: "folders", folders: [INBOX, "Archive"] }],
+        ["acc_2", { mode: "none" }],
+      ]);
+      expect([...loaded.senders.addresses]).toEqual(["ex@example.net"]);
+      expect([...loaded.senders.domains]).toEqual(["blocked.example.com"]);
+      expect(s.getAiScope().accounts.size).toBe(0);
+      s.setAiScope(loaded);
+      expect(s.getAiScope()).toBe(loaded);
+      s.putAiScope([], [], T0);
+      expect(s.loadAiScope().accounts.size).toBe(0);
+    });
+  });
+
+  describe("scoped contacts", () => {
+    beforeEach(() => {
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { from: { name: "Ada Planner", address: "ada@example.org" }, subject: "Garden plan" }),
+        makeFetchedMessage(2, { from: { name: "Ex Planner", address: "ex@example.net" }, subject: "Garden tools" }),
+        makeFetchedMessage(3, {
+          from: { name: "Code Sender", address: "codes@example.org" },
+          subject: "Sign in",
+          bodyText: "Your verification code is 482913. It expires soon.",
+        }),
+      ]);
+      s.upsertMessages("acc_1", "Archive", [
+        makeFetchedMessage(4, { from: { name: "Archive Friend", address: "friend@example.org" }, subject: "Garden party" }),
+      ]);
+      thread("acc_1");
+    });
+
+    it("neither returns nor counts excluded or out-of-scope correspondence", () => {
+      expect(s.contacts("garden", 10).map((c) => c.address).sort()).toEqual(
+        ["ada@example.org", "ex@example.net", "friend@example.org"].sort(),
+      );
+      s.setAiScope(aiScope([["acc_1", { mode: "folders", folders: [INBOX] }]], { domains: ["example.net"] }));
+      expect(s.contacts("garden", 10, { scoped: true }).map((c) => c.address)).toEqual(["ada@example.org"]);
+      expect(s.contacts("planner", 10, { scoped: true }).map((c) => c.address)).toEqual(["ada@example.org"]);
+      expect(s.contacts("garden", 10).map((c) => c.address)).toHaveLength(3);
+    });
+
+    it("never finds a contact by a secret in their mail", () => {
+      s.setAiScope(aiScope());
+      expect(s.contacts("482913", 10, { scoped: true })).toEqual([]);
+      expect(s.contacts("verification", 10, { scoped: true }).map((c) => c.address)).toEqual(["codes@example.org"]);
+    });
+  });
+
+  describe("agent log", () => {
+    it("appends content-free rows, updates by refId, pages by thread, clears and purges", () => {
+      const first = s.appendAgentLog(logInput({ threadId: "th_1", messageIds: ["m_1", "m_2"], count: 2 }));
+      const proposal = s.appendAgentLog(logInput({ tool: "propose", outcome: "proposed", refId: "p_1", threadId: "th_1" }));
+      s.appendAgentLog(logInput({ threadId: "th_2", messageIds: Array.from({ length: 60 }, (_, i) => `m_${i}`) }));
+      expect(proposal).toBeGreaterThan(first);
+      expect(s.updateAgentLog("p_1", "sent", 1)).toBe(1);
+      expect(s.updateAgentLog("p_unknown", "sent", 1)).toBe(0);
+
+      const page1 = s.listAgentLog({ threadId: "th_1", limit: 1 });
+      expect(page1.entries).toEqual([expect.objectContaining({ seq: proposal, outcome: "sent", count: 1, refId: "p_1" })]);
+      const page2 = s.listAgentLog({ threadId: "th_1", cursor: page1.next, limit: 1 });
+      expect(page2.entries).toEqual([expect.objectContaining({ seq: first, messageIds: ["m_1", "m_2"], count: 2 })]);
+      expect(page2.next).toBeNull();
+      const all = s.listAgentLog({ limit: 10 }).entries;
+      expect(all.map((e) => e.threadId)).toEqual(["th_2", "th_1", "th_1"]);
+      expect(all[0]!.messageIds).toHaveLength(50);
+
+      expect(s.clearAgentLog()).toBe(3);
+      expect(s.listAgentLog({ limit: 10 }).entries).toEqual([]);
+    });
+
+    it("purges by age and by count", () => {
+      s.appendAgentLog(logInput({ at: "2026-01-01T00:00:00.000Z" }));
+      for (let i = 0; i < 4; i++) s.appendAgentLog(logInput({ at: later(i * 1000), count: i }));
+      expect(s.purgeAgentLog(T0, 3)).toBe(2);
+      expect(s.listAgentLog({ limit: 10 }).entries.map((e) => e.count)).toEqual([3, 2, 1]);
+    });
+  });
+
+  describe("AI results", () => {
+    const result = (overrides: Partial<AiResultRecord> = {}): AiResultRecord => ({
+      kind: "summary",
+      subjectId: "th_1",
+      accountId: "acc_1",
+      sourceSha256: "a".repeat(64),
+      provider: "provider-x",
+      model: "model-y",
+      resultJson: '{"decisions":[]}',
+      notesJson: '{"hidden":0}',
+      createdAt: T0,
+      ...overrides,
+    });
+
+    it("round-trips, replaces by (kind, subject) and refuses more than 64 KiB", () => {
+      expect(s.getAiResult("summary", "th_1")).toBeNull();
+      s.putAiResult(result());
+      expect(s.getAiResult("summary", "th_1")).toEqual(result());
+      s.putAiResult(result({ sourceSha256: "b".repeat(64) }));
+      expect(s.getAiResult("summary", "th_1")!.sourceSha256).toBe("b".repeat(64));
+      expect(() => s.putAiResult(result({ resultJson: "x".repeat(AI_RESULT_MAX_BYTES + 1) }))).toThrow();
+      expect(s.getAiResult("summary", "th_1")!.sourceSha256).toBe("b".repeat(64));
+    });
+  });
+
+  describe("tasks", () => {
+    const task = (id: string, due: string | null, messageId = "m_x"): NewTask => ({
+      id,
+      accountId: "acc_1",
+      messageId,
+      dedupKey: `k_${id}`,
+      title: `Task ${id}`,
+      due,
+      createdAt: T0,
+    });
+
+    it("keeps, orders open tasks overdue, dated, undated, pages and counts", () => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+      thread("acc_1");
+      const message = idIn(INBOX, 1);
+      expect(s.keepTasks([task("t_undated", null), task("t_late", "2026-11-10", message), task("t_today", "2026-11-15")])).toEqual({
+        kept: 3,
+      });
+      s.keepTasks([task("t_next", "2026-11-20")]);
+      const first = s.listTasks({ done: false, limit: 2 });
+      expect(first.tasks.map((t) => t.id)).toEqual(["t_late", "t_today"]);
+      expect(first.tasks[0]).toMatchObject({ messageId: message, threadId: s.getMessage(message)!.threadId, doneAt: null });
+      const second = s.listTasks({ done: false, cursor: first.next, limit: 2 });
+      expect(second.tasks.map((t) => t.id)).toEqual(["t_next", "t_undated"]);
+      expect(second.next).toBeNull();
+      expect(s.taskCounts("2026-11-15")).toEqual({ overdue: 1, today: 1 });
+    });
+
+    it("updates, marks done, deletes and nulls the message when the row goes", () => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+      const message = idIn(INBOX, 1);
+      s.keepTasks([task("t_1", "2026-11-10", message)]);
+      expect(s.updateTask("t_1", { title: "Renamed", due: null }, later(1000))).toBe(true);
+      expect(s.getTask("t_1")).toMatchObject({ title: "Renamed", due: null, updatedAt: later(1000) });
+      expect(s.updateTask("t_1", { done: true }, later(2000))).toBe(true);
+      expect(s.listTasks({ done: false, limit: 10 }).tasks).toEqual([]);
+      expect(s.listTasks({ done: true, limit: 10 }).tasks.map((t) => t.doneAt)).toEqual([later(2000)]);
+      expect(s.updateTask("t_1", { done: false }, later(3000))).toBe(true);
+      expect(s.getTask("t_1")!.doneAt).toBeNull();
+      s.deleteByUids("acc_1", INBOX, [1]);
+      expect(s.getTask("t_1")).toMatchObject({ messageId: null, threadId: null });
+      expect(s.deleteTask("t_1")).toBe(true);
+      expect(s.deleteTask("t_1")).toBe(false);
+      expect(s.updateTask("t_1", { done: true }, T0)).toBe(false);
+    });
+
+    it("refuses to keep past the open cap", () => {
+      const many = Array.from({ length: TASKS_OPEN_MAX }, (_, i) => task(`t_${i}`, null));
+      expect(s.keepTasks(many)).toEqual({ kept: TASKS_OPEN_MAX });
+      expect(s.keepTasks([task("t_over", null)])).toEqual({ full: true });
+      expect(s.getTask("t_over")).toBeNull();
+    });
+  });
+
+  describe("categories", () => {
+    beforeEach(() => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2), makeFetchedMessage(3)]);
+      // The same message in Archive: labels key on (account, dedup key).
+      s.upsertMessages("acc_1", "Archive", [makeFetchedMessage(9, { messageId: "msg-1@example.org" })]);
+      thread("acc_1");
+    });
+
+    it("labels by dedup key, returns the previous labels and restores them", () => {
+      const first = s.setCategories([idIn(INBOX, 1), idIn("Archive", 9), "m_unknown"], "bills", "owner", T0);
+      expect(first.previous).toEqual([
+        { accountId: "acc_1", dedupKey: expect.any(String), category: null, source: null },
+      ]);
+      expect(s.categoriesOf([idIn("Archive", 9)]).get(idIn("Archive", 9))).toEqual({
+        category: "bills",
+        source: "owner",
+        suggestion: null,
+      });
+      const second = s.setCategories([idIn(INBOX, 1)], "personal", "owner", T0);
+      expect(second.previous).toEqual([expect.objectContaining({ category: "bills", source: "owner" })]);
+      s.restoreCategories(second.previous, T0);
+      expect(s.categoriesOf([idIn(INBOX, 1)]).get(idIn(INBOX, 1))!.category).toBe("bills");
+      s.restoreCategories(first.previous, T0);
+      expect(s.categoriesOf([idIn(INBOX, 1)]).get(idIn(INBOX, 1))!.category).toBeNull();
+      s.setCategories([idIn(INBOX, 2)], "newsletters", "owner", T0);
+      s.setCategories([idIn(INBOX, 2)], null, "owner", T0);
+      expect(s.categoriesOf([idIn(INBOX, 2)]).get(idIn(INBOX, 2))!.category).toBeNull();
+      expect(s.categoriesOf(["m_unknown"]).size).toBe(0);
+    });
+
+    it("never lets a rule override the owner's label", () => {
+      s.setCategories([idIn(INBOX, 1)], "personal", "owner", T0);
+      const ruled = s.setCategories([idIn(INBOX, 1), idIn(INBOX, 2)], "newsletters", "rule", T0);
+      expect(ruled.previous).toHaveLength(1);
+      expect(s.categoriesOf([idIn(INBOX, 1)]).get(idIn(INBOX, 1))).toMatchObject({ category: "personal", source: "owner" });
+      expect(s.categoriesOf([idIn(INBOX, 2)]).get(idIn(INBOX, 2))).toMatchObject({ category: "newsletters", source: "rule" });
+      s.setCategories([idIn(INBOX, 2)], "bills", "owner", T0);
+      expect(s.categoriesOf([idIn(INBOX, 2)]).get(idIn(INBOX, 2))).toMatchObject({ category: "bills", source: "owner" });
+    });
+
+    it("stores model suggestions and shows the latest member row's label and suggestion on the thread", () => {
+      s.putCategorySuggestions(
+        [
+          { messageId: idIn(INBOX, 1), category: "notifications" },
+          { messageId: idIn(INBOX, 2), category: "none" },
+        ],
+        T0,
+      );
+      s.setCategories([idIn(INBOX, 1)], "bills", "owner", T0);
+      expect(s.categoriesOf([idIn(INBOX, 1)]).get(idIn(INBOX, 1))!.suggestion).toBe("notifications");
+      expect(s.categoriesOf([idIn(INBOX, 2)]).get(idIn(INBOX, 2))!.suggestion).toBe("none");
+      const byId = new Map(s.listThreads("acc_1", INBOX, null, 10).threads.map((t) => [t.id, t]));
+      expect(byId.get(s.getMessage(idIn(INBOX, 1))!.threadId)).toMatchObject({ category: "bills", categorySuggestion: "notifications" });
+      expect(byId.get(s.getMessage(idIn(INBOX, 2))!.threadId)).toMatchObject({ category: null, categorySuggestion: null });
+      const merged = new Map(s.listThreadsAll("inbox", null, 10).threads.map((t) => [t.id, t]));
+      expect(merged.get(s.getMessage(idIn(INBOX, 1))!.threadId)!.category).toBe("bills");
+    });
+
+    it("filters threads by category across a page boundary, in a folder and the merged role", () => {
+      s.upsertMessages(
+        "acc_2",
+        INBOX,
+        [1, 2, 3, 4].map((uid) => makeFetchedMessage(uid, { messageId: `two-${uid}@example.org`, date: later(uid * 60_000) })),
+      );
+      thread("acc_2");
+      s.setCategories([idIn(INBOX, 1), idIn(INBOX, 3)], "bills", "owner", T0);
+      s.setCategories([1, 2, 4].map((uid) => idIn(INBOX, uid, "acc_2")), "bills", "owner", T0);
+      const page1 = s.listThreads("acc_1", INBOX, null, 1, { category: "bills" });
+      const page2 = s.listThreads("acc_1", INBOX, page1.nextCursor, 1, { category: "bills" });
+      expect(page2.nextCursor).toBeNull();
+      expect([...page1.threads, ...page2.threads].map((t) => t.id).sort()).toEqual(
+        [s.getMessage(idIn(INBOX, 1))!.threadId, s.getMessage(idIn(INBOX, 3))!.threadId].sort(),
+      );
+      expect(s.listThreads("acc_1", INBOX, null, 10, { category: "personal" }).threads).toEqual([]);
+      const listed: string[] = [];
+      let cursor: string | null = null;
+      do {
+        const page: ReturnType<MailStore["listThreadsAll"]> = s.listThreadsAll("inbox", cursor, 2, { category: "bills" });
+        listed.push(...page.threads.map((t) => t.id));
+        cursor = page.nextCursor;
+      } while (cursor !== null);
+      expect(listed).toHaveLength(5);
+      expect(new Set(listed).size).toBe(5);
+    });
+
+    it("keeps rules unique per (kind, value), capped at 500, and removes them", () => {
+      const added = s.addCategoryRule("domain", "shop.example.com", "bills", "cr_1", T0);
+      expect(added).toEqual({
+        rule: { id: "cr_1", kind: "domain", value: "shop.example.com", category: "bills", createdAt: T0 },
+        created: true,
+      });
+      expect(s.addCategoryRule("domain", "shop.example.com", "personal", "cr_2", T0)).toMatchObject({
+        rule: { id: "cr_1", category: "bills" },
+        created: false,
+      });
+      for (let i = 1; i < CATEGORY_RULES_MAX; i++) s.addCategoryRule("address", `a${i}@example.org`, "personal", `cr_x${i}`, later(i));
+      expect(s.listCategoryRules()).toHaveLength(CATEGORY_RULES_MAX);
+      expect(s.addCategoryRule("address", "over@example.org", "personal", "cr_over", T0)).toEqual({ full: true });
+      expect(s.listCategoryRules()[0]!.id).toBe("cr_1");
+      expect(s.removeCategoryRule("cr_1")).toBe(true);
+      expect(s.removeCategoryRule("cr_1")).toBe(false);
+      expect(s.listCategoryRules()).toHaveLength(CATEGORY_RULES_MAX - 1);
+    });
+  });
+
+  describe("Today", () => {
+    it("answers each conversation's latest message with its role and the newest Sent row", () => {
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(1, { date: later(60_000), to: [{ name: null, address: "owner@example.org" }] }),
+        makeFetchedMessage(2, { date: later(120_000), messageId: "two@example.org", subject: "Topic" }),
+        makeFetchedMessage(3, { date: "2026-10-01T00:00:00.000Z", messageId: "old@example.org", subject: "Old" }),
+      ]);
+      s.upsertMessages("acc_1", "Sent", [
+        makeFetchedMessage(4, {
+          date: later(180_000),
+          messageId: "reply@example.org",
+          inReplyTo: "two@example.org",
+          references: ["two@example.org"],
+          subject: "Re: Topic",
+          from: { name: null, address: "owner@example.org" },
+        }),
+      ]);
+      thread("acc_1");
+      const candidates = s.replyCandidates(T0, 10);
+      expect(candidates.map((c) => c.messageId)).toEqual([idIn("Sent", 4), idIn(INBOX, 1)]);
+      expect(candidates[1]).toMatchObject({
+        accountId: "acc_1",
+        threadId: s.getMessage(idIn(INBOX, 1))!.threadId,
+        folderRole: "inbox",
+        fromAddress: "sender@example.org",
+        to: ["owner@example.org"],
+        cc: [],
+        bulk: null,
+        lastSentAt: null,
+        date: later(60_000),
+      });
+      expect(candidates[0]).toMatchObject({ folderRole: "sent", lastSentAt: later(180_000) });
+      expect(s.replyCandidates(T0, 1)).toHaveLength(1);
+    });
+
+    it("stores dismissals by the latest message's dedup key", () => {
+      expect(s.replyDismissals().size).toBe(0);
+      s.dismissReply("acc_1", "mid:a@example.org:100", T0);
+      s.dismissReply("acc_1", "mid:a@example.org:100", later(1000));
+      expect([...s.replyDismissals()]).toEqual([dismissalKey("acc_1", "mid:a@example.org:100")]);
+    });
+
+    it("builds a digest once per day and marks it notified once", () => {
+      const digest = { day: "2026-11-15", builtAt: T0, since: later(-86_400_000), replyCount: 2, noticeCount: 1, notifiedAt: null };
+      expect(s.getDigest("2026-11-15")).toBeNull();
+      expect(s.putDigest(digest)).toBe(true);
+      expect(s.putDigest({ ...digest, replyCount: 9 })).toBe(false);
+      expect(s.getDigest("2026-11-15")).toEqual(digest);
+      expect(s.markDigestNotified("2026-11-15", later(1000))).toBe(true);
+      expect(s.markDigestNotified("2026-11-15", later(2000))).toBe(false);
+      expect(s.getDigest("2026-11-15")!.notifiedAt).toBe(later(1000));
+      expect(s.markDigestNotified("2026-11-16", later(1000))).toBe(false);
+    });
+  });
+
+  describe("reply reminders", () => {
+    it("creates queued, binds at send, deletes for a cancelled outbox row and caps live rows", () => {
+      expect(s.createReminder(reminderRow())).toEqual({ created: true });
+      expect(s.createReminder(reminderRow({ id: "r_2", outboxId: "out_2" }))).toEqual({ created: true });
+      const bound = s.bindReminder("out_1", T0)!;
+      expect(bound).toMatchObject({ id: "r_1", state: "waiting", outboxId: null, sentAt: T0, updatedAt: T0 });
+      expect(bound.dueAt).toBe(dueAt(T0, 3));
+      expect(s.bindReminder("out_1", T0)).toBeNull();
+      expect(s.deleteReminderForOutbox("out_2")).toBe(1);
+      expect(s.getReminder("r_2")).toBeNull();
+      expect(s.deleteReminderForOutbox("out_1")).toBe(0);
+
+      for (let i = 1; i < REMINDERS_LIVE_MAX; i++) s.createReminder(reminderRow({ id: `r_x${i}`, outboxId: null, state: "waiting" }));
+      expect(s.createReminder(reminderRow({ id: "r_over" }))).toEqual({ full: true });
+      s.updateReminder("r_x1", { state: "dismissed" }, T0);
+      expect(s.createReminder(reminderRow({ id: "r_room" }))).toEqual({ created: true });
+    });
+
+    it("lists by state and due time and updates fields", () => {
+      s.createReminder(reminderRow({ id: "r_a", outboxId: null, state: "waiting", dueAt: later(3000), sentAt: T0 }));
+      s.createReminder(reminderRow({ id: "r_b", outboxId: null, state: "waiting", dueAt: later(1000), sentAt: T0 }));
+      s.createReminder(reminderRow({ id: "r_c", outboxId: "out_c", state: "queued" }));
+      expect(s.listReminders({ states: ["waiting", "queued"], limit: 10 }).map((r) => r.id)).toEqual(["r_b", "r_a", "r_c"]);
+      expect(s.listReminders({ states: ["waiting"], dueBefore: later(2000), limit: 10 }).map((r) => r.id)).toEqual(["r_b"]);
+      expect(s.listReminders({ states: [], limit: 10 })).toEqual([]);
+      expect(s.updateReminder("r_b", { state: "due", notifiedAt: later(5000), threadId: "th_9" }, later(5000))).toBe(true);
+      expect(s.getReminder("r_b")).toMatchObject({ state: "due", notifiedAt: later(5000), threadId: "th_9", updatedAt: later(5000) });
+      expect(s.updateReminder("r_b", { state: "waiting", days: 5, dueAt: later(9000) }, later(6000))).toBe(true);
+      expect(s.getReminder("r_b")).toMatchObject({ state: "waiting", days: 5, dueAt: later(9000), notifiedAt: later(5000) });
+      expect(s.updateReminder("r_unknown", { state: "due" }, T0)).toBe(false);
+    });
+
+    it("finds answering rows by In-Reply-To and References after the sent time, and the sent copy's thread", () => {
+      s.upsertMessages("acc_1", "Sent", [makeFetchedMessage(1, { messageId: "sent-1@example.org", date: T0 })]);
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(2, { inReplyTo: "<sent-1@example.org>", date: later(60_000) }),
+        makeFetchedMessage(3, { references: ["other@example.org", "sent-1@example.org"], date: later(120_000) }),
+        makeFetchedMessage(4, { inReplyTo: "sent-1@example.org", date: later(-60_000) }),
+        makeFetchedMessage(5, { inReplyTo: "unrelated@example.org", date: later(60_000) }),
+      ]);
+      thread("acc_1");
+      const rows = s.answeringRows(["<sent-1@example.org>"], T0);
+      expect(rows.map((r) => r.id)).toEqual([idIn(INBOX, 2), idIn(INBOX, 3)]);
+      expect(rows[1]).toMatchObject({
+        accountId: "acc_1",
+        messageId: "msg-3@example.org",
+        references: ["other@example.org", "sent-1@example.org"],
+        bulk: null,
+        fromAddress: "sender@example.org",
+      });
+      expect(s.answeringRows([], T0)).toEqual([]);
+      expect(s.sentCopyThread("acc_1", "<sent-1@example.org>")).toBe(s.getMessage(idIn("Sent", 1))!.threadId);
+      expect(s.sentCopyThread("acc_2", "sent-1@example.org")).toBeNull();
+    });
+  });
+
+  describe("deletes and the daily purge", () => {
+    it("deleteAccount drops the account's 3f rows and keeps the global ones", () => {
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+      s.upsertMessages("acc_2", INBOX, [makeFetchedMessage(1)]);
+      thread("acc_1");
+      thread("acc_2");
+      const one = idIn(INBOX, 1);
+      const two = idIn(INBOX, 1, "acc_2");
+      for (const [accountId, id] of [["acc_1", one], ["acc_2", two]] as const) {
+        s.setCategories([id], "bills", "owner", T0);
+        s.putCategorySuggestions([{ messageId: id, category: "notifications" }], T0);
+        s.keepTasks([{ id: `t_${accountId}`, accountId, messageId: id, dedupKey: "k", title: "T", due: null, createdAt: T0 }]);
+        s.putAiResult({
+          kind: "summary",
+          subjectId: s.getMessage(id)!.threadId,
+          accountId,
+          sourceSha256: "a".repeat(64),
+          provider: "p",
+          model: "m",
+          resultJson: "{}",
+          notesJson: "{}",
+          createdAt: T0,
+        });
+        s.dismissReply(accountId, "k", T0);
+        s.createReminder(reminderRow({ id: `r_${accountId}`, accountId }));
+      }
+      s.putAiScope([{ accountId: "acc_1", scope: { mode: "none" } }, { accountId: "acc_2", scope: { mode: "none" } }], [{ kind: "address", value: "x@example.org" }], T0);
+      s.appendAgentLog(logInput());
+      s.addCategoryRule("address", "x@example.org", "bills", "cr_1", T0);
+      s.putDigest({ day: "2026-11-15", builtAt: T0, since: T0, replyCount: 0, noticeCount: 0, notifiedAt: null });
+      const twoThread = s.getMessage(two)!.threadId;
+
+      s.deleteAccount("acc_1");
+
+      expect(s.getTask("t_acc_1")).toBeNull();
+      expect(s.getTask("t_acc_2")).not.toBeNull();
+      expect(s.getReminder("r_acc_1")).toBeNull();
+      expect(s.getReminder("r_acc_2")).not.toBeNull();
+      expect([...s.replyDismissals()]).toEqual([dismissalKey("acc_2", "k")]);
+      expect(s.getAiResult("summary", twoThread)).not.toBeNull();
+      expect(s.categoriesOf([two]).get(two)).toEqual({ category: "bills", source: "owner", suggestion: "notifications" });
+      expect([...s.loadAiScope().accounts.keys()]).toEqual(["acc_2"]);
+      expect([...s.loadAiScope().senders.addresses]).toEqual(["x@example.org"]);
+      expect(s.listAgentLog({ limit: 10 }).entries).toHaveLength(1);
+      expect(s.listCategoryRules()).toHaveLength(1);
+      expect(s.getDigest("2026-11-15")).not.toBeNull();
+    });
+
+    it("prunes orphan labels, gone summaries, old digests, dismissals, answered reminders and the log", () => {
+      const now = "2026-11-15T10:00:00.000Z";
+      const daysAgo = (days: number) => new Date(Date.parse(now) - days * 86_400_000).toISOString();
+      s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1), makeFetchedMessage(2)]);
+      thread("acc_1");
+      const kept = idIn(INBOX, 1);
+      const gone = idIn(INBOX, 2);
+      const goneThread = s.getMessage(gone)!.threadId;
+      s.setCategories([kept, gone], "bills", "owner", now);
+      s.putCategorySuggestions([{ messageId: kept, category: "personal" }, { messageId: gone, category: "personal" }], now);
+      const summary = (subjectId: string): AiResultRecord => ({
+        kind: "summary",
+        subjectId,
+        accountId: "acc_1",
+        sourceSha256: "a".repeat(64),
+        provider: "p",
+        model: "m",
+        resultJson: "{}",
+        notesJson: "{}",
+        createdAt: now,
+      });
+      s.putAiResult(summary(s.getMessage(kept)!.threadId));
+      s.putAiResult(summary(goneThread));
+      s.deleteByUids("acc_1", INBOX, [2]);
+      thread("acc_1");
+      s.putDigest({ day: "2026-09-01", builtAt: daysAgo(61), since: daysAgo(62), replyCount: 0, noticeCount: 0, notifiedAt: null });
+      s.putDigest({ day: "2026-11-14", builtAt: daysAgo(1), since: daysAgo(2), replyCount: 0, noticeCount: 0, notifiedAt: null });
+      s.dismissReply("acc_1", "old", daysAgo(61));
+      s.dismissReply("acc_1", "new", daysAgo(1));
+      s.createReminder(reminderRow({ id: "r_old", outboxId: null, state: "answered", createdAt: daysAgo(31) }));
+      s.createReminder(reminderRow({ id: "r_new", outboxId: null, state: "answered", createdAt: daysAgo(1) }));
+      s.createReminder(reminderRow({ id: "r_live", outboxId: null, state: "waiting", createdAt: daysAgo(90) }));
+      s.appendAgentLog(logInput({ at: daysAgo(91) }));
+      s.appendAgentLog(logInput({ at: daysAgo(1) }));
+
+      expect(s.purgeDaily(now)).toBe(7);
+
+      expect(s.categoriesOf([kept]).get(kept)).toEqual({ category: "bills", source: "owner", suggestion: "personal" });
+      expect(s.getAiResult("summary", s.getMessage(kept)!.threadId)).not.toBeNull();
+      expect(s.getAiResult("summary", goneThread)).toBeNull();
+      expect(s.getDigest("2026-09-01")).toBeNull();
+      expect(s.getDigest("2026-11-14")).not.toBeNull();
+      expect([...s.replyDismissals()]).toEqual([dismissalKey("acc_1", "new")]);
+      expect(s.getReminder("r_old")).toBeNull();
+      expect(s.getReminder("r_new")).not.toBeNull();
+      expect(s.getReminder("r_live")).not.toBeNull();
+      expect(s.listAgentLog({ limit: 10 }).entries).toHaveLength(1);
+      expect(s.purgeDaily(now)).toBe(0);
     });
   });
 });
