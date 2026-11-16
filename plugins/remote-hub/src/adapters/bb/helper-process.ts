@@ -19,20 +19,16 @@ import {
   type RequestMessage,
   type ResponseMessage,
 } from "../../core/protocol.ts";
+import type { SessionHandle } from "../../core/rpc.ts";
 
 export const HELPER_BIN_NAME = "remote-hub-helper";
 /** Must match helper/Cargo.toml version; the adapter refuses a mismatch. */
 export const HELPER_VERSION = "0.1.0";
-
-export type HelperStartErrorCode =
-  | "helper_missing"
-  | "helper_mismatch"
-  | "unsupported_platform"
-  | "version_mismatch"
-  | "handshake_timeout";
+/** How long the hello handshake may take before it is reported as handshake_timeout. */
+export const HANDSHAKE_TIMEOUT_MS = 5_000;
 
 export interface HelperStartFailure {
-  code: HelperStartErrorCode;
+  code: string;
   message: string;
   path?: string;
 }
@@ -46,9 +42,9 @@ export class HelperStartError extends Error {
   }
 }
 
-export type HelperRuntimeErrorCode = "helper_exited" | "protocol_error";
+export type HelperRuntimeErrorCode = "helper_exited" | "protocol_error" | "session_not_found";
 
-/** A runtime failure while a helper was running (exit, protocol error). */
+/** A runtime failure while a helper was running (exit, protocol error, …). */
 export class HelperRuntimeError extends Error {
   readonly code: HelperRuntimeErrorCode;
   constructor(code: HelperRuntimeErrorCode, message: string) {
@@ -152,7 +148,6 @@ export type HelperSpawn = (binPath: string, args: string[]) => ChildProcessWitho
 /** Per-session buffered terminal output bound, before oldest bytes are dropped. */
 const MAX_STREAM_BUFFER_BYTES = 256 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
-const HANDSHAKE_TIMEOUT_MS = 5_000;
 
 interface PendingRequest {
   resolve: (resp: ResponseMessage) => void;
@@ -189,8 +184,10 @@ export class HelperProcess {
   private readonly onExitCallbacks: Array<() => void> = [];
   private buffer: Uint8Array = new Uint8Array(0);
   private _status: Omit<HelperStatus, "alive"> | null = null;
+  private generation = "";
   private dead = false;
   private deadError: Error | null = null;
+  private killStarted = false;
 
   private constructor(child: ChildProcessWithoutNullStreams) {
     this.child = child;
@@ -199,6 +196,10 @@ export class HelperProcess {
   get status(): HelperStatus | null {
     if (this._status === null) return null;
     return { ...this._status, alive: !this.dead };
+  }
+
+  get currentGeneration(): string {
+    return this.generation;
   }
 
   static async start(pluginDir: string, spawnFn: HelperSpawn = defaultSpawn): Promise<HelperProcess> {
@@ -219,6 +220,7 @@ export class HelperProcess {
     process.attach(child);
     try {
       const ack = await process.handshake(opts.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS);
+      process.generation = ack.generation;
       process._status = {
         version: ack.helperVersion,
         pid: ack.pid,
@@ -239,33 +241,42 @@ export class HelperProcess {
     });
     // Without an error listener, an EPIPE on stdin can crash the server worker.
     child.stdin.on("error", () => {
-      this.fail(new HelperRuntimeError("helper_exited", "helper stdin closed"));
+      this.fail(new HelperRuntimeError("helper_exited", "helper stdin closed"), true);
     });
     child.on("error", (error: Error) => {
-      this.fail(new HelperRuntimeError("helper_exited", error.message));
+      this.fail(new HelperRuntimeError("helper_exited", error.message), true);
     });
     child.on("exit", () => {
-      this.fail(new HelperRuntimeError("helper_exited", "helper exited"));
+      this.fail(new HelperRuntimeError("helper_exited", "helper exited"), false);
     });
   }
 
   private handshake(timeoutMs: number): Promise<Extract<ResponseMessage, { type: "hello_ack" }>> {
     return new Promise((resolve, reject) => {
+      let settled = false;
       const waiter: OneShot = {
         predicate: (resp) => resp.type === "hello_ack" || resp.type === "error",
         resolve: (resp) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
           if (resp.type === "error") {
-            const code: HelperStartErrorCode = resp.code === "version_mismatch" ? "version_mismatch" : "handshake_timeout";
-            reject(new HelperStartError({ code, message: resp.message }));
+            // Pass the helper's own code through (version_mismatch, …).
+            reject(new HelperStartError({ code: resp.code, message: resp.message }));
           } else {
             resolve(resp as Extract<ResponseMessage, { type: "hello_ack" }>);
           }
         },
-        reject,
+        reject: (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        },
       };
-      this.oneShots.push(waiter);
-      this.writeControl({ type: "hello", protocol: PROTOCOL_VERSION });
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
         const index = this.oneShots.indexOf(waiter);
         if (index >= 0) this.oneShots.splice(index, 1);
         reject(
@@ -275,6 +286,8 @@ export class HelperProcess {
           }),
         );
       }, timeoutMs);
+      this.oneShots.push(waiter);
+      this.writeControl({ type: "hello", protocol: PROTOCOL_VERSION });
     });
   }
 
@@ -290,7 +303,7 @@ export class HelperProcess {
         // A codec error is fatal: the connection is out of step and must not
         // silently resync.
         this.buffer = new Uint8Array(0);
-        this.fail(new HelperRuntimeError("protocol_error", result.message));
+        this.fail(new HelperRuntimeError("protocol_error", result.message), true);
         return;
       }
       this.buffer = result.remaining;
@@ -329,8 +342,6 @@ export class HelperProcess {
       state = { decoder: new TextDecoder("utf-8"), parts: [], bytes: 0, truncated: false };
       this.streams.set(sessionId, state);
     }
-    // One streaming decoder per session: a UTF-8 sequence split across frames
-    // decodes correctly instead of becoming replacement characters.
     const text = state.decoder.decode(data, { stream: true });
     const bytes = data.byteLength;
     if (text.length > 0) state.parts.push({ text, bytes });
@@ -368,10 +379,11 @@ export class HelperProcess {
     });
   }
 
-  private fail(reason: Error): void {
+  private fail(reason: Error, kill: boolean): void {
     if (this.dead) return;
     this.dead = true;
     this.deadError = reason;
+    if (kill) this.killChild();
     for (const entry of this.pending.values()) {
       clearTimeout(entry.timer);
       entry.reject(reason);
@@ -385,6 +397,33 @@ export class HelperProcess {
         // Listener failures must not break teardown.
       }
     }
+  }
+
+  private killChild(): void {
+    if (this.killStarted) return;
+    this.killStarted = true;
+    try {
+      this.child.stdin.end();
+    } catch {
+      // Already closed.
+    }
+    try {
+      this.child.kill("SIGTERM");
+    } catch {
+      // Already gone.
+    }
+    try {
+      this.child.stdout.removeAllListeners("data");
+    } catch {
+      // Ignore.
+    }
+    setTimeout(() => {
+      try {
+        this.child.kill("SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }, 2000);
   }
 
   /** Register a callback fired once when the helper dies. */
@@ -405,7 +444,6 @@ export class HelperProcess {
     return { output, truncated };
   }
 
-  /** Wait for stream output to settle (bounded quiet period), then drain. */
   private async waitForOutput(
     sessionId: number,
     opts: { quietMs: number; maxMs: number },
@@ -430,6 +468,15 @@ export class HelperProcess {
     }
   }
 
+  private assertGeneration(handle: SessionHandle): void {
+    if (handle.generation !== this.generation) {
+      throw new HelperRuntimeError(
+        "session_not_found",
+        "session handle belongs to a different helper generation",
+      );
+    }
+  }
+
   async pingAlive(): Promise<boolean> {
     if (this.dead) return false;
     try {
@@ -440,40 +487,38 @@ export class HelperProcess {
     }
   }
 
-  async openEcho(cols: number, rows: number): Promise<number> {
+  async openEcho(cols: number, rows: number): Promise<SessionHandle> {
     const resp = await this.request({ type: "session.open_echo", cols, rows } as RequestMessage);
     if (resp.type === "error") throw new Error(resp.message);
     if (resp.type !== "session.opened") throw new Error("unexpected helper response: " + resp.type);
     if (this._status !== null) this._status.sessionCount += 1;
-    return resp.sessionId;
+    return { generation: this.generation, sessionId: resp.sessionId };
   }
 
-  async input(sessionId: number, data: string): Promise<{ output: string; truncated: boolean }> {
-    const resp = await this.request({ type: "session.input", sessionId, data } as RequestMessage);
+  async input(handle: SessionHandle, data: string): Promise<{ output: string; truncated: boolean }> {
+    this.assertGeneration(handle);
+    const resp = await this.request({ type: "session.input", sessionId: handle.sessionId, data } as RequestMessage);
     if (resp.type === "error") throw new Error(resp.message);
     if (resp.type !== "session.input_ack") throw new Error("unexpected helper response: " + resp.type);
-    return this.waitForOutput(sessionId, { quietMs: 40, maxMs: 500 });
+    return this.waitForOutput(handle.sessionId, { quietMs: 40, maxMs: 500 });
   }
 
-  async resize(sessionId: number, cols: number, rows: number): Promise<void> {
-    const resp = await this.request({ type: "session.resize", sessionId, cols, rows } as RequestMessage);
+  async resize(handle: SessionHandle, cols: number, rows: number): Promise<void> {
+    this.assertGeneration(handle);
+    const resp = await this.request({ type: "session.resize", sessionId: handle.sessionId, cols, rows } as RequestMessage);
     if (resp.type === "error") throw new Error(resp.message);
   }
 
-  async close(sessionId: number): Promise<void> {
-    const resp = await this.request({ type: "session.close", sessionId } as RequestMessage);
+  async close(handle: SessionHandle): Promise<void> {
+    this.assertGeneration(handle);
+    const resp = await this.request({ type: "session.close", sessionId: handle.sessionId } as RequestMessage);
     if (resp.type === "error") throw new Error(resp.message);
-    this.streams.delete(sessionId);
+    this.streams.delete(handle.sessionId);
     if (this._status !== null) this._status.sessionCount = Math.max(0, this._status.sessionCount - 1);
   }
 
   /** Stop the helper; children are torn down by the helper's own shutdown. */
   stop(): void {
-    if (this.dead) return;
-    try {
-      this.child.kill("SIGTERM");
-    } catch {
-      // Already gone.
-    }
+    this.killChild();
   }
 }

@@ -55,11 +55,15 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   command via argv itself) and offers no way to attach an existing PTY master,
   so Remote Hub cannot hand its own `openpty` master to it; the chosen path is
   the plugin's own PTY transport rendered with xterm.js, not the BB terminal.
-- Flow control: every session's output is bounded (256 KiB pending) and written
-  through a single shared stdout outbox (4 MiB) with non-blocking writes and
-  backpressure; a slow stdout therefore throttles PTY draining rather than
-  buffering without limit. This shared-pipe limit is a known constraint to
-  revisit for stage 2 (per-session binary WebSocket).
+- Flow control: every buffer is bounded — per-session pending input (256 KiB,
+  refuse with input_overflow), per-session pending output (256 KiB), the shared
+  stdout outbox (4 MiB), and the stdin ingress buffer (1 MiB). The loop only
+  requests POLLIN on a PTY while its pending output has room, only reads stdin
+  while the outbox has room, and polls stdout POLLOUT while the outbox is
+  non-empty, so a stalled reader applies backpressure instead of busy looping.
+  The remaining limit is the single shared stdout pipe: a client that stops
+  reading stalls every session, which stage 2 will revisit with a per-session
+  binary WebSocket.
 - RDP image frames: not in this stage; nothing is claimed about them yet.
 
 ## 4. Where metadata, secrets, keys and trust records live

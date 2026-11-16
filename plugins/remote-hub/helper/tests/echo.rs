@@ -41,10 +41,23 @@ fn start_with_args(args: &[&str]) -> Helper {
     }
 }
 
+fn send_req(stdin: &mut ChildStdin, req: &Request) {
+    stdin.write_all(&encode_request(req)).expect("write request");
+    stdin.flush().expect("flush request");
+}
+
+fn read_frame_io(stdout: &mut ChildStdout) -> (u8, Vec<u8>) {
+    let mut header = [0u8; 4];
+    stdout.read_exact(&mut header).expect("read header");
+    let len = u32::from_le_bytes(header) as usize;
+    let mut body = vec![0u8; len];
+    stdout.read_exact(&mut body).expect("read body");
+    (body[0], body[1..].to_vec())
+}
+
 impl Helper {
     fn send(&mut self, req: &Request) {
-        self.stdin.write_all(&encode_request(req)).expect("write request");
-        self.stdin.flush().expect("flush request");
+        send_req(&mut self.stdin, req);
     }
 
     fn send_raw(&mut self, bytes: &[u8]) {
@@ -53,12 +66,7 @@ impl Helper {
     }
 
     fn read_frame(&mut self) -> (u8, Vec<u8>) {
-        let mut header = [0u8; 4];
-        self.stdout.read_exact(&mut header).expect("read header");
-        let len = u32::from_le_bytes(header) as usize;
-        let mut body = vec![0u8; len];
-        self.stdout.read_exact(&mut body).expect("read body");
-        (body[0], body[1..].to_vec())
+        read_frame_io(&mut self.stdout)
     }
 
     fn read_response(&mut self) -> Response {
@@ -153,6 +161,58 @@ fn pid_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
+/// Cumulative CPU seconds of a process, from ps -o time=.
+fn cpu_seconds(pid: u32) -> f64 {
+    let out = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "time="])
+        .output()
+        .expect("ps");
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() >= 2 {
+        let min: f64 = parts[0].trim().parse().unwrap_or(0.0);
+        let sec: f64 = parts[1].trim().parse().unwrap_or(0.0);
+        min * 60.0 + sec
+    } else {
+        0.0
+    }
+}
+
+/// Resident set size in KiB, from ps -o rss=.
+fn rss_kb(pid: u32) -> i64 {
+    let out = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "rss="])
+        .output()
+        .expect("ps");
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+}
+
+/// The numeric fds a process has open, from lsof -p.
+fn child_fds(pid: u32) -> Vec<i32> {
+    let out = Command::new("lsof")
+        .args(["-p", &pid.to_string()])
+        .output()
+        .expect("lsof");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut fds = Vec::new();
+    for line in text.lines().skip(1) {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() >= 4 {
+            let fd = cols[3];
+            let first = fd.chars().next().unwrap_or(' ');
+            if first.is_ascii_digit() {
+                let digits: String = fd.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if let Ok(n) = digits.parse::<i32>() {
+                    fds.push(n);
+                }
+            }
+        }
+    }
+    fds.sort_unstable();
+    fds.dedup();
+    fds
+}
+
 #[test]
 fn version_mismatch_answers_error_and_exits() {
     let mut helper = start();
@@ -187,8 +247,7 @@ fn echo_round_trip_resize_and_close() {
     helper.send(&Request::SessionInput {
         id: 2,
         session_id,
-        data: "héllo
-".to_string(),
+        data: "héllo\n".to_string(),
     });
     match helper.read_response() {
         Response::SessionInputAck { .. } => {}
@@ -304,8 +363,7 @@ fn r1_closing_one_session_keeps_others_alive() {
     helper.send(&Request::SessionInput {
         id: 11,
         session_id: b_id,
-        data: "still-alive
-".to_string(),
+        data: "still-alive\n".to_string(),
     });
     match helper.read_response() {
         Response::SessionInputAck { .. } => {}
@@ -330,29 +388,29 @@ fn r1_child_exit_is_unsolicited_closed_and_helper_survives() {
     }
 }
 
-// R2: a 200001-byte input echoes exactly, in order, with consecutive sequence
-// numbers, and stdin close tears everything down within 5 s.
+// R2: a 200001-byte input echoes back exactly (contents, in order, consecutive
+// sequence numbers), and stdin close tears everything down within 5 s.
 #[test]
 fn r2_large_input_echoes_in_order_and_shutdown_clean() {
     let mut helper = start();
     helper.hello();
     let (sid, pid) = helper.open();
 
-    let payload = format!("{}
-", "x".repeat(200_000));
+    let payload = format!("{}\n", "x".repeat(200_000));
     helper.send(&Request::SessionInput {
         id: 1,
         session_id: sid,
-        data: payload,
+        data: payload.clone(),
     });
     match helper.read_response() {
         Response::SessionInputAck { .. } => {}
         other => panic!("expected session.input_ack, got {other:?}"),
     }
 
+    let expected = payload.into_bytes();
     let mut received: Vec<u8> = Vec::new();
     let mut last_seq: Option<u32> = None;
-    while received.len() < 200_001 {
+    while received.len() < expected.len() {
         let (rsid, seq, data) = helper.read_stream();
         assert_eq!(rsid, sid);
         match last_seq {
@@ -362,7 +420,7 @@ fn r2_large_input_echoes_in_order_and_shutdown_clean() {
         last_seq = Some(seq);
         received.extend_from_slice(&data);
     }
-    assert_eq!(received.len(), 200_001);
+    assert_eq!(received, expected);
 
     drop(helper.stdin);
     let status = wait_timeout(&mut helper.child, Duration::from_secs(5))
@@ -410,8 +468,7 @@ fn r6_closing_one_session_does_not_disturb_another() {
     helper.send(&Request::SessionInput {
         id: 2,
         session_id: b_id,
-        data: "b-still-works
-".to_string(),
+        data: "b-still-works\n".to_string(),
     });
     match helper.read_response() {
         Response::SessionInputAck { .. } => {}
@@ -422,7 +479,7 @@ fn r6_closing_one_session_does_not_disturb_another() {
 }
 
 // R7: a child that prints 100000 bytes and exits has its output fully drained
-// before the unsolicited session.closed.
+// (exact contents) before the unsolicited session.closed.
 #[test]
 fn r7_child_output_is_drained_before_closed() {
     let script = "awk 'BEGIN{for(i=0;i<100000;i++)printf \"x\"}'";
@@ -430,6 +487,7 @@ fn r7_child_output_is_drained_before_closed() {
     helper.hello();
     let (sid, _pid) = helper.open();
 
+    let literal = "x".repeat(100_000).into_bytes();
     let mut received: Vec<u8> = Vec::new();
     let mut closed = false;
     for _ in 0..400 {
@@ -448,7 +506,7 @@ fn r7_child_output_is_drained_before_closed() {
         }
     }
     assert!(closed, "session.closed never arrived for {sid}");
-    assert_eq!(received.len(), 100_000, "expected exactly 100000 bytes before closed");
+    assert_eq!(received, literal, "exact contents must arrive before closed");
 }
 
 // R11: a resize is visible to the child (stty size prints 30 100).
@@ -475,8 +533,7 @@ fn r11_resize_is_visible_to_the_child() {
     helper.send(&Request::SessionInput {
         id: 2,
         session_id: sid,
-        data: "
-".to_string(),
+        data: "\n".to_string(),
     });
     match helper.read_response() {
         Response::SessionInputAck { .. } => {}
@@ -484,4 +541,144 @@ fn r11_resize_is_visible_to_the_child() {
     }
     let echoed = helper.read_until_stream_contains(sid, "30 100");
     assert!(echoed.contains("30 100"), "child did not see 30 100: {echoed:?}");
+}
+
+// S1: under stdout backpressure the helper sleeps in poll instead of busy
+// looping, and SIGTERM still tears everything down.
+#[test]
+fn s1_backpressure_does_not_busy_loop() {
+    let mut helper = start_with_args(&["--echo-command", "/usr/bin/yes"]);
+    helper.hello();
+    let (_sid, pid) = helper.open();
+    let helper_pid = helper.child.id();
+    std::thread::sleep(Duration::from_millis(300));
+    let t0 = cpu_seconds(helper_pid);
+    std::thread::sleep(Duration::from_secs(2));
+    let t1 = cpu_seconds(helper_pid);
+    let cpu = t1 - t0;
+    assert!(cpu < 0.5, "helper busy-looped: {cpu} s CPU over 2 s");
+    unsafe { libc::kill(helper_pid as libc::pid_t, libc::SIGTERM) };
+    let status = wait_timeout(&mut helper.child, Duration::from_secs(5))
+        .expect("helper did not exit after SIGTERM");
+    assert_eq!(status.code(), Some(0));
+    assert!(!pid_alive(pid), "child {pid} still alive");
+}
+
+// S2: a control-frame flood is bounded in memory; every ping is answered in
+// order with the matching id.
+#[test]
+fn s2_bounded_under_control_flood() {
+    let Helper {
+        child,
+        mut stdin,
+        mut stdout,
+    } = start();
+
+    send_req(&mut stdin, &Request::Hello {
+        protocol: PROTOCOL_VERSION,
+    });
+    match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+        Response::HelloAck { .. } => {}
+        other => panic!("expected hello_ack, got {other:?}"),
+    }
+
+    let helper_pid = child.id();
+    let writer = std::thread::spawn(move || {
+        for i in 0u64..200_000 {
+            send_req(&mut stdin, &Request::Ping { id: i });
+        }
+    });
+
+    // Let the writer flood the helper, then sample RSS while stdout is unread.
+    std::thread::sleep(Duration::from_millis(600));
+    let rss = rss_kb(helper_pid);
+    assert!(rss < 64 * 1024, "helper RSS {rss} KiB exceeds 64 MiB");
+
+    let mut pongs = Vec::new();
+    while pongs.len() < 200_000 {
+        let (kind, payload) = read_frame_io(&mut stdout);
+        if kind == FRAME_KIND_CONTROL {
+            if let Response::Pong { id } = decode_response(&payload).unwrap() {
+                pongs.push(id);
+            }
+        }
+    }
+    writer.join().unwrap();
+    assert_eq!(pongs.len(), 200_000);
+    for (i, id) in pongs.iter().enumerate() {
+        assert_eq!(*id, i as u64, "pong order must match ping order");
+    }
+}
+
+// S3: explicit close emits already-read output plus the drained tail, with
+// consecutive sequence numbers, before session.closed.
+#[test]
+fn s3_close_emits_queued_output_before_closed() {
+    let script = "awk 'BEGIN{for(i=0;i<300000;i++)printf \"A\"}'; sleep 30";
+    let mut helper = start_with_args(&["--echo-command", "/bin/sh", "-c", script]);
+    helper.hello();
+    let (sid, pid) = helper.open();
+    std::thread::sleep(Duration::from_millis(400));
+
+    helper.send(&Request::SessionClose { id: 1, session_id: sid });
+
+    let literal = "A".repeat(300_000).into_bytes();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut seqs: Vec<u32> = Vec::new();
+    let mut closed = false;
+    for _ in 0..2000 {
+        let (kind, payload) = helper.read_frame();
+        if kind == FRAME_KIND_STREAM {
+            let rsid = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+            if rsid == sid {
+                let seq = u32::from_le_bytes(payload[4..8].try_into().unwrap());
+                seqs.push(seq);
+                bytes.extend_from_slice(&payload[8..]);
+            }
+        } else if kind == FRAME_KIND_CONTROL {
+            if let Response::SessionClosed { session_id, .. } = decode_response(&payload).unwrap() {
+                assert_eq!(session_id, sid);
+                closed = true;
+                break;
+            }
+        }
+    }
+    assert!(closed, "session.closed never arrived");
+    assert!(!bytes.is_empty(), "no stream bytes received");
+    // A prefix of the literal payload with no gap.
+    assert!(bytes.len() <= literal.len());
+    assert_eq!(bytes, literal[..bytes.len()]);
+    for w in seqs.windows(2) {
+        assert_eq!(w[1], w[0] + 1, "sequence numbers must be consecutive");
+    }
+    assert!(!pid_alive(pid), "child {pid} still alive");
+}
+
+// S4(a): a live child whose tty is closed is terminated and reaped, then
+// session.closed arrives.
+#[test]
+fn s4a_live_child_with_closed_tty_is_reaped() {
+    let mut helper = start_with_args(&[
+        "--echo-command",
+        "/bin/sh",
+        "-c",
+        "exec >/dev/null 2>&1 </dev/null; sleep 30",
+    ]);
+    helper.hello();
+    let (sid, pid) = helper.open();
+    helper.read_until_closed(sid);
+    assert!(!pid_alive(pid), "child {pid} still alive");
+}
+
+// S9: a sibling session's child does not inherit the other session's master or
+// the signal pipe (only fds 0,1,2 remain after exec).
+#[test]
+fn s9_child_does_not_inherit_sibling_fds() {
+    let mut helper = start();
+    helper.hello();
+    let (_a_id, _a_pid) = helper.open();
+    let (_b_id, b_pid) = helper.open();
+    std::thread::sleep(Duration::from_millis(300));
+    let fds = child_fds(b_pid);
+    assert_eq!(fds, vec![0, 1, 2], "B's child inherited unexpected fds: {fds:?}");
 }

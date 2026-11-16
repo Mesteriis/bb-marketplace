@@ -1,13 +1,15 @@
 // Remote Hub — BB backend entry.
 //
-// Composition root: builds the BB adapter (HelperProcess), exposes a
-// schema-validated RPC contract to the app, and tears the helper down on
-// dispose. All wire schemas live in src/core/rpc.ts and src/core/protocol.ts.
+// Composition root: builds the BB adapter (HelperProcess) and the host-free
+// service, exposes a schema-validated RPC contract to the app, and tears the
+// helper down on dispose. All wire schemas live in src/core/rpc.ts and
+// src/core/protocol.ts.
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, experimental_PluginRpcRefusal, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { HELPER_BIN_NAME, HelperProcess, HelperRuntimeError, HelperStartError } from "./src/adapters/bb/helper-process.ts";
+import { createRemoteHubService } from "./src/adapters/bb/service.ts";
 import { rpcSchemas } from "./src/core/rpc.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
@@ -26,32 +28,13 @@ function pluginRootDir(): string {
 }
 
 export default function plugin(bb: BbPluginApi): void {
-  let helper: HelperProcess | null = null;
-  let starting: Promise<HelperProcess> | null = null;
+  const service = createRemoteHubService({
+    startHelper: () => HelperProcess.start(pluginRootDir()),
+  });
 
-  const startHelper = (): Promise<HelperProcess> => {
-    if (helper !== null) return Promise.resolve(helper);
-    if (starting === null) {
-      starting = HelperProcess.start(pluginRootDir())
-        .then((started) => {
-          helper = started;
-          // A dead helper is dropped from the cache so the next call starts a
-          // fresh one; no input is ever replayed.
-          started.onExit(() => {
-            if (helper === started) helper = null;
-          });
-          return started;
-        })
-        .finally(() => {
-          starting = null;
-        });
-    }
-    return starting;
-  };
-
-  const withHelper = async <T>(run: (process: HelperProcess) => Promise<T>): Promise<T> => {
+  const withHelper = async <T>(run: () => Promise<T>): Promise<T> => {
     try {
-      return await run(await startHelper());
+      return await run();
     } catch (error) {
       if (error instanceof HelperStartError || error instanceof HelperRuntimeError) {
         throw new experimental_PluginRpcRefusal({ code: "not_found", message: error.message });
@@ -61,23 +44,17 @@ export default function plugin(bb: BbPluginApi): void {
   };
 
   bb.rpc.register(rpcContract, {
-    helper_status: () =>
-      withHelper(async (process) => {
-        const status = process.status!;
-        // alive reflects a live ping, not just the handshake snapshot.
-        const alive = await process.pingAlive();
-        return { ...status, alive };
-      }),
-    echo_open: (input) => withHelper(async (process) => ({ sessionId: await process.openEcho(input.cols, input.rows) })),
-    echo_input: (input) => withHelper(async (process) => process.input(input.sessionId, input.data)),
+    helper_status: () => withHelper(() => service.helperStatus()),
+    echo_open: (input) => withHelper(() => service.echoOpen(input.cols, input.rows)),
+    echo_input: (input) =>
+      withHelper(() =>
+        service.echoInput({ generation: input.generation, sessionId: input.sessionId }, input.data),
+      ),
     echo_close: (input) =>
-      withHelper(async (process) => {
-        await process.close(input.sessionId);
-        return { closed: true };
-      }),
+      withHelper(() => service.echoClose({ generation: input.generation, sessionId: input.sessionId })),
   });
 
   bb.onDispose(() => {
-    if (helper !== null) helper.stop();
+    service.stop();
   });
 }

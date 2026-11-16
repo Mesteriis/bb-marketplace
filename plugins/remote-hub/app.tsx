@@ -3,59 +3,35 @@
 // Compiled by bb plugin build into dist/app.js + dist/app.css. React and
 // @get-bb/plugin-sdk/app are provided by the BB app at load time, so this
 // file must be loaded by BB, not imported directly.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
-import { RemoteHubPanel, type RemoteHubViewState } from "./src/ui/remote-hub-panel.tsx";
+import type { SessionHandle } from "./src/core/rpc.ts";
+import { RemoteHubPage } from "./src/ui/remote-hub-page.tsx";
 
-function RemoteHubPage() {
+function RemoteHubTab() {
   const rpc = useRpc<typeof rpcContract>();
-  const [state, setState] = useState<RemoteHubViewState>({ kind: "loading" });
-  const [refresh, setRefresh] = useState(0);
 
-  useEffect(() => {
-    let cancelled = false;
-    setState({ kind: "loading" });
-    rpc
-      .call("helper_status")
-      .then((status) => {
-        if (!cancelled) {
-          setState(
-            status.alive
-              ? { kind: "ready", status }
-              : { kind: "error", message: "Remote Hub helper is not running" },
-          );
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setState({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [rpc, refresh]);
+  const loadStatus = useCallback(() => rpc.call("helper_status"), [rpc]);
 
   const onOpen = useCallback(async () => {
-    const result = await rpc.call("echo_open", { cols: 80, rows: 24 });
-    return result.sessionId;
+    const handle = await rpc.call("echo_open", { cols: 80, rows: 24 });
+    return handle as SessionHandle;
   }, [rpc]);
 
   const onInput = useCallback(
-    async (sessionId: number, data: string) => rpc.call("echo_input", { sessionId, data }),
+    async (handle: SessionHandle, data: string) => rpc.call("echo_input", { generation: handle.generation, sessionId: handle.sessionId, data }),
     [rpc],
   );
 
   const onClose = useCallback(
-    async (sessionId: number) => {
-      await rpc.call("echo_close", { sessionId });
-      setRefresh((n) => n + 1);
+    async (handle: SessionHandle) => {
+      await rpc.call("echo_close", { generation: handle.generation, sessionId: handle.sessionId });
     },
     [rpc],
   );
 
-  return <RemoteHubPanel state={state} onOpen={onOpen} onInput={onInput} onClose={onClose} />;
+  return <RemoteHubPage loadStatus={loadStatus} onOpen={onOpen} onInput={onInput} onClose={onClose} />;
 }
 
 export default definePluginApp((app) => {
@@ -64,6 +40,6 @@ export default definePluginApp((app) => {
     title: "Remote Hub",
     icon: "Terminal",
     path: "remote-hub",
-    component: RemoteHubPage,
+    component: RemoteHubTab,
   });
 });

@@ -6,6 +6,11 @@ description = "Remote Hub supervision helper: owns PTY sessions and speaks the v
 license = "MIT"
 publish = false
 
+[features]
+# Off by default: enables the --echo-command argv hook used only by the
+# integration tests. The release binary (npm run build:helper) has it off.
+test-hooks = []
+
 [lib]
 name = "remote_hub_helper"
 path = "src/lib.rs"
@@ -13,6 +18,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "remote-hub-helper"
 path = "src/main.rs"
+
+[[test]]
+name = "echo"
+path = "tests/echo.rs"
+required-features = ["test-hooks"]
 
 [dependencies]
 libc = "0.2"

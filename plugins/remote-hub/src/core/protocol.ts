@@ -64,6 +64,7 @@ export const helloAckSchema = z.object({
   helperVersion: z.string().min(1),
   platform: z.string().min(1),
   pid: z.number().int().positive(),
+  generation: z.string().regex(/^[0-9a-f]{32}$/),
 });
 export const pongSchema = z.object({
   type: z.literal("pong"),

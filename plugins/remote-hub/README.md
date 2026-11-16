@@ -40,7 +40,7 @@ npm run check          # typecheck + vitest
 npm run build          # bb plugin build
 ```
 
-Rust-тесты помощника: `cd helper && cargo test --locked`.
+Rust-тесты помощника: `cd helper && cargo test --locked --features test-hooks`.
 
 ## Структура
 

@@ -1,8 +1,8 @@
-// The host-agnostic Remote Hub page. It receives plain state and callbacks
+// The host-agnostic Remote Hub panel. It receives plain state and callbacks
 // through props and never touches the BB host: loading, error and ready are
 // the only states, and the echo console is the only interaction.
 import { useCallback, useState } from "react";
-import type { HelperStatus } from "../core/rpc.ts";
+import type { HelperStatus, SessionHandle } from "../core/rpc.ts";
 
 export type RemoteHubViewState =
   | { kind: "loading" }
@@ -16,14 +16,14 @@ export interface EchoInputResult {
 
 export interface RemoteHubPanelProps {
   state: RemoteHubViewState;
-  onOpen: () => Promise<number | null>;
-  onInput: (sessionId: number, data: string) => Promise<EchoInputResult>;
-  onClose: (sessionId: number) => Promise<void>;
+  onOpen: () => Promise<SessionHandle | null>;
+  onInput: (handle: SessionHandle, data: string) => Promise<EchoInputResult>;
+  onClose: (handle: SessionHandle) => Promise<void>;
 }
 
 export function RemoteHubPanel(props: RemoteHubPanelProps) {
   const { state, onOpen, onInput, onClose } = props;
-  const [sessionId, setSessionId] = useState<number | null>(null);
+  const [handle, setHandle] = useState<SessionHandle | null>(null);
   const [lines, setLines] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -35,11 +35,11 @@ export function RemoteHubPanel(props: RemoteHubPanelProps) {
     setBusy(true);
     setConsoleError(null);
     try {
-      let active = sessionId;
+      let active = handle;
       if (active === null) {
         active = await onOpen();
         if (active === null) return;
-        setSessionId(active);
+        setHandle(active);
       }
       const result = await onInput(active, text);
       setLines((prev) => [...prev, result.output]);
@@ -50,20 +50,20 @@ export function RemoteHubPanel(props: RemoteHubPanelProps) {
     } finally {
       setBusy(false);
     }
-  }, [draft, busy, sessionId, onOpen, onInput]);
+  }, [draft, busy, handle, onOpen, onInput]);
 
   const close = useCallback(async () => {
-    if (sessionId === null || busy) return;
+    if (handle === null || busy) return;
     setBusy(true);
     try {
-      await onClose(sessionId);
+      await onClose(handle);
     } catch (error) {
       setConsoleError(error instanceof Error ? error.message : String(error));
     } finally {
-      setSessionId(null);
+      setHandle(null);
       setBusy(false);
     }
-  }, [sessionId, busy, onClose]);
+  }, [handle, busy, onClose]);
 
   if (state.kind === "loading") {
     return (
@@ -122,7 +122,7 @@ export function RemoteHubPanel(props: RemoteHubPanelProps) {
         <button type="submit" disabled={busy || draft.length === 0}>
           Send
         </button>
-        <button type="button" onClick={() => void close()} disabled={sessionId === null || busy}>
+        <button type="button" onClick={() => void close()} disabled={handle === null || busy}>
           Close session
         </button>
       </form>

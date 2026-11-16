@@ -56,6 +56,7 @@ pub enum Response {
         helper_version: String,
         platform: String,
         pid: u32,
+        generation: String,
     },
     #[serde(rename = "pong")]
     Pong { id: u64 },

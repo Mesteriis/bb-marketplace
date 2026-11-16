@@ -8,7 +8,9 @@ import {
   encodeStreamFrame,
   type ControlMessage,
 } from "../../core/protocol.ts";
+import { createRemoteHubService } from "./service.ts";
 import {
+  HANDSHAKE_TIMEOUT_MS,
   HELPER_BIN_NAME,
   HelperProcess,
   helperBinaryPath,
@@ -20,43 +22,62 @@ import {
 
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+const GEN_A = "a".repeat(32);
+const GEN_B = "b".repeat(32);
+
 interface FakeChild {
   child: EventEmitter & { stdin: Writable; stdout: PassThrough; stderr: PassThrough; kill: (signal?: string) => void };
   writes: Buffer[];
+  kills: string[];
+  stdinEnded: { value: boolean };
 }
 
 function makeFakeChild(): FakeChild {
   const writes: Buffer[] = [];
+  const kills: string[] = [];
+  const stdinEnded = { value: false };
   const stdin = new Writable({
     write(chunk, _encoding, callback) {
       writes.push(Buffer.from(chunk));
       callback();
     },
   });
+  (stdin as unknown as { end: () => Writable }).end = () => {
+    stdinEnded.value = true;
+    return stdin;
+  };
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   const child = new EventEmitter() as FakeChild["child"];
   child.stdin = stdin;
   child.stdout = stdout;
   child.stderr = stderr;
-  child.kill = () => {};
-  return { child, writes };
+  child.kill = (signal?: string) => {
+    kills.push(signal ?? "");
+  };
+  return { child, writes, kills, stdinEnded };
 }
 
-/** A fake spawn that answers hello, so the handshake completes. */
+function helloAck(generation: string): Buffer {
+  return Buffer.from(
+    encodeControlFrame({
+      type: "hello_ack",
+      protocol: 1,
+      helperVersion: "0.1.0",
+      platform: "test",
+      pid: 99999,
+      generation,
+    }),
+  );
+}
+
+/** A fake spawn that answers hello (with GEN_A), so the handshake completes. */
 function fakeSpawnWithHello(spawns: FakeChild[]): HelperSpawn {
   return () => {
     const fake = makeFakeChild();
     spawns.push(fake);
     setImmediate(() => {
-      const ack = encodeControlFrame({
-        type: "hello_ack",
-        protocol: 1,
-        helperVersion: "0.1.0",
-        platform: "test",
-        pid: 99999,
-      });
-      fake.child.stdout.push(ack);
+      fake.child.stdout.push(helloAck(GEN_A));
     });
     return fake.child as unknown as ChildProcessWithoutNullStreams;
   };
@@ -100,10 +121,16 @@ describe("helper-process (pure parts)", () => {
       path: missing,
     });
   });
+
+  // S8: the default handshake timeout is a fixed, exported constant.
+  it("exports a 5000 ms handshake timeout", () => {
+    expect(HANDSHAKE_TIMEOUT_MS).toBe(5000);
+  });
 });
 
 describe("helper-process (lifecycle)", () => {
-  // R4: a dead helper is marked, rejects immediately, and a new start sends only hello.
+  // R4 + S7(a): a dead helper is marked, rejects immediately, and a new start
+  // sends only hello.
   it("marks a dead helper and starts a fresh one without replaying input", async () => {
     const spawns: FakeChild[] = [];
     const hp = await HelperProcess.spawn("bin", fakeSpawnWithHello(spawns));
@@ -120,24 +147,105 @@ describe("helper-process (lifecycle)", () => {
     expect(second.status?.alive).toBe(true);
   });
 
+  // S7(a): a request that is pending when the child exits rejects with helper_exited.
+  it("rejects a pending request when the helper exits", async () => {
+    const fake = makeFakeChild();
+    const spawn: HelperSpawn = () => {
+      setImmediate(() => fake.child.stdout.push(helloAck(GEN_A)));
+      return fake.child as unknown as ChildProcessWithoutNullStreams;
+    };
+    const hp = await HelperProcess.spawn("bin", spawn);
+    const pending = hp.openEcho(80, 24); // fake never answers open_echo
+    await tick();
+    fake.child.emit("exit");
+    await expect(pending).rejects.toMatchObject({ code: "helper_exited" });
+  });
+
+  // S5: a protocol error kills the child, ends stdin, and stops consuming stdout.
+  it("kills the helper and stops consuming stdout after a protocol error", async () => {
+    const fake = makeFakeChild();
+    const spawn: HelperSpawn = () => {
+      setImmediate(() => fake.child.stdout.push(helloAck(GEN_A)));
+      return fake.child as unknown as ChildProcessWithoutNullStreams;
+    };
+    const hp = await HelperProcess.spawn("bin", spawn);
+    fake.child.stdout.push(Buffer.from([0, 0, 0, 0])); // invalid frame
+    await tick();
+    expect(fake.kills).toContain("SIGTERM");
+    expect(fake.stdinEnded.value).toBe(true);
+    fake.child.stdout.push(encodeStreamFrame({ sessionId: 9, seq: 0 }, new TextEncoder().encode("hi")));
+    await tick();
+    expect(hp.drain(9).output).toBe("");
+  });
+
+  // S6: a session handle from another generation is refused and never written.
+  it("refuses a session handle from another helper generation", async () => {
+    const fake = makeFakeChild();
+    const spawn: HelperSpawn = () => {
+      setImmediate(() => fake.child.stdout.push(helloAck(GEN_A)));
+      return fake.child as unknown as ChildProcessWithoutNullStreams;
+    };
+    const hp = await HelperProcess.spawn("bin", spawn);
+    await expect(hp.input({ generation: GEN_B, sessionId: 1 }, "x")).rejects.toMatchObject({
+      code: "session_not_found",
+    });
+    expect(fake.writes.length).toBe(1); // only hello
+  });
+
+  // S7(b): the service drops a dead helper and the next RPC starts a new one
+  // whose stdin receives exactly one hello and the new request.
+  it("restarts a dead helper with only hello plus the new request", async () => {
+    const spawns: FakeChild[] = [];
+    const service = createRemoteHubService({
+      startHelper: () => HelperProcess.spawn("bin", fakeSpawnWithHello(spawns)),
+    });
+    const first = service.echoOpen(80, 24); // pending: fake does not answer open_echo
+    await tick();
+    spawns[0].child.emit("exit");
+    await expect(first).rejects.toMatchObject({ code: "helper_exited" });
+
+    const second = service.echoOpen(80, 24);
+    await tick();
+    expect(spawns).toHaveLength(2);
+    expect(decodeControlFrames(spawns[1].writes).map((f) => f.type)).toEqual(["hello", "session.open_echo"]);
+  });
+
   // R9: version mismatch surfaces as HelperStartError with code version_mismatch.
   it("surfaces version_mismatch through HelperStartError", async () => {
     const spawn: HelperSpawn = () => {
       const fake = makeFakeChild();
       setImmediate(() => {
-        const err = encodeControlFrame({
-          type: "error",
-          id: null,
-          code: "version_mismatch",
-          message: "unsupported protocol version",
-        });
-        fake.child.stdout.push(err);
+        fake.child.stdout.push(
+          encodeControlFrame({
+            type: "error",
+            id: null,
+            code: "version_mismatch",
+            message: "unsupported protocol version",
+          }),
+        );
       });
       return fake.child as unknown as ChildProcessWithoutNullStreams;
     };
     await expect(HelperProcess.spawn("bin", spawn)).rejects.toMatchObject({
       name: "HelperStartError",
       error: { code: "version_mismatch" },
+    });
+  });
+
+  // S8: a non-version_mismatch handshake error keeps its own code.
+  it("passes through non-version_mismatch handshake errors", async () => {
+    const spawn: HelperSpawn = () => {
+      const fake = makeFakeChild();
+      setImmediate(() => {
+        fake.child.stdout.push(
+          encodeControlFrame({ type: "error", id: null, code: "invalid_frame", message: "bad frame" }),
+        );
+      });
+      return fake.child as unknown as ChildProcessWithoutNullStreams;
+    };
+    await expect(HelperProcess.spawn("bin", spawn)).rejects.toMatchObject({
+      name: "HelperStartError",
+      error: { code: "invalid_frame" },
     });
   });
 
@@ -157,17 +265,7 @@ describe("helper-process (lifecycle)", () => {
   it("decodes multibyte UTF-8 split across stream frames", async () => {
     const fake = makeFakeChild();
     const spawn: HelperSpawn = () => {
-      setImmediate(() => {
-        fake.child.stdout.push(
-          encodeControlFrame({
-            type: "hello_ack",
-            protocol: 1,
-            helperVersion: "0.1.0",
-            platform: "test",
-            pid: 99999,
-          }),
-        );
-      });
+      setImmediate(() => fake.child.stdout.push(helloAck(GEN_A)));
       return fake.child as unknown as ChildProcessWithoutNullStreams;
     };
     const hp = await HelperProcess.spawn("bin", spawn);
