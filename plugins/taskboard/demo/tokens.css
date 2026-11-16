@@ -1,0 +1,64 @@
+:root {
+  color-scheme: light dark;
+  --background: #ffffff; --foreground: #18181b; --canvas: #ffffff; --ink: #18181b;
+  --card: #ffffff; --card-foreground: #18181b;
+  --popover: #ffffff; --popover-foreground: #18181b;
+  --primary: #7c3aed; --primary-foreground: #ffffff;
+  --secondary: #f4f4f5; --secondary-foreground: #18181b;
+  --muted: #f4f4f5; --muted-foreground: #71717a;
+  --accent: #f4f4f5; --accent-foreground: #18181b;
+  --destructive: #dc2626; --destructive-foreground: #ffffff; --destructive-text: #dc2626;
+  --border: #e4e4e7; --input: #d4d4d8; --ring: #7c3aed;
+  --state-hover: rgba(24, 24, 27, 0.05); --state-active: rgba(24, 24, 27, 0.09);
+  --surface-recessed-soft-solid: #f4f4f5;
+  --success: #16a34a; --warning: #d97706; --timeline-accent: #7c3aed;
+  --radius: 0.5rem; --spacing: 0.25rem;
+  --text-xs: 0.75rem; --text-xs--line-height: 1rem;
+  --text-sm: 0.875rem; --text-sm--line-height: 1.25rem;
+  --text-base: 1rem; --text-base--line-height: 1.5rem;
+  --leading-snug: 1.375; --tracking-tight: -0.025em; --tracking-wide: 0.025em;
+  --font-weight-normal: 400; --font-weight-medium: 500; --font-weight-semibold: 600;
+  --default-transition-duration: 150ms;
+  --default-transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.05); --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+  --container-lg: 80rem; --color-black: #000000;
+  --bb-sidebar-row-height: 2rem; --bb-sidebar-row-height-coarse: 2.75rem;
+  --bb-drawer-keyboard-inset: 0px; --bb-safe-area-bottom: 0px;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body { font-family: system-ui, -apple-system, sans-serif; color: var(--foreground); background: var(--background); font-size: 14px; }
+
+/* Scoped preflight-like reset so standalone controls look like BB (BB provides this
+   globally in production). :where() keeps specificity zero so utility classes win. */
+:where([data-bb-plugin-root]) button,
+:where([data-bb-plugin-root]) input,
+:where([data-bb-plugin-root]) select,
+:where([data-bb-plugin-root]) textarea {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+:where([data-bb-plugin-root]) button {
+  cursor: pointer;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a; --foreground: #e4e4e7; --canvas: #131316; --ink: #e4e4e7;
+    --card: #131316; --card-foreground: #e4e4e7;
+    --popover: #131316; --popover-foreground: #e4e4e7;
+    --primary: #8b5cf6; --primary-foreground: #0a0a0a;
+    --secondary: #1d1d22; --secondary-foreground: #e4e4e7;
+    --muted: #1d1d22; --muted-foreground: #a1a1aa;
+    --accent: #1d1d22; --accent-foreground: #e4e4e7;
+    --destructive: #ef4444; --destructive-foreground: #ffffff; --destructive-text: #ef4444;
+    --border: #27272a; --input: #3f3f46; --ring: #8b5cf6;
+    --state-hover: rgba(228, 228, 231, 0.07); --state-active: rgba(228, 228, 231, 0.12);
+    --surface-recessed-soft-solid: #1d1d22;
+  }
+}

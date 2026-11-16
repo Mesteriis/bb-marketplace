@@ -1,0 +1,77 @@
+{
+  "name": "bb-plugin-makosh-taskboard",
+  "version": "0.1.0",
+  "description": "Local task CRUD plus Jira Cloud and Server/Data Center boards in one focused List and Kanban view.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "author": "Mesteriis",
+  "homepage": "https://github.com/Mesteriis/makosh-bb/tree/main/plugins/taskboard#readme",
+  "bugs": {
+    "url": "https://github.com/Mesteriis/makosh-bb/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mesteriis/makosh-bb.git",
+    "directory": "plugins/taskboard"
+  },
+  "keywords": [
+    "bb-plugin",
+    "makosh",
+    "taskboard",
+    "kanban",
+    "jira",
+    "tasks"
+  ],
+  "engines": {
+    "bb": ">=0.49",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Makosh Taskboard [Experimental]",
+    "description": "Local task CRUD plus Jira Cloud and Server/Data Center boards in one focused List and Kanban view.",
+    "branding": {
+      "icon": "./assets/icon.svg"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": [
+      "skills"
+    ],
+    "host": "./host.ts"
+  },
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test",
+    "demo:build": "node demo/build.mjs"
+  },
+  "dependencies": {
+    "@radix-ui/react-slot": "^1.5.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@radix-ui/react-dialog": "^1.3.1",
+    "@radix-ui/react-select": "^2.4.1",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "better-sqlite3": "^12.0.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "jsdom": "^26.1.0",
+    "sonner": "^1.7.4",
+    "tailwind-merge": "^3.7.0",
+    "typescript": "^5.7.0",
+    "vitest": "^5.1.0",
+    "hono": "^4.11.9",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "esbuild": "^0.28.2"
+  }
+}
