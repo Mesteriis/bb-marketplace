@@ -101,34 +101,38 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
 
         attached = true;
         const grant = deps.service.creditAttach(handle!, attachId);
-        let stream: { subscribe: (cb: (data: Uint8Array) => void) => () => void };
+        let stream: { subscribe: (cb: (data: Uint8Array) => void) => () => void; cancel: () => void };
         try {
           const attachedStream = deps.service.attachStream(handle);
           guardSend(socket, JSON.stringify({ type: "snapshot", bytes: attachedStream.snapshot.byteLength }));
           if (attachedStream.snapshot.byteLength > 0) guardSend(socket, attachedStream.snapshot);
           guardSend(socket, JSON.stringify({ type: "live" }));
           stream = attachedStream;
-          unsubscribe = stream.subscribe((data) => {
-            deps.service.creditLiveSent(handle!, attachId, data.byteLength);
-            guardSend(socket, data);
-          });
-          offExit = deps.service.onHelperExit(() => socket.close(WS_GENERATION_STALE, "helper exited"));
-          offEnd = deps.service.subscribeSessionEnd(handle!, (info) => {
-            guardSend(
-              socket,
-              JSON.stringify({ type: "closed", exitCode: info.exitCode, signal: info.signal, reason: info.reason }),
-            );
-            socket.close(WS_SESSION_ENDED, "session ended");
-          });
         } catch {
           closeStale(socket);
           return;
         }
-        if (!attached || !isOpen(socket)) return;
         if (grant > 0) {
           await deps.service.sessionCredit(handle!, grant).catch(() => closeStale(socket));
         }
-        if (!attached || !isOpen(socket)) return;
+        if (!attached || !isOpen(socket)) {
+          stream.cancel();
+          return;
+        }
+        // Output that arrived during the credit await is buffered; subscribe
+        // flushes it after the live marker.
+        unsubscribe = stream.subscribe((data) => {
+          deps.service.creditLiveSent(handle!, attachId, data.byteLength);
+          guardSend(socket, data);
+        });
+        offExit = deps.service.onHelperExit(() => socket.close(WS_GENERATION_STALE, "helper exited"));
+        offEnd = deps.service.subscribeSessionEnd(handle!, (info) => {
+          guardSend(
+            socket,
+            JSON.stringify({ type: "closed", exitCode: info.exitCode, signal: info.signal, reason: info.reason }),
+          );
+          socket.close(WS_SESSION_ENDED, "session ended");
+        });
       },
       onMessage(socket, data) {
         if (!attached || handle === null) return;

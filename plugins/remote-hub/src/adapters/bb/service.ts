@@ -44,6 +44,7 @@ export interface RemoteHubService {
   attachStream(handle: SessionHandle): {
     snapshot: Uint8Array;
     subscribe: (cb: (data: Uint8Array) => void) => () => void;
+    cancel: () => void;
   };
   creditAttach(handle: SessionHandle, attachId: string): number;
   creditDetach(handle: SessionHandle, attachId: string): number;
@@ -280,17 +281,19 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         else buffer.push(data);
       };
       set.add(buffered);
+      const cancel = (): void => {
+        set.delete(buffered);
+        if (set.size === 0) listeners.delete(key);
+      };
       return {
         snapshot,
         subscribe(cb) {
           live = cb;
           for (const data of buffer) cb(data);
           buffer.length = 0;
-          return () => {
-            set.delete(buffered);
-            if (set.size === 0) listeners.delete(key);
-          };
+          return () => cancel();
         },
+        cancel,
       };
     },
     creditState(handle) {

@@ -11,6 +11,7 @@ class FakeHelper {
   nextSessionId = 1;
   creditFrames: Array<{ sessionId: number; bytes: number }> = [];
   scrollback = new Uint8Array(0);
+  emitOnCredit: Uint8Array | null = null;
   private outputCb: ((sessionId: number, data: Uint8Array) => void) | null = null;
   private closedCbs: Array<(sessionId: number, info: { exitCode: number | null; signal: number | null; reason: string }) => void> = [];
   private exitCbs: Array<() => void> = [];
@@ -27,6 +28,7 @@ class FakeHelper {
   }
   async credit(handle: SessionHandle, bytes: number): Promise<void> {
     this.creditFrames.push({ sessionId: handle.sessionId, bytes });
+    if (this.emitOnCredit !== null) this.emitOutput(handle.sessionId, this.emitOnCredit);
   }
   async resize(): Promise<void> {}
   async input(): Promise<{ output: string; truncated: boolean }> {
@@ -254,15 +256,18 @@ describe("credit window X1 (real service + real socket)", () => {
   it("scenario 7: snapshot before buffered tail, each byte once", async () => {
     const { helper, service, wire } = makeServiceAndSocket();
     const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+    helper.scrollback = new Uint8Array([65]);
+    helper.emitOnCredit = new Uint8Array([66]); // arrives during the credit await
     const token = service.sessionAttach(handle);
     const socket = makeSocket();
-    const handlers = wire("ws://x/attach?attach=" + token);
-    await handlers.onOpen(socket);
-    const bytes = socket.sent.filter((d) => d instanceof Uint8Array) as Uint8Array[];
-    expect(bytes.length).toBe(0); // no output produced
-    expect(socket.sent[0]).toBe(JSON.stringify({ type: "snapshot", bytes: 0 }));
-    expect(socket.sent[1]).toBe(JSON.stringify({ type: "live" }));
-    void handlers;
+    await wire("ws://x/attach?attach=" + token).onOpen(socket);
+    const bytes = socket.sent.map((d) => (typeof d === "string" ? d : Array.from(d as Uint8Array)));
+    expect(bytes).toEqual([
+      JSON.stringify({ type: "snapshot", bytes: 1 }),
+      [65],
+      JSON.stringify({ type: "live" }),
+      [66],
+    ]);
   });
 
   it("scenario 8: eviction deletes credit state (fake clock)", async () => {
