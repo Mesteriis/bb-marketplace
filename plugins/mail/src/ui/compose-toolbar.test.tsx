@@ -93,6 +93,16 @@ describe("ComposeToolbar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Quote" }));
     expect(editorRef!.isActive("blockquote")).toBe(true);
 
+    fireEvent.click(screen.getByRole("button", { name: "Quote" }));
+    // Slice 3g: Code block.
+    const codeBlock = screen.getByRole("button", { name: "Code block" });
+    fireEvent.click(codeBlock);
+    expect(editorRef!.isActive("codeBlock")).toBe(true);
+    expect(codeBlock.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(codeBlock);
+    expect(editorRef!.isActive("codeBlock")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Quote" }));
+
     fireEvent.click(screen.getByRole("button", { name: "Clear formatting" }));
     expect(editorRef!.isActive("bold")).toBe(false);
     expect(editorRef!.isActive("blockquote")).toBe(false);

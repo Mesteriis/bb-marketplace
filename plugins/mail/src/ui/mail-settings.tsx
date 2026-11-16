@@ -63,6 +63,7 @@ export const TEMPLATE_TOOLS: readonly ToolId[] = [
   "bulletList",
   "orderedList",
   "link",
+  "codeBlock",
   "clear",
 ];
 

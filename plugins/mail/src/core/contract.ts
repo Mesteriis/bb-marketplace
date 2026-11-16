@@ -1311,3 +1311,8 @@ export type TaskTargetsOutput = Out<"task_targets">;
 export type PatchViewOutput = Out<"patch_view">;
 export type AlertViewResult = Out<"alert_view">;
 export type ProjectListItem = Out<"projects_list">["projects"][number];
+
+/** Any RPC method, its input as the page sends it and its output as the page reads it. */
+export type RpcMethod = keyof typeof rpcSchemas;
+export type RpcIn<M extends RpcMethod> = z.input<(typeof rpcSchemas)[M]["input"]>;
+export type RpcOut<M extends RpcMethod> = z.output<(typeof rpcSchemas)[M]["output"]>;

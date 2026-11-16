@@ -62,7 +62,7 @@ export function SignatureEditor({ address, initial, onSave, onCancel }: Signatur
         label={`Signature for ${address}`}
         initialDoc={initial ?? EMPTY_DOC}
         importFrom={null}
-        features={{ lists: false, quotes: false }}
+        features={{ lists: false, quotes: false, code: false }}
         onChange={(next) => {
           doc.current = next;
           setProblem(null);

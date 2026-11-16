@@ -89,6 +89,14 @@ export interface PendingUpload {
   error: string | null;
 }
 
+/** Where a BB file came from (slice 3g): "from a BB project" or "from a BB thread"; null for uploads. */
+export function originLabel(origin: string | null | undefined): string | null {
+  if (origin === null || origin === undefined) return null;
+  if (origin.startsWith("bb:project:")) return "from a BB project";
+  if (origin.startsWith("bb:thread:")) return "from a BB thread";
+  return "from BB";
+}
+
 export interface AttachmentsInputProps {
   attachments: readonly ComposeAttachment[];
   uploads: readonly PendingUpload[];
@@ -148,6 +156,7 @@ export function AttachmentChips({
         >
           <Icon name="Paperclip" className="size-3.5 shrink-0" aria-hidden />
           <span className="min-w-0 truncate text-foreground">{attachment.fileName}</span>
+          {originLabel(attachment.origin) !== null ? <span className="shrink-0">{originLabel(attachment.origin)}</span> : null}
           <span className="shrink-0">{formatBytes(attachment.size)}</span>
           <button
             type="button"

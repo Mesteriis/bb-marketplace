@@ -47,6 +47,8 @@ import { chipText, MAX_CHIP_LENGTH, MIN_CHIP_LENGTH, RecipientInput, addChips, s
 import { stopEscape } from "./shortcuts.ts";
 import { sendCheckText, type TemplateView } from "./mail-settings.tsx";
 import { PresendDialog } from "./presend-dialog.tsx";
+import { BbFilePicker, type FilePickRequest } from "./bb-file-picker.tsx";
+import type { BbCall } from "./bb-ports.ts";
 import { findSignature, signatureKey } from "./signature-node.ts";
 import { TemplatesPopover } from "./templates-popover.tsx";
 
@@ -117,6 +119,8 @@ export interface ComposerProps {
   improve?: { jobs: AiJobPorts; disabledReason: string | null };
   /** replyReminderDays (slice 3f): the Remind checkbox beside Send; absent: none. */
   reminderDays?: number;
+  /** Attach from a BB project or thread (slice 3g); absent: not offered. */
+  bbFiles?: { call: BbCall; projectId: string | null; threadId: string | null };
 }
 
 /** One entry of the From list: an identity of an account that can send. */
@@ -706,6 +710,9 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
     editor.chain().focus().insertContent(template.doc.content ?? []).run();
   };
 
+  const [bbMenuOpen, setBbMenuOpen] = useState(false);
+  const [bbPick, setBbPick] = useState<FilePickRequest | null>(null);
+
   const addFiles = (files: File[]) => {
     for (const file of files) {
       const key = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1039,6 +1046,55 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           {sending ? "Sending…" : "Send"}
         </Button>
         <AttachButton onAdd={addFiles} disabled={closing} />
+        {props.bbFiles !== undefined ? (
+          <span className="relative inline-flex">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2"
+              aria-haspopup="menu"
+              aria-expanded={bbMenuOpen}
+              disabled={closing}
+              onClick={() => setBbMenuOpen((open) => !open)}
+            >
+              {"Attach from BB \u25be"}
+            </Button>
+            {bbMenuOpen ? (
+              <span
+                role="menu"
+                aria-label="Attach from BB"
+                className="absolute bottom-full left-0 z-10 mb-1 flex min-w-44 flex-col rounded-md border border-border bg-popover p-1 shadow-md"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.stopPropagation();
+                    setBbMenuOpen(false);
+                  }
+                }}
+              >
+                {(
+                  [
+                    ["project", "From a project\u2026"],
+                    ["thread", "From a thread\u2026"],
+                  ] as const
+                ).map(([kind, label]) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    role="menuitem"
+                    className="rounded-sm px-2 py-1 text-left text-sm text-foreground hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    onClick={() => {
+                      setBbMenuOpen(false);
+                      setBbPick({ kind, draftId: draft.id });
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
         {props.reminderDays !== undefined ? (
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <Checkbox
@@ -1077,6 +1133,20 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
             setImproveRequest(null);
             editor?.commands.focus();
           }}
+        />
+      ) : null}
+      {props.bbFiles !== undefined ? (
+        <BbFilePicker
+          request={bbPick}
+          call={props.bbFiles.call}
+          currentProjectId={props.bbFiles.projectId}
+          currentThreadId={props.bbFiles.threadId}
+          onAttached={(added) => {
+            if (added.length === 0) return;
+            setAttachments((prev) => [...prev, ...added]);
+            changed();
+          }}
+          onClose={() => setBbPick(null)}
         />
       ) : null}
       <PresendDialog

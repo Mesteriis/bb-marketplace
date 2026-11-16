@@ -9,6 +9,7 @@ import {
   AttachmentChips,
   CHUNK_BYTES,
   formatBytes,
+  originLabel,
   sha256Hex,
   toBase64,
   uploadFile,
@@ -125,5 +126,22 @@ describe("attachment chips", () => {
     const file = new File(["x"], "a.txt", { type: "text/plain" });
     fireEvent.change(screen.getByTestId("compose-file-input"), { target: { files: [file] } });
     expect(onAdd).toHaveBeenCalledWith([file]);
+  });
+});
+
+describe("BB files (slice 3g)", () => {
+  it("labels a file picked from BB by its origin", () => {
+    expect(originLabel(null)).toBeNull();
+    expect(originLabel("bb:project:p-api")).toBe("from a BB project");
+    expect(originLabel("bb:thread:bbt-1")).toBe("from a BB thread");
+    render(
+      <AttachmentChips
+        attachments={[{ id: "a-1", fileName: "out.log", mimeType: "text/plain", size: 10, origin: "bb:thread:bbt-1" }]}
+        uploads={[]}
+        onRemove={vi.fn()}
+        onDismissUpload={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("from a BB thread")).toBeTruthy();
   });
 });

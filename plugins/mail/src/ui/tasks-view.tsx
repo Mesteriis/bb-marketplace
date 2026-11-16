@@ -163,6 +163,12 @@ export function TasksView({ load, update, remove, onOpen, refreshKey = 0 }: Task
                       <span>{TASK_GONE_TEXT}</span>
                     )}
                   </span>
+                  {task.note !== null && task.note !== undefined && task.note.trim() !== "" ? (
+                    <details className="text-xs text-muted-foreground">
+                      <summary className="cursor-pointer select-none">Note</summary>
+                      <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-xs text-foreground">{task.note}</pre>
+                    </details>
+                  ) : null}
                 </div>
                 <Button
                   variant="ghost"

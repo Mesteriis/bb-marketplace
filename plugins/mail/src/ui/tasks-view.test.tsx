@@ -33,6 +33,15 @@ function mount(tasks: TaskView[]) {
 }
 
 describe("TasksView", () => {
+  it("shows a local task's note collapsed, as text (slice 3g)", async () => {
+    mount([task("n", null, { note: "Call back <b>soon</b>\nFrom mail: Ada Example" })]);
+    const list = await screen.findByRole("list", { name: "Tasks" });
+    const details = list.querySelector("details")!;
+    expect(details.open).toBe(false);
+    expect(details.textContent).toContain("Call back <b>soon</b>");
+    expect(list.querySelector("b")).toBeNull();
+  });
+
   it("orders by due date, no date last", () => {
     expect(byDue([task("a", null), task("b", "2026-11-20"), task("c", "2026-11-18")]).map((t) => t.id)).toEqual(["c", "b", "a"]);
   });

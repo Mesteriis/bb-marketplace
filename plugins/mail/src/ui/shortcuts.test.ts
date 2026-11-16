@@ -92,6 +92,23 @@ describe("matchShortcut", () => {
     expect(matchShortcut(key({ key: "T", code: "KeyT", shiftKey: true }), false)).toEqual({ kind: "find_tasks" });
   });
 
+  it("Shift+N starts a BB thread, Shift+K makes a task and g n goes to Dev, by the physical key; never while typing (slice 3g)", () => {
+    expect(matchShortcut(key({ key: "N", code: "KeyN", shiftKey: true }), false)).toEqual({ kind: "new_bb_thread" });
+    expect(matchShortcut(key({ key: "\u0422", code: "KeyN", shiftKey: true }), false)).toEqual({ kind: "new_bb_thread" });
+    expect(matchShortcut(key({ key: "\u041b", code: "KeyK", shiftKey: true }), false)).toEqual({ kind: "make_task" });
+    expect(matchShortcut(key({ key: "\u0442", code: "KeyN" }), true)).toEqual({ kind: "go", target: "dev" });
+    // k alone still moves up; n alone is nothing.
+    expect(matchShortcut(key({ key: "k", code: "KeyK" }), false)).toEqual({ kind: "previous" });
+    expect(matchShortcut(key({ key: "n", code: "KeyN" }), false)).toBeNull();
+    const input = document.createElement("input");
+    document.body.append(input);
+    expect(matchShortcut(key({ key: "N", code: "KeyN", shiftKey: true, target: input }), false)).toBeNull();
+    expect(matchShortcut(key({ key: "K", code: "KeyK", shiftKey: true, target: input }), false)).toBeNull();
+    input.remove();
+    const labels = SHORTCUT_SHEET.flatMap((section) => section.entries.map((entry) => entry.keys.join(" ")));
+    expect(labels).toEqual(expect.arrayContaining(["Shift n", "Shift k", "g n"]));
+  });
+
   it("Shift+S summarizes and Shift+T finds tasks by the physical key (Cyrillic layout too); never while typing (slice 3f)", () => {
     expect(matchShortcut(key({ key: "S", code: "KeyS", shiftKey: true }), false)).toEqual({ kind: "summarize" });
     expect(matchShortcut(key({ key: "\u042b", code: "KeyS", shiftKey: true }), false)).toEqual({ kind: "summarize" });

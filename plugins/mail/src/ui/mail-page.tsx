@@ -50,6 +50,7 @@ import type { AiCitation } from "./ai-text.tsx";
 import { AskPanel, ASK_QUESTION_MAX } from "./ask-panel.tsx";
 import { CategoryChip, type Category } from "./category-chips.tsx";
 import { RemindDialog, ReminderStrip } from "./reminder-strip.tsx";
+import { useBbDialogs, type MailBbPorts } from "./bb-dialogs.tsx";
 import { SummaryBlock } from "./summary-block.tsx";
 import { TasksDialog, type TaskPick } from "./tasks-dialog.tsx";
 import { SnoozeMenu } from "./snooze-menu.tsx";
@@ -269,6 +270,8 @@ export interface MailPageProps {
   ai?: MailAiPorts;
   /** The Today or Tasks page (slice 3f), shown instead of the list and the conversation. */
   page?: ReactNode;
+  /** Slice 3g: the BB integration; absent: none of it. */
+  bb?: MailBbPorts;
 }
 
 function PageFrame({ children }: { children: ReactNode }) {
@@ -417,7 +420,7 @@ function viewModel(props: MailPageProps & { status: StatusView }): ViewModel {
 }
 
 /** The view `g` then a letter goes to; null when there is none. */
-function goView(props: MailPageProps, model: ViewModel, target: Exclude<GoTarget, "all">): MailView | null {
+function goView(props: MailPageProps, model: ViewModel, target: Exclude<GoTarget, "all" | "dev">): MailView | null {
   const role: RoleName = target;
   if (props.unified) return { kind: "role", role };
   const account = props.account;
@@ -709,6 +712,12 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
     const timer = setTimeout(() => setHighlight(null), 2_000);
     return () => clearTimeout(timer);
   }, [highlight?.serial]);
+  const bbUi = useBbDialogs(props.bb, reading.detail);
+  const bbMessage = () => {
+    if (!threadOpen || selecting || reading.detail === null) return null;
+    const message = messageToHand(reading.detail.messages, reading.expandedIds);
+    return message !== null && !isDraft(message) ? message : null;
+  };
   const summaryShown = summaryFor !== null && summaryFor.threadId === reading.threadId && openDetail !== null && ai !== undefined;
 
   const onKeyDown = useShortcuts((command: ShortcutCommand, repeat: boolean) => {
@@ -777,11 +786,25 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         return summarize();
       case "find_tasks":
         return findTasks();
+      case "new_bb_thread": {
+        const message = bbMessage();
+        if (message !== null) bbUi.newThreadFor(message);
+        return;
+      }
+      case "make_task": {
+        const message = bbMessage();
+        if (message !== null) bbUi.makeTaskFor(message);
+        return;
+      }
       case "sheet":
         rememberOpener();
         setSheetOpen(true);
         return;
       case "go": {
+        if (command.target === "dev") {
+          props.bb?.onOpenDev?.();
+          return;
+        }
         if (command.target === "all") {
           if (status.accounts.length > 1) props.onSelectAccount(ALL_ACCOUNTS);
           return;
@@ -822,6 +845,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         {...(props.onManageTemplates !== undefined ? { onManageTemplates: props.onManageTemplates } : {})}
         {...(props.ai !== undefined
           ? { improve: { jobs: props.ai.jobs, disabledReason: props.ai.disabledReason }, reminderDays: props.ai.reminderDays }
+          : {})}
+        {...(props.bb !== undefined
+          ? { bbFiles: { call: props.bb.call, projectId: props.bb.context.projectId, threadId: props.bb.context.threadId } }
           : {})}
       />
     ) : null;
@@ -1033,6 +1059,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
               onEditDraft={props.onEditDraft}
               hideToolbar={docked && composerFocused}
               translation={props.translation}
+              {...(bbUi.reading !== undefined ? { bb: bbUi.reading } : {})}
               ai={
                 ai === undefined || openDetail === null
                   ? undefined
@@ -1164,6 +1191,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           />
         </>
       ) : null}
+      {bbUi.dialogs}
       {ai !== undefined ? (
         <>
           <TasksDialog

@@ -387,6 +387,8 @@ export function docLosesContent(input: DocNodeInput): boolean {
 const FITTING_TAGS = new Set([
   "html", "head", "body", "meta", "title", "p", "br", "div", "span",
   "ul", "ol", "li", "blockquote", "b", "strong", "i", "em", "u", "a",
+  // Slice 3g: the editor keeps code blocks and inline code.
+  "pre", "code",
 ]);
 /** Attributes that carry no formatting or content. */
 const FITTING_ATTRS = new Set(["href", "target", "rel", "class", "id", "dir", "lang", "name", "title", "charset", "content", "http-equiv", "type", "start"]);

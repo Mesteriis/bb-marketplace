@@ -755,3 +755,28 @@ describe("Composer: Improve and reply reminders (slice 3f)", () => {
     expect(button.closest("span")?.getAttribute("title")).toBe("AI features need the Makosh AI plugin");
   });
 });
+
+describe("Composer: files from BB (slice 3g)", () => {
+  it("Attach from BB opens the project picker and adds what it attached", async () => {
+    const calls: { method: string; input: unknown }[] = [];
+    const call = (async (method: string, input: unknown) => {
+      calls.push({ method, input });
+      if (method === "projects_list") return { projects: [{ id: "p-api", name: "api", kind: "local", hasTree: true, repo: null }] };
+      if (method === "project_files") return { files: [{ name: "a.txt", path: "a.txt" }], truncated: false };
+      if (method === "compose_attach_bb") return { id: "att-9", fileName: "a.txt", mimeType: "text/plain", size: 5, origin: "bb:project:p-api" };
+      throw new Error(method);
+    }) as never;
+    mount({ bbFiles: { call, projectId: "p-api", threadId: null } });
+    fireEvent.click(screen.getByRole("button", { name: "Attach from BB \u25be" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "From a project\u2026" }));
+    fireEvent.click(await screen.findByLabelText("a.txt"));
+    fireEvent.click(screen.getByRole("button", { name: "Attach" }));
+    expect(await screen.findByText("from a BB project")).toBeTruthy();
+    expect(calls.find((c) => c.method === "compose_attach_bb")?.input).toMatchObject({ source: { kind: "project", projectId: "p-api", path: "a.txt" } });
+  });
+
+  it("offers no BB attach without the integration", () => {
+    mount();
+    expect(screen.queryByRole("button", { name: "Attach from BB \u25be" })).toBeNull();
+  });
+});

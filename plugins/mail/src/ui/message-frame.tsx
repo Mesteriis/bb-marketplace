@@ -7,8 +7,11 @@ import type { MessageBody } from "../core/index.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { isAllowedLinkUrl, sanitizeEmailHtml } from "./sanitize.ts";
+import type { CodeRenderers } from "./bb-ports.ts";
+import { BodyParts, HtmlCodeBlocks } from "./code-blocks.tsx";
 
 const INITIAL_HEIGHT = 120;
+const NO_RENDERERS: CodeRenderers = {};
 
 export interface MessageFrameProps {
   body: MessageBody;
@@ -31,6 +34,8 @@ export interface MessageFrameProps {
   senderTrusted: boolean;
   /** Take the sender off that list. */
   onStopImages: () => void;
+  /** Slice 3g: BB's code renderers for code in the body; absent: the <pre> fallback. */
+  renderers?: CodeRenderers;
 }
 
 /** Duck-typed: the click target lives in the frame's own realm. */
@@ -49,6 +54,7 @@ export function MessageFrame({
   onAlwaysShowImages,
   senderTrusted,
   onStopImages,
+  renderers = NO_RENDERERS,
 }: MessageFrameProps) {
   const showRemote = remoteImages || body.remoteImagesAllowed;
   const sanitized = useMemo(
@@ -58,9 +64,7 @@ export function MessageFrame({
 
   if (sanitized === null) {
     return body.text !== null && body.text.trim() !== "" ? (
-      <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-foreground">
-        {body.text}
-      </pre>
+      <BodyParts text={body.text} renderers={renderers} />
     ) : (
       <p className="text-sm text-muted-foreground">This message has no text.</p>
     );
@@ -88,6 +92,7 @@ export function MessageFrame({
         </div>
       ) : null}
       <HtmlFrame srcDoc={sanitized.html} title={title} onOpenLink={onOpenLink} />
+      <HtmlCodeBlocks blocks={body.codeBlocks ?? []} renderers={renderers} />
       {body.htmlTruncated ? (
         <p className="text-xs text-muted-foreground">
           This message is very long; the end is not shown.

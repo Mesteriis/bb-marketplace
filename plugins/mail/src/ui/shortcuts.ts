@@ -4,8 +4,8 @@
 // its own root element only, so nothing fires while another BB page is shown.
 import { useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
-/** Where `g` then a letter goes. "all" is the All accounts view. */
-export type GoTarget = "inbox" | "sent" | "drafts" | "trash" | "all";
+/** Where `g` then a letter goes. "all" is the All accounts view, "dev" the Dev view (slice 3g). */
+export type GoTarget = "inbox" | "sent" | "drafts" | "trash" | "all" | "dev";
 
 export type ShortcutCommand =
   | { kind: "next" }
@@ -31,6 +31,8 @@ export type ShortcutCommand =
   | { kind: "snooze" }
   | { kind: "summarize" }
   | { kind: "find_tasks" }
+  | { kind: "new_bb_thread" }
+  | { kind: "make_task" }
   | { kind: "go"; target: GoTarget };
 
 /** How long `g` waits for its second key. */
@@ -86,6 +88,7 @@ const GO_KEYS: Record<string, GoTarget> = {
   KeyD: "drafts",
   KeyT: "trash",
   KeyA: "all",
+  KeyN: "dev",
 };
 
 /** `#`, `!`, `?`: the character, else the key that types it on a US layout. */
@@ -133,6 +136,9 @@ function matchKey(event: KeyLike, afterG: boolean): KeyMatch {
     // Slice 3f: by the physical key, so a Cyrillic layout works too.
     if (event.code === "KeyS") return { kind: "summarize" };
     if (event.code === "KeyT") return { kind: "find_tasks" };
+    // Slice 3g: New thread... and Make a task....
+    if (event.code === "KeyN") return { kind: "new_bb_thread" };
+    if (event.code === "KeyK") return { kind: "make_task" };
     return null;
   }
   switch (event.code) {
@@ -246,6 +252,7 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
       { keys: ["g", "d"], label: "Go to Drafts" },
       { keys: ["g", "t"], label: "Go to Trash" },
       { keys: ["g", "a"], label: "Go to All accounts" },
+      { keys: ["g", "n"], label: "Go to Dev" },
       { keys: ["?"], label: "Show keyboard shortcuts" },
     ],
   },
@@ -264,6 +271,8 @@ export const SHORTCUT_SHEET: { title: string; entries: ShortcutEntry[] }[] = [
       { keys: ["t"], label: "Translate, or show the original" },
       { keys: ["Shift", "s"], label: "Summarize the conversation (AI)" },
       { keys: ["Shift", "t"], label: "Find tasks in the conversation (AI)" },
+      { keys: ["Shift", "n"], label: "New BB thread from the message" },
+      { keys: ["Shift", "k"], label: "Make a task from the message" },
       { keys: ["z"], label: "Undo the last action" },
     ],
   },

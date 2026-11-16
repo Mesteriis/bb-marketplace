@@ -11,9 +11,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import {
   definePluginApp,
   experimental_copyToClipboard,
+  experimental_Diff,
   experimental_saveFile,
+  experimental_SourceCode,
   experimental_useQuestionFormHost,
   UrlLink,
+  useBbContext,
   useBbNavigate,
   useComposer,
   useRealtime,
@@ -121,10 +124,15 @@ import type { TaskPick } from "./src/ui/tasks-dialog.tsx";
 import { TodayView } from "./src/ui/today-view.tsx";
 import { DAY_NOTICE_TOAST_MS, dayNoticePlan } from "./src/ui/day-notices.ts";
 import { TasksView } from "./src/ui/tasks-view.tsx";
+import type { MailBbPorts } from "./src/ui/bb-dialogs.tsx";
+import type { BbCall, CodeRenderers } from "./src/ui/bb-ports.ts";
 
 // The channel name is checked against the core constant without importing it
 // at runtime: a value import of the core would bundle its zod schemas.
 const MAIL_CHANGED_CHANNEL: typeof MailChangedChannel = "mail-changed";
+/** BB's highlighter and diff viewer, injected into src/ui as render props (slice 3g, spec resolution 6). */
+const HostSourceCode = experimental_SourceCode;
+const HostDiff = experimental_Diff;
 const OUTBOX_CHANGED_CHANNEL: typeof OutboxChangedChannel = "outbox-changed";
 const NEW_MAIL_CHANNEL: typeof NewMailChannel = "mail-new";
 const DAY_NOTICE_CHANNEL: typeof DayNoticeChannel = "mail-day";
@@ -2626,6 +2634,50 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       />
     ) : undefined;
 
+  // ---- Slice 3g: the BB integration ----
+
+  const bbContext = useBbContext();
+  const bbCall = useCallback<BbCall>(
+    (method, input) => rpc.call(method as never, input as never) as never,
+    [rpc],
+  );
+  const codeRenderers = useMemo<CodeRenderers>(
+    () => ({
+      renderCode: (content, path) => <HostSourceCode content={content} path={path} overflow="wrap" />,
+      renderDiff: (patch, path) => <HostDiff patch={patch} path={path} overflow="wrap" />,
+      copy: (text) => {
+        void copy(text).then((done) => {
+          if (done === false) toast.error("Could not copy");
+        });
+      },
+    }),
+    [copy],
+  );
+  const attachmentFolder =
+    typeof pluginSettings?.attachmentFolder === "string" && pluginSettings.attachmentFolder !== ""
+      ? pluginSettings.attachmentFolder
+      : "mail-attachments";
+  const mailBb = useMemo<MailBbPorts>(
+    () => ({
+      call: bbCall,
+      renderers: codeRenderers,
+      attachmentFolder,
+      context: { projectId: bbContext.projectId, threadId: bbContext.threadId },
+      notify: (text, action) => {
+        toast(text, action !== undefined ? { action: { label: action.label, onClick: action.run } } : undefined);
+      },
+      notifyError: (text) => toast.error(text),
+      onOpenThread: (bbThreadId) => navigate.toThread(bbThreadId),
+      onOpenProject: (projectId) => navigate.toProject(projectId),
+      onEditInComposer: (projectId, prompt) => navigate.toCompose({ projectId, initialPrompt: prompt, focusPrompt: true }),
+      onChanged: () => {
+        const open = openThreadId.current;
+        if (open !== null) void loadThread(open, null);
+      },
+    }),
+    [attachmentFolder, bbCall, bbContext.projectId, bbContext.threadId, codeRenderers, loadThread, navigate],
+  );
+
   // ---- The sidebar's rail ----
 
   const outboxInScope = useMemo(
@@ -2766,6 +2818,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onListFilter={setListFilter}
       inbox={inboxPorts}
       ai={mailAi}
+      bb={mailBb}
       {...(pageContent !== undefined ? { page: pageContent } : {})}
     />
     <UnsubscribeDialog

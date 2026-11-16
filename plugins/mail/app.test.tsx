@@ -645,6 +645,9 @@ const NOT_MOVES = [
   "Summarize",
   "Find tasks",
   "Remind me\u2026",
+  // Slice 3g.
+  "New thread\u2026",
+  "Make a task\u2026",
 ];
 
 function toolbar(slot: ReturnType<typeof render>) {
@@ -1023,7 +1026,18 @@ describe("Fix round 1", () => {
       .map((button) => button.textContent?.trim())
       .filter((label) => label !== "Back");
     // Writing still applies; the moves do not.
-    expect(labels).toEqual(["Reply", "Reply all", "Forward", "Translate", "Block", "Summarize", "Find tasks", "Hand to agent"]);
+    expect(labels).toEqual([
+      "Reply",
+      "Reply all",
+      "Forward",
+      "Translate",
+      "Block",
+      "New thread\u2026",
+      "Make a task\u2026",
+      "Summarize",
+      "Find tasks",
+      "Hand to agent",
+    ]);
   });
 
   it("shows Spam and Delete but no Archive in an archive folder", async () => {
@@ -4455,5 +4469,76 @@ describe("Slice 3f: Today, Tasks, Mail settings and day notices", () => {
     expect(await slot.findByText("Nothing yet.")).toBeTruthy();
     fireEvent.click(slot.getByRole("tab", { name: "AI features" }));
     expect(await slot.findByText("On: the Today digest is ready at 07:30.")).toBeTruthy();
+  });
+});
+
+describe("BB integration in the reading pane (slice 3g)", () => {
+  const projects = [{ id: "p-api", name: "api", kind: "local", hasTree: true, repo: null }];
+  const PROMPT = "Untrusted email content follows.\n<b>kept as text</b>";
+
+  it("Shift+N opens New thread with the server's prompt; Start starts it and opens the BB thread", async () => {
+    const slot = render(
+      mailRpc({
+        projects_list: () => ({ projects }),
+        thread_get: () => ({ ...detailA, project: { id: "p-api", name: "api", source: "owner" } }),
+        bb_thread_prepare: () => ({ prompt: PROMPT, title: "Quarterly plan", hidden: 0, leftOut: 0, permissionMode: "accept-edits" }),
+        bb_thread_start: () => ({ bbThreadId: "bbt-1" }),
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    press(pageRoot(slot), { key: "N", code: "KeyN", shiftKey: true });
+    const prompt = await slot.findByTestId("bb-thread-prompt");
+    expect(prompt.textContent).toBe(PROMPT);
+    expect(slot.getByText("Runs with accept-edits permissions")).toBeTruthy();
+    expect(callsTo(slot, "bb_thread_prepare")[0]?.input).toEqual({ messageId: "m-new", include: "message", projectId: "p-api" });
+    fireEvent.click(slot.getByRole("button", { name: "Start thread" }));
+    await waitFor(() => expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "bbt-1" }));
+    expect(toasts.plain).toContain("Thread started");
+  });
+
+  it("Edit in composer opens BB's composer with the prompt", async () => {
+    const slot = render(
+      mailRpc({
+        projects_list: () => ({ projects }),
+        bb_thread_prepare: () => ({ prompt: PROMPT, title: "Quarterly plan", hidden: 0, leftOut: 0, permissionMode: null }),
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    fireEvent.click(toolbar(slot).getByRole("button", { name: "New thread\u2026" }));
+    const select = (await slot.findByLabelText("Project")) as HTMLSelectElement;
+    await slot.findByRole("option", { name: "api" });
+    fireEvent.change(select, { target: { value: "p-api" } });
+    await slot.findByTestId("bb-thread-prompt");
+    fireEvent.click(slot.getByRole("button", { name: "Edit in composer" }));
+    await waitFor(() => expect(slot.inspection.navigateCalls.some((c) => c.method === "toCompose" as never)).toBe(true));
+  });
+
+  it("New thread is off for mail outside AI access, Make a task stays", async () => {
+    const outside = { ...detailA, messages: detailA.messages.map((m) => ({ ...m, inAiScope: false })) };
+    const slot = render(mailRpc({ thread_get: () => outside }));
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    await slot.findByRole("heading", { name: "Quarterly plan" });
+    expect((toolbar(slot).getByRole("button", { name: "New thread\u2026" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((toolbar(slot).getByRole("button", { name: "Make a task\u2026" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("a plain body's code goes through BB's highlighter", async () => {
+    const fence = "```";
+    const slot = render(
+      mailRpc({
+        message_body: ({ messageId }: { messageId: string }) => ({
+          messageId,
+          text: `Run this:\n${fence}sh\nmake test\n${fence}\n`,
+          html: null,
+          htmlTruncated: false,
+          remoteImagesAllowed: false,
+          codeBlocks: [],
+        }),
+      }),
+    );
+    fireEvent.click(await slot.findByRole("button", { name: /Quarterly plan/ }));
+    expect(await slot.findByRole("figure", { name: "Code (sh)" })).toBeTruthy();
   });
 });

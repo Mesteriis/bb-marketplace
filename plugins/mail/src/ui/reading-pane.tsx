@@ -13,7 +13,8 @@ import type {
   SpecialUse,
   ThreadDetail,
 } from "../core/index.ts";
-import type { UnsubscribeInfoView } from "../core/model.ts";
+import type { BbLinkView, DevLinkView, UnsubscribeInfoView } from "../core/model.ts";
+import type { ProjectListItem } from "../core/contract.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,11 @@ import { LoadingState } from "./empty-states.tsx";
 import { MessageFrame } from "./message-frame.tsx";
 import { addressLabel, formatFullDate, formatUntil, subjectOrPlaceholder } from "./thread-list.tsx";
 import { UNSUBSCRIBE_HIDDEN_HINT, preferredMethod } from "./unsubscribe-dialog.tsx";
+import { projectName, type BbCall, type CodeRenderers } from "./bb-ports.ts";
+import { AlertCard } from "./alert-card.tsx";
+import { DevLinksStrip } from "./dev-links-strip.tsx";
+import { PatchCard } from "./patch-dialog.tsx";
+import { ProjectChip, type AlwaysChoice } from "./project-chip.tsx";
 
 export type BodyState =
   | { status: "loading" }
@@ -77,6 +83,81 @@ export interface ReadingPaneProps {
   inbox?: ReadingInbox;
   /** Summarize, Find tasks, the category line and Remind me (slice 3f); absent: none of them. */
   ai?: ReadingAi;
+  /** Slice 3g: New thread, Make a task, the project, links, patches, alerts and saves; absent: none of them. */
+  bb?: ReadingBb;
+}
+
+/** The reading pane's part of the BB integration (slice 3g). */
+export interface ReadingBb {
+  call: BbCall;
+  /** The BB projects (null while unknown). */
+  projects: readonly ProjectListItem[] | null;
+  renderers: CodeRenderers;
+  onNewThread: (message: MessageHeader) => void;
+  onMakeTask: (message: MessageHeader) => void;
+  onSetProject: (projectId: string | null) => void;
+  onAlways: (choice: AlwaysChoice, projectId: string) => void;
+  onOpenProject: (projectId: string) => void;
+  onOpenThread: (bbThreadId: string) => void;
+  /** New thread... from a link: its project and "Look at <url>". */
+  onLinkThread: (message: MessageHeader, link: DevLinkView) => void;
+  onSaveAttachments: (message: MessageHeader, attachments: AttachmentMeta[]) => void;
+  onReviewPatch: (message: MessageHeader) => void;
+  onIncident: (bbThreadId: string, appended: boolean) => void;
+}
+
+/** Each BB target once, oldest first, from the conversation's messages. */
+export function linkedItems(messages: readonly MessageHeader[]): BbLinkView[] {
+  const seen = new Set<string>();
+  const items: BbLinkView[] = [];
+  for (const message of messages) {
+    for (const link of message.bbLinks ?? []) {
+      const key = `${link.kind}:${link.targetId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(link);
+    }
+  }
+  return items;
+}
+
+function LinkedItems({ items, bb }: { items: readonly BbLinkView[]; bb: ReadingBb }) {
+  if (items.length === 0) return null;
+  return (
+    <ul aria-label="In BB" className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+      {items.map((item) => {
+        const key = `${item.kind}:${item.targetId}`;
+        if (item.kind === "taskboard_task") {
+          return (
+            <li key={key} className="flex items-center gap-1">
+              <Icon name="ListChecks" fallback="Check" className="size-3.5" aria-hidden />
+              <span>Task on Taskboard</span>
+            </li>
+          );
+        }
+        if (item.kind === "project_file") {
+          return (
+            <li key={key} className="flex min-w-0 items-center gap-1">
+              <Icon name="Folder" className="size-3.5 shrink-0" aria-hidden />
+              <span className="min-w-0 truncate">
+                {`Saved to ${item.projectId !== null ? projectName(bb.projects, item.projectId) : "a project"}: ${item.targetId}`}
+              </span>
+            </li>
+          );
+        }
+        const label = item.kind === "incident" ? "Incident thread" : item.kind === "patch" ? "Patch thread" : "Thread";
+        return (
+          <li key={key} className="flex min-w-0 items-center gap-1">
+            <Icon name="Bot" className="size-3.5 shrink-0" aria-hidden />
+            <span className="min-w-0 truncate">{`${label}: ${item.title ?? "BB thread"}`}</span>
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => bb.onOpenThread(item.targetId)}>
+              Open
+            </Button>
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 /** The reading pane's part of the AI features (slice 3f). */
@@ -182,12 +263,14 @@ function MessageBodyView({
   senderAddress,
   onOpenLink,
   images,
+  renderers,
 }: {
   state: BodyState | undefined;
   title: string;
   senderAddress: string | null;
   onOpenLink: (url: string) => void;
   images: ImageProps;
+  renderers?: CodeRenderers;
 }) {
   if (state === undefined || state.status === "loading") {
     return <LoadingState label="Loading message…" />;
@@ -210,6 +293,7 @@ function MessageBodyView({
       onAlwaysShowImages={images.onAlwaysShowImages}
       senderTrusted={images.senderAllowed || state.body.remoteImagesAllowed}
       onStopImages={images.onStopImages}
+      {...(renderers !== undefined ? { renderers } : {})}
     />
   );
 }
@@ -226,14 +310,17 @@ export function attachmentType(attachment: Pick<AttachmentMeta, "filename" | "mi
 function AttachmentButton({
   attachment,
   onDownload,
+  onSave,
 }: {
   attachment: AttachmentMeta;
   onDownload: () => void;
+  /** Slice 3g: Save to project...; absent: not offered. */
+  onSave?: () => void;
 }) {
   const name = attachment.filename ?? "Unnamed attachment";
   const type = attachmentType(attachment);
   return (
-    <li>
+    <li className="flex items-center gap-0.5">
       <button
         type="button"
         onClick={onDownload}
@@ -246,6 +333,17 @@ function AttachmentButton({
         <span>{formatSize(attachment.size)}</span>
         <Icon name="Download" fallback="Paperclip" className="size-3.5" aria-hidden />
       </button>
+      {onSave !== undefined ? (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 text-muted-foreground"
+          aria-label={`Save ${name} to project\u2026`}
+          onClick={onSave}
+        >
+          <Icon name="FolderInput" fallback="Folder" aria-hidden />
+        </Button>
+      ) : null}
     </li>
   );
 }
@@ -265,6 +363,8 @@ function MessageItem({
   onEditDraft,
   translation,
   highlighted = false,
+  bb,
+  projectId = null,
 }: {
   message: MessageHeader;
   expanded: boolean;
@@ -284,6 +384,9 @@ function MessageItem({
   translation: ReactNode | null;
   /** A citation points here: marked for a moment. */
   highlighted?: boolean;
+  bb?: ReadingBb;
+  /** The conversation's project (slice 3g). */
+  projectId?: string | null;
 }) {
   const sender = addressLabel(message.from);
   const senderAddress = message.from.address.trim() !== "" ? message.from.address : null;
@@ -348,12 +451,38 @@ function MessageItem({
       {expanded ? (
         <div className="flex flex-col gap-3 px-3 pb-3">
           {translation}
+          {bb !== undefined ? (
+            <DevLinksStrip
+              links={message.devLinks ?? []}
+              projectName={(id) => projectName(bb.projects, id)}
+              onOpen={onOpenLink}
+              onOpenProject={bb.onOpenProject}
+              onNewThread={(link) => bb.onLinkThread(message, link)}
+              inAiScope={message.inAiScope}
+            />
+          ) : null}
+          {bb !== undefined && message.alert === true ? (
+            <AlertCard
+              messageId={message.id}
+              inAiScope={message.inAiScope}
+              projectId={projectId}
+              call={bb.call}
+              onOpenThread={bb.onOpenThread}
+              onOpenLink={onOpenLink}
+              onStarted={(id) => bb.onIncident(id, false)}
+              onAppended={(id) => bb.onIncident(id, true)}
+            />
+          ) : null}
+          {bb !== undefined && message.patch != null ? (
+            <PatchCard patch={message.patch} onReview={() => bb.onReviewPatch(message)} />
+          ) : null}
           <MessageBodyView
             state={body}
             title={`Message from ${sender}`}
             senderAddress={senderAddress}
             onOpenLink={onOpenLink}
             images={images}
+            {...(bb !== undefined ? { renderers: bb.renderers } : {})}
           />
           {attachments.length > 0 ? (
             <ul aria-label="Attachments" className="flex flex-wrap gap-2">
@@ -362,9 +491,18 @@ function MessageItem({
                   key={attachment.partId}
                   attachment={attachment}
                   onDownload={() => onDownloadAttachment(attachment)}
+                  {...(bb !== undefined ? { onSave: () => bb.onSaveAttachments(message, [attachment]) } : {})}
                 />
               ))}
             </ul>
+          ) : null}
+          {bb !== undefined && attachments.length > 1 ? (
+            <div>
+              <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => bb.onSaveAttachments(message, attachments)}>
+                <Icon name="FolderInput" fallback="Folder" aria-hidden />
+                {"Save all to project\u2026"}
+              </Button>
+            </div>
           ) : null}
           {inline.length > 0 ? (
             <details className="text-xs text-muted-foreground">
@@ -557,6 +695,26 @@ export function ReadingPane(props: ReadingPaneProps) {
           </Button>
         ) : null}
         <span className="flex-1" />
+        {props.bb !== undefined && handed !== null && !handedDraft ? (
+          <>
+            <span title={handed.inAiScope ? undefined : OUTSIDE_AI_ACCESS} className="inline-flex">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={!handed.inAiScope}
+                aria-keyshortcuts="Shift+N"
+                onClick={() => props.bb?.onNewThread(handed)}
+              >
+                <Icon name="MessageSquarePlus" fallback="Bot" aria-hidden />
+                {"New thread\u2026"}
+              </Button>
+            </span>
+            <Button variant="ghost" size="sm" aria-keyshortcuts="Shift+K" onClick={() => props.bb?.onMakeTask(handed)}>
+              <Icon name="ListPlus" fallback="ListChecks" aria-hidden />
+              {"Make a task\u2026"}
+            </Button>
+          </>
+        ) : null}
         {props.ai !== undefined ? (
           <AiButtons ai={props.ai} reason={conversationAiReason(messages, props.ai.disabledReason)} />
         ) : null}
@@ -605,6 +763,19 @@ export function ReadingPane(props: ReadingPaneProps) {
           <p className="text-xs text-muted-foreground">{UNSUBSCRIBE_HIDDEN_HINT}</p>
         ) : null}
         {props.ai?.category ?? null}
+        {props.bb !== undefined ? (
+          <>
+            <ProjectChip
+              key={thread.id}
+              detail={detail}
+              projects={props.bb.projects}
+              onSet={props.bb.onSetProject}
+              onAlways={props.bb.onAlways}
+              onOpenProject={props.bb.onOpenProject}
+            />
+            <LinkedItems items={linkedItems(messages)} bb={props.bb} />
+          </>
+        ) : null}
       </div>
       {props.ai?.summary ?? null}
       {messages.map((message) => {
@@ -632,6 +803,7 @@ export function ReadingPane(props: ReadingPaneProps) {
             onEditDraft={props.isDraft(message) ? () => props.onEditDraft(message) : null}
             translation={props.translation?.shown?.messageId === message.id ? props.translation.shown.block : null}
             highlighted={highlight?.messageId === message.id}
+            {...(props.bb !== undefined ? { bb: props.bb, projectId: detail.project?.id ?? null } : {})}
           />
         );
       })}

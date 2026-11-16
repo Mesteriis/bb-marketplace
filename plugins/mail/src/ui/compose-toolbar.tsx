@@ -1,5 +1,5 @@
 // The composer's formatting toolbar: bold, italic, underline, lists, link,
-// quote and clear formatting. One tab stop with arrow-key (roving) focus,
+// quote, code block and clear formatting. One tab stop with arrow-key (roving) focus,
 // like a native toolbar; each button names its shortcut.
 import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
@@ -13,7 +13,7 @@ export function modKeyLabel(platform: string = typeof navigator === "undefined" 
   return /mac|iphone|ipad|ipod/i.test(platform) ? "⌘" : "Ctrl+";
 }
 
-export type ToolId = "bold" | "italic" | "underline" | "bulletList" | "orderedList" | "link" | "blockquote" | "clear";
+export type ToolId = "bold" | "italic" | "underline" | "bulletList" | "orderedList" | "link" | "blockquote" | "codeBlock" | "clear";
 
 interface Tool {
   id: ToolId;
@@ -32,6 +32,7 @@ const ALL_TOOLS: Tool[] = [
   { id: "orderedList", label: "Numbered list", icon: "ListOrdered", fallback: "List" },
   { id: "link", label: "Link", icon: "Link", fallback: "ExternalLink", key: "K" },
   { id: "blockquote", label: "Quote", icon: "Quote", fallback: "MessageSquare" },
+  { id: "codeBlock", label: "Code block", icon: "SquareCode", fallback: "Code" },
   { id: "clear", label: "Clear formatting", icon: "RemoveFormatting", fallback: "X" },
 ];
 
@@ -104,6 +105,7 @@ export function ComposeToolbar({
             orderedList: current.isActive("orderedList"),
             link: current.isActive("link"),
             blockquote: current.isActive("blockquote"),
+            codeBlock: current.isActive("codeBlock"),
           },
   });
 
@@ -123,6 +125,8 @@ export function ComposeToolbar({
         return void chain.toggleOrderedList().run();
       case "blockquote":
         return void chain.toggleBlockquote().run();
+      case "codeBlock":
+        return void chain.toggleCodeBlock().run();
       case "clear":
         return void chain.unsetAllMarks().clearNodes().run();
       case "link":

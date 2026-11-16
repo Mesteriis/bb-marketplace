@@ -317,6 +317,10 @@ describe("htmlFitsDoc", () => {
     expect(htmlFitsDoc("<div>Line<br></div><div><i>two</i> <a href=\"mailto:a@example.org\">x</a></div>")).toBe(true);
   });
 
+  it("fits code blocks and inline code (slice 3g)", () => {
+    expect(htmlFitsDoc('<pre><code class="language-ts">const a = 1;</code></pre><p>use <code>a</code></p>')).toBe(true);
+  });
+
   it("refuses images, tables, headings, styles and links the editor drops", () => {
     for (const html of [
       '<p>Hi <img src="cid:part1"></p>',
@@ -326,7 +330,7 @@ describe("htmlFitsDoc", () => {
       "<style>p{color:red}</style><p>x</p>",
       '<p><font color="red">x</font></p>',
       '<p><a href="ftp://example.org/f">file</a></p>',
-      "<pre>code</pre>",
+      '<pre style="color:red">code</pre>',
       "<s>gone</s>",
     ]) {
       expect(htmlFitsDoc(html), html).toBe(false);
