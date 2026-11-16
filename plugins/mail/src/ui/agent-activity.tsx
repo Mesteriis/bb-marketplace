@@ -21,6 +21,8 @@ const ACTORS: Record<LogActor, string> = {
   handoff: "Hand to agent",
   cli: "Command in a thread",
   owner_ai: "You (AI)",
+  owner_bb: "You (BB)",
+  rule: "Mail rule",
 };
 
 const TOOLS: Record<LogTool, string> = {
@@ -42,6 +44,12 @@ const TOOLS: Record<LogTool, string> = {
   ai_categories: "Suggested categories",
   ai_digest: "Today summary",
   ai_draft: "Improve",
+  bb_thread: "BB thread",
+  bb_task: "Task",
+  project_save: "Saved to a project",
+  patch_handoff: "Patch to an agent",
+  incident: "Incident thread",
+  rule_thread: "Rule thread",
 };
 
 const OUTCOMES: Record<LogOutcome, string> = {
@@ -58,6 +66,9 @@ const OUTCOMES: Record<LogOutcome, string> = {
   expired: "expired",
   applied: "applied",
   failed: "failed",
+  prepared: "ready to start",
+  started: "started",
+  capped: "held: limit reached",
 };
 
 /** "Today 10:42", "Yesterday 18:03" or "12 Nov 09:15", in local time. */

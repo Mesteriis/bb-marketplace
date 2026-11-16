@@ -14,6 +14,8 @@ import {
   renderInboxForAgentCounted,
   renderSearchHits,
   renderSearchHitsCounted,
+  bodyPlainText,
+  plainBodyText,
 } from "./agent-text.ts";
 
 function header(overrides: Partial<MessageHeader> = {}): MessageHeader {
@@ -475,5 +477,17 @@ describe("slice 3f redaction in the renderers", () => {
     expect(hitStillMatches(hit, ["482913"])).toBe(false);
     expect(hitStillMatches(hit, ["garden", "4829"])).toBe(false);
     expect(hitStillMatches(hit, [])).toBe(true);
+  });
+});
+
+describe("bodyPlainText (slice 3g)", () => {
+  it("is the text the renderer reads: plain part, else the HTML as text, else a marker", () => {
+    expect(bodyPlainText(body({ text: "Plain words." }))).toBe("Plain words.");
+    expect(bodyPlainText(body({ text: null, html: "<p>From <b>HTML</b></p>" }))).toBe("From HTML");
+    expect(bodyPlainText(body({ text: "  ", html: null }))).toBe("(no text body)");
+    expect(bodyPlainText(null)).toBe("(body not available)");
+    const sample = body({ text: null, html: "<div>a</div><div>b</div>" });
+    expect(bodyPlainText(sample)).toBe(plainBodyText(sample));
+    expect(renderMessageForAgent(header(), sample, 20_000)).toContain(bodyPlainText(sample));
   });
 });

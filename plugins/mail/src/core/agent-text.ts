@@ -461,6 +461,14 @@ export function plainBodyText(body: MessageBody | null): string {
   return bodyText(body);
 }
 
+/**
+ * The text renderMessageForAgentCounted reads a body as (slice 3g): bb-text
+ * strips quotes from it before rendering.
+ */
+export function bodyPlainText(body: MessageBody | null): string {
+  return bodyText(body);
+}
+
 function bodyText(body: MessageBody | null): string {
   if (body === null) return "(body not available)";
   if (body.text !== null && body.text.trim() !== "") return body.text;
