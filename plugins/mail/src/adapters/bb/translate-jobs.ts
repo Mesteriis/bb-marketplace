@@ -19,6 +19,7 @@ import {
   type TranslateFinish,
   type Translator,
 } from "../../core/translate.ts";
+import { newRestoreTag, restoreSecrets } from "../../core/redact.ts";
 import type { Clock, MailStore, TranslationView } from "../../core/index.ts";
 
 export const JOB_MAX_RUNNING = 2;
@@ -26,6 +27,8 @@ export const JOB_MAX_MS = 5 * 60 * 1000;
 /** A job nobody polled for this long is cancelled; a finished one is forgotten. */
 export const JOB_IDLE_MS = 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
+/** Longest numbered placeholder ("[hidden one-time code 999 abcd]") held back while it streams. */
+const OPEN_PLACEHOLDER_MAX = 48;
 
 export type TranslateSettings = { providerId: string; model: string; language: LanguageTag };
 
@@ -49,6 +52,8 @@ export type TranslateJobsDeps = {
   log?: (line: string) => void;
   /** Told what a job learned about the gateway: "ok", gateway_missing or pool_unavailable. */
   onGateway?: (state: "ok" | TranslateErrorKind) => void;
+  /** A restore tag absent from every part (default: newRestoreTag). */
+  tag?: (parts: string[]) => string;
 };
 
 /** A refusal of translate_start with fixed text. */
@@ -71,7 +76,13 @@ type Job = {
   id: string;
   key: string;
   state: JobPoll["state"];
+  /** What the owner sees: the model's text with this job's placeholders restored. */
   text: string;
+  /** The model's text as streamed (placeholders), until the job ends. */
+  raw: string;
+  /** Placeholder -> original, in this job's memory only; dropped at every end state (spec resolution 2). */
+  restore: Map<string, string> | null;
+  tag: string;
   finish?: TranslateFinish;
   error?: TranslateErrorKind;
   gatewayMessage?: string;
@@ -102,8 +113,10 @@ export class TranslateJobs {
     const header = this.deps.store.getMessage(messageId);
     const body = this.deps.store.getBody(messageId);
     if (header === null || body === null) throw new TranslateJobRefusal("not_found");
-    const source = translationSource(header.subject, body);
-    const sha = await sourceHash(source.text, language);
+    // The cache key is over the redacted source with plain placeholders, so
+    // it does not change with each job's numbered, tagged ones.
+    const plain = translationSource(header.subject, body);
+    const sha = await sourceHash(plain.text, language);
     if (options.force !== true) {
       const row = this.deps.store.getTranslation(messageId, language);
       if (row !== null && cacheHit(row, sha)) {
@@ -131,11 +144,17 @@ export class TranslateJobs {
     if (this.starts.length >= TRANSLATE_RATE_PER_HOUR) throw new TranslateJobRefusal("rate_limited");
     this.starts.push(now);
 
+    // The model sees numbered placeholders only; the map stays in the job.
+    const tag = this.deps.tag?.([plain.text]) ?? newRestoreTag(undefined, [plain.text]);
+    const source = translationSource(header.subject, body, { restore: true, tag });
     const job: Job = {
       id: this.deps.newId(),
       key,
       state: "running",
       text: "",
+      raw: "",
+      restore: source.restore ?? new Map(),
+      tag,
       truncatedInput: source.truncated,
       startedAt: now,
       polledAt: now,
@@ -201,13 +220,39 @@ export class TranslateJobs {
     return this.jobs.get(jobId)?.done ?? Promise.resolve();
   }
 
+  /** Whether the job still holds a restore map (for tests: dropped at every end state). */
+  holdsRestore(jobId: string): boolean {
+    return (this.jobs.get(jobId)?.restore ?? null) !== null;
+  }
+
   private now(): number {
     return this.deps.clock.now().getTime();
   }
 
+  /** The job's end: the restore map and the raw text are dropped. */
+  private end(job: Job): void {
+    job.endedAt = this.now();
+    job.restore = null;
+    job.raw = "";
+  }
+
+  /**
+   * The owner's text so far: placeholders restored, except a placeholder
+   * still being streamed (an open "[" near the end), held back so the text
+   * only ever grows.
+   */
+  private reveal(job: Job, final: boolean): void {
+    let shown = job.raw;
+    if (!final) {
+      const open = shown.lastIndexOf("[");
+      if (open !== -1 && shown.indexOf("]", open) === -1 && shown.length - open <= OPEN_PLACEHOLDER_MAX) shown = shown.slice(0, open);
+    }
+    job.text = restoreSecrets(shown, job.restore ?? new Map(), job.tag).text;
+  }
+
   private stop(job: Job, state: "cancelled" | "failed"): void {
     job.state = state;
-    job.endedAt = this.now();
+    this.end(job);
     if (state === "failed") job.error = "failed";
     else job.error = "cancelled";
     job.controller.abort();
@@ -232,14 +277,17 @@ export class TranslateJobs {
       const { finish } = await this.deps.translator.translate(
         { providerId, model, ...prompt, maxOutputTokens: TRANSLATE_MAX_TOKENS },
         (delta) => {
-          if (job.state === "running") job.text += delta;
+          if (job.state !== "running") return;
+          job.raw += delta;
+          this.reveal(job, false);
         },
         signal,
       );
       if (job.state !== "running") return;
+      this.reveal(job, true);
       job.finish = finish;
       job.state = "done";
-      job.endedAt = this.now();
+      this.end(job);
       this.deps.onGateway?.("ok");
       // A message removed meanwhile gets no cache row.
       if (this.deps.store.getMessage(messageId) !== null) {
@@ -261,7 +309,7 @@ export class TranslateJobs {
       job.state = kind === "cancelled" ? "cancelled" : "failed";
       job.error = kind;
       if (error instanceof TranslateError && error.gatewayMessage !== null) job.gatewayMessage = error.gatewayMessage;
-      job.endedAt = this.now();
+      this.end(job);
       if (kind === "gateway_missing" || kind === "pool_unavailable") this.deps.onGateway?.(kind);
       this.deps.log?.(`translation ${job.id} failed (${error instanceof TranslateError ? kind : errorName(error)})`);
     }
