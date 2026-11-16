@@ -4,14 +4,22 @@ hand mail to BB projects, threads and Taskboard.
 
 ## What you get
 
-- A **Mail** page: unread badge, folders, conversations, search, sanitized
-  HTML. Every folder syncs on the BB server every 5 minutes, last 30 days;
-  the Inbox also within seconds (IMAP IDLE).
+- A **Mail** page with sanitized HTML. Every folder syncs on the BB server
+  every 5 minutes, last 30 days; the Inbox within seconds (IDLE).
 - **All accounts** merges Inbox, Sent, Drafts, Spam, Archive and Trash.
 - Mark, flag, archive, delete or **Move to…** a selection; **Undo** or `z`;
   filters; hotkeys (`?`).
 - Remote images stay hidden until you allow them.
-- **Hand to agent** and an `@` mention give an agent a message you picked.
+- **Hand to agent** and `@` mentions share a message you pick.
+
+## Search, folders and files
+
+- Operators (`from:`, `has:attachment`, `newer_than:`, `-in:`), saved
+  searches, **Search on the server** and **Load 30 more days**, read-only.
+- Create, rename, delete folders; drag onto them; Gmail labels with Undo.
+- A viewer for images, text and PDF; **Files**; opt-in search inside
+  attachments, yours only.
+- Hidden quotes, plain text, dark mail, sender card, related mail, print.
 
 ## Inbox tools
 
@@ -30,23 +38,21 @@ of the mail involved; never addresses, attachments or HTML.
 
 - **New thread…** from a mail shows the exact prompt and the project's
   permission mode first; **Make a task…** on Taskboard or in Mail.
-- **Save to project…** writes attachments as new files inside the project's
-  tree, never over a file without asking; **Attach from BB** picks project
-  or thread files.
-- **Email the result** turns a thread's answer into a draft, never sent.
+- **Save to project…** writes attachments as new files in the project,
+  never over a file without asking; **Attach from BB** picks files.
+- **Email the result** drafts a thread's answer, unsent.
 - **Dev** groups GitHub, CI and monitoring mail; links, code and diffs show
   with BB's highlighter.
-- Patches go to an agent in a new worktree (Mail never applies them);
-  alerts open one incident thread; conversations bind to projects.
-- **Mail rules** (off by default) prepare threads for your review, or start
-  capped ones in a worktree; rule threads get no mail tools.
+- Patches go to an agent in a new worktree; alerts open one incident
+  thread; conversations bind to projects.
+- **Mail rules** (off) prepare threads for review, or start capped ones in
+  a worktree.
 
 ## Your secrets and agents
 
 Codes, passwords, tokens and card numbers become `[hidden …]` before any
-agent, model or BB thread sees them. It is a heuristic: unusual formats can
-pass. **AI access** limits agents and AI to chosen accounts and folders and
-excludes senders. **Agent activity** logs every agent, AI and BB hand-off
+agent, model or BB thread sees them (a heuristic). **AI access** limits
+agents and AI to chosen accounts and folders and excludes senders. **Agent activity** logs every agent, AI and BB hand-off
 locally, ids and counts only.
 
 ## Writing and sending
@@ -68,7 +74,8 @@ the page's own methods. Sends still show Undo.
 
 Read state, flags and moves on your click or key, and by your snoozes and
 block rules. Delete moves to Trash. Drafts and sent copies are appended.
-Nothing new is written by the BB integration. The only web request is a
+Folders and Gmail labels on your click; nothing is expunged. Server search
+sends your words to your own mail server. The only web request is a
 one-click unsubscribe you confirmed.
 
 ## What it costs
@@ -76,11 +83,11 @@ one-click unsubscribe you confirmed.
 - An app password per account; Gmail needs 2-step verification.
 - Mail and encrypted credentials stay on the BB server.
 - Allowing images or unsubscribing tells senders you read the mail.
-- The page bundle is about 860 KB, mostly the editor.
+- The page bundle is about 2.7 MB, mostly pdf.js and the editor.
 
 ## Not yet
 
-Renaming folders, Gmail API or OAuth.
+Gmail API or OAuth, semantic search.
 
 ## Source
 

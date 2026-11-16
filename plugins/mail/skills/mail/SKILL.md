@@ -46,8 +46,16 @@ written to the owner's local Agent activity log (ids and counts only).
 
 - `mail_search({ query, accountId?, limit? })` — up to 20 hits with message
   id, date, sender, subject, folder and snippet. The query takes free text plus
-  `from:x`, `subject:x` (quote values with spaces: `subject:"weekly report"`),
-  `is:unread`, `after:YYYY-MM-DD` and `before:YYYY-MM-DD`.
+  operators (quote values with spaces: `subject:"weekly report"`): `from:x`,
+  `to:x`, `cc:x`, `subject:x`, `has:attachment`, `filename:x` (`filename:pdf`
+  means `*.pdf`), `in:x` (`inbox`, `sent`, `drafts`, `spam`, `trash`,
+  `archive`, `snoozed` or a folder name), `is:unread`, `is:read`,
+  `is:flagged`, `larger:5M`, `smaller:100K`, `after:YYYY-MM-DD`,
+  `before:YYYY-MM-DD`, `newer_than:7d`, `older_than:1y` (`d`, `w`, `m`, `y`),
+  `list:x` and `label:x`. A leading `-` negates one (`-in:trash`); a value
+  that cannot be read stays free text. It searches only mail already synced
+  or loaded on the owner's machine: there is no server search and no
+  attachment text for agents.
 - `mail_read({ messageId, maxChars? })` — headers (folder included) and the
   plain-text body of one message, truncated to `maxChars` (1000–20000, default 20000).
 
@@ -229,7 +237,7 @@ those that write into BB: `attachment_save`, `bb_thread_start`,
 `task_from_mail`, `patch_save`, `patch_handoff`, `incident_start` or
 `rule_save`; those that change the owner's mail server: `folder_create`,
 `folder_rename`, `folder_delete`, `folder_subscribe` and `labels_change`;
-and those that fetch from it: `server_search_start`, `history_load` and
-`conversation_load`) with `bb plugin rpc call`. Never do that: those methods are the owner's, they
+and those that fetch from it: `server_search_start`, `server_search_more`,
+`history_load` and `conversation_load`) with `bb plugin rpc call`. Never do that: those methods are the owner's, they
 bypass the owner's AI access and the log, and calling them is not something
 the owner asked you to do.

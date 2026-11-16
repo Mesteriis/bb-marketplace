@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-makosh-mail",
   "version": "0.1.0",
-  "description": "Reads, snoozes, sends and translates iCloud, Gmail and IMAP mail; AI on click; mail to BB threads, tasks and projects; agent access logged.",
+  "description": "Reads, searches, files and sends iCloud, Gmail and IMAP mail; attachment viewer; AI on click; mail to BB threads and tasks; agent log.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,7 @@
   },
   "bb": {
     "name": "Makosh Mail [Experimental]",
-    "description": "Reads, snoozes, sends and translates iCloud, Gmail and IMAP mail; AI on click; mail to BB threads, tasks and projects; agent access logged.",
+    "description": "Reads, searches, files and sends iCloud, Gmail and IMAP mail; attachment viewer; AI on click; mail to BB threads and tasks; agent log.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

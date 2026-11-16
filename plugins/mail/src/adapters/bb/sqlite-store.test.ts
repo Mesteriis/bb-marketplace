@@ -760,7 +760,7 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 12).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 14).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
       "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
@@ -780,6 +780,10 @@ describe("slice-2 migrations (SQLite)", () => {
       "7fb5168f63a78ec868ee8302d7f4b24f565b6c22a018ce01e6635857a52ecb2f",
       // Element 11 (slice 3g: dev columns, list_id, BB links, bindings, incidents, mail rules and runs).
       "fc77dbcbd543d0c12209f9e3a00560ed06a257fdc34fd8d8433886d16c8b26dd",
+      // Element 12 (slice 3g review: the rule-thread gate and caps outlive the mail).
+      "e4714d9efb12775f4b66b49f5d831a93df288b19004a05c29ab72cf73cf2d3d8",
+      // Element 13 (slice 3h: kept rows, Gmail labels, attachment kinds and text, saved searches, folder prefs).
+      "9308a59ee243d1fcd946a94f35d8c86665cafd9d5ea6bb822af0f47b936ad4ba",
     ]);
   });
 

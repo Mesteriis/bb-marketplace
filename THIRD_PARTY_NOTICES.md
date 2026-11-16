@@ -254,9 +254,12 @@ SOFTWARE.
 - Paths: bundled into `plugins/mail/dist/app.js` (the PDF viewer and its
   worker, which the page starts from a `blob:` URL), and loaded by
   `plugins/mail/dist/server.js` from `plugins/mail/node_modules/pdfjs-dist`
-  inside a `worker_threads` worker (attachment text). Both uses passed the
-  slice 3h packaging check (Task 0); the code that uses them lands in later
-  3h tasks.
+  inside a `worker_threads` worker (attachment text). The page side is
+  `plugins/mail/src/adapters/bb/pdf-page.ts` with the worker text from
+  `pdf-worker-source.ts`; the server side is
+  `plugins/mail/src/adapters/bb/pdf-text.ts`. `dist/app.js` keeps one inert
+  `@napi-rs/canvas` string from pdf.js's Node-only canvas factory, which
+  never runs in a page.
 - License: Apache-2.0, Copyright Mozilla Foundation. The full license text
   is the Apache License 2.0 reproduced under "Velo" above, and ships as
   `plugins/mail/node_modules/pdfjs-dist/LICENSE`. pdf.js ships no NOTICE

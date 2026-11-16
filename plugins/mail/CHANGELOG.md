@@ -8,6 +8,31 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Search, older mail, folders and attachments (slice 3h). Gmail-style search
+  operators with `-` negation (`to:`, `cc:`, `has:attachment`, `filename:`,
+  `in:`, `account:`, `is:`, `larger:`, `smaller:`, `newer_than:`,
+  `older_than:`, `list:`, `category:`, `label:`), also for `mail_search`.
+  **Search on the server** (read-only, Gmail search on All Mail, IMAP
+  `SEARCH` elsewhere, 50 hits at a time, Cancel); unopened hits expire after
+  `serverSearchKeepDays`. Saved searches with unread counts in the rail.
+- **Load 30 more days** per folder (`historyStepDays`), **Load the whole
+  conversation**, **Forget older mail**; loaded mail is checked daily. Jobs
+  never add mail newer than the last sync round.
+- Folder **New folder…**, **New subfolder…**, **Rename…**, **Subscribed**
+  and **Delete…** (only at 0 messages, after an optional move to Trash;
+  never expunged; a Gmail label folder loses the label only); names read as system folders
+  are refused. Drag conversations onto rail folders. Gmail labels as chips,
+  **Labels…** (`l`) with per-message Undo.
+- Attachment viewer for images, text and PDF (pdf.js 6.5.438 in a `blob:`
+  worker, download-only when the page refuses it); SVG and other types are
+  download-only. **Files** view (`g f`). Opt-in local search inside text and
+  PDF attachments (`indexAttachmentText`, off; PDF text in a resource-limited
+  worker thread), for the owner's own searches only.
+- Hidden quoted text (`hideQuotes`), **Expand all** / **Collapse all** (`;`),
+  **Group by conversation** per folder, plain text (`mailView`), dark mail
+  (`darkMail`) with **Original colors**, a sender card, local **Related**
+  mail, and **Print…** (Shift+P) without remote images or **Save printable
+  page**.
 - BB integration (slice 3g). **New thread…** (Shift+N) starts a BB agent
   thread from a message or conversation after showing the exact prompt and
   the project's permission mode; **Edit in composer** opens BB's composer

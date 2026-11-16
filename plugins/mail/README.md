@@ -9,11 +9,15 @@ from every agent and model, an AI access scope and a local log of what
 agents did. On your click it hands mail to BB: a new agent thread or a task,
 an attachment saved into a project, a patch or an alert handed to an agent,
 and a thread's result back as a draft (see [BB integration](#bb-integration)).
+It searches your mail server on your click, loads older mail, manages folders
+and Gmail labels, and opens attachments in its own viewer (see
+[Search, older mail, folders and attachments](#search-older-mail-folders-and-attachments)).
 
 **Status: experimental.** Plugin id: `makosh-mail`. It reads mail, and
 changes it on the server only when you click or press a key: read and unread,
-flags, moves, and the snoozes and block rules you set up, which move mail
-later on their own. It sends mail you write through your account's SMTP server,
+flags, moves, folders you create, rename, delete or subscribe to, Gmail
+labels, and the snoozes and block rules you set up, which move mail later on
+their own. It sends mail you write through your account's SMTP server,
 after a 10-second Undo window. Agents cannot send on their own: with
 `agentPropose` on (off by default) an agent can propose an email, and it goes
 out only when you press **Send** on its card in that agent's thread.
@@ -71,7 +75,9 @@ out only when you press **Send** on its card in that agent's thread.
   binary files.
 - Hotkeys on the Mail page; `?` shows them all. Slice 3f adds Shift+`s`
   summarize and Shift+`t` find tasks; slice 3g adds Shift+`n` New thread…,
-  Shift+`k` Make a task… and `g` then `n` for Dev. `j` / `k` next and previous
+  Shift+`k` Make a task… and `g` then `n` for Dev; slice 3h adds `g` then `f`
+  for Files, `l` Labels (Gmail), `;` expand or collapse the conversation and
+  Shift+`p` print it. `j` / `k` next and previous
   conversation, `o` or Enter open, `u` back to the list, `/` search, `x`
   select, `e` archive, `#` delete, `!` spam, `s` flag or unflag, Shift+`u`
   mark unread, Shift+`i` mark read, `v` Move to…, `b` snooze, and `g` then `i`, `s`, `d`,
@@ -99,8 +105,11 @@ out only when you press **Send** on its card in that agent's thread.
   else uses COPY. Every other undo is an ordinary move back. Snooze creates
   one folder per account, "Snoozed" (on Gmail "Snoozed (Makosh)"), only when
   you confirm it, and moves snoozed mail there and back; block rules and
-  approved triage items move mail like your own buttons. Instant new mail
-  watches the Inbox read-only (`EXAMINE`) and writes nothing. The one
+  approved triage items move mail like your own buttons. Folders you create,
+  rename, delete or (un)subscribe and Gmail labels you add or remove are the
+  other writes, each on your click (see
+  [Folders](#folders)). Instant new mail, server search and loading older
+  mail read through read-only (`EXAMINE`) sessions and write nothing. The one
   outbound web request is an unsubscribe one-click POST you confirmed (see
   [Inbox tools](#inbox-tools-new-mail-unsubscribe-snooze-block-filters)).
 - Agent tools `mail_search` and `mail_read` and the `mail` skill, off by
@@ -111,7 +120,10 @@ out only when you press **Send** on its card in that agent's thread.
   The one way an agent writes mail is `mail_propose`, behind its own
   `agentPropose` setting (see [Emails an agent proposes](#emails-an-agent-proposes)).
   Drafts synced from the server's Drafts folder, yours included, are
-  ordinary messages to `mail_search` and `mail_read`.
+  ordinary messages to `mail_search` and `mail_read`. `mail_search` takes the
+  same operators as the search box, over synced and already loaded mail
+  only: agents cannot search the mail server, load older mail or search
+  attachment text.
 - `agentTools` controls what agents are offered; it is not a barrier against
   an agent that has shell access to the machine running the BB server. Such
   an agent can also call the plugin's RPC methods, including the ones behind
@@ -139,9 +151,9 @@ Account passwords are sealed with AES-256-GCM under the `vaultKey` secret
 setting, generated on first load. Mail and credentials stay on the machine
 that runs the BB server.
 
-Not yet: creating or renaming folders (beyond the one snooze folder), Gmail
-API or OAuth, scheduled send, system notifications, and writing categories
-or reminders to the mail server.
+Not yet: Gmail API or OAuth, scheduled send, system notifications, semantic
+search, a virtualized list, and writing categories or reminders to the mail
+server.
 
 ## Writing and sending
 
@@ -609,6 +621,157 @@ Settings: `devNotifications`, `mailRules`, `attachmentFolder`,
 Plugins → Makosh Mail); Mail settings shows them under **BB integration**
 and **Rules**, with the binding rules.
 
+## Search, older mail, folders and attachments
+
+Slice 3h. Everything here starts with your click, runs on the BB server's
+machine, sends nothing to an AI provider, and makes no web request. The
+new reads go to your own mail server only; the new writes are listed under
+[Folders](#folders).
+
+### Search
+
+- **Operators** in the search box (the **?** beside it lists them):
+  `from:`, `to:`, `cc:`, `subject:`, `has:attachment`, `filename:` (`pdf`
+  alone means `*.pdf`), `in:` (a role such as `inbox`, `sent`, `trash`,
+  `spam`, `archive`, `snoozed`, or a folder name), `account:`, `is:unread`,
+  `is:read`, `is:flagged`, `larger:` / `smaller:` (`10K`, `2M`), `after:` /
+  `before:` (`YYYY-MM-DD`), `newer_than:` / `older_than:` (`7d`, `2w`, `3m`,
+  `1y`), `list:`, `category:` and `label:`; a leading `-` negates one, values
+  with spaces are quoted. A value Mail cannot read stays text and the box
+  says so.
+- **Search on the server**, below the local hits, sends the query to your
+  own mail server: on Gmail as one Gmail search on All Mail (on Trash or Spam
+  for `in:trash` / `in:spam`), elsewhere an IMAP `SEARCH` in up to 30
+  folders (never Trash, Spam or Drafts unless you name them with `in:`) with
+  a 60-second budget per account and **Cancel**. The newest 50 hits not
+  already in Mail are fetched (`BODY.PEEK`, read-only, nothing is marked
+  read) and shown "from the server"; **More from the server** fetches the
+  next 50. `list:`, `category:` and non-Gmail `label:` are local only. A
+  server that refuses the search says "This server could not search for this
+  text" (non-ASCII text) or "The server refused the search". Unopened server
+  hits are removed from Mail after `serverSearchKeepDays` (default 14);
+  opening, flagging, moving, replying to, snoozing, labelling or binding
+  one keeps it.
+- **Saved searches** (up to 50) sit in the rail's **Saved** section with
+  their unread count; rename, edit, reorder or delete them from their menu.
+- **Search inside attachments** (`indexAttachmentText`, **off by default**):
+  after a sync round Mail fetches attachments of synced and loaded mail
+  (not Spam, Trash or unopened server hits) and keeps their text in a local
+  index: text files (text, CSV, JSON, XML, code, `.ics`, HTML as source) up
+  to 10 MB and PDFs up to 5 MB. PDF text is extracted by pdf.js in a
+  separate worker thread with memory limits and a 20-second timeout, so a
+  bad PDF cannot block or crash the plugin. At most 50 files a round, 200 MB
+  of fetching a day and 200 000 characters a file; the whole index stops at
+  50 million characters ("Attachment text index is full"). Mail settings
+  show the counts, **Retry failed** and **Remove attachment text**. Only your
+  own search on the Mail page reads the index: never `mail_search`, the CLI,
+  mentions, AI features or BB hand-offs.
+- **Related** under a conversation lists up to 10 local conversations that
+  share people, a reference or distinctive words, each with its reason. No
+  model and no network: it is ranked by local SQL.
+
+### Older mail
+
+- At the end of a folder, **Load 30 more days** (`historyStepDays`, default
+  30) fetches up to 500 older messages per step from the server, read-only;
+  **Stop** ends a step. In a conversation, **Load the whole conversation**
+  looks for its other messages (Gmail by the conversation id; elsewhere by
+  Message-ID and References, in the conversation's folders plus Sent and
+  Archive), at most 100.
+- Loaded mail stays until you choose **Forget older mail** in the folder's
+  menu, which removes it from Mail only; nothing changes on the server.
+  Flags of loaded mail are checked once a day, so a message deleted on the
+  server can stay in loaded history for up to a day.
+- A server-search, history or conversation load never adds mail newer than
+  the last sync round, and skips a folder that has not synced yet or whose
+  UIDVALIDITY changed, so new mail still reaches toasts, rules and triage.
+
+### Folders
+
+The folder menu in the rail has **New subfolder…**, **Rename…**,
+**Subscribed** and **Delete…**; the account menu has **New folder…**.
+Unsubscribed folders still sync and sit under **More folders**. Each
+operation runs on a fresh connection with no folder selected, so nothing is
+ever expunged.
+
+- **Create** and **rename** refuse names with control characters or the
+  folder delimiter, INBOX, and names your server could read as a system
+  folder ("That name is used for system folders"). Inbox, system folders,
+  Gmail's `[Gmail]` folders and the snooze folder cannot be renamed or
+  deleted. A rename moves Mail's own records (messages, drafts, snoozes,
+  folder settings, the AI access choice) to the new path.
+- **Delete** of an empty folder is a plain `DELETE` after `STATUS` shows 0
+  messages on the same connection. A folder with messages asks first: "Move
+  them to Trash first?" moves them with `MOVE` (not undoable with Undo; they
+  are in Trash), checks again and deletes only at 0; if mail arrived
+  meanwhile it stops with "New mail arrived in the folder; it was not
+  deleted". A folder with subfolders is refused.
+- **Gmail labels as folders**: deleting one removes the label only. The
+  messages stay in All Mail and keep their other labels, so Mail never moves
+  them.
+- **Residual risk (not Gmail)**: a message delivered to the folder between
+  the `STATUS` check and the `DELETE` (one round trip) would be lost with
+  the folder.
+- **A crash right after a rename**: if the plugin stops between the
+  server's answer and moving its own records, the next listing drops the old
+  path locally and syncs the new one as a new folder. The sync window comes
+  back; mail loaded beyond it, server hits, opened rows and the folder's
+  settings are lost locally only. Nothing is lost on the server.
+- **Drag** conversations (or the selection) onto a folder in the rail to
+  move them; dropping on Trash, Spam or Archive runs Delete, Spam or
+  Archive. Undo works as for **Move to…**, and only Mail's own drag from the
+  same page is accepted.
+- **Gmail labels** show as chips on the message and the list row. **Labels…**
+  (`l`) adds or removes labels (`STORE X-GM-LABELS` on All Mail) or creates a
+  new one; Undo reverts exactly the labels the change added or removed. A
+  refused change makes no Undo.
+
+What the server sees: your search words and the folders and dates you load,
+on your own mail server. Server writes added by this slice are only folder
+`CREATE`, `RENAME`, `DELETE`, `SUBSCRIBE` / `UNSUBSCRIBE`, `STORE
+X-GM-LABELS`, and the `MOVE`s you ask for.
+
+### Attachments and reading
+
+- **The viewer**: clicking an attachment opens it inside Mail. The BB
+  server checks the bytes (a type that does not match the attachment's is
+  refused) and serves images up to 20 MB, PDFs up to 25 MB and text (the
+  first 2 MB). Images show as images, text as text, never as HTML. SVG,
+  HTML and every other type are download-only. The page keeps the bytes in
+  a `blob:` that it never navigates to and drops on close.
+- **PDF** pages are drawn by pdf.js in a `blob:` worker without scripts,
+  forms or network requests; links in the PDF are listed by their real URL
+  and open only on your click. If BB's page refuses the worker, the PDF is
+  download-only with "PDF preview is not available here". Fonts or images
+  that need files from the web may not display.
+- **Files** in the rail (`g` then `f`) lists every attachment of synced and
+  loaded mail with filters for type, sender, account and name, and **View**,
+  **Download** and **Open message**.
+- **Quoted text** of replies is hidden behind "Show quoted text"
+  (`hideQuotes`, on); **Expand all** / **Collapse all** (`;`) opens every
+  message of the conversation with its quotes. **Group by conversation** in
+  a folder's menu can turn grouping off for that folder.
+- **Show plain text** per message, or for all mail with `mailView`. In BB's
+  dark mode HTML mail is shown in adapted colors (`darkMail`, `adapt`) unless
+  it supports dark mode itself; **Original colors** per message.
+- **About** a sender opens a card with counts, recent conversations and
+  files, **Search from this sender**, **Files**, **Always show images** and
+  **Block…**.
+- **Print…** (Shift+`p`) prints a message or the conversation through the
+  system dialog (on macOS also **Save as PDF**) from a frame without
+  scripts. Remote images are never printed ("Remote images are not
+  printed"); where printing is not available, **Save printable page** saves
+  the same HTML.
+
+Settings: `historyStepDays`, `serverSearchKeepDays`, `indexAttachmentText`,
+`mailView`, `darkMail` and `hideQuotes` are BB plugin settings.
+
+**pdf.js** (`pdfjs-dist` 6.5.438, exact) is the one new dependency. npm may
+also install its optional `@napi-rs/canvas` package into `node_modules`;
+Mail never loads it (the server worker blocks it) and it is not in the
+build. `dist/app.js` contains one inert mention of it in pdf.js's Node-only
+code path, which never runs in BB's page.
+
 ## Agents, AI and your secrets
 
 ### Redaction
@@ -748,8 +911,12 @@ Mail page's own methods (`ai_start`, `message_body`, `thread_get`, `search`
 among them) through `bb plugin rpc call`, as described above. Slice 3g adds
 methods that write into BB on the owner's behalf: `attachment_save`,
 `bb_thread_start`, `task_from_mail`, `patch_save`, `patch_handoff`,
-`incident_start` and `rule_save`. This is the accepted limit of slices 3c to
-3g, and the skill tells agents not to.
+`incident_start` and `rule_save`. Slice 3h adds methods that change your mail
+server: `folder_create`, `folder_rename`, `folder_delete`, `folder_subscribe`
+and `labels_change`; methods that fetch from it: `server_search_start`,
+`server_search_more`, `history_load` and `conversation_load`; and the owner's
+search with `attachments: true`, which reads attachment text. This is the
+accepted limit of slices 3c to 3h, and the skill tells agents not to.
 
 ## Mail in the sidebar
 
