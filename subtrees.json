@@ -681,7 +681,7 @@
       "upstreamRevision": "8c694a3a66b20191f13683c30bed69043057d8cb",
       "fork": "https://github.com/Mesteriis/brsbl-bb-plugins.git",
       "branch": "marketplace/prompt-shaper",
-      "commit": "7243514b3ef84cbb751ee4c9be9a1f7b25f3cf22",
+      "commit": "7d82bad251537cffed1adc131ec7d38d0fb9fa85",
       "remote": "plugin-prompt-shaper",
       "upstreamRemote": "upstream-prompt-shaper"
     },
