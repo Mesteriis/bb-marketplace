@@ -67,6 +67,7 @@ export interface JiraTransitionView {
   id: string;
   name: string;
   toName: string;
+  toId?: string;
 }
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -76,7 +77,7 @@ function apiPath(auth: JiraAuth, suffix: string): string {
   return auth.baseUrl + "/rest/api/" + version + suffix;
 }
 
-async function requestJson(auth: JiraAuth, suffix: string, init: RequestInit, fetchFn: FetchLike): Promise<unknown> {
+export async function requestJson(auth: JiraAuth, suffix: string, init: RequestInit, fetchFn: FetchLike, api: "platform" | "agile" = "platform"): Promise<unknown> {
   const headers: Record<string, string> = {
     Accept: "application/json",
     Authorization: auth.authHeader,
@@ -84,7 +85,7 @@ async function requestJson(auth: JiraAuth, suffix: string, init: RequestInit, fe
   };
   let response: Response;
   try {
-    response = await fetchFn(apiPath(auth, suffix), {
+    response = await fetchFn(api === "agile" ? auth.baseUrl + "/rest/agile/1.0" + suffix : apiPath(auth, suffix), {
       method: init.method ?? "GET",
       headers,
       body: init.body,
@@ -194,7 +195,7 @@ function boundedUrl(value: string): string | null {
   return value.length > URL_MAX ? null : value;
 }
 
-function toSummary(raw: unknown, baseUrl: string): JiraIssueSummary | null {
+export function toSummary(raw: unknown, baseUrl: string): JiraIssueSummary | null {
   const issue = (raw ?? {}) as Record<string, unknown>;
   const fields = (issue.fields ?? {}) as Record<string, unknown>;
   const status = (fields.status ?? {}) as Record<string, unknown>;
@@ -341,7 +342,7 @@ export function createJiraClient(auth: JiraAuth, fetchFn: FetchLike = fetch): Ji
         if (id === "") continue;
         const toName = bounded(to.name, NAME_MAX, "").trim();
         const name = bounded(t.name, NAME_MAX, toName === "" ? "Transition" : toName).trim();
-        out.push({ id, name, toName: toName === "" ? name : toName });
+        out.push({ id, name, toName: toName === "" ? name : toName, ...(bounded(to.id, ID_MAX, "") !== "" ? { toId: bounded(to.id, ID_MAX, "") } : {}) });
       }
       return out;
     },

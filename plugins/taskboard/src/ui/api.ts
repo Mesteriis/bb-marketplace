@@ -1,3 +1,4 @@
+import type { JiraBoard, JiraProject, JiraKanbanColumn } from "../core/jira-kanban.ts";
 // The host-free API surface the taskboard page consumes. app.tsx builds an
 // implementation from BB RPC; a test builds one from fakes.
 import type { BoardView, Column, Connection, ConnectionCreateInput, ConnectionUpdateInput, JiraTransition, Task, TaskRun, TimeEntry, WorklogRecord } from "../core/index.ts";
@@ -5,6 +6,9 @@ import type { BoardView, Column, Connection, ConnectionCreateInput, ConnectionUp
 export interface TaskboardApi {
   prepareWorklog?(input: { taskId: string; durationSeconds: number; comment: string }): Promise<TimeEntry>;
   listWorklogs?(taskId: string): Promise<WorklogRecord[]>;
+  jiraProjects?(connectionId: string): Promise<JiraProject[]>;
+  jiraBoards?(connectionId: string, projectKey: string): Promise<JiraBoard[]>;
+  jiraKanban?(connectionId: string, projectKey: string, jiraBoardId: number): Promise<{ columns: JiraKanbanColumn[]; items: { task: Task; statusId: string }[] }>;
   listBoards(): Promise<BoardView[]>;
   listConnections(): Promise<Connection[]>;
   listTasks(boardId: string): Promise<{ columns: Column[]; tasks: Task[] }>;

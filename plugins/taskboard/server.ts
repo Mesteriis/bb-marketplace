@@ -20,6 +20,9 @@ import {
 } from "./src/adapters/bb/credential-store.ts";
 import { createSqliteStore, MIGRATIONS } from "./src/adapters/bb/sqlite-store.ts";
 import {
+  listAssignedJiraProjects,
+  fetchJiraKanban,
+  jiraKanbanClientFor,
   prepareWorklog,
   DomainError,
   applyTransition,
@@ -125,6 +128,9 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   bb.rpc.register(rpcContract, {
+    jira_projects: ({ connectionId }) => run(async () => ({ projects: await listAssignedJiraProjects(connectionId, syncDeps) })),
+    jira_boards: ({ connectionId, projectKey }) => run(async () => ({ boards: await jiraKanbanClientFor(connectionId, syncDeps).boards(projectKey) })),
+    jira_kanban: ({ connectionId, projectKey, jiraBoardId }) => run(() => fetchJiraKanban(connectionId, projectKey, jiraBoardId, syncDeps)),
     boards_list: () => run(() => ({ boards: listBoards(boardDeps) })),
     tasks_list: ({ boardId }) => run(() => listTasks(boardId, boardDeps)),
     connections_list: () => run(() => ({ connections: listConnections(connectionDeps) })),

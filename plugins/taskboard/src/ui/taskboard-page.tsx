@@ -1,3 +1,4 @@
+import { JiraProjectKanban } from "./jira-project-kanban.tsx";
 import { groupTasksByProject, projectKeyForTask } from "../core/projects.ts";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -30,7 +31,7 @@ export function TaskboardPage({ api, notify = noNotify, openThread }: TaskboardP
   const [tasksLoading, setTasksLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tasksVersion, setTasksVersion] = useState(0);
-  const [view, setView] = useState<ViewMode>("kanban");
+  const [view, setView] = useState<ViewMode>("list");
   const [detailsTaskId, setDetailsTaskId] = useState<string | null>(null);
   const [taskForm, setTaskForm] = useState<{ task: Task | null } | null>(null);
   const [connectionForm, setConnectionForm] = useState<{ connection: Connection | null } | null>(null);
@@ -465,7 +466,7 @@ export function TaskboardPage({ api, notify = noNotify, openThread }: TaskboardP
           ))}
         </select>
         <Button variant="ghost" size="sm" onClick={() => setBoardFormOpen(true)}>New board</Button>
-        <Button variant="ghost" size="sm" onClick={() => setSettingsOpen(true)}>Board settings</Button>
+        {!isRemoteBoard && <Button variant="ghost" size="sm" onClick={() => setSettingsOpen(true)}>Board settings</Button>}
         <Button variant="ghost" size="sm" className={cn(confirmDeleteBoard && "text-destructive")} onClick={() => void deleteActiveBoard()}>
           {confirmDeleteBoard ? "Really delete?" : "Delete board"}
         </Button>
@@ -481,8 +482,8 @@ export function TaskboardPage({ api, notify = noNotify, openThread }: TaskboardP
             <button type="button" aria-pressed={view === "list"} className={cn("rounded px-2.5 py-1 text-xs font-medium", view === "list" ? "bg-secondary" : "text-muted-foreground")} onClick={() => setView("list")}>List</button>
             <button type="button" aria-pressed={view === "kanban"} className={cn("rounded px-2.5 py-1 text-xs font-medium", view === "kanban" ? "bg-secondary" : "text-muted-foreground")} onClick={() => setView("kanban")}>Board</button>
           </div>
-          <Button size="sm" onClick={() => setTaskForm({ task: null })}>New task</Button>
-          {activeBoard?.connectionId != null && activeConnection != null && (
+          {(view === "list" || !isRemoteBoard) && <Button size="sm" onClick={() => setTaskForm({ task: null })}>New task</Button>}
+          {view === "list" && activeBoard?.connectionId != null && activeConnection != null && (
             <Button size="sm" variant="outline" disabled={busyConnectionId === activeBoard.connectionId} onClick={() => void fetchIssuesFor(activeBoard.connectionId!)}>
               {busyConnectionId === activeBoard.connectionId ? "Fetching…" : "Fetch issues"}
             </Button>
@@ -491,7 +492,7 @@ export function TaskboardPage({ api, notify = noNotify, openThread }: TaskboardP
         </div>
       </header>
 
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2">
+      {(view === "list" || !isRemoteBoard) && <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2">
         <Input placeholder="Search tasks" aria-label="Search tasks" value={search} onChange={(event) => setSearch(event.target.value)} className="h-8 w-40 max-w-full" />
         <select aria-label="Project filter" className="h-8 max-w-full rounded-md border border-input bg-transparent px-2 text-xs" value={projectFilter} onChange={(e) => setProjectFilter(e.target.value)}>
           <option value="all">All projects</option>
@@ -515,11 +516,13 @@ export function TaskboardPage({ api, notify = noNotify, openThread }: TaskboardP
           ))}
         </select>
         {filtersActive && <Button variant="ghost" size="sm" onClick={clearFilters}>Clear</Button>}
-      </div>
+      </div>}
 
       <div className="flex min-h-0 flex-1">
         <main className="min-w-0 flex-1 overflow-auto">
-          {tasksLoading ? (
+          {view === "kanban" && isRemoteBoard ? (
+            activeBoard?.connectionId && connectionPresent ? <JiraProjectKanban key={activeBoard.connectionId} connectionId={activeBoard.connectionId} api={api} refreshKey={tasksVersion} notify={notify} onOpen={(task) => { setTasks(previous => [...previous.filter(t => t.id !== task.id), task]); setDetailsTaskId(task.id); if (activeBoardId) void api.listTasks(activeBoardId).then(result => { setTasks(result.tasks); setColumns(result.columns); }).catch(error => notify("error", messageOf(error))); }} /> : <p className="p-8 text-sm text-muted-foreground">Connect Jira to view the project Kanban.</p>
+          ) : tasksLoading ? (
             <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">Loading tasks…</div>
           ) : filteredTasks.length === 0 ? (
             <p className="p-8 text-center text-sm text-muted-foreground">{filtersActive ? "No tasks match these filters." : "No tasks yet."}</p>

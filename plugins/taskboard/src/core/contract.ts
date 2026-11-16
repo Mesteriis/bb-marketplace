@@ -1,3 +1,4 @@
+import { jiraBoardSchema, jiraColumnSchema, jiraProjectSchema } from "./jira-kanban.ts";
 // The RPC wire contract: plain zod schemas. server.ts wraps them for BB RPC;
 // another host wraps the same schemas for its own transport.
 import { prepareWorklogSchema } from "./manual-worklogs.ts";
@@ -21,6 +22,9 @@ import {
 } from "./model.ts";
 
 export const rpcSchemas = {
+  jira_projects: { input: z.object({ connectionId: idSchema }).strict(), output: z.object({ projects: z.array(jiraProjectSchema) }).strict() },
+  jira_boards: { input: z.object({ connectionId: idSchema, projectKey: z.string().min(1).max(200) }).strict(), output: z.object({ boards: z.array(jiraBoardSchema) }).strict() },
+  jira_kanban: { input: z.object({ connectionId: idSchema, projectKey: z.string().min(1).max(200), jiraBoardId: z.number().int().positive() }).strict(), output: z.object({ columns: z.array(jiraColumnSchema), items: z.array(z.object({ task: taskSchema, statusId: z.string() })) }).strict() },
   boards_list: {
     input: z.object({}).strict(),
     output: z.object({ boards: z.array(boardViewSchema) }).strict(),

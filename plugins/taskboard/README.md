@@ -19,8 +19,8 @@ Kanban view.
   panels.
 - **Fetch issues** — fetches all issues assigned to the authenticated user
   across Jira projects, without selecting a project or entering JQL. All pages
-  are loaded, including results beyond 200 issues. List and Kanban group tasks
-  by project key and offer a project filter. Previous connection scopes are
+  are loaded, including results beyond 200 issues. List groups tasks
+  by project key and offers a project filter. Previous connection scopes are
   ignored. Reassigned issues are hidden on refresh while their cached records,
   development runs and time history remain intact. Local tasks stay separate.
 - **Transitions** — move a Jira task through its real workflow. A transition
@@ -116,3 +116,16 @@ another entry. Submit only time the owner authorized. Preparing writes a draft;
 submitting records the time. No development thread is required.
 
 The read-only `jira_worklogs_list` RPC verifies worklogs on the connected Jira issue directly (including records created outside Taskboard).
+
+## Jira Kanban
+
+List is the default and the only cross-project view of assigned tasks. Jira
+Kanban requires selecting a project with assigned tasks (from the last Fetch) and a real Kanban board. It
+loads the board's configured columns in their Jira order, maps issues by status
+ID (several statuses may share a column), and shows WIP limits. Board tasks use
+the board filter plus the selected project, including teammates' tasks.
+Unmapped/backlog statuses are reported without inventing extra columns.
+Moving a card offers valid Jira transitions to the destination column's statuses.
+Local boards retain their own editable Kanban columns.
+
+Kanban project choices exclude projects represented only by cached teammates’ tasks. Host RPC wrapper changes and opening task details do not trigger a remote board reload.

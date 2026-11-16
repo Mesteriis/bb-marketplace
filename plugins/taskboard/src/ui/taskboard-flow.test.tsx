@@ -287,7 +287,7 @@ describe("taskboard defensive UI", () => {
 });
 
 
-it("groups assigned issues by project and filters both List and Kanban", async () => {
+it("groups assigned issues in List and requires project selection for Kanban", async () => {
   const { api, connectionDeps } = buildApi(async () => json({ issues: [
     { key: "WEB-1", fields: { summary: "Website task", status: { name: "To do" } } },
     { key: "API-2", fields: { summary: "Backend task", status: { name: "To do" } } },
@@ -301,8 +301,9 @@ it("groups assigned issues by project and filters both List and Kanban", async (
   fireEvent.change(screen.getByLabelText("Project filter"), { target: { value: "API" } });
   expect(screen.queryByText("Website task")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Board" }));
-  expect(screen.getByText("Backend task")).toBeTruthy();
+  expect(screen.getByText("Select a Jira project to view Kanban. All assigned tasks are available in List.")).toBeTruthy();
   expect(screen.queryByRole("region", { name: "Project WEB" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "List" }));
   fireEvent.click(screen.getByRole("button", { name: "Clear" }));
   expect(screen.getByText("Website task")).toBeTruthy();
   fireEvent.change(screen.getByLabelText("Search tasks"), { target: { value: "not present" } });
