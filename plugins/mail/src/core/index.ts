@@ -54,3 +54,6 @@ export * from "./dev-notify.ts";
 export * from "./dev-links.ts";
 export * from "./code-blocks.ts";
 export * from "./markdown-doc.ts";
+export * from "./patch.ts";
+export * from "./alerts.ts";
+export * from "./mail-rules.ts";
