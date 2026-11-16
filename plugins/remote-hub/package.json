@@ -44,7 +44,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm run test",
-    "test:integration": "python3 tests/integration/ssh-docker.py"
+    "test:integration": "python3 tests/integration/ssh-docker.py && REMOTE_HUB_INTEGRATION=1 vitest run tests/integration/ssh-service.test.ts"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.10.0",
