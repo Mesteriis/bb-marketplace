@@ -181,6 +181,9 @@ export const messageHeaderSchema = messageSummarySchema.extend({
 });
 export type MessageHeader = z.infer<typeof messageHeaderSchema>;
 
+/** The four local categories (slice 3f). */
+export const categorySchema = z.enum(["bills", "notifications", "personal", "newsletters"]);
+
 export const threadSummarySchema = z.object({
   id: z.string(),
   accountId: z.string(),
