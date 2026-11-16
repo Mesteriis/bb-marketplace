@@ -1,0 +1,240 @@
+// The RPC contract between server.ts and app.tsx.
+import { defineRpcContract } from "@get-bb/plugin-sdk";
+import { z } from "zod";
+
+export { CONTEXT_CHANNEL, LIMITS_CHANNEL, TURNS_CHANNEL, USAGE_CHANNEL } from "./channels.js";
+
+/** The page's longest range is a week; allow a little over for clock skew. */
+export const MAX_WINDOW_MS = 9 * 24 * 3_600_000;
+
+const tokens = {
+  input: z.number(),
+  cacheRead: z.number(),
+  output: z.number(),
+};
+
+export const hourUsageSchema = z.object({ hour: z.number(), ...tokens });
+
+export const threadUsageSchema = z.object({
+  threadId: z.string(),
+  title: z.string().nullable(),
+  projectId: z.string(),
+  projectName: z.string().nullable(),
+  providerId: z.string(),
+  /** When it was archived or deleted; null while it is active. */
+  archivedAt: z.number().nullable(),
+  turns: z.number(),
+  /** Its latest recorded context size, or null before any. */
+  context: z.number().nullable(),
+  /** Each of its finished turns that started in the window: when, and how long it took in milliseconds; oldest first. */
+  turnTimes: z.array(z.object({ at: z.number(), ms: z.number() })).optional(),
+  /** Its tokens per hour in the window, for its sparkline. */
+  hours: z.array(z.object({ hour: z.number(), total: z.number() })),
+  /** Its tokens over its whole life, as its header counts them; more than the window's when it ran before it. */
+  lifetime: z.number().optional(),
+  ...tokens,
+});
+
+/** How many of a thread's latest usage rows the header and its summary read. */
+export const MAX_ROWS = 1_000;
+
+export const usageAtSchema = z.object({ at: z.number(), ...tokens });
+
+export const turnDetailSchema = z.object({
+  turnId: z.string().nullable(),
+  startedAt: z.number(),
+  endedAt: z.number().nullable(),
+  usageAt: z.number(),
+  prompt: z.string().nullable(),
+  /** Where the turn's time went, in milliseconds; null before timings were recorded or while it runs. */
+  time: z.object({ model: z.number(), tools: z.number(), waiting: z.number() }).nullable().optional(),
+  ...tokens,
+});
+
+/** One turn's length, tokens, and commands. See turnSummaries. */
+export const turnSummarySchema = z.object({
+  turnId: z.string(),
+  startedAt: z.number(),
+  endedAt: z.number().nullable(),
+  commands: z.number(),
+  tools: z.number(),
+  time: z.object({ model: z.number(), tools: z.number(), waiting: z.number() }).nullable(),
+  /** Model calls so far. */
+  calls: z.number(),
+  /** Claude's 80% ranges for the turn. See usage/forecast.ts. */
+  forecast: z
+    .object({
+      calls: z.tuple([z.number(), z.number()]),
+      timeMs: z.tuple([z.number(), z.number()]),
+      tokens: z.tuple([z.number(), z.number()]).nullable(),
+      context: z.number().nullable(),
+      note: z.string().nullable(),
+      /** Time per call the time range assumed. */
+      paceMs: z.number().nullable().optional(),
+      /** Waits Claude named, included in the time range. */
+      waitMs: z.tuple([z.number(), z.number()]).nullable().optional(),
+    })
+    .nullable(),
+  /** The model, speed, and reasoning level it ran with. */
+  settings: z
+    .object({ model: z.string().nullable(), serviceTier: z.string().nullable(), reasoningLevel: z.string().nullable() })
+    .nullable(),
+  ...tokens,
+});
+
+/** What one turn ran. See turnWork. */
+export const turnWorkSchema = z.object({
+  commands: z.array(z.object({ command: z.string(), ms: z.number().nullable() })),
+  moreCommands: z.number(),
+  kinds: z.array(z.object({ kind: z.string(), count: z.number(), ms: z.number() })),
+});
+
+const thresholdsSchema = z.object({ warning: z.number().nullable(), error: z.number().nullable() });
+
+const splitSchema = z.object({ model: z.number(), tools: z.number(), waiting: z.number() });
+
+/** Where the period's finished turns spent their time. See timeBreakdown. */
+export const turnTimeSchema = z.object({
+  turns: z.number(),
+  split: splitSchema,
+  kinds: z.array(z.object({ kind: z.string(), ms: z.number(), count: z.number() })),
+  questions: z.number(),
+  lengths: z.array(z.object({ turns: z.number(), split: splitSchema })),
+  /** The shell commands that took the most time, grouped by commandKey. */
+  commands: z.array(
+    z.object({ command: z.string(), runs: z.number(), totalMs: z.number(), medianMs: z.number(), longestMs: z.number() }),
+  ),
+});
+
+export type TurnTimeBreakdown = z.infer<typeof turnTimeSchema>;
+
+/** A subscription's usage limit window and where it's headed. See limits.ts. */
+export const limitSchema = z.object({
+  providerId: z.string(),
+  accountKey: z.string().nullable(),
+  label: z.string(),
+  kind: z.string(),
+  usedPercent: z.number(),
+  resetsAt: z.number(),
+  sampledAt: z.number(),
+  pacePerHour: z.number().nullable(),
+  projectedPercent: z.number().nullable(),
+  runsOutAt: z.number().nullable(),
+  tone: z.enum(["ok", "warning", "error"]),
+  /** The provider's tokens in the past hour, for the chart's bars at this pace. */
+  lastHourTokens: z.number(),
+  /**
+   * A session's tokens in each 15 minutes since it began, oldest first, for the
+   * title bar's spark chart. Between sessions, the weekly limit's past five hours.
+   */
+  slots: z.array(z.number()).optional(),
+  /** About how many tokens the whole window holds; null while there's too little to tell; absent when it can't be told. See sizeOf. */
+  sizeTokens: z.number().nullable().optional(),
+});
+
+export type Limit = z.infer<typeof limitSchema>;
+
+export const rpcContract = defineRpcContract({
+  /** Each subscription's limits from the latest reading, for the meters above the chart. */
+  usage_limits: {
+    input: z.null(),
+    output: z.object({
+      limits: z.array(limitSchema),
+      /** When the providers were last read; null before the first reading. */
+      polledAt: z.number().nullable(),
+      /** Why the last reading failed, if it did. */
+      error: z.string().nullable(),
+    }),
+  },
+  /** Tokens per hour since `since`, without the page's thread list, for the title bar's chart. */
+  usage_hours: {
+    input: z.object({ since: z.number().int().nonnegative() }),
+    output: z.object({ hours: z.array(hourUsageSchema) }),
+  },
+  usage_window: {
+    input: z.object({ since: z.number().int().nonnegative() }),
+    output: z.object({
+      hours: z.array(hourUsageSchema),
+      threads: z.array(threadUsageSchema),
+      /** When this plugin started recording; earlier hours may be missing turns. */
+      recordingSince: z.number(),
+      /** The context warning and error settings in tokens; null when one is off. */
+      contextThresholds: thresholdsSchema,
+      turnTime: turnTimeSchema,
+    }),
+  },
+  thread_usage: {
+    input: z.object({ threadId: z.string().min(1).max(200) }),
+    output: z.object({
+      input: z.number(),
+      cacheRead: z.number(),
+      output: z.number(),
+      total: z.number(),
+      turns: z.number(),
+      /** The latest usage rows, up to MAX_ROWS, oldest first, subagents' calls included. */
+      recent: z.array(usageAtSchema),
+      /** Claude Code subagents the thread ran and the tokens they used, which bb does not report. */
+      subagents: z.object({ count: z.number(), tokens: z.number() }),
+    }),
+  },
+  /** The thread's usage by turn, with the message that began each. Reads bb, so it runs when the summary opens. */
+  thread_turns: {
+    input: z.object({ threadId: z.string().min(1).max(200) }),
+    output: z.object({ turns: z.array(turnDetailSchema) }),
+  },
+  /**
+   * Each turn's length, tokens, and commands, from the ledger alone, for the
+   * line under each turn and the strip above the composer. Oldest first.
+   */
+  thread_turn_summaries: {
+    input: z.object({ threadId: z.string().min(1).max(200) }),
+    output: z.object({ turns: z.array(turnSummarySchema) }),
+  },
+  /** What one turn ran, read when its summary's card opens. */
+  thread_turn_work: {
+    input: z.object({ threadId: z.string().min(1).max(200), turnId: z.string().min(1).max(200) }),
+    output: turnWorkSchema,
+  },
+  /**
+   * The thread's latest context size and the warning setting, for the meter
+   * above the composer. Null `context` means none recorded yet.
+   */
+  thread_context: {
+    input: z.object({ threadId: z.string().min(1).max(200) }),
+    output: z.object({
+      context: z
+        .object({
+          usedTokens: z.number(),
+          contextWindow: z.number().nullable(),
+          autoCompactAt: z.number().nullable(),
+          at: z.number(),
+        })
+        .nullable(),
+      /** Tokens the thread's latest recorded turn used. */
+      lastTurn: z.number().nullable(),
+      /** The context warning and error settings in tokens; null when one is off. */
+      thresholds: thresholdsSchema,
+      /** Archived or deleted threads get no meter. */
+      archived: z.boolean(),
+      /** When the prompt cache from the latest call expires; null when the provider reports no lifetime. */
+      cacheExpiresAt: z.number().nullable(),
+    }),
+  },
+  /** How many active threads have their latest context past the warning setting, and past the error one, for the sidebar. */
+  context_levels: {
+    input: z.null(),
+    output: z.object({ warning: z.number(), error: z.number() }),
+  },
+  /** Asks bb to compact the thread, which runs /compact as a turn. Only an idle or errored thread can. */
+  compact_thread: {
+    input: z.object({ threadId: z.string().min(1).max(200) }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+});
+
+export type HourUsage = z.infer<typeof hourUsageSchema>;
+export type ThreadUsage = z.infer<typeof threadUsageSchema>;
+export type UsageAt = z.infer<typeof usageAtSchema>;
+export type TurnDetail = z.infer<typeof turnDetailSchema>;
+export type TurnSummary = z.infer<typeof turnSummarySchema>;
+export type TurnWork = z.infer<typeof turnWorkSchema>;
