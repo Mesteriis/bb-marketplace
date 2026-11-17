@@ -72,7 +72,7 @@ import { createHash } from "node:crypto";
 import { createPgpEngine } from "./src/adapters/bb/pgp-openpgp.ts";
 import { extractEncrypted, extractSigned, wrapEncrypted, wrapSigned } from "./src/core/pgp-mime.ts";
 import { PGP_SEND_TEXT } from "./src/core/compose-outbox.ts";
-import { SLICE_3K_METHODS, SLICE_3L_METHODS, SLICE_3M_METHODS, SLICE_3N_METHODS } from "./src/core/contract.ts";
+import { SLICE_3K_METHODS, SLICE_3L_METHODS, SLICE_3M_METHODS, SLICE_3N_METHODS, SLICE_3P_METHODS } from "./src/core/contract.ts";
 import { readFileSync } from "node:fs";
 import type {
   AccountPreset,
@@ -1262,6 +1262,7 @@ describe("makosh-mail server", () => {
     expect(resolved.tools.map((t) => t.name).sort()).toEqual(["mail_contacts", "mail_read", "mail_search"]);
     expect(registrations.cli!.commands.map((c) => c.name).sort()).toEqual([
       "accounts",
+      "archive",
       "backup",
       "doctor",
       "export",
@@ -2976,7 +2977,7 @@ describe("agent proposals", () => {
     await expect(call(host, "proposal_view", { proposalId: "p_1", contentHash: "a".repeat(64) })).resolves.toEqual({ state: "gone" });
     const { registrations } = host.harness.inspection;
     expect(registrations.experimental_publishedRpcMethods).toEqual([]);
-    expect(registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "backup", "doctor", "export", "read", "remove", "search", "sync"]);
+    expect(registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "archive", "backup", "doctor", "export", "read", "remove", "search", "sync"]);
     expect(registrations.mentionProviders.map((m) => m.id)).toEqual(["mail"]);
   });
 
@@ -3546,7 +3547,7 @@ describe("sending polish: agent tools", () => {
       "mail_templates",
       "mail_triage",
     ]);
-    expect(on.harness.inspection.registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "backup", "doctor", "export", "read", "remove", "search", "sync"]);
+    expect(on.harness.inspection.registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "archive", "backup", "doctor", "export", "read", "remove", "search", "sync"]);
   });
 
   it("mail_propose with a template and an alias: the card shows them, and nothing leaks to logs or realtime", async () => {
@@ -5594,6 +5595,8 @@ const CLI_FIXTURES = (ids: ReturnType<typeof canaryIds>): Record<string, string[
   // Slice 3j: both refuse inside a thread; the fixture proves the refusal says nothing.
   doctor: [[]],
   backup: [["/tmp/makosh-mail-canary-never-written.db"]],
+  // Slice 3p: every action refuses inside a thread.
+  archive: [["list"], ["add", "/tmp/makosh-mail-canary-never-read.mbox"], ["remove", "arc_1"]],
   // Slice 3o: refuses inside a thread as well.
   export: [["acc_1", "INBOX", "/tmp/makosh-mail-canary-never-written.mbox"]],
 });
@@ -8701,7 +8704,7 @@ describe("slice 3j: doctor and backup", () => {
   it("doctor and backup refuse inside an agent thread", async () => {
     const host = await load({ settings: { vaultKey: generateVaultKey(), agentTools: true } });
     await addAndSync(host);
-    for (const args of [["doctor"], ["backup", "/tmp/never-written.db"], ["export", "acc_1", "INBOX", "/tmp/never-written.mbox"]]) {
+    for (const args of [["doctor"], ["backup", "/tmp/never-written.db"], ["export", "acc_1", "INBOX", "/tmp/never-written.mbox"], ["archive", "list"], ["archive", "add", "/tmp/never-read.mbox"]]) {
       const refused = await host.harness.behavior.runCli(args, { threadId: "thread-1" });
       expect(refused.exitCode).toBe(1);
       expect(refused.stderr).toContain(OWNER_TERMINAL_MESSAGE);
@@ -8740,6 +8743,183 @@ describe("slice 3j: doctor and backup", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("slice 3p: local archive", () => {
+  const eml = (n: number, extra: string[] = []) =>
+    [
+      `From: Old Sender ${n} <old${n}@example.com>`,
+      "To: owner@example.org",
+      `Subject: Invented archive note ${n}`,
+      `Date: Mon, 0${n} Mar 2010 08:00:00 +0000`,
+      ...extra,
+    ].join("\r\n");
+  const MBOX = [
+    "From old1@example.com Mon Mar  1 08:00:00 2010",
+    eml(1).replace(/\r\n/g, "\n"),
+    "",
+    "Wombat words in an old letter.",
+    ">From a quoted line",
+    "",
+    "From old2@example.com Tue Mar  2 08:00:00 2010",
+    eml(2, ["MIME-Version: 1.0", 'Content-Type: multipart/mixed; boundary="b"']).replace(/\r\n/g, "\n"),
+    "",
+    "--b",
+    "Content-Type: text/html; charset=utf-8",
+    "",
+    '<p>Old <b>html</b> <img src="https://tracker.example.net/p.gif"><script>alert(1)</script></p>',
+    "--b",
+    'Content-Type: text/plain; name="notes.txt"',
+    'Content-Disposition: attachment; filename="notes.txt"',
+    "",
+    "Invented attachment text",
+    "--b--",
+    "",
+    "",
+  ].join("\n");
+
+  async function withArchive<T>(work: (host: Host, file: string, dir: string) => Promise<T>): Promise<T> {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const host = await load({ settings: { vaultKey: generateVaultKey(), agentTools: true } });
+    await addAndSync(host);
+    const dir = await mkdtemp(join(tmpdir(), "makosh-mail-archive-"));
+    try {
+      const file = join(dir, "Old letters.mbox");
+      await writeFile(file, MBOX);
+      return await work(host, file, dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  type Page = { rows: { id: string; subject: string; archiveId: string; hasAttachments: boolean }[]; nextCursor: unknown };
+
+  it("archive add reads a file into an archive of its own; the page lists, searches and opens it; live mail is untouched", async () => {
+    await withArchive(async (host, file, dir) => {
+      const liveBefore = host.bb.storage.database().prepare("SELECT count(*) AS n FROM messages").get();
+      const added = await host.harness.behavior.runCli(["archive", "add", file]);
+      expect(added.stderr).toBe("");
+      expect(added.stdout).toContain('"Old letters": 2 messages added, 2 in all.');
+      const again = await host.harness.behavior.runCli(["archive", "add", file]);
+      expect(again.stdout).toContain("is already in Mail: 2 messages");
+
+      const { archives } = (await call(host, "archives_list", {})) as { archives: { id: string; name: string; messages: number; complete: boolean; sourcePath: string }[] };
+      expect(archives).toMatchObject([{ name: "Old letters", messages: 2, complete: true, sourcePath: file, kind: "mbox", skipped: 0 }]);
+      const id = archives[0]!.id;
+      const page = (await call(host, "archive_messages", { archiveId: id, query: "", cursor: null })) as Page;
+      expect(page.rows.map((row) => [row.subject, row.hasAttachments])).toEqual([
+        ["Invented archive note 2", true],
+        ["Invented archive note 1", false],
+      ]);
+      expect(page.nextCursor).toBeNull();
+      const found = (await call(host, "archive_messages", { archiveId: null, query: "wombat", cursor: null })) as Page;
+      expect(found.rows.map((row) => row.subject)).toEqual(["Invented archive note 1"]);
+      const first = (await call(host, "archive_message", { id: found.rows[0]!.id })) as { text: string; html: string | null };
+      expect(first.text).toContain("From a quoted line");
+      const second = (await call(host, "archive_message", { id: page.rows[0]!.id })) as { html: string; attachments: { partId: string; filename: string }[] };
+      // Stored as it came; the page's sanitizer is what removes the script and holds the image.
+      expect(second.html).toContain("<b>html</b>");
+      expect(second.attachments).toMatchObject([{ partId: "1", filename: "notes.txt" }]);
+
+      // Live mail: the same rows, no hit for archive text, nothing unread added.
+      expect(host.bb.storage.database().prepare("SELECT count(*) AS n FROM messages").get()).toEqual(liveBefore);
+      const live = (await call(host, "search", { query: "wombat", accountId: null, limit: 10 })) as { hits: unknown[] };
+      expect(live.hits).toEqual([]);
+      // The log has the archive id and counts only.
+      expect(logText(host)).toContain(`archive ${id}: 2 added, 0 skipped, complete`);
+      expect(logText(host)).not.toContain(dir);
+      expect(logText(host)).not.toMatch(/Old letters|old1@example|Wombat/i);
+    });
+  });
+
+  it("an attachment is read from the source file through a one-time ticket, and says so when the file is gone", async () => {
+    await withArchive(async (host, file) => {
+      const { rm } = await import("node:fs/promises");
+      await host.harness.behavior.runCli(["archive", "add", file]);
+      const page = (await call(host, "archive_messages", { archiveId: null, query: "note 2", cursor: null })) as Page;
+      const id = page.rows[0]!.id;
+      const ticket = (await call(host, "archive_download_ticket", { id, partId: "1" })) as { url: string; fileName: string };
+      expect(ticket.fileName).toBe("notes.txt");
+      const path = ticket.url.replace("/api/v1/plugins/makosh-mail/http", "");
+      const response = await host.harness.behavior.fetchHttp("GET", path);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("Invented attachment text");
+      expect(response.headers.get("content-disposition")).toContain("attachment");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      expect((await host.harness.behavior.fetchHttp("GET", path)).status).toBe(404);
+      await expect(call(host, "archive_download_ticket", { id, partId: "9" })).rejects.toThrow("Unknown attachment");
+
+      await rm(file);
+      const gone = (await call(host, "archive_download_ticket", { id, partId: "1" })) as { url: string };
+      const missing = await host.harness.behavior.fetchHttp("GET", gone.url.replace("/api/v1/plugins/makosh-mail/http", ""));
+      expect(missing.status).toBe(409);
+      expect(await missing.text()).toContain("moved or changed");
+      // The text is still readable.
+      expect(((await call(host, "archive_message", { id })) as { html: string }).html).toContain("Old");
+    });
+  });
+
+  it("list and remove; a refusal for what is not an archive; removing leaves the file", async () => {
+    await withArchive(async (host, file, dir) => {
+      const { readFile, writeFile } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      expect((await host.harness.behavior.runCli(["archive", "list"])).stdout).toContain("No archives.");
+      await writeFile(join(dir, "notes.txt"), "not mail");
+      for (const [args, text] of [
+        [["add", join(dir, "notes.txt")], "not an mbox file"],
+        [["add", join(dir, "missing.mbox")], "no such file"],
+        [["add", "relative.mbox"], "full path"],
+        [["add"], "full path"],
+        [["remove", "arc_nope"], "unknown archive"],
+        [["burn", file], "the action is add, list or remove"],
+      ] as const) {
+        const refused = await host.harness.behavior.runCli(["archive", ...args]);
+        expect(refused.exitCode).toBe(1);
+        expect(refused.stderr).toContain(text);
+      }
+      await host.harness.behavior.runCli(["archive", "add", file, "--name", "Renamed  on\nimport"]);
+      const listed = await host.harness.behavior.runCli(["archive", "list", "--json"]);
+      const { archives } = JSON.parse(listed.stdout) as { archives: { id: string; name: string }[] };
+      expect(archives.map((a) => a.name)).toEqual(["Renamed on import"]);
+      const removed = await host.harness.behavior.runCli(["archive", "remove", archives[0]!.id]);
+      expect(removed.stdout).toContain("The file it was read from is untouched.");
+      expect(await readFile(file, "utf8")).toBe(MBOX);
+      expect(await call(host, "archives_list", {})).toEqual({ archives: [] });
+      expect(await call(host, "archive_messages", { archiveId: null, query: "", cursor: null })).toEqual({ rows: [], nextCursor: null });
+      expect(await call(host, "archive_remove", { id: archives[0]!.id })).toEqual({ ok: false });
+    });
+  });
+
+  it("no agent surface reaches an archive: the RPCs refuse plugins, and tools, the CLI in a thread and mentions find nothing", async () => {
+    await withArchive(async (host, file) => {
+      await host.harness.behavior.runCli(["archive", "add", file]);
+      const page = (await call(host, "archive_messages", { archiveId: null, query: "", cursor: null })) as Page;
+      const id = page.rows[0]!.id;
+      const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+      const inputs: [string, unknown][] = [
+        ["archives_list", {}],
+        ["archive_messages", { archiveId: null, query: "", cursor: null }],
+        ["archive_message", { id }],
+        ["archive_download_ticket", { id, partId: "1" }],
+        ["archive_remove", { id: page.rows[0]!.archiveId }],
+      ];
+      expect(inputs.map(([method]) => method)).toEqual([...SLICE_3P_METHODS]);
+      for (const [method, input] of inputs) {
+        await expect(host.harness.behavior.callRpc(method, input, asPlugin)).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+      }
+      expect(((await call(host, "archives_list", {})) as { archives: unknown[] }).archives).toHaveLength(1);
+      expect(host.harness.inspection.registrations.agentTools.some((tool) => /archive/i.test(tool.name))).toBe(false);
+      // The agent's own search and the CLI in a thread see live mail only.
+      const tool = await host.harness.behavior.callAgentTool("mail_search", { query: "wombat" }, { threadId: "thread-1" });
+      expect(JSON.stringify(tool)).not.toMatch(/archive note|Wombat words/i);
+      const cli = await host.harness.behavior.runCli(["search", "wombat"], { threadId: "thread-1" });
+      expect(`${cli.stdout}${cli.stderr}`).not.toMatch(/archive note|Wombat words/i);
+      const read = await host.harness.behavior.runCli(["read", id], { threadId: "thread-1" });
+      expect(read.exitCode).toBe(1);
+    });
   });
 });
 

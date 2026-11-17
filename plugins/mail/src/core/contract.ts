@@ -475,6 +475,53 @@ export const subscriptionViewSchema = z.object({
 });
 export type SubscriptionView = z.infer<typeof subscriptionViewSchema>;
 
+const archiveAddressSchema = z.object({ name: z.string().nullable(), address: z.string() });
+const archiveAttachmentSchema = z.object({
+  partId: z.string(),
+  filename: z.string().nullable(),
+  mimeType: z.string(),
+  size: z.number().int(),
+  isInline: z.boolean(),
+});
+
+/** A local archive as its page lists it (slice 3p, core archive.ts). */
+export const archiveViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  /** The file or folder it was read from, for the owner. */
+  sourcePath: z.string(),
+  kind: z.enum(["mbox", "eml", "eml_dir"]),
+  messages: z.number().int(),
+  skipped: z.number().int(),
+  /** False: the import stopped before the end of the source. */
+  complete: z.boolean(),
+  createdAt: z.string(),
+});
+export type ArchiveView = z.infer<typeof archiveViewSchema>;
+
+export const archiveSummarySchema = z.object({
+  id: z.string(),
+  archiveId: z.string(),
+  date: z.string().nullable(),
+  from: archiveAddressSchema,
+  subject: z.string(),
+  snippet: z.string(),
+  hasAttachments: z.boolean(),
+});
+export type ArchiveSummaryView = z.infer<typeof archiveSummarySchema>;
+
+const archiveCursorSchema = z.object({ date: z.string().max(40).nullable(), id: idInput });
+
+export const archiveMessageSchema = archiveSummarySchema.extend({
+  to: z.array(archiveAddressSchema),
+  cc: z.array(archiveAddressSchema),
+  text: z.string().nullable(),
+  html: z.string().nullable(),
+  htmlTruncated: z.boolean(),
+  attachments: z.array(archiveAttachmentSchema),
+});
+export type ArchiveMessageView = z.infer<typeof archiveMessageSchema>;
+
 export const rpcSchemas = {
   status_get: {
     input: z.null(),
@@ -1410,6 +1457,37 @@ export const rpcSchemas = {
       total: z.number().int().min(0),
     }),
   },
+  /**
+   * Slice 3p: local archives, mail read from files on this machine and kept
+   * apart from every mailbox. Owner only; no agent surface reads them.
+   */
+  archives_list: {
+    input: z.object({}),
+    output: z.object({ archives: z.array(archiveViewSchema) }),
+  },
+  /** One page, newest first; `archiveId` null: every archive. */
+  archive_messages: {
+    input: z.object({
+      archiveId: idInput.nullable(),
+      query: z.string().max(200),
+      cursor: archiveCursorSchema.nullable(),
+    }),
+    output: z.object({ rows: z.array(archiveSummarySchema), nextCursor: archiveCursorSchema.nullable() }),
+  },
+  archive_message: {
+    input: z.object({ id: idInput }),
+    output: archiveMessageSchema,
+  },
+  /** A one-time URL for one attachment, read from the archive's source file. */
+  archive_download_ticket: {
+    input: z.object({ id: idInput, partId: z.string().min(1).max(20) }),
+    output: z.object({ url: z.string(), fileName: z.string() }),
+  },
+  /** Removes the archive from Mail; the source file stays. */
+  archive_remove: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
   /** Slice 3m: the filters that sort new Inbox mail, in the order they apply. */
   filters_list: {
     input: z.object({}),
@@ -1762,6 +1840,15 @@ export const SLICE_3H_METHODS = [
   "attachment_text_clear",
   "related_messages",
   "sender_card",
+] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The five owner-only methods slice 3p adds. */
+export const SLICE_3P_METHODS = [
+  "archives_list",
+  "archive_messages",
+  "archive_message",
+  "archive_download_ticket",
+  "archive_remove",
 ] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** The owner-only method slice 3n adds. */

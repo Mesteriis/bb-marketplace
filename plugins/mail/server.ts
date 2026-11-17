@@ -75,6 +75,9 @@ import { createSenderChecks, type SenderChecks } from "./src/adapters/bb/sender-
 import { createPgpEngine } from "./src/adapters/bb/pgp-openpgp.ts";
 import { createPgpService, type PgpService } from "./src/adapters/bb/pgp-service.ts";
 import { readCalendarText } from "./src/adapters/bb/invite.ts";
+import { ARCHIVE_REFUSALS, ArchiveRefused, importArchive, readArchiveAttachment } from "./src/adapters/bb/archive-import.ts";
+import { ARCHIVE_PAGE, type ArchiveRecord } from "./src/core/archive.ts";
+import type { ArchiveView } from "./src/core/contract.ts";
 import {
   EXPORT_MAX_DEFAULT,
   EXPORT_MAX_LIMIT,
@@ -1813,6 +1816,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
     });
 
     const tickets = new TicketBook<DownloadRequest>(clock);
+    const archiveTickets = new TicketBook<ArchiveDownload>(clock);
     const undoBook = new UndoBook(clock);
     const slice3h = createSlice3hRpc({
       store,
@@ -1884,6 +1888,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       },
       rawDeps,
       tickets,
+      archiveTickets,
       undo: undoBook,
       slice3h,
       roundWakes,
@@ -1908,6 +1913,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       return senderChecks.secure([header])[0]!;
     }
     registerDownloadRoute(bb, store, rawDeps, tickets);
+    registerArchiveDownloadRoute(bb, store, archiveTickets);
     // Every agent tool refuses inside a rule thread, by the thread it runs in (spec resolution 4).
     const agentBb = gateRuleThreads(bb, isRuleThread, agentLog.log);
     registerAgentSurfaces(agentBb, store, {
@@ -1979,6 +1985,8 @@ type RpcDeps = {
   }) => Promise<void>;
   rawDeps: RawDeps;
   tickets: TicketBook<DownloadRequest>;
+  /** Slice 3p: one-time tickets for an archive message's attachment. */
+  archiveTickets: TicketBook<ArchiveDownload>;
   /** The one undo slot (slice 3d). */
   undo: UndoBook;
   /** Slice 3h methods (search jobs, folders, labels, files, attachment text). */
@@ -2913,6 +2921,7 @@ async function unsubscribeOnce(
   return { outcome: "queued", reason: null, outboxId: queued.outboxId };
 }
 
+export const UNKNOWN_ARCHIVE_MESSAGE = "Unknown archive";
 export const UNKNOWN_FILTER_MESSAGE = "Unknown filter";
 export const FILTER_FOLDER_MESSAGE = "Choose a folder of the chosen account to move to";
 export const FILTERS_FULL_MESSAGE = "There are 50 filters already; delete one first";
@@ -3836,6 +3845,29 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         log(`pgp verify ${messageId}: ${checked.state}`);
         return "fingerprint" in checked ? checked : { state: checked.state, fingerprint: null, signer: null, fromSender: false };
       },
+      // Slice 3p: local archives. Owner only; nothing here is a tool, a mention or a CLI read.
+      archives_list: owner("archives_list", () => ({ archives: store.listArchives().map(toArchiveView) })),
+      archive_messages: owner("archive_messages", ({ archiveId, query, cursor }) => {
+        if (archiveId !== null && store.getArchive(archiveId) === null) throw refuse("not_found", UNKNOWN_ARCHIVE_MESSAGE);
+        return store.archiveMessages(archiveId, { query, limit: ARCHIVE_PAGE, cursor });
+      }),
+      archive_message: owner("archive_message", ({ id }) => {
+        const found = store.archiveMessage(id);
+        if (found === null) throw refuse("not_found", "Unknown message");
+        return found.message;
+      }),
+      archive_download_ticket: owner("archive_download_ticket", ({ id, partId }) => {
+        const found = store.archiveMessage(id);
+        const attachment = found?.message.attachments.find((entry) => entry.partId === partId);
+        if (found === null || attachment === undefined) throw refuse("not_found", "Unknown attachment");
+        const ticket = deps.archiveTickets.mint({ id, partId });
+        return { url: `${archiveDownloadUrl(bb.pluginId)}?t=${ticket}`, fileName: sanitizeFileName(attachment.filename, "attachment") };
+      }),
+      archive_remove: owner("archive_remove", ({ id }) => {
+        const removed = store.removeArchive(id);
+        if (removed) log(`archive ${id}: removed`);
+        return { ok: removed };
+      }),
       // Slice 3m: filters. Owner only; saving one changes what happens to new mail.
       filters_list: owner("filters_list", () => ({ filters: store.listMailFilters() })),
       filter_save: owner("filter_save", (input) => {
@@ -3916,6 +3948,58 @@ export function renderSource(
     structure = ["structure unavailable"];
   }
   return { headers, structure };
+}
+
+/** What an archive download ticket stands for (slice 3p). */
+type ArchiveDownload = { id: string; partId: string };
+
+function archiveDownloadUrl(pluginId: string): string {
+  return `/api/v1/plugins/${pluginId}/http/archive-download`;
+}
+
+function toArchiveView(archive: ArchiveRecord): ArchiveView {
+  return {
+    id: archive.id,
+    name: archive.name,
+    sourcePath: archive.sourcePath,
+    kind: archive.kind,
+    messages: archive.messages,
+    skipped: archive.skipped,
+    complete: archive.complete,
+    createdAt: archive.createdAt,
+  };
+}
+
+/**
+ * GET /archive-download?t=<ticket> (slice 3p): one attachment of an archive
+ * message, read from the archive's source file and checked against the hash
+ * taken at import. Always served as a download with a safe type. Nothing is
+ * logged but a failure's kind.
+ */
+function registerArchiveDownloadRoute(bb: BbPluginApi, store: MailStore, tickets: TicketBook<ArchiveDownload>): void {
+  bb.http.route(
+    "GET",
+    "/archive-download",
+    async (c) => {
+      const request = tickets.take(c.req.query("t") ?? "");
+      if (request === null) return new Response(null, { status: 404, headers: BASE_HEADERS });
+      const found = store.archiveMessage(request.id);
+      const stored = found?.message.attachments.find((attachment) => attachment.partId === request.partId);
+      if (found === null || found === undefined || stored === undefined) return textResponse(409, ARCHIVE_REFUSALS.changed);
+      try {
+        const bytes = await readArchiveAttachment(store, found.place, stored);
+        return new Response(new Uint8Array(bytes), {
+          status: 200,
+          headers: downloadHeaders(sanitizeFileName(stored.filename, "attachment"), safeContentType(stored.mimeType), bytes.byteLength),
+        });
+      } catch (error) {
+        if (error instanceof ArchiveRefused) return textResponse(409, ARCHIVE_REFUSALS[error.reason]);
+        bb.log.warn(`archive download failed (${errorKind(error)})`);
+        return textResponse(502, ARCHIVE_REFUSALS.failed);
+      }
+    },
+    { auth: "local" },
+  );
 }
 
 function textResponse(status: number, text: string): Response {
@@ -6003,6 +6087,70 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
             const exitCode = worst === "fail" ? 1 : 0;
             if (options.json) return { exitCode, stdout: json({ result: worst, sections }) };
             return { exitCode, stdout: `${doctorText(sections)}\n` };
+          },
+        }),
+        archive: cliCommand({
+          summary: "Read an old mbox or .eml archive into Mail, list archives or remove one (owner's terminal only)",
+          positionals: [
+            { name: "action", description: "add, list or remove", required: true },
+            { name: "target", description: "add: full path of the mbox file, .eml file or folder of .eml files; remove: the archive id", required: false },
+          ],
+          options: {
+            name: { type: "string", description: "add: a name for the archive (default: the file's name)" },
+            ...jsonOption,
+          },
+          run: async ({ positionals, options }, ctx) => {
+            refuseRuleThread(ctx);
+            if (ctx.threadId !== undefined) {
+              throw new PluginCliError(OWNER_TERMINAL_MESSAGE, { code: "owner_terminal_only" });
+            }
+            const { action, target } = positionals;
+            if (action === "list") {
+              const archives = store.listArchives();
+              if (options.json) return { exitCode: 0, stdout: json({ archives }) };
+              const lines =
+                archives.length === 0
+                  ? ["No archives. Add one with `bb makosh-mail archive add /full/path/old.mbox`."]
+                  : archives.map(
+                      (archive) =>
+                        `${archive.id}  ${archive.name}: ${archive.messages} messages${archive.complete ? "" : " (not finished)"}, from ${archive.sourcePath}`,
+                    );
+              return { exitCode: 0, stdout: `${lines.join("\n")}\n` };
+            }
+            if (action === "remove") {
+              if (target === undefined || store.getArchive(target) === null) {
+                throw new PluginCliError("unknown archive; `bb makosh-mail archive list` shows the ids", { code: "archive_not_found" });
+              }
+              store.removeArchive(target);
+              deps.log(`archive ${target}: removed`);
+              deps.publishChanged(null);
+              if (options.json) return { exitCode: 0, stdout: json({ removed: true, id: target }) };
+              return { exitCode: 0, stdout: "Removed from Mail. The file it was read from is untouched.\n" };
+            }
+            if (action !== "add") throw new PluginCliError("the action is add, list or remove", { code: "archive_action" });
+            if (target === undefined) throw new PluginCliError(ARCHIVE_REFUSALS.not_absolute, { code: "archive_not_absolute" });
+            let result: Awaited<ReturnType<typeof importArchive>>;
+            try {
+              result = await importArchive({ store, now: deps.doctor().now, newId: randomUUID }, { path: target, name: options.name ?? null });
+            } catch (error) {
+              const reason = error instanceof ArchiveRefused ? error.reason : "failed";
+              deps.log(`archive add: ${reason}`);
+              deps.publishChanged(null);
+              const again = reason === "failed" ? " Run the same command again to go on from where it stopped." : "";
+              throw new PluginCliError(`${ARCHIVE_REFUSALS[reason]}${again}`, { code: `archive_${reason}` });
+            }
+            const { archive } = result;
+            // The archive id and counts: never the path, the name or anything of a message.
+            deps.log(`archive ${archive.id}: ${result.added} added, ${archive.skipped} skipped, ${archive.complete ? "complete" : "not finished"}`);
+            deps.publishChanged(null);
+            if (options.json) return { exitCode: 0, stdout: json({ ...result, archive }) };
+            const lines = result.already
+              ? [`"${archive.name}" is already in Mail: ${archive.messages} messages. Remove it first to read the file again.`]
+              : [`"${archive.name}": ${result.added} messages added${result.resumed ? " (went on from an earlier run)" : ""}, ${archive.messages} in all.`];
+            if (!result.already && archive.skipped > 0) lines.push(`${archive.skipped} were left out (not readable as mail, or over 50 MB).`);
+            if (result.capped) lines.push("The archive holds 200,000 messages, the most one archive takes; the rest of the file was left out.");
+            if (!result.already) lines.push("Open Mail's Archive page to read and search it. The file stays where it is: attachments are read from it.");
+            return { exitCode: 0, stdout: `${lines.join("\n")}\n` };
           },
         }),
         export: cliCommand({
