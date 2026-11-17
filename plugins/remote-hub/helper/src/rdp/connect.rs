@@ -552,12 +552,30 @@ mod tests {
     /// A clock that only moves when a test says so.
     struct ManualClock {
         millis: AtomicU64,
+        /// Reads that have RETURNED a value (counted after it was captured).
         reads: AtomicU64,
+        /// Real time the very first read takes (a test widens the window between
+        /// the engine announcing `tls` and reading the clock for its budget).
+        first_read_delay: Duration,
     }
 
     impl ManualClock {
         fn new() -> Arc<Self> {
-            Arc::new(ManualClock { millis: AtomicU64::new(0), reads: AtomicU64::new(0) })
+            Self::with_first_read_delay(Duration::ZERO)
+        }
+        fn with_first_read_delay(first_read_delay: Duration) -> Arc<Self> {
+            Arc::new(ManualClock { millis: AtomicU64::new(0), reads: AtomicU64::new(0), first_read_delay })
+        }
+        /// Block until the engine has read the clock at least once: its budget
+        /// has started. The `tls` state event does NOT imply that (the budget
+        /// clock is read just after the event is sent), so a driver that moves the
+        /// clock must wait for this first.
+        fn wait_until_started(&self) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while self.reads() < 1 {
+                assert!(std::time::Instant::now() < deadline, "hang guard: the engine never read the clock");
+                std::thread::yield_now();
+            }
         }
         fn advance(&self, by: Duration) {
             self.millis.fetch_add(by.as_millis() as u64, Ordering::SeqCst);
@@ -579,8 +597,12 @@ mod tests {
 
     impl Clock for ManualClock {
         fn now(&self) -> Duration {
+            if self.reads.load(Ordering::SeqCst) == 0 && !self.first_read_delay.is_zero() {
+                std::thread::sleep(self.first_read_delay);
+            }
+            let value = self.millis.load(Ordering::SeqCst);
             self.reads.fetch_add(1, Ordering::SeqCst);
-            Duration::from_millis(self.millis.load(Ordering::SeqCst))
+            Duration::from_millis(value)
         }
     }
 
@@ -1013,8 +1035,14 @@ mod tests {
     /// the clock again and the session is still running), 16 s is `timeout`.
     #[test]
     fn the_tls_budget_runs_out_without_a_prompt() {
-        let out = run(Server::Tls, None, budgets(60_000), &StuckTls, move |ctl| {
+        // The first clock read (the budget's start) takes 300 ms of real time, so
+        // the `tls` event is seen long before the budget has started: a driver
+        // that moved the clock on that event alone would shift the budget's origin
+        // and the test would hang (the J7 failure).
+        let clock = ManualClock::with_first_read_delay(Duration::from_millis(300));
+        let out = run_with_clock(Server::Tls, None, budgets(60_000), &StuckTls, clock, move |ctl| {
             ctl.collector.wait_for(|e| matches!(e, EngineEvent::State { state } if state == "tls"));
+            ctl.clock.wait_until_started();
             ctl.clock.advance(Duration::from_secs(14));
             // Two more clock reads: the engine has re-checked its budget at 14 s.
             // A Timeout at 14 s would have completed the sequence by now or stop
