@@ -92,9 +92,33 @@ impl Helper {
         }
     }
 
+    /// The reply to request `id`. RDP state / certificate / rejection events are
+    /// asynchronous and may arrive at any point, so they are skipped; only a
+    /// response carrying this request id counts.
+    pub fn read_reply(&mut self, id: u64) -> Response {
+        self.read_until(Duration::from_secs(60), |k, p| {
+            if k != FRAME_KIND_CONTROL {
+                return None;
+            }
+            let reply = decode_response(p).ok()?;
+            let reply_id = match &reply {
+                Response::Pong { id }
+                | Response::SessionOpened { id, .. }
+                | Response::SessionInputAck { id, .. }
+                | Response::SessionResized { id, .. }
+                | Response::SessionCreditAck { id, .. }
+                | Response::RdpAck { id, .. }
+                | Response::RdpScreenshot { id, .. } => Some(*id),
+                Response::SessionClosed { id, .. } | Response::Error { id, .. } => *id,
+                _ => None,
+            };
+            (reply_id == Some(id)).then_some(reply)
+        })
+    }
+
     pub fn open_echo(&mut self) -> (u32, u32) {
         self.send(&Request::OpenEcho { id: 1, cols: 80, rows: 24 });
-        match self.read_response() {
+        match self.read_reply(1) {
             Response::SessionOpened { session_id, pid, .. } => (session_id, pid),
             other => panic!("expected session.opened, got {other:?}"),
         }

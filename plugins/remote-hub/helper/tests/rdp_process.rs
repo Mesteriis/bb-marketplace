@@ -87,7 +87,7 @@ fn g8_engine_exit_code_is_reported_and_close_after_reap_signals_nothing() {
     std::thread::sleep(Duration::from_millis(300));
     h.send(&Request::SessionClose { id: 30, session_id: rdp });
     // The session is already reported closed; the close is still answered.
-    let _ = h.read_response();
+    let _ = h.read_reply(30);
     let log = h.stderr_text();
     let h_pid = h.pid();
     h.shutdown();
@@ -176,7 +176,7 @@ fn g15_screenshot_before_desktop_ready_is_refused_with_its_request_id() {
     }
     // Unknown sessions are refused, not acked.
     h.send(&Request::RdpScreenshot { id: 778, session_id: 4242 });
-    match h.read_response() {
+    match h.read_reply(778) {
         Response::Error { id, code, .. } => assert_eq!((id, code.as_str()), (Some(778), "session_not_found")),
         other => panic!("expected session_not_found, got {other:?}"),
     }
@@ -189,7 +189,7 @@ fn g15_screenshot_before_desktop_ready_is_refused_with_its_request_id() {
 fn g16_unknown_session_input_and_decision_are_refused() {
     let mut h = start(&[]);
     h.send(&Request::RdpInput { id: 1, session_id: 999, events: vec![] });
-    match h.read_response() {
+    match h.read_reply(1) {
         Response::Error { id, code, .. } => assert_eq!((id, code.as_str()), (Some(1), "session_not_found")),
         other => panic!("expected session_not_found, got {other:?}"),
     }
@@ -199,7 +199,7 @@ fn g16_unknown_session_input_and_decision_are_refused() {
         fingerprint: "AA".to_string(),
         accept: "once".to_string(),
     });
-    match h.read_response() {
+    match h.read_reply(2) {
         Response::Error { id, code, .. } => assert_eq!((id, code.as_str()), (Some(2), "session_not_found")),
         other => panic!("expected session_not_found, got {other:?}"),
     }
