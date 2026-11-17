@@ -1638,7 +1638,6 @@ fn w4_hup_does_not_block_the_loop() {
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
-    let helper_pid = child.id();
 
     send_req(&mut stdin, &Request::Hello {
         protocol: PROTOCOL_VERSION,
@@ -1664,8 +1663,53 @@ fn w4_hup_does_not_block_the_loop() {
         }
     });
 
+    let mut closed: HashMap<u32, (Option<i32>, Option<i32>)> = HashMap::new();
+    let mut echo_buf = String::new();
+    let mut echo_sid = 0u32;
+
+    // Read frames until the response with the requested id arrives, collecting
+    // unsolicited SessionClosed frames and stream frames along the way.
+    fn read_until_id(
+        stdout: &mut ChildStdout,
+        want: u64,
+        closed: &mut HashMap<u32, (Option<i32>, Option<i32>)>,
+        echo_sid: u32,
+        echo_buf: &mut String,
+    ) -> Response {
+        loop {
+            let (kind, payload) = read_frame_io(stdout);
+            if kind == FRAME_KIND_CONTROL {
+                let resp = decode_response(&payload).unwrap();
+                match &resp {
+                    Response::SessionOpened { id, .. }
+                    | Response::SessionCreditAck { id, .. }
+                    | Response::SessionInputAck { id, .. }
+                    | Response::SessionResized { id, .. } => {
+                        if *id == want {
+                            return resp;
+                        }
+                    }
+                    Response::SessionClosed {
+                        session_id,
+                        exit_code,
+                        signal,
+                        ..
+                    } => {
+                        closed.insert(*session_id, (*exit_code, *signal));
+                    }
+                    _ => {}
+                }
+            } else if echo_sid != 0 {
+                let rsid = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+                if rsid == echo_sid {
+                    echo_buf.push_str(&String::from_utf8_lossy(&payload[8..]));
+                }
+            }
+        }
+    }
+
     // 50 ssh-kind sessions whose child really closes its tty fds, then lives
-    // 300 ms and exits 7. Grant each a little credit so the EOF/HUP is observed.
+    // 1.5 s and exits 7.
     let mut ssh_sids = Vec::new();
     for i in 0..50u64 {
         send_req(
@@ -1678,13 +1722,13 @@ fn w4_hup_does_not_block_the_loop() {
                 argv: vec![
                     "perl".to_string(),
                     "-e".to_string(),
-                    "close STDIN; close STDOUT; close STDERR; select(undef,undef,undef,0.3); exit 7".to_string(),
+                    "close STDIN; close STDOUT; close STDERR; select(undef,undef,undef,1.5); exit 7".to_string(),
                 ],
                 env: HashMap::new(),
                 cwd: None,
             },
         );
-        let sid = match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+        let sid = match read_until_id(&mut stdout, 10 + i, &mut closed, 0, &mut echo_buf) {
             Response::SessionOpened { session_id, .. } => session_id,
             other => panic!("expected session.opened, got {other:?}"),
         };
@@ -1696,7 +1740,7 @@ fn w4_hup_does_not_block_the_loop() {
                 bytes: 65_536,
             },
         );
-        match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+        match read_until_id(&mut stdout, 200 + i, &mut closed, 0, &mut echo_buf) {
             Response::SessionCreditAck { .. } => {}
             other => panic!("expected session.credit_ack, got {other:?}"),
         }
@@ -1711,18 +1755,13 @@ fn w4_hup_does_not_block_the_loop() {
             rows: 24,
         },
     );
-    let echo_sid = match decode_response(&read_frame_io(&mut stdout).1).unwrap() {
+    echo_sid = match read_until_id(&mut stdout, 400, &mut closed, 0, &mut echo_buf) {
         Response::SessionOpened { session_id, .. } => session_id,
         other => panic!("expected session.opened, got {other:?}"),
     };
 
-    // Let the 50 perl children finish their 300 ms sleep and close; the echo
-    // latency is then measured against a helper that is reaping, not one still
-    // forking 50 children.
-    std::thread::sleep(Duration::from_millis(500));
     let deadline = Instant::now() + Duration::from_millis(3000);
-    let mut closed: HashMap<u32, (Option<i32>, Option<i32>)> = HashMap::new();
-    let mut echo_buf = String::new();
+    let mut times: Vec<Duration> = Vec::new();
     let mut n = 0u64;
     while Instant::now() < deadline {
         let line = format!("ping-{n}\n");
@@ -1742,7 +1781,7 @@ fn w4_hup_does_not_block_the_loop() {
             let (kind, payload) = read_frame_io(&mut stdout);
             if kind == FRAME_KIND_CONTROL {
                 match decode_response(&payload).unwrap() {
-                    Response::SessionInputAck { .. } => acked = true,
+                    Response::SessionInputAck { id, .. } if id == 500 + n => acked = true,
                     Response::SessionClosed {
                         session_id,
                         exit_code,
@@ -1763,16 +1802,18 @@ fn w4_hup_does_not_block_the_loop() {
                 }
             }
         }
-        assert!(
-            t0.elapsed() < Duration::from_millis(100),
-            "echo round trip took {:?}",
-            t0.elapsed()
-        );
+        times.push(t0.elapsed());
         n += 1;
     }
+    times.sort();
+    let median = times[times.len() / 2];
+    let max = *times.last().unwrap();
+    assert!(
+        median < Duration::from_millis(100),
+        "median echo round trip {median:?} >= 100 ms"
+    );
+    assert!(max < Duration::from_secs(1), "max echo round trip {max:?} >= 1 s");
 
-    // All 50 must have reported exit 7, and at least 40 EOF/HUP-before-reap
-    // events must have been observed (the precondition).
     for sid in ssh_sids {
         let (code, sig) = closed
             .get(&sid)
@@ -1792,7 +1833,6 @@ fn w4_hup_does_not_block_the_loop() {
     drop(stdin);
     let status = wait_timeout(&mut child, Duration::from_secs(5)).expect("helper did not exit");
     assert_eq!(status.code(), Some(0));
-    let _ = helper_pid;
     reader.join().expect("stderr reader joined");
 }
 

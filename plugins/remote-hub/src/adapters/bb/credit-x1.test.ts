@@ -28,7 +28,10 @@ class FakeHelper {
   }
   async credit(handle: SessionHandle, bytes: number): Promise<void> {
     this.creditFrames.push({ sessionId: handle.sessionId, bytes });
-    if (this.emitOnCredit !== null) this.emitOutput(handle.sessionId, this.emitOnCredit);
+    if (this.emitOnCredit !== null) {
+      this.emitOutput(handle.sessionId, this.emitOnCredit);
+      this.emitOnCredit = null; // one-shot: do not re-emit on every grant
+    }
   }
   async resize(): Promise<void> {}
   async input(): Promise<{ output: string; truncated: boolean }> {
