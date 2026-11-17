@@ -122,6 +122,14 @@ import { matchesBlock, type BlockRule } from "../../core/blocking.ts";
 import { SNOOZES_MAX_PER_ACCOUNT, type SnoozeRow, type SnoozeState } from "../../core/snooze.ts";
 import { SCHEDULE_LATE_MS } from "../../core/send-later.ts";
 import { FILTERS_MAX, type FilterActions, type FilterMatch, type MailFilter } from "../../core/mail-filters.ts";
+import {
+  ARCHIVES_MAX,
+  ARCHIVE_MESSAGES_MAX,
+  type ArchiveAttachment,
+  type ArchiveKind,
+  type ArchiveRecord,
+  type ArchiveSummary,
+} from "../../core/archive.ts";
 import type { TriageAction, TriageBatchState, TriageItemOutcome } from "../../core/triage.ts";
 import { UNSUBSCRIBE_INFO_MAX_BYTES, type UnsubscribeInfo } from "../../core/unsubscribe.ts";
 import type { ProposalCapRow, ProposalState } from "../../core/agent-propose.ts";
@@ -956,6 +964,62 @@ export const MIGRATIONS: string[] = [
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+  `,
+  // 18: slice 3p - local archives. Mail read from files on this machine,
+  // in tables of its own: nothing here is a row of a mailbox, so sync,
+  // moves, sending and the agent surfaces never see it. A message keeps its
+  // place in the source file (attachments are read from there) and a hash of
+  // its bytes. Trigram search like messages_fts.
+  `
+  CREATE TABLE archives (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    source_path TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    source_size INTEGER NOT NULL,
+    messages INTEGER NOT NULL DEFAULT 0,
+    skipped INTEGER NOT NULL DEFAULT 0,
+    complete INTEGER NOT NULL DEFAULT 0,
+    resume_at INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE archive_messages (
+    seq INTEGER PRIMARY KEY,
+    archive_id TEXT NOT NULL,
+    file TEXT NOT NULL DEFAULT '',
+    offset INTEGER NOT NULL,
+    length INTEGER NOT NULL,
+    raw_hash TEXT NOT NULL,
+    message_id TEXT,
+    from_name TEXT,
+    from_address TEXT NOT NULL,
+    to_json TEXT NOT NULL,
+    cc_json TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    date TEXT,
+    snippet TEXT NOT NULL,
+    body_text TEXT,
+    body_html TEXT,
+    html_truncated INTEGER NOT NULL DEFAULT 0,
+    attachments_json TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    UNIQUE (archive_id, file, offset)
+  );
+  CREATE INDEX archive_messages_list ON archive_messages(archive_id, date, seq);
+  CREATE INDEX archive_messages_all ON archive_messages(date, seq);
+  CREATE VIRTUAL TABLE archive_messages_fts USING fts5(
+    subject, from_name, from_address, body_text,
+    content='archive_messages', content_rowid='seq', tokenize='trigram'
+  );
+  CREATE TRIGGER archive_messages_ai AFTER INSERT ON archive_messages BEGIN
+    INSERT INTO archive_messages_fts(rowid, subject, from_name, from_address, body_text)
+    VALUES (new.seq, new.subject, new.from_name, new.from_address, new.body_text);
+  END;
+  CREATE TRIGGER archive_messages_ad AFTER DELETE ON archive_messages BEGIN
+    INSERT INTO archive_messages_fts(archive_messages_fts, rowid, subject, from_name, from_address, body_text)
+    VALUES ('delete', old.seq, old.subject, old.from_name, old.from_address, old.body_text);
+  END;
   `,
 ];
 
@@ -1956,6 +2020,61 @@ function toOutbox(row: OutboxRow): OutboxRecord {
     rejected: JSON.parse(row.rejected_json) as string[],
     updatedAt: row.updated_at,
     scheduled: row.scheduled === 1,
+  };
+}
+
+type ArchiveDbRow = {
+  id: string;
+  name: string;
+  source_path: string;
+  kind: ArchiveKind;
+  source_size: number;
+  messages: number;
+  skipped: number;
+  complete: number;
+  resume_at: number;
+  created_at: string;
+  updated_at: string;
+};
+
+function toArchive(row: ArchiveDbRow): ArchiveRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    sourcePath: row.source_path,
+    kind: row.kind,
+    sourceSize: row.source_size,
+    messages: row.messages,
+    skipped: row.skipped,
+    complete: row.complete === 1,
+    resumeAt: row.resume_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+type ArchiveSummaryRow = {
+  seq: number;
+  archive_id: string;
+  date: string | null;
+  from_name: string | null;
+  from_address: string;
+  subject: string;
+  snippet: string;
+  attachments_json: string;
+};
+
+const ARCHIVE_SUMMARY_COLUMNS = "a.seq, a.archive_id, a.date, a.from_name, a.from_address, a.subject, a.snippet, a.attachments_json";
+
+function toArchiveSummary(row: ArchiveSummaryRow): ArchiveSummary {
+  return {
+    id: String(row.seq),
+    archiveId: row.archive_id,
+    date: row.date,
+    from: { name: row.from_name, address: row.from_address },
+    subject: row.subject,
+    snippet: row.snippet,
+    hasAttachments: (JSON.parse(row.attachments_json) as ArchiveAttachment[]).some((a) => !a.isInline),
   };
 }
 
@@ -7046,6 +7165,176 @@ export function createSqliteStore(db: Database.Database): MailStore {
 
     touchIncident(fingerprint, nowIso) {
       return db.prepare("UPDATE incident_threads SET last_at = ? WHERE fingerprint = ?").run(nowIso, fingerprint).changes > 0;
+    },
+
+    // Local archives (slice 3p) -----------------------------------------------
+
+    listArchives() {
+      return db.prepare<[], ArchiveDbRow>("SELECT * FROM archives ORDER BY created_at, id").all().map(toArchive);
+    },
+
+    getArchive(id) {
+      const row = db.prepare<[string], ArchiveDbRow>("SELECT * FROM archives WHERE id = ?").get(id);
+      return row === undefined ? null : toArchive(row);
+    },
+
+    findArchiveBySource(sourcePath) {
+      const row = db.prepare<[string], ArchiveDbRow>("SELECT * FROM archives WHERE source_path = ?").get(sourcePath);
+      return row === undefined ? null : toArchive(row);
+    },
+
+    createArchive(archive) {
+      return atomic(() => {
+        const count = db.prepare<[], { n: number }>("SELECT count(*) AS n FROM archives").get()!.n;
+        if (count >= ARCHIVES_MAX) return { full: true as const };
+        db.prepare(
+          `INSERT INTO archives (id, name, source_path, kind, source_size, messages, skipped, complete, resume_at, created_at, updated_at)
+           VALUES (@id, @name, @sourcePath, @kind, @sourceSize, 0, @skipped, @complete, @resumeAt, @createdAt, @updatedAt)`,
+        ).run({
+          id: archive.id,
+          name: archive.name,
+          sourcePath: archive.sourcePath,
+          kind: archive.kind,
+          sourceSize: archive.sourceSize,
+          skipped: archive.skipped,
+          complete: archive.complete ? 1 : 0,
+          resumeAt: archive.resumeAt,
+          createdAt: isoOf(archive.createdAt),
+          updatedAt: isoOf(archive.updatedAt),
+        });
+        return { archive: toArchive(db.prepare<[string], ArchiveDbRow>("SELECT * FROM archives WHERE id = ?").get(archive.id)!) };
+      });
+    },
+
+    appendArchiveMessages(archiveId, rows, progress) {
+      return atomic(() => {
+        const have = db.prepare<[string], { n: number }>("SELECT count(*) AS n FROM archive_messages WHERE archive_id = ?").get(archiveId)!.n;
+        const insert = db.prepare(
+          `INSERT OR IGNORE INTO archive_messages (archive_id, file, offset, length, raw_hash, message_id, from_name, from_address,
+             to_json, cc_json, subject, date, snippet, body_text, body_html, html_truncated, attachments_json, size)
+           VALUES (@archiveId, @file, @offset, @length, @rawHash, @messageId, @fromName, @fromAddress,
+             @to, @cc, @subject, @date, @snippet, @bodyText, @bodyHtml, @htmlTruncated, @attachments, @size)`,
+        );
+        let added = 0;
+        for (const row of rows) {
+          if (have + added >= ARCHIVE_MESSAGES_MAX) break;
+          added += insert.run({
+            archiveId,
+            file: row.file,
+            offset: row.offset,
+            length: row.length,
+            rawHash: row.rawHash,
+            messageId: row.messageId,
+            fromName: row.from.name,
+            fromAddress: row.from.address,
+            to: JSON.stringify(row.to),
+            cc: JSON.stringify(row.cc),
+            subject: row.subject,
+            date: row.date === null ? null : (normalizeDate(row.date) ?? null),
+            snippet: row.snippet,
+            bodyText: row.bodyText,
+            bodyHtml: row.bodyHtml,
+            htmlTruncated: row.htmlTruncated ? 1 : 0,
+            attachments: JSON.stringify(row.attachments),
+            size: row.size,
+          }).changes;
+        }
+        db.prepare(
+          `UPDATE archives SET messages = (SELECT count(*) FROM archive_messages WHERE archive_id = @id),
+             skipped = @skipped, complete = @complete, resume_at = @resumeAt, updated_at = @now WHERE id = @id`,
+        ).run({ id: archiveId, skipped: progress.skipped, complete: progress.complete ? 1 : 0, resumeAt: progress.resumeAt, now: isoOf(progress.nowIso) });
+        return added;
+      });
+    },
+
+    removeArchive(id) {
+      const removed = atomic(() => {
+        db.prepare("DELETE FROM archive_messages WHERE archive_id = ?").run(id);
+        return db.prepare("DELETE FROM archives WHERE id = ?").run(id).changes > 0;
+      });
+      // An archive can be most of the file: give its pages back (a no-op inside a caller's transaction).
+      if (removed && !db.inTransaction) db.exec("PRAGMA incremental_vacuum");
+      return removed;
+    },
+
+    archiveMessages(archiveId, opts) {
+      const where: string[] = [];
+      const params: unknown[] = [];
+      let from = "FROM archive_messages a";
+      // Control characters make MATCH throw and never occur in indexed text.
+      const text = opts.query.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+      if (Array.from(text).length >= FTS_MIN_CHARS) {
+        from = "FROM archive_messages_fts JOIN archive_messages a ON a.seq = archive_messages_fts.rowid";
+        where.push("archive_messages_fts MATCH ?");
+        params.push(ftsPhrase(text));
+      } else if (text !== "") {
+        const pattern = likePattern(text);
+        where.push("(a.subject LIKE ? ESCAPE '\\' OR a.from_name LIKE ? ESCAPE '\\' OR a.from_address LIKE ? ESCAPE '\\')");
+        params.push(pattern, pattern, pattern);
+      }
+      if (archiveId !== null) {
+        where.push("a.archive_id = ?");
+        params.push(archiveId);
+      }
+      if (opts.cursor !== null) {
+        const seq = Number(opts.cursor.id);
+        if (opts.cursor.date === null) {
+          // Undated rows come last: after an undated row only undated rows with a smaller seq follow.
+          where.push("a.date IS NULL AND a.seq < ?");
+          params.push(seq);
+        } else {
+          where.push("(a.date IS NULL OR a.date < ? OR (a.date = ? AND a.seq < ?))");
+          params.push(opts.cursor.date, opts.cursor.date, seq);
+        }
+      }
+      params.push(opts.limit + 1);
+      const rows = db
+        .prepare(
+          `SELECT ${ARCHIVE_SUMMARY_COLUMNS} ${from}
+           ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+           ORDER BY a.date IS NULL, a.date DESC, a.seq DESC LIMIT ?`,
+        )
+        .all(...params) as ArchiveSummaryRow[];
+      const page = rows.slice(0, opts.limit).map(toArchiveSummary);
+      const last = page[page.length - 1];
+      return { rows: page, nextCursor: rows.length > opts.limit && last !== undefined ? { date: last.date, id: last.id } : null };
+    },
+
+    archiveMessage(id) {
+      const seq = Number(id);
+      if (!Number.isSafeInteger(seq)) return null;
+      const row = db
+        .prepare<
+          [number],
+          ArchiveSummaryRow & {
+            file: string;
+            offset: number;
+            length: number;
+            raw_hash: string;
+            to_json: string;
+            cc_json: string;
+            body_text: string | null;
+            body_html: string | null;
+            html_truncated: number;
+          }
+        >(
+          `SELECT ${ARCHIVE_SUMMARY_COLUMNS}, a.file, a.offset, a.length, a.raw_hash, a.to_json, a.cc_json, a.body_text, a.body_html, a.html_truncated
+           FROM archive_messages a WHERE a.seq = ?`,
+        )
+        .get(seq);
+      if (row === undefined) return null;
+      return {
+        message: {
+          ...toArchiveSummary(row),
+          to: JSON.parse(row.to_json) as MailAddress[],
+          cc: JSON.parse(row.cc_json) as MailAddress[],
+          text: row.body_text,
+          html: row.body_html,
+          htmlTruncated: row.html_truncated === 1,
+          attachments: JSON.parse(row.attachments_json) as ArchiveAttachment[],
+        },
+        place: { archiveId: row.archive_id, file: row.file, offset: row.offset, length: row.length, rawHash: row.raw_hash },
+      };
     },
 
     // Filters (slice 3m) -------------------------------------------------------

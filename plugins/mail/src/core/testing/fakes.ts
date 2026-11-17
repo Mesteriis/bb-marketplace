@@ -55,6 +55,16 @@ import { SendRateLimit, UndoneSends } from "../compose-outbox.ts";
 import { SCHEDULE_LATE_MS } from "../send-later.ts";
 import { FILTERS_MAX, type MailFilter } from "../mail-filters.ts";
 import type { SubscriptionRow } from "../subscriptions.ts";
+import {
+  ARCHIVES_MAX,
+  ARCHIVE_MESSAGES_MAX,
+  type ArchiveCursor,
+  type ArchiveMessage,
+  type ArchivePlace,
+  type ArchiveRecord,
+  type ArchiveSummary,
+  type NewArchiveMessage,
+} from "../archive.ts";
 import { TRANSLATION_CACHE_ROWS } from "../translate.ts";
 import {
   CONTACT_SCAN,
@@ -403,6 +413,9 @@ type StoreState = {
   incidents: Map<string, IncidentRow>;
   rules: Map<string, RuleRecord>;
   filters: Map<string, { filter: MailFilter; createdAt: string }>;
+  archives: Map<string, ArchiveRecord>;
+  archiveRows: { seq: number; archiveId: string; row: NewArchiveMessage }[];
+  archiveSeq: number;
   ruleRuns: (RuleRunRecord & { messageKey: string })[];
   /** bb thread id to its rule thread row (review C1): never dropped with mail. */
   ruleThreads: Map<string, { ruleId: string; runId: string | null; createdAt: string }>;
@@ -515,6 +528,9 @@ export class InMemoryMailStore implements MailStore {
     incidents: new Map(),
     rules: new Map(),
     filters: new Map(),
+    archives: new Map(),
+    archiveRows: [],
+    archiveSeq: 0,
     ruleRuns: [],
     ruleThreads: new Map(),
     history: new Map(),
@@ -2839,6 +2855,112 @@ export class InMemoryMailStore implements MailStore {
     if (row === undefined) return false;
     row.lastAt = nowIso;
     return true;
+  }
+
+  listArchives(): ArchiveRecord[] {
+    return [...this.state.archives.values()].map((archive) => ({ ...archive }));
+  }
+
+  getArchive(id: string): ArchiveRecord | null {
+    const archive = this.state.archives.get(id);
+    return archive === undefined ? null : { ...archive };
+  }
+
+  findArchiveBySource(sourcePath: string): ArchiveRecord | null {
+    const archive = [...this.state.archives.values()].find((entry) => entry.sourcePath === sourcePath);
+    return archive === undefined ? null : { ...archive };
+  }
+
+  createArchive(archive: ArchiveRecord): { archive: ArchiveRecord } | { full: true } {
+    if (this.state.archives.size >= ARCHIVES_MAX) return { full: true };
+    this.state.archives.set(archive.id, { ...archive, messages: 0 });
+    return { archive: { ...archive, messages: 0 } };
+  }
+
+  appendArchiveMessages(
+    archiveId: string,
+    rows: NewArchiveMessage[],
+    progress: { resumeAt: number; skipped: number; complete: boolean; nowIso: string },
+  ): number {
+    const mine = () => this.state.archiveRows.filter((entry) => entry.archiveId === archiveId);
+    let added = 0;
+    for (const row of rows) {
+      if (mine().length >= ARCHIVE_MESSAGES_MAX) break;
+      if (mine().some((entry) => entry.row.file === row.file && entry.row.offset === row.offset)) continue;
+      this.state.archiveRows.push({ seq: ++this.state.archiveSeq, archiveId, row: structuredClone(row) });
+      added += 1;
+    }
+    const archive = this.state.archives.get(archiveId);
+    if (archive !== undefined) {
+      Object.assign(archive, {
+        messages: mine().length,
+        skipped: progress.skipped,
+        complete: progress.complete,
+        resumeAt: progress.resumeAt,
+        updatedAt: progress.nowIso,
+      });
+    }
+    return added;
+  }
+
+  removeArchive(id: string): boolean {
+    this.state.archiveRows = this.state.archiveRows.filter((entry) => entry.archiveId !== id);
+    return this.state.archives.delete(id);
+  }
+
+  private archiveSummary(entry: { seq: number; archiveId: string; row: NewArchiveMessage }): ArchiveSummary {
+    return {
+      id: String(entry.seq),
+      archiveId: entry.archiveId,
+      date: entry.row.date,
+      from: { ...entry.row.from },
+      subject: entry.row.subject,
+      snippet: entry.row.snippet,
+      hasAttachments: entry.row.attachments.some((a) => !a.isInline),
+    };
+  }
+
+  archiveMessages(
+    archiveId: string | null,
+    opts: { query: string; limit: number; cursor: ArchiveCursor | null },
+  ): { rows: ArchiveSummary[]; nextCursor: ArchiveCursor | null } {
+    const needle = opts.query.trim().toLowerCase();
+    // Newest first, undated last, then by seq descending.
+    const order = (a: { seq: number; row: NewArchiveMessage }, b: { seq: number; row: NewArchiveMessage }) => {
+      if (a.row.date === null || b.row.date === null) return a.row.date === b.row.date ? b.seq - a.seq : a.row.date === null ? 1 : -1;
+      return a.row.date === b.row.date ? b.seq - a.seq : a.row.date < b.row.date ? 1 : -1;
+    };
+    const all = this.state.archiveRows
+      .filter((entry) => archiveId === null || entry.archiveId === archiveId)
+      .filter(
+        (entry) =>
+          needle === "" ||
+          [entry.row.subject, entry.row.from.name ?? "", entry.row.from.address, entry.row.bodyText ?? ""].some((text) => text.toLowerCase().includes(needle)),
+      )
+      .sort(order);
+    const cursor = opts.cursor;
+    const start = cursor === null ? 0 : all.findIndex((entry) => String(entry.seq) === cursor.id) + 1;
+    const page = all.slice(start, start + opts.limit).map((entry) => this.archiveSummary(entry));
+    const last = page[page.length - 1];
+    return { rows: page, nextCursor: start + opts.limit < all.length && last !== undefined ? { date: last.date, id: last.id } : null };
+  }
+
+  archiveMessage(id: string): { message: ArchiveMessage; place: ArchivePlace } | null {
+    const entry = this.state.archiveRows.find((candidate) => String(candidate.seq) === id);
+    if (entry === undefined) return null;
+    const { row } = entry;
+    return {
+      message: {
+        ...this.archiveSummary(entry),
+        to: structuredClone(row.to),
+        cc: structuredClone(row.cc),
+        text: row.bodyText,
+        html: row.bodyHtml,
+        htmlTruncated: row.htmlTruncated,
+        attachments: structuredClone(row.attachments),
+      },
+      place: { archiveId: entry.archiveId, file: row.file, offset: row.offset, length: row.length, rawHash: row.rawHash },
+    };
   }
 
   listMailFilters(): MailFilter[] {

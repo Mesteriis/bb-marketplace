@@ -763,7 +763,7 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 18).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 19).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
       "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
@@ -795,7 +795,137 @@ describe("slice-2 migrations (SQLite)", () => {
       "62597e0677e25aefadc475f6a6afadbc30e89474c48400d85c576bc82b14e929",
       // Element 17 (slice 3m: filters).
       "32a4f62febff3500b7c877687dc2defc39bc8ab3a4fc4620b1761953fa1f380c",
+      // Element 18 (slice 3p: local archives).
+      "484e585d5c158287c94e3370663b0c697d3fcdd065de9a9decbc1ca1e054e3a7",
     ]);
+  });
+
+  describe("local archives (slice 3p)", () => {
+    const at = "2026-11-17T10:00:00.000Z";
+    const open = () => {
+      const db = new Database(":memory:");
+      db.transaction(() => MIGRATIONS.forEach((statement) => db.exec(statement)))();
+      return { db, s: createSqliteStore(db) };
+    };
+    const archive = (id: string, sourcePath = `/invented/${id}.mbox`) => ({
+      id,
+      name: `Invented ${id}`,
+      sourcePath,
+      kind: "mbox" as const,
+      sourceSize: 1000,
+      messages: 0,
+      skipped: 0,
+      complete: false,
+      resumeAt: 0,
+      createdAt: at,
+      updatedAt: at,
+    });
+    const message = (offset: number, overrides: Record<string, unknown> = {}) => ({
+      file: "",
+      offset,
+      length: 100,
+      rawHash: `hash-${offset}`,
+      messageId: `<m-${offset}@example.org>`,
+      from: { name: "Ana Example", address: "ana@example.com" },
+      to: [{ name: null, address: "owner@example.org" }],
+      cc: [],
+      subject: `Invented subject ${offset}`,
+      date: `2020-01-${String(10 + offset).padStart(2, "0")}T08:00:00.000Z`,
+      snippet: "Invented snippet",
+      bodyText: `Invented body ${offset} about the orchard`,
+      bodyHtml: "<p>Invented</p>",
+      htmlTruncated: false,
+      attachments: [],
+      size: 100,
+      ...overrides,
+    });
+    const progress = (overrides: Record<string, unknown> = {}) => ({ resumeAt: 0, skipped: 0, complete: false, nowIso: at, ...overrides });
+
+    it("keeps archives apart from mailboxes: no message, thread, unread count or search hit of live mail", () => {
+      const { db, s } = open();
+      s.createArchive(archive("arc_1"));
+      expect(s.appendArchiveMessages("arc_1", [message(1), message(2)], progress({ complete: true, resumeAt: 1000 }))).toBe(2);
+      expect(s.getArchive("arc_1")).toMatchObject({ messages: 2, complete: true, resumeAt: 1000 });
+      expect(db.prepare("SELECT count(*) AS n FROM messages").get()).toEqual({ n: 0 });
+      expect(db.prepare("SELECT count(*) AS n FROM threads").get()).toEqual({ n: 0 });
+      expect(s.unreadCount(null)).toBe(0);
+      expect(s.search(parseQuery("orchard"), null, 10)).toEqual([]);
+    });
+
+    it("pages newest first with undated rows last, and searches the subject, the sender and the text", () => {
+      const { s } = open();
+      s.createArchive(archive("arc_1"));
+      s.createArchive(archive("arc_2"));
+      s.appendArchiveMessages(
+        "arc_1",
+        [message(1), message(2, { date: null }), message(3), message(4, { subject: "Quarterly zebra report", attachments: [{ partId: "1", filename: "a.pdf", mimeType: "application/pdf", size: 5, isInline: false }] })],
+        progress(),
+      );
+      s.appendArchiveMessages("arc_2", [message(5, { from: { name: "Bob", address: "bob@example.net" }, bodyText: "pelican" })], progress());
+      const first = s.archiveMessages("arc_1", { query: "", limit: 2, cursor: null });
+      expect(first.rows.map((r) => r.subject)).toEqual(["Quarterly zebra report", "Invented subject 3"]);
+      expect(first.rows[0]).toMatchObject({ archiveId: "arc_1", hasAttachments: true, from: { name: "Ana Example", address: "ana@example.com" } });
+      const second = s.archiveMessages("arc_1", { query: "", limit: 2, cursor: first.nextCursor });
+      expect(second.rows.map((r) => r.subject)).toEqual(["Invented subject 1", "Invented subject 2"]);
+      expect(second.nextCursor).toBeNull();
+      expect(s.archiveMessages(null, { query: "", limit: 10, cursor: null }).rows).toHaveLength(5);
+      expect(s.archiveMessages(null, { query: "zebra", limit: 10, cursor: null }).rows.map((r) => r.subject)).toEqual(["Quarterly zebra report"]);
+      expect(s.archiveMessages(null, { query: "pelican", limit: 10, cursor: null }).rows.map((r) => r.archiveId)).toEqual(["arc_2"]);
+      expect(s.archiveMessages("arc_1", { query: "pelican", limit: 10, cursor: null }).rows).toEqual([]);
+      expect(s.archiveMessages(null, { query: "bob@example.net", limit: 10, cursor: null }).rows).toHaveLength(1);
+      // Two characters: a plain match on the subject and the sender, and no syntax of the index gets through.
+      expect(s.archiveMessages(null, { query: "Bo", limit: 10, cursor: null }).rows).toHaveLength(1);
+      expect(s.archiveMessages(null, { query: 'zebra" OR subject:*', limit: 10, cursor: null }).rows).toEqual([]);
+    });
+
+    it("gives one message with its place in the source, and continues an import without doubling", () => {
+      const { s } = open();
+      s.createArchive(archive("arc_1"));
+      s.appendArchiveMessages("arc_1", [message(1), message(2)], progress({ resumeAt: 250 }));
+      // The same batch again (an import that was stopped and run again), plus one new message.
+      expect(s.appendArchiveMessages("arc_1", [message(2), message(3)], progress({ resumeAt: 400, skipped: 1, complete: true }))).toBe(1);
+      expect(s.getArchive("arc_1")).toMatchObject({ messages: 3, skipped: 1, complete: true, resumeAt: 400 });
+      const [newest] = s.archiveMessages("arc_1", { query: "", limit: 1, cursor: null }).rows;
+      expect(s.archiveMessage(newest!.id)).toEqual({
+        message: {
+          id: newest!.id,
+          archiveId: "arc_1",
+          date: "2020-01-13T08:00:00.000Z",
+          from: { name: "Ana Example", address: "ana@example.com" },
+          subject: "Invented subject 3",
+          snippet: "Invented snippet",
+          hasAttachments: false,
+          to: [{ name: null, address: "owner@example.org" }],
+          cc: [],
+          text: "Invented body 3 about the orchard",
+          html: "<p>Invented</p>",
+          htmlTruncated: false,
+          attachments: [],
+        },
+        place: { archiveId: "arc_1", file: "", offset: 3, length: 100, rawHash: "hash-3" },
+      });
+      expect(s.archiveMessage("nope")).toBeNull();
+      expect(s.archiveMessage("999")).toBeNull();
+    });
+
+    it("removes an archive with its messages and its search entries, caps the number of archives, and finds one by its source", () => {
+      const { db, s } = open();
+      s.createArchive(archive("arc_1"));
+      s.createArchive(archive("arc_2"));
+      s.appendArchiveMessages("arc_1", [message(1)], progress());
+      s.appendArchiveMessages("arc_2", [message(1, { subject: "Kept zebra" })], progress());
+      expect(s.findArchiveBySource("/invented/arc_2.mbox")?.id).toBe("arc_2");
+      expect(s.findArchiveBySource("/invented/nope.mbox")).toBeNull();
+      expect(s.removeArchive("arc_1")).toBe(true);
+      expect(s.removeArchive("arc_1")).toBe(false);
+      expect(s.listArchives().map((a) => a.id)).toEqual(["arc_2"]);
+      expect(s.archiveMessages(null, { query: "Invented subject", limit: 10, cursor: null }).rows).toEqual([]);
+      expect(s.archiveMessages(null, { query: "zebra", limit: 10, cursor: null }).rows).toHaveLength(1);
+      expect(db.prepare("SELECT count(*) AS n FROM archive_messages").get()).toEqual({ n: 1 });
+      for (let i = 3; i <= 21; i++) s.createArchive(archive(`arc_${i}`));
+      expect(s.listArchives()).toHaveLength(20);
+      expect(s.createArchive(archive("arc_over"))).toEqual({ full: true });
+    });
   });
 
   it("filters keep the order they were made in, an edit keeps its place, and the list is capped (slice 3m)", () => {
@@ -3432,7 +3562,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(18);
+    expect(MIGRATIONS).toHaveLength(19);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -4080,7 +4210,7 @@ describe("slice-3f migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(18);
+    expect(MIGRATIONS).toHaveLength(19);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -4886,7 +5016,7 @@ describe("slice-3g migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(18);
+    expect(MIGRATIONS).toHaveLength(19);
     const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
     expect(runs).toEqual([
       { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
@@ -5471,7 +5601,7 @@ describe("slice-3h migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(18);
+    expect(MIGRATIONS).toHaveLength(19);
     const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
       part_id: string;
       kind: string;
@@ -6141,7 +6271,7 @@ describe("slice-3i migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(14).forEach((statement) => old.exec(statement)))();
 
-    expect(MIGRATIONS).toHaveLength(18);
+    expect(MIGRATIONS).toHaveLength(19);
     const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
     expect(columns).toEqual(expect.arrayContaining(["sender_check_json", "receipt_requested", "crypto"]));
     expect(old.prepare("SELECT sender_check_json, receipt_requested, crypto FROM messages").all()).toEqual([

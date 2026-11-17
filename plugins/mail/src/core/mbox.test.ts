@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mboxBody, mboxEntry, mboxFromLine, mboxSeparator } from "./mbox.ts";
+import { MboxSplitter, isMboxSeparator, mboxBody, mboxEntry, mboxFromLine, mboxSeparator, mboxSliceMessage, type MboxMessage } from "./mbox.ts";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 const text = (data: Uint8Array) => new TextDecoder().decode(data);
@@ -55,5 +55,91 @@ describe("mboxFromLine / mboxSeparator", () => {
     expect(text(mboxEntry(bytes("From: <ana@example.com>\r\nDate: Fri, 13 Nov 2026 07:30:00 +0000\r\n\r\nHi\r\n"), FALLBACK))).toBe(
       "From ana@example.com Fri Nov 13 07:30:00 2026\nFrom: <ana@example.com>\nDate: Fri, 13 Nov 2026 07:30:00 +0000\n\nHi\n\n",
     );
+  });
+});
+
+describe("MboxSplitter", () => {
+  const SEP = (who: string) => `From ${who} Fri Nov 13 08:30:00 2026\n`;
+  const A = "Subject: Invented one\n\nFirst body\n>From the garden\n>>From deeper\n";
+  const B = "Subject: Invented two\r\n\r\nSecond body\r\n";
+  const FILE = `${SEP("a@example.com")}${A}\n${SEP("b@example.com")}${B}\n`;
+
+  const split = (file: string, chunkSize: number, max = 1_000_000): MboxMessage[] => {
+    const data = bytes(file);
+    const splitter = new MboxSplitter(max);
+    const out: MboxMessage[] = [];
+    // One reused buffer, as a file reader would hand over.
+    const buffer = new Uint8Array(chunkSize);
+    for (let at = 0; at < data.length; at += chunkSize) {
+      const n = Math.min(chunkSize, data.length - at);
+      buffer.set(data.subarray(at, at + n));
+      out.push(...splitter.push(buffer.subarray(0, n)));
+    }
+    out.push(...splitter.end());
+    return out;
+  };
+
+  it("finds each message, unquotes it, and says where it sits in the file, whatever the chunk size", () => {
+    const whole = split(FILE, FILE.length);
+    expect(whole.map((m) => text(m.raw!))).toEqual(["Subject: Invented one\n\nFirst body\nFrom the garden\n>From deeper\n", B]);
+    const first = SEP("a@example.com").length;
+    expect(whole.map((m) => [m.offset, m.length])).toEqual([
+      [first, A.length + 1],
+      [first + A.length + 1 + SEP("b@example.com").length, B.length + 1],
+    ]);
+    for (const size of [1, 2, 3, 5, 7, 16, 64]) expect(split(FILE, size), `chunks of ${size}`).toEqual(whole);
+    // The stored place gives the same message back.
+    const data = bytes(FILE);
+    for (const message of whole) {
+      expect(mboxSliceMessage(data.subarray(message.offset, message.offset + message.length), 1_000_000)).toEqual(message.raw);
+    }
+  });
+
+  it("round-trips what mboxEntry writes", () => {
+    const originals = [
+      bytes("From: <a@example.com>\r\nDate: Fri, 13 Nov 2026 07:30:00 +0000\r\n\r\nFrom here\r\n>From there\r\nlast"),
+      bytes("From: <b@example.com>\r\n\r\n"),
+    ];
+    const file = originals.map((raw) => text(mboxEntry(raw, FALLBACK))).join("");
+    const back = split(file, 9).map((m) => text(m.raw!));
+    expect(back).toEqual(["From: <a@example.com>\nDate: Fri, 13 Nov 2026 07:30:00 +0000\n\nFrom here\n>From there\nlast\n", "From: <b@example.com>\n\n"]);
+  });
+
+  it("does not split on a body line that only begins with From, and ignores bytes before the first entry", () => {
+    const body = "Subject: x\n\nFrom my point of view this is fine\nFrom a friend\n";
+    const messages = split(`junk before\n${SEP("a@example.com")}${body}`, 11);
+    expect(messages.map((m) => text(m.raw!))).toEqual([body]);
+    expect(isMboxSeparator(bytes("From a@example.com Fri Nov 13 08:30:00 2026"))).toBe(true);
+    expect(isMboxSeparator(bytes("From my point of view"))).toBe(false);
+    expect(isMboxSeparator(bytes("From  two spaces 08:30"))).toBe(false);
+    expect(isMboxSeparator(bytes(">From a@example.com Fri Nov 13 08:30:00 2026"))).toBe(false);
+  });
+
+  it("reports a message over the cap without its bytes and carries on", () => {
+    const big = `Subject: big\n\n${"x".repeat(500)}\n`;
+    const messages = split(`${SEP("a@example.com")}${big}\n${SEP("b@example.com")}${B}`, 37, 100);
+    expect(messages.map((m) => m.raw === null)).toEqual([true, false]);
+    expect(messages[0]!.length).toBe(big.length + 1);
+    expect(text(messages[1]!.raw!)).toBe(B);
+  });
+
+  it("handles an empty file, a file without a final line end, and a lone separator at the end", () => {
+    expect(split("", 8)).toEqual([]);
+    expect(split("no mbox here\n", 8)).toEqual([]);
+    expect(split(`${SEP("a@example.com")}Subject: x\n\nno line end`, 6).map((m) => text(m.raw!))).toEqual(["Subject: x\n\nno line end"]);
+    const lone = split(`${SEP("a@example.com")}Subject: x\n\nbody\n\n${SEP("b@example.com").trimEnd()}`, 6);
+    expect(lone.map((m) => text(m.raw!))).toEqual(["Subject: x\n\nbody\n"]);
+  });
+
+  it("splits a large file of many small messages in bounded time", () => {
+    const one = `${SEP("a@example.com")}Subject: x\n\n${"line of text\n".repeat(20)}\n`;
+    const file = bytes(one.repeat(20_000));
+    const splitter = new MboxSplitter(1_000_000);
+    let count = 0;
+    const start = performance.now();
+    for (let at = 0; at < file.length; at += 65_536) count += splitter.push(file.subarray(at, at + 65_536)).length;
+    count += splitter.end().length;
+    expect(count).toBe(20_000);
+    expect(performance.now() - start).toBeLessThan(5000);
   });
 });

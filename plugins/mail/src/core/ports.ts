@@ -69,6 +69,7 @@ import type { ProjectInfo } from "./projects.ts";
 import type { Rule, RuleMode } from "./mail-rules.ts";
 import type { MailFilter } from "./mail-filters.ts";
 import type { SubscriptionRow } from "./subscriptions.ts";
+import type { ArchiveCursor, ArchiveMessage, ArchivePlace, ArchiveRecord, ArchiveSummary, NewArchiveMessage } from "./archive.ts";
 import type { BbLinkRowKind } from "./model.ts";
 import type { MailCrypto } from "./mail-crypto.ts";
 import type { SenderCheck } from "./sender-check.ts";
@@ -1085,6 +1086,31 @@ export interface MailStore {
   releaseIncident(fingerprint: string, token: string): void;
   /** Sets `last_at`; false when there is no incident. */
   touchIncident(fingerprint: string, nowIso: string): boolean;
+  // Local archives (slice 3p): mail read from files, apart from every mailbox.
+  listArchives(): ArchiveRecord[];
+  getArchive(id: string): ArchiveRecord | null;
+  /** The archive made from this source path, if any (an import of the same file continues it). */
+  findArchiveBySource(sourcePath: string): ArchiveRecord | null;
+  /** `full` when ARCHIVES_MAX archives exist already. */
+  createArchive(archive: ArchiveRecord): { archive: ArchiveRecord } | { full: true };
+  /**
+   * Adds a batch and records the import's progress, in one transaction. A
+   * message already stored at the same place is left as it is. Rows beyond
+   * ARCHIVE_MESSAGES_MAX are not added. Returns how many were added.
+   */
+  appendArchiveMessages(
+    archiveId: string,
+    rows: NewArchiveMessage[],
+    progress: { resumeAt: number; skipped: number; complete: boolean; nowIso: string },
+  ): number;
+  /** Deletes the archive and its messages; false when there is none. */
+  removeArchive(id: string): boolean;
+  /** One page, newest first; `archiveId` null: every archive. `query`: words in the subject, the sender or the text. */
+  archiveMessages(
+    archiveId: string | null,
+    opts: { query: string; limit: number; cursor: ArchiveCursor | null },
+  ): { rows: ArchiveSummary[]; nextCursor: ArchiveCursor | null };
+  archiveMessage(id: string): { message: ArchiveMessage; place: ArchivePlace } | null;
   /** Filters (slice 3m) in the order they apply: the order they were made in; an edit keeps its place. */
   listMailFilters(): MailFilter[];
   /** Inserts or replaces a filter; `full` when a new one would exceed FILTERS_MAX. */
