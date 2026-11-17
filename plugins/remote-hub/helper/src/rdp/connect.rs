@@ -420,6 +420,10 @@ async fn tls_phase(
     tokio::pin!(upgrade);
     loop {
         let guarded = std::future::poll_fn(|cx| match upgrade.as_mut().poll(cx) {
+            // A handshake that completes after its budget ran out is still a
+            // timeout: nothing (no credential) may follow it. Rejections and
+            // errors keep their own reason.
+            Poll::Ready(Ok(_)) if ctx.meter.exceeded() => Poll::Ready(None),
             Poll::Ready(r) => Poll::Ready(Some(r)),
             Poll::Pending if ctx.meter.exceeded() => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
@@ -542,20 +546,37 @@ mod tests {
     const OTHER_FP: &str = "AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA";
 
     /// A clock that only moves when a test says so.
-    struct ManualClock(AtomicU64);
+    struct ManualClock {
+        millis: AtomicU64,
+        reads: AtomicU64,
+    }
 
     impl ManualClock {
         fn new() -> Arc<Self> {
-            Arc::new(ManualClock(AtomicU64::new(0)))
+            Arc::new(ManualClock { millis: AtomicU64::new(0), reads: AtomicU64::new(0) })
         }
         fn advance(&self, by: Duration) {
-            self.0.fetch_add(by.as_millis() as u64, Ordering::SeqCst);
+            self.millis.fetch_add(by.as_millis() as u64, Ordering::SeqCst);
+        }
+        fn reads(&self) -> u64 {
+            self.reads.load(Ordering::SeqCst)
+        }
+        /// Block until the engine has read the clock `n` more times: it has
+        /// looked at the time again (a hang guard bounds the wait).
+        fn wait_for_reads(&self, n: u64) {
+            let target = self.reads() + n;
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while self.reads() < target {
+                assert!(std::time::Instant::now() < deadline, "hang guard: the engine stopped reading the clock");
+                std::thread::yield_now();
+            }
         }
     }
 
     impl Clock for ManualClock {
         fn now(&self) -> Duration {
-            Duration::from_millis(self.0.load(Ordering::SeqCst))
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Duration::from_millis(self.millis.load(Ordering::SeqCst))
         }
     }
 
@@ -801,6 +822,17 @@ mod tests {
         tls: &dyn TlsUpgrader,
         user: impl FnOnce(Ctl) + Send + 'static,
     ) -> Outcome {
+        run_with_clock(mode, expected, timeouts, tls, ManualClock::new(), user)
+    }
+
+    fn run_with_clock(
+        mode: Server,
+        expected: Option<&str>,
+        timeouts: Timeouts,
+        tls: &dyn TlsUpgrader,
+        clock: Arc<ManualClock>,
+        user: impl FnOnce(Ctl) + Send + 'static,
+    ) -> Outcome {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let (port, captured) = spawn_server(&rt, mode);
         let (engine_end, peer) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -808,7 +840,6 @@ mod tests {
         let collector = Collector::start(peer);
         let (dec_tx, dec_rx) = channel();
         let cancel = Arc::new(Cancel::new());
-        let clock = ManualClock::new();
         let ctl = Ctl {
             decisions: dec_tx.clone(),
             collector: collector.clone(),
@@ -828,10 +859,14 @@ mod tests {
                 .expect("hang guard: connect_sequence did not finish")
             })
             .map(|_| ());
-        let _ = helper.join();
+        let driver = helper.join();
         drop(dec_tx);
         rt.shutdown_background();
         collector.finish();
+        // A failed assertion in the driver is a failed test.
+        if let Err(panic) = driver {
+            std::panic::resume_unwind(panic);
+        }
         Outcome { result, collector, captured }
     }
 
@@ -927,20 +962,66 @@ mod tests {
     }
 
     /// The TLS budget does run while the handshake is slow and nobody is
-    /// deciding: 14 s on the test clock is within budget, 16 s is `timeout`.
+    /// deciding: 14 s on the test clock is within budget (the engine looks at
+    /// the clock again and the session is still running), 16 s is `timeout`.
     #[test]
     fn the_tls_budget_runs_out_without_a_prompt() {
-        let out = run(Server::Tls, None, budgets(60_000), &StuckTls, |ctl| {
+        let finished = Arc::new(AtomicBool::new(false));
+        let seen = finished.clone();
+        let out = run(Server::Tls, None, budgets(60_000), &StuckTls, move |ctl| {
             ctl.collector.wait_for(|e| matches!(e, EngineEvent::State { state } if state == "tls"));
             ctl.clock.advance(Duration::from_secs(14));
-            // Still within budget: the session is alive, so cancel would be
-            // the only way out. Prove it by waiting for a real tick, then push
-            // the clock over the line.
-            std::thread::sleep(Duration::from_millis(150));
+            // Two more clock reads: the engine has re-checked its budget at 14 s
+            // (a Timeout at 14 s would end the sequence and the reads would stop).
+            ctl.clock.wait_for_reads(2);
+            assert!(!seen.load(Ordering::SeqCst), "the sequence ended at 14 s of a 15 s budget");
             assert!(ctl.cancel.reason().is_none());
             ctl.clock.advance(Duration::from_secs(2));
         });
+        finished.store(true, Ordering::SeqCst);
         assert_eq!(out.result.err(), Some(RdpClosedReason::Timeout));
+    }
+
+    /// A handshake that SUCCEEDS, after taking `took` on the test clock.
+    struct SlowTls {
+        clock: Arc<ManualClock>,
+        took: Duration,
+    }
+
+    impl TlsUpgrader for SlowTls {
+        fn upgrade(&self, tcp: TcpStream, host: String, callback: CertificateValidationCallback) -> UpgradeFuture {
+            let clock = self.clock.clone();
+            let took = self.took;
+            let inner = TestCaTls.upgrade(tcp, host, callback);
+            Box::pin(async move {
+                let outcome = inner.await;
+                clock.advance(took);
+                outcome
+            })
+        }
+    }
+
+    /// H2: a handshake that completes in one poll after 16 active seconds of a
+    /// 15 s budget is a `timeout`, and nothing is sent after it.
+    #[test]
+    fn a_handshake_that_completes_after_the_budget_is_a_timeout() {
+        let clock = ManualClock::new();
+        let tls = SlowTls { clock: clock.clone(), took: Duration::from_secs(16) };
+        let out = run_with_clock(Server::Tls, None, budgets(60_000), &tls, clock, |_| {});
+        assert_eq!(out.result.err(), Some(RdpClosedReason::Timeout));
+        assert_eq!(out.collector.states(), vec!["connecting", "tls"]);
+    }
+
+    /// H2: the same handshake finishing at 14 s of the 15 s budget proceeds.
+    #[test]
+    fn a_handshake_that_completes_within_the_budget_proceeds() {
+        let clock = ManualClock::new();
+        let tls = SlowTls { clock: clock.clone(), took: Duration::from_secs(14) };
+        let out = run_with_clock(Server::Tls, None, budgets(60_000), &tls, clock, |ctl| {
+            ctl.collector.wait_for(|e| matches!(e, EngineEvent::State { state } if state == "authenticating"));
+            ctl.cancel.trigger(RdpClosedReason::KilledByClose);
+        });
+        assert!(out.collector.states().contains(&"authenticating".to_string()));
     }
 
     /// A clock that notes whether the certificate prompt had already been written
