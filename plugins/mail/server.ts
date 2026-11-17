@@ -6149,7 +6149,7 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
               : [`"${archive.name}": ${result.added} messages added${result.resumed ? " (went on from an earlier run)" : ""}, ${archive.messages} in all.`];
             if (!result.already && archive.skipped > 0) lines.push(`${archive.skipped} were left out (not readable as mail, or over 50 MB).`);
             if (result.capped) lines.push("The archive holds 200,000 messages, the most one archive takes; the rest of the file was left out.");
-            if (!result.already) lines.push("Open Mail's Archive page to read and search it. The file stays where it is: attachments are read from it.");
+            if (!result.already) lines.push("Open Mail's Local archive page to read and search it. The file stays where it is: attachments are read from it.");
             return { exitCode: 0, stdout: `${lines.join("\n")}\n` };
           },
         }),

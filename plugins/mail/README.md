@@ -1025,8 +1025,50 @@ bb makosh-mail export <accountId> "Work/Reports" /full/path/reports --format eml
 - A message that is gone meanwhile or larger than 50 MB is skipped and
   counted. If the connection drops, what was written so far is kept and
   the command says how many messages that is.
-- Flags (read, flagged) and Gmail labels are not written. There is no
-  import yet.
+- Flags (read, flagged) and Gmail labels are not written.
+
+### Local archive: `bb makosh-mail archive`
+
+An old mbox file, an `.eml` file or a folder of `.eml` files can be read
+into Mail and searched there without being uploaded anywhere. It becomes a
+local archive: mail that is in no mailbox.
+
+```bash
+bb makosh-mail archive add /full/path/old-mail.mbox --name "Old work mail"
+bb makosh-mail archive list
+bb makosh-mail archive remove <archiveId>
+```
+
+- **Apart from your mailboxes.** Archive mail is on the **Local archive**
+  page in the left rail and nowhere else: not in the Inbox, a folder, All
+  accounts, the unread count, a conversation or Mail's main search. Sync,
+  filters, block rules, snooze and sending never see it, and nothing of it
+  is sent to a mail server.
+- **Agents cannot read it.** No tool, mention or `bb makosh-mail` command
+  in a thread reaches an archive, and AI features do not run on it.
+- **What is kept.** Mail's database keeps each message's headers, text and
+  HTML (up to 1 MB each), and the names and sizes of its attachments. The
+  attachments themselves stay in the file you imported: Mail reads one
+  from there when you download it, and checks that the file still holds
+  the same message. Move or change the file and the text stays readable,
+  but attachments are no longer available. Mail never writes to the file.
+- **Reading.** Pick one archive or all, search by subject, sender or words
+  of the text, open a message. It is shown in the same frame as live mail:
+  scripts removed, remote images off until you ask for one message, links
+  through the same check. There is no sender check for archive mail, and
+  the page says so. Archive mail is read-only: no reply, move or delete of
+  one message. **Remove archive** takes the whole archive out of Mail and
+  leaves the file.
+- **Importing.** The file is read in one pass, in batches. If the import
+  is stopped, what was read stays, and the same command goes on from
+  there. A complete archive is not read again; remove it first to re-read
+  a file. mbox is read in its common forms (mboxrd and mboxo, where a
+  body line that starts with "From " is written as ">From ").
+- **Limits.** 20 archives; 200,000 messages and 20 GB per archive; a
+  message over 50 MB or one that is not readable as mail is left out and
+  counted. Pictures embedded in a message's HTML are not shown. An archive
+  is a flat list, not conversations. The command runs in your own terminal
+  and refuses inside an agent thread.
 
 ### Layout
 

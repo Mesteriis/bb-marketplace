@@ -84,8 +84,8 @@ export function parseDraftSubPath(subPath: string): string | null {
   return decodeTwice(segments[1]!);
 }
 
-/** The Today and Tasks pages of the rail (slice 3f), Dev and Projects (slice 3g), Files (slice 3h). */
-export type MailPageName = "today" | "tasks" | "dev" | "projects" | "files";
+/** The Today and Tasks pages of the rail (slice 3f), Dev and Projects (slice 3g), Files (slice 3h), Archive (slice 3p). */
+export type MailPageName = "today" | "tasks" | "dev" | "projects" | "files" | "archive";
 
 /** The subPath of a rail page; Projects is `p` (one project is `p/<projectId>`). */
 export function pageSubPath(page: MailPageName): string {
@@ -94,7 +94,7 @@ export function pageSubPath(page: MailPageName): string {
 
 /** The rail page a panel subPath names; null for anything else. */
 export function parsePageSubPath(subPath: string): MailPageName | null {
-  if (subPath === "today" || subPath === "tasks" || subPath === "dev" || subPath === "files") return subPath;
+  if (subPath === "today" || subPath === "tasks" || subPath === "dev" || subPath === "files" || subPath === "archive") return subPath;
   if (subPath === "p" || parseProjectSubPath(subPath) !== null) return "projects";
   return null;
 }

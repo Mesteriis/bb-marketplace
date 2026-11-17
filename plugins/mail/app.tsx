@@ -9,6 +9,7 @@
 // in src/ui.
 import type { SettingsPgpPorts } from "./src/ui/pgp-settings.tsx";
 import type { SettingsFilterPorts } from "./src/ui/filters-settings.tsx";
+import { ArchiveViewPage, type ArchivePorts } from "./src/ui/archive-view.tsx";
 import type { SettingsSubscriptionPorts } from "./src/ui/subscriptions-settings.tsx";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
@@ -3828,7 +3829,33 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         onOpenMessage={(file) => navigate.toPluginPanel("mail", { subPath: threadSubPath(file.accountId, file.threadId) })}
       />
     ) : undefined;
-  const shownContent = pageContent ?? filesContent;
+  // Slice 3p: the Archive page. Mail read from files; nothing here touches a mailbox.
+  const [archiveRefresh, setArchiveRefresh] = useState(0);
+  useDebouncedRealtime(MAIL_CHANGED_CHANNEL, (payloads) => {
+    // An import or a removal in the terminal publishes with no account.
+    if (payloads.some((payload) => (payload as { accountId?: unknown } | null)?.accountId == null)) setArchiveRefresh((n) => n + 1);
+  });
+  const archivePorts = useMemo<ArchivePorts>(
+    () => ({
+      archives: async () => (await rpc.call("archives_list", {})).archives,
+      messages: (archiveId, query, cursor) => rpc.call("archive_messages", { archiveId, query, cursor }),
+      message: (id) => rpc.call("archive_message", { id }),
+      download: async (id, partId) => {
+        const request = { id, partId };
+        const ticket = await rpc.call("archive_download_ticket", request);
+        if ((await saveTicket(ticket)) === "started") return;
+        // A ticket works once: the fallback takes a fresh one.
+        anchorDownload(await rpc.call("archive_download_ticket", request));
+      },
+      remove: async (id) => {
+        await rpc.call("archive_remove", { id });
+      },
+    }),
+    [rpc],
+  );
+  const archiveContent =
+    shownPage === "archive" ? <ArchiveViewPage ports={archivePorts} onOpenLink={openLink} refresh={archiveRefresh} /> : undefined;
+  const shownContent = pageContent ?? filesContent ?? archiveContent;
 
   // Reading (#50, #54, #62, #83, #86, #89).
   const codeTheme = experimental_useCodeTheme();
@@ -4045,6 +4072,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
               ...(bbSettings.devNotifications ? { dev: pageCounts.dev } : {}),
               projects: true,
               files: true,
+              archive: true,
             },
             saved: { searches: savedSearches ?? [], currentId: savedRouteId },
             grouped: (accountId: string, path: string) => !ungrouped.has(groupingKey({ kind: "folder", accountId, path })),

@@ -8,6 +8,13 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Local archive (slice 3p). `bb makosh-mail archive add <file>` reads an
+  mbox file, an `.eml` file or a folder of `.eml` files into a local
+  archive, apart from every mailbox and never uploaded. The **Local
+  archive** page lists, searches and opens its messages read-only;
+  attachments are read from the source file. No agent surface reads an
+  archive. Database migration 18.
+
 - Export (slice 3o). `bb makosh-mail export <accountId> <folder> <file>`
   in the owner's terminal writes a folder from the mail server as one mbox
   file or, with `--format eml`, a directory of `.eml` files; read-only, and

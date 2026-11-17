@@ -34,7 +34,7 @@ import { SavedSearchesRail } from "./saved-searches.tsx";
 import { tx } from "./i18n/index.ts";
 
 /** A rail page: Today and Tasks (slice 3f), Dev and Projects (slice 3g), Files (slice 3h). */
-export type RailPage = "today" | "tasks" | "dev" | "projects" | "files";
+export type RailPage = "today" | "tasks" | "dev" | "projects" | "files" | "archive";
 
 /** Slice 3h: what a folder, account or saved search menu asks of the page. */
 export type RailCommand =
@@ -77,6 +77,8 @@ export interface MailSidebarState {
     projects?: boolean;
     /** Slice 3h: Files. */
     files?: boolean;
+    /** Slice 3p: Archive (mail read from files). */
+    archive?: boolean;
   };
   /** Slice 3h: saved searches and the one open; absent: no Saved section. */
   saved?: { searches: readonly SavedSearchView[]; currentId: string | null };
@@ -117,6 +119,7 @@ function PageRows({
     ...(pages.dev !== undefined ? [{ page: "dev" as const, label: tx("Dev"), icon: "GitBranch", count: pages.dev, unit: "CI failures today" }] : []),
     ...(pages.projects === true ? [{ page: "projects" as const, label: tx("Projects"), icon: "Folder", count: null, unit: "" }] : []),
     ...(pages.files === true ? [{ page: "files" as const, label: tx("Files"), icon: "Paperclip", count: null, unit: "" }] : []),
+    ...(pages.archive === true ? [{ page: "archive" as const, label: tx("Local archive"), icon: "Archive", count: null, unit: "" }] : []),
   ];
   return (
     <ul aria-label={tx("Today and tasks")} className="flex flex-col gap-px px-1.5 pb-1">

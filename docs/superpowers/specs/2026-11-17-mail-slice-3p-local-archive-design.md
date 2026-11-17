@@ -88,3 +88,33 @@ and the reply rule all assume that. An imported message has none of these.
 
 Estimated size: larger than any slice since 3k; two to three working
 sessions of this kind.
+
+## What was built
+
+- `src/core/mbox.ts` (`MboxSplitter`, `isMboxSeparator`,
+  `mboxSliceMessage`), `src/core/archive.ts` (types and bounds).
+- Store: migration element 18 (`archives`, `archive_messages`,
+  `archive_messages_fts`), pinned as `MIGRATIONS.slice(0, 19)`.
+- `src/adapters/bb/archive-import.ts`: `importArchive`, `readArchiveRaw`,
+  `readArchiveAttachment`.
+- Server: the `archive` CLI command (add, list, remove), five owner-only
+  RPCs (`SLICE_3P_METHODS`, 175 methods in all), the `/archive-download`
+  route with its own one-time tickets.
+- UI: the rail page, named **Local archive** so it is not taken for the
+  Archive folder (`archive-view.tsx`), Russian texts.
+
+## Different from the design
+
+- The page is called "Local archive", not "Archive": a mailbox already has
+  an Archive folder in the same rail.
+- An unfinished import is continued by running `archive add` again; a
+  complete archive is never re-read, even when the file grew.
+- Inline (cid:) pictures of archive HTML are not shown.
+
+## Not done
+
+- No viewer for archive attachments (download only), no .eml download of
+  an archive message, no conversations, no reply or forward.
+- No progress while a large import runs; the command answers at the end.
+- Not tried on a real export from Thunderbird, Apple Mail or Gmail
+  Takeout; no second review pass and no rendered preview of the page.
