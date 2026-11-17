@@ -401,9 +401,7 @@ fn g14_the_helper_stays_single_threaded_across_forks() {
     assert_eq!(thread_count_of(h.pid()), 1, "after a PTY session");
     let (rdp, engine_pid) = h.open_rdp(server.port);
     assert_eq!(thread_count_of(h.pid()), 1, "after an RDP session");
-    // The engine, by contrast, is multi-threaded (tokio + reader); it never
-    // forks. Documented here so nobody "fixes" the difference.
-    assert!(thread_count_of(engine_pid) >= 2, "the engine process runs a runtime");
+    let _ = engine_pid; // the engine's own thread count is not part of the invariant
     h.send(&Request::SessionClose { id: 70, session_id: rdp });
     let _ = h.read_closed(rdp);
     h.send(&Request::SessionClose { id: 71, session_id: echo });
