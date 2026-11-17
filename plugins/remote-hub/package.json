@@ -44,7 +44,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm run test",
-    "test:integration": "python3 tests/integration/ssh-docker.py && cargo build --features test-hooks --manifest-path helper/Cargo.toml && REMOTE_HUB_INTEGRATION=1 REMOTE_HUB_HELPER=helper/target/debug/remote-hub-helper vitest run tests/integration/ssh-service.test.ts"
+    "test:integration": "python3 tests/integration/ssh-docker.py && python3 tests/integration/rdp-docker.py && cargo build --features test-hooks --manifest-path helper/Cargo.toml && REMOTE_HUB_INTEGRATION=1 REMOTE_HUB_HELPER=helper/target/debug/remote-hub-helper vitest run tests/integration/ssh-service.test.ts"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.10.0",

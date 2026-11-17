@@ -1,0 +1,27 @@
+# Test xrdp server for the Remote Hub RDP integration suite. The base image is
+# pinned by digest. apt packages are not pinned by version (Debian's stable
+# repository does not offer an immutable versioned snapshot without pinning the
+# whole repository); the throwaway test image accepts that trade-off, same as
+# the SSH image.
+FROM debian:12@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    xrdp xorgxrdp openssl xterm xdotool x11-xserver-utils dbus-x11 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Self-signed certificate for xrdp TLS. Fingerprint is computed per-run from
+# /etc/xrdp/cert.pem in the integration driver.
+RUN openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout /etc/xrdp/key.pem -out /etc/xrdp/cert.pem -days 3650 \
+    -subj "/CN=rdp-test"
+
+# TLS security only, TLS 1.2/1.3.
+RUN sed -i 's/^security_layer=.*/security_layer=tls/' /etc/xrdp/xrdp.ini \
+    && sed -i 's/^ssl_protocols=.*/ssl_protocols=TLSv1.2 TLSv1.3/' /etc/xrdp/xrdp.ini \
+    && sed -i 's/^port=.*/port=3389/' /etc/xrdp/xrdp.ini
+
+COPY rdp-entrypoint.sh /rdp-entrypoint.sh
+RUN chmod +x /rdp-entrypoint.sh
+
+EXPOSE 3389
+ENTRYPOINT ["/rdp-entrypoint.sh"]
