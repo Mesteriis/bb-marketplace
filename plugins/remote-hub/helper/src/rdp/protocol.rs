@@ -6,9 +6,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::secret::Secret;
 
-/// Largest engine → helper control frame body (a screenshot PNG as base64 is
-/// the biggest legitimate one). Binary update frames are limited far lower.
-pub const RDP_MAX_CONTROL_BODY: usize = 64 * 1024 * 1024;
+/// Largest engine → helper control frame body: the client's own frame limit,
+/// so nothing the engine sends can be too large to relay. Binary update frames
+/// are limited far lower.
+pub const RDP_MAX_CONTROL_BODY: usize = crate::protocol::MAX_FRAME_BODY_BYTES;
+/// Largest base64 screenshot PNG the engine will send (3.5 MiB). A larger one
+/// is refused with `screenshot_too_large`; with the JSON around it the
+/// response stays under the 4 MiB wire limit.
+pub const MAX_SCREENSHOT_BASE64: usize = 3_670_016;
 /// Largest helper → engine frame body: commands are small and the client's own
 /// frame limit is 4 MiB.
 pub const RDP_MAX_COMMAND_BODY: usize = 4 * 1024 * 1024;

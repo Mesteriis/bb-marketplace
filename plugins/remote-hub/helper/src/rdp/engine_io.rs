@@ -296,7 +296,11 @@ mod tests {
         let (engine_end, mut helper_end) = pair();
         let inbox = spawn_reader_with_capacity(engine_end, 8);
         for _ in 0..65 {
-            helper_end.write_all(&input_frame()).unwrap();
+            // The reader ends the session at the ninth frame and closes its end:
+            // later writes may legitimately fail with a broken pipe.
+            if helper_end.write_all(&input_frame()).is_err() {
+                break;
+            }
         }
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let reason = rt.block_on(async { tokio::time::timeout(Duration::from_secs(30), inbox.cancel.wait()).await }).unwrap();

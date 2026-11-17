@@ -556,6 +556,9 @@ impl RdpManager {
             match take_frame(&mut s.read_buf) {
                 Take::Frame(frame) => {
                     frames += 1;
+                    // Every frame counts against the turn's byte budget, events
+                    // as well as pixels.
+                    used += frame.len();
                     match classify_frame(&frame) {
                         Some(RdpFrame::Event(EngineEvent::State { state })) => {
                             if state != "cert_prompt" {
@@ -584,12 +587,7 @@ impl RdpManager {
                                 host, port, fingerprint, subject, issuer, not_before, not_after, reason, detail,
                             }));
                         }
-                        Some(f) => {
-                            if let RdpFrame::Update { rgba, .. } = &f {
-                                used += rgba.len();
-                            }
-                            out.push(f);
-                        }
+                        Some(f) => out.push(f),
                         None => {
                             Self::fail_protocol(s);
                         }
@@ -1069,6 +1067,45 @@ mod tests {
             mgr.push_screenshot(id, i);
         }
         assert_eq!(mgr.enqueue_command(id, &EngineCommand::Screenshot), Err(EnqueueError::TooManyScreenshots));
+        unsafe { libc::close(b) };
+    }
+
+    fn screenshot_frame(png_len: usize) -> Vec<u8> {
+        encode_control(&EngineEvent::Screenshot {
+            frame_id: 1,
+            width: 1,
+            height: 1,
+            timestamp: 0,
+            png: "A".repeat(png_len),
+        })
+    }
+
+    #[test]
+    fn event_frames_count_against_the_turn_budget() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        for _ in 0..5 {
+            mgr.sessions.get_mut(&id).unwrap().read_buf.extend(screenshot_frame(1_500_000));
+        }
+        // Budget 4 MiB: frames of ~1.5 MB each → the third crosses it and ends the turn.
+        let first = mgr.process_readable(id, 4 * 1024 * 1024);
+        assert_eq!(first.len(), 3);
+        let second = mgr.process_readable(id, 4 * 1024 * 1024);
+        assert_eq!(second.len(), 2);
+        unsafe { libc::close(b) };
+    }
+
+    #[test]
+    fn a_control_frame_over_4_mib_fails_that_session() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        let over = 4 * 1024 * 1024 + 1;
+        mgr.sessions.get_mut(&id).unwrap().read_buf.extend((over as u32).to_le_bytes());
+        mgr.sessions.get_mut(&id).unwrap().read_buf.push(protocol::FRAME_CONTROL);
+        assert!(mgr.process_readable(id, usize::MAX).is_empty());
+        assert_eq!(mgr.sessions[&id].close_reason.as_deref(), Some("protocol_error"));
         unsafe { libc::close(b) };
     }
 

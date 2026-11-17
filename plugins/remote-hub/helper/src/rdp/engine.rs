@@ -327,12 +327,16 @@ fn send_screenshot(desk: &Desk, out: &Out) -> std::io::Result<()> {
             return out.send(&EngineEvent::ScreenshotError { code: "encode_failed".to_string() });
         }
     }
+    let png = base64_encode(&png);
+    if png.len() > protocol::MAX_SCREENSHOT_BASE64 {
+        return out.send(&EngineEvent::ScreenshotError { code: "screenshot_too_large".to_string() });
+    }
     out.send(&EngineEvent::Screenshot {
         frame_id: fb.frame_id(),
         width: fb.width(),
         height: fb.height(),
         timestamp: fb.last_update_ms(),
-        png: base64_encode(&png),
+        png,
     })
 }
 
@@ -420,6 +424,94 @@ mod tests {
         let (batches, next) = drain_input(vec![mv(1)], &mut rx);
         assert_eq!(batches.len(), 1);
         assert!(next.is_none());
+    }
+
+    /// Deterministic noise (an LCG with fixed constants); a PNG cannot compress it.
+    fn noisy_desk(width: u32, height: u32) -> Desk {
+        let mut state: u32 = 0x1234_5678;
+        let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+        for _ in 0..width as usize * height as usize * 4 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            rgba.push((state >> 24) as u8);
+        }
+        let mut fb = Framebuffer::new(width, height).unwrap();
+        fb.apply(0, 0, width, height, &rgba, 5).unwrap();
+        let mut desk = Desk::new(fb);
+        desk.desktop_sent = true;
+        desk
+    }
+
+    fn frames_sent(desk: &Desk) -> Vec<Vec<u8>> {
+        use std::io::Read as _;
+        let (engine_end, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let out = Out::new(engine_end);
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(move || {
+                let mut all = Vec::new();
+                peer.read_to_end(&mut all).unwrap();
+                all
+            });
+            send_screenshot(desk, &out).unwrap();
+            drop(out);
+            let all = reader.join().unwrap();
+            let mut frames = Vec::new();
+            let mut at = 0;
+            while at < all.len() {
+                let len = u32::from_le_bytes(all[at..at + 4].try_into().unwrap()) as usize;
+                frames.push(all[at..at + 4 + len].to_vec());
+                at += 4 + len;
+            }
+            frames
+        })
+    }
+
+    fn base64_decode(s: &str) -> Vec<u8> {
+        let val = |c: u8| match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            _ => 63,
+        };
+        let mut out = Vec::new();
+        for q in s.as_bytes().chunks(4) {
+            let n = q.iter().filter(|&&c| c != b'=').fold(0u32, |a, &c| (a << 6) | val(c) as u32) << (6 * (4 - q.iter().filter(|&&c| c != b'=').count()));
+            let bytes = q.iter().filter(|&&c| c != b'=').count() * 6 / 8;
+            for i in 0..bytes {
+                out.push((n >> (16 - 8 * i)) as u8);
+            }
+        }
+        out
+    }
+
+    /// H3: a 3840x2160 noisy desktop (an ~33 MiB PNG) is refused with a stable
+    /// code instead of producing a frame the client would treat as fatal.
+    #[test]
+    fn an_oversized_screenshot_is_refused_and_no_frame_exceeds_the_wire_limit() {
+        let frames = frames_sent(&noisy_desk(3840, 2160));
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].len() <= 4_194_304, "frame of {} bytes", frames[0].len());
+        let event: EngineEvent = serde_json::from_slice(&frames[0][5..]).unwrap();
+        assert_eq!(event, EngineEvent::ScreenshotError { code: "screenshot_too_large".to_string() });
+    }
+
+    /// H3: a screenshot that fits is one frame under the limit and its PNG
+    /// decodes to exactly the framebuffer.
+    #[test]
+    fn a_screenshot_that_fits_decodes_to_the_framebuffer() {
+        let desk = noisy_desk(400, 300);
+        let frames = frames_sent(&desk);
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].len() <= 4_194_304);
+        let EngineEvent::Screenshot { width, height, png, .. } = serde_json::from_slice(&frames[0][5..]).unwrap() else {
+            panic!("not a screenshot")
+        };
+        assert_eq!((width, height), (400, 300));
+        let decoded = base64_decode(&png);
+        let mut reader = png::Decoder::new(std::io::Cursor::new(decoded)).read_info().unwrap();
+        let mut buf = vec![0u8; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        assert_eq!(&buf[..info.buffer_size()], desk.fb.pixels());
     }
 
     #[test]

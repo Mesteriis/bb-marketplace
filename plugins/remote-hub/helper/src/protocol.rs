@@ -277,8 +277,20 @@ pub fn encode_request(req: &Request) -> Vec<u8> {
     encode_frame(FRAME_KIND_CONTROL, &json)
 }
 
+/// A response never exceeds the wire limit: an oversized one is replaced by a
+/// stable error, because the client treats a longer frame as fatal for every
+/// session.
 pub fn encode_response(resp: &Response) -> Vec<u8> {
     let json = serde_json::to_vec(resp).expect("serialize response");
+    if 1 + json.len() > MAX_FRAME_BODY_BYTES {
+        let error = Response::Error {
+            id: None,
+            code: "response_too_large".to_string(),
+            message: "a response exceeded the frame size limit and was dropped".to_string(),
+        };
+        let json = serde_json::to_vec(&error).expect("serialize response");
+        return encode_frame(FRAME_KIND_CONTROL, &json);
+    }
     encode_frame(FRAME_KIND_CONTROL, &json)
 }
 
@@ -293,4 +305,28 @@ pub fn encode_stream(session_id: u32, seq: u32, data: &[u8]) -> Vec<u8> {
 
 pub fn decode_response(json: &[u8]) -> Result<Response, serde_json::Error> {
     serde_json::from_slice(json)
+}
+
+#[cfg(test)]
+mod frame_limit_tests {
+    use super::*;
+
+    #[test]
+    fn an_oversized_response_becomes_a_small_error_frame() {
+        let big = Response::RdpScreenshot {
+            id: 9,
+            session_id: 1,
+            frame_id: 1,
+            width: 1,
+            height: 1,
+            timestamp: 0,
+            png: "A".repeat(MAX_FRAME_BODY_BYTES),
+        };
+        let frame = encode_response(&big);
+        assert!(frame.len() <= 4 + MAX_FRAME_BODY_BYTES, "{} bytes", frame.len());
+        match decode_response(&frame[5..]).unwrap() {
+            Response::Error { code, .. } => assert_eq!(code, "response_too_large"),
+            other => panic!("expected an error frame, got {other:?}"),
+        }
+    }
 }
