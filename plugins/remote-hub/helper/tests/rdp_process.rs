@@ -292,7 +292,21 @@ fn g10_unread_stdout_does_not_grow_the_helper() {
     let mut h = start(&[(FAKE, "flood")]);
     let base = rss_kb(h.pid());
     let (_rdp, _) = h.open_rdp_sized(closed_port(), 1920, 1080);
-    std::thread::sleep(Duration::from_millis(500));
+    // Start the observation window once the helper has FILLED its bounded
+    // buffers (its RSS stops climbing), not after a fixed delay: under load the
+    // filling itself takes longer than any fixed delay, and that one-off growth
+    // is not the unbounded growth this test is about. The 60 s limit is a hang
+    // guard.
+    let hang_guard = std::time::Instant::now() + Duration::from_secs(60);
+    let mut last = rss_kb(h.pid());
+    let mut steady = 0;
+    while steady < 4 {
+        assert!(std::time::Instant::now() < hang_guard, "hang guard: the helper's RSS never levelled off");
+        std::thread::sleep(Duration::from_millis(250));
+        let now = rss_kb(h.pid());
+        steady = if now.saturating_sub(last) < 1024 { steady + 1 } else { 0 };
+        last = now;
+    }
     let early = rss_kb(h.pid());
     std::thread::sleep(Duration::from_secs(3));
     let late = rss_kb(h.pid());
