@@ -16,7 +16,7 @@ this file records what was decided and built.
 3. **New dependency: `openpgp` 6.3.2, LGPL-3.0-or-later.** The owner was
    told 3k needs new dependencies and said to start. The license differs
    from the plugin's MIT: the notice says how the bundle is rebuilt from
-   the npm package. The owner should confirm this before publishing.
+   the npm package. The owner confirmed the license on 2026-11-17.
 
 ## Rules the code holds
 

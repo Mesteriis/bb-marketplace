@@ -92,5 +92,5 @@ Gmail API or OAuth, semantic search.
 
 ## Source
 
-Requires BB 0.49 or later. MIT licensed at https://github.com/Mesteriis/makosh-bb,
+Requires BB 0.49 or later. MIT, https://github.com/Mesteriis/bb-makosh-mail,
 with parts ported from Velo (Apache-2.0).

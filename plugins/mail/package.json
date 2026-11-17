@@ -6,13 +6,13 @@
   "type": "module",
   "license": "MIT",
   "author": "Mesteriis",
-  "homepage": "https://github.com/Mesteriis/makosh-bb/tree/main/plugins/mail#readme",
+  "homepage": "https://github.com/Mesteriis/bb-makosh-mail/tree/main/plugins/mail#readme",
   "bugs": {
-    "url": "https://github.com/Mesteriis/makosh-bb/issues"
+    "url": "https://github.com/Mesteriis/bb-makosh-mail/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Mesteriis/makosh-bb.git",
+    "url": "git+https://github.com/Mesteriis/bb-makosh-mail.git",
     "directory": "plugins/mail"
   },
   "keywords": [
