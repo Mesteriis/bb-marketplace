@@ -119,27 +119,33 @@ impl RdpManager {
                 let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
                 if devnull >= 0 {
                     libc::dup2(devnull, 1);
-                    libc::dup2(devnull, 2);
                     if devnull > 2 {
                         libc::close(devnull);
                     }
                 }
                 libc::dup2(engine_fd, 3);
-                libc::close(helper_fd);
-                if engine_fd > 3 {
+                if helper_fd != 3 {
+                    libc::close(helper_fd);
+                }
+                if engine_fd != 3 {
                     libc::close(engine_fd);
                 }
-                // Close every other inherited fd above 3.
+                // Close every other inherited fd above 3. Collect first, then
+                // close: closing the read_dir fd mid-iteration panics closedir.
+                let mut to_close: Vec<i32> = Vec::new();
                 if let Ok(entries) = std::fs::read_dir("/dev/fd") {
                     for entry in entries.flatten() {
                         if let Some(name) = entry.file_name().to_str() {
                             if let Ok(n) = name.parse::<i32>() {
                                 if n > 3 {
-                                    libc::close(n);
+                                    to_close.push(n);
                                 }
                             }
                         }
                     }
+                }
+                for fd in to_close {
+                    libc::close(fd);
                 }
                 let argv = [arg0.as_ptr(), arg1.as_ptr(), std::ptr::null()];
                 let envp = [std::ptr::null::<libc::c_char>()];

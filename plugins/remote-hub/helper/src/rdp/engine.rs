@@ -147,7 +147,10 @@ pub fn run_engine() -> i32 {
     let stream = unsafe { UnixStream::from_raw_fd(3) };
     match engine_main(stream) {
         Ok(code) => code,
-        Err(_) => 1,
+        Err(e) => {
+            eprintln!("rdp-engine error: {e}");
+            1
+        }
     }
 }
 
