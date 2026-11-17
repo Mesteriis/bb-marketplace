@@ -790,7 +790,7 @@ describe("slice-2 migrations (SQLite)", () => {
       // Element 14 (slice 3i: sender check, read receipt request, crypto kind).
       "85e10b2409d979ca08535d7c9a7b495375e014126b9b16ab645be6f16c189d79",
       // Element 15 (slice 3k: OpenPGP keys).
-      "",
+      "692137cda01ae3f12987900d2ec20feae427352122f78ddb1b5a515c73c1b93a",
     ]);
   });
 
