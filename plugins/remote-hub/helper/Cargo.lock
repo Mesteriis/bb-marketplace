@@ -1974,10 +1974,12 @@ dependencies = [
  "ironrdp-tokio",
  "libc",
  "png",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
+ "tokio-rustls",
  "x509-cert",
 ]
 

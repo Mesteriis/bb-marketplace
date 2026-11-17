@@ -53,3 +53,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync"
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 sha2 = "0.11"
 png = "0.18"
+
+[dev-dependencies]
+# Test-only: a fake RDP server that presents the fixture certificates, and a
+# client that trusts the fixture CA (the validated-certificate path).
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring"] }

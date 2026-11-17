@@ -134,3 +134,74 @@ fn g6_engine_inherits_only_its_socket() {
     }
     h.shutdown();
 }
+
+/// G12: when the helper dies hard (SIGKILL, no chance to clean up) its engines
+/// end their sessions and exit on their own instead of lingering as logged-in
+/// orphans.
+#[test]
+fn g12_engine_exits_when_the_helper_is_killed() {
+    let server = silent_server();
+    let mut h = start(&[]);
+    let (_rdp, engine_pid) = h.open_rdp(server.port);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(pid_alive(engine_pid));
+    unsafe { libc::kill(h.pid() as libc::pid_t, libc::SIGKILL) };
+    let _ = h.child.wait();
+    assert!(
+        wait_pid_gone(engine_pid, Duration::from_secs(1)),
+        "the engine outlived its helper by more than 1 s"
+    );
+}
+
+/// G15: a screenshot before `desktop_ready` is refused, with the request's own
+/// correlation id (never a frameId-0 image), and the session stays usable.
+#[test]
+fn g15_screenshot_before_desktop_ready_is_refused_with_its_request_id() {
+    let server = silent_server();
+    let mut h = start(&[]);
+    let (rdp, _) = h.open_rdp(server.port);
+    h.send(&Request::RdpScreenshot { id: 777, session_id: rdp });
+    let reply = h.read_until(Duration::from_secs(5), |k, p| {
+        if k != remote_hub_helper::protocol::FRAME_KIND_CONTROL {
+            return None;
+        }
+        match remote_hub_helper::protocol::decode_response(p).ok()? {
+            r @ (Response::Error { .. } | Response::RdpScreenshot { .. }) => Some(r),
+            _ => None,
+        }
+    });
+    match reply {
+        Response::Error { id, code, .. } => assert_eq!((id, code.as_str()), (Some(777), "not_ready")),
+        other => panic!("expected a not_ready refusal, got {other:?}"),
+    }
+    // Unknown sessions are refused, not acked.
+    h.send(&Request::RdpScreenshot { id: 778, session_id: 4242 });
+    match h.read_response() {
+        Response::Error { id, code, .. } => assert_eq!((id, code.as_str()), (Some(778), "session_not_found")),
+        other => panic!("expected session_not_found, got {other:?}"),
+    }
+    h.shutdown();
+}
+
+/// G16: input and certificate decisions for an unknown session are refused with
+/// `session_not_found` instead of being acknowledged.
+#[test]
+fn g16_unknown_session_input_and_decision_are_refused() {
+    let mut h = start(&[]);
+    h.send(&Request::RdpInput { id: 1, session_id: 999, events: vec![] });
+    match h.read_response() {
+        Response::Error { id, code, .. } => assert_eq!((id, code.as_str()), (Some(1), "session_not_found")),
+        other => panic!("expected session_not_found, got {other:?}"),
+    }
+    h.send(&Request::RdpCertDecision {
+        id: 2,
+        session_id: 999,
+        fingerprint: "AA".to_string(),
+        accept: "once".to_string(),
+    });
+    match h.read_response() {
+        Response::Error { id, code, .. } => assert_eq!((id, code.as_str()), (Some(2), "session_not_found")),
+        other => panic!("expected session_not_found, got {other:?}"),
+    }
+    h.shutdown();
+}

@@ -1,171 +1,51 @@
-//! The `--rdp-engine` child: one process per RDP session. It reads length-
-//! prefixed control frames from a socketpair on fd 3, runs the IronRDP
-//! connection sequence with strict TLS and a certificate-decision callback,
-//! owns one RGBA8 framebuffer, and streams state/desktop/update/screenshot
-//! events back to the helper.
-use std::io::{Read as _, Write as _};
+//! The `--rdp-engine` child: one process per RDP session. It reads the Open
+//! command (all parameters, including the password) from the socketpair on fd
+//! 3, runs the IronRDP connection sequence (`connect.rs`), owns one RGBA8
+//! framebuffer and streams state/desktop/update/screenshot events back to the
+//! helper. If the helper goes away the engine ends its session and exits.
 use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixStream;
-use std::sync::mpsc::{self, Receiver};
-use std::future::Future;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use ironrdp_connector::sspi::generator::NetworkRequest;
-use ironrdp_connector::{
-    ClientConnector, Config, ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, DesktopSize,
-    ServerName,
-};
 use ironrdp_graphics::image_processing::PixelFormat;
+use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput};
-use ironrdp_tls::{extract_tls_server_public_key, upgrade_with_certificate_validation_callback_for_endpoint};
-use ironrdp_tokio::{
-    connect_begin, connect_finalize, mark_as_upgraded, split_tokio_framed, FramedWrite as _, TokioFramed,
-};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
+use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
+use ironrdp_tokio::FramedWrite as _;
 
-use super::cert::{fingerprint_matches, fingerprint_sha256, parse_cert_fields, CertFields};
+use super::connect::{connect_sequence, Connected, FramedRead, FramedWrite, Params, SystemTls, Timeouts, TlsUpgrader};
+use super::engine_io::{read_frame, spawn_reader, Cancel, Control, Inbox, Out};
 use super::framebuffer::{Framebuffer, Rect};
 use super::input::Geometry;
-use super::protocol::{self, EngineCommand, EngineEvent, InputEvent};
+use super::input_encode::{coalesce_moves, encode_input};
+use super::mapping::map_terminate;
+use super::protocol::{self, EngineCommand, EngineEvent, ENGINE_UPDATE_OVERHEAD};
 use super::reasons::RdpClosedReason;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-const CERT_PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
-const MAX_HELPER_FRAME: usize = 1024 * 1024; // one helper frame stays <= 1 MiB
-
-struct NoopNetworkClient;
-impl ironrdp_tokio::NetworkClient for NoopNetworkClient {
-    fn send(&mut self, _request: &NetworkRequest) -> impl Future<Output = ConnectorResult<Vec<u8>>> {
-        async move {
-            Err(ConnectorError::new(
-                "kdc proxy",
-                ConnectorErrorKind::Reason("no network client; Kerberos KDC proxying is not implemented".into()),
-            ))
-        }
-    }
-}
-
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn write_frame(stream: &mut UnixStream, frame: &[u8]) -> std::io::Result<()> {
-    stream.write_all(frame)
-}
-
-fn read_frame(stream: &mut UnixStream) -> std::io::Result<Option<Vec<u8>>> {
-    let mut len_buf = [0u8; 4];
-    let mut got = 0;
-    while got < 4 {
-        match stream.read(&mut len_buf[got..]) {
-            Ok(0) if got == 0 => return Ok(None),
-            Ok(0) => return Err(std::io::Error::other("short frame header")),
-            Ok(n) => got += n,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    let len = u32::from_le_bytes(len_buf) as usize;
-    if len == 0 || len > protocol::RDP_MAX_COMMAND_BODY {
-        return Err(std::io::Error::other("frame body length out of range"));
-    }
-    let mut body = vec![0u8; len];
-    stream.read_exact(&mut body)?;
-    Ok(Some(body))
-}
-
-fn send_control(stream: &mut UnixStream, event: &EngineEvent) {
-    let _ = write_frame(stream, &protocol::encode_control(event));
-}
-
-fn send_state(stream: &mut UnixStream, state: &str) {
-    send_control(stream, &EngineEvent::State { state: state.to_string() });
-}
-
-fn connector_config(host: String, username: String, password: String, domain: Option<String>, width: u32, height: u32) -> Config {
-    Config {
-        desktop_size: DesktopSize { width: width as u16, height: height as u16 },
-        monitor_layout: None,
-        desktop_scale_factor: 0,
-        desktop_physical_size: None,
-        desktop_orientation: None,
-        device_scale_factor: None,
-        monitor_extended_layout: None,
-        relative_mouse_input: false,
-        enable_tls: true,
-        enable_credssp: true,
-        enable_standard_rdp_security: false,
-        credentials: Credentials::UsernamePassword { username, password },
-        domain,
-        client_build: 2600,
-        client_name: host,
-        keyboard_type: ironrdp_pdu::gcc::KeyboardType::IBM_ENHANCED,
-        keyboard_subtype: 0,
-        keyboard_functional_keys_count: 12,
-        keyboard_layout: 0x409,
-        connection_type: ironrdp_pdu::gcc::ConnectionType::Lan,
-        ime_file_name: String::new(),
-        bitmap: None,
-        dig_product_id: String::new(),
-        client_dir: String::new(),
-        alternate_shell: String::new(),
-        work_dir: String::new(),
-        remote_application_mode: false,
-        rail_support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel::empty(),
-        platform: ironrdp_pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
-        hardware_id: None,
-        request_data: None,
-        autologon: false,
-        enable_audio_playback: false,
-        enable_audio_capture: false,
-        performance_flags: ironrdp_pdu::rdp::client_info::PerformanceFlags::default(),
-        license_cache: None,
-        timezone_info: ironrdp_pdu::rdp::client_info::TimezoneInfo::default(),
-        compression_type: None,
-        enable_server_pointer: false,
-        pointer_software_rendering: false,
-        multitransport_flags: None,
-        support_dyn_vc_gfx_protocol: false,
-    }
-}
-
-fn map_connector_error(e: &ConnectorError) -> RdpClosedReason {
-    match e.kind() {
-        ConnectorErrorKind::AccessDenied => RdpClosedReason::AuthFailed,
-        ConnectorErrorKind::Credssp(_) => RdpClosedReason::AuthFailed,
-        _ => RdpClosedReason::ProtocolError,
-    }
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 pub fn run_engine() -> i32 {
     let stream = unsafe { UnixStream::from_raw_fd(3) };
     match engine_main(stream) {
         Ok(code) => code,
-        Err(e) => {
-            eprintln!("rdp-engine error: {e}");
-            1
-        }
+        Err(_) => 2, // the helper is gone (its socket failed): nothing to tell it
     }
 }
 
-fn engine_main(mut stream: UnixStream) -> Result<i32, std::io::Error> {
-    // First frame must be Open. All parameters (including the password) arrive
-    // over this socketpair, never argv/env/file.
+fn engine_main(mut stream: UnixStream) -> std::io::Result<i32> {
+    // The first frame must be Open. All parameters (including the password)
+    // arrive over this socketpair, never argv/env/file.
     let open = loop {
         match read_frame(&mut stream)? {
             Some(body) if body.first() == Some(&protocol::FRAME_CONTROL) => {
-                match serde_json::from_slice::<EngineCommand>(&body[1..]) {
-                    Ok(cmd @ EngineCommand::Open { .. }) => break cmd,
-                    _ => continue,
+                if let Ok(cmd @ EngineCommand::Open { .. }) = serde_json::from_slice::<EngineCommand>(&body[1..]) {
+                    break cmd;
                 }
             }
-            Some(_) => continue,
+            Some(_) => {}
             None => return Ok(0),
         }
     };
@@ -173,204 +53,59 @@ fn engine_main(mut stream: UnixStream) -> Result<i32, std::io::Error> {
     else {
         return Ok(1);
     };
-
-    let (decision_tx, decision_rx): (mpsc::Sender<(String, String)>, Receiver<(String, String)>) = mpsc::channel();
-    let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<InputEvent>>();
-    let screenshot_requested = Arc::new(Mutex::new(false));
-    let close_requested = Arc::new(Mutex::new(false));
-    let forced_reason: Arc<Mutex<Option<RdpClosedReason>>> = Arc::new(Mutex::new(None));
-
-    {
-        let mut read_stream = stream.try_clone()?;
-        let decision_tx = decision_tx.clone();
-        let input_tx = input_tx.clone();
-        let screenshot_requested = screenshot_requested.clone();
-        let close_requested = close_requested.clone();
-        std::thread::spawn(move || loop {
-            match read_frame(&mut read_stream) {
-                Ok(Some(body)) if body.first() == Some(&protocol::FRAME_CONTROL) => {
-                    let Ok(cmd) = serde_json::from_slice::<EngineCommand>(&body[1..]) else { continue };
-                    match cmd {
-                        EngineCommand::CertDecision { fingerprint, accept } => {
-                            let _ = decision_tx.send((fingerprint, accept));
-                        }
-                        EngineCommand::Input { events } => {
-                            let _ = input_tx.send(events);
-                        }
-                        EngineCommand::Screenshot => {
-                            *screenshot_requested.lock().unwrap() = true;
-                        }
-                        EngineCommand::Ack { .. } => {}
-                        EngineCommand::Close => {
-                            *close_requested.lock().unwrap() = true;
-                            let _ = decision_tx.send((String::new(), "reject".to_string()));
-                        }
-                        EngineCommand::Open { .. } => {}
-                    }
-                }
-                Ok(Some(_)) => {}
-                Ok(None) | Err(_) => break,
-            }
-        });
-    }
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("build tokio runtime");
-    rt.block_on(connect_and_run(
-        host,
-        port,
-        username,
-        password.expose().to_string(),
-        domain,
-        width,
-        height,
-        expected_fingerprint,
-        &mut stream,
-        decision_rx,
-        &mut input_rx,
-        screenshot_requested,
-        close_requested,
-        forced_reason,
-    ));
+    let params = Params { host, port, username, password, domain, width, height, expected_fingerprint };
+    let out = Arc::new(Out::new(stream.try_clone()?));
+    let inbox = spawn_reader(stream);
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    rt.block_on(run(params, Timeouts::default(), out, inbox, &SystemTls))?;
     Ok(0)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn connect_and_run(
-    host: String,
-    port: u16,
-    username: String,
-    password: String,
-    domain: Option<String>,
-    width: u32,
-    height: u32,
-    expected_fingerprint: Option<String>,
-    stream: &mut UnixStream,
-    decision_rx: Receiver<(String, String)>,
-    input_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<InputEvent>>,
-    screenshot_requested: Arc<Mutex<bool>>,
-    close_requested: Arc<Mutex<bool>>,
-    forced_reason: Arc<Mutex<Option<RdpClosedReason>>>,
-) {
-    send_state(stream, "connecting");
-    let result = tokio::time::timeout(CONNECT_TIMEOUT, connect_sequence(
-        host, port, username, password, domain, width, height, expected_fingerprint, decision_rx, &forced_reason, stream,
-    ))
-    .await;
-    match result {
-        Err(_) => send_control(stream, &EngineEvent::Closed { reason: RdpClosedReason::Timeout.as_str().to_string() }),
-        Ok(Ok(mut session)) => run_active_stage(&mut session, stream, input_rx, screenshot_requested, close_requested).await,
-        Ok(Err(reason)) => {
-            let forced = forced_reason.lock().unwrap().take();
-            send_control(stream, &EngineEvent::Closed { reason: forced.unwrap_or(reason).as_str().to_string() });
-        }
+/// Run one session to its end. `Err` means the helper's socket failed.
+pub async fn run(
+    params: Params,
+    timeouts: Timeouts,
+    out: Arc<Out>,
+    inbox: Inbox,
+    tls: &dyn TlsUpgrader,
+) -> std::io::Result<()> {
+    let Inbox { control, decisions, cancel } = inbox;
+    match connect_sequence(params, timeouts, out.clone(), decisions, cancel.clone(), tls).await {
+        Ok(connected) => run_active(connected, &out, control, &cancel).await,
+        Err(reason) => report_closed(&out, reason),
     }
 }
 
-type FramedRead = TokioFramed<tokio::io::ReadHalf<Box<dyn AsyncReadWrite + Unpin + Send + Sync>>>;
-type FramedWrite = TokioFramed<tokio::io::WriteHalf<Box<dyn AsyncReadWrite + Unpin + Send + Sync>>>;
+/// Tell the helper why the session ended. When the helper itself went away
+/// there is no one to tell.
+fn report_closed(out: &Out, reason: RdpClosedReason) -> std::io::Result<()> {
+    if reason == RdpClosedReason::HelperShutdown {
+        return Ok(());
+    }
+    out.closed(reason)
+}
 
-trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send + Sync {}
-impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncReadWrite for T {}
-
-struct Session {
+struct Active {
     reader: FramedRead,
     writer: FramedWrite,
-    active_stage: ironrdp_session::ActiveStage,
+    stage: ActiveStage,
+    image: DecodedImage,
     framebuffer: Framebuffer,
     desktop_sent: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn connect_sequence(
-    host: String,
-    port: u16,
-    username: String,
-    password: String,
-    domain: Option<String>,
-    width: u32,
-    height: u32,
-    expected_fingerprint: Option<String>,
-    decision_rx: Receiver<(String, String)>,
-    forced_reason: &Arc<Mutex<Option<RdpClosedReason>>>,
-    stream: &mut UnixStream,
-) -> Result<Session, RdpClosedReason> {
-    let tcp = TcpStream::connect((host.as_str(), port)).await.map_err(|_| RdpClosedReason::NetworkError)?;
-    let client_addr = tcp.local_addr().map_err(|_| RdpClosedReason::NetworkError)?;
-    let config = connector_config(host.clone(), username, password, domain, width, height);
-    let mut connector = ClientConnector::new(config, client_addr);
-    let mut framed = TokioFramed::new(tcp);
-
-    send_state(stream, "tls");
-    let should_upgrade = connect_begin(&mut framed, &mut connector).await.map_err(|_| RdpClosedReason::NetworkError)?;
-    let (initial_stream, leftover) = framed.into_inner();
-
-    let expected = expected_fingerprint.clone();
-    let forced = forced_reason.clone();
-    let decision_rx = Arc::new(Mutex::new(decision_rx));
-    let cb_stream = Arc::new(Mutex::new(stream.try_clone().map_err(|_| RdpClosedReason::TlsError)?));
-    let callback: ironrdp_tls::CertificateValidationCallback = Arc::new(move |der, _endpoint, error| {
-        let presented = fingerprint_sha256(der);
-        if let Some(expected) = &expected {
-            if !fingerprint_matches(&presented, expected) {
-                *forced.lock().unwrap() = Some(RdpClosedReason::CertChanged);
-                return false;
-            }
-            return true;
-        }
-        send_state(&mut *cb_stream.lock().unwrap(), "cert_prompt");
-        let fields = parse_cert_fields(der).unwrap_or(CertFields {
-            subject: String::new(),
-            issuer: String::new(),
-            not_before: String::new(),
-            not_after: String::new(),
-        });
-        send_control(&mut *cb_stream.lock().unwrap(), &EngineEvent::CertPrompt {
-            host: String::new(),
-            port: 0,
-            fingerprint: presented.clone(),
-            subject: fields.subject,
-            issuer: fields.issuer,
-            not_before: fields.not_before,
-            not_after: fields.not_after,
-            reason: super::mapping::cert_reason_code(error).to_string(),
-            detail: Some(error.to_string()),
-        });
-        match decision_rx.lock().unwrap().recv_timeout(CERT_PROMPT_TIMEOUT) {
-            Ok((decision_fp, accept)) if fingerprint_matches(&presented, &decision_fp) && (accept == "once" || accept == "session_trust") => true,
-            _ => {
-                *forced.lock().unwrap() = Some(RdpClosedReason::CertRejected);
-                false
-            }
-        }
-    });
-
-    let (tls_stream, tls_cert) = upgrade_with_certificate_validation_callback_for_endpoint(initial_stream, &host, &host, callback)
-        .await
-        .map_err(|_| RdpClosedReason::TlsError)?;
-    let server_public_key = extract_tls_server_public_key(&tls_cert).ok_or(RdpClosedReason::TlsError)?.to_vec();
-    let upgraded = mark_as_upgraded(should_upgrade, &mut connector);
-
-    send_state(stream, "authenticating");
-    let mut upgraded_framed = TokioFramed::new_with_leftover(Box::new(tls_stream) as Box<dyn AsyncReadWrite + Unpin + Send + Sync>, leftover);
-    let outcome = connect_finalize(
-        upgraded,
-        connector,
-        &mut upgraded_framed,
-        &mut NoopNetworkClient,
-        ServerName::from(host.as_str()),
-        server_public_key,
-        None,
-    )
-    .await
-    .map_err(|e| map_connector_error(&e))?;
-    let connection = outcome.into_connected().map_err(|e| map_connector_error(&e))?;
-
-    let framebuffer = Framebuffer::new(connection.desktop_size.width as u32, connection.desktop_size.height as u32)
-        .map_err(|_| RdpClosedReason::ProtocolError)?;
-    let active_stage = ActiveStageBuilder {
+async fn run_active(
+    connected: Connected,
+    out: &Out,
+    mut control: tokio::sync::mpsc::Receiver<Control>,
+    cancel: &Cancel,
+) -> std::io::Result<()> {
+    let Connected { reader, writer, connection } = connected;
+    let Ok(framebuffer) = Framebuffer::new(connection.desktop_size.width as u32, connection.desktop_size.height as u32)
+    else {
+        return report_closed(out, RdpClosedReason::ProtocolError);
+    };
+    let stage = ActiveStageBuilder {
         static_channels: connection.static_channels,
         user_channel_id: connection.user_channel_id,
         io_channel_id: connection.io_channel_id,
@@ -381,153 +116,136 @@ async fn connect_sequence(
         pointer_software_rendering: connection.pointer_software_rendering,
     }
     .build();
-    let (reader, writer) = split_tokio_framed(upgraded_framed);
-
-    Ok(Session { reader, writer, active_stage, framebuffer, desktop_sent: false })
-}
-
-async fn run_active_stage(
-    session: &mut Session,
-    stream: &mut UnixStream,
-    input_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<InputEvent>>,
-    screenshot_requested: Arc<Mutex<bool>>,
-    close_requested: Arc<Mutex<bool>>,
-) {
-    let mut image = DecodedImage::new(PixelFormat::RgbA32, session.framebuffer.width() as u16, session.framebuffer.height() as u16);
+    let image = DecodedImage::new(PixelFormat::RgbA32, framebuffer.width() as u16, framebuffer.height() as u16);
+    let mut a = Active { reader, writer, stage, image, framebuffer, desktop_sent: false };
 
     loop {
-        if *close_requested.lock().unwrap() {
-            send_control(stream, &EngineEvent::Closed { reason: RdpClosedReason::KilledByClose.as_str().to_string() });
-            return;
-        }
-        if *screenshot_requested.lock().unwrap() {
-            *screenshot_requested.lock().unwrap() = false;
-            send_screenshot(session, stream);
-        }
-
         let outputs = tokio::select! {
-            frame = session.reader.read_pdu() => {
-                match frame {
-                    Ok((action, payload)) => match session.active_stage.process(&mut image, action, &payload, None) {
-                        Ok(o) => o,
-                        Err(_) => {
-                            send_control(stream, &EngineEvent::Closed { reason: RdpClosedReason::ProtocolError.as_str().to_string() });
-                            return;
-                        }
-                    },
-                    Err(_) => {
-                        send_control(stream, &EngineEvent::Closed { reason: RdpClosedReason::NetworkError.as_str().to_string() });
-                        return;
-                    }
+            reason = cancel.wait() => return report_closed(out, reason),
+            ctl = control.recv() => match ctl {
+                // The helper went away: end the session and exit.
+                None => return Ok(()),
+                Some(Control::Input(events)) => handle_input(&mut a, out, &events)?,
+                Some(Control::Screenshot) => {
+                    send_screenshot(&a, out)?;
+                    Vec::new()
                 }
-            }
-            events = input_rx.recv() => {
-                match events {
-                    Some(events) => encode_and_apply_input(session, &events).unwrap_or_default(),
-                    None => {
-                        send_control(stream, &EngineEvent::Closed { reason: RdpClosedReason::HelperShutdown.as_str().to_string() });
-                        return;
-                    }
-                }
-            }
+                Some(Control::Ack(_)) => Vec::new(),
+            },
+            frame = a.reader.read_pdu() => match frame {
+                Ok((action, payload)) => match a.stage.process(&mut a.image, action, &payload, None) {
+                    Ok(o) => o,
+                    Err(_) => return report_closed(out, RdpClosedReason::ProtocolError),
+                },
+                Err(_) => return report_closed(out, RdpClosedReason::NetworkError),
+            },
         };
-
-        let mut done = false;
-        for out in outputs {
-            match out {
-                ActiveStageOutput::ResponseFrame(frame) => {
-                    let _ = session.writer.write_all(&frame).await;
-                }
-                ActiveStageOutput::GraphicsUpdate(_region) => {
-                    let rect = apply_image(session, &image);
-                    if !session.desktop_sent && session.framebuffer.frame_id() > 0 {
-                        session.desktop_sent = true;
-                        send_control(stream, &EngineEvent::Desktop {
-                            frame_id: session.framebuffer.frame_id(),
-                            width: session.framebuffer.width(),
-                            height: session.framebuffer.height(),
-                            timestamp: session.framebuffer.last_update_ms(),
-                        });
-                    }
-                    if let Some(rect) = rect {
-                        let _ = send_update_chunked(session, stream, rect);
-                    }
-                }
-                ActiveStageOutput::Terminate(_reason) => done = true,
-                _ => {}
-            }
-        }
-        if done {
-            send_control(stream, &EngineEvent::Closed { reason: RdpClosedReason::ProtocolError.as_str().to_string() });
-            return;
+        if let Some(reason) = handle_outputs(&mut a, out, outputs).await? {
+            return report_closed(out, reason);
         }
     }
 }
 
-/// Copy the decoded image into the engine framebuffer and return the region to
-/// send (the whole frame, split into <= 1 MiB helper frames on the way out).
-fn apply_image(session: &mut Session, image: &DecodedImage) -> Option<Rect> {
-    let w = image.width() as u32;
-    let h = image.height() as u32;
-    if w != session.framebuffer.width() || h != session.framebuffer.height() {
+/// Apply stage outputs. Returns a closed reason when the session ended.
+async fn handle_outputs(
+    a: &mut Active,
+    out: &Out,
+    outputs: Vec<ActiveStageOutput>,
+) -> std::io::Result<Option<RdpClosedReason>> {
+    for output in outputs {
+        match output {
+            ActiveStageOutput::ResponseFrame(frame) => {
+                if a.writer.write_all(&frame).await.is_err() {
+                    return Ok(Some(RdpClosedReason::NetworkError));
+                }
+            }
+            ActiveStageOutput::GraphicsUpdate(region) => {
+                let Some(rect) = region_to_rect(&region, a.framebuffer.width(), a.framebuffer.height()) else {
+                    continue;
+                };
+                let stride = a.image.width() as usize * 4;
+                if a.framebuffer.apply_from_image(rect, a.image.data(), stride, now_ms()).is_err() {
+                    return Ok(Some(RdpClosedReason::ProtocolError));
+                }
+                if !a.desktop_sent {
+                    a.desktop_sent = true;
+                    out.send(&EngineEvent::Desktop {
+                        frame_id: a.framebuffer.frame_id(),
+                        width: a.framebuffer.width(),
+                        height: a.framebuffer.height(),
+                        timestamp: a.framebuffer.last_update_ms(),
+                    })?;
+                }
+                send_region(&a.framebuffer, out, rect)?;
+            }
+            ActiveStageOutput::Terminate(reason) => return Ok(Some(map_terminate(&reason))),
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// The server's inclusive dirty rectangle as a framebuffer rectangle, clamped
+/// to the desktop. None when it lies outside or is empty.
+pub fn region_to_rect(region: &InclusiveRectangle, fb_w: u32, fb_h: u32) -> Option<Rect> {
+    let (left, top) = (region.left as u32, region.top as u32);
+    if region.right < region.left || region.bottom < region.top || left >= fb_w || top >= fb_h {
         return None;
     }
-    session.framebuffer.apply(0, 0, w, h, image.data(), now_ms()).ok()?;
-    Some(Rect { x: 0, y: 0, w, h })
+    let right = (region.right as u32).min(fb_w - 1);
+    let bottom = (region.bottom as u32).min(fb_h - 1);
+    Some(Rect { x: left, y: top, w: right - left + 1, h: bottom - top + 1 })
 }
 
-fn send_update_chunked(session: &Session, stream: &mut UnixStream, rect: Rect) -> std::io::Result<()> {
-    let bytes_per_row = rect.w as usize * 4;
-    if bytes_per_row == 0 {
-        return Ok(());
-    }
-    let rows_per_chunk = (MAX_HELPER_FRAME / bytes_per_row).max(1);
+/// Send the dirty region, split into update frames of at most 1 MiB on the
+/// wire with every header counted.
+fn send_region(fb: &Framebuffer, out: &Out, rect: Rect) -> std::io::Result<()> {
+    let rows_per_chunk = protocol::rows_per_chunk(rect.w, ENGINE_UPDATE_OVERHEAD) as u32;
     let mut y = rect.y;
     let mut remaining = rect.h;
-    let mut out = Vec::new();
+    let mut pixels = Vec::new();
     while remaining > 0 {
-        let chunk_h = remaining.min(rows_per_chunk as u32);
-        let sub = session.framebuffer.copy_region(rect.x, y, rect.w, chunk_h, &mut out);
-        let frame = protocol::encode_update(
+        let chunk_h = remaining.min(rows_per_chunk);
+        let sub = fb.copy_region(rect.x, y, rect.w, chunk_h, &mut pixels);
+        out.send_frame(&protocol::encode_update(
             0,
-            session.framebuffer.frame_id(),
-            session.framebuffer.width(),
-            session.framebuffer.height(),
+            fb.frame_id(),
+            fb.width(),
+            fb.height(),
             sub.x,
             sub.y,
             sub.w,
             sub.h,
-            &out,
-        );
-        write_frame(stream, &frame)?;
+            &pixels,
+        ))?;
         y += chunk_h;
         remaining -= chunk_h;
     }
     Ok(())
 }
 
-fn send_screenshot(session: &Session, stream: &mut UnixStream) {
-    let fb = &session.framebuffer;
+fn send_screenshot(a: &Active, out: &Out) -> std::io::Result<()> {
+    if !a.desktop_sent {
+        return out.send(&EngineEvent::ScreenshotError { code: "not_ready".to_string() });
+    }
+    let fb = &a.framebuffer;
     let mut png = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut png, fb.width(), fb.height());
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = match encoder.write_header() {
-            Ok(w) => w,
-            Err(_) => return,
-        };
-        if writer.write_image_data(fb.pixels()).is_err() {
-            return;
+        let encoded = encoder.write_header().and_then(|mut w| w.write_image_data(fb.pixels()));
+        if encoded.is_err() {
+            return out.send(&EngineEvent::ScreenshotError { code: "encode_failed".to_string() });
         }
     }
-    send_control(stream, &EngineEvent::Screenshot {
+    out.send(&EngineEvent::Screenshot {
         frame_id: fb.frame_id(),
         width: fb.width(),
         height: fb.height(),
         timestamp: fb.last_update_ms(),
         png: base64_encode(&png),
-    });
+    })
 }
 
 fn base64_encode(data: &[u8]) -> String {
@@ -546,13 +264,52 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
-fn encode_and_apply_input(session: &mut Session, events: &[InputEvent]) -> Result<Vec<ActiveStageOutput>, ()> {
-    let fb = Geometry { width: session.framebuffer.width(), height: session.framebuffer.height() };
-    let encoded = super::input_encode::encode_input(events, fb);
-    let fast = super::input_encode::coalesce_moves(encoded.events);
+/// Validate, encode and send one input batch. Rejected events are reported
+/// (with their index and a stable code); the rest are applied.
+fn handle_input(a: &mut Active, out: &Out, events: &[protocol::InputEvent]) -> std::io::Result<Vec<ActiveStageOutput>> {
+    let fb = Geometry { width: a.framebuffer.width(), height: a.framebuffer.height() };
+    let encoded = encode_input(events, fb);
+    if !encoded.rejected.is_empty() {
+        out.send(&EngineEvent::InputRejected { applied: encoded.applied, rejected: encoded.rejected })?;
+    }
+    let fast = coalesce_moves(encoded.events);
     if fast.is_empty() {
         return Ok(Vec::new());
     }
-    let mut image = DecodedImage::new(PixelFormat::RgbA32, session.framebuffer.width() as u16, session.framebuffer.height() as u16);
-    session.active_stage.process_fastpath_input(&mut image, &fast).map_err(|_| ())
+    match a.stage.process_fastpath_input(&mut a.image, &fast) {
+        Ok(outputs) => Ok(outputs),
+        Err(_) => {
+            out.send(&EngineEvent::Error {
+                code: "input_failed".to_string(),
+                message: "the input could not be encoded".to_string(),
+            })?;
+            Ok(Vec::new())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dirty_regions_convert_to_clamped_rectangles() {
+        let r = |l, t, rr, b| InclusiveRectangle { left: l, top: t, right: rr, bottom: b };
+        assert_eq!(region_to_rect(&r(0, 0, 0, 0), 10, 10), Some(Rect { x: 0, y: 0, w: 1, h: 1 }));
+        assert_eq!(region_to_rect(&r(2, 3, 5, 7), 10, 10), Some(Rect { x: 2, y: 3, w: 4, h: 5 }));
+        // clamped to the desktop
+        assert_eq!(region_to_rect(&r(8, 8, 20, 20), 10, 10), Some(Rect { x: 8, y: 8, w: 2, h: 2 }));
+        // outside or inverted
+        assert_eq!(region_to_rect(&r(10, 0, 12, 1), 10, 10), None);
+        assert_eq!(region_to_rect(&r(5, 5, 4, 6), 10, 10), None);
+    }
+
+    #[test]
+    fn base64_matches_rfc_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
 }
