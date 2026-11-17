@@ -297,7 +297,7 @@ describe("createOutboxWorker", () => {
     expect(bound).toMatchObject({ state: "waiting", outboxId: null });
     expect(bound.dueAt).toBe(dueAt(bound.sentAt!, 3));
 
-    h.transport.answer(new SendError("connect", false));
+    h.transport.answer(new SendError("tls", false));
     const failed = await queued();
     remind("rem-failed", failed);
     h.advance(UNDO_MS);

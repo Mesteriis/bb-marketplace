@@ -40,6 +40,25 @@ export const APPEND_BACKOFF_MS = [1_000, 4_000, 15_000];
 /** How long after a send became unknown a Gmail account's Sent folder is searched for it. */
 export const SETTLE_WINDOW_MS = 5 * 60_000;
 
+/** Slice 3j: how long after Send a send that never reached the server is tried again on its own. */
+export const RETRY_WINDOW_MS = 24 * 60 * 60_000;
+/** The wait before each automatic try; the last one repeats. */
+export const RETRY_BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000];
+/** The gap between waiting sends released together (a sync round came back, or the cap was hit). */
+export const RETRY_STAGGER_MS = 7_000;
+/**
+ * Failures that prove the message never reached the server: no connection,
+ * no answer before the data, or a 4xx reply (which refuses the message even
+ * after the data). Only these retry on their own.
+ */
+const RETRYABLE = new Set<SendErrorKind>(["connect", "timeout_before_data", "temporary"]);
+
+/** The wait before try number `attempts + 1`. */
+export function retryBackoffMs(attempts: number): number {
+  const index = Math.min(Math.max(attempts, 1), RETRY_BACKOFF_MS.length) - 1;
+  return RETRY_BACKOFF_MS[index]!;
+}
+
 /** What moves an outbox row. "deleted": the row is removed. */
 export type OutboxEvent =
   | "claim"
@@ -55,15 +74,17 @@ export type OutboxEvent =
   | "resend"
   | "dismiss"
   | "recover"
-  | "settle";
+  | "settle"
+  | "wait"
+  | "hasten";
 
 type Target = OutboxState | "deleted";
 
 /** The state table. Every store transition is a compare-and-swap over these `from` states. */
 const TRANSITIONS: Record<OutboxEvent, Partial<Record<OutboxState, Target>>> = {
-  claim: { queued: "sending" },
-  undo: { queued: "deleted", held: "deleted", failed: "deleted" },
-  send_now: { held: "queued" },
+  claim: { queued: "sending", waiting: "sending" },
+  undo: { queued: "deleted", held: "deleted", failed: "deleted", waiting: "deleted" },
+  send_now: { held: "queued", waiting: "queued" },
   // From unknown too: a reload's recovery may have marked the row while the
   // old worker was still in SMTP; an accepted send is still a sent one.
   accepted: { sending: "sent", unknown: "sent" },
@@ -74,9 +95,12 @@ const TRANSITIONS: Record<OutboxEvent, Partial<Record<OutboxState, Target>>> = {
   copy_failed: { appending: "sent_no_copy" },
   retry: { failed: "queued", sent_no_copy: "sent" },
   resend: { unknown: "queued" },
-  dismiss: { unknown: "deleted", sent_no_copy: "deleted", failed: "deleted" },
+  dismiss: { unknown: "deleted", sent_no_copy: "deleted", failed: "deleted", waiting: "deleted" },
   recover: { sending: "unknown", queued: "held", appending: "sent" },
   settle: { unknown: "sent" },
+  // Slice 3j: a failed try that never reached the server waits for the next one.
+  wait: { sending: "waiting" },
+  hasten: { waiting: "waiting" },
 };
 
 /** Where `event` takes a row in `from`, or null when it does not apply. */
@@ -142,6 +166,8 @@ export type QueueDeps = ComposeDeps & { notifier: OutboxNotifier; rate: SendRate
 export type OutboxDeps = ComposeDeps & {
   notifier: OutboxNotifier;
   transport: MailTransport;
+  /** Slice 3j: the per-account cap, shared with Retry and Send again, for automatic tries. */
+  rate?: SendRateLimit;
   /** Waits between Sent-copy tries; resolves early when the signal aborts. Defaults to a timer. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 };
@@ -376,6 +402,14 @@ export async function runOutboxOnce(
   }
   const due = deps.store.nextDueOutbox(deps.clock.now().toISOString(), []);
   if (due === null) return false;
+  if (due.state === "waiting" && deps.rate !== undefined && !deps.rate.take(due.accountId)) {
+    // Over the cap: this automatic try moves back instead of being sent.
+    const now = deps.clock.now();
+    deps.store.transitionOutbox(due.id, fromStates("hasten"), "waiting", {
+      sendAfter: new Date(now.getTime() + 60_000).toISOString(),
+    });
+    return true;
+  }
 
   type Outcome =
     | { state: "skipped" }
@@ -398,7 +432,7 @@ export async function runOutboxOnce(
       }
       if (account === null || payload === null || config === null) {
         // Nothing was sent: SMTP was never opened.
-        return { state: "failed", row: claimed, kind: account?.smtp === null ? "connect" : "auth" };
+        return { state: "failed", row: claimed, kind: account?.smtp === null ? "no_smtp" : "auth" };
       }
       try {
         const result = await deps.transport.send(
@@ -650,10 +684,38 @@ function settle(
   state: "failed" | "unknown",
   kind: SendErrorKind,
 ): void {
-  const updatedAt = deps.clock.now().toISOString();
+  const now = deps.clock.now();
+  const updatedAt = now.toISOString();
+  const retries =
+    state === "failed" && RETRYABLE.has(kind) && now.getTime() < Date.parse(row.createdAt) + RETRY_WINDOW_MS;
+  if (retries) {
+    const sendAfter = new Date(now.getTime() + retryBackoffMs(row.attempts)).toISOString();
+    if (deps.store.transitionOutbox(row.id, fromStates("wait"), "waiting", { errorKind: kind, sendAfter, updatedAt })) {
+      publish(deps, row, "waiting");
+    }
+    return;
+  }
   if (deps.store.transitionOutbox(row.id, ["sending"], state, { errorKind: kind, updatedAt })) {
     publish(deps, row, state);
   }
+}
+
+/**
+ * Slice 3j: the account's server answered again (an ok sync round), so its
+ * waiting sends are due now, a few seconds apart. Returns how many.
+ */
+export function hastenWaiting(deps: Pick<OutboxDeps, "store" | "clock">, accountId: string): number {
+  const now = deps.clock.now().getTime();
+  let hastened = 0;
+  let slot = 0;
+  for (const row of deps.store.listOutbox(accountId)) {
+    if (row.state !== "waiting") continue;
+    // Every waiting row takes a slot, so a second call moves nothing.
+    const sendAfter = new Date(now + slot++ * RETRY_STAGGER_MS).toISOString();
+    if (Date.parse(row.sendAfter) <= Date.parse(sendAfter)) continue;
+    if (deps.store.transitionOutbox(row.id, fromStates("hasten"), "waiting", { sendAfter })) hastened++;
+  }
+  return hastened;
 }
 
 function requeue(

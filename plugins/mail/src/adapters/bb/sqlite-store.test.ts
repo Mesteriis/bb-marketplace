@@ -2219,6 +2219,19 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       expect(s.getDraft("d_1")).not.toBeNull();
     });
 
+    it("claims a waiting row once it is due, and leaves it alone on a restart (slice 3j)", () => {
+      s.queueOutbox(newOutbox({ sendAfter: later(1_000) }), 1);
+      expect(s.claimDueOutbox(later(1_000), [])).toMatchObject({ state: "sending", attempts: 1 });
+      expect(
+        s.transitionOutbox("out_1", ["sending"], "waiting", { errorKind: "connect", sendAfter: later(61_000) }),
+      ).toBe(true);
+      expect(s.nextDueOutbox(later(60_000), [])).toBeNull();
+      expect(s.recoverOutboxOnStart(later(70_000))).toEqual({ unknown: 0, held: 0 });
+      expect(s.getOutbox("out_1")).toMatchObject({ state: "waiting", errorKind: "connect" });
+      expect(s.claimDueOutbox(later(70_000), [])).toMatchObject({ id: "out_1", state: "sending", attempts: 2 });
+      expect(s.claimDueOutbox(later(70_000), [])).toBeNull();
+    });
+
     it("claims the oldest due row of an account not busy, once", () => {
       s.createDraft(newDraft({ id: "d_2", accountId: "acc_2" }));
       s.createDraft(newDraft({ id: "d_3" }));

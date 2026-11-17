@@ -1268,7 +1268,7 @@ export class InMemoryMailStore implements MailStore {
       .map((e) => e.record)
       .filter(
         (r) =>
-          r.state === "queued" &&
+          (r.state === "queued" || r.state === "waiting") &&
           Date.parse(r.sendAfter) <= now &&
           !busyAccounts.includes(r.accountId) &&
           (onlyId === undefined || r.id === onlyId),

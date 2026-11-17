@@ -2340,7 +2340,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
     const due = db
       .prepare<[{ now: string; busy: string; only: string | null }], { id: string }>(
         `SELECT id FROM outbox
-         WHERE state = 'queued' AND send_after <= @now
+         WHERE state IN ('queued', 'waiting') AND send_after <= @now
            AND account_id NOT IN (SELECT value FROM json_each(@busy))
            AND (@only IS NULL OR id = @only)
          ORDER BY send_after, created_at, id LIMIT 1`,
@@ -4435,7 +4435,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         const changed = db
           .prepare(
             `UPDATE outbox SET state = 'sending', attempts = attempts + 1, updated_at = ?
-             WHERE id = ? AND state = 'queued'`,
+             WHERE id = ? AND state IN ('queued', 'waiting')`,
           )
           .run(now, due.id).changes;
         return changed === 1 ? toOutbox(outboxById.get(due.id)!) : null;

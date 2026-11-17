@@ -113,3 +113,21 @@ describe("OutboxSection", () => {
     expect(container.innerHTML).toBe("");
   });
 });
+
+describe("a waiting send (slice 3j)", () => {
+  it("offers Send now, Edit and Discard and says when Mail tries again", () => {
+    const waiting = row("waiting", { errorKind: "connect", attempts: 2, sendAfter: "2026-11-17T10:42:00.000Z" });
+    expect(outboxActions(waiting)).toEqual(["send_now", "edit", "dismiss"]);
+    const text = outboxStateText(waiting);
+    expect(text).toMatch(/^Not sent yet: the server could not be reached\. Next try at .+ \(try 3\)\.$/);
+    expect(outboxRowHint(waiting)).toBe("Edit reopens the draft. Discard deletes the message and its draft.");
+    // Waiting is not yet a problem for the owner to fix.
+    expect(outboxAttention([waiting])).toBe(0);
+  });
+
+  it("has a text without a time when the date does not parse", () => {
+    expect(outboxStateText({ state: "waiting", errorKind: null, rejected: [], sendAfter: "nope" })).toBe(
+      "Not sent yet. Mail will try again.",
+    );
+  });
+});

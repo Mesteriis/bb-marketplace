@@ -298,6 +298,7 @@ const OUTBOX_EVENT_STATES = new Set<OutboxChangedPayload["state"]>([
   "failed",
   "unknown",
   "sent_no_copy",
+  "waiting",
   "done",
   "cancelled",
 ]);
@@ -2005,6 +2006,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
             break;
           case "sent_no_copy":
             toast.error(row !== null ? outboxStateText(row) : "Sent; the copy to Sent failed", { id: toastId });
+            break;
+          case "waiting":
+            // Not an error yet: Mail tries again on its own (slice 3j).
+            toast(row !== null ? outboxStateText(row) : "Not sent yet. Mail will try again.", { id: toastId });
             break;
           case "held":
           case "sent":

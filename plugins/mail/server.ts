@@ -132,6 +132,7 @@ import {
   OUTBOX_CHANGED_CHANNEL,
   ROLE_NAMES,
   SendRateLimit,
+  hastenWaiting,
   UndoneSends,
   addComposeAttachment,
   attachmentRoom,
@@ -1297,6 +1298,12 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
           } catch {
             senderChecks.markStale();
           }
+          // Slice 3j: the server answered, so sends waiting for it go now.
+          try {
+            if (hastenWaiting({ store, clock }, accountId) > 0) worker.wake(accountId);
+          } catch (error) {
+            bb.log.warn(`outbox: waiting sends not released (${errorKind(error)})`);
+          }
           afterRound(newMailDeps, accountId, outcome, only);
           // Category rules and reply reminders over the round's new rows (slice 3f).
           afterRoundAi({ store, clock, categoriesOn: () => current.mailCategories, log: (line) => bb.log.info(line) }, accountId, outcome);
@@ -1451,6 +1458,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         ...composeDeps,
         notifier: outboxNotifier,
         transport,
+        rate: queueDeps.rate,
         isReady: () => vault !== null,
         mailChanged: (accountId) => {
           publishChanged(accountId);

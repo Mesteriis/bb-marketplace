@@ -680,6 +680,8 @@ export const outboxStateSchema = z.enum([
   "unknown",
   "sent_no_copy",
   "done",
+  /** Slice 3j: a send that never reached the server waits for its next automatic try. */
+  "waiting",
 ]);
 export type OutboxState = z.infer<typeof outboxStateSchema>;
 
@@ -698,6 +700,8 @@ export const sendErrorKindSchema = z.enum([
   "append_failed",
   /** A 5xx reply to MAIL FROM (other than 552) for an alias From; the core decides it (slice 3d). */
   "sender_refused",
+  /** Slice 3j: the account has no SMTP server set; nothing was opened and nothing retries. */
+  "no_smtp",
 ]);
 export type SendErrorKind = z.infer<typeof sendErrorKindSchema>;
 

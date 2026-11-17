@@ -46,6 +46,8 @@ function stateActions(row: Pick<OutboxRow, "state">): OutboxAction[] {
       return ["resend", "dismiss"];
     case "sent_no_copy":
       return ["retry_copy", "dismiss"];
+    case "waiting":
+      return ["send_now", "edit", "dismiss"];
     case "sending":
     case "sent":
     case "appending":
@@ -62,9 +64,10 @@ export function outboxActionLabel(row: Pick<OutboxRow, "state">, action: OutboxA
 
 /** A line under a row that says what its buttons keep and delete, or null. */
 export function outboxRowHint(row: Pick<OutboxRow, "state"> & Partial<Pick<OutboxRow, "purpose">>): string | null {
-  if (row.purpose === "unsubscribe") return row.state === "failed" || row.state === "unknown" ? "Discard deletes the request." : null;
+  if (row.purpose === "unsubscribe") return row.state === "failed" || row.state === "unknown" || row.state === "waiting" ? "Discard deletes the request." : null;
   switch (row.state) {
     case "failed":
+    case "waiting":
       return "Edit reopens the draft. Discard deletes the message and its draft.";
     case "unknown":
       return "Discard deletes the message and its draft.";
@@ -86,6 +89,7 @@ const REASONS: Record<SendErrorKind, string> = {
   no_sent_folder: "no Sent folder to copy to",
   sender_refused: "the server refused to send from this address",
   append_failed: "the copy to Sent failed",
+  no_smtp: "this account has no outgoing server set",
 };
 
 export function sendErrorText(kind: SendErrorKind): string {
@@ -93,7 +97,9 @@ export function sendErrorText(kind: SendErrorKind): string {
 }
 
 /** Where a send stands, in words. */
-export function outboxStateText(row: Pick<OutboxRow, "state" | "errorKind" | "rejected">): string {
+export function outboxStateText(
+  row: Pick<OutboxRow, "state" | "errorKind" | "rejected"> & Partial<Pick<OutboxRow, "sendAfter" | "attempts">>,
+): string {
   const reason = row.errorKind !== null ? REASONS[row.errorKind] : null;
   switch (row.state) {
     case "queued":
@@ -113,7 +119,21 @@ export function outboxStateText(row: Pick<OutboxRow, "state" | "errorKind" | "re
       return reason !== null ? `Sent; ${reason}` : "Sent; the copy to Sent failed";
     case "done":
       return "Sent";
+    case "waiting": {
+      const why = reason !== null ? `Not sent yet: ${reason}` : "Not sent yet";
+      const at = row.sendAfter !== undefined ? clockTime(row.sendAfter) : null;
+      if (at === null) return `${why}. Mail will try again.`;
+      const tries = row.attempts !== undefined && row.attempts > 0 ? ` (try ${row.attempts + 1})` : "";
+      return `${why}. Next try at ${at}${tries}.`;
+    }
   }
+}
+
+/** A time of day for an ISO date, or null when it does not parse. */
+function clockTime(iso: string): string | null {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return null;
+  return at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
 /** Rows that need the owner: shown as a count on Sent in the folder rail. */

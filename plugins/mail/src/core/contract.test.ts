@@ -697,6 +697,7 @@ describe("slice-3b contract", () => {
       "unknown",
       "sent_no_copy",
       "done",
+      "waiting",
     ]);
     expect(outboxStateSchema.options).not.toContain("cancelled");
     expect(sendErrorKindSchema.options).toEqual([
@@ -712,6 +713,7 @@ describe("slice-3b contract", () => {
       "no_sent_folder",
       "append_failed",
       "sender_refused",
+      "no_smtp",
     ]);
   });
 
