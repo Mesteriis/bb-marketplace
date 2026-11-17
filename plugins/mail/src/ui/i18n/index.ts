@@ -34,9 +34,12 @@ export function resolveLanguage(setting: unknown, system: readonly string[]): La
   return system.some((tag) => /^ru\b/i.test(tag)) ? "ru" : "en";
 }
 
-/** The BCP 47 tag for dates and numbers in the page's language. */
-export function dateLocale(): string {
-  return current === "ru" ? "ru-RU" : "en-US";
+/**
+ * The locale for dates and numbers: Russian for a Russian page, and the
+ * system's own formats (undefined) for an English one, as before slice 3j.
+ */
+export function dateLocale(): string | undefined {
+  return current === "ru" ? "ru-RU" : undefined;
 }
 
 export type Params = Readonly<Record<string, string | number>>;

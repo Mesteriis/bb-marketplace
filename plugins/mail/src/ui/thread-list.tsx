@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { CategoryFilters, RowCategory, categoryLabel, type Category } from "./category-chips.tsx";
 import { dragLabel, writeMovePayload } from "./drag-move.ts";
 import { LabelChips } from "./label-chips.tsx";
-import { msg, tx } from "./i18n/index.ts";
+import { dateLocale, msg, tx } from "./i18n/index.ts";
 
 export const NO_SUBJECT = "(no subject)";
 
@@ -31,9 +31,9 @@ export function formatListDate(iso: string | null, now: Date = new Date()): stri
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
   if (date.toDateString() === now.toDateString()) {
-    return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return date.toLocaleTimeString(dateLocale(), { hour: "numeric", minute: "2-digit" });
   }
-  return date.toLocaleDateString(undefined, {
+  return date.toLocaleDateString(dateLocale(), {
     month: "short",
     day: "numeric",
     ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
@@ -45,7 +45,7 @@ export function formatFullDate(iso: string | null): string {
   if (iso === null) return "";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return date.toLocaleString(dateLocale(), { dateStyle: "medium", timeStyle: "short" });
 }
 
 /**
@@ -56,11 +56,11 @@ export function formatUntil(iso: string | null, now: Date = new Date()): string 
   if (iso === null) return "";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
-  const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const time = date.toLocaleTimeString(dateLocale(), { hour: "2-digit", minute: "2-digit" });
   const soon = date.getTime() - now.getTime() < 6 * 86_400_000;
   const day = soon
-    ? date.toLocaleDateString(undefined, { weekday: "short" })
-    : date.toLocaleDateString(undefined, {
+    ? date.toLocaleDateString(dateLocale(), { weekday: "short" })
+    : date.toLocaleDateString(dateLocale(), {
         month: "short",
         day: "numeric",
         ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
@@ -597,7 +597,7 @@ export type HistoryState =
 function formatDay(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return date.toLocaleDateString(dateLocale(), { day: "numeric", month: "short", year: "numeric" });
 }
 
 /** The end of a folder's list: "Showing mail since ... - Load 30 more days", progress with Stop. */

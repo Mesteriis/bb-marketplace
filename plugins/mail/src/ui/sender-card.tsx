@@ -14,12 +14,12 @@ import { Icon } from "@/components/ui/icon";
 import { formatFileSize } from "./files-view.tsx";
 import { stopEscape } from "./shortcuts.ts";
 import { formatListDate, subjectOrPlaceholder } from "./thread-list.tsx";
-import { tx } from "./i18n/index.ts";
+import { dateLocale, tx } from "./i18n/index.ts";
 
 function formatDay(iso: string | null): string {
   if (iso === null) return "";
   const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString(dateLocale(), { day: "numeric", month: "short", year: "numeric" });
 }
 
 /** "48 from, 12 to - since 3 Mar 2025 - last ..." (the separators are middle dots). */

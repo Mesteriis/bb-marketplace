@@ -9,7 +9,7 @@
 import type { MessageBody, MessageHeader } from "../core/index.ts";
 import { sanitizeFileName } from "../core/file-names.ts";
 import { EMAIL_CSP, sanitizeEmailHtml } from "./sanitize.ts";
-import { tx } from "./i18n/index.ts";
+import { dateLocale, tx } from "./i18n/index.ts";
 
 /** The print frame's sandbox: the parent may call print(); the frame runs nothing. */
 export const PRINT_SANDBOX = "allow-same-origin allow-modals";
@@ -79,7 +79,7 @@ export interface PrintMessage {
 export function printDocument(messages: readonly PrintMessage[], title: string, options: { cleanLinks?: boolean } = {}): string {
   const sections = messages.map(({ header, body }) => {
     const { html, blocked } = bodyHtml(body, options.cleanLinks !== false);
-    const date = header.date === null ? "" : new Date(header.date).toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" });
+    const date = header.date === null ? "" : new Date(header.date).toLocaleString(dateLocale(), { dateStyle: "full", timeStyle: "short" });
     return (
       '<section class="mk-message"><table class="mk-head">' +
       headerRow("From", addresses([header.from])) +

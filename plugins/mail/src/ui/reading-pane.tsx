@@ -34,7 +34,7 @@ import { LabelChips } from "./label-chips.tsx";
 import { RelatedMail } from "./related-mail.tsx";
 import { LinkStatusLine, type LinkHover } from "./link-status.tsx";
 import { CryptoChip, cryptoPlaceholder, imagesHeldReason, RECEIPT_TEXT, securityOf, SenderWarnings } from "./sender-warnings.tsx";
-import { tx } from "./i18n/index.ts";
+import { dateLocale, tx } from "./i18n/index.ts";
 
 export type BodyState =
   | { status: "loading" }
@@ -258,7 +258,7 @@ const SETTLED_UNSUBSCRIBE = new Set(["done", "queued", "sent"]);
 function formatDay(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return date.toLocaleDateString(dateLocale(), { day: "numeric", month: "short", year: "numeric" });
 }
 
 /** The reading pane's part of translation (slice 3c). */

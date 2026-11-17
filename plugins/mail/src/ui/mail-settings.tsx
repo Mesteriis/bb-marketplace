@@ -34,7 +34,7 @@ import { stopEscape } from "./shortcuts.ts";
 import { BbIntegrationSettings, type BbSettingsValues } from "./bb-integration-settings.tsx";
 import { RulesSettings } from "./rules-settings.tsx";
 import type { BbCall } from "./bb-ports.ts";
-import { tx } from "./i18n/index.ts";
+import { dateLocale, tx } from "./i18n/index.ts";
 
 export type TemplateView = { id: string; name: string; doc: EditorDoc; updatedAt: string };
 export type SuggestionView = { address: string; count: number; lastDate: string };
@@ -259,7 +259,7 @@ export function sendCheckText(check: IdentityView["sendCheck"]): string | null {
 function formatDay(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return date.toLocaleDateString(dateLocale(), { day: "numeric", month: "short", year: "numeric" });
 }
 
 export function MailSettings(props: MailSettingsProps) {

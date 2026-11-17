@@ -9,7 +9,7 @@ import type { LogActor, LogOutcome, LogTool } from "../core/agent-log.ts";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { subjectOrPlaceholder } from "./thread-list.tsx";
-import { msg, tx } from "./i18n/index.ts";
+import { dateLocale, msg, tx } from "./i18n/index.ts";
 
 export const LOG_PAGE = 50;
 export const TERMINAL_NOT_LOGGED = "Commands in your own terminal are not logged.";
@@ -76,13 +76,13 @@ const OUTCOMES: Record<LogOutcome, string> = {
 export function logTime(iso: string, now: Date = new Date()): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
-  const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const time = date.toLocaleTimeString(dateLocale(), { hour: "2-digit", minute: "2-digit" });
   const day = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
   if (day(date) === day(now)) return tx("Today {time}", { time });
   if (day(date) === day(yesterday)) return tx("Yesterday {time}", { time });
-  return `${date.toLocaleDateString(undefined, { day: "numeric", month: "short" })} ${time}`;
+  return `${date.toLocaleDateString(dateLocale(), { day: "numeric", month: "short" })} ${time}`;
 }
 
 /** One row's line, without the messages. */

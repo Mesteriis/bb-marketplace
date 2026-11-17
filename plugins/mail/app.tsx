@@ -173,7 +173,7 @@ import type { SettingsSearchPorts } from "./src/ui/mail-settings.tsx";
 // The page-side pdf.js engine: pdf.js loads lazily, in a blob: worker only.
 import { browserPdfEngine } from "./src/adapters/bb/pdf-page.ts";
 import type { RuleRunView } from "./src/core/contract.ts";
-import { tx } from "./src/ui/i18n/index.ts";
+import { resolveLanguage, setLanguage, tx, type Language } from "./src/ui/i18n/index.ts";
 
 // The channel name is checked against the core constant without importing it
 // at runtime: a value import of the core would bundle its zod schemas.
@@ -526,7 +526,21 @@ const mailPageLink = (() => {
 
 type FolderState = { key: string; folders: Folder[]; roles: RoleCount[]; error: string | null };
 
+/**
+ * Slice 3j: the page's language, from the `language` setting ("auto" follows
+ * the system). Every slot component calls it first, so the texts it renders
+ * (and the helpers they call) are in that language.
+ */
+function useMailLanguage(): Language {
+  const setting = useSettings().values?.language;
+  const system = typeof navigator === "undefined" ? [] : (navigator.languages ?? [navigator.language]);
+  const language = resolveLanguage(setting, system);
+  setLanguage(language);
+  return language;
+}
+
 function MailPanel({ subPath }: PluginNavPanelProps) {
+  useMailLanguage();
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const composer = useComposer();
@@ -4347,6 +4361,7 @@ function useUnreadBadge(): ExperimentalBadge | null {
  * thread list. It draws what the page publishes and hands picks back to it.
  */
 function MailFolderSidebar(_props: PluginNavPanelProps) {
+  useMailLanguage();
   const navigate = useBbNavigate();
   const state = useSyncExternalStore(
     mailPageLink.subscribeSidebar,
@@ -4402,6 +4417,7 @@ function settledProposalId(payload: unknown): string | null {
  * id, the content hash and the view token of this card's own view.
  */
 function AgentSendInteraction({ interaction, submit, cancel }: PluginPendingInteractionProps) {
+  useMailLanguage();
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const form = experimental_useQuestionFormHost();
@@ -4432,6 +4448,7 @@ function AgentSendInteraction({ interaction, submit, cancel }: PluginPendingInte
 
 /** A settled card's row in the thread: where the email stands now, with Undo while it waits. */
 function AgentSendTimelineRow({ payload }: PluginTimelineRendererProps) {
+  useMailLanguage();
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const proposalId = settledProposalId(payload);
@@ -4481,6 +4498,7 @@ function settledBatchId(payload: unknown): string | null {
  * ticked positions (under 2 KiB: at most 50 positions and a few accounts).
  */
 function AgentTriageInteraction({ interaction, submit, cancel }: PluginPendingInteractionProps) {
+  useMailLanguage();
   const rpc = useRpc<typeof rpcContract>();
   const form = experimental_useQuestionFormHost();
   const ids = triagePayload(interaction.payload);
@@ -4516,6 +4534,7 @@ function AgentTriageInteraction({ interaction, submit, cancel }: PluginPendingIn
 
 /** A settled triage card's row: what ran, with Undo while the batch's record lives. */
 function AgentTriageTimelineRow({ payload }: PluginTimelineRendererProps) {
+  useMailLanguage();
   const rpc = useRpc<typeof rpcContract>();
   const batchId = settledBatchId(payload);
   const [version, setVersion] = useState(0);
@@ -4593,6 +4612,7 @@ function emailMessageRun(context: Pick<PluginMessageActionContext, "threadId" | 
 
 /** The Mail section of a BB thread's Info tab: shown only when the project has bound or origin mail. */
 function ThreadMailInfo({ threadId, projectId }: ExperimentalThreadInfoProps) {
+  useMailLanguage();
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const load = useCallback(() => rpc.call("bb_thread_mail", { projectId, bbThreadId: threadId }), [projectId, rpc, threadId]);

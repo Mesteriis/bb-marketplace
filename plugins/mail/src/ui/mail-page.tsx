@@ -111,7 +111,7 @@ import { SearchHelpButton, SearchNotes } from "./search-help.tsx";
 import { ServerSearchStrip, type ServerJobView } from "./server-search-strip.tsx";
 import { SAVED_SEARCH_GONE_TEXT } from "./saved-searches.tsx";
 import { SenderCardDialog } from "./sender-card.tsx";
-import { tx } from "./i18n/index.ts";
+import { getLanguage, tx } from "./i18n/index.ts";
 
 export { ALL_ACCOUNTS };
 
@@ -1203,6 +1203,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
       tabIndex={-1}
       onKeyDown={onKeyDown}
       onKeyUp={onKeyUp}
+      lang={getLanguage()}
       className="@container flex h-full min-h-0 flex-1 flex-col outline-none"
     >
       {composerView !== null && !wide ? (

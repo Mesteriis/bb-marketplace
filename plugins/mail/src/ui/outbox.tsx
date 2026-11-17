@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { subjectOrPlaceholder } from "./thread-list.tsx";
-import { msg, tx } from "./i18n/index.ts";
+import { dateLocale, msg, tx } from "./i18n/index.ts";
 
 export type OutboxAction = "undo" | "send_now" | "edit" | "retry" | "resend" | "dismiss" | "retry_copy";
 
@@ -134,7 +134,7 @@ export function outboxStateText(
 function clockTime(iso: string): string | null {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return null;
-  return at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return at.toLocaleTimeString(dateLocale(), { hour: "2-digit", minute: "2-digit" });
 }
 
 /** Rows that need the owner: shown as a count on Sent in the folder rail. */
