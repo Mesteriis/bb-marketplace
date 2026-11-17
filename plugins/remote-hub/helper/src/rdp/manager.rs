@@ -304,23 +304,29 @@ impl RdpManager {
     }
 
     /// Reap engine children; returns the session ids whose engine exited.
+    ///
+    /// Only the engine pids this manager owns are waited on. Using waitpid(-1)
+    /// here would steal children that belong to the PTY SessionManager, whose
+    /// reaper runs on the same poll loop, and that lost child would later be
+    /// reported as an orphan with no exit code (regression in w4).
     pub fn reap(&mut self) -> Vec<u32> {
         let mut out = Vec::new();
-        loop {
+        let owned: Vec<(u32, libc::pid_t)> =
+            self.sessions.iter().map(|(&id, s)| (id, s.engine_pid)).collect();
+        for (id, pid) in owned {
             let mut status: libc::c_int = 0;
-            let r = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-            if r <= 0 {
-                break;
+            let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            if r != pid {
+                continue;
             }
-            for session in self.sessions.values_mut() {
-                if session.engine_pid == r && !session.engine_exited {
-                    session.engine_exited = true;
-                    session.exit_code = Some(if libc::WIFEXITED(status) { libc::WEXITSTATUS(status) } else { 0 });
-                    if session.close_reason.is_none() {
-                        session.close_reason = Some("engine_exited".to_string());
-                    }
-                    out.push(session.id);
+            let Some(session) = self.sessions.get_mut(&id) else { continue };
+            if !session.engine_exited {
+                session.engine_exited = true;
+                session.exit_code = Some(if libc::WIFEXITED(status) { libc::WEXITSTATUS(status) } else { 0 });
+                if session.close_reason.is_none() {
+                    session.close_reason = Some("engine_exited".to_string());
                 }
+                out.push(id);
             }
         }
         out
@@ -387,6 +393,63 @@ fn classify_frame(frame: &[u8]) -> Option<RdpFrame> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The RDP reaper must only reap its own engine pids. On the old code
+    /// (waitpid(-1, WNOHANG)) this test fails deterministically: the reaper
+    /// steals the unrelated child, and the following waitpid returns -1.
+    #[test]
+    fn rdp_reap_does_not_steal_unrelated_children() {
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            unsafe { libc::_exit(7) };
+        }
+        // Let the child exit and become reapable.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let mut mgr = RdpManager::new();
+        assert!(mgr.reap().is_empty(), "empty manager reaped something");
+        let mut status: libc::c_int = 0;
+        let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        assert_eq!(r, pid, "RDP reaper stole an unrelated child");
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 7);
+    }
+
+    /// A manager that owns an engine pid must report its exit with its code.
+    #[test]
+    fn rdp_reap_reports_own_engine_exit() {
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            unsafe { libc::_exit(9) };
+        }
+        let mut fds = [0i32; 2];
+        let r = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(r, 0);
+        let mut mgr = RdpManager::new();
+        mgr.sessions.insert(
+            1,
+            RdpSession {
+                id: 1,
+                engine_pid: pid,
+                fd: fds[0],
+                read_buf: Vec::new(),
+                write_buf: VecDeque::new(),
+                state: "connecting".to_string(),
+                close_reason: None,
+                pending_screenshot_id: None,
+                engine_exited: false,
+                exit_code: None,
+                reported_closed: false,
+            },
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(mgr.reap(), vec![1]);
+        assert_eq!(mgr.take_closed(1).as_deref(), Some("engine_exited"));
+        unsafe { libc::close(fds[1]) };
+        // Session was already reaped; do not double-close the fd in the test.
+        std::mem::forget(mgr.sessions.remove(&1).unwrap());
+    }
 
     #[test]
     fn engine_env_never_carries_sslkeylogfile() {
