@@ -1255,4 +1255,47 @@ mod tests {
             ]
         );
     }
+
+    /// A session with a ready desktop, for the screenshot tests.
+    fn ready_session(rdp: &mut RdpManager) -> (u32, std::os::unix::net::UnixStream) {
+        use std::io::Write as _;
+        let mut fds = [0i32; 2];
+        assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) }, 0);
+        let sid = rdp.adopt(None, fds[0]);
+        let mut peer = unsafe { <std::os::unix::net::UnixStream as std::os::fd::FromRawFd>::from_raw_fd(fds[1]) };
+        peer.write_all(&crate::rdp::protocol::encode_control(&EngineEvent::Desktop {
+            frame_id: 1,
+            width: 8,
+            height: 8,
+            timestamp: 0,
+        }))
+        .unwrap();
+        while !rdp.is_ready(sid) {
+            let _ = rdp.process_readable(sid, usize::MAX);
+        }
+        (sid, peer)
+    }
+
+    /// J5: at most 4 screenshot requests are outstanding; the fifth is refused
+    /// with `screenshot_busy`, and an answer makes room for a new one.
+    #[test]
+    fn the_fifth_outstanding_screenshot_is_busy_until_one_is_answered() {
+        let mut manager = SessionManager::new(None);
+        let mut rdp = RdpManager::new();
+        let (sid, _peer) = ready_session(&mut rdp);
+        let mut shake = true;
+        let mut ask = |rdp: &mut RdpManager, id: u64| {
+            handle(&mut manager, rdp, "/nonexistent", &mut shake, "g", Request::RdpScreenshot { id, session_id: sid }).unwrap()
+        };
+        for id in 1..=4u64 {
+            assert!(ask(&mut rdp, id).is_empty(), "request {id} must be accepted");
+        }
+        let refused: VecDeque<u8> = ask(&mut rdp, 5).into_iter().collect();
+        assert_eq!(answers(&refused), vec![(Some(5), "screenshot_busy".to_string())]);
+        // The engine answers the oldest request; a new one fits again.
+        let mut outbox = VecDeque::new();
+        relay_rdp_frames(&mut rdp, &mut outbox, sid, vec![shot()]);
+        assert_eq!(answers(&outbox), vec![(Some(1), "png".to_string())]);
+        assert!(ask(&mut rdp, 6).is_empty());
+    }
 }
