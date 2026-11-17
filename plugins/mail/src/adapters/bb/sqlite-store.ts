@@ -87,7 +87,8 @@ import { cleanSnippet, needsSnippetRepair, snippetOf } from "../../core/snippet.
 import { AI_RESULT_MAX_BYTES, BINDINGS_MAX, TASKS_OPEN_MAX } from "../../core/ports.ts";
 import type { BbLinkRow, BindingKind, RuleRecord, RuleRunRecord, RuleRunState } from "../../core/ports.ts";
 import { INCIDENT_PENDING_PREFIX, INCIDENT_RESERVE_MS } from "../../core/ports.ts";
-import type { AttachmentTextRow, FilesFilter, SavedSearchRow, SearchOptions, SenderStats } from "../../core/ports.ts";
+import type { AttachmentTextRow, FilesFilter, PgpKeyRow, SavedSearchRow, SearchOptions, SenderStats } from "../../core/ports.ts";
+import { PGP_KEYS_MAX } from "../../core/ports.ts";
 import type { AttachmentMatch, FileKind, FileRow, KeptState, SearchCondition, SearchCursor } from "../../core/model.ts";
 import { excerptAround, type AttachmentCandidate } from "../../core/attachment-text.ts";
 import { RELATED_CANDIDATES_MAX, type RelatedCandidate } from "../../core/related.ts";
@@ -918,6 +919,24 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE messages ADD COLUMN sender_check_json TEXT;
   ALTER TABLE messages ADD COLUMN receipt_requested INTEGER;
   ALTER TABLE messages ADD COLUMN crypto TEXT;
+  `,
+  // 15: slice 3k - OpenPGP keys. An own key keeps its private half sealed by
+  // the vault; a contact key is public only. One row per kind and fingerprint.
+  `
+  CREATE TABLE pgp_keys (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    addresses_json TEXT NOT NULL,
+    user_ids_json TEXT NOT NULL,
+    public_armor TEXT NOT NULL,
+    private_sealed TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    added_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    UNIQUE (kind, fingerprint)
+  );
   `,
 ];
 
@@ -2838,6 +2857,34 @@ export function createSqliteStore(db: Database.Database): MailStore {
     if (JSON.stringify(after) === JSON.stringify(before)) return;
     db.prepare("UPDATE ai_scope_accounts SET folders_json = ? WHERE account_id = ?").run(JSON.stringify(after), accountId);
   }
+
+  // Never the private half: it is read by pgpPrivateSealed alone.
+  const PGP_KEY_COLUMNS =
+    "id, kind, fingerprint, addresses_json, user_ids_json, public_armor, created_at, expires_at, added_at, source";
+  type PgpKeyDbRow = {
+    id: string;
+    kind: string;
+    fingerprint: string;
+    addresses_json: string;
+    user_ids_json: string;
+    public_armor: string;
+    created_at: string;
+    expires_at: string | null;
+    added_at: string;
+    source: string;
+  };
+  const toPgpKey = (row: PgpKeyDbRow): PgpKeyRow => ({
+    id: row.id,
+    kind: row.kind === "own" ? "own" : "contact",
+    fingerprint: row.fingerprint,
+    addresses: JSON.parse(row.addresses_json) as string[],
+    userIds: JSON.parse(row.user_ids_json) as string[],
+    publicArmor: row.public_armor,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    addedAt: row.added_at,
+    source: row.source === "generated" ? "generated" : row.source === "message" ? "message" : "imported",
+  });
 
   type SavedSearchDbRow = {
     id: string;
@@ -6238,6 +6285,59 @@ export function createSqliteStore(db: Database.Database): MailStore {
         `INSERT INTO folder_prefs (account_id, path, grouping) VALUES (?, ?, ?)
          ON CONFLICT(account_id, path) DO UPDATE SET grouping = excluded.grouping`,
       ).run(accountId, path, grouping ? 1 : 0);
+    },
+
+    // OpenPGP keys (slice 3k) -------------------------------------------------
+
+    listPgpKeys() {
+      return db
+        .prepare<[], PgpKeyDbRow>(`SELECT ${PGP_KEY_COLUMNS} FROM pgp_keys ORDER BY kind DESC, added_at, id`)
+        .all()
+        .map(toPgpKey);
+    },
+
+    getPgpKey(id) {
+      const row = db.prepare<[string], PgpKeyDbRow>(`SELECT ${PGP_KEY_COLUMNS} FROM pgp_keys WHERE id = ?`).get(id);
+      return row === undefined ? null : toPgpKey(row);
+    },
+
+    savePgpKey(row, privateSealed) {
+      return atomic(() => {
+        const same = db
+          .prepare<[string, string], { id: string }>("SELECT id FROM pgp_keys WHERE kind = ? AND fingerprint = ?")
+          .get(row.kind, row.fingerprint);
+        if (same !== undefined) return "exists";
+        const count = db.prepare<[], { n: number }>("SELECT COUNT(*) AS n FROM pgp_keys").get()!.n;
+        if (count >= PGP_KEYS_MAX) return "full";
+        db.prepare(
+          `INSERT INTO pgp_keys (id, kind, fingerprint, addresses_json, user_ids_json, public_armor,
+             private_sealed, created_at, expires_at, added_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          row.id,
+          row.kind,
+          row.fingerprint,
+          JSON.stringify(row.addresses),
+          JSON.stringify(row.userIds),
+          row.publicArmor,
+          row.kind === "own" ? privateSealed : null,
+          row.createdAt,
+          row.expiresAt,
+          row.addedAt,
+          row.source,
+        );
+        return "saved";
+      });
+    },
+
+    deletePgpKey(id) {
+      return db.prepare("DELETE FROM pgp_keys WHERE id = ?").run(id).changes > 0;
+    },
+
+    pgpPrivateSealed(id) {
+      const row = db
+        .prepare<[string], { private_sealed: string | null }>("SELECT private_sealed FROM pgp_keys WHERE id = ? AND kind = 'own'")
+        .get(id);
+      return row?.private_sealed ?? null;
     },
 
     listSavedSearches() {

@@ -20,6 +20,8 @@ import {
   UNKNOWN_TRANSLATION_MESSAGE,
   PLUGIN_CALLER_MESSAGE,
   OWNER_TERMINAL_MESSAGE,
+  PGP_EXISTS_MESSAGE,
+  PGP_NOT_OWN_ADDRESS_MESSAGE,
   REMOVE_IN_THREAD_MESSAGE,
   renderSource,
   PROPOSE_OFF_INSTRUCTIONS,
@@ -62,6 +64,10 @@ import {
   senderCheckOf,
 } from "./src/core/index.ts";
 import { createHash } from "node:crypto";
+import { createPgpEngine } from "./src/adapters/bb/pgp-openpgp.ts";
+import { extractEncrypted, extractSigned, wrapEncrypted, wrapSigned } from "./src/core/pgp-mime.ts";
+import { PGP_SEND_TEXT } from "./src/core/compose-outbox.ts";
+import { SLICE_3K_METHODS } from "./src/core/contract.ts";
 import { readFileSync } from "node:fs";
 import type {
   AccountPreset,
@@ -8489,5 +8495,258 @@ describe("slice 3j: doctor and backup", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("slice 3k: OpenPGP", () => {
+  const engine = createPgpEngine();
+  const OWNER = "owner@example.org";
+  const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+
+  /** A draft to Ana without Bcc. */
+  async function plainDraft(host: Host): Promise<{ draftId: string; revision: number }> {
+    const { draftId } = (await call(host, "compose_new", { accountId: "acc_1" })) as { draftId: string };
+    const saved = (await call(host, "compose_save", {
+      draftId,
+      baseRevision: 1,
+      accountId: "acc_1",
+      to: [TO],
+      cc: [],
+      bcc: [],
+      subject: SUBJECT,
+      doc: DOC,
+    })) as { revision: number };
+    return { draftId, revision: saved.revision };
+  }
+
+  async function sendAndWait(host: Host, input: Record<string, unknown>): Promise<Uint8Array> {
+    const service = host.harness.behavior.runService("sync");
+    await call(host, "compose_send", input);
+    host.clock.set(new Date(NOW.getTime() + UNDO_MS));
+    await vi.waitFor(() => expect(outboxStates(host)).toContain("done"));
+    service.controller.abort();
+    await service.done;
+    return host.transport.sent.at(-1)!.raw;
+  }
+
+  const makeOwn = async (host: Host) =>
+    ((await call(host, "pgp_cert_generate", { accountId: "acc_1", address: OWNER })) as { cert: { id: string; fingerprint: string } }).cert;
+
+  it("every method refuses other plugins", async () => {
+    const host = await loadCompose();
+    const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    const inputs: [string, unknown][] = [
+      ["pgp_certs_list", {}],
+      ["pgp_cert_generate", { accountId: "acc_1", address: OWNER }],
+      ["pgp_cert_import", { armor: "x" }],
+      ["pgp_cert_import_message", { messageId: "m" }],
+      ["pgp_cert_remove", { id: "pgp_1" }],
+      ["pgp_cert_export", { id: "pgp_1" }],
+      ["pgp_check", { from: OWNER, recipients: [] }],
+      ["pgp_verify", { messageId: "m" }],
+      ["pgp_open", { messageId: "m" }],
+    ];
+    expect(inputs.map(([method]) => method)).toEqual([...SLICE_3K_METHODS]);
+    for (const [method, input] of inputs) {
+      await expect(host.harness.behavior.callRpc(method, input, asPlugin)).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    }
+    expect(host.bb.storage.database().prepare("SELECT COUNT(*) AS n FROM pgp_keys").get()).toEqual({ n: 0 });
+    // Nothing here is a tool or a command.
+    expect(host.harness.inspection.registrations.agentTools.some((tool) => /pgp/i.test(tool.name))).toBe(false);
+    expect(host.harness.inspection.registrations.cli!.commands.some((command) => /pgp|key/i.test(command.name))).toBe(false);
+  });
+
+  it("makes a key for a sending address only, once, with the private half sealed", async () => {
+    const host = await loadCompose();
+    await expect(call(host, "pgp_cert_generate", { accountId: "acc_1", address: "stranger@example.net" })).rejects.toThrow(
+      PGP_NOT_OWN_ADDRESS_MESSAGE,
+    );
+    const cert = await makeOwn(host);
+    expect(cert).toMatchObject({ kind: "own", addresses: [OWNER], source: "generated", expired: false });
+    await expect(makeOwn(host)).rejects.toThrow(PGP_EXISTS_MESSAGE);
+
+    const listed = (await call(host, "pgp_certs_list", {})) as { certs: unknown[]; vaultReady: boolean };
+    expect(listed.vaultReady).toBe(true);
+    expect(JSON.stringify(listed)).not.toContain("PRIVATE KEY");
+    const row = host.bb.storage.database().prepare("SELECT private_sealed, public_armor FROM pgp_keys").get() as {
+      private_sealed: string;
+      public_armor: string;
+    };
+    expect(row.private_sealed).not.toContain("BEGIN PGP");
+    expect(row.public_armor).toContain("BEGIN PGP PUBLIC KEY BLOCK");
+    expect(createVault(COMPOSE_KEY).open(row.private_sealed)).toContain("BEGIN PGP PRIVATE KEY BLOCK");
+
+    // The export is the public key; a backup is the private key locked by the owner's words.
+    const pub = (await call(host, "pgp_cert_export", { id: cert.id })) as { armor: string; fileName: string };
+    expect(pub.armor).toContain("PUBLIC KEY BLOCK");
+    expect(pub.armor).not.toContain("PRIVATE");
+    const words = ["invented", "backup", "words", String(NOW.getTime())].join(" ");
+    const backup = (await call(host, "pgp_cert_export", { id: cert.id, phrase: words })) as { armor: string };
+    expect(await engine.inspect(backup.armor)).toMatchObject({ hasPrivate: true, locked: true, fingerprint: cert.fingerprint });
+
+    // The backup restores the key after it was removed, with the same words only.
+    expect(await call(host, "pgp_cert_remove", { id: cert.id })).toEqual({ ok: true });
+    expect(await call(host, "pgp_cert_import", { armor: backup.armor })).toMatchObject({ result: "locked", added: [] });
+    expect(await call(host, "pgp_cert_import", { armor: backup.armor, phrase: `${words} x` })).toMatchObject({ result: "wrong_phrase" });
+    const restored = (await call(host, "pgp_cert_import", { armor: backup.armor, phrase: words })) as { result: string; added: { kind: string; fingerprint: string }[] };
+    expect(restored).toMatchObject({ result: "added", added: [{ kind: "own", fingerprint: cert.fingerprint }] });
+    const logs = logText(host);
+    expect(logs).not.toContain(cert.fingerprint);
+    expect(logs).not.toContain(OWNER);
+    expect(logs).not.toContain("BEGIN PGP");
+  });
+
+  it("sends a signed message another program can verify, and refuses to sign without a key", async () => {
+    const host = await loadCompose();
+    const first = await plainDraft(host);
+    await expect(
+      call(host, "compose_send", { draftId: first.draftId, baseRevision: first.revision, requestId: REQUEST_ID, protect: { sign: true, encrypt: false } }),
+    ).rejects.toThrow(PGP_SEND_TEXT.no_own);
+    expect(host.transport.sent).toEqual([]);
+
+    const cert = await makeOwn(host);
+    const raw = await sendAndWait(host, {
+      draftId: first.draftId,
+      baseRevision: first.revision,
+      requestId: REQUEST_ID,
+      protect: { sign: true, encrypt: false },
+    });
+    expect(decode(raw)).toMatch(/Content-Type: multipart\/signed; micalg=pgp-sha256/);
+    expect((await parseMail(raw)).subject).toBe(SUBJECT);
+    const cut = extractSigned(raw);
+    const pub = (await call(host, "pgp_cert_export", { id: cert.id })) as { armor: string };
+    expect(await engine.verifyDetached(cut.entity, cut.signatureArmor, [pub.armor])).toMatchObject({ state: "valid" });
+    // The Sent copy is the same signed message.
+    const copy = host.gateway.appended.find((a) => a.path === "Sent")!;
+    expect(decode(copy.raw)).toContain("multipart/signed");
+  });
+
+  it("encrypts only when every recipient has a key and there is no Bcc; the text never crosses the wire", async () => {
+    const host = await loadCompose();
+    await makeOwn(host);
+    const ana = await engine.generate({ name: null, address: "ana@example.com" });
+
+    const withBcc = await savedDraft(host);
+    await expect(
+      call(host, "compose_send", { draftId: withBcc.draftId, baseRevision: withBcc.revision, requestId: REQUEST_ID, protect: { sign: true, encrypt: true } }),
+    ).rejects.toThrow(PGP_SEND_TEXT.bcc);
+
+    const draft = await plainDraft(host);
+    expect(await call(host, "pgp_check", { from: OWNER, recipients: ["ana@example.com"] })).toEqual({
+      canSign: true,
+      missing: ["ana@example.com"],
+    });
+    await expect(
+      call(host, "compose_send", { draftId: draft.draftId, baseRevision: draft.revision, requestId: REQUEST_ID, protect: { sign: true, encrypt: true } }),
+    ).rejects.toThrow(PGP_SEND_TEXT.missing);
+    expect(host.transport.sent).toEqual([]);
+
+    expect(await call(host, "pgp_cert_import", { armor: ana.publicArmor })).toMatchObject({
+      result: "added",
+      added: [{ kind: "contact", addresses: ["ana@example.com"] }],
+    });
+    expect(await call(host, "pgp_cert_import", { armor: ana.publicArmor })).toMatchObject({ result: "exists", added: [] });
+    expect(await call(host, "pgp_check", { from: OWNER, recipients: ["Ana@Example.com"] })).toEqual({ canSign: true, missing: [] });
+
+    const raw = await sendAndWait(host, {
+      draftId: draft.draftId,
+      baseRevision: draft.revision,
+      requestId: REQUEST_ID,
+      protect: { sign: true, encrypt: true },
+    });
+    const wire = decode(raw);
+    expect(wire).toContain("multipart/encrypted");
+    expect(wire).toContain(`Subject: ${SUBJECT}`);
+    expect(wire).not.toContain(BODY_TEXT);
+    // Ana opens it with her key and sees the owner's signature.
+    const owner = ((await call(host, "pgp_certs_list", {})) as { certs: { id: string; kind: string }[] }).certs.find((c) => c.kind === "own")!;
+    const pub = (await call(host, "pgp_cert_export", { id: owner.id })) as { armor: string };
+    const opened = await engine.decrypt(extractEncrypted(raw), [ana.privateArmor], [pub.armor]);
+    expect(opened!.signature).toMatchObject({ state: "valid" });
+    expect((await parseMail(opened!.data)).text).toContain(BODY_TEXT);
+    // The copy in Sent is encrypted too.
+    const copy = host.gateway.appended.find((a) => a.path === "Sent")!;
+    expect(decode(copy.raw)).not.toContain(BODY_TEXT);
+    expect(logText(host)).not.toContain(BODY_TEXT);
+  });
+
+  it("opens an encrypted message for the owner's page only and stores nothing of it", async () => {
+    const placeholder = new TextEncoder().encode("Subject: Invented sealed note\r\nContent-Type: text/plain\r\n\r\nplaceholder\r\n");
+    // No stored size or Message-ID: the test swaps what the server serves for this uid.
+    const { host, messageId } = await loadRaw(placeholder, { size: 0, messageId: null });
+    const cert = await makeOwn(host);
+    const pub = (await call(host, "pgp_cert_export", { id: cert.id })) as { armor: string };
+    const sender = await engine.generate({ name: "Sender", address: "sender@example.org" });
+    const inner = new TextEncoder().encode(
+      "Content-Type: text/plain; charset=utf-8\r\n\r\nZanzibarite sealed words for the owner only.\r\n",
+    );
+    const armor = await engine.encrypt(inner, [pub.armor], sender.privateArmor);
+    host.gateway.setRaw(
+      "INBOX",
+      1,
+      wrapEncrypted(["From: Sender <sender@example.org>", "Subject: Invented sealed note"], armor, "----b"),
+    );
+
+    const before = (await call(host, "pgp_open", { messageId })) as { state: string; text: string; signature: { state: string } };
+    expect(before).toMatchObject({ state: "opened", attachments: [], signature: { state: "no_cert", fromSender: false } });
+    expect(before.text).toContain("Zanzibarite sealed words");
+
+    // With the sender's key saved, the signature is theirs.
+    await call(host, "pgp_cert_import", { armor: sender.publicArmor });
+    expect(await call(host, "pgp_open", { messageId })).toMatchObject({
+      state: "opened",
+      signature: { state: "valid", fromSender: true },
+    });
+
+    // Nothing of the opened text is stored, searchable, logged or sent on realtime.
+    const db = host.bb.storage.database();
+    const stored = JSON.stringify(db.prepare("SELECT * FROM messages").all());
+    expect(stored).not.toContain("Zanzibarite");
+    expect(await call(host, "search", { query: "Zanzibarite", accountId: null, limit: 10 })).toMatchObject({ hits: [] });
+    expect(logText(host)).not.toContain("Zanzibarite");
+    expect(JSON.stringify(host.harness.inspection.realtimeSignals)).not.toContain("Zanzibarite");
+    expect(logText(host)).toContain(`pgp open ${messageId}: opened`);
+
+    // Without the key the message stays closed; a plain message is not PGP.
+    await call(host, "pgp_cert_remove", { id: cert.id });
+    expect(await call(host, "pgp_open", { messageId })).toEqual({ state: "no_cert", text: null, html: null, attachments: [], signature: null });
+    host.gateway.setRaw("INBOX", 1, placeholder);
+    expect(await call(host, "pgp_open", { messageId })).toMatchObject({ state: "not_pgp", text: null });
+  });
+
+  it("checks a signed message against saved keys and takes a key the message carries", async () => {
+    const sender = await engine.generate({ name: "Sender", address: "sender@example.org" });
+    const entity = new TextEncoder().encode("Content-Type: text/plain\r\n\r\nInvented signed words.");
+    const signature = await engine.signDetached(entity, sender.privateArmor);
+    const signed = wrapSigned(["From: Sender <sender@example.org>", "Subject: Invented signed note"], entity, signature, "----b");
+    const { host, messageId } = await loadRaw(signed, { size: 0, messageId: null });
+
+    expect(await call(host, "pgp_verify", { messageId })).toMatchObject({ state: "no_cert", fromSender: false });
+    expect(await call(host, "pgp_cert_import_message", { messageId })).toMatchObject({ result: "unreadable", added: [] });
+    await call(host, "pgp_cert_import", { armor: sender.publicArmor });
+    expect(await call(host, "pgp_verify", { messageId })).toMatchObject({ state: "valid", fromSender: true });
+
+    // One changed byte in what was signed.
+    const forged = signed.slice();
+    forged[decode(signed).indexOf("Invented signed words")] = "X".charCodeAt(0);
+    host.gateway.setRaw("INBOX", 1, forged);
+    expect(await call(host, "pgp_verify", { messageId })).toMatchObject({ state: "invalid" });
+
+    // A message that carries a key: the key is saved as a contact's, never as the owner's.
+    const carrier = new TextEncoder().encode(
+      `From: Other <other@example.net>\r\nSubject: Invented key\r\nContent-Type: text/plain\r\n\r\n${sender.privateArmor}\r\n`,
+    );
+    host.gateway.setRaw("INBOX", 1, carrier);
+    expect(await call(host, "pgp_cert_import_message", { messageId })).toMatchObject({ result: "unreadable" });
+    const other = await engine.generate({ name: null, address: "other@example.net" });
+    host.gateway.setRaw(
+      "INBOX",
+      1,
+      new TextEncoder().encode(`From: Other <other@example.net>\r\nSubject: Invented key\r\nContent-Type: text/plain\r\n\r\n${other.publicArmor}\r\n`),
+    );
+    expect(await call(host, "pgp_cert_import_message", { messageId })).toMatchObject({
+      result: "added",
+      added: [{ kind: "contact", addresses: ["other@example.net"], source: "message" }],
+    });
   });
 });

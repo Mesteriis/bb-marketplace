@@ -381,6 +381,23 @@ const folderRefusalSchema = z.enum([
   "parent_not_selectable",
 ]);
 
+/** An OpenPGP key as the page sees it (slice 3k): never the private half. */
+export const pgpCertSchema = z.object({
+  id: z.string(),
+  kind: z.enum(["own", "contact"]),
+  fingerprint: z.string(),
+  addresses: z.array(z.string()),
+  userIds: z.array(z.string()),
+  createdAt: z.string(),
+  expiresAt: z.string().nullable(),
+  addedAt: z.string(),
+  source: z.enum(["generated", "imported", "message"]),
+  expired: z.boolean(),
+});
+export type PgpCert = z.infer<typeof pgpCertSchema>;
+
+export const pgpImportResultSchema = z.enum(["added", "exists", "full", "unreadable", "locked", "wrong_phrase", "revoked"]);
+
 export const rpcSchemas = {
   status_get: {
     input: z.null(),
@@ -630,6 +647,8 @@ export const rpcSchemas = {
       requestId: z.uuid(),
       /** Slice 3f: remind the owner when no reply came within these days. */
       remindAfterDays: reminderDaysInput.optional(),
+      /** Slice 3k: sign or encrypt this message with OpenPGP. */
+      protect: z.object({ sign: z.boolean(), encrypt: z.boolean() }).optional(),
     }),
     output: z.object({ outboxId: z.string(), sendAfter: z.string() }),
   },
@@ -1521,6 +1540,74 @@ export const rpcSchemas = {
     input: z.object({ messageIds: z.array(idInput).min(1).max(50), force: z.boolean().optional() }),
     output: z.object({ refreshed: z.number().int().min(0), failed: z.number().int().min(0) }),
   },
+
+  // Slice 3k: OpenPGP. Owner only. "cert" is an OpenPGP key: the outputs never
+  // carry a private key except `pgp_cert_export` with a passphrase, whose
+  // armor is locked by that passphrase (a backup the owner saves).
+  pgp_certs_list: {
+    input: z.object({}),
+    output: z.object({ certs: z.array(pgpCertSchema), vaultReady: z.boolean() }),
+  },
+  /** Makes a key pair for one of the account's sending addresses. */
+  pgp_cert_generate: {
+    input: z.object({ accountId: idInput, address: addressInput.refine(noLineBreaks, NO_LINE_BREAKS) }),
+    output: z.object({ cert: pgpCertSchema }),
+  },
+  /** Pasted armor: a public key (a contact), or a private-key backup with its passphrase (the owner's). */
+  pgp_cert_import: {
+    input: z.object({ armor: z.string().min(1).max(200_000), phrase: z.string().max(1024).optional() }),
+    output: z.object({ result: pgpImportResultSchema, added: z.array(pgpCertSchema) }),
+  },
+  /** The public keys attached to or pasted into a message, saved as contact keys. */
+  pgp_cert_import_message: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({ result: pgpImportResultSchema, added: z.array(pgpCertSchema) }),
+  },
+  pgp_cert_remove: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
+  /** The public armor; with `phrase`, an own key's private half locked by it. */
+  pgp_cert_export: {
+    input: z.object({ id: idInput, phrase: z.string().min(8).max(1024).optional() }),
+    output: z.object({ armor: z.string(), fileName: z.string() }),
+  },
+  /** Whether From can sign, and the recipients Mail has no usable key for. */
+  pgp_check: {
+    input: z.object({
+      from: addressInput.refine(noLineBreaks, NO_LINE_BREAKS),
+      recipients: z.array(addressInput.refine(noLineBreaks, NO_LINE_BREAKS)).max(100),
+    }),
+    output: z.object({ canSign: z.boolean(), missing: z.array(z.string()) }),
+  },
+  /** Checks a signed message against the saved keys; fetches the message from the server. */
+  pgp_verify: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({
+      state: z.enum(["valid", "invalid", "no_cert", "not_pgp", "failed"]),
+      fingerprint: z.string().nullable(),
+      signer: z.string().nullable(),
+      fromSender: z.boolean(),
+    }),
+  },
+  /** Opens an encrypted message for the owner's page; the text is never stored. */
+  pgp_open: {
+    input: z.object({ messageId: idInput }),
+    output: z.object({
+      state: z.enum(["opened", "no_cert", "not_pgp", "failed"]),
+      text: z.string().nullable(),
+      html: z.string().nullable(),
+      attachments: z.array(z.object({ fileName: z.string(), size: z.number().int() })),
+      signature: z
+        .object({
+          state: z.enum(["valid", "invalid", "no_cert"]),
+          fingerprint: z.string().nullable(),
+          signer: z.string().nullable(),
+          fromSender: z.boolean(),
+        })
+        .nullable(),
+    }),
+  },
 } as const;
 
 /** The 28 owner-only methods slice 3h adds. */
@@ -1553,6 +1640,19 @@ export const SLICE_3H_METHODS = [
   "attachment_text_clear",
   "related_messages",
   "sender_card",
+] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The 9 owner-only methods slice 3k adds. */
+export const SLICE_3K_METHODS = [
+  "pgp_certs_list",
+  "pgp_cert_generate",
+  "pgp_cert_import",
+  "pgp_cert_import_message",
+  "pgp_cert_remove",
+  "pgp_cert_export",
+  "pgp_check",
+  "pgp_verify",
+  "pgp_open",
 ] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** The owner-only method slice 3i adds. */

@@ -110,7 +110,7 @@ import type {
   ReminderRecord,
   TaskRecord,
 } from "../ports.ts";
-import { AI_RESULT_MAX_BYTES, TASKS_OPEN_MAX } from "../ports.ts";
+import { AI_RESULT_MAX_BYTES, PGP_KEYS_MAX, TASKS_OPEN_MAX, type PgpKeyRow } from "../ports.ts";
 import { BINDINGS_MAX, INCIDENT_PENDING_PREFIX, INCIDENT_RESERVE_MS } from "../ports.ts";
 import type {
   BbLinkRow,
@@ -3274,6 +3274,36 @@ export class InMemoryMailStore implements MailStore {
 
   setFolderGrouping(accountId: string, path: string, grouping: boolean): void {
     this.state.folderPrefs.set(stateKey(accountId, path), grouping);
+  }
+
+  // OpenPGP keys (slice 3k) ---------------------------------------------------
+  private readonly pgpKeys = new Map<string, { row: PgpKeyRow; privateSealed: string | null }>();
+
+  listPgpKeys(): PgpKeyRow[] {
+    return [...this.pgpKeys.values()]
+      .map((entry) => structuredClone(entry.row))
+      .sort((a, b) => (a.kind === b.kind ? a.addedAt.localeCompare(b.addedAt) || a.id.localeCompare(b.id) : a.kind === "own" ? -1 : 1));
+  }
+
+  getPgpKey(id: string): PgpKeyRow | null {
+    const entry = this.pgpKeys.get(id);
+    return entry === undefined ? null : structuredClone(entry.row);
+  }
+
+  savePgpKey(row: PgpKeyRow, privateSealed: string | null): "saved" | "exists" | "full" {
+    if ([...this.pgpKeys.values()].some((e) => e.row.kind === row.kind && e.row.fingerprint === row.fingerprint)) return "exists";
+    if (this.pgpKeys.size >= PGP_KEYS_MAX) return "full";
+    this.pgpKeys.set(row.id, { row: structuredClone(row), privateSealed: row.kind === "own" ? privateSealed : null });
+    return "saved";
+  }
+
+  deletePgpKey(id: string): boolean {
+    return this.pgpKeys.delete(id);
+  }
+
+  pgpPrivateSealed(id: string): string | null {
+    const entry = this.pgpKeys.get(id);
+    return entry !== undefined && entry.row.kind === "own" ? entry.privateSealed : null;
   }
 
   listSavedSearches(): SavedSearchRow[] {

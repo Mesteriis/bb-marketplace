@@ -763,7 +763,7 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 15).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 16).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
       "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
@@ -789,6 +789,8 @@ describe("slice-2 migrations (SQLite)", () => {
       "9308a59ee243d1fcd946a94f35d8c86665cafd9d5ea6bb822af0f47b936ad4ba",
       // Element 14 (slice 3i: sender check, read receipt request, crypto kind).
       "85e10b2409d979ca08535d7c9a7b495375e014126b9b16ab645be6f16c189d79",
+      // Element 15 (slice 3k: OpenPGP keys).
+      "",
     ]);
   });
 
@@ -3377,7 +3379,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(15);
+    expect(MIGRATIONS).toHaveLength(16);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -4025,7 +4027,7 @@ describe("slice-3f migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(15);
+    expect(MIGRATIONS).toHaveLength(16);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -4831,7 +4833,7 @@ describe("slice-3g migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(15);
+    expect(MIGRATIONS).toHaveLength(16);
     const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
     expect(runs).toEqual([
       { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
@@ -5416,7 +5418,7 @@ describe("slice-3h migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(15);
+    expect(MIGRATIONS).toHaveLength(16);
     const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
       part_id: string;
       kind: string;
@@ -6086,7 +6088,7 @@ describe("slice-3i migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(14).forEach((statement) => old.exec(statement)))();
 
-    expect(MIGRATIONS).toHaveLength(15);
+    expect(MIGRATIONS).toHaveLength(16);
     const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
     expect(columns).toEqual(expect.arrayContaining(["sender_check_json", "receipt_requested", "crypto"]));
     expect(old.prepare("SELECT sender_check_json, receipt_requested, crypto FROM messages").all()).toEqual([
@@ -6438,5 +6440,43 @@ describe("slice 3j: rethreading only what changed", () => {
     const reloaded = createSqliteStore(db);
     reloaded.assignThreads("acc_1", buildThreads(reloaded.threadingInputs("acc_1")));
     expect(threadRows()[0]).toMatchObject({ message_count: 1 });
+  });
+});
+
+describe("slice 3k: OpenPGP keys in the store", () => {
+  let db: Database.Database;
+  let s: MailStore;
+  const key = (id: string, kind: "own" | "contact", fingerprint: string) => ({
+    id,
+    kind,
+    fingerprint,
+    addresses: ["owner@example.org"],
+    userIds: ["Owner <owner@example.org>"],
+    publicArmor: "invented public armor",
+    createdAt: "2026-11-17T10:00:00.000Z",
+    expiresAt: null,
+    addedAt: "2026-11-17T10:00:00.000Z",
+    source: "generated" as const,
+  });
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    migrate(db);
+    s = createSqliteStore(db);
+  });
+
+  it("keeps the private half out of every row and returns it sealed for an own key only", () => {
+    expect(s.savePgpKey(key("pgp_1", "own", "AA"), "sealed-own")).toBe("saved");
+    expect(s.savePgpKey(key("pgp_2", "contact", "AA"), "sealed-ignored")).toBe("saved");
+    expect(s.savePgpKey(key("pgp_3", "own", "AA"), "x")).toBe("exists");
+    expect(s.listPgpKeys().map((row) => row.id)).toEqual(["pgp_1", "pgp_2"]);
+    expect(JSON.stringify(s.listPgpKeys())).not.toContain("sealed");
+    expect(JSON.stringify(s.getPgpKey("pgp_1"))).not.toContain("sealed");
+    expect(s.pgpPrivateSealed("pgp_1")).toBe("sealed-own");
+    expect(s.pgpPrivateSealed("pgp_2")).toBeNull();
+    expect(s.pgpPrivateSealed("nope")).toBeNull();
+    expect(s.deletePgpKey("pgp_1")).toBe(true);
+    expect(s.deletePgpKey("pgp_1")).toBe(false);
+    expect(s.getPgpKey("pgp_1")).toBeNull();
   });
 });

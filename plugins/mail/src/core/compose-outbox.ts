@@ -162,7 +162,34 @@ export class UndoneSends {
   }
 }
 
-export type QueueDeps = ComposeDeps & { notifier: OutboxNotifier; rate: SendRateLimit; undone: UndoneSends };
+/** What the composer asked OpenPGP to do with one outgoing message (slice 3k). */
+export type ProtectRequest = {
+  sign: boolean;
+  encrypt: boolean;
+  /** The From address: its own key signs, and the message is also encrypted to it. */
+  from: string;
+  /** To and Cc addresses; Bcc is refused before this is called. */
+  recipients: string[];
+  /** Makes the MIME boundary unique. */
+  seed: string;
+};
+
+/** Fixed refusals of a signed or encrypted send. */
+export const PGP_SEND_TEXT = {
+  unavailable: "Signing and encryption are not available for this message",
+  bcc: "An encrypted message cannot have Bcc recipients: remove them, or send without encryption",
+  no_own: "There is no OpenPGP key for this sending address; make one in Mail settings",
+  missing: "Some recipients have no OpenPGP key in Mail; add their keys, or send without encryption",
+  failed: "The message could not be signed or encrypted. Nothing was sent.",
+} as const;
+
+export type QueueDeps = ComposeDeps & {
+  notifier: OutboxNotifier;
+  rate: SendRateLimit;
+  undone: UndoneSends;
+  /** Slice 3k: the built message signed and/or encrypted; throws ComposeError with a PGP_SEND_TEXT. */
+  protect?: (mime: Uint8Array, request: ProtectRequest) => Promise<Uint8Array>;
+};
 export type OutboxDeps = ComposeDeps & {
   notifier: OutboxNotifier;
   transport: MailTransport;
@@ -209,6 +236,8 @@ export async function queueSend(
      * the outbox row; skipped (`reminder: false`) at the live cap.
      */
     remind?: { id: string; days: number };
+    /** Slice 3k: sign or encrypt with OpenPGP. Only the owner's composer asks; an agent send never does. */
+    protect?: { sign: boolean; encrypt: boolean };
   },
 ): Promise<{ outboxId: string; sendAfter: string; reminder?: boolean }> {
   if (deps.undone.has(input.requestId)) throw new ComposeError("undone");
@@ -240,7 +269,22 @@ export async function queueSend(
   if (attached > ATTACHMENT_CAP_BYTES) throw new ComposeError("too_large");
   if (!deps.rate.take(account.id)) throw new ComposeError("rate_limited");
 
-  const mime = await deps.builder.build(message);
+  const wantsPgp = input.protect !== undefined && (input.protect.sign || input.protect.encrypt);
+  if (wantsPgp) {
+    if (input.origin !== "owner" || deps.protect === undefined) throw new ComposeError("invalid", PGP_SEND_TEXT.unavailable);
+    // Each recipient's key id is visible in an encrypted message: a hidden copy would not stay hidden.
+    if (input.protect!.encrypt && message.bcc.length > 0) throw new ComposeError("invalid", PGP_SEND_TEXT.bcc);
+  }
+  const built = await deps.builder.build(message);
+  const mime = wantsPgp
+    ? await deps.protect!(built, {
+        sign: input.protect!.sign,
+        encrypt: input.protect!.encrypt,
+        from: message.from.address,
+        recipients: uniqueAddresses([...message.to, ...message.cc].map((a) => a.address)),
+        seed: draft.messageId,
+      })
+    : built;
   const now = deps.clock.now();
   let reminder: boolean | undefined;
   const queued = deps.store.transaction(() => {

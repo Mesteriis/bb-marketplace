@@ -71,6 +71,9 @@ import {
 import { UploadBook, UploadError } from "./src/adapters/bb/uploads.ts";
 import { MIGRATIONS, createSqliteStore, hardenDatabase } from "./src/adapters/bb/sqlite-store.ts";
 import { createSenderChecks, type SenderChecks } from "./src/adapters/bb/sender-checks.ts";
+import { createPgpEngine } from "./src/adapters/bb/pgp-openpgp.ts";
+import { createPgpService, type PgpService } from "./src/adapters/bb/pgp-service.ts";
+import type { PgpEngine } from "./src/core/pgp.ts";
 import { createServerJobs } from "./src/adapters/bb/server-search-jobs.ts";
 import { RetryLater, charsetOf, createAttachmentIndexer, matchingPart } from "./src/adapters/bb/attachment-indexer.ts";
 import { extractPdfText } from "./src/adapters/bb/pdf-text.ts";
@@ -114,6 +117,7 @@ import { templatesForAgent } from "./src/core/templates.ts";
 import { planUndo, recordGroups, type RecordableGroup, type UndoGroup, type UndoRow, type UndoStep } from "./src/core/undo.ts";
 import { RoundWakes, UndoBook } from "./src/adapters/bb/undo-book.ts";
 import { outboxErrorText } from "./src/core/compose-outbox.ts";
+import { accountIdentities } from "./src/core/compose.ts";
 import {
   AGENT_RESULT,
   SUPPORTED_LANGUAGES,
@@ -328,6 +332,11 @@ export const REMOVE_IN_THREAD_MESSAGE =
 export const OWNER_TERMINAL_MESSAGE =
   "This command works only in the owner's own terminal, not inside an agent thread.";
 
+export const PGP_NOT_OWN_ADDRESS_MESSAGE = "Make a key only for an address this account sends from";
+export const PGP_EXISTS_MESSAGE = "This address already has an OpenPGP key in Mail";
+export const PGP_FULL_MESSAGE = "Mail keeps at most 500 OpenPGP keys; remove some first";
+export const PGP_UNKNOWN_MESSAGE = "This OpenPGP key is not in Mail, or its private half cannot be read";
+
 export const MESSAGE_GONE_CONTEXT = "This email is no longer available in Makosh Mail.";
 /** What an agent gets for an unknown id, and for an id outside the AI scope (never told apart). */
 export const UNKNOWN_MESSAGE_TEXT = "No message with this id in Makosh Mail.";
@@ -434,6 +443,8 @@ export interface MailPluginOverrides {
   gateway?: ImapGateway;
   clock?: Clock;
   transport?: MailTransport;
+  /** Slice 3k: the OpenPGP engine; tests may pass a counting one. */
+  pgpEngine?: PgpEngine;
   /** The outbox worker's tick; tests shorten it. */
   outboxIntervalMs?: number;
   /** The per-account write queue; tests hold it to race an undo with a round. */
@@ -1489,7 +1500,22 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
         if (state === "done") senderChecks.markStale();
       },
     };
-    const queueDeps: QueueDeps = { ...composeDeps, notifier: outboxNotifier, rate: new SendRateLimit(clock), undone: new UndoneSends(clock) };
+    // Slice 3k: OpenPGP. The private keys are sealed by the same vault as the passwords.
+    const pgp = createPgpService({
+      store,
+      engine: overrides.pgpEngine ?? createPgpEngine(),
+      vault: () => vault,
+      clock,
+      newId: randomUUID,
+      log: (line) => bb.log.info(line),
+    });
+    const queueDeps: QueueDeps = {
+      ...composeDeps,
+      notifier: outboxNotifier,
+      rate: new SendRateLimit(clock),
+      undone: new UndoneSends(clock),
+      protect: (mime, request) => pgp.protect(mime, request),
+    };
     const worker = createOutboxWorker(
       {
         ...composeDeps,
@@ -1759,6 +1785,7 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       quietHours: () => current.quietHours,
       categoryUndo: new CategoryUndoBook(randomUUID),
       senderChecks,
+      pgp,
     };
     registerRpc(bb, rpcDeps);
     /** One header with its 3i fields, for agent text (the sender line and the encrypted placeholder). */
@@ -1873,6 +1900,8 @@ type RpcDeps = {
   categoryUndo: CategoryUndoBook;
   /** Slice 3i: sender checks, disguise warnings and the old-row refresh. */
   senderChecks: SenderChecks;
+  /** Slice 3k: OpenPGP keys, signing, encryption and opening. */
+  pgp: PgpService;
 };
 
 /** What a download ticket stands for; the name and bytes are resolved again when it is used. */
@@ -3533,6 +3562,73 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       sender_check_refresh: async ({ messageIds, force }, context) => {
         refusePluginCaller(context);
         return deps.senderChecks.refresh({ messageIds, force });
+      },
+      // Slice 3k: OpenPGP. Every method refuses another plugin first; nothing here is a tool or a command.
+      pgp_certs_list: (_input, context) => {
+        refusePluginCaller(context);
+        return { certs: deps.pgp.list(), vaultReady: deps.vaultReady() };
+      },
+      pgp_cert_generate: async ({ accountId, address }, context) => {
+        refusePluginCaller(context);
+        const account = store.getAccount(accountId);
+        if (account === null) throw refuse("not_found", "Unknown account");
+        const wanted = address.trim().toLowerCase();
+        const identity = accountIdentities(store, account).find((entry) => entry.address.toLowerCase() === wanted);
+        // Only for an address this account sends from: a key for someone else's address would mislead.
+        if (identity === undefined) throw refuse("invalid", PGP_NOT_OWN_ADDRESS_MESSAGE);
+        const made = await deps.pgp.generate(wanted, identity.displayName);
+        if ("refused" in made) {
+          throw refuse("conflict", made.refused === "vault" ? NEEDS_KEY_MESSAGE : made.refused === "exists" ? PGP_EXISTS_MESSAGE : PGP_FULL_MESSAGE);
+        }
+        return { cert: made };
+      },
+      pgp_cert_import: async ({ armor, phrase }, context) => {
+        refusePluginCaller(context);
+        return deps.pgp.importArmor(armor, phrase ?? null);
+      },
+      pgp_cert_import_message: async ({ messageId }, context) => {
+        refusePluginCaller(context);
+        const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
+          throw rawRefusal(error);
+        });
+        return deps.pgp.importFromMessage(fetched.raw);
+      },
+      pgp_cert_remove: ({ id }, context) => {
+        refusePluginCaller(context);
+        return { ok: deps.pgp.remove(id) };
+      },
+      pgp_cert_export: async ({ id, phrase }, context) => {
+        refusePluginCaller(context);
+        const exported = await deps.pgp.exportArmor(id, phrase ?? null);
+        if (exported === null) throw refuse("not_found", PGP_UNKNOWN_MESSAGE);
+        return exported;
+      },
+      pgp_check: ({ from, recipients }, context) => {
+        refusePluginCaller(context);
+        return deps.pgp.check(from, recipients);
+      },
+      pgp_verify: async ({ messageId }, context) => {
+        refusePluginCaller(context);
+        const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
+          throw rawRefusal(error);
+        });
+        const sender = store.getMessage(messageId)?.from?.address ?? null;
+        const checked = await deps.pgp.verify(fetched.raw, sender);
+        log(`pgp verify ${messageId}: ${checked.state}`);
+        return "fingerprint" in checked ? checked : { state: checked.state, fingerprint: null, signer: null, fromSender: false };
+      },
+      pgp_open: async ({ messageId }, context) => {
+        refusePluginCaller(context);
+        const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
+          throw rawRefusal(error);
+        });
+        const sender = store.getMessage(messageId)?.from?.address ?? null;
+        const opened = await deps.pgp.open(fetched.raw, sender);
+        // The outcome only: never a subject, an address or a byte of the text.
+        log(`pgp open ${messageId}: ${opened.state}`);
+        return opened.state === "opened"
+          ? opened
+          : { state: opened.state, text: null, html: null, attachments: [], signature: null };
       },
     },
     { experimental_discoverable: false },

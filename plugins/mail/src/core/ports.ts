@@ -290,6 +290,26 @@ export interface MailTransport {
   ): Promise<SendResult>;
 }
 
+/** How many OpenPGP keys Mail keeps. */
+export const PGP_KEYS_MAX = 500;
+
+/** A stored OpenPGP key without its private half. */
+export type PgpKeyRow = {
+  id: string;
+  /** `own`: the owner's key, with a private half; `contact`: someone else's public key. */
+  kind: "own" | "contact";
+  fingerprint: string;
+  addresses: string[];
+  userIds: string[];
+  publicArmor: string;
+  /** ISO 8601: when the key itself was made. */
+  createdAt: string;
+  expiresAt: string | null;
+  /** ISO 8601: when Mail stored it. */
+  addedAt: string;
+  source: "generated" | "imported" | "message";
+};
+
 export interface MessageBuilder {
   /** RFC 5322 bytes, built once and never with a Bcc header. */
   build(input: OutgoingMessage): Promise<Uint8Array>;
@@ -1162,6 +1182,16 @@ export interface MailStore {
   /** grouping per folder; `accountId` '*' with a role name as `path` for All accounts views. */
   folderGrouping(accountId: string, path: string): boolean;
   setFolderGrouping(accountId: string, path: string, grouping: boolean): void;
+
+  // OpenPGP keys (slice 3k). The private half is stored sealed by the vault
+  // and is read only through pgpPrivateSealed; no list or row carries it.
+  listPgpKeys(): PgpKeyRow[];
+  getPgpKey(id: string): PgpKeyRow | null;
+  /** "exists": this kind already has the fingerprint; "full": the cap is reached. */
+  savePgpKey(row: PgpKeyRow, privateSealed: string | null): "saved" | "exists" | "full";
+  deletePgpKey(id: string): boolean;
+  /** The vault-sealed private key of an own key; null for a contact key or an unknown id. */
+  pgpPrivateSealed(id: string): string | null;
 
   listSavedSearches(): SavedSearchRow[];
   /**
