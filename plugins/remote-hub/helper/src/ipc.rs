@@ -903,15 +903,9 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         let rdp_room = outbox.len() + RDP_RESERVE <= OUTBOX_CAP;
         let mut rdp_buffered = false;
         for (rid, rfd) in guard.rdp.fds() {
-            let mut events = 0;
-            if rdp_room {
-                events |= libc::POLLIN;
-                if guard.rdp.has_buffered_frame(rid) {
-                    rdp_buffered = true;
-                }
-            }
-            if guard.rdp.wants_write(rid) {
-                events |= libc::POLLOUT;
+            let events = guard.rdp.poll_interest(rid, rdp_room);
+            if rdp_room && guard.rdp.has_buffered_frame(rid) {
+                rdp_buffered = true;
             }
             if events == 0 {
                 continue;
@@ -974,9 +968,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                     }
                 }
                 PollRole::Rdp(rid) => {
-                    if revents & libc::POLLOUT != 0 {
-                        guard.rdp.write_pending(*rid);
-                    }
+                    guard.rdp.handle_poll_events(*rid, revents);
                     let readable = revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
                         || guard.rdp.has_buffered_frame(*rid);
                     if readable && outbox.len() + RDP_RESERVE <= OUTBOX_CAP {

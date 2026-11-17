@@ -277,6 +277,45 @@ impl RdpManager {
         self.sessions.iter().filter(|(_, s)| s.fd >= 0).map(|(&id, s)| (id, s.fd)).collect()
     }
 
+    /// What the poll loop should ask of this session's fd: read while the outbox
+    /// has `room` for a whole update, write while commands are pending. Zero
+    /// means the fd stays out of the poll set this turn.
+    pub fn poll_interest(&self, id: u32, room: bool) -> libc::c_short {
+        let mut events = 0;
+        if room {
+            events |= libc::POLLIN;
+        }
+        if self.wants_write(id) {
+            events |= libc::POLLOUT;
+        }
+        events
+    }
+
+    /// The fd reported a hang-up (POLLHUP/POLLERR/POLLNVAL): the engine can no
+    /// longer receive, so drop what was waiting to be sent. Nothing else changes:
+    /// the transport stays open and no reason is recorded, so a Closed event that
+    /// is still buffered is read once the outbox has room, and `EOF_GRACE` bounds
+    /// the case where it never has. Without this, a pending write keeps the fd in
+    /// the poll set for POLLOUT, which never comes on a hung-up peer, and `poll`
+    /// returns at once every turn (a CPU spin while the outbox is full).
+    pub fn on_hangup(&mut self, id: u32) {
+        if let Some(s) = self.sessions.get_mut(&id) {
+            s.write_buf.clear();
+            s.pending_ack = None;
+        }
+    }
+
+    /// The write side of one poll turn for this session: a hang-up drops what
+    /// was waiting to be sent (see `on_hangup`), POLLOUT sends it.
+    pub fn handle_poll_events(&mut self, id: u32, revents: libc::c_short) {
+        if revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+            self.on_hangup(id);
+        }
+        if revents & libc::POLLOUT != 0 {
+            self.write_pending(id);
+        }
+    }
+
     pub fn wants_write(&self, id: u32) -> bool {
         self.sessions.get(&id).map(|s| s.fd >= 0 && (!s.write_buf.is_empty() || s.pending_ack.is_some())).unwrap_or(false)
     }
@@ -1267,12 +1306,12 @@ mod tests {
     /// A session whose engine was reaped but whose peer is still open (retained
     /// by someone) with `ended_at` already past `EOF_GRACE`.
     fn reaped_but_open(closed_event: Option<&str>) -> (RdpManager, u32, RawFd) {
+        let pid = spawn_exit(0);
+        wait_until_exited_unreaped(pid);
         let (a, b) = socketpair();
         if let Some(reason) = closed_event {
             write_all(b, &encode_control(&EngineEvent::Closed { reason: reason.to_string() }));
         }
-        let pid = spawn_exit(0);
-        wait_until_exited_unreaped(pid);
         let mut mgr = RdpManager::new();
         let id = mgr.adopt(Some(pid), a);
         assert_eq!(mgr.reap(), vec![id]);
@@ -1323,6 +1362,86 @@ mod tests {
         assert_eq!(mgr.close(id).as_deref(), Some("engine_exited"));
         assert!(!ENGINE_KILLS.lock().unwrap().contains(&pid), "an exited engine was signalled");
         unsafe { libc::close(b) };
+    }
+
+    /// The peer goes away, even if a forked child of another test still holds a
+    /// copy of its descriptor (between fork and exec): `shutdown` ends the
+    /// connection itself, `close` only drops one reference.
+    fn hang_up(peer: RawFd) {
+        unsafe {
+            libc::shutdown(peer, libc::SHUT_RDWR);
+            libc::close(peer);
+        }
+    }
+
+    /// Block until the kernel reports the peer's hang-up on the session's fd. A
+    /// forked child of another test can hold the peer open for a moment (between
+    /// fork and exec), so the hang-up is waited for as an event; the limit is a
+    /// hang guard.
+    fn wait_for_hangup(mgr: &RdpManager, id: u32) {
+        let fd = mgr.fds().iter().find(|(i, _)| *i == id).map(|(_, fd)| *fd).unwrap();
+        for _ in 0..600 {
+            // The loop's own interest with a full outbox: write only.
+            let mut pfd = libc::pollfd { fd, events: libc::POLLOUT, revents: 0 };
+            unsafe { libc::poll(&mut pfd, 1, 50) };
+            if pfd.revents & libc::POLLHUP != 0 {
+                return;
+            }
+        }
+        panic!("hang guard: the peer's hang-up was never reported");
+    }
+
+    /// Run the poll loop's decision for one session for up to `turns` turns, as
+    /// `ipc.rs` does (interest, a zero-timeout poll, hang-up handling) with the
+    /// outbox full (`room == false`). Returns how many turns polled the fd.
+    fn polled_turns(mgr: &mut RdpManager, id: u32, turns: usize) -> usize {
+        let mut polled = 0;
+        for _ in 0..turns {
+            let events = mgr.poll_interest(id, false);
+            if events == 0 {
+                break; // the fd is out of the poll set
+            }
+            let fd = mgr.fds().iter().find(|(i, _)| *i == id).map(|(_, fd)| *fd).unwrap();
+            let mut pfd = libc::pollfd { fd, events, revents: 0 };
+            unsafe { libc::poll(&mut pfd, 1, 0) };
+            polled += 1;
+            mgr.handle_poll_events(id, pfd.revents);
+        }
+        polled
+    }
+
+    /// K1: outbox full, an ack pending, the engine dead with its Closed event
+    /// buffered. The hang-up takes the fd out of the poll set after one turn (no
+    /// spin), records no reason yet, and the buffered reason still wins once read.
+    #[test]
+    fn a_hung_up_engine_with_a_pending_write_leaves_the_poll_set() {
+        let (a, b) = socketpair();
+        write_all(b, &encode_control(&EngineEvent::Closed { reason: "network_error".to_string() }));
+        hang_up(b);
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        assert_eq!(mgr.enqueue_command(id, &EngineCommand::Ack { frame_id: 1 }), Ok(()));
+        assert!(mgr.wants_write(id));
+        wait_for_hangup(&mgr, id);
+        let polled = polled_turns(&mut mgr, id, 100);
+        assert!(polled <= 2, "the helper polled a hung-up fd {polled} times in 100 turns");
+        assert!(!mgr.wants_write(id));
+        assert!(mgr.take_closed(id).is_none(), "no reason may be recorded by the hang-up itself");
+        read_until_closed(&mut mgr, id);
+        assert_eq!(mgr.take_closed(id).expect("closed").reason, "network_error");
+    }
+
+    /// K1: if the outbox never drains, the grace still ends the session, with the
+    /// buffered reason when one is readable.
+    #[test]
+    fn a_hung_up_engine_is_still_ended_by_the_grace_when_the_outbox_never_drains() {
+        let (mut mgr, id, b) = reaped_but_open(Some("network_error"));
+        assert_eq!(mgr.enqueue_command(id, &EngineCommand::Ack { frame_id: 1 }), Ok(()));
+        hang_up(b);
+        wait_for_hangup(&mgr, id);
+        assert!(polled_turns(&mut mgr, id, 100) <= 2);
+        assert_eq!(mgr.reap(), vec![id]);
+        assert_eq!(mgr.take_closed(id).expect("closed").reason, "network_error");
     }
 
     #[test]
