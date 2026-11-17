@@ -32,3 +32,19 @@ path = "tests/production.rs"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# IronRDP, pinned per docs/rdp-engine.md. Each crate moves at its own pace, so
+# the exact versions below are the coherent set verified against crates.io.
+ironrdp-connector = "=0.12.0"
+ironrdp-tokio = "=0.12.0"
+ironrdp-tls = { version = "=0.3.0", features = ["rustls-ring"] }
+ironrdp-session = "=0.13.0"
+ironrdp-pdu = "=0.11.0"
+ironrdp-graphics = "=0.11.0"
+ironrdp-input = "=0.9.0"
+ironrdp-core = "=0.3.1"
+
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+x509-cert = { version = "0.3", default-features = false, features = ["std"] }
+sha2 = "0.11"
+png = "0.18"
