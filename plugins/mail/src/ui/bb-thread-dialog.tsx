@@ -224,7 +224,7 @@ function ThreadBody({ request, call, onStarted, onEditInComposer, onClose }: BbT
               >
                 {preview.value.prompt}
               </pre>
-              <p className="text-xs text-muted-foreground">{`Thread title: ${preview.value.title}`}</p>
+              <p className="text-xs text-muted-foreground">{tx("Thread title: {title}", { title: preview.value.title })}</p>
               {permissionText(preview.value.permissionMode).map((line) => (
                 <p key={line} className="text-xs text-muted-foreground">
                   {line}
@@ -288,7 +288,7 @@ export function PreparedPrompt({
       >
         {prepared.prompt}
       </pre>
-      <p className="text-xs text-muted-foreground">{`Thread title: ${prepared.title}`}</p>
+      <p className="text-xs text-muted-foreground">{tx("Thread title: {title}", { title: prepared.title })}</p>
       {[...permissionText(prepared.permissionMode), ...previewNotes({ hidden: prepared.hidden, leftOut: 0 })].map((line) => (
         <p key={line} className="text-xs text-muted-foreground">
           {line}

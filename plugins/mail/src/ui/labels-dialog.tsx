@@ -17,13 +17,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { stopEscape } from "./shortcuts.ts";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export const LABEL_REFUSAL_TEXT: Record<LabelNameRefusal, string> = {
-  empty: "Type a name",
-  too_long: "Use at most 100 characters",
-  control: "The name has characters a label cannot hold",
-  system: "That name is one of Gmail's own labels",
+  empty: msg("Type a name"),
+  too_long: msg("Use at most 100 characters"),
+  control: msg("The name has characters a label cannot hold"),
+  system: msg("That name is one of Gmail's own labels"),
 };
 
 export interface LabelsRequest {

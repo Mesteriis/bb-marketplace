@@ -8,7 +8,7 @@ import { ROLE_NAMES, roleFolders } from "../core/actions.ts";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { carriesMove, MOVE_TYPE } from "./drag-move.ts";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 /** The account chooser's value for All accounts. */
 export const ALL_ACCOUNTS = "__all_accounts__";
@@ -18,17 +18,17 @@ export const DEFAULT_FOLDER_PATH = "INBOX";
 
 /** BB glyph names per special use; the owner's own folders get "Folder". */
 const FOLDER_ICONS: Record<SpecialUse, string> = {
-  inbox: "Mail",
-  sent: "Sent",
+  inbox: msg("Mail"),
+  sent: msg("Sent"),
   drafts: "EditFile",
   junk: "AlertTriangle",
   trash: "Trash2",
-  archive: "Archive",
-  all: "Archive",
+  archive: msg("Archive"),
+  all: msg("Archive"),
 };
 
 export function folderIcon(specialUse: SpecialUse | null): string {
-  return specialUse === null ? "Folder" : FOLDER_ICONS[specialUse];
+  return specialUse === null ? tx("Folder") : FOLDER_ICONS[specialUse];
 }
 
 /** The account's inbox path, or null before its folders are known. */
@@ -268,7 +268,7 @@ function FolderRowsList({
               className="flex h-7 w-full items-center gap-1 rounded-md px-2 text-left text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
             >
               <Chevron open={more || [...hidden].some(isSelected)} />
-              {`More folders (${hidden.size})`}
+              {tx("More folders ({size})", { size: hidden.size })}
             </button>
           </li>
           {more || [...hidden].some(isSelected) ? [...hidden].map((folder) => button(folder, 1, true)) : null}

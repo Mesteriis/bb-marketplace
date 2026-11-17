@@ -13,24 +13,24 @@ import {
 } from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
 import { stopEscape } from "./shortcuts.ts";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export const SEARCH_OPERATORS: readonly { example: string; meaning: string }[] = [
-  { example: "from:anna", meaning: "Sender name or address" },
-  { example: "to:team@example.org", meaning: "A recipient (cc: for copies)" },
-  { example: "subject:\"weekly report\"", meaning: "Words in the subject; quotes keep words together" },
-  { example: "has:attachment", meaning: "Messages with attachments" },
-  { example: "filename:invoice.pdf", meaning: "An attachment's name" },
+  { example: "from:anna", meaning: msg("Sender name or address") },
+  { example: "to:team@example.org", meaning: msg("A recipient (cc: for copies)") },
+  { example: "subject:\"weekly report\"", meaning: msg("Words in the subject; quotes keep words together") },
+  { example: "has:attachment", meaning: msg("Messages with attachments") },
+  { example: "filename:invoice.pdf", meaning: msg("An attachment's name") },
   { example: "in:inbox", meaning: "inbox, sent, drafts, spam, trash, archive, snoozed" },
   { example: "is:unread", meaning: "unread, read, flagged, unflagged" },
-  { example: "larger:2M", meaning: "Size; smaller: too. Sizes look like 10K or 2M" },
-  { example: "after:2026-01-31", meaning: "Dates; before: too" },
-  { example: "newer_than:3m", meaning: "Relative dates: d, w, m, y; older_than: too" },
-  { example: "label:Travel", meaning: "A Gmail label" },
-  { example: "list:news.example.org", meaning: "A mailing list" },
-  { example: "category:bills", meaning: "A Mail category" },
-  { example: "account:work", meaning: "One account" },
-  { example: "-in:trash", meaning: "A leading - leaves matches out" },
+  { example: "larger:2M", meaning: msg("Size; smaller: too. Sizes look like 10K or 2M") },
+  { example: "after:2026-01-31", meaning: msg("Dates; before: too") },
+  { example: "newer_than:3m", meaning: msg("Relative dates: d, w, m, y; older_than: too") },
+  { example: "label:Travel", meaning: msg("A Gmail label") },
+  { example: "list:news.example.org", meaning: msg("A mailing list") },
+  { example: "category:bills", meaning: msg("A Mail category") },
+  { example: "account:work", meaning: msg("One account") },
+  { example: "-in:trash", meaning: msg("A leading - leaves matches out") },
 ];
 
 /** The operator a note's word names, lower case; null for a bare word. */

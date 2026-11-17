@@ -51,7 +51,7 @@ import { BbFilePicker, type FilePickRequest } from "./bb-file-picker.tsx";
 import type { BbCall } from "./bb-ports.ts";
 import { findSignature, signatureKey } from "./signature-node.ts";
 import { TemplatesPopover } from "./templates-popover.tsx";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 /** Typing rests this long before the draft is saved. */
 export const AUTOSAVE_MS = 1_500;
@@ -224,14 +224,14 @@ type SaveState =
 type Conflict = { revision: number; queued: boolean } | null;
 
 const TITLES: Record<DraftView["kind"], string> = {
-  new: "New message",
-  reply: "Reply",
-  reply_all: "Reply all",
-  forward: "Forward",
+  new: msg("New message"),
+  reply: msg("Reply"),
+  reply_all: msg("Reply all"),
+  forward: msg("Forward"),
 };
 
 function messageOf(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : "Something went wrong";
+  return error instanceof Error && error.message ? error.message : tx("Something went wrong");
 }
 
 function fieldOf(addresses: readonly MailAddress[]): Field {
@@ -663,7 +663,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         const wanted = new Set(issue.addresses.map((a) => a.toLowerCase()));
         setMarked(wanted);
         const holds = (field: Field) => field.chips.some((chip) => wanted.has(chipAddress(chip)));
-        const field = holds(to) ? "To" : holds(cc) ? "Cc" : holds(bcc) ? "Bcc" : "To";
+        const field = holds(to) ? "To" : holds(cc) ? "Cc" : holds(bcc) ? tx("Bcc") : "To";
         if (field !== "To") setShowCopies(true);
         return () => within(`input[role="combobox"][aria-label="${field}"]`)?.focus();
       }
@@ -1117,11 +1117,11 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         {props.reminderDays !== undefined ? (
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <Checkbox
-              aria-label={`Remind me if no reply in ${daysText(props.reminderDays)}`}
+              aria-label={tx("Remind me if no reply in {p1}", { p1: daysText(props.reminderDays) })}
               checked={remind}
               onCheckedChange={(checked) => setRemind(checked === true)}
             />
-            {`Remind me if no reply in ${daysText(props.reminderDays)}`}
+            {tx("Remind me if no reply in {p1}", { p1: daysText(props.reminderDays) })}
           </label>
         ) : null}
         <SaveStateLine state={saveState} serverCopy={draft.serverCopy} />
@@ -1231,17 +1231,17 @@ function FieldRow({ label, htmlFor, children }: { label: string; htmlFor?: strin
 function SaveStateLine({ state, serverCopy }: { state: SaveState; serverCopy: DraftView["serverCopy"] }) {
   const text =
     state.kind === "saving"
-      ? "Saving…"
+      ? tx("Saving\u2026")
       : state.kind === "unsaved"
-        ? "Not saved yet"
+        ? tx("Not saved yet")
         : state.kind === "error"
-          ? `Not saved: ${state.text}`
+          ? tx("Not saved: {text}", { text: state.text })
           : serverCopy === "failed"
-            ? "Saved on this computer — server copy failed"
+            ? tx("Saved on this computer \u2014 server copy failed")
             : serverCopy === "local_only"
-              ? "Saved on this computer"
+              ? tx("Saved on this computer")
               : state.kind === "saved"
-                ? "Saved"
+                ? tx("Saved")
                 : "";
   return (
     <span

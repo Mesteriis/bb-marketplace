@@ -60,7 +60,7 @@ export function SignatureEditor({ address, initial, onSave, onCancel }: Signatur
         />
       </div>
       <ComposeEditor
-        label={`Signature for ${address}`}
+        label={tx("Signature for {address}", { address })}
         initialDoc={initial ?? EMPTY_DOC}
         importFrom={null}
         features={{ lists: false, quotes: false, code: false }}

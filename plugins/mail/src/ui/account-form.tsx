@@ -41,7 +41,7 @@ export interface AccountFormProps {
 type Outcome = { kind: "ok" | "error"; message: string } | null;
 
 function messageOf(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : "Something went wrong";
+  return error instanceof Error && error.message ? error.message : tx("Something went wrong");
 }
 
 export function AccountForm({ initial, title, onTest, onSave, onCancel, ExternalLink }: AccountFormProps) {
@@ -101,8 +101,8 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
       const result = await onTest(input);
       setOutcome(
         result.ok
-          ? { kind: "ok", message: "Connection works." }
-          : { kind: "error", message: result.reason ?? "Connection failed." },
+          ? { kind: "ok", message: tx("Connection works.") }
+          : { kind: "error", message: result.reason ?? tx("Connection failed.") },
       );
     } catch (error) {
       setOutcome({ kind: "error", message: messageOf(error) });
@@ -120,7 +120,7 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
     try {
       await onSave(input);
       if (passwordRef.current) passwordRef.current.value = "";
-      setOutcome({ kind: "ok", message: "Account saved." });
+      setOutcome({ kind: "ok", message: tx("Account saved.") });
     } catch (error) {
       setOutcome({ kind: "error", message: messageOf(error) });
     } finally {

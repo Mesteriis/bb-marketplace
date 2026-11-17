@@ -141,7 +141,7 @@ export function TasksView({ load, update, remove, onOpen, refreshKey = 0 }: Task
             ) : (
               <li key={task.id} className="flex flex-wrap items-start gap-2 px-3 py-2">
                 <Checkbox
-                  aria-label={`Done: ${task.title}`}
+                  aria-label={tx("Done: {title}", { title: task.title })}
                   checked={task.doneAt !== null}
                   onCheckedChange={(checked) => run(() => update(task.id, { done: checked === true }))}
                   className="mt-0.5"
@@ -151,7 +151,7 @@ export function TasksView({ load, update, remove, onOpen, refreshKey = 0 }: Task
                     <AiText text={task.title} />
                   </span>
                   <span className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                    {task.due !== null ? <span>{`Due ${task.due}`}</span> : <span>{tx("No due date")}</span>}
+                    {task.due !== null ? <span>{tx("Due {due}", { due: task.due })}</span> : <span>{tx("No due date")}</span>}
                     {task.messageId !== null && task.threadId !== null ? (
                       <button
                         type="button"

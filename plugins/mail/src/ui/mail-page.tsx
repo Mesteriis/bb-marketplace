@@ -424,7 +424,7 @@ export function MailPage(props: MailPageProps) {
             first
               ? tx("Connect your mailbox")
               : accountForm?.initial
-                ? `Reconnect ${accountForm.initial.email}`
+                ? tx("Reconnect {email}", { email: accountForm.initial.email })
                 : tx("Add an account")
           }
           initial={accountForm?.initial}
@@ -502,7 +502,7 @@ function viewModel(props: MailPageProps & { status: StatusView }): ViewModel {
   const all = props.folders ?? [];
   const foldersOf = (accountId: string) => all.filter((f) => f.accountId === accountId);
   const folderName = (accountId: string, path: string) =>
-    foldersOf(accountId).find((f) => f.path === path)?.name ?? (path === "INBOX" ? "Inbox" : path);
+    foldersOf(accountId).find((f) => f.path === path)?.name ?? (path === "INBOX" ? tx("Inbox") : path);
   const use: SpecialUse | null =
     view.kind === "role"
       ? view.role
@@ -1750,7 +1750,7 @@ function ListColumn(
             localOnly={serverHere.localOnly}
             accountName={(id) => {
               const account = status.accounts.find((a) => a.id === id);
-              return account === undefined ? "Account" : accountLabel(account);
+              return account === undefined ? tx("Account") : accountLabel(account);
             }}
             shownFromServer={search.hits.filter((h) => serverHere.ids.has(h.id)).length}
             onCancel={s3.onServerCancel}
@@ -1953,7 +1953,7 @@ function MailHeader(
         size="sm"
         className="h-7 px-2 text-xs font-normal text-muted-foreground"
         aria-haspopup="dialog"
-        aria-label={`Mail status: ${syncStatusLabel(shown, props.syncing, Date.now(), props.bbLink)}`}
+        aria-label={tx("Mail status: {p1}", { p1: syncStatusLabel(shown, props.syncing, Date.now(), props.bbLink) })}
         onClick={() => setStatusOpen(true)}
       >
         {syncStatusLabel(shown, props.syncing, Date.now(), props.bbLink)}

@@ -147,7 +147,7 @@ export function ProjectChip({ detail, projects, onSet, onAlways, onOpenProject }
                       setOpen(false);
                     }}
                   >
-                    {`Always for ${choice.value}`}
+                    {tx("Always for {value}", { value: choice.value })}
                   </Button>
                 ))
               : null}

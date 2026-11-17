@@ -7,15 +7,15 @@ import type { ThreadSummary } from "../core/model.ts";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export type Category = NonNullable<ThreadSummary["category"]>;
 
 export const CATEGORIES: readonly { value: Category; label: string }[] = [
-  { value: "bills", label: "Bills" },
-  { value: "notifications", label: "Notifications" },
-  { value: "personal", label: "Personal" },
-  { value: "newsletters", label: "Newsletters" },
+  { value: "bills", label: msg("Bills") },
+  { value: "notifications", label: msg("Notifications") },
+  { value: "personal", label: msg("Personal") },
+  { value: "newsletters", label: msg("Newsletters") },
 ];
 
 export function categoryLabel(category: Category): string {
@@ -110,7 +110,7 @@ export function CategoryChip({ category, suggestion, onAccept, onChange, onAlway
       )}
       {onAlways !== null && shown !== null ? (
         <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" disabled={pending} onClick={() => onAlways(shown)}>
-          {`Always ${categoryLabel(shown)} for this sender`}
+          {tx("Always {p1} for this sender", { p1: categoryLabel(shown) })}
         </Button>
       ) : null}
     </div>

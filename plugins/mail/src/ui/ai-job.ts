@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AiStartInput, AiStartOutput, AiPollOutput } from "../core/contract.ts";
 import type { AiErrorKind, AiResultView } from "../core/model.ts";
+import { msg } from "./i18n/index.ts";
 
 export interface AiJobPorts {
   start: (input: AiStartInput) => Promise<AiStartOutput>;
@@ -34,20 +35,20 @@ export const AI_POLL_MS = 500;
 
 /** The fixed text of an AI error kind; the same words as the core's aiErrorText (a test compares them). */
 export const AI_ERROR_TEXT: Record<AiErrorKind, string> = {
-  gateway_missing: "AI features need the Makosh AI plugin",
-  pool_unavailable: "The AI provider is not available",
-  provider_unknown: "The chosen AI provider is not available",
-  model_unknown: "The chosen AI model is not available",
-  auth: "The AI provider refused the sign-in",
-  quota: "The AI provider's quota is used up",
-  refused: "The AI provider refused this request",
-  too_large: "The text is too large for the AI",
-  busy: "AI is busy; try again in a moment",
-  failed: "The AI request failed",
-  cancelled: "The AI request was cancelled",
-  unreadable: "The AI answer could not be read",
-  out_of_scope: "Outside AI access (Mail settings)",
-  too_long: "The AI answer was cut off; try fewer messages or a shorter text",
+  gateway_missing: msg("AI features need the Makosh AI plugin"),
+  pool_unavailable: msg("The AI provider is not available"),
+  provider_unknown: msg("The chosen AI provider is not available"),
+  model_unknown: msg("The chosen AI model is not available"),
+  auth: msg("The AI provider refused the sign-in"),
+  quota: msg("The AI provider's quota is used up"),
+  refused: msg("The AI provider refused this request"),
+  too_large: msg("The text is too large for the AI"),
+  busy: msg("AI is busy; try again in a moment"),
+  failed: msg("The AI request failed"),
+  cancelled: msg("The AI request was cancelled"),
+  unreadable: msg("The AI answer could not be read"),
+  out_of_scope: msg("Outside AI access (Mail settings)"),
+  too_long: msg("The AI answer was cut off; try fewer messages or a shorter text"),
 };
 
 function messageOf(error: unknown): string {

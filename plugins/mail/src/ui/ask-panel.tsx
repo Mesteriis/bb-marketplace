@@ -85,7 +85,7 @@ export function AskPanel({ ports, question, accountId, onOpen, onClose, pollMs }
                     onClick={() => onOpen(citation)}
                     className="text-left text-sm text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
-                    {`Message ${citation.n}: open the conversation`}
+                    {tx("Message {n}: open the conversation", { n: citation.n })}
                   </button>
                 </li>
               ))}

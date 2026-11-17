@@ -8,7 +8,7 @@ import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { isMacPlatform } from "./shortcuts.ts";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 /** "⌘" on Apple platforms, "Ctrl+" elsewhere (the platform rule is shortcuts.ts's isMacPlatform). */
 export function modKeyLabel(platform?: string): string {
@@ -27,15 +27,15 @@ interface Tool {
 }
 
 const ALL_TOOLS: Tool[] = [
-  { id: "bold", label: "Bold", icon: "Bold", fallback: "Type", key: "B" },
-  { id: "italic", label: "Italic", icon: "Italic", fallback: "Type", key: "I" },
-  { id: "underline", label: "Underline", icon: "Underline", fallback: "Type", key: "U" },
-  { id: "bulletList", label: "Bulleted list", icon: "List", fallback: "ListChecks" },
-  { id: "orderedList", label: "Numbered list", icon: "ListOrdered", fallback: "List" },
-  { id: "link", label: "Link", icon: "Link", fallback: "ExternalLink", key: "K" },
-  { id: "blockquote", label: "Quote", icon: "Quote", fallback: "MessageSquare" },
-  { id: "codeBlock", label: "Code block", icon: "SquareCode", fallback: "Code" },
-  { id: "clear", label: "Clear formatting", icon: "RemoveFormatting", fallback: "X" },
+  { id: "bold", label: msg("Bold"), icon: msg("Bold"), fallback: msg("Type"), key: "B" },
+  { id: "italic", label: msg("Italic"), icon: msg("Italic"), fallback: msg("Type"), key: "I" },
+  { id: "underline", label: msg("Underline"), icon: msg("Underline"), fallback: msg("Type"), key: "U" },
+  { id: "bulletList", label: msg("Bulleted list"), icon: msg("List"), fallback: "ListChecks" },
+  { id: "orderedList", label: msg("Numbered list"), icon: "ListOrdered", fallback: msg("List") },
+  { id: "link", label: msg("Link"), icon: msg("Link"), fallback: "ExternalLink", key: "K" },
+  { id: "blockquote", label: msg("Quote"), icon: msg("Quote"), fallback: "MessageSquare" },
+  { id: "codeBlock", label: msg("Code block"), icon: "SquareCode", fallback: msg("Code") },
+  { id: "clear", label: msg("Clear formatting"), icon: "RemoveFormatting", fallback: "X" },
 ];
 
 /**
@@ -219,7 +219,7 @@ export function ComposeToolbar({
             variant="ghost"
             size="sm"
             className={cn("h-7 px-2", onImprove === undefined && "ml-auto")}
-            aria-label={`Templates (${mod}${mod === "⌘" ? "⌥" : "Alt+"}T)`}
+            aria-label={tx("Templates ({mod}{p1}T)", { mod, p1: mod === "⌘" ? "⌥" : "Alt+" })}
             aria-keyshortcuts="Control+Alt+T Meta+Alt+T"
             aria-expanded={templatesOpen === true}
             disabled={editor === null}

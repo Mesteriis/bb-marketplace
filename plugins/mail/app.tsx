@@ -321,7 +321,7 @@ function sendToastId(outboxId: string): string {
 
 /** The fallback prompt carries the message text itself (it starts with the untrusted notice). */
 function handToAgentPrompt(agentText: string): string {
-  return `Help me with this email.\n\n${agentText}`;
+  return tx("Help me with this email.\n\n{agentText}", { agentText });
 }
 
 /** The threads_list scope of a view. */
@@ -678,7 +678,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       statusLoaded.current = true;
       setStatusError(null);
     } catch (error) {
-      if (statusLoaded.current) toast.error(`Could not refresh mail status: ${messageOf(error)}`);
+      if (statusLoaded.current) toast.error(tx("Could not refresh mail status: {p1}", { p1: messageOf(error) }));
       else setStatusError(messageOf(error));
     }
   }, [rpc]);
@@ -803,7 +803,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         const text = messageOf(error);
         setFolderState((prev) => {
           const same = prev !== null && prev.key === key;
-          if (!same || prev.error === null) toast.error(`Could not load folders: ${text}`);
+          if (!same || prev.error === null) toast.error(tx("Could not load folders: {text}", { text }));
           return {
             key,
             folders: same ? prev.folders : [],
@@ -882,7 +882,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     } catch (error) {
       if (token !== requests.current.search) return;
       setSearch((prev) => ({ ...prev, loadingMore: false }));
-      toast.error(`Could not load more results: ${messageOf(error)}`);
+      toast.error(tx("Could not load more results: {p1}", { p1: messageOf(error) }));
     }
   }, [rpc]);
 
@@ -944,7 +944,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     (message: MessageHeader) => {
       expandMessage(message);
       void markOpened([message]).then((failure) => {
-        if (failure !== null) toast.error(`Could not mark the message read: ${failure}`);
+        if (failure !== null) toast.error(tx("Could not mark the message read: {failure}", { failure }));
       });
     },
     [expandMessage, markOpened],
@@ -972,7 +972,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
               ? detail.messages
               : [focus, ...detail.messages.filter((m) => m !== focus)];
           void markOpened(ordered).then((failure) => {
-            if (failure !== null) toast.error(`Could not mark the conversation read: ${failure}`);
+            if (failure !== null) toast.error(tx("Could not mark the conversation read: {failure}", { failure }));
           });
         }
       } catch (error) {
@@ -1300,7 +1300,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       toast(undoToastText(action, count, destinationName), {
         id: UNDO_TOAST_ID,
         duration: UNDO_TOAST_MS,
-        action: { label: "Undo", onClick: () => void undo(undoId, moving) },
+        action: { label: tx("Undo"), onClick: () => void undo(undoId, moving) },
       });
     },
     [undo],
@@ -1380,7 +1380,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           const names = [...destinations].join(", ");
           recordUndo(undoId, action, done.size, names === "" ? null : names, moving || done.size >= 2);
         } else if (moving && done.size > 0 && destinations.size > 0) {
-          toast.success(`Moved to ${[...destinations].join(", ")}`);
+          toast.success(tx("Moved to {p1}", { p1: [...destinations].join(", ") }));
         }
         if (action === "mark_unread") {
           // A later open marks them read again.
@@ -1548,7 +1548,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           imageSenders: new Set(prev.imageSenders).add(address.trim().toLowerCase()),
         }));
       } catch (error) {
-        toast.error(`Could not allow images: ${messageOf(error)}`);
+        toast.error(tx("Could not allow images: {p1}", { p1: messageOf(error) }));
       }
     },
     [rpc],
@@ -1561,7 +1561,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       try {
         await rpc.call("images_disallow_sender", { accountId: message.accountId, address: message.from.address });
       } catch (error) {
-        toast.error(`Could not stop showing images: ${messageOf(error)}`);
+        toast.error(tx("Could not stop showing images: {p1}", { p1: messageOf(error) }));
         return;
       }
       const { detail, bodies } = latest.current.reading;
@@ -1691,7 +1691,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         if ((await saveTicket(ticket)) === "started") return;
         anchorDownload(await rpc.call("download_ticket", request));
       } catch (error) {
-        toast.error(`Could not download: ${messageOf(error)}`);
+        toast.error(tx("Could not download: {p1}", { p1: messageOf(error) }));
       }
     },
     [rpc],
@@ -1724,7 +1724,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       if (!started) stopSyncing();
     } catch (error) {
       stopSyncing();
-      toast.error(`Sync failed: ${messageOf(error)}`);
+      toast.error(tx("Sync failed: {p1}", { p1: messageOf(error) }));
     }
   }, [rpc, scopeKey, searchAccount, stopSyncing]);
 
@@ -1785,7 +1785,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       try {
         ({ text } = await rpc.call("message_agent_text", { messageId: message.id }));
       } catch (error) {
-        toast.error(`Could not hand the message to an agent: ${messageOf(error)}`);
+        toast.error(tx("Could not hand the message to an agent: {p1}", { p1: messageOf(error) }));
         return;
       }
       navigate.toCompose({ initialPrompt: handToAgentPrompt(text), focusPrompt: true });
@@ -1835,7 +1835,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     openedDraftLink.current = draftId;
     rpc.call("compose_open", { draftId }).then(
       ({ draft, warning }) => openComposer(draft, warning, [], null),
-      (error: unknown) => toast.error(`Could not open the draft: ${messageOf(error)}`),
+      (error: unknown) => toast.error(tx("Could not open the draft: {p1}", { p1: messageOf(error) })),
     );
   }, [openComposer, rpc, subPath]);
 
@@ -1848,7 +1848,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       const { draft, warning } = await rpc.call("compose_open", { draftId });
       openComposer(draft, warning, [], null);
     } catch (error) {
-      toast.error(`Could not start a message: ${messageOf(error)}`);
+      toast.error(tx("Could not start a message: {p1}", { p1: messageOf(error) }));
     }
   }, [account, accounts, openComposer, rpc]);
 
@@ -1859,7 +1859,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         const { draft } = await rpc.call("compose_open", { draftId: prepared.draftId });
         openComposer(draft, prepared.warning, prepared.dropped, latest.current.reading.threadId);
       } catch (error) {
-        toast.error(`Could not start the ${kind === "forward" ? "forward" : "reply"}: ${messageOf(error)}`);
+        toast.error(tx("Could not start the {p1}: {p2}", { p1: kind === "forward" ? "forward" : "reply", p2: messageOf(error) }));
       }
     },
     [openComposer, rpc],
@@ -1875,7 +1875,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         );
         openComposer(draft, warning, [], null);
       } catch (error) {
-        toast.error(`Could not open the draft: ${messageOf(error)}`);
+        toast.error(tx("Could not open the draft: {p1}", { p1: messageOf(error) }));
       }
     },
     [openComposer, rpc],
@@ -1890,7 +1890,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         const message = detail.messages.filter((m) => inViewOf(ctx, m)).at(-1) ?? detail.messages.at(-1);
         if (message !== undefined) await editDraft(message);
       } catch (error) {
-        toast.error(`Could not open the draft: ${messageOf(error)}`);
+        toast.error(tx("Could not open the draft: {p1}", { p1: messageOf(error) }));
       }
     },
     [editDraft, rpc],
@@ -1945,7 +1945,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           openComposer(draft, warning, [], null);
         }
       } catch (error) {
-        toast.error(`Could not undo: ${messageOf(error)}`, { id: toastId });
+        toast.error(tx("Could not undo: {p1}", { p1: messageOf(error) }), { id: toastId });
       }
     },
     [loadOutbox, openComposer, rpc],
@@ -1956,11 +1956,11 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     (outboxId: string, sendAfter: string | null, origin: OutboxRow["origin"] = "owner", purpose: OutboxRow["purpose"] = null) => {
       const due = sendAfter === null ? NaN : Date.parse(sendAfter);
       const left = Number.isNaN(due) ? UNDO_WINDOW_MS : Math.max(0, due - Date.now());
-      const label = purpose === "unsubscribe" ? "Unsubscribe email queued · " : origin === "agent" ? "Agent message · " : "";
+      const label = purpose === "unsubscribe" ? tx("Unsubscribe email queued \u00b7 ") : origin === "agent" ? tx("Agent message \u00b7 ") : "";
       toast(`${label}Sending in ${Math.max(1, Math.ceil(left / 1000))} s`, {
         id: sendToastId(outboxId),
         duration: left + 2_000,
-        action: { label: "Undo", onClick: () => void undoSend(outboxId) },
+        action: { label: tx("Undo"), onClick: () => void undoSend(outboxId) },
       });
     },
     [undoSend],
@@ -2002,7 +2002,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           case "failed":
             toast.error(row !== null ? outboxStateText(row) : tx("Not sent"), {
               id: toastId,
-              action: { label: "Retry", onClick: () => void outboxAction(event.id, "retry") },
+              action: { label: tx("Retry"), onClick: () => void outboxAction(event.id, "retry") },
             });
             break;
           case "unknown":
@@ -2148,7 +2148,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     async (message: MessageHeader, info: UnsubscribeInfoView, method: UnsubscribeMethod) => {
       const viaEmail =
         method === "one_click" && info.methods.mailto !== null
-          ? { label: "Send an email instead", onClick: () => askUnsubscribe(message, "mailto") }
+          ? { label: tx("Send an email instead"), onClick: () => askUnsubscribe(message, "mailto") }
           : undefined;
       try {
         const result = await rpc.call("unsubscribe_run", {
@@ -2165,7 +2165,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
             break;
           case "failed":
             toast.error(
-              `Could not unsubscribe: ${unsubscribeFailureText(result.reason)}`,
+              tx("Could not unsubscribe: {p1}", { p1: unsubscribeFailureText(result.reason) }),
               viaEmail !== undefined ? { action: viaEmail } : undefined,
             );
             break;
@@ -2199,7 +2199,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           return;
         }
         if (undoable) recordUndo(undoId, "archive", queued, null, true);
-        else toast.success(`Archived ${plural(queued, "message", "messages")}`);
+        else toast.success(tx("Archived {p1}", { p1: plural(queued, "message", "messages") }));
         refreshAfterChange();
       } catch (error) {
         toast.error(messageOf(error));
@@ -2479,7 +2479,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
               return;
             }
           } catch (error) {
-            toast.error(`Could not start the translation: ${messageOf(error)}`);
+            toast.error(tx("Could not start the translation: {p1}", { p1: messageOf(error) }));
             return;
           }
         }
@@ -2824,16 +2824,16 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         toast(tx("Nothing to label"));
         return;
       }
-      toast(`Labelled ${plural(changed, "message", "messages")}`, {
+      toast(tx("Labelled {p1}", { p1: plural(changed, "message", "messages") }), {
         ...(undoId !== null
           ? {
               action: {
-                label: "Undo",
+                label: tx("Undo"),
                 onClick: () => {
                   rpc
                     .call("category_undo", { undoId })
                     .then(reloadAfterLabel)
-                    .catch((error: unknown) => toast.error(`Could not undo: ${messageOf(error)}`));
+                    .catch((error: unknown) => toast.error(tx("Could not undo: {p1}", { p1: messageOf(error) })));
                 },
               },
             }
@@ -2858,7 +2858,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       disabledReason: status?.translate.gateway === "gateway_missing" ? AI_ERROR_TEXT.gateway_missing : null,
       keepTasks: async (jobId: string, picks: TaskPick[]) => {
         const { kept } = await rpc.call("tasks_keep", { jobId, picks });
-        toast.success(kept === 1 ? tx("Kept 1 task") : `Kept ${kept} tasks`);
+        toast.success(kept === 1 ? tx("Kept 1 task") : tx("Kept {kept} tasks", { kept }));
         return kept;
       },
       onOpenConversation: (accountId, threadId) =>
@@ -2871,7 +2871,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
             labelledToast(changed, undoId);
             reloadAfterLabel();
           })
-          .catch((error: unknown) => toast.error(`Could not change the category: ${messageOf(error)}`));
+          .catch((error: unknown) => toast.error(tx("Could not change the category: {p1}", { p1: messageOf(error) })));
       },
       onCategoryAccept: (messageIds) => {
         rpc
@@ -2880,18 +2880,18 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
             labelledToast(changed, undoId);
             reloadAfterLabel();
           })
-          .catch((error: unknown) => toast.error(`Could not accept the category: ${messageOf(error)}`));
+          .catch((error: unknown) => toast.error(tx("Could not accept the category: {p1}", { p1: messageOf(error) })));
       },
       onCategoryRule: (messageId, category: Category) => {
         rpc
           .call("category_rule_add", { messageId, kind: "address", category })
           .then(() => rpc.call("category_set", { messageIds: [messageId], category }))
           .then(({ changed, undoId }) => {
-            toast.success(`New mail from this sender will be labelled ${categoryLabel(category)}`);
+            toast.success(tx("New mail from this sender will be labelled {p1}", { p1: categoryLabel(category) }));
             if (changed > 0) labelledToast(changed, undoId);
             reloadAfterLabel();
           })
-          .catch((error: unknown) => toast.error(`Could not add the rule: ${messageOf(error)}`));
+          .catch((error: unknown) => toast.error(tx("Could not add the rule: {p1}", { p1: messageOf(error) })));
       },
       onSuggestCategories: (threadIds) => {
         void (async () => {
@@ -2901,10 +2901,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
             toast(tx("Suggesting categories\u2026"));
             const result = await runAiToEnd({ kind: "categories", messageIds: ids });
             const suggested = result.kind === "categories" ? result.items.filter((item) => item.category !== null).length : 0;
-            toast(suggested === 1 ? tx("Suggested a category for 1 message") : `Suggested categories for ${suggested} messages`);
+            toast(suggested === 1 ? tx("Suggested a category for 1 message") : tx("Suggested categories for {suggested} messages", { suggested }));
             reloadAfterLabel();
           } catch (error) {
-            toast.error(`Could not suggest categories: ${messageOf(error)}`);
+            toast.error(tx("Could not suggest categories: {p1}", { p1: messageOf(error) }));
           }
         })();
       },
@@ -2917,7 +2917,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
             labelledToast(changed, undoId);
             reloadAfterLabel();
           } catch (error) {
-            toast.error(`Could not accept the categories: ${messageOf(error)}`);
+            toast.error(tx("Could not accept the categories: {p1}", { p1: messageOf(error) }));
           }
         })();
       },
@@ -2926,23 +2926,23 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onRemind: (messageId, days) => {
         rpc
           .call("reminder_set", { messageId, days })
-          .then(() => toast.success(`You will be reminded if no reply comes in ${daysText(days)}`))
-          .catch((error: unknown) => toast.error(`Could not set the reminder: ${messageOf(error)}`));
+          .then(() => toast.success(tx("You will be reminded if no reply comes in {p1}", { p1: daysText(days) })))
+          .catch((error: unknown) => toast.error(tx("Could not set the reminder: {p1}", { p1: messageOf(error) })));
       },
       onReminderSnooze: (reminder, days) => {
         rpc
           .call("reminder_snooze", { id: reminder.id, days })
           .then(() => {
-            toast(`Reminding again in ${daysText(days)}`);
+            toast(tx("Reminding again in {p1}", { p1: daysText(days) }));
             void loadReminders();
           })
-          .catch((error: unknown) => toast.error(`Could not change the reminder: ${messageOf(error)}`));
+          .catch((error: unknown) => toast.error(tx("Could not change the reminder: {p1}", { p1: messageOf(error) })));
       },
       onReminderDismiss: (reminder) => {
         rpc
           .call("reminder_dismiss", { id: reminder.id })
           .then(() => void loadReminders())
-          .catch((error: unknown) => toast.error(`Could not dismiss the reminder: ${messageOf(error)}`));
+          .catch((error: unknown) => toast.error(tx("Could not dismiss the reminder: {p1}", { p1: messageOf(error) })));
       },
     }),
     [
@@ -3130,19 +3130,19 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       .call("rules_pause", {})
       .then(({ paused }) => {
         void loadRuleRuns();
-        toast(paused === 1 ? tx("Paused 1 rule") : `Paused ${paused} rules`, {
+        toast(paused === 1 ? tx("Paused 1 rule") : tx("Paused {paused} rules", { paused }), {
           action: {
-            label: "Undo",
+            label: tx("Undo"),
             onClick: () => {
               rpc
                 .call("rules_pause", { undo: true })
                 .then(() => void loadRuleRuns())
-                .catch((error: unknown) => toast.error(`Could not undo: ${messageOf(error)}`));
+                .catch((error: unknown) => toast.error(tx("Could not undo: {p1}", { p1: messageOf(error) })));
             },
           },
         });
       })
-      .catch((error: unknown) => toast.error(`Could not pause the rules: ${messageOf(error)}`));
+      .catch((error: unknown) => toast.error(tx("Could not pause the rules: {p1}", { p1: messageOf(error) })));
   }, [loadRuleRuns, rpc]);
   const mailBb = useMemo<MailBbPorts>(
     () => ({
@@ -3171,7 +3171,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
               rpc
                 .call("rule_run_dismiss", { id: run.id })
                 .then(() => void loadRuleRuns())
-                .catch((error: unknown) => toast.error(`Could not dismiss: ${messageOf(error)}`));
+                .catch((error: unknown) => toast.error(tx("Could not dismiss: {p1}", { p1: messageOf(error) })));
             },
             onPauseRules: pauseRules,
           }
@@ -3205,7 +3205,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const accountName = useCallback(
     (accountId: string) => {
       const found = accounts.find((a) => a.id === accountId);
-      return found === undefined ? "Account" : (found.displayName?.trim() || found.email);
+      return found === undefined ? tx("Account") : (found.displayName?.trim() || found.email);
     },
     [accounts],
   );
@@ -3291,7 +3291,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     try {
       await rpc.call("server_job_cancel", { jobId });
     } catch (error) {
-      toast.error(`Could not stop the search: ${messageOf(error)}`);
+      toast.error(tx("Could not stop the search: {p1}", { p1: messageOf(error) }));
     }
   }, [rpc]);
   const moreFromServer = useCallback(async () => {
@@ -3305,7 +3305,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       }
       followServerJob(current.query, current.jobId);
     } catch (error) {
-      toast.error(`Could not search further: ${messageOf(error)}`);
+      toast.error(tx("Could not search further: {p1}", { p1: messageOf(error) }));
     }
   }, [followServerJob, rpc]);
 
@@ -3347,7 +3347,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       const { id } = await rpc.call("saved_search_save", input);
       setSavedEdit(null);
       await loadSavedSearches();
-      if (input.id === undefined) toast(`Saved \u201c${input.name}\u201d`);
+      if (input.id === undefined) toast(tx("Saved \u201c{name}\u201d", { name: input.name }));
       if (latest.current.subPath === savedSearchSubPath(id)) {
         appliedSaved.current = null;
       }
@@ -3367,7 +3367,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       try {
         if (kind === "saved_delete") {
           await rpc.call("saved_search_delete", { id });
-          toast(`Deleted \u201c${search.name}\u201d`);
+          toast(tx("Deleted \u201c{name}\u201d", { name: search.name }));
         } else {
           await rpc.call("saved_search_move", { id, position: Math.max(0, Math.min(list.length - 1, at + (kind === "saved_up" ? -1 : 1))) });
         }
@@ -3431,7 +3431,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     try {
       await rpc.call("server_job_cancel", { jobId });
     } catch (error) {
-      toast.error(`Could not stop: ${messageOf(error)}`);
+      toast.error(tx("Could not stop: {p1}", { p1: messageOf(error) }));
     }
   }, [history?.jobId, rpc]);
   const [forget, setForget] = useState<{ request: ForgetRequest; count: number | null; error: string | null } | null>(null);
@@ -3470,7 +3470,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     async (accountId: string, parent: string | null, name: string) => {
       const { path } = await rpc.call("folder_create", { accountId, parent, name });
       setFolderName(null);
-      toast(`Created ${name}`);
+      toast(tx("Created {name}", { name }));
       reloadFolders();
       void path;
     },
@@ -3480,7 +3480,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     async (accountId: string, from: string, name: string) => {
       const { path } = await rpc.call("folder_rename", { accountId, path: from, name });
       setFolderName(null);
-      toast(`Renamed to ${name}`);
+      toast(tx("Renamed to {name}", { name }));
       reloadFolders();
       const current = latest.current.view;
       if (current.kind === "folder" && current.accountId === accountId && current.path === from) {
@@ -3508,7 +3508,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       const { ok, moved } = await rpc.call("folder_delete", { accountId: request.accountId, path: request.path, ...input });
       if (!ok) throw new Error("The folder was not deleted");
       setFolderDelete(null);
-      toast(moved > 0 ? `Moved ${plural(moved, "message", "messages")} to Trash and deleted ${request.name}` : `Deleted ${request.name}`);
+      toast(moved > 0 ? tx("Moved {p1} to Trash and deleted {name}", { p1: plural(moved, "message", "messages"), name: request.name }) : tx("Deleted {name}", { name: request.name }));
       reloadFolders();
       const current = latest.current.view;
       if (current.kind === "folder" && current.accountId === request.accountId && current.path === request.path) {
@@ -3721,7 +3721,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         if ((await saveTicket(ticket)) === "started") return;
         anchorDownload(await rpc.call("download_ticket", request));
       } catch (error) {
-        toast.error(`Could not download: ${messageOf(error)}`);
+        toast.error(tx("Could not download: {p1}", { p1: messageOf(error) }));
       }
     },
     [rpc],
@@ -3776,12 +3776,12 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           const fetched = poll.accounts.reduce((sum, row) => sum + row.fetched, 0);
           const note =
             poll.state === "failed"
-              ? "The conversation could not be loaded"
+              ? tx("The conversation could not be loaded")
               : poll.state === "cancelled"
-                ? "Stopped"
+                ? tx("Stopped")
                 : fetched === 0
-                  ? "Nothing more of this conversation on the server"
-                  : `Loaded ${plural(fetched, "message", "messages")} from the server`;
+                  ? tx("Nothing more of this conversation on the server")
+                  : tx("Loaded {p1} from the server", { p1: plural(fetched, "message", "messages") });
           setConversationJob({ threadId, state: "done", note });
           if (latest.current.reading.threadId === threadId) void loadThread(threadId, null);
         },
@@ -3805,7 +3805,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           }),
         );
       } catch (error) {
-        toast.error(`Could not prepare the page: ${messageOf(error)}`);
+        toast.error(tx("Could not prepare the page: {p1}", { p1: messageOf(error) }));
         return;
       }
       const subject = messages[0]!.subject;
@@ -3817,7 +3817,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           toast.error(tx("The page could not be saved"));
         });
       };
-      toast(tx("Printing is not available here"), { action: { label: "Save printable page", onClick: save } });
+      toast(tx("Printing is not available here"), { action: { label: tx("Save printable page"), onClick: save } });
     },
     [rpc],
   );
@@ -3894,7 +3894,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           if (forget === null) return;
           const { removed } = await rpc.call("history_forget", { accountId: forget.request.accountId, folder: forget.request.folder });
           setForget(null);
-          toast(`Removed ${plural(removed, "older message", "older messages")} from Mail`);
+          toast(tx("Removed {p1} from Mail", { p1: plural(removed, "older message", "older messages") }));
           setHistory(null);
           refreshAfterChange();
         }}
@@ -4201,7 +4201,7 @@ async function showNewMail(
       id: `makosh-mail-new-${token}`,
       description: plan.description,
       duration: NEW_MAIL_TOAST_MS,
-      ...(canOpen ? { action: { label: "Open", onClick: open } } : {}),
+      ...(canOpen ? { action: { label: tx("Open"), onClick: open } } : {}),
     });
   } catch {
     // Expired token, a refusal, or no toast host: the badge carries on.
@@ -4278,7 +4278,7 @@ async function showDayNotices(
         id: `makosh-mail-day-${token ?? "open"}-${shown}`,
         description: plan.description,
         duration: DAY_NOTICE_TOAST_MS,
-        ...(canOpen ? { action: { label: "Open", onClick: open } } : {}),
+        ...(canOpen ? { action: { label: tx("Open"), onClick: open } } : {}),
       });
     } catch {
       return;
@@ -4338,7 +4338,7 @@ function useUnreadBadge(): ExperimentalBadge | null {
   }, [rpc]);
   useEffect(refresh, [refresh]);
   useDebouncedRealtime(MAIL_CHANGED_CHANNEL, refresh);
-  return count > 0 ? { count, label: "Unread mail" } : null;
+  return count > 0 ? { count, label: tx("Unread mail") } : null;
 }
 
 /**
@@ -4524,7 +4524,7 @@ function AgentTriageTimelineRow({ payload }: PluginTimelineRendererProps) {
     return rpc.call("triage_status", { batchId });
   }, [batchId, rpc]);
   const undo = useCallback(async () => {
-    if (batchId === null) return "Nothing to undo";
+    if (batchId === null) return tx("Nothing to undo");
     return undoResultText(await rpc.call("action_undo", { undoId: batchId }));
   }, [batchId, rpc]);
   return <TriageRow status={status} undo={undo} version={version} />;
@@ -4577,7 +4577,7 @@ async function emailFromBb(
     toast.success(reply ? tx("Reply draft ready in Mail") : tx("Draft ready in Mail"));
     navigate?.toPluginPanel("mail", { subPath: draftSubPath(draftId) });
   } catch (error) {
-    toast.error(`Could not make the draft: ${messageOf(error)}`);
+    toast.error(tx("Could not make the draft: {p1}", { p1: messageOf(error) }));
   }
 }
 
@@ -4612,7 +4612,7 @@ function ThreadMailInfo({ threadId, projectId }: ExperimentalThreadInfoProps) {
 export default definePluginApp((app) => {
   app.slots.navPanel({
     id: "mail",
-    title: "Mail",
+    title: tx("Mail"),
     icon: "Mail",
     path: "mail",
     component: MailPanel,
@@ -4629,18 +4629,18 @@ export default definePluginApp((app) => {
   // Slice 3g (spec resolution 18): a thread's result or one assistant message as a Mail draft.
   app.slots.experimental_threadAction({
     id: "email-result",
-    title: "Email the result",
+    title: tx("Email the result"),
     icon: "Mail",
     group: experimental_THREAD_ACTION_GROUPS.organize,
     placement: "menu",
     useData: useBbBridge,
     item: ({ thread, data }) => ({
-      label: "Email the result",
+      label: tx("Email the result"),
       icon: "Mail",
       run: () => emailFromBb(data, thread.id, { kind: "output" }),
     }),
   });
-  app.slots.messageAction({ id: "email-message", title: "Email this", icon: "Mail", run: emailMessageRun });
+  app.slots.messageAction({ id: "email-message", title: tx("Email this"), icon: "Mail", run: emailMessageRun });
   app.slots.experimental_threadInfoSection({
     id: "mail",
     group: experimental_THREAD_INFO_SECTION_GROUPS.related,

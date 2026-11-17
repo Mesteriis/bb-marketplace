@@ -112,11 +112,11 @@ function PageRows({
   onSelect: (page: RailPage) => void;
 }) {
   const rows: { page: RailPage; label: string; icon: string; count: number | null; unit: string }[] = [
-    { page: "today", label: "Today", icon: "Sun", count: pages.today, unit: "need a reply" },
-    { page: "tasks", label: "Tasks", icon: "ListChecks", count: pages.tasks, unit: "open" },
-    ...(pages.dev !== undefined ? [{ page: "dev" as const, label: "Dev", icon: "GitBranch", count: pages.dev, unit: "CI failures today" }] : []),
-    ...(pages.projects === true ? [{ page: "projects" as const, label: "Projects", icon: "Folder", count: null, unit: "" }] : []),
-    ...(pages.files === true ? [{ page: "files" as const, label: "Files", icon: "Paperclip", count: null, unit: "" }] : []),
+    { page: "today", label: tx("Today"), icon: "Sun", count: pages.today, unit: "need a reply" },
+    { page: "tasks", label: tx("Tasks"), icon: "ListChecks", count: pages.tasks, unit: "open" },
+    ...(pages.dev !== undefined ? [{ page: "dev" as const, label: tx("Dev"), icon: "GitBranch", count: pages.dev, unit: "CI failures today" }] : []),
+    ...(pages.projects === true ? [{ page: "projects" as const, label: tx("Projects"), icon: "Folder", count: null, unit: "" }] : []),
+    ...(pages.files === true ? [{ page: "files" as const, label: tx("Files"), icon: "Paperclip", count: null, unit: "" }] : []),
   ];
   return (
     <ul aria-label={tx("Today and tasks")} className="flex flex-col gap-px px-1.5 pb-1">
@@ -253,13 +253,13 @@ type OpenMenu =
 /** The entries of a folder's menu. */
 export function folderMenuEntries(folder: Folder, grouped: boolean, gmail: boolean): MenuEntry[] {
   const own = folder.specialUse === null && folder.path.toUpperCase() !== "INBOX";
-  const entries: MenuEntry[] = [{ kind: "action", id: "new", label: "New subfolder\u2026", icon: "FolderPlus" }];
-  if (own) entries.push({ kind: "action", id: "rename", label: "Rename\u2026", icon: "Pencil" });
-  entries.push({ kind: "check", id: "subscribe", label: "Subscribed", checked: folder.subscribed });
-  entries.push({ kind: "check", id: "grouping", label: "Group by conversation", checked: grouped });
-  entries.push({ kind: "action", id: "forget", label: "Forget older mail\u2026", icon: "Eraser" });
+  const entries: MenuEntry[] = [{ kind: "action", id: "new", label: tx("New subfolder\u2026"), icon: "FolderPlus" }];
+  if (own) entries.push({ kind: "action", id: "rename", label: tx("Rename\u2026"), icon: "Pencil" });
+  entries.push({ kind: "check", id: "subscribe", label: tx("Subscribed"), checked: folder.subscribed });
+  entries.push({ kind: "check", id: "grouping", label: tx("Group by conversation"), checked: grouped });
+  entries.push({ kind: "action", id: "forget", label: tx("Forget older mail\u2026"), icon: "Eraser" });
   if (own) {
-    entries.push({ kind: "action", id: "delete", label: gmail ? "Delete label\u2026" : "Delete\u2026", icon: "Trash2", destructive: true });
+    entries.push({ kind: "action", id: "delete", label: gmail ? tx("Delete label\u2026") : tx("Delete\u2026"), icon: "Trash2", destructive: true });
   }
   return entries;
 }
@@ -303,7 +303,7 @@ export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, o
     if (menu.kind === "account") {
       return {
         title: accountLabel(menu.account),
-        entries: [{ kind: "action", id: "new", label: "New folder\u2026", icon: "FolderPlus" }] as MenuEntry[],
+        entries: [{ kind: "action", id: "new", label: tx("New folder\u2026"), icon: "FolderPlus" }] as MenuEntry[],
         pick: () => onRailCommand({ kind: "folder_new", accountId: menu.account.id, parent: null }),
       };
     }
@@ -311,11 +311,11 @@ export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, o
     return {
       title: search.name,
       entries: [
-        { kind: "action", id: "saved_rename", label: "Rename\u2026", icon: "Pencil" },
-        { kind: "action", id: "saved_edit", label: "Edit query\u2026", icon: "Search" },
-        { kind: "action", id: "saved_up", label: "Move up", icon: "ArrowUp", disabled: index === 0 },
-        { kind: "action", id: "saved_down", label: "Move down", icon: "ArrowDown", disabled: index === count - 1 },
-        { kind: "action", id: "saved_delete", label: "Delete", icon: "Trash2", destructive: true },
+        { kind: "action", id: "saved_rename", label: tx("Rename\u2026"), icon: "Pencil" },
+        { kind: "action", id: "saved_edit", label: tx("Edit query\u2026"), icon: "Search" },
+        { kind: "action", id: "saved_up", label: tx("Move up"), icon: "ArrowUp", disabled: index === 0 },
+        { kind: "action", id: "saved_down", label: tx("Move down"), icon: "ArrowDown", disabled: index === count - 1 },
+        { kind: "action", id: "saved_delete", label: tx("Delete"), icon: "Trash2", destructive: true },
       ] as MenuEntry[],
       pick: (id: string) =>
         onRailCommand({ kind: id as "saved_rename" | "saved_edit" | "saved_delete" | "saved_up" | "saved_down", id: search.id }),

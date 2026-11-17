@@ -25,7 +25,7 @@ import { tx } from "./i18n/index.ts";
 
 /** "Patch - 3 files - +40 -12". */
 export function patchSummaryText(patch: { files: number; added: number; removed: number }): string {
-  return `Patch \u00b7 ${patch.files} ${patch.files === 1 ? "file" : "files"} \u00b7 +${patch.added} -${patch.removed}`;
+  return tx("Patch \u00b7 {files} {p1} \u00b7 +{added} -{removed}", { files: patch.files, p1: patch.files === 1 ? "file" : "files", added: patch.added, removed: patch.removed });
 }
 
 export function PatchCard({ patch, onReview }: { patch: { files: number; added: number; removed: number }; onReview: () => void }) {
@@ -184,7 +184,7 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
       ) : (
         <div className="flex flex-col gap-3">
           {refused !== null ? (
-            <p role="alert" className="text-sm text-destructive">{`Refused: ${refused}`}</p>
+            <p role="alert" className="text-sm text-destructive">{tx("Refused: {refused}", { refused })}</p>
           ) : null}
           {view.warnings.length > 0 ? (
             <ul aria-label={tx("Warnings")} className="flex flex-col gap-0.5 text-sm text-foreground">
@@ -223,7 +223,7 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
             <>
               <ProjectSelect label={tx("Project")} projects={projects} value={projectId} onChange={(id) => { setProjectId(id); setOfferCheckout(false); setPrepared(null); }} />
               {!request.inAiScope ? <p className="text-xs text-muted-foreground">{BB_TEXT.out_of_scope}</p> : null}
-              {savedPath !== null ? <p role="status" className="text-xs text-muted-foreground">{`Saved as ${savedPath}`}</p> : null}
+              {savedPath !== null ? <p role="status" className="text-xs text-muted-foreground">{tx("Saved as {savedPath}", { savedPath })}</p> : null}
               {offerCheckout ? (
                 <div role="alert" className="flex flex-col gap-2 rounded-md border border-border p-2 text-sm">
                   <p>{CHECKOUT_WARNING}</p>

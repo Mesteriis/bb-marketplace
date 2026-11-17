@@ -9,6 +9,7 @@
 import type { MessageBody, MessageHeader } from "../core/index.ts";
 import { sanitizeFileName } from "../core/file-names.ts";
 import { EMAIL_CSP, sanitizeEmailHtml } from "./sanitize.ts";
+import { tx } from "./i18n/index.ts";
 
 /** The print frame's sandbox: the parent may call print(); the frame runs nothing. */
 export const PRINT_SANDBOX = "allow-same-origin allow-modals";
@@ -106,7 +107,7 @@ export function printDocument(messages: readonly PrintMessage[], title: string, 
 export function printFileName(date: Date, subject: string): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   const day = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-  const title = subject.replace(/[/\\]+/g, " ").trim() || "Message";
+  const title = subject.replace(/[/\\]+/g, " ").trim() || tx("Message");
   return sanitizeFileName(`${day} ${title}.html`, `${day} Message.html`);
 }
 

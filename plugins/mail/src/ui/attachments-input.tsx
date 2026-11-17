@@ -161,7 +161,7 @@ export function AttachmentChips({
           <span className="shrink-0">{formatBytes(attachment.size)}</span>
           <button
             type="button"
-            aria-label={`Remove ${attachment.fileName}`}
+            aria-label={tx("Remove {fileName}", { fileName: attachment.fileName })}
             onClick={() => onRemove(attachment.id)}
             className="flex size-6 shrink-0 items-center justify-center rounded-sm hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
@@ -190,7 +190,7 @@ export function AttachmentChips({
               </span>
               <button
                 type="button"
-                aria-label={`Dismiss ${upload.fileName}`}
+                aria-label={tx("Dismiss {fileName}", { fileName: upload.fileName })}
                 onClick={() => onDismissUpload(upload.key)}
                 className="flex size-6 shrink-0 items-center justify-center rounded-sm hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >

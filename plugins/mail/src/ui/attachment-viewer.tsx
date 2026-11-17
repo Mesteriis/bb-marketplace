@@ -150,7 +150,7 @@ export function AttachmentViewer({
     };
   }, [request, host]);
 
-  const name = request?.filename ?? "Unnamed attachment";
+  const name = request?.filename ?? tx("Unnamed attachment");
   let body: ReactNode = null;
   if (request !== null) {
     switch (shown.kind) {

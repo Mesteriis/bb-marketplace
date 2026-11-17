@@ -70,9 +70,9 @@ export function DiffView({ patch, path, renderers }: { patch: string; path: stri
 }
 
 export function partLabel(part: Exclude<BodyPart, { kind: "text" }>): string {
-  if (part.kind === "log") return "Log";
-  if (part.kind === "diff") return part.files.length === 1 ? `Diff: ${part.files[0]!.path}` : `Diff: ${part.files.length} files`;
-  return part.language !== null ? `Code (${part.language})` : "Code";
+  if (part.kind === "log") return tx("Log");
+  if (part.kind === "diff") return part.files.length === 1 ? tx("Diff: {path}", { path: part.files[0]!.path }) : tx("Diff: {length} files", { length: part.files.length });
+  return part.language !== null ? tx("Code ({language})", { language: part.language }) : tx("Code");
 }
 
 /** A plain body's parts: text as before, code blocks drawn as code. */
@@ -112,10 +112,10 @@ export function HtmlCodeBlocks({ blocks, renderers }: { blocks: readonly string[
   if (blocks.length === 0) return null;
   return (
     <details className="text-xs text-muted-foreground">
-      <summary className="cursor-pointer select-none">{`Code (${blocks.length})`}</summary>
+      <summary className="cursor-pointer select-none">{tx("Code ({length})", { length: blocks.length })}</summary>
       <div className="mt-2 flex flex-col gap-2">
         {blocks.map((block, index) => (
-          <Block key={index} label={`Block ${index + 1}`} copy={block} onCopy={renderers.copy}>
+          <Block key={index} label={tx("Block {p1}", { p1: index + 1 })} copy={block} onCopy={renderers.copy}>
             <CodeView content={block} path="snippet.txt" renderers={renderers} />
           </Block>
         ))}

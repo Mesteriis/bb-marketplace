@@ -25,28 +25,28 @@ export function accountLine(
 ): string {
   switch (row.reason) {
     case "search_failed":
-      return nonAscii(query) ? "This server could not search for this text" : "The server refused the search";
+      return nonAscii(query) ? tx("This server could not search for this text") : tx("The server refused the search");
     case "connection_failed":
-      return "Could not connect to the server";
+      return tx("Could not connect to the server");
     case "password_needed":
-      return "The account needs its password again";
+      return tx("The account needs its password again");
     case "not_synced":
-      return "Not synced yet; nothing searched";
+      return tx("Not synced yet; nothing searched");
     case "nothing_to_search":
-      return "Nothing to search on this server";
+      return tx("Nothing to search on this server");
     case "time_budget":
-      return `Stopped after ${row.searched} ${row.searched === 1 ? "folder" : "folders"} \u2014 narrow with in:`;
+      return tx("Stopped after {searched} {p1} \u2014 narrow with in:", { searched: row.searched, p1: row.searched === 1 ? "folder" : "folders" });
     case "changed":
-      return "The server's folders changed; search again";
+      return tx("The server's folders changed; search again");
     case "cancelled":
-      return "Stopped";
+      return tx("Stopped");
     case null:
       break;
   }
   if (state === "running") {
-    return row.total > 0 ? `${row.searched} of ${row.total} folders\u2026` : "Searching\u2026";
+    return row.total > 0 ? `${row.searched} of ${row.total} folders\u2026` : tx("Searching\u2026");
   }
-  if (state === "cancelled") return "Stopped";
+  if (state === "cancelled") return tx("Stopped");
   const found = `${row.found} found`;
   return row.partial ? `${found} \u00b7 stopped early \u2014 narrow with in:` : shown > 0 && shown < row.found ? `${shown} shown \u00b7 ${found}` : found;
 }
@@ -99,7 +99,7 @@ export function ServerSearchStrip({
         ))}
       </ul>
       {job.state === "failed" ? <p role="alert" className="text-destructive">{tx("The server search failed")}</p> : null}
-      {narrowed.length > 0 ? <p>{`Checked in Mail only: ${narrowed.join(", ")}`}</p> : null}
+      {narrowed.length > 0 ? <p>{tx("Checked in Mail only: {p1}", { p1: narrowed.join(", ") })}</p> : null}
       <div className="flex flex-wrap items-center gap-1">
         {running ? (
           <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onCancel}>

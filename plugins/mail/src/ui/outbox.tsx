@@ -10,18 +10,18 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { subjectOrPlaceholder } from "./thread-list.tsx";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export type OutboxAction = "undo" | "send_now" | "edit" | "retry" | "resend" | "dismiss" | "retry_copy";
 
 const ACTION_LABELS: Record<OutboxAction, string> = {
-  undo: "Undo",
-  send_now: "Send now",
-  edit: "Edit",
-  retry: "Retry",
-  resend: "Send again",
-  dismiss: "Discard",
-  retry_copy: "Retry copy",
+  undo: msg("Undo"),
+  send_now: msg("Send now"),
+  edit: msg("Edit"),
+  retry: msg("Retry"),
+  resend: msg("Send again"),
+  dismiss: msg("Discard"),
+  retry_copy: msg("Retry copy"),
 };
 
 /** What the owner may do with a row in its state; an unsubscribe request is never edited. */
@@ -32,7 +32,7 @@ export function outboxActions(row: Pick<OutboxRow, "state"> & Partial<Pick<Outbo
 
 /** The row's title: its subject, or "Unsubscribe request" for the plugin's own unsubscribe email. */
 export function outboxRowTitle(row: Pick<OutboxRow, "subject"> & Partial<Pick<OutboxRow, "purpose">>): string {
-  return row.purpose === "unsubscribe" ? "Unsubscribe request" : subjectOrPlaceholder(row.subject);
+  return row.purpose === "unsubscribe" ? tx("Unsubscribe request") : subjectOrPlaceholder(row.subject);
 }
 
 function stateActions(row: Pick<OutboxRow, "state">): OutboxAction[] {
@@ -59,19 +59,19 @@ function stateActions(row: Pick<OutboxRow, "state">): OutboxAction[] {
 
 /** The label of an action on a row; Discard reads Dismiss once the message was sent. */
 export function outboxActionLabel(row: Pick<OutboxRow, "state">, action: OutboxAction): string {
-  if (action === "dismiss" && row.state === "sent_no_copy") return "Dismiss";
+  if (action === "dismiss" && row.state === "sent_no_copy") return tx("Dismiss");
   return ACTION_LABELS[action];
 }
 
 /** A line under a row that says what its buttons keep and delete, or null. */
 export function outboxRowHint(row: Pick<OutboxRow, "state"> & Partial<Pick<OutboxRow, "purpose">>): string | null {
-  if (row.purpose === "unsubscribe") return row.state === "failed" || row.state === "unknown" || row.state === "waiting" ? "Discard deletes the request." : null;
+  if (row.purpose === "unsubscribe") return row.state === "failed" || row.state === "unknown" || row.state === "waiting" ? tx("Discard deletes the request.") : null;
   switch (row.state) {
     case "failed":
     case "waiting":
-      return "Edit reopens the draft. Discard deletes the message and its draft.";
+      return tx("Edit reopens the draft. Discard deletes the message and its draft.");
     case "unknown":
-      return "Discard deletes the message and its draft.";
+      return tx("Discard deletes the message and its draft.");
     default:
       return null;
   }
@@ -104,24 +104,24 @@ export function outboxStateText(
   const reason = row.errorKind !== null ? REASONS[row.errorKind] : null;
   switch (row.state) {
     case "queued":
-      return "Sending soon";
+      return tx("Sending soon");
     case "held":
-      return "Not sent: held after a restart";
+      return tx("Not sent: held after a restart");
     case "sending":
-      return "Sending…";
+      return tx("Sending\u2026");
     case "sent":
     case "appending":
-      return row.rejected.length > 0 ? `Sent, but not to: ${row.rejected.join(", ")}` : "Sent; saving a copy to Sent…";
+      return row.rejected.length > 0 ? tx("Sent, but not to: {p1}", { p1: row.rejected.join(", ") }) : tx("Sent; saving a copy to Sent\u2026");
     case "failed":
-      return reason !== null ? `Not sent: ${reason}` : "Not sent";
+      return reason !== null ? tx("Not sent: {reason}", { reason }) : tx("Not sent");
     case "unknown":
-      return "May have been sent";
+      return tx("May have been sent");
     case "sent_no_copy":
-      return reason !== null ? `Sent; ${reason}` : "Sent; the copy to Sent failed";
+      return reason !== null ? tx("Sent; {reason}", { reason }) : tx("Sent; the copy to Sent failed");
     case "done":
-      return "Sent";
+      return tx("Sent");
     case "waiting": {
-      const why = reason !== null ? `Not sent yet: ${reason}` : "Not sent yet";
+      const why = reason !== null ? tx("Not sent yet: {reason}", { reason }) : tx("Not sent yet");
       const at = row.sendAfter !== undefined ? clockTime(row.sendAfter) : null;
       if (at === null) return `${why}. Mail will try again.`;
       const tries = row.attempts !== undefined && row.attempts > 0 ? ` (try ${row.attempts + 1})` : "";

@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { CategoryFilters, RowCategory, categoryLabel, type Category } from "./category-chips.tsx";
 import { dragLabel, writeMovePayload } from "./drag-move.ts";
 import { LabelChips } from "./label-chips.tsx";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export const NO_SUBJECT = "(no subject)";
 
@@ -72,9 +72,9 @@ export function formatUntil(iso: string | null, now: Date = new Date()): string 
 export type ListFilter = { unread?: true; flagged?: true; attachments?: true; category?: Category; notDev?: true };
 
 export const LIST_FILTERS: readonly { key: "unread" | "flagged" | "attachments"; label: string }[] = [
-  { key: "unread", label: "Unread" },
-  { key: "flagged", label: "Flagged" },
-  { key: "attachments", label: "Attachments" },
+  { key: "unread", label: msg("Unread") },
+  { key: "flagged", label: msg("Flagged") },
+  { key: "attachments", label: msg("Attachments") },
 ];
 
 /** Whether any toggle is on. */
@@ -87,13 +87,13 @@ export function filterActive(filter: ListFilter): boolean {
 /** The empty list's text under the toggles that are on. */
 export function filterEmptyText(filter: ListFilter): string {
   if (filter.category !== undefined && !LIST_FILTERS.some(({ key }) => filter[key] === true)) {
-    return `No ${categoryLabel(filter.category)} conversations here`;
+    return tx("No {p1} conversations here", { p1: categoryLabel(filter.category) });
   }
   const on = LIST_FILTERS.filter(({ key }) => filter[key] === true).map(({ key }) => key);
-  if (on.length === 1 && on[0] === "unread") return "No unread conversations here";
-  if (on.length === 1 && on[0] === "flagged") return "No flagged conversations here";
-  if (on.length === 1 && on[0] === "attachments") return "No conversations with attachments here";
-  return "No matching conversations here";
+  if (on.length === 1 && on[0] === "unread") return tx("No unread conversations here");
+  if (on.length === 1 && on[0] === "flagged") return tx("No flagged conversations here");
+  if (on.length === 1 && on[0] === "attachments") return tx("No conversations with attachments here");
+  return tx("No matching conversations here");
 }
 
 /** Unread, Flagged and Attachments: Tab-reachable toggles, no hotkeys. */
@@ -180,7 +180,7 @@ export function participantsLabel(participants: MailAddress[], ownAddress: strin
   const own = ownAddress?.toLowerCase() ?? null;
   const others = participants.filter((p) => p.address.toLowerCase() !== own);
   const shown = others.length > 0 ? others : participants;
-  if (shown.length === 0) return "Unknown sender";
+  if (shown.length === 0) return tx("Unknown sender");
   return shown.map(addressLabel).join(", ");
 }
 
@@ -300,7 +300,7 @@ function Row({
       {check !== undefined ? (
         <span className={cn("flex shrink-0 self-stretch items-start pl-3", compact ? "pt-1.5" : "pt-2.5")}>
           <Checkbox
-            aria-label={`Select ${label}`}
+            aria-label={tx("Select {label}", { label })}
             checked={check.checked}
             onClick={(event) => check.onToggle(event.shiftKey)}
             className={cn(
@@ -635,7 +635,7 @@ export function HistoryStrip({
           {state.kind === "idle" && state.since !== null ? `Showing mail since ${formatDay(state.since)}` : tx("Older mail stays on the server")}
         </span>
         <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={onLoad}>
-          {`Load ${stepDays} more days`}
+          {tx("Load {stepDays} more days", { stepDays })}
         </Button>
       </div>
     </div>

@@ -17,7 +17,7 @@ import { tx } from "./i18n/index.ts";
 
 /** The fixed lines of the Start confirmation. */
 export function startConfirmText(projectName: string): string {
-  return `An email from anyone matching this rule will start an agent in ${projectName}`;
+  return tx("An email from anyone matching this rule will start an agent in {projectName}", { projectName });
 }
 export const START_MODE_LINE = "Runs with accept-edits permissions in a new worktree";
 export const CAPS_LINE = `At most ${RULE_CAPS.perRuleHour} threads an hour and ${RULE_CAPS.perRuleDay} a day for a rule, ${RULE_CAPS.allDay} a day for all rules, one a day per conversation.`;
@@ -131,7 +131,7 @@ export function RuleForm({ rule, projects, onSave, onCancel }: RuleFormProps) {
 
   return (
     <form
-      aria-label={rule === null ? tx("New rule") : `Edit ${rule.name}`}
+      aria-label={rule === null ? tx("New rule") : tx("Edit {name}", { name: rule.name })}
       className="flex flex-col gap-3 rounded-md border border-border p-3"
       onSubmit={(event) => {
         event.preventDefault();

@@ -25,22 +25,22 @@ export type { PresendIssue };
 export function presendIssueText(issue: PresendIssue): { text: string; fix: string } {
   switch (issue.kind) {
     case "attachment_mentioned":
-      return { text: `You wrote “${issue.phrase}”, but nothing is attached.`, fix: "Attach a file" };
+      return { text: tx("You wrote \u201c{phrase}\u201d, but nothing is attached.", { phrase: issue.phrase }), fix: "Attach a file" };
     case "empty_subject":
-      return { text: "The subject is empty.", fix: "Add a subject" };
+      return { text: tx("The subject is empty."), fix: "Add a subject" };
     case "outside_conversation":
-      return { text: `Not in this conversation: ${issue.addresses.join(", ")}`, fix: "Check recipients" };
+      return { text: tx("Not in this conversation: {p1}", { p1: issue.addresses.join(", ") }), fix: "Check recipients" };
     case "new_recipients":
-      return { text: `You have not written to ${issue.addresses.join(", ")} before.`, fix: "Check recipients" };
+      return { text: tx("You have not written to {p1} before.", { p1: issue.addresses.join(", ") }), fix: "Check recipients" };
     case "bb_files":
       return {
         text: `${issue.count} ${issue.count === 1 ? "file" : "files"} from BB: ${issue.origins.join(", ")}`,
         fix: "Check attachments",
       };
     case "looks_secret":
-      return { text: `The text looks like it holds a password, token or code (${issue.count})`, fix: "Check the text" };
+      return { text: tx("The text looks like it holds a password, token or code ({count})", { count: issue.count }), fix: "Check the text" };
     case "reply_to_elsewhere":
-      return { text: `Reply-To differs from the sender: ${issue.addresses.join(", ")}`, fix: "Check recipients" };
+      return { text: tx("Reply-To differs from the sender: {p1}", { p1: issue.addresses.join(", ") }), fix: "Check recipients" };
   }
 }
 

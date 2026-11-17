@@ -197,12 +197,12 @@ function LinkedItems({ items, bb }: { items: readonly BbLinkView[]; bb: ReadingB
             <li key={key} className="flex min-w-0 items-center gap-1">
               <Icon name="Folder" className="size-3.5 shrink-0" aria-hidden />
               <span className="min-w-0 truncate">
-                {`Saved to ${item.projectId !== null ? projectName(bb.projects, item.projectId) : "a project"}: ${item.targetId}`}
+                {tx("Saved to {p1}: {targetId}", { p1: item.projectId !== null ? projectName(bb.projects, item.projectId) : "a project", targetId: item.targetId })}
               </span>
             </li>
           );
         }
-        const label = item.kind === "incident" ? "Incident thread" : item.kind === "patch" ? "Patch thread" : "Thread";
+        const label = item.kind === "incident" ? tx("Incident thread") : item.kind === "patch" ? tx("Patch thread") : tx("Thread");
         return (
           <li key={key} className="flex min-w-0 items-center gap-1">
             <Icon name="Bot" className="size-3.5 shrink-0" aria-hidden />
@@ -283,12 +283,12 @@ interface ToolbarAction {
  */
 export function actionsFor(use: SpecialUse | null, archiveAllowed: boolean): ToolbarAction[] {
   const actions: ToolbarAction[] = [];
-  if (use === "junk") actions.push({ action: "not_spam", label: "Not spam", icon: "SecurityCheck" });
+  if (use === "junk") actions.push({ action: "not_spam", label: tx("Not spam"), icon: "SecurityCheck" });
   if (archiveAllowed) {
-    actions.push({ action: "archive", label: "Archive", icon: "Archive" });
+    actions.push({ action: "archive", label: tx("Archive"), icon: "Archive" });
   }
-  if (use !== "junk") actions.push({ action: "spam", label: "Spam", icon: "AlertTriangle" });
-  if (use !== "trash") actions.push({ action: "delete", label: "Delete", icon: "Trash2" });
+  if (use !== "junk") actions.push({ action: "spam", label: tx("Spam"), icon: "AlertTriangle" });
+  if (use !== "trash") actions.push({ action: "delete", label: tx("Delete"), icon: "Trash2" });
   return actions;
 }
 
@@ -400,7 +400,7 @@ function AttachmentButton({
   /** Slice 3h: a click opens the viewer; the download moves to its own button. */
   onView?: () => void;
 }) {
-  const name = attachment.filename ?? "Unnamed attachment";
+  const name = attachment.filename ?? tx("Unnamed attachment");
   const type = attachmentType(attachment);
   return (
     <li className="flex items-center gap-0.5">
@@ -417,7 +417,7 @@ function AttachmentButton({
         <Icon name={onView !== undefined ? "Eye" : "Download"} fallback="Paperclip" className="size-3.5" aria-hidden />
       </button>
       {onView !== undefined ? (
-        <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" aria-label={`Download ${name}`} onClick={onDownload}>
+        <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" aria-label={tx("Download {name}", { name })} onClick={onDownload}>
           <Icon name="Download" fallback="Paperclip" aria-hidden />
         </Button>
       ) : null}
@@ -426,7 +426,7 @@ function AttachmentButton({
           variant="ghost"
           size="icon"
           className="size-7 text-muted-foreground"
-          aria-label={`Save ${name} to project\u2026`}
+          aria-label={tx("Save {name} to project\u2026", { name })}
           onClick={onSave}
         >
           <Icon name="FolderInput" fallback="Folder" aria-hidden />
@@ -492,7 +492,7 @@ function MessageItem({
   const inline = message.attachments.filter((a) => a.isInline);
   return (
     <article
-      aria-label={`Message from ${sender}`}
+      aria-label={tx("Message from {sender}", { sender })}
       data-message-id={message.id}
       className={cn("rounded-lg border border-border bg-card", highlighted && "ring-2 ring-ring")}
     >
@@ -554,7 +554,7 @@ function MessageItem({
             variant="ghost"
             size="icon"
             className="size-7 shrink-0 text-muted-foreground"
-            aria-label={`About ${sender}`}
+            aria-label={tx("About {sender}", { sender })}
             onClick={() => r3.onSender(message)}
           >
             <Icon name="User" fallback="Info" aria-hidden />
@@ -598,7 +598,7 @@ function MessageItem({
           ) : (
             <MessageBodyView
               state={body}
-              title={`Message from ${sender}`}
+              title={tx("Message from {sender}", { sender })}
               senderAddress={senderAddress}
               onOpenLink={onOpenLink}
               images={images}
@@ -1013,7 +1013,7 @@ export function ReadingPane(props: ReadingPaneProps) {
       {single !== null && messages.length > 1 && props.onShowConversation !== undefined ? (
         <div>
           <Button variant="outline" size="sm" className="h-7 px-2" onClick={props.onShowConversation}>
-            {`Show conversation (${messages.length})`}
+            {tx("Show conversation ({length})", { length: messages.length })}
           </Button>
         </div>
       ) : null}

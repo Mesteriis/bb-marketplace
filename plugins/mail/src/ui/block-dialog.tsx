@@ -38,15 +38,15 @@ export interface BlockChoice {
 /** "You have written to this sender N times"; null when never. */
 export function writtenToText(count: number): string | null {
   if (count <= 0) return null;
-  return count === 1 ? "You have written to this sender once." : `You have written to this sender ${count} times.`;
+  return count === 1 ? tx("You have written to this sender once.") : tx("You have written to this sender {count} times.", { count });
 }
 
 /** The move box's label for the chosen kind's count. */
 export function moveExistingText(kind: BlockKind, count: number): string {
   const whom = kind === "address" ? "from them" : "from that domain";
   return count === 1
-    ? `Also move the 1 stored message ${whom} to Spam`
-    : `Also move the ${count} stored messages ${whom} to Spam`;
+    ? tx("Also move the 1 stored message {whom} to Spam", { whom })
+    : tx("Also move the {count} stored messages {whom} to Spam", { count, whom });
 }
 
 export interface BlockDialogProps {
@@ -80,7 +80,7 @@ export function BlockDialog({ messageId, load, onBlock, onCancel, onCloseAutoFoc
         if (live) setLoaded({ kind: "ready", check });
       },
       (error: unknown) => {
-        if (live) setLoaded({ kind: "error", text: error instanceof Error && error.message ? error.message : "Could not check this sender." });
+        if (live) setLoaded({ kind: "error", text: error instanceof Error && error.message ? error.message : tx("Could not check this sender.") });
       },
     );
     return () => {

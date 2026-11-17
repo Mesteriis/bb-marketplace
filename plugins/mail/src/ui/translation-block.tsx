@@ -8,25 +8,25 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 /** The languages the server takes (SUPPORTED_LANGUAGES in the core), by tag. */
 export const TRANSLATE_LANGUAGES: readonly { tag: string; label: string }[] = [
-  { tag: "ru", label: "Russian" },
-  { tag: "en", label: "English" },
-  { tag: "de", label: "German" },
-  { tag: "fr", label: "French" },
-  { tag: "es", label: "Spanish" },
-  { tag: "it", label: "Italian" },
-  { tag: "pt", label: "Portuguese" },
-  { tag: "uk", label: "Ukrainian" },
-  { tag: "pl", label: "Polish" },
-  { tag: "tr", label: "Turkish" },
-  { tag: "zh", label: "Chinese" },
-  { tag: "ja", label: "Japanese" },
-  { tag: "ko", label: "Korean" },
-  { tag: "ar", label: "Arabic" },
-  { tag: "he", label: "Hebrew" },
+  { tag: "ru", label: msg("Russian") },
+  { tag: "en", label: msg("English") },
+  { tag: "de", label: msg("German") },
+  { tag: "fr", label: msg("French") },
+  { tag: "es", label: msg("Spanish") },
+  { tag: "it", label: msg("Italian") },
+  { tag: "pt", label: msg("Portuguese") },
+  { tag: "uk", label: msg("Ukrainian") },
+  { tag: "pl", label: msg("Polish") },
+  { tag: "tr", label: msg("Turkish") },
+  { tag: "zh", label: msg("Chinese") },
+  { tag: "ja", label: msg("Japanese") },
+  { tag: "ko", label: msg("Korean") },
+  { tag: "ar", label: msg("Arabic") },
+  { tag: "he", label: msg("Hebrew") },
 ];
 
 export function languageLabel(tag: string): string {
@@ -73,27 +73,27 @@ export function translationErrorText(error: TranslateErrorKind, provider: string
   const m = model ?? "";
   switch (error) {
     case "gateway_missing":
-      return "Translation needs the Makosh AI plugin.";
+      return tx("Translation needs the Makosh AI plugin.");
     case "pool_unavailable":
-      return "Makosh AI cannot reach Account Pooler right now.";
+      return tx("Makosh AI cannot reach Account Pooler right now.");
     case "provider_unknown":
-      return `The translation provider '${p}' is not available in Makosh AI. Choose another in AI settings.`;
+      return tx("The translation provider '{p}' is not available in Makosh AI. Choose another in AI settings.", { p });
     case "model_unknown":
-      return `The model '${m}' is not available for '${p}'. Choose another in AI settings.`;
+      return tx("The model '{m}' is not available for '{p}'. Choose another in AI settings.", { m, p });
     case "auth":
-      return "The provider refused the request (sign-in). Try later or choose another provider.";
+      return tx("The provider refused the request (sign-in). Try later or choose another provider.");
     case "quota":
-      return "The provider refused the request (quota). Try later or choose another provider.";
+      return tx("The provider refused the request (quota). Try later or choose another provider.");
     case "refused":
-      return "The model declined to translate this message.";
+      return tx("The model declined to translate this message.");
     case "too_large":
-      return "The message is too large to translate.";
+      return tx("The message is too large to translate.");
     case "busy":
-      return "Translation is busy; try again in a moment.";
+      return tx("Translation is busy; try again in a moment.");
     case "cancelled":
-      return "The translation was stopped.";
+      return tx("The translation was stopped.");
     case "failed":
-      return "The translation failed.";
+      return tx("The translation failed.");
   }
 }
 

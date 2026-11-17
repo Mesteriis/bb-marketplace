@@ -9,7 +9,7 @@ import type { LogActor, LogOutcome, LogTool } from "../core/agent-log.ts";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { subjectOrPlaceholder } from "./thread-list.tsx";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export const LOG_PAGE = 50;
 export const TERMINAL_NOT_LOGGED = "Commands in your own terminal are not logged.";
@@ -17,40 +17,40 @@ export const MESSAGE_GONE = "no longer in Makosh Mail";
 const ALL_THREADS = "all";
 
 const ACTORS: Record<LogActor, string> = {
-  agent: "Agent",
-  mention: "Mention",
-  handoff: "Hand to agent",
-  cli: "Command in a thread",
-  owner_ai: "You (AI)",
-  owner_bb: "You (BB)",
-  rule: "Mail rule",
+  agent: msg("Agent"),
+  mention: msg("Mention"),
+  handoff: msg("Hand to agent"),
+  cli: msg("Command in a thread"),
+  owner_ai: msg("You (AI)"),
+  owner_bb: msg("You (BB)"),
+  rule: msg("Mail rule"),
 };
 
 const TOOLS: Record<LogTool, string> = {
-  search: "Searched mail",
-  read: "Read an email",
-  contacts: "Looked up contacts",
-  inbox: "Listed the inbox",
-  propose: "Proposed an email",
-  templates: "Read templates",
-  triage: "Proposed inbox actions",
-  mention: "Mentioned an email",
-  handoff: "Handed an email over",
-  cli_search: "Searched mail (command)",
-  cli_read: "Read an email (command)",
-  ai_translate: "Translation",
-  ai_summary: "Summary",
-  ai_ask: "Ask",
-  ai_tasks: "Find tasks",
-  ai_categories: "Suggested categories",
-  ai_digest: "Today summary",
-  ai_draft: "Improve",
-  bb_thread: "BB thread",
-  bb_task: "Task",
-  project_save: "Saved to a project",
-  patch_handoff: "Patch to an agent",
-  incident: "Incident thread",
-  rule_thread: "Rule thread",
+  search: msg("Searched mail"),
+  read: msg("Read an email"),
+  contacts: msg("Looked up contacts"),
+  inbox: msg("Listed the inbox"),
+  propose: msg("Proposed an email"),
+  templates: msg("Read templates"),
+  triage: msg("Proposed inbox actions"),
+  mention: msg("Mentioned an email"),
+  handoff: msg("Handed an email over"),
+  cli_search: msg("Searched mail (command)"),
+  cli_read: msg("Read an email (command)"),
+  ai_translate: msg("Translation"),
+  ai_summary: msg("Summary"),
+  ai_ask: msg("Ask"),
+  ai_tasks: msg("Find tasks"),
+  ai_categories: msg("Suggested categories"),
+  ai_digest: msg("Today summary"),
+  ai_draft: msg("Improve"),
+  bb_thread: msg("BB thread"),
+  bb_task: msg("Task"),
+  project_save: msg("Saved to a project"),
+  patch_handoff: msg("Patch to an agent"),
+  incident: msg("Incident thread"),
+  rule_thread: msg("Rule thread"),
 };
 
 const OUTCOMES: Record<LogOutcome, string> = {
@@ -80,8 +80,8 @@ export function logTime(iso: string, now: Date = new Date()): string {
   const day = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
-  if (day(date) === day(now)) return `Today ${time}`;
-  if (day(date) === day(yesterday)) return `Yesterday ${time}`;
+  if (day(date) === day(now)) return tx("Today {time}", { time });
+  if (day(date) === day(yesterday)) return tx("Yesterday {time}", { time });
   return `${date.toLocaleDateString(undefined, { day: "numeric", month: "short" })} ${time}`;
 }
 
@@ -161,7 +161,7 @@ export function AgentActivity({ load, clear, onOpen }: AgentActivityProps) {
             <SelectItem value={ALL_THREADS}>{tx("Every thread")}</SelectItem>
             {threads.map((id) => (
               <SelectItem key={id} value={id}>
-                {`Thread ${id.slice(0, 8)}`}
+                {tx("Thread {p1}", { p1: id.slice(0, 8) })}
               </SelectItem>
             ))}
           </SelectContent>

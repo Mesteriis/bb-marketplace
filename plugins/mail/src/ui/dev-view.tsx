@@ -10,7 +10,7 @@ import { Icon } from "@/components/ui/icon";
 import { errorText } from "./bb-ports.ts";
 import { LoadingState } from "./empty-states.tsx";
 import { formatListDate } from "./thread-list.tsx";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export interface DevViewProps {
   load: (cursor: string | null) => Promise<{ groups: DevGroup[]; next: string | null }>;
@@ -22,7 +22,7 @@ export interface DevViewProps {
 }
 
 const KIND_WORDS: Record<keyof DevGroup["counts"], [string, string]> = {
-  ci: ["CI run", "CI runs"],
+  ci: [msg("CI run"), msg("CI runs")],
   pr: ["PR", "PRs"],
   mr: ["MR", "MRs"],
   issue: ["issue", "issues"],
@@ -45,7 +45,7 @@ export function groupLine(group: DevGroup): string {
 }
 
 export function groupName(group: DevGroup): string {
-  return group.repo ?? (group.source === "monitoring" ? "Monitoring" : group.source === "ci" ? "CI" : group.source);
+  return group.repo ?? (group.source === "monitoring" ? tx("Monitoring") : group.source === "ci" ? "CI" : group.source);
 }
 
 export function DevView({ load, onAction, onOpenProject, refreshKey = 0 }: DevViewProps) {
@@ -129,12 +129,12 @@ export function DevView({ load, onAction, onOpenProject, refreshKey = 0 }: DevVi
                 </div>
                 <p className="text-xs text-muted-foreground">{groupLine(group)}</p>
                 {group.latestFailure !== null ? (
-                  <p className="truncate text-xs text-foreground">{`Latest failure: ${group.latestFailure.subject}`}</p>
+                  <p className="truncate text-xs text-foreground">{tx("Latest failure: {subject}", { subject: group.latestFailure.subject })}</p>
                 ) : null}
                 <div className="flex flex-wrap items-center gap-1">
                   {group.projectId !== null ? (
                     <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => onOpenProject(group.projectId!)}>
-                      {`Project ${group.projectName ?? group.projectId}`}
+                      {tx("Project {p1}", { p1: group.projectName ?? group.projectId })}
                     </Button>
                   ) : null}
                   <span className="flex-1" />

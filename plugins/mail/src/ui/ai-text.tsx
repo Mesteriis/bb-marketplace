@@ -31,11 +31,11 @@ export function aiLabel(provider: string | null, model: string | null, cached = 
 export function phaseText(phase: AiPhase | null, waiting: string): string {
   switch (phase) {
     case "planning":
-      return "Searching your mail\u2026";
+      return tx("Searching your mail\u2026");
     case "reading":
-      return "Reading the messages found\u2026";
+      return tx("Reading the messages found\u2026");
     case "writing":
-      return "Writing the answer\u2026";
+      return tx("Writing the answer\u2026");
     default:
       return waiting;
   }
@@ -74,7 +74,7 @@ export function CitationChips({
         <button
           key={citation.n}
           type="button"
-          aria-label={`Open cited message ${citation.n}`}
+          aria-label={tx("Open cited message {n}", { n: citation.n })}
           onClick={() => onCite(citation)}
           className="rounded-sm border border-border px-1 text-xs leading-4 text-muted-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >

@@ -135,7 +135,7 @@ function TasksBody({ request, ports, onKeep, onCite, onClose, pollMs }: TasksDia
               return (
                 <li key={task.index} className="flex items-start gap-2">
                   <Checkbox
-                    aria-label={`Keep task ${task.index + 1}`}
+                    aria-label={tx("Keep task {p1}", { p1: task.index + 1 })}
                     checked={row.picked}
                     onCheckedChange={(checked) => patch(task.index, { picked: checked === true })}
                     className="mt-2"
@@ -143,7 +143,7 @@ function TasksBody({ request, ports, onKeep, onCite, onClose, pollMs }: TasksDia
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
                     <div className="flex flex-wrap gap-2">
                       <Input
-                        aria-label={`Task ${task.index + 1} title`}
+                        aria-label={tx("Task {p1} title", { p1: task.index + 1 })}
                         value={row.title}
                         maxLength={TASK_TITLE_MAX}
                         onChange={(event) => patch(task.index, { title: event.target.value.replace(/[\r\n]+/g, " ") })}
@@ -151,7 +151,7 @@ function TasksBody({ request, ports, onKeep, onCite, onClose, pollMs }: TasksDia
                       />
                       <Input
                         type="date"
-                        aria-label={`Task ${task.index + 1} due date`}
+                        aria-label={tx("Task {p1} due date", { p1: task.index + 1 })}
                         value={row.due}
                         onChange={(event) => patch(task.index, { due: event.target.value })}
                         className="h-8 w-40"

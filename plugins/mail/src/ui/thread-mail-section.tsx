@@ -44,7 +44,7 @@ export function ThreadMailSection({ load, onOpen, onShowAll, frame }: ThreadMail
       {mail.total > mail.bound.length ? (
         <div>
           <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onShowAll}>
-            {`Show all ${mail.total}`}
+            {tx("Show all {total}", { total: mail.total })}
           </Button>
         </div>
       ) : null}

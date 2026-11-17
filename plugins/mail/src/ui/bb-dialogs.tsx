@@ -12,6 +12,7 @@ import { PatchDialog, type PatchRequest } from "./patch-dialog.tsx";
 import type { ReadingBb } from "./reading-pane.tsx";
 import { SaveToProjectDialog, type SaveRequest } from "./save-to-project-dialog.tsx";
 import { TaskDialog, type TaskRequest } from "./task-dialog.tsx";
+import { tx } from "./i18n/index.ts";
 
 /** What app.tsx hands the page for the BB integration. */
 export interface MailBbPorts {
@@ -140,7 +141,7 @@ export function useBbDialogs(bb: MailBbPorts | undefined, detail: ThreadDetail |
       onReviewPatch: (message) => setPatch({ messageId: message.id, projectId, inAiScope: message.inAiScope }),
       onIncident: (bbThreadId, appended) => {
         bb.notify(appended ? "Added to the incident thread" : "Incident thread started", {
-          label: "Open",
+          label: tx("Open"),
           run: () => bb.onOpenThread(bbThreadId),
         });
         bb.onChanged();
@@ -157,7 +158,7 @@ export function useBbDialogs(bb: MailBbPorts | undefined, detail: ThreadDetail |
           onStarted={({ bbThreadId, saved }) => {
             const failed = saved.filter((r) => r.outcome !== "saved").length;
             bb.notify(failed > 0 ? `Thread started; ${failed} ${failed === 1 ? "attachment was" : "attachments were"} not saved` : "Thread started", {
-              label: "Open",
+              label: tx("Open"),
               run: () => bb.onOpenThread(bbThreadId),
             });
             bb.onChanged();
@@ -196,7 +197,7 @@ export function useBbDialogs(bb: MailBbPorts | undefined, detail: ThreadDetail |
           }}
           onHandedOff={(bbThreadId, environment) => {
             bb.notify(environment === "checkout" ? "An agent applies the patch in your checkout" : "An agent applies the patch in a new worktree", {
-              label: "Open",
+              label: tx("Open"),
               run: () => bb.onOpenThread(bbThreadId),
             });
             bb.onChanged();

@@ -3,6 +3,7 @@
 // or any mail text; the address always shows beside a name. Host-free:
 // app.tsx shows it from the badge hook.
 import type { DayNotice } from "../core/contract.ts";
+import { tx } from "./i18n/index.ts";
 
 /** How long a day notice toast stays. */
 export const DAY_NOTICE_TOAST_MS = 12_000;
@@ -20,19 +21,19 @@ export function dayNoticePlan(notice: DayNotice): DayNoticePlan {
     return {
       title:
         count === 0
-          ? "Today: nothing needs a reply"
+          ? tx("Today: nothing needs a reply")
           : count === 1
-            ? "Today: 1 conversation needs a reply"
-            : `Today: ${count} conversations need a reply`,
-      description: "Your Today view is ready.",
+            ? tx("Today: 1 conversation needs a reply")
+            : tx("Today: {count} conversations need a reply", { count }),
+      description: tx("Your Today view is ready."),
       open: { page: "today" },
     };
   }
   if (notice.kind === "rule") {
     const count = notice.count;
     return {
-      title: `Rule ${notice.ruleName}: ${count === 1 ? "a thread is ready" : `${count} threads are ready`}`,
-      description: "Review it in the Inbox.",
+      title: tx("Rule {ruleName}: {p1}", { ruleName: notice.ruleName, p1: count === 1 ? "a thread is ready" : `${count} threads are ready` }),
+      description: tx("Review it in the Inbox."),
       open: { page: "today" },
     };
   }
@@ -40,8 +41,8 @@ export function dayNoticePlan(notice: DayNotice): DayNoticePlan {
   const address = notice.address.trim();
   const who = name !== "" ? name : address !== "" ? address : "the recipient";
   return {
-    title: `No reply from ${who}`,
-    description: name !== "" && address !== "" ? `${address} \u00b7 waiting for a reply` : "Waiting for a reply",
+    title: tx("No reply from {who}", { who }),
+    description: name !== "" && address !== "" ? `${address} \u00b7 waiting for a reply` : tx("Waiting for a reply"),
     open: notice.threadId !== null ? { accountId: notice.accountId, threadId: notice.threadId } : { page: "today" },
   };
 }

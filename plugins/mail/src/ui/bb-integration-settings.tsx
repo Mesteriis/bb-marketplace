@@ -8,7 +8,7 @@ import type { BindingView } from "../core/contract.ts";
 import { PROJECT_PATH_REFUSAL_TEXT, projectFolder } from "../core/project-paths.ts";
 import { Button } from "@/components/ui/button";
 import { errorText, type BbCall } from "./bb-ports.ts";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export interface BbSettingsValues {
   attachmentFolder: string;
@@ -24,12 +24,12 @@ export function folderProblem(folder: string): string | null {
 }
 
 const TARGET_TEXT: Record<BbSettingsValues["taskTarget"], string> = {
-  auto: "Taskboard when it answers, else Mail's own Tasks",
-  taskboard: "Taskboard",
-  local: "Mail's own Tasks",
+  auto: msg("Taskboard when it answers, else Mail's own Tasks"),
+  taskboard: msg("Taskboard"),
+  local: msg("Mail's own Tasks"),
 };
 
-const KIND_TEXT: Record<BindingView["kind"], string> = { address: "Sender", domain: "Domain", list: "List", repo: "Repository" };
+const KIND_TEXT: Record<BindingView["kind"], string> = { address: msg("Sender"), domain: msg("Domain"), list: msg("List"), repo: msg("Repository") };
 
 export interface BbIntegrationSettingsProps {
   values: BbSettingsValues;
@@ -60,7 +60,7 @@ export function BbIntegrationSettings({ values, call, hint }: BbIntegrationSetti
         </p>
       </section>
       <section aria-label={tx("Tasks")} className="flex flex-col gap-1">
-        <p className="text-sm text-foreground">{`Make a task puts tasks in: ${TARGET_TEXT[values.taskTarget]}`}</p>
+        <p className="text-sm text-foreground">{tx("Make a task puts tasks in: {p1}", { p1: TARGET_TEXT[values.taskTarget] })}</p>
       </section>
       <section aria-label={tx("Dev notifications")} className="flex flex-col gap-1">
         <p className="text-sm text-foreground">

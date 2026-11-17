@@ -11,7 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { accountLabel } from "./folder-list.tsx";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 type Mode = AiScopeView["accounts"][number]["mode"];
 type Sender = AiScopeView["senders"][number];
@@ -21,9 +21,9 @@ export const GMAIL_SCOPE_NOTE = "Gmail: a message is shared when any of its labe
 export const AI_SCOPE_SENDERS_MAX = 1_000;
 
 const MODES: readonly { value: Mode; label: string }[] = [
-  { value: "all", label: "All folders" },
-  { value: "folders", label: "Chosen folders\u2026" },
-  { value: "none", label: "None" },
+  { value: "all", label: msg("All folders") },
+  { value: "folders", label: msg("Chosen folders\u2026") },
+  { value: "none", label: msg("None") },
 ];
 
 /** A typed sender as a rule: an address with "@", else a domain. */
@@ -135,7 +135,7 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
         setSenders(view.senders);
       },
       (error: unknown) => {
-        if (live) setState({ kind: "error", text: error instanceof Error ? error.message : "AI access could not be loaded" });
+        if (live) setState({ kind: "error", text: error instanceof Error ? error.message : tx("AI access could not be loaded") });
       },
     );
     return () => {
@@ -173,7 +173,7 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
       setSenders(view.senders);
       setState({ kind: "saved" });
     } catch (error) {
-      setState({ kind: "error", text: error instanceof Error && error.message !== "" ? error.message : "AI access could not be saved" });
+      setState({ kind: "error", text: error instanceof Error && error.message !== "" ? error.message : tx("AI access could not be saved") });
     }
   };
 
@@ -191,7 +191,7 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
             <div className="flex flex-wrap items-center gap-2">
               <h4 className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{accountLabel(account)}</h4>
               <Select value={draft.mode} onValueChange={(mode) => patch(account.id, { mode: mode as Mode })}>
-                <SelectTrigger aria-label={`AI access for ${accountLabel(account)}`} className="h-8 w-auto">
+                <SelectTrigger aria-label={tx("AI access for {p1}", { p1: accountLabel(account) })} className="h-8 w-auto">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

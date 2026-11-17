@@ -197,7 +197,7 @@ function PickerBody({ request, call, currentProjectId, currentThreadId, onAttach
     <>
       <DialogHeader>
         <DialogTitle>{request.kind === "project" ? tx("Attach from a project") : tx("Attach from a thread")}</DialogTitle>
-        <DialogDescription>{`Tick up to ${PICK_MAX} files. They are sent as they are; nothing is hidden in them.`}</DialogDescription>
+        <DialogDescription>{tx("Tick up to {p1} files. They are sent as they are; nothing is hidden in them.", { p1: PICK_MAX })}</DialogDescription>
       </DialogHeader>
       <div className="flex flex-col gap-3">
         {request.kind === "thread" && currentThreadId !== null ? (

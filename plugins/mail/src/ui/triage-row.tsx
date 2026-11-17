@@ -33,7 +33,7 @@ const DONE_TEXT: Record<string, (n: number) => string> = {
 /** "Applied N of M" and the per-group counts of an applied batch. */
 export function appliedText(status: TriageStatus): { head: string; groups: string; notes: string[] } {
   const replies = status.byAction.find((entry) => entry.action === "reply")?.done ?? 0;
-  const head = `Applied ${status.done + replies} of ${status.total}`;
+  const head = tx("Applied {p1} of {total}", { p1: status.done + replies, total: status.total });
   const groups = status.byAction
     .filter((entry) => entry.done > 0 && DONE_TEXT[entry.action] !== undefined)
     .map((entry) => DONE_TEXT[entry.action]!(entry.done))

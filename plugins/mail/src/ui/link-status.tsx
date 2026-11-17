@@ -75,9 +75,9 @@ export function LinkStatusLine({ hover, cleanLinks }: { hover: LinkHover | null;
 /** What the dialog says about a link that needs it (part A resolution 10). */
 export function linkDialogText(clean: CleanLink): { reason: string; host: string } {
   const host = clean.deceptive !== null ? orgDomain(clean.host) : clean.host;
-  if (clean.deceptive !== null) return { reason: `This link says ${clean.deceptive.says} but opens ${host}.`, host };
+  if (clean.deceptive !== null) return { reason: tx("This link says {says} but opens {host}.", { says: clean.deceptive.says, host }), host };
   if (clean.lookalike !== null) return { reason: `${clean.host} looks like ${clean.lookalike}, which you write to.`, host };
-  return { reason: `This link's address mixes alphabets: ${clean.host} (shown as it really is).`, host };
+  return { reason: tx("This link's address mixes alphabets: {host} (shown as it really is).", { host: clean.host }), host };
 }
 
 export interface LinkDialogProps {

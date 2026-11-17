@@ -65,7 +65,7 @@ export function ReminderStrip({ reminders, defaultDays, onOpen, onSnooze, onDism
                 {tx("Open")}
               </Button>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => onSnooze(reminder, defaultDays)}>
-                {`Remind in ${daysText(defaultDays)}`}
+                {tx("Remind in {p1}", { p1: daysText(defaultDays) })}
               </Button>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => onDismiss(reminder)}>
                 {tx("Dismiss")}

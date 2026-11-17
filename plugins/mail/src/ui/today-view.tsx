@@ -48,7 +48,7 @@ export function devLine(dev: TodayData["dev"] | undefined): string | null {
     );
   }
   if (dev.alertsFiring > 0) parts.push(`${dev.alertsFiring} ${dev.alertsFiring === 1 ? "alert" : "alerts"} firing`);
-  return parts.length === 0 ? null : `Dev: ${parts.join(" \u00b7 ")}`;
+  return parts.length === 0 ? null : tx("Dev: {p1}", { p1: parts.join(" \u00b7 ") });
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -212,7 +212,7 @@ export function TodayView(props: TodayViewProps) {
                   className="h-7 px-2 text-xs"
                   onClick={act(() => props.onReminderSnooze(reminder, props.reminderDays))}
                 >
-                  {`Remind in ${daysText(props.reminderDays)}`}
+                  {tx("Remind in {p1}", { p1: daysText(props.reminderDays) })}
                 </Button>
                 <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={act(() => props.onReminderDismiss(reminder))}>
                   {tx("Dismiss")}

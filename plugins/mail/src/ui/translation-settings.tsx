@@ -148,7 +148,7 @@ export function TranslationSettings({ open, onOpenChange, load, save, clear, onS
                 <>
                   <p className="text-xs text-destructive">{tx("This provider is not available in Makosh AI right now.")}</p>
                   {chosen.reason !== null && chosen.reason !== "" ? (
-                    <p className="text-xs text-muted-foreground">{`Makosh AI: ${chosen.reason}`}</p>
+                    <p className="text-xs text-muted-foreground">{tx("Makosh AI: {reason}", { reason: chosen.reason })}</p>
                   ) : null}
                 </>
               ) : null}

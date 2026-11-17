@@ -6,7 +6,7 @@ import type { RuleRunView } from "../core/contract.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { subjectOrPlaceholder } from "./thread-list.tsx";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export interface RuleStripProps {
   runs: readonly RuleRunView[];
@@ -17,7 +17,7 @@ export interface RuleStripProps {
 
 const STATE_TEXT: Partial<Record<RuleRunView["state"], string>> = {
   capped: "over the rule's limit: start it yourself",
-  failed: "BB could not start it",
+  failed: msg("BB could not start it"),
 };
 
 export function RuleStrip({ runs, onReview, onDismiss, onPauseAll }: RuleStripProps) {
@@ -26,7 +26,7 @@ export function RuleStrip({ runs, onReview, onDismiss, onPauseAll }: RuleStripPr
     <section aria-label={tx("Ready to start")} className="flex flex-col gap-1 border-b border-border px-3 py-2">
       <div className="flex items-center gap-2">
         <Icon name="Bot" className="size-3.5 text-muted-foreground" aria-hidden />
-        <h3 className="min-w-0 flex-1 text-xs font-semibold text-foreground">{`Ready to start (${runs.length})`}</h3>
+        <h3 className="min-w-0 flex-1 text-xs font-semibold text-foreground">{tx("Ready to start ({length})", { length: runs.length })}</h3>
         <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onPauseAll}>
           {tx("Pause all rules")}
         </Button>

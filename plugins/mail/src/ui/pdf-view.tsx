@@ -148,7 +148,7 @@ export function PdfView({
         <Button variant="ghost" size="icon" className="size-7" aria-label={tx("Previous page")} disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
           <Icon name="ChevronLeft" fallback="ArrowLeft" aria-hidden />
         </Button>
-        <span aria-live="polite">{`Page ${page} of ${pages}`}</span>
+        <span aria-live="polite">{tx("Page {page} of {pages}", { page, pages })}</span>
         <Button variant="ghost" size="icon" className="size-7" aria-label={tx("Next page")} disabled={page >= pages} onClick={() => setPage((p) => Math.min(pages, p + 1))}>
           <Icon name="ChevronRight" fallback="ArrowRight" aria-hidden />
         </Button>
@@ -171,7 +171,7 @@ export function PdfView({
       </div>
       <p className="text-xs text-muted-foreground">{PDF_PARTIAL_NOTE}</p>
       {doc !== null && doc.pages > PDF_PAGES_MAX ? (
-        <p className="text-xs text-muted-foreground">{`Only the first ${PDF_PAGES_MAX} pages show here`}</p>
+        <p className="text-xs text-muted-foreground">{tx("Only the first {p1} pages show here", { p1: PDF_PAGES_MAX })}</p>
       ) : null}
       {drawError !== null ? (
         <p role="alert" className="text-sm text-destructive">
@@ -179,11 +179,11 @@ export function PdfView({
         </p>
       ) : null}
       <div className="min-h-0 overflow-auto rounded-md border border-border bg-muted">
-        <canvas ref={canvasRef} aria-label={`Page ${page}`} className="mx-auto block" />
+        <canvas ref={canvasRef} aria-label={tx("Page {page}", { page })} className="mx-auto block" />
       </div>
       {links.length > 0 ? (
         <details className="text-xs text-muted-foreground">
-          <summary className="cursor-pointer select-none">{`Links in this PDF (${links.length})`}</summary>
+          <summary className="cursor-pointer select-none">{tx("Links in this PDF ({length})", { length: links.length })}</summary>
           <ul aria-label={tx("Links in this PDF")} className="mt-1 flex flex-col gap-0.5">
             {links.map((url) => (
               <li key={url}>

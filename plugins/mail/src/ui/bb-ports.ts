@@ -4,6 +4,7 @@
 // shows what it answers as plain text.
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { ProjectListItem, RpcIn, RpcMethod, RpcOut } from "../core/contract.ts";
+import { msg } from "./i18n/index.ts";
 
 /** One owner RPC, as app.tsx's useRpc().call. */
 export type BbCall = <M extends RpcMethod>(method: M, input: RpcIn<M>) => Promise<RpcOut<M>>;
@@ -22,9 +23,9 @@ export interface CodeRenderers {
  * would bundle zod; a test checks the two agree.
  */
 export const BB_TEXT = {
-  out_of_scope: "Outside AI access (Mail settings)",
-  no_tree: "This project has no single local checkout",
-  confirm_needed: "This file name looks like it holds a secret; confirm to attach it",
+  out_of_scope: msg("Outside AI access (Mail settings)"),
+  no_tree: msg("This project has no single local checkout"),
+  confirm_needed: msg("This file name looks like it holds a secret; confirm to attach it"),
 } as const;
 
 /** An error's message for the owner, or the fallback. */

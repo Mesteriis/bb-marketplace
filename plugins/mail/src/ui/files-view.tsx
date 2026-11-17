@@ -13,26 +13,26 @@ import { cn } from "@/lib/utils";
 import { LoadingState } from "./empty-states.tsx";
 import { accountLabel } from "./folder-list.tsx";
 import { addressLabel, formatListDate } from "./thread-list.tsx";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export const FILE_KIND_FILTERS: readonly { kind: FileKind; label: string }[] = [
-  { kind: "image", label: "Images" },
+  { kind: "image", label: msg("Images") },
   { kind: "pdf", label: "PDF" },
-  { kind: "document", label: "Documents" },
-  { kind: "text", label: "Text" },
-  { kind: "archive", label: "Archives" },
-  { kind: "calendar", label: "Calendar" },
-  { kind: "other", label: "Other" },
+  { kind: "document", label: msg("Documents") },
+  { kind: "text", label: msg("Text") },
+  { kind: "archive", label: msg("Archives") },
+  { kind: "calendar", label: msg("Calendar") },
+  { kind: "other", label: msg("Other") },
 ];
 
 const KIND_TEXT: Record<FileKind, string> = {
-  image: "Image",
+  image: msg("Image"),
   pdf: "PDF",
-  document: "Document",
-  text: "Text",
-  archive: "Archive",
-  calendar: "Calendar",
-  other: "File",
+  document: msg("Document"),
+  text: msg("Text"),
+  archive: msg("Archive"),
+  calendar: msg("Calendar"),
+  other: msg("File"),
 };
 
 /** A file size the owner reads: bytes, KB or MB. */
@@ -144,7 +144,7 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
     <section aria-label={tx("Files")} className="flex flex-col gap-3">
       <h2 className="text-lg font-semibold text-foreground">{tx("Files")}</h2>
       <div role="group" aria-label={tx("Type")} className="flex flex-wrap items-center gap-1">
-        {[{ kind: undefined, label: "All" } as { kind: FileKind | undefined; label: string }, ...FILE_KIND_FILTERS].map(({ kind, label }) => {
+        {[{ kind: undefined, label: tx("All") } as { kind: FileKind | undefined; label: string }, ...FILE_KIND_FILTERS].map(({ kind, label }) => {
           const on = filter.kind === kind;
           return (
             <Button
@@ -230,7 +230,7 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
             </thead>
             <tbody>
               {files.map((file) => {
-                const fileName = file.filename ?? "Unnamed attachment";
+                const fileName = file.filename ?? tx("Unnamed attachment");
                 return (
                   <tr key={`${file.messageId}:${file.partId}`} className="border-t border-border">
                     <td className="max-w-56 truncate py-1 pr-2 text-foreground" title={fileName}>
@@ -244,19 +244,19 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
                     <td className="py-1">
                       <span className="flex items-center justify-end gap-0.5">
                         {viewable(file) ? (
-                          <Button variant="ghost" size="icon" className="size-7" aria-label={`View ${fileName}`} onClick={() => onView(file)}>
+                          <Button variant="ghost" size="icon" className="size-7" aria-label={tx("View {fileName}", { fileName })} onClick={() => onView(file)}>
                             <Icon name="Eye" fallback="Info" aria-hidden />
                           </Button>
                         ) : null}
-                        <Button variant="ghost" size="icon" className="size-7" aria-label={`Download ${fileName}`} onClick={() => onDownload(file)}>
+                        <Button variant="ghost" size="icon" className="size-7" aria-label={tx("Download {fileName}", { fileName })} onClick={() => onDownload(file)}>
                           <Icon name="Download" fallback="Paperclip" aria-hidden />
                         </Button>
                         {onSave !== undefined ? (
-                          <Button variant="ghost" size="icon" className="size-7" aria-label={`Save ${fileName} to project\u2026`} onClick={() => onSave(file)}>
+                          <Button variant="ghost" size="icon" className="size-7" aria-label={tx("Save {fileName} to project\u2026", { fileName })} onClick={() => onSave(file)}>
                             <Icon name="FolderInput" fallback="Folder" aria-hidden />
                           </Button>
                         ) : null}
-                        <Button variant="ghost" size="icon" className="size-7" aria-label={`Open the message of ${fileName}`} onClick={() => onOpenMessage(file)}>
+                        <Button variant="ghost" size="icon" className="size-7" aria-label={tx("Open the message of {fileName}", { fileName })} onClick={() => onOpenMessage(file)}>
                           <Icon name="Mail" aria-hidden />
                         </Button>
                       </span>

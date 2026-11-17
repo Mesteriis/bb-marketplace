@@ -69,7 +69,7 @@ function RuleList({ call, notify }: Pick<RulesSettingsProps, "call" | "notify">)
       const { paused } = await call("rules_pause", {});
       await load();
       notify(paused === 1 ? "Paused 1 rule" : `Paused ${paused} rules`, {
-        label: "Undo",
+        label: tx("Undo"),
         run: () => {
           call("rules_pause", { undo: true }).then(load, (error: unknown) => setProblem(errorText(error, "Could not undo")));
         },

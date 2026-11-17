@@ -74,7 +74,7 @@ export function attachmentTextLine(status: AttachmentTextStatus): string {
   const parts = [`${status.indexed} indexed`];
   if (status.skipped + status.failed > 0) parts.push(`${status.skipped + status.failed} skipped (too large or unreadable)`);
   if (status.running || status.pending > 0) parts.push("indexing\u2026");
-  return `Attachment text: ${parts.join(" \u00b7 ")}`;
+  return tx("Attachment text: {p1}", { p1: parts.join(" \u00b7 ") });
 }
 
 export function SearchSection({ search, hint }: { search: SettingsSearchPorts; hint: string }) {
@@ -108,7 +108,7 @@ export function SearchSection({ search, hint }: { search: SettingsSearchPorts; h
     <div className="flex flex-col gap-4 text-sm">
       <section className="flex flex-col gap-1">
         <h3 className="font-medium text-foreground">{tx("Search and older mail")}</h3>
-        <p className="text-muted-foreground">{`Load more days loads ${v.historyStepDays} days at a time. Unopened server search results are kept ${v.serverSearchKeepDays} days.`}</p>
+        <p className="text-muted-foreground">{tx("Load more days loads {historyStepDays} days at a time. Unopened server search results are kept {serverSearchKeepDays} days.", { historyStepDays: v.historyStepDays, serverSearchKeepDays: v.serverSearchKeepDays })}</p>
         <p className="text-muted-foreground">
           {v.indexAttachmentText
             ? tx("Search inside attachments is on: text and PDF attachments are read on this computer, and only your own search uses them.")
@@ -140,10 +140,10 @@ export function SearchSection({ search, hint }: { search: SettingsSearchPorts; h
       </section>
       <section className="flex flex-col gap-1">
         <h3 className="font-medium text-foreground">{tx("Reading")}</h3>
-        <p className="text-muted-foreground">{`Show mail as: ${v.mailView === "plain" ? "Plain text" : "Original"}`}</p>
-        <p className="text-muted-foreground">{`Mail in dark mode: ${v.darkMail === "adapt" ? "Adapt colors" : "Original colors"}`}</p>
-        <p className="text-muted-foreground">{`Hide quoted text in replies: ${v.hideQuotes ? "On" : "Off"}`}</p>
-        <p className="text-muted-foreground">{`Remove tracking from links I open: ${v.cleanLinks !== false ? "On" : "Off"}`}</p>
+        <p className="text-muted-foreground">{tx("Show mail as: {p1}", { p1: v.mailView === "plain" ? "Plain text" : "Original" })}</p>
+        <p className="text-muted-foreground">{tx("Mail in dark mode: {p1}", { p1: v.darkMail === "adapt" ? "Adapt colors" : "Original colors" })}</p>
+        <p className="text-muted-foreground">{tx("Hide quoted text in replies: {p1}", { p1: v.hideQuotes ? "On" : "Off" })}</p>
+        <p className="text-muted-foreground">{tx("Remove tracking from links I open: {p1}", { p1: v.cleanLinks !== false ? "On" : "Off" })}</p>
       </section>
       <p className="text-xs text-muted-foreground">{hint}</p>
     </div>
@@ -248,10 +248,10 @@ export function docPreview(doc: EditorDoc | null): string {
 /** What the owner sees about an address's sends; null when there is nothing to warn about. */
 export function sendCheckText(check: IdentityView["sendCheck"]): string | null {
   if (check === "rewritten") {
-    return "The last message from this address went out from the account's own address: the provider does not let this account send as it.";
+    return tx("The last message from this address went out from the account's own address: the provider does not let this account send as it.");
   }
   if (check === "refused") {
-    return "The server refused to send from this address. Set it up with your provider, or remove it.";
+    return tx("The server refused to send from this address. Set it up with your provider, or remove it.");
   }
   return null;
 }
@@ -538,7 +538,7 @@ function AddressesSection(
                 variant="outline"
                 size="sm"
                 className="h-7"
-                aria-label={`Add ${suggestion.address}`}
+                aria-label={tx("Add {address}", { address: suggestion.address })}
                 onClick={() => {
                   setAddress(suggestion.address);
                   setAddProblem(null);
@@ -687,7 +687,7 @@ function IdentityRow({ identity, onUpdate, onRemove }: { identity: IdentityView 
       ) : null}
 
       {mode === "remove" ? (
-        <div role="alertdialog" aria-label={`Remove ${identity.address}`} className="flex flex-wrap items-center gap-2">
+        <div role="alertdialog" aria-label={tx("Remove {address}", { address: identity.address })} className="flex flex-wrap items-center gap-2">
           <p className="min-w-0 flex-1 text-xs text-foreground">
             {tx("Remove this address? New mail can no longer be sent from it; sends already queued keep it.")}
           </p>
@@ -754,7 +754,7 @@ function InboxSection({
                   variant="ghost"
                   size="sm"
                   className="h-7"
-                  aria-label={`Unblock ${rule.value}`}
+                  aria-label={tx("Unblock {value}", { value: rule.value })}
                   onClick={() => {
                     setProblem(null);
                     setRemoving(rule.id);
@@ -764,7 +764,7 @@ function InboxSection({
                 </Button>
               </div>
               {removing === rule.id ? (
-                <div role="alertdialog" aria-label={`Unblock ${rule.value}`} className="flex flex-wrap items-center gap-2">
+                <div role="alertdialog" aria-label={tx("Unblock {value}", { value: rule.value })} className="flex flex-wrap items-center gap-2">
                   <p className="min-w-0 flex-1 text-xs text-foreground">
                     {tx("Unblock")} {rule.value}{tx("? Mail already in Spam stays there.")}
                   </p>
@@ -811,7 +811,7 @@ function InboxSection({
                 variant="outline"
                 size="sm"
                 className="h-7"
-                aria-label={`Change the snoozed folder of ${accountLabel(account)}`}
+                aria-label={tx("Change the snoozed folder of {p1}", { p1: accountLabel(account) })}
                 onClick={() => onChangeSnoozeFolder(account.id)}
               >
                 {tx("Change\u2026")}
@@ -883,7 +883,7 @@ function TemplatesSection({
                   variant="ghost"
                   size="sm"
                   className="h-7"
-                  aria-label={`Edit ${template.name}`}
+                  aria-label={tx("Edit {name}", { name: template.name })}
                   onClick={() => {
                     setProblem(null);
                     setEditing({ id: template.id, name: template.name, doc: template.doc });
@@ -895,7 +895,7 @@ function TemplatesSection({
                   variant="ghost"
                   size="sm"
                   className="h-7"
-                  aria-label={`Delete ${template.name}`}
+                  aria-label={tx("Delete {name}", { name: template.name })}
                   onClick={() => setRemoving(template.id)}
                 >
                   {tx("Delete")}
@@ -903,7 +903,7 @@ function TemplatesSection({
               </div>
               <p className="line-clamp-2 whitespace-pre-line text-xs text-muted-foreground">{docPreview(template.doc)}</p>
               {removing === template.id ? (
-                <div role="alertdialog" aria-label={`Delete ${template.name}`} className="flex flex-wrap items-center gap-2">
+                <div role="alertdialog" aria-label={tx("Delete {name}", { name: template.name })} className="flex flex-wrap items-center gap-2">
                   <p className="min-w-0 flex-1 text-xs text-foreground">{tx("Delete this template?")}</p>
                   <Button
                     variant="destructive"
@@ -972,7 +972,7 @@ function TemplateEditor({
   return (
     <form
       onSubmit={(event) => void save(event)}
-      aria-label={edit.id === null ? tx("New template") : `Edit ${edit.name}`}
+      aria-label={edit.id === null ? tx("New template") : tx("Edit {name}", { name: edit.name })}
       className="flex flex-col gap-2 rounded-md border border-border p-2"
     >
       <div className="flex flex-col gap-1">
@@ -1095,7 +1095,7 @@ function AiFeaturesSection({ ai }: { ai: SettingsAiPorts }) {
       </section>
       <section aria-label={tx("Reply reminders")} className="flex flex-col gap-1">
         <SectionHeading>{tx("Reply reminders")}</SectionHeading>
-        <p className="text-sm text-foreground">{`Remind me after ${ai.reminderDays === 1 ? "1 day" : `${ai.reminderDays} days`} by default.`}</p>
+        <p className="text-sm text-foreground">{tx("Remind me after {p1} by default.", { p1: ai.reminderDays === 1 ? "1 day" : `${ai.reminderDays} days` })}</p>
         <p className="text-xs text-muted-foreground">
           {tx("A reminder turns due when no message answering yours (by In-Reply-To or References) arrives in time.")} {PLUGIN_SETTINGS_HINT}
         </p>

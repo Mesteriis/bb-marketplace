@@ -43,12 +43,12 @@ export function syncStatusLabel(
   nowMs: number,
   bbLink: BbLink = "connected",
 ): string {
-  if (bbLink === "reconnecting") return "Reconnecting to BB…";
-  if (syncing) return "Syncing…";
-  if (accounts.length === 0 || accounts.some((a) => a.lastSyncAt === null)) return "Not synced yet";
+  if (bbLink === "reconnecting") return tx("Reconnecting to BB\u2026");
+  if (syncing) return tx("Syncing\u2026");
+  if (accounts.length === 0 || accounts.some((a) => a.lastSyncAt === null)) return tx("Not synced yet");
   const oldest = accounts.map((a) => a.lastSyncAt!).sort()[0]!;
   const when = formatListDate(oldest, new Date(nowMs));
-  return accounts.some((a) => isQuietlyOffline(a, nowMs)) ? `Offline · synced ${when}` : `Synced ${when}`;
+  return accounts.some((a) => isQuietlyOffline(a, nowMs)) ? tx("Offline \u00b7 synced {when}", { when }) : tx("Synced {when}", { when });
 }
 
 export interface MailStatusDialogProps {
@@ -69,7 +69,7 @@ export function outboxStatusText(rows: readonly Pick<OutboxRow, "state">[]): str
   const parts: string[] = [];
   if (waiting > 0) parts.push(`${waiting} waiting to be sent`);
   if (stuck > 0) parts.push(`${stuck} not sent`);
-  return parts.length > 0 ? `Outbox: ${parts.join(", ")}` : null;
+  return parts.length > 0 ? tx("Outbox: {p1}", { p1: parts.join(", ") }) : null;
 }
 
 /** Mail status: each account's last sync, its problems and its waiting sends. Read-only besides Sync now. */

@@ -4,19 +4,19 @@
 import type { DevLinkView } from "../core/model.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 const KIND_LABEL: Record<DevLinkView["kind"], string> = {
-  repo: "Repository",
+  repo: msg("Repository"),
   pr: "PR",
   mr: "MR",
-  issue: "Issue",
-  commit: "Commit",
-  run: "CI run",
-  pipeline: "Pipeline",
-  release: "Release",
-  compare: "Compare",
-  tracker: "Issue",
+  issue: msg("Issue"),
+  commit: msg("Commit"),
+  run: msg("CI run"),
+  pipeline: msg("Pipeline"),
+  release: msg("Release"),
+  compare: msg("Compare"),
+  tracker: msg("Issue"),
 };
 
 /** "PR #42 example-org/demo". */

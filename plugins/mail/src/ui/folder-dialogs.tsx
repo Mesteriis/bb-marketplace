@@ -17,16 +17,16 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { stopEscape } from "./shortcuts.ts";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export const FOLDER_NAME_TEXT: Record<FolderNameRefusal, string> = {
-  empty: "Type a name",
+  empty: msg("Type a name"),
   too_long: `Use at most ${FOLDER_NAME_MAX} characters`,
-  control: "The name has characters a folder cannot hold",
-  delimiter: "The name cannot hold the folder separator",
-  reserved: "That name is reserved",
-  exists: "A folder with that name is already here",
-  special_use: "That name is used for system folders",
+  control: msg("The name has characters a folder cannot hold"),
+  delimiter: msg("The name cannot hold the folder separator"),
+  reserved: msg("That name is reserved"),
+  exists: msg("A folder with that name is already here"),
+  special_use: msg("That name is used for system folders"),
 };
 
 /** Why a folder cannot be renamed or deleted, as the owner reads it. */
@@ -34,17 +34,17 @@ export function folderRefusalText(refusal: FolderOpRefusal, op: "rename" | "dele
   switch (refusal) {
     case "inbox":
     case "special_use":
-      return op === "delete" ? "Inbox and system folders cannot be deleted" : "Inbox and system folders cannot be renamed";
+      return op === "delete" ? tx("Inbox and system folders cannot be deleted") : tx("Inbox and system folders cannot be renamed");
     case "gmail_system":
-      return "Gmail's own folders cannot be changed";
+      return tx("Gmail's own folders cannot be changed");
     case "snooze_folder":
-      return "This is the snooze folder; choose another one in Mail settings first";
+      return tx("This is the snooze folder; choose another one in Mail settings first");
     case "has_children":
-      return "Delete its subfolders first";
+      return tx("Delete its subfolders first");
     case "move_pending":
-      return "Messages are still moving in or out of this folder; try again in a moment";
+      return tx("Messages are still moving in or out of this folder; try again in a moment");
     case "parent_not_selectable":
-      return "This folder cannot be renamed here";
+      return tx("This folder cannot be renamed here");
   }
 }
 
@@ -191,11 +191,11 @@ export function deletePlan(name: string, check: DeleteCheck):
       messages: check.messages,
       text:
         check.messages === 0
-          ? `Delete the label ${name}? No message has it. The label is removed from Gmail.`
-          : `Delete the label ${name}? It is removed from ${plural(check.messages, "message", "messages")}. The messages stay in All Mail and keep their other labels.`,
+          ? tx("Delete the label {name}? No message has it. The label is removed from Gmail.", { name })
+          : tx("Delete the label {name}? It is removed from {p1}. The messages stay in All Mail and keep their other labels.", { name, p1: plural(check.messages, "message", "messages") }),
     };
   }
-  if (check.messages === 0) return { kind: "empty", text: `Delete ${name}? It is empty.` };
+  if (check.messages === 0) return { kind: "empty", text: tx("Delete {name}? It is empty.", { name }) };
   return {
     kind: "move",
     messages: check.messages,

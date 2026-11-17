@@ -138,7 +138,7 @@ export function SaveSearchDialog({
     }
   };
 
-  const title = request?.kind === "rename" ? "Rename saved search" : request?.kind === "edit" ? "Edit saved search" : "Save search";
+  const title = request?.kind === "rename" ? tx("Rename saved search") : request?.kind === "edit" ? tx("Edit saved search") : tx("Save search");
   return (
     <Dialog open={request !== null} onOpenChange={(open) => !open && !busy && onCancel()}>
       <DialogContent className="max-w-sm" onEscapeKeyDown={stopEscape}>

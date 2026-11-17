@@ -71,7 +71,7 @@ export function SummaryBlock({ ports, threadId, folder, onCite, onClose, pollMs 
       ? aiLabel(result.provider, result.model, result.cached)
       : state.status === "failed"
         ? aiLabel(state.provider, state.model)
-        : "AI summary";
+        : tx("AI summary");
   const empty =
     result !== null && result.decisions.length === 0 && result.questions.length === 0 && result.deadlines.length === 0;
   return (

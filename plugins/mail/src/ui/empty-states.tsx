@@ -86,7 +86,7 @@ export function EmptyFolder({ name }: { name: string }) {
 }
 
 export function NoSearchResults({ query }: { query: string }) {
-  return <EmptyState icon="Search" title={`No messages match “${query}”`} />;
+  return <EmptyState icon="Search" title={tx("No messages match \u201c{query}\u201d", { query })} />;
 }
 
 export function NothingSelected() {

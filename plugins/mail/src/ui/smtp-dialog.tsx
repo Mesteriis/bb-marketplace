@@ -54,12 +54,12 @@ export function smtpInput(
   fields: { host: string; port: string; security: SmtpSecurity; username: string },
 ): SmtpSettingsInput | string {
   const host = fields.host.trim();
-  if (host === "") return "Enter the SMTP server.";
-  if (!HOST.test(host)) return "The SMTP server is a host name like smtp.example.org.";
+  if (host === "") return tx("Enter the SMTP server.");
+  if (!HOST.test(host)) return tx("The SMTP server is a host name like smtp.example.org.");
   const port = Number(fields.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return "Enter a port between 1 and 65535.";
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return tx("Enter a port between 1 and 65535.");
   const username = fields.username.trim();
-  if (/[\r\n\u0000]/.test(username) || username.length > 320) return "The username cannot be used.";
+  if (/[\r\n\u0000]/.test(username) || username.length > 320) return tx("The username cannot be used.");
   return { accountId, host, port, security: fields.security, ...(username !== "" ? { username } : {}) };
 }
 
@@ -123,14 +123,14 @@ function SmtpForm({ account, onClose, onTest, onSave }: SmtpDialogProps & { acco
       const result = await (kind === "test" ? onTest(input) : onSave(input));
       if (result.signInRequired === true) setAskPassword(true);
       if (!result.ok) {
-        setOutcome({ kind: "error", message: result.reason ?? "The SMTP server refused the login." });
+        setOutcome({ kind: "error", message: result.reason ?? tx("The SMTP server refused the login.") });
       } else if (kind === "test") {
-        setOutcome({ kind: "ok", message: "SMTP works." });
+        setOutcome({ kind: "ok", message: tx("SMTP works.") });
       } else {
         onClose();
       }
     } catch (error) {
-      setOutcome({ kind: "error", message: error instanceof Error && error.message ? error.message : "Something went wrong" });
+      setOutcome({ kind: "error", message: error instanceof Error && error.message ? error.message : tx("Something went wrong") });
     } finally {
       setBusy(null);
     }

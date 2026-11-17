@@ -60,7 +60,7 @@ export interface DetailsPanelProps {
 /** "Authenticity (from mx.google.com): SPF pass (example.com) \u00b7 DMARC pass"; the lines alone without an authserv-id. */
 export function authenticityText(authenticity: { authserv: string | null; lines: string[] }): string {
   const lines = authenticity.lines.join(" \u00b7 ");
-  return authenticity.authserv !== null ? `Authenticity (from ${authenticity.authserv}): ${lines}` : `Authenticity: ${lines}`;
+  return authenticity.authserv !== null ? tx("Authenticity (from {authserv}): {lines}", { authserv: authenticity.authserv, lines }) : tx("Authenticity: {lines}", { lines });
 }
 
 export function DetailsPanel({ details, onClose, onCopy, onCloseAutoFocus, onAfterCloseAutoFocus, onCheckAgain }: DetailsPanelProps) {

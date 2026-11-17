@@ -22,9 +22,9 @@ export interface ForgetRequest {
 
 /** The confirmation text for `count` messages. */
 export function forgetText(count: number): string {
-  if (count === 0) return "Nothing older than the sync window is kept for this folder.";
+  if (count === 0) return tx("Nothing older than the sync window is kept for this folder.");
   const n = count === 1 ? "1 message" : `${count} messages`;
-  return `Removes ${n} older than the sync window from Mail. Nothing changes on the server.`;
+  return tx("Removes {n} older than the sync window from Mail. Nothing changes on the server.", { n });
 }
 
 export function HistoryForgetDialog({

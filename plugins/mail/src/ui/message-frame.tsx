@@ -236,7 +236,7 @@ export function MessageFrame({
         />
       ) : null}
       {showRemote && sanitized.trackers > 0 ? (
-        <p className="px-1 text-xs text-muted-foreground">{`Images shown \u00b7 ${trackersText(sanitized.trackers)} blocked`}</p>
+        <p className="px-1 text-xs text-muted-foreground">{tx("Images shown \u00b7 {p1} blocked", { p1: trackersText(sanitized.trackers) })}</p>
       ) : null}
       {senderTrusted && senderAddress !== null && imagesHeld === null ? (
         <div
@@ -299,7 +299,7 @@ function ImagesBar({
       <Icon name="EyeOff" className="size-3.5 shrink-0" aria-hidden />
       <span className="min-w-0 flex-1">
         {!blocked ? (
-          <span>{`Remote images: this message has ${trackersText(trackers)}; they stay blocked.`}</span>
+          <span>{tx("Remote images: this message has {p1}; they stay blocked.", { p1: trackersText(trackers) })}</span>
         ) : (
           <>
             <span>

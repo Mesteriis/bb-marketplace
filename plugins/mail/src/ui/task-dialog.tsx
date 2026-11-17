@@ -81,7 +81,7 @@ function TaskBody({ request, call, onMade, onClose }: TaskDialogProps & { reques
         }
       },
       () => {
-        if (live) setTargets({ taskboard: null, reason: "Taskboard did not answer", lastBoardId: null, target: "auto" });
+        if (live) setTargets({ taskboard: null, reason: tx("Taskboard did not answer"), lastBoardId: null, target: "auto" });
       },
     );
     return () => {

@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 import { formatBytes } from "./attachments-input.tsx";
 import { presendIssueText } from "./presend-dialog.tsx";
 import { subjectOrPlaceholder } from "./thread-list.tsx";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export type ProposalViewResult =
   | { state: "ready"; view: ProposalView; viewToken: string }
@@ -68,16 +68,16 @@ export function extensionOf(fileName: string): string | null {
 }
 
 const KIND_LABELS: Record<ProposalView["kind"], string> = {
-  new: "New",
-  reply: "Reply",
-  reply_all: "Reply all",
-  forward: "Forward",
+  new: msg("New"),
+  reply: msg("Reply"),
+  reply_all: msg("Reply all"),
+  forward: msg("Forward"),
 };
 
 const CLOSED_TEXT: Record<"changed" | "gone" | "opened_elsewhere", string> = {
-  changed: "This proposal changed after it was made and cannot be sent.",
-  gone: "This proposal is no longer available. Nothing was sent.",
-  opened_elsewhere: "This card was opened elsewhere; reopen it.",
+  changed: msg("This proposal changed after it was made and cannot be sent."),
+  gone: msg("This proposal is no longer available. Nothing was sent."),
+  opened_elsewhere: msg("This card was opened elsewhere; reopen it."),
 };
 
 type Loaded =
@@ -225,9 +225,9 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
   const gateText = !dwellDone
     ? null
     : unacknowledged.length > 0
-      ? "Confirm each new address to enable Send."
+      ? tx("Confirm each new address to enable Send.")
       : !scrolledToEnd
-        ? "Scroll to the end of the message to enable Send."
+        ? tx("Scroll to the end of the message to enable Send.")
         : null;
 
   return (
@@ -405,10 +405,10 @@ function CardShell({ children }: { children: ReactNode }) {
 }
 
 const FLAG_LABELS: Record<RecipientFlag, string> = {
-  new: "New address",
-  added: "Added by the agent",
-  outside: "Outside your domains",
-  hidden_chars: "Hidden characters",
+  new: msg("New address"),
+  added: msg("Added by the agent"),
+  outside: msg("Outside your domains"),
+  hidden_chars: msg("Hidden characters"),
 };
 
 const QUIET_FLAGS: ReadonlySet<RecipientFlag> = new Set(["outside"]);

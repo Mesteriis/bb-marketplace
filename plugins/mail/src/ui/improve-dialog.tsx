@@ -21,16 +21,16 @@ import { shownText } from "./agent-send-card.tsx";
 import { useAiJob, type AiJobPorts } from "./ai-job.ts";
 import { AiFailure, aiLabel } from "./ai-text.tsx";
 import { stopEscape } from "./shortcuts.ts";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export type DraftMode = Extract<AiStartInput, { kind: "draft" }>["mode"];
 type DraftResult = Extract<AiResultView, { kind: "draft" }>;
 
 export const IMPROVE_MODES: readonly { mode: Exclude<DraftMode, "custom">; label: string }[] = [
-  { mode: "fix", label: "Fix mistakes" },
-  { mode: "shorter", label: "Shorter" },
-  { mode: "formal", label: "More formal" },
-  { mode: "friendly", label: "Friendlier" },
+  { mode: "fix", label: msg("Fix mistakes") },
+  { mode: "shorter", label: msg("Shorter") },
+  { mode: "formal", label: msg("More formal") },
+  { mode: "friendly", label: msg("Friendlier") },
 ];
 
 export const IMPROVE_INSTRUCTION_MAX = 200;

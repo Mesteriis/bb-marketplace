@@ -3,6 +3,7 @@
 // any text (spec resolution 1); the address is always there, so a display
 // name alone cannot pass as someone else. Host-free: app.tsx shows it.
 import type { NewMailItem } from "../core/model.ts";
+import { tx } from "./i18n/index.ts";
 
 /** How long a new-mail toast stays. */
 export const NEW_MAIL_TOAST_MS = 8_000;
@@ -28,9 +29,9 @@ export function newMailToastPlan(
   if (newest === undefined || pageShowsInbox) return null;
   const total = items.length + Math.max(0, more);
   const open = { accountId: newest.accountId, threadId: newest.threadId };
-  if (total === 1) return { title: `New mail from ${newest.name}`, description: newest.address, open };
+  if (total === 1) return { title: tx("New mail from {name}", { name: newest.name }), description: newest.address, open };
   return {
-    title: `New mail from ${newest.name} and ${total - 1} more`,
+    title: tx("New mail from {name} and {p1} more", { name: newest.name, p1: total - 1 }),
     description: `${total} messages`,
     open,
   };

@@ -7,7 +7,7 @@ import { Icon } from "@/components/ui/icon";
 import type { DisguiseWarning, MessageHeader, SenderCheckView } from "../core/index.ts";
 import { addressDomain, autoImagesAllowed } from "../core/sender-basics.ts";
 import { shownText } from "./agent-send-card.tsx";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 /** The header's 3i fields with their defaults (MessageHeader keeps them optional). */
 export function securityOf(message: Pick<MessageHeader, "senderCheck" | "warnings" | "receiptRequested" | "crypto">): {
@@ -140,10 +140,10 @@ export function SenderWarnings({ message }: { message: Pick<MessageHeader, "from
 }
 
 const CRYPTO_LABELS: Record<NonNullable<MessageHeader["crypto"]>["kind"], { label: string; title: string }> = {
-  pgp_signed: { label: "Signed (PGP)", title: "Mail does not check signatures" },
-  smime_signed: { label: "Signed (S/MIME)", title: "Mail does not check signatures" },
-  pgp_encrypted: { label: "Encrypted (PGP)", title: "Mail cannot read it" },
-  smime_encrypted: { label: "Encrypted (S/MIME)", title: "Mail cannot read it" },
+  pgp_signed: { label: msg("Signed (PGP)"), title: msg("Mail does not check signatures") },
+  smime_signed: { label: msg("Signed (S/MIME)"), title: msg("Mail does not check signatures") },
+  pgp_encrypted: { label: msg("Encrypted (PGP)"), title: msg("Mail cannot read it") },
+  smime_encrypted: { label: msg("Encrypted (S/MIME)"), title: msg("Mail cannot read it") },
 };
 
 /** The neutral chip for signed or encrypted mail (#92, #97 partial). */

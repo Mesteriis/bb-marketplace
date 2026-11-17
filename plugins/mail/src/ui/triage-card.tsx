@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { shownText } from "./agent-send-card.tsx";
 import { formatFullDate, formatUntil, subjectOrPlaceholder } from "./thread-list.tsx";
 import { FOREIGN_MAILTO_NOTE, MailtoPreview, UNSUBSCRIBE_PRIVACY } from "./unsubscribe-dialog.tsx";
-import { tx } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export type TriageAction = TriageItemView["action"];
 
@@ -34,23 +34,23 @@ export interface TriageSelection {
 
 /** The groups in the order the card shows them. */
 export const TRIAGE_GROUPS: readonly { action: TriageAction; label: string }[] = [
-  { action: "archive", label: "Archive" },
-  { action: "mark_read", label: "Mark read" },
-  { action: "snooze", label: "Snooze" },
-  { action: "spam", label: "Move to Spam" },
-  { action: "unsubscribe", label: "Unsubscribe" },
-  { action: "reply", label: "Reply" },
+  { action: "archive", label: msg("Archive") },
+  { action: "mark_read", label: msg("Mark read") },
+  { action: "snooze", label: msg("Snooze") },
+  { action: "spam", label: msg("Move to Spam") },
+  { action: "unsubscribe", label: msg("Unsubscribe") },
+  { action: "reply", label: msg("Reply") },
 ];
 
 const CLOSED_TEXT: Record<Exclude<TriageViewResult["state"], "ready">, string> = {
-  confirming: "This batch was already answered.",
-  applying: "This batch is being applied.",
-  applied: "This batch was already applied.",
-  cancelled: "Cancelled. Nothing was applied.",
-  changed: "This batch changed after the agent proposed it. Nothing was applied.",
-  expired: "This batch expired. Nothing was applied.",
-  interrupted: "A restart interrupted this; check your Inbox.",
-  gone: "This batch is no longer available. Nothing was applied.",
+  confirming: msg("This batch was already answered."),
+  applying: msg("This batch is being applied."),
+  applied: msg("This batch was already applied."),
+  cancelled: msg("Cancelled. Nothing was applied."),
+  changed: msg("This batch changed after the agent proposed it. Nothing was applied."),
+  expired: msg("This batch expired. Nothing was applied."),
+  interrupted: msg("A restart interrupted this; check your Inbox."),
+  gone: msg("This batch is no longer available. Nothing was applied."),
 };
 
 /** Ticked by default: every available item but Unsubscribe. */
@@ -222,7 +222,7 @@ export function TriageCard({ load, submit, cancel, registerAction }: TriageCardP
       {view.needsFolder.length > 0 ? (
         <section aria-label={tx("Snooze folders")} className="flex flex-col gap-1 rounded-md bg-muted/50 px-2 py-1.5">
           {view.needsFolder.map((need) => {
-            const text = `Create a '${shownText(need.proposedName)}' folder in ${shownText(need.accountEmail)}`;
+            const text = tx("Create a '{p1}' folder in {p2}", { p1: shownText(need.proposedName), p2: shownText(need.accountEmail) });
             return (
               <label key={need.accountId} className="flex items-start gap-2 text-sm text-foreground">
                 <Checkbox
@@ -319,7 +319,7 @@ function TriageItemRow({
       className={cn("flex items-start gap-2 rounded-md border border-border px-2 py-1.5", !enabled && "opacity-60")}
     >
       <Checkbox
-        aria-label={`Include ${subject}`}
+        aria-label={tx("Include {subject}", { subject })}
         className="mt-0.5"
         checked={checked}
         disabled={!enabled}
