@@ -1,0 +1,120 @@
+// "Send later" (slice 3l): the presets in local time (In an hour, This
+// evening, Tomorrow morning, Tomorrow afternoon, Monday morning) and Pick a
+// date and time. The composer sends the chosen moment as UTC ISO; the server
+// checks the range again.
+import { useEffect, useState, type FormEvent } from "react";
+import { sendLaterPresets, validSendAt, type SendLaterPresetId } from "../core/send-later.ts";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { stopEscape } from "./shortcuts.ts";
+import { localDateTimeValue, parseLocalDateTime } from "./snooze-menu.tsx";
+import { formatUntil } from "./thread-list.tsx";
+import { msg, tx } from "./i18n/index.ts";
+
+export const SEND_LATER_RANGE = msg("Pick a time from one minute to a year from now.");
+
+const PRESET_LABELS: Record<SendLaterPresetId, string> = {
+  in_an_hour: msg("In an hour"),
+  this_evening: msg("This evening"),
+  tomorrow_morning: msg("Tomorrow morning"),
+  tomorrow_afternoon: msg("Tomorrow afternoon"),
+  monday_morning: msg("Monday morning"),
+};
+
+export interface SendLaterMenuProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** The chosen moment, as UTC ISO. */
+  onPick: (at: string) => void;
+  now?: () => Date;
+}
+
+export function SendLaterMenu({ open, onOpenChange, onPick, now = () => new Date() }: SendLaterMenuProps) {
+  const [picking, setPicking] = useState(false);
+  const [value, setValue] = useState("");
+  const [problem, setProblem] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    setPicking(false);
+    setProblem(null);
+    setValue(localDateTimeValue(new Date(now().getTime() + 3_600_000)));
+  }, [open]);
+  const at = now();
+
+  const submitCustom = (event: FormEvent) => {
+    event.preventDefault();
+    // React events cross the portal: the submit must not reach the composer around the dialog.
+    event.stopPropagation();
+    const date = parseLocalDateTime(value);
+    if (date === null || !validSendAt(date.toISOString(), now())) {
+      setProblem(tx(SEND_LATER_RANGE));
+      return;
+    }
+    onPick(date.toISOString());
+  };
+
+  const row =
+    "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm text-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring";
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-xs" onEscapeKeyDown={stopEscape}>
+        <DialogHeader>
+          <DialogTitle>{tx("Send later")}</DialogTitle>
+          <DialogDescription>
+            {tx("Mail sends it at that time while BB runs. Until then it waits in the Outbox in Sent, where you can edit it.")}
+          </DialogDescription>
+        </DialogHeader>
+        <ul aria-label={tx("Send times")} className="flex flex-col gap-px">
+          {sendLaterPresets(at).map((preset) => (
+            <li key={preset.id}>
+              <button type="button" onClick={() => onPick(preset.at.toISOString())} className={row}>
+                <span className="min-w-0 flex-1 truncate">{tx(PRESET_LABELS[preset.id])}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">{formatUntil(preset.at.toISOString(), at)}</span>
+              </button>
+            </li>
+          ))}
+          <li>
+            <button type="button" aria-expanded={picking} onClick={() => setPicking((shown) => !shown)} className={row}>
+              {tx("Pick a date and time")}
+            </button>
+          </li>
+        </ul>
+        {picking ? (
+          <form onSubmit={submitCustom} className="flex flex-col gap-2">
+            <Input
+              type="datetime-local"
+              aria-label={tx("Send at")}
+              value={value}
+              onChange={(event) => {
+                setValue(event.target.value);
+                setProblem(null);
+              }}
+              className="h-8"
+            />
+            {problem !== null ? (
+              <p role="alert" className="text-xs text-destructive">
+                {problem}
+              </p>
+            ) : null}
+            <Button type="submit" size="sm" className="self-end">
+              {tx("Schedule")}
+            </Button>
+          </form>
+        ) : null}
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+            {tx("Cancel")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

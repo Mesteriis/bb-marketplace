@@ -763,7 +763,7 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 16).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 17).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
       "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
@@ -791,6 +791,8 @@ describe("slice-2 migrations (SQLite)", () => {
       "85e10b2409d979ca08535d7c9a7b495375e014126b9b16ab645be6f16c189d79",
       // Element 15 (slice 3k: OpenPGP keys).
       "692137cda01ae3f12987900d2ec20feae427352122f78ddb1b5a515c73c1b93a",
+      // Element 16 (slice 3l: the scheduled mark of a "Send later" row).
+      "62597e0677e25aefadc475f6a6afadbc30e89474c48400d85c576bc82b14e929",
     ]);
   });
 
@@ -2158,6 +2160,7 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
           errorKind: null,
           rejected: [],
           updatedAt: T0,
+          scheduled: false,
         },
       });
       const again = s.queueOutbox(newOutbox({ subject: "Ignored" }), 7);
@@ -2279,6 +2282,24 @@ describe.each(storeKinds)("slice-3b store semantics (%s)", (_kind, make) => {
       ).toEqual({ sending: "unknown", overdue: "held", fresh: "queued", appending: "sent", failed: "failed" });
       expect(s.getOutbox("sending")!.errorKind).toBe("unknown_after_data");
       expect(s.hasSendingOutbox("acc_1")).toBe(false);
+    });
+
+    it("a scheduled send survives a restart: under a day late it stays queued, later it is held (slice 3l)", () => {
+      const DAY = 86_400_000;
+      for (const id of ["d_2", "d_3"]) s.createDraft(newDraft({ id }));
+      s.queueOutbox(newOutbox({ id: "late", sendAfter: later(1_000), scheduled: true }), 1);
+      s.queueOutbox(newOutbox({ id: "stale", draftId: "d_2", sendAfter: later(500), scheduled: true }), 1);
+      s.queueOutbox(newOutbox({ id: "ahead", draftId: "d_3", sendAfter: later(3 * DAY), scheduled: true }), 1);
+      expect(s.getOutbox("late")).toMatchObject({ state: "queued", scheduled: true });
+      expect(s.recoverOutboxOnStart(later(DAY + 700))).toEqual({ unknown: 0, held: 1 });
+      expect(Object.fromEntries(s.listOutbox(null).map((r) => [r.id, r.state]))).toEqual({
+        late: "queued",
+        stale: "held",
+        ahead: "queued",
+      });
+      expect(s.transitionOutbox("stale", ["held"], "queued", { sendAfter: later(DAY + 800), scheduled: false })).toBe(true);
+      expect(s.getOutbox("stale")).toMatchObject({ state: "queued", scheduled: false });
+      expect(s.getOutbox("fresh")).toBeNull();
     });
 
     it("completeOutbox deletes the row and its draft with attachments", () => {
@@ -3379,7 +3400,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(16);
+    expect(MIGRATIONS).toHaveLength(17);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -4027,7 +4048,7 @@ describe("slice-3f migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(16);
+    expect(MIGRATIONS).toHaveLength(17);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -4833,7 +4854,7 @@ describe("slice-3g migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(16);
+    expect(MIGRATIONS).toHaveLength(17);
     const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
     expect(runs).toEqual([
       { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
@@ -5418,7 +5439,7 @@ describe("slice-3h migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(16);
+    expect(MIGRATIONS).toHaveLength(17);
     const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
       part_id: string;
       kind: string;
@@ -6088,7 +6109,7 @@ describe("slice-3i migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(14).forEach((statement) => old.exec(statement)))();
 
-    expect(MIGRATIONS).toHaveLength(16);
+    expect(MIGRATIONS).toHaveLength(17);
     const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
     expect(columns).toEqual(expect.arrayContaining(["sender_check_json", "receipt_requested", "crypto"]));
     expect(old.prepare("SELECT sender_check_json, receipt_requested, crypto FROM messages").all()).toEqual([

@@ -131,3 +131,23 @@ describe("a waiting send (slice 3j)", () => {
     );
   });
 });
+
+describe("a scheduled send (slice 3l)", () => {
+  it("says when it goes out and offers Edit only", () => {
+    const scheduled = row("queued", { scheduled: true, sendAfter: "2027-03-04T09:00:00.000Z" });
+    expect(outboxActions(scheduled)).toEqual(["edit"]);
+    expect(outboxStateText(scheduled)).toMatch(/^Scheduled for .*\d{2}:\d{2}/);
+    expect(outboxRowHint(scheduled)).toBe("Edit cancels the send and reopens the draft.");
+    expect(outboxAttention([scheduled])).toBe(0);
+    // An ordinary queued send keeps its Undo.
+    expect(outboxActions(row("queued"))).toEqual(["undo"]);
+    expect(outboxStateText(row("queued"))).toBe("Sending soon");
+  });
+
+  it("held because its time passed says so and can be sent now or edited", () => {
+    const held = row("held", { scheduled: true });
+    expect(outboxStateText(held)).toBe("Not sent: its time passed while BB was closed");
+    expect(outboxActions(held)).toEqual(["send_now", "edit"]);
+    expect(outboxAttention([held])).toBe(1);
+  });
+});

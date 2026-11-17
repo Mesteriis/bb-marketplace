@@ -940,6 +940,7 @@ function toOutboxRow(row: OutboxRecord, errorText: string | null = null, purpose
     sendAfter: row.sendAfter,
     attempts: row.attempts,
     origin: row.origin,
+    scheduled: row.scheduled === true,
   };
 }
 

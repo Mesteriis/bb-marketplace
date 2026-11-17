@@ -661,6 +661,8 @@ export interface MailStore {
       rejected?: string[];
       sendAfter?: string;
       countAttempt?: boolean;
+      /** Slice 3l: false ends a "Send later" (the row sends with the usual Undo window). */
+      scheduled?: boolean;
       /** ISO 8601; the row's updatedAt stays when absent. */
       updatedAt?: string;
     },

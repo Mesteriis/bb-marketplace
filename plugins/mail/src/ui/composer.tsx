@@ -51,6 +51,7 @@ import { BbFilePicker, type FilePickRequest } from "./bb-file-picker.tsx";
 import type { BbCall } from "./bb-ports.ts";
 import { findSignature, signatureKey } from "./signature-node.ts";
 import { TemplatesPopover } from "./templates-popover.tsx";
+import { SendLaterMenu } from "./send-later-menu.tsx";
 import { msg, tx } from "./i18n/index.ts";
 
 /** Typing rests this long before the draft is saved. */
@@ -86,6 +87,8 @@ export interface ComposerPorts {
     remindAfterDays?: number;
     /** Slice 3k: sign or encrypt this message with OpenPGP. */
     protect?: { sign: boolean; encrypt: boolean };
+    /** Slice 3l, "Send later": the time to send, UTC ISO. */
+    sendAt?: string;
   }): Promise<{
     outboxId: string;
     sendAfter: string;
@@ -577,6 +580,10 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   const pgpEncryptOn = pgpEncrypt && pgpEncryptBlock === null && pgpState !== null;
   pgpRef.current = { sign: pgpSignOn, encrypt: pgpEncryptOn };
 
+  /** Slice 3l: the time picked in "Send later" for the send in flight; null sends now. */
+  const sendAtRef = useRef<string | null>(null);
+  const [laterOpen, setLaterOpen] = useState(false);
+
   /** Queues the saved revision: one request id per Send of it, retried once. */
   const queue = async (baseRevision: number) => {
     // One request id per Send of this revision: a retried call is the same send.
@@ -593,6 +600,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       requestId,
       ...(remindAfterDays !== undefined ? { remindAfterDays } : {}),
       ...(protect.sign || protect.encrypt ? { protect } : {}),
+      ...(sendAtRef.current !== null ? { sendAt: sendAtRef.current } : {}),
     };
     let outbox: { outboxId: string; sendAfter: string };
     try {
@@ -626,8 +634,10 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
    * advisory pre-send check. Issues open "Before you send"; none, or any
    * failure of the check, queues the send (slice 3d: no check blocks).
    */
-  const send = async () => {
+  const send = async (sendAt: string | null = null) => {
     if (sendingRef.current || closing) return;
+    // "Send later" keeps its time through "Before you send" (Send anyway).
+    sendAtRef.current = sendAt;
     const now = commitAll();
     const all = [...now.to.chips, ...now.cc.chips, ...now.bcc.chips];
     const typed = [now.to, now.cc, now.bcc].some((f) => f.text.trim() !== "");
@@ -1127,6 +1137,26 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           <Icon name="Send" fallback="Mail" aria-hidden />
           {sending ? tx("Sending\u2026") : tx("Send")}
         </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 px-2"
+          aria-haspopup="dialog"
+          onClick={() => setLaterOpen(true)}
+          disabled={sending || closing || noRecipients || !smtpReady || conflict !== null}
+        >
+          <Icon name="Clock" fallback="Mail" aria-hidden />
+          {tx("Send later")}
+        </Button>
+        <SendLaterMenu
+          open={laterOpen}
+          onOpenChange={setLaterOpen}
+          onPick={(at) => {
+            setLaterOpen(false);
+            void send(at);
+          }}
+        />
         <AttachButton onAdd={addFiles} disabled={closing} />
         {props.bbFiles !== undefined ? (
           <span className="relative inline-flex">

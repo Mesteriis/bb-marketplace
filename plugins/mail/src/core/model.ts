@@ -777,6 +777,8 @@ export const outboxRowSchema = z.object({
    * (slice 3e): the Outbox labels it "Unsubscribe request" and offers no Edit.
    */
   purpose: z.enum(["unsubscribe"]).nullable().optional(),
+  /** Slice 3l: the owner picked `sendAfter` as the time to send ("Send later"). */
+  scheduled: z.boolean().optional(),
 });
 export type OutboxRow = z.infer<typeof outboxRowSchema>;
 
@@ -908,6 +910,12 @@ export type NewOutboxRow = {
   origin: DraftOrigin;
   /** ISO 8601. */
   createdAt: string;
+  /**
+   * Slice 3l: the owner picked `sendAfter` as the time to send. The row has no
+   * Undo window, and one that came due while BB was closed is still sent on
+   * the next start when it is less than a day late.
+   */
+  scheduled?: boolean;
 };
 
 /** An outbox row without its blobs. */

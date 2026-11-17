@@ -1009,3 +1009,83 @@ describe("slice 3j: automatic retry of sends that never reached the server", () 
     expect(h.store.getDraft(c.draftId)).toBeNull();
   });
 });
+
+describe("Send later (slice 3l)", () => {
+  const HOUR = 3_600_000;
+  const at = (ms: number) => new Date(h.clock.now().getTime() + ms).toISOString();
+
+  async function scheduledIn(ms: number) {
+    const draft = await readyDraft();
+    const id = requestId();
+    const sendAt = at(ms);
+    const result = await queueSend(deps, { ...draft, requestId: id, origin: "owner", sendAt });
+    return { ...draft, id, sendAt, result };
+  }
+
+  it("queues the send for the picked time, which is the message's Date too", async () => {
+    const { id, sendAt, result } = await scheduledIn(3 * HOUR);
+    expect(result.sendAfter).toBe(sendAt);
+    expect(h.store.getOutbox(id)).toMatchObject({ state: "queued", sendAfter: sendAt, scheduled: true });
+    expect(h.builder.built.at(-1)!.date).toBe(sendAt);
+    h.advance(3 * HOUR - 1_000);
+    await drain();
+    expect(h.transport.sent).toHaveLength(0);
+    h.advance(1_000);
+    await drain();
+    expect(h.transport.sent).toHaveLength(1);
+  });
+
+  it("refuses a time under a minute or over a year ahead, an unreadable one, and an agent's", async () => {
+    const draft = await readyDraft();
+    for (const sendAt of [at(30_000), at(-HOUR), at(366 * 24 * HOUR), "tomorrow"]) {
+      await expect(queueSend(deps, { ...draft, requestId: requestId(), origin: "owner", sendAt })).rejects.toMatchObject({
+        kind: "invalid",
+      });
+    }
+    await expect(queueSend(deps, { ...draft, requestId: requestId(), origin: "agent", sendAt: at(HOUR) })).rejects.toMatchObject({
+      kind: "invalid",
+    });
+    expect(h.store.listOutbox(null)).toHaveLength(0);
+  });
+
+  it("Edit before the time deletes the row and leaves the draft", async () => {
+    const { id, draftId } = await scheduledIn(HOUR);
+    h.advance(HOUR / 2);
+    expect(cancelSend(deps, id)).toEqual({ cancelled: true, draftId });
+    h.advance(HOUR);
+    await drain();
+    expect(h.transport.sent).toHaveLength(0);
+    expect(h.store.getDraft(draftId)).not.toBeNull();
+  });
+
+  it("a send that came due while BB was closed goes out on the next start when under a day late", async () => {
+    const { id } = await scheduledIn(HOUR);
+    h.advance(HOUR + 23 * HOUR);
+    expect(h.store.recoverOutboxOnStart(h.clock.now().toISOString())).toEqual({ unknown: 0, held: 0 });
+    expect(h.store.getOutbox(id)!.state).toBe("queued");
+    await drain();
+    expect(h.transport.sent).toHaveLength(1);
+  });
+
+  it("a day late or more it is held; Send now then sends it with the usual Undo window", async () => {
+    const { id } = await scheduledIn(HOUR);
+    h.advance(HOUR + 24 * HOUR);
+    expect(h.store.recoverOutboxOnStart(h.clock.now().toISOString())).toEqual({ unknown: 0, held: 1 });
+    expect(h.store.getOutbox(id)).toMatchObject({ state: "held", scheduled: true });
+    await drain();
+    expect(h.transport.sent).toHaveLength(0);
+    sendNow(deps, id);
+    expect(h.store.getOutbox(id)).toMatchObject({
+      state: "queued",
+      scheduled: false,
+      sendAfter: at(UNDO_MS),
+    });
+  });
+
+  it("a send not yet due stays queued over a restart", async () => {
+    const { id } = await scheduledIn(48 * HOUR);
+    h.advance(HOUR);
+    expect(h.store.recoverOutboxOnStart(h.clock.now().toISOString())).toEqual({ unknown: 0, held: 0 });
+    expect(h.store.getOutbox(id)!.state).toBe("queued");
+  });
+});

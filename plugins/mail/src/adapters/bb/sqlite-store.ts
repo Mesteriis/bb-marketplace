@@ -120,6 +120,7 @@ import { firstNonBlankLine, isEncrypted, type MailCrypto } from "../../core/mail
 import { fitSenderCheck, orgDomain, type SenderCheck } from "../../core/sender-check.ts";
 import { matchesBlock, type BlockRule } from "../../core/blocking.ts";
 import { SNOOZES_MAX_PER_ACCOUNT, type SnoozeRow, type SnoozeState } from "../../core/snooze.ts";
+import { SCHEDULE_LATE_MS } from "../../core/send-later.ts";
 import type { TriageAction, TriageBatchState, TriageItemOutcome } from "../../core/triage.ts";
 import { UNSUBSCRIBE_INFO_MAX_BYTES, type UnsubscribeInfo } from "../../core/unsubscribe.ts";
 import type { ProposalCapRow, ProposalState } from "../../core/agent-propose.ts";
@@ -938,6 +939,10 @@ export const MIGRATIONS: string[] = [
     UNIQUE (kind, fingerprint)
   );
   `,
+  // 16: slice 3l - "Send later". A queued row the owner gave a send time.
+  `
+  ALTER TABLE outbox ADD COLUMN scheduled INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 const HTML_CAP = 1_000_000;
@@ -1306,6 +1311,7 @@ type OutboxRow = {
   origin: DraftOrigin;
   created_at: string;
   updated_at: string;
+  scheduled: number;
 };
 
 type ComposeAttachmentRow = {
@@ -1321,7 +1327,7 @@ type ComposeAttachmentRow = {
 
 /** Outbox columns without the blobs. */
 const OUTBOX_COLUMNS = `id, account_id, draft_id, message_id, subject, envelope_from, envelope_to_json,
-  state, send_after, attempts, error_kind, rejected_json, origin, created_at, updated_at`;
+  state, send_after, attempts, error_kind, rejected_json, origin, created_at, updated_at, scheduled`;
 
 /** Distinct rows read for recipient suggestions, newest first. */
 const SUGGESTION_SCAN = 5000;
@@ -1935,6 +1941,7 @@ function toOutbox(row: OutboxRow): OutboxRecord {
     errorKind: row.error_kind,
     rejected: JSON.parse(row.rejected_json) as string[],
     updatedAt: row.updated_at,
+    scheduled: row.scheduled === 1,
   };
 }
 
@@ -2353,7 +2360,13 @@ export function createSqliteStore(db: Database.Database): MailStore {
      ORDER BY created_at, id LIMIT 1`,
   );
   const draftById = db.prepare<[string], DraftRow>("SELECT * FROM compose_drafts WHERE id = ?");
-  const outboxById = db.prepare<[string], OutboxRow>(`SELECT ${OUTBOX_COLUMNS} FROM outbox WHERE id = ?`);
+  // Prepared on first use: it names the newest outbox column, which a database
+  // still being migrated does not have yet.
+  let outboxByIdStatement: Database.Statement<[string], OutboxRow> | undefined;
+  const outboxById = {
+    get: (id: string): OutboxRow | undefined =>
+      (outboxByIdStatement ??= db.prepare<[string], OutboxRow>(`SELECT ${OUTBOX_COLUMNS} FROM outbox WHERE id = ?`)).get(id),
+  };
   /** The oldest due queued row of an account not busy (with onlyId, that row only), or null. */
   const dueOutboxId = (now: string, busyAccounts: string[], onlyId?: string): string | null => {
     const due = db
@@ -4365,9 +4378,9 @@ export function createSqliteStore(db: Database.Database): MailStore {
         db.prepare(
           `INSERT INTO outbox (id, account_id, draft_id, message_id, subject, envelope_from,
              envelope_to_json, mime, bcc_header, state, send_after, attempts, error_kind, rejected_json,
-             origin, created_at, updated_at)
+             origin, created_at, updated_at, scheduled)
            VALUES (@id, @accountId, @draftId, @messageId, @subject, @envelopeFrom, @envelopeTo, @mime,
-             @bccHeader, 'queued', @sendAfter, 0, NULL, '[]', @origin, @createdAt, @createdAt)`,
+             @bccHeader, 'queued', @sendAfter, 0, NULL, '[]', @origin, @createdAt, @createdAt, @scheduled)`,
         ).run({
           id: input.id,
           accountId: input.accountId,
@@ -4381,6 +4394,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
           sendAfter: isoOf(input.sendAfter),
           origin: input.origin,
           createdAt: isoOf(input.createdAt),
+          scheduled: input.scheduled === true ? 1 : 0,
         });
         return { row: toOutbox(outboxById.get(input.id)!), created: true };
       });
@@ -4428,6 +4442,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
         params.sendAfter = isoOf(patch.sendAfter);
       }
       if (patch.countAttempt) sets.push("attempts = attempts + 1");
+      if (patch.scheduled !== undefined) sets.push(`scheduled = ${patch.scheduled ? 1 : 0}`);
       if (patch.updatedAt !== undefined) {
         sets.push("updated_at = @updatedAt");
         params.updatedAt = isoOf(patch.updatedAt);
@@ -4500,9 +4515,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
           .run(now).changes;
         const held = db
           .prepare(
-            "UPDATE outbox SET state = 'held', updated_at = ? WHERE state = 'queued' AND send_after <= ?",
+            // A scheduled send (slice 3l) less than a day late stays queued: the worker sends it.
+            `UPDATE outbox SET state = 'held', updated_at = ?
+             WHERE state = 'queued' AND send_after <= ? AND NOT (scheduled = 1 AND send_after > ?)`,
           )
-          .run(now, now).changes;
+          .run(now, now, new Date(Date.parse(now) - SCHEDULE_LATE_MS).toISOString()).changes;
         db.prepare("UPDATE outbox SET state = 'sent', updated_at = ? WHERE state = 'appending'").run(now);
         return { unknown, held };
       });

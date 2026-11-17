@@ -2195,6 +2195,41 @@ describe("compose and send", () => {
     expect(await call(host, "outbox_list", { accountId: "acc_1" })).toEqual({ rows: [] });
   });
 
+  it("Send later waits for the picked time, which is the message's Date; a time out of range is refused (slice 3l)", async () => {
+    const host = await loadCompose();
+    const service = host.harness.behavior.runService("sync");
+    const { draftId, revision } = await savedDraft(host);
+    const sendAt = new Date(NOW.getTime() + 2 * 3_600_000).toISOString();
+
+    await expect(
+      call(host, "compose_send", {
+        draftId,
+        baseRevision: revision,
+        requestId: REQUEST_ID,
+        sendAt: new Date(NOW.getTime() + 30_000).toISOString(),
+      }),
+    ).rejects.toThrow(/one minute to a year/);
+    expect(await call(host, "compose_send", { draftId, baseRevision: revision, requestId: REQUEST_ID, sendAt })).toEqual({
+      outboxId: REQUEST_ID,
+      sendAfter: sendAt,
+    });
+    const { rows } = (await call(host, "outbox_list", { accountId: null })) as { rows: object[] };
+    expect(rows[0]).toMatchObject({ id: REQUEST_ID, state: "queued", scheduled: true, sendAfter: sendAt });
+
+    // Well past the usual Undo window nothing has gone out.
+    host.clock.set(new Date(NOW.getTime() + 3_600_000));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(host.transport.sent).toEqual([]);
+    host.clock.set(new Date(sendAt));
+    await vi.waitFor(() => expect(outboxStates(host)).toContain("done"));
+    service.controller.abort();
+    await service.done;
+
+    expect(host.transport.sent).toHaveLength(1);
+    const parsed = await parseMail(host.transport.sent[0]!.raw);
+    expect(new Date(String(parsed.date)).toISOString()).toBe(new Date(Math.floor(Date.parse(sendAt) / 1000) * 1000).toISOString());
+  });
+
   it("realtime carries ids and states only; logs carry no content or secret", async () => {
     const host = await loadCompose();
     const service = host.harness.behavior.runService("sync");

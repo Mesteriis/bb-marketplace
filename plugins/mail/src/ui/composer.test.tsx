@@ -174,6 +174,26 @@ describe("Composer", () => {
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("Send later sends the picked time with the send (slice 3l)", async () => {
+    const { ports, onSent } = mount();
+    addRecipient();
+    fireEvent.click(screen.getByRole("button", { name: "Send later" }));
+    const before = Date.now();
+    fireEvent.click(await screen.findByRole("button", { name: /^In an hour/ }));
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+    const input = ports.send.mock.calls[0]![0] as { sendAt?: string };
+    const ahead = Date.parse(input.sendAt!) - before;
+    expect(ahead).toBeGreaterThanOrEqual(3_600_000 - 1_000);
+    expect(ahead).toBeLessThan(3_600_000 + 60_000);
+    // A plain Send after that carries no time.
+    cleanup();
+    const again = mount();
+    addRecipient();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(again.onSent).toHaveBeenCalledTimes(1));
+    expect("sendAt" in (again.ports.send.mock.calls[0]![0] as object)).toBe(false);
+  });
+
   it("refuses to send with an invalid address", async () => {
     const { ports } = mount();
     addRecipient("not-an-address");

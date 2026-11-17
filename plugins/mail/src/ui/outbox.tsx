@@ -3,13 +3,14 @@
 // there (the failure matrix): Undo while queued, Send now or Edit when held
 // after a restart, Retry, Edit or Discard after a failure, Send again or
 // Discard when it may have been sent, Retry copy or Dismiss when the Sent
-// copy failed. Nothing
-// here resends on its own.
+// copy failed. A "Send later" row (slice 3l) waits for its time and offers
+// Edit only: its Date is the picked time, so it is not sent early as it is.
+// Nothing here resends on its own.
 import type { OutboxRow, SendErrorKind } from "../core/model.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-import { subjectOrPlaceholder } from "./thread-list.tsx";
+import { formatUntil, subjectOrPlaceholder } from "./thread-list.tsx";
 import { dateLocale, msg, tx } from "./i18n/index.ts";
 
 export type OutboxAction = "undo" | "send_now" | "edit" | "retry" | "resend" | "dismiss" | "retry_copy";
@@ -25,7 +26,10 @@ const ACTION_LABELS: Record<OutboxAction, string> = {
 };
 
 /** What the owner may do with a row in its state; an unsubscribe request is never edited. */
-export function outboxActions(row: Pick<OutboxRow, "state"> & Partial<Pick<OutboxRow, "purpose">>): OutboxAction[] {
+export function outboxActions(
+  row: Pick<OutboxRow, "state"> & Partial<Pick<OutboxRow, "purpose" | "scheduled">>,
+): OutboxAction[] {
+  if (row.state === "queued" && row.scheduled === true) return ["edit"];
   const actions = stateActions(row);
   return row.purpose === "unsubscribe" ? actions.filter((action) => action !== "edit") : actions;
 }
@@ -64,7 +68,10 @@ export function outboxActionLabel(row: Pick<OutboxRow, "state">, action: OutboxA
 }
 
 /** A line under a row that says what its buttons keep and delete, or null. */
-export function outboxRowHint(row: Pick<OutboxRow, "state"> & Partial<Pick<OutboxRow, "purpose">>): string | null {
+export function outboxRowHint(
+  row: Pick<OutboxRow, "state"> & Partial<Pick<OutboxRow, "purpose" | "scheduled">>,
+): string | null {
+  if (row.state === "queued" && row.scheduled === true) return tx("Edit cancels the send and reopens the draft.");
   if (row.purpose === "unsubscribe") return row.state === "failed" || row.state === "unknown" || row.state === "waiting" ? tx("Discard deletes the request.") : null;
   switch (row.state) {
     case "failed":
@@ -99,14 +106,18 @@ export function sendErrorText(kind: SendErrorKind): string {
 
 /** Where a send stands, in words. */
 export function outboxStateText(
-  row: Pick<OutboxRow, "state" | "errorKind" | "rejected"> & Partial<Pick<OutboxRow, "sendAfter" | "attempts">>,
+  row: Pick<OutboxRow, "state" | "errorKind" | "rejected"> & Partial<Pick<OutboxRow, "sendAfter" | "attempts" | "scheduled">>,
 ): string {
   const reason = row.errorKind !== null ? tx(REASONS[row.errorKind]) : null;
   switch (row.state) {
     case "queued":
-      return tx("Sending soon");
+      return row.scheduled === true && row.sendAfter !== undefined
+        ? tx("Scheduled for {when}", { when: formatUntil(row.sendAfter) })
+        : tx("Sending soon");
     case "held":
-      return tx("Not sent: held after a restart");
+      return row.scheduled === true
+        ? tx("Not sent: its time passed while BB was closed")
+        : tx("Not sent: held after a restart");
     case "sending":
       return tx("Sending\u2026");
     case "sent":

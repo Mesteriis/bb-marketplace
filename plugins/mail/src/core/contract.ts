@@ -649,6 +649,8 @@ export const rpcSchemas = {
       remindAfterDays: reminderDaysInput.optional(),
       /** Slice 3k: sign or encrypt this message with OpenPGP. */
       protect: z.object({ sign: z.boolean(), encrypt: z.boolean() }).optional(),
+      /** Slice 3l, "Send later": the time to send, one minute to a year ahead. */
+      sendAt: z.iso.datetime().optional(),
     }),
     output: z.object({ outboxId: z.string(), sendAfter: z.string() }),
   },

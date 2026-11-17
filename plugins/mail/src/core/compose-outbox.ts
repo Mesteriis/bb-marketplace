@@ -20,6 +20,7 @@ import {
   type ComposeDeps,
 } from "./compose.ts";
 import { sendCheckOnAccepted, type SendCheck } from "./identities.ts";
+import { validSendAt } from "./send-later.ts";
 import type { DraftOrigin, OutboxRecord, OutboxState, SendErrorKind, StoredAccount } from "./model.ts";
 import {
   SendError,
@@ -31,6 +32,8 @@ import {
 
 /** The Undo window: a queued send leaves this long after Send. */
 export const UNDO_MS = 10_000;
+/** What the owner reads when the picked time is out of range. */
+export const SEND_LATER_RANGE_TEXT = "Pick a time from one minute to a year from now.";
 /** Sends per account in any 60 s. */
 export const SEND_RATE_PER_MINUTE = 10;
 /** Tries of the Sent-copy step (each searches by Message-ID first). */
@@ -238,6 +241,11 @@ export async function queueSend(
     remind?: { id: string; days: number };
     /** Slice 3k: sign or encrypt with OpenPGP. Only the owner's composer asks; an agent send never does. */
     protect?: { sign: boolean; encrypt: boolean };
+    /**
+     * Slice 3l, "Send later": the time to send, ISO, one minute to a year
+     * ahead. It is the message's Date too. Only the owner's composer asks.
+     */
+    sendAt?: string;
   },
 ): Promise<{ outboxId: string; sendAfter: string; reminder?: boolean }> {
   if (deps.undone.has(input.requestId)) throw new ComposeError("undone");
@@ -252,7 +260,13 @@ export async function queueSend(
   const account = requireAccount(deps.store, draft.accountId);
   if (account.smtp === null) throw new ComposeError("smtp_missing");
 
-  const message = outgoingOf(deps, account, draft, true);
+  const scheduled = input.sendAt !== undefined;
+  if (scheduled && (input.origin !== "owner" || !validSendAt(input.sendAt!, deps.clock.now()))) {
+    throw new ComposeError("invalid", SEND_LATER_RANGE_TEXT);
+  }
+  const prepared = outgoingOf(deps, account, draft, true);
+  // The recipient sees the time the message was sent, not the time it was written.
+  const message = scheduled ? { ...prepared, date: new Date(input.sendAt!).toISOString() } : prepared;
   if (input.expectFrom !== undefined) {
     const expected = parseAddress(input.expectFrom.address);
     if (
@@ -299,9 +313,10 @@ export async function queueSend(
       envelopeTo,
       mime,
       bccHeader: bccHeaderLine(message.bcc),
-      sendAfter: new Date(now.getTime() + UNDO_MS).toISOString(),
+      sendAfter: scheduled ? message.date : new Date(now.getTime() + UNDO_MS).toISOString(),
       origin: input.origin,
       createdAt: now.toISOString(),
+      ...(scheduled ? { scheduled: true } : {}),
     },
     input.baseRevision,
     );
@@ -777,6 +792,7 @@ function requeue(
     errorKind: null,
     rejected: [],
     sendAfter: new Date(now.getTime() + UNDO_MS).toISOString(),
+    scheduled: false,
     updatedAt: now.toISOString(),
   });
   if (!moved) throw new ComposeError("conflict");

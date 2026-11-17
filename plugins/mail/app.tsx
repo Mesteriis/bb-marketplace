@@ -189,6 +189,8 @@ const NEW_MAIL_CHANNEL: typeof NewMailChannel = "mail-new";
 const DAY_NOTICE_CHANNEL: typeof DayNoticeChannel = "mail-day";
 /** The Undo window when a row's sendAfter is not known yet. */
 const UNDO_WINDOW_MS = 10_000;
+/** A queued send further away than this is a scheduled one (slice 3l): no countdown toast. */
+const SCHEDULED_TOAST_MS = 30_000;
 /** How often a running translation is polled while the page is visible. */
 const TRANSLATE_POLL_MS = 400;
 const TRANSLATE_MISSING = "Translation needs the Makosh AI plugin";
@@ -1973,6 +1975,14 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     (outboxId: string, sendAfter: string | null, origin: OutboxRow["origin"] = "owner", purpose: OutboxRow["purpose"] = null) => {
       const due = sendAfter === null ? NaN : Date.parse(sendAfter);
       const left = Number.isNaN(due) ? UNDO_WINDOW_MS : Math.max(0, due - Date.now());
+      // "Send later" (slice 3l): no countdown; the row waits in the Outbox, where Edit cancels it.
+      if (left > SCHEDULED_TOAST_MS) {
+        toast(tx("Send scheduled for {when}", { when: formatUntil(sendAfter) }), {
+          id: sendToastId(outboxId),
+          action: { label: tx("Undo"), onClick: () => void undoSend(outboxId) },
+        });
+        return;
+      }
       const label = purpose === "unsubscribe" ? tx("Unsubscribe email queued \u00b7 ") : origin === "agent" ? tx("Agent message \u00b7 ") : "";
       toast(`${label}Sending in ${Math.max(1, Math.ceil(left / 1000))} s`, {
         id: sendToastId(outboxId),
@@ -1989,7 +1999,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     if (!status?.vaultReady || outboxChecked.current) return;
     outboxChecked.current = true;
     void loadOutbox().then((rows) => {
-      for (const row of rows ?? []) if (row.state === "queued") showUndo(row.id, row.sendAfter, row.origin, row.purpose);
+      // A scheduled send says so once, when it is queued; not again on every reload.
+      for (const row of rows ?? []) {
+        if (row.state === "queued" && row.scheduled !== true) showUndo(row.id, row.sendAfter, row.origin, row.purpose);
+      }
     });
   }, [loadOutbox, showUndo, status?.vaultReady]);
 

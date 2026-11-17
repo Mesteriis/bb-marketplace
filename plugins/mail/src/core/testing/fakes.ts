@@ -52,6 +52,7 @@ import { fileKindOf } from "../file-kinds.ts";
 import type { ProposalCapRow, ProposalState } from "../agent-propose.ts";
 import type { ProposalDeps } from "../agent-proposals.ts";
 import { SendRateLimit, UndoneSends } from "../compose-outbox.ts";
+import { SCHEDULE_LATE_MS } from "../send-later.ts";
 import { TRANSLATION_CACHE_ROWS } from "../translate.ts";
 import {
   CONTACT_SCAN,
@@ -1200,6 +1201,7 @@ export class InMemoryMailStore implements MailStore {
       errorKind: null,
       rejected: [],
       updatedAt: input.createdAt,
+      scheduled: input.scheduled === true,
     };
     this.state.outbox.set(input.id, { record, mime: mime.slice(), bccHeader });
     return { row: structuredClone(record), created: true };
@@ -1232,6 +1234,7 @@ export class InMemoryMailStore implements MailStore {
       rejected?: string[];
       sendAfter?: string;
       countAttempt?: boolean;
+      scheduled?: boolean;
       updatedAt?: string;
     } = {},
   ): boolean {
@@ -1251,6 +1254,7 @@ export class InMemoryMailStore implements MailStore {
     if (patch.rejected !== undefined) record.rejected = [...patch.rejected];
     if (patch.sendAfter !== undefined) record.sendAfter = patch.sendAfter;
     if (patch.countAttempt) record.attempts++;
+    if (patch.scheduled !== undefined) record.scheduled = patch.scheduled;
     if (patch.updatedAt !== undefined) record.updatedAt = patch.updatedAt;
     return true;
   }
@@ -1300,7 +1304,11 @@ export class InMemoryMailStore implements MailStore {
         record.errorKind = "unknown_after_data";
         record.updatedAt = nowIso;
         unknown++;
-      } else if (record.state === "queued" && Date.parse(record.sendAfter) <= now) {
+      } else if (
+        record.state === "queued" &&
+        Date.parse(record.sendAfter) <= now &&
+        !(record.scheduled === true && Date.parse(record.sendAfter) > now - SCHEDULE_LATE_MS)
+      ) {
         record.state = "held";
         record.updatedAt = nowIso;
         held++;
