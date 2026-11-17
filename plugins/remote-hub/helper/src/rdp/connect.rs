@@ -104,7 +104,7 @@ impl Meter {
 }
 
 /// How often an idle TLS handshake re-checks its budget.
-const BUDGET_TICK: Duration = Duration::from_millis(50);
+pub(crate) const BUDGET_TICK: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy)]
 pub struct Timeouts {
@@ -118,6 +118,9 @@ pub struct Timeouts {
     pub prompt: Duration,
     /// Security exchange, licensing, capabilities, activation.
     pub finalize: Duration,
+    /// From the end of the connect sequence to the first painted update: a
+    /// server that never paints does not keep the session in `authenticating`.
+    pub first_paint: Duration,
 }
 
 impl Default for Timeouts {
@@ -127,6 +130,7 @@ impl Default for Timeouts {
             tls: Duration::from_secs(15),
             prompt: Duration::from_secs(60),
             finalize: Duration::from_secs(15),
+            first_paint: Duration::from_secs(30),
         }
     }
 }
@@ -781,6 +785,7 @@ mod tests {
             tls: Duration::from_secs(15),
             prompt: Duration::from_millis(prompt_ms),
             finalize: Duration::from_secs(120),
+            first_paint: Duration::from_secs(120),
         }
     }
 
@@ -976,6 +981,17 @@ mod tests {
         let out = run(Server::Tls12, Some(OTHER_FP), budgets(60_000), &SystemTls, |_| {});
         assert_eq!(out.result.err(), Some(RdpClosedReason::CertChanged));
         assert_eq!(out.collector.states(), vec!["connecting", "tls"]);
+    }
+
+    /// H7: the production budgets, as literals (a change must be deliberate).
+    #[test]
+    fn the_default_timeouts_are_15_15_60_15_and_30_to_first_paint() {
+        let t = Timeouts::default();
+        assert_eq!(t.connect, Duration::from_secs(15));
+        assert_eq!(t.tls, Duration::from_secs(15));
+        assert_eq!(t.prompt, Duration::from_secs(60));
+        assert_eq!(t.finalize, Duration::from_secs(15));
+        assert_eq!(t.first_paint, Duration::from_secs(30));
     }
 
     /// A TLS step that never finishes.

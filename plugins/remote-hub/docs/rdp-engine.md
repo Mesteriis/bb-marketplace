@@ -50,7 +50,12 @@ The sequence lives in `helper/src/rdp/connect.rs` and is driven with
 `ironrdp-tokio` + `ironrdp-connector` (mirrors `ironrdp-client-0.1.0/src/rdp.rs`).
 Each phase has its own budget (`Timeouts`): TCP + X.224 15 s, TLS 15 s
 (excluding the time the user spends deciding), authentication/finalize 15 s;
-the certificate prompt waits up to 60 s on its own. Loading the system root
+the certificate prompt waits up to 60 s on its own; after the connect sequence a
+session that never paints leaves `authenticating` with `timeout` after 30 s
+(`first_paint`). Worst cases without a prompt: 15 + 15 + 15 = 45 s to the end
+of the connect sequence, 75 s to the first paint; with a prompt add the time
+the user takes, at most 60 s (an unanswered prompt is `cert_rejected`). A
+handshake that completes after its budget is a `timeout` as well. Loading the system root
 certificates happens INSIDE the TLS handshake (the pinned ironrdp-tls does it
 when it builds the client config), so a slow or cold root store is charged to
 the TLS budget and, past 15 s, ends the session as `timeout` — a real product
@@ -194,7 +199,16 @@ called.
   engine frame (length, kind, JSON, pixel byte length `w*h*4`, rectangle inside a
   framebuffer ≤ 3840×2160, no overflow); any violation closes THAT session with
   `protocol_error` (engine killed and reaped, no resync attempt). Input is
-  refused past 1 MiB of pending helper→engine bytes (`rdp_input_overflow`).
+  refused past 256 KiB of pending helper→engine bytes (`rdp_input_overflow`;
+  the same cap covers acks and screenshot requests; a certificate decision and
+  close always pass). `rdp.input` and `rdp.update_ack` before `desktop_ready` are
+  refused with `not_ready`; acks coalesce to the newest `frameId`; at most 4
+  screenshot requests are outstanding per session (`screenshot_busy`). The
+  engine's reader thread never blocks on its own command channel (4096 entries):
+  an overflow ends the session as `protocol_error`, so a close, a certificate
+  decision or the helper's EOF is always read. Engine control frames are capped at
+  4 MiB (the client's frame limit); every engine frame counts against the per-turn
+  byte budget.
 - `desktop_ready` (`rdp.desktop`) fires only after the first non-empty
   `GraphicsUpdate` has been applied (B2).
 - First video path: plain bitmap updates (`ironrdp-graphics`), no native deps.
@@ -273,7 +287,14 @@ out of scope).
 
 `rdp_screenshot {handle}` encodes the SAME RGBA8 framebuffer the views get with
 the `png` crate (pinned 0.18) and returns `{frameId, width, height, timestamp,
-png}`. Refused before `desktop_ready`.
+png}`. Refused before `desktop_ready` (`not_ready`). The PNG travels as base64
+inside one control frame, which must stay under the 4 MiB wire limit: a
+screenshot whose base64 exceeds 3.5 MiB is refused with `screenshot_too_large`
+(a 1920×1080 desktop with photographic content is ≈ 3 MiB; 3840×2160 with
+detailed content exceeds the cap). Streaming a larger PNG as chunks needs a
+client-protocol addition and is deferred to 2b-2. `encode_response` replaces any
+response over the wire limit with `response_too_large`, so the client never
+sees a frame it would have to treat as fatal.
 
 ## 8. Status (stage 2b-1, after the repair round)
 
@@ -315,4 +336,5 @@ messages added in the repair round: `rdp.certificate`, `rdp.input_rejected`,
 `rdp.update_ack` (request), the cert-prompt `reason` code + `detail`, the
 `server_disconnected` closed reason and the errors `not_ready`,
 `fingerprint_mismatch`, `no_pending_prompt`, `rdp_input_overflow`,
+`screenshot_busy`, `screenshot_too_large`, `response_too_large`,
 `session_closed`.

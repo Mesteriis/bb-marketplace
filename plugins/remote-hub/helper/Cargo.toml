@@ -59,3 +59,6 @@ png = "=0.18.1"
 # client that trusts the fixture CA (the validated-certificate path).
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring"] }
+# Test-only: builds an ActiveStage over quiet streams (already in the tree as a
+# transitive dependency of ironrdp-session).
+ironrdp-svc = "=0.10.0"

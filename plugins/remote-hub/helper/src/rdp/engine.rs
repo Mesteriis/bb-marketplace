@@ -74,8 +74,8 @@ pub async fn run(
     tls: &dyn TlsUpgrader,
 ) -> std::io::Result<()> {
     let Inbox { control, decisions, cancel } = inbox;
-    match connect_sequence(params, timeouts, out.clone(), decisions, cancel.clone(), clock, tls).await {
-        Ok(connected) => run_active(connected, &out, control, &cancel).await,
+    match connect_sequence(params, timeouts, out.clone(), decisions, cancel.clone(), clock.clone(), tls).await {
+        Ok(connected) => run_active(connected, &out, control, &cancel, clock, timeouts.first_paint).await,
         Err(reason) => report_closed(&out, reason),
     }
 }
@@ -148,11 +148,31 @@ struct Active {
     desk: Desk,
 }
 
+/// How long the session may wait for its first painted update.
+struct FirstPaint {
+    clock: Arc<dyn Clock>,
+    started: std::time::Duration,
+    budget: std::time::Duration,
+}
+
+impl FirstPaint {
+    fn new(clock: Arc<dyn Clock>, budget: std::time::Duration) -> Self {
+        let started = clock.now();
+        FirstPaint { clock, started, budget }
+    }
+
+    fn expired(&self) -> bool {
+        self.clock.now().saturating_sub(self.started) >= self.budget
+    }
+}
+
 async fn run_active(
     connected: Connected,
     out: &Out,
-    mut control: tokio::sync::mpsc::Receiver<Control>,
+    control: tokio::sync::mpsc::Receiver<Control>,
     cancel: &Cancel,
+    clock: Arc<dyn Clock>,
+    first_paint: std::time::Duration,
 ) -> std::io::Result<()> {
     let Connected { reader, writer, connection } = connected;
     let Ok(framebuffer) = Framebuffer::new(connection.desktop_size.width as u32, connection.desktop_size.height as u32)
@@ -171,15 +191,32 @@ async fn run_active(
     }
     .build();
     let image = DecodedImage::new(PixelFormat::RgbA32, framebuffer.width() as u16, framebuffer.height() as u16);
-    let mut a = Active { reader, writer, stage, image, desk: Desk::new(framebuffer) };
+    let a = Active { reader, writer, stage, image, desk: Desk::new(framebuffer) };
+    drive(a, out, control, cancel, FirstPaint::new(clock, first_paint)).await
+}
 
+/// The active session loop: server PDUs, helper commands and cancellation,
+/// until the session ends. Without a first painted update inside the
+/// `FirstPaint` budget the session ends as `timeout`.
+async fn drive(
+    mut a: Active,
+    out: &Out,
+    mut control: tokio::sync::mpsc::Receiver<Control>,
+    cancel: &Cancel,
+    paint: FirstPaint,
+) -> std::io::Result<()> {
     let mut held: Option<Control> = None;
     loop {
+        if !a.desk.desktop_sent && paint.expired() {
+            return report_closed(out, RdpClosedReason::Timeout);
+        }
         let outputs = if let Some(c) = held.take() {
             handle_control(&mut a, out, c, &mut control, &mut held)?
         } else {
             tokio::select! {
                 reason = cancel.wait() => return report_closed(out, reason),
+                // Re-checks the first-paint budget while the server is quiet.
+                _ = tokio::time::sleep(super::connect::BUDGET_TICK), if !a.desk.desktop_sent => Vec::new(),
                 ctl = control.recv() => match ctl {
                     // The helper went away: end the session and exit.
                     None => return Ok(()),
@@ -512,6 +549,153 @@ mod tests {
         let mut buf = vec![0u8; reader.output_buffer_size().unwrap()];
         let info = reader.next_frame(&mut buf).unwrap();
         assert_eq!(&buf[..info.buffer_size()], desk.fb.pixels());
+    }
+
+    /// A clock the test moves; counts reads so it can tell the loop looked again.
+    struct TestClock {
+        millis: std::sync::atomic::AtomicU64,
+        reads: std::sync::atomic::AtomicU64,
+    }
+
+    impl Clock for TestClock {
+        fn now(&self) -> std::time::Duration {
+            use std::sync::atomic::Ordering::SeqCst;
+            self.reads.fetch_add(1, SeqCst);
+            std::time::Duration::from_millis(self.millis.load(SeqCst))
+        }
+    }
+
+    /// An `Active` over streams that never deliver a byte (the server is quiet).
+    fn quiet_active() -> (Active, tokio::io::DuplexStream, tokio::io::DuplexStream) {
+        use ironrdp_svc::StaticChannelSet;
+        let (client_r, server_r) = tokio::io::duplex(64);
+        let (client_w, server_w) = tokio::io::duplex(64);
+        let reader_stream: super::super::connect::BoxStream = Box::new(client_r);
+        let writer_stream: super::super::connect::BoxStream = Box::new(client_w);
+        let (reader, _unused_w) = tokio::io::split(reader_stream);
+        let (_unused_r, writer) = tokio::io::split(writer_stream);
+        let stage = ActiveStageBuilder {
+            static_channels: StaticChannelSet::new(),
+            user_channel_id: 1002,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 1,
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let a = Active {
+            reader: ironrdp_tokio::TokioFramed::new(reader),
+            writer: ironrdp_tokio::TokioFramed::new(writer),
+            stage,
+            image: DecodedImage::new(PixelFormat::RgbA32, 8, 8),
+            desk: Desk::new(Framebuffer::new(8, 8).unwrap()),
+        };
+        (a, server_r, server_w)
+    }
+
+    /// Run `drive` while `script` moves the clock; returns the Closed reason the
+    /// helper would see (None when the loop was ended by cancellation first).
+    fn drive_scripted(
+        painted: bool,
+        script: impl FnOnce(
+            Arc<TestClock>,
+            Arc<std::sync::atomic::AtomicBool>,
+            Arc<Cancel>,
+            tokio::sync::mpsc::Sender<Control>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+    ) -> Option<String> {
+        use std::io::Read as _;
+        use std::sync::atomic::Ordering::SeqCst;
+        let clock = Arc::new(TestClock { millis: 0.into(), reads: 0.into() });
+        let (mut a, _s1, _s2) = quiet_active();
+        a.desk.desktop_sent = painted;
+        let (engine_end, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let out = Out::new(engine_end);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Control>(4);
+        let cancel = Arc::new(Cancel::new());
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _ = rt.block_on(async {
+            let paint = FirstPaint::new(clock.clone(), std::time::Duration::from_secs(30));
+            let driven = async {
+                let r = drive(a, &out, rx, &cancel, paint).await;
+                done.store(true, SeqCst);
+                r
+            };
+            let scripted = script(clock.clone(), done.clone(), cancel.clone(), tx);
+            // Hang guard: the whole scene must finish.
+            tokio::time::timeout(std::time::Duration::from_secs(30), async { tokio::join!(driven, scripted) })
+                .await
+                .expect("hang guard: drive did not finish")
+        });
+        drop(out);
+        let mut all = Vec::new();
+        peer.read_to_end(&mut all).unwrap();
+        if all.len() < 5 {
+            return None;
+        }
+        match serde_json::from_slice::<EngineEvent>(&all[5..]).unwrap() {
+            EngineEvent::Closed { reason } => Some(reason),
+            other => panic!("unexpected event {other:?}"),
+        }
+    }
+
+    /// Wait (async) until the loop has read the clock `n` more times.
+    async fn looked_again(clock: &TestClock, n: u64) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let target = clock.reads.load(SeqCst) + n;
+        while clock.reads.load(SeqCst) < target {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    }
+
+    /// H7: a server that never paints ends the session as `timeout`: not at
+    /// 29 s of the 30 s budget, at 31 s.
+    #[test]
+    fn a_session_that_never_paints_times_out_after_the_first_paint_budget() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let reason = drive_scripted(false, |clock, done, _cancel, tx| {
+            Box::pin(async move {
+                // Keep the command channel open: its closing ends the loop.
+                let _open = tx;
+                clock.millis.store(29_000, SeqCst);
+                looked_again(&clock, 2).await;
+                assert!(!done.load(SeqCst), "timed out at 29 s of a 30 s budget");
+                clock.millis.store(31_000, SeqCst);
+                // Hold the channel open until the loop has ended on its own.
+                while !done.load(SeqCst) {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+        });
+        assert_eq!(reason.as_deref(), Some("timeout"));
+    }
+
+    /// H7: once the desktop has painted there is no first-paint deadline.
+    #[test]
+    fn a_painted_session_has_no_first_paint_deadline() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let reason = drive_scripted(true, |clock, done, cancel, tx| {
+            Box::pin(async move {
+                clock.millis.store(100_000, SeqCst);
+                // Two commands force two more passes through the loop; the
+                // second is consumed only if the first pass did not end the
+                // session (the capacity returns to 4 when both are taken).
+                tx.send(Control::Ack(0)).await.unwrap();
+                tx.send(Control::Ack(0)).await.unwrap();
+                while tx.capacity() < 4 {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+                assert!(!done.load(SeqCst), "a painted session timed out");
+                cancel.trigger(RdpClosedReason::KilledByClose);
+                while !done.load(SeqCst) {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+        });
+        assert_eq!(reason.as_deref(), Some("killed_by_close"));
     }
 
     #[test]
