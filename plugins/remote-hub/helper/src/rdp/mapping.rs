@@ -69,7 +69,11 @@ pub fn map_terminate(reason: &GracefulDisconnectReason) -> RdpClosedReason {
 /// A stable code for why a certificate failed strict validation, from rustls'
 /// error text. The text itself travels only as optional detail.
 pub fn cert_reason_code(rustls_error: &str) -> &'static str {
-    if rustls_error.contains("UnknownIssuer") {
+    // `CaUsedAsEndEntity`: a self-signed certificate that carries the CA flag
+    // (what `openssl req -x509` makes, and what xrdp ships) is rejected by
+    // webpki before the issuer lookup; to the user it is the same case: the
+    // certificate does not chain to a trusted root.
+    if rustls_error.contains("UnknownIssuer") || rustls_error.contains("CaUsedAsEndEntity") {
         "untrusted_root"
     } else if rustls_error.contains("NotValidForName") {
         "hostname_mismatch"
@@ -140,6 +144,11 @@ mod tests {
     fn certificate_failures_have_stable_codes() {
         // The Display text of rustls 0.23 errors.
         assert_eq!(cert_reason_code("invalid peer certificate: UnknownIssuer"), "untrusted_root");
+        // Observed against xrdp's self-signed (CA:TRUE) certificate.
+        assert_eq!(
+            cert_reason_code("invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))"),
+            "untrusted_root"
+        );
         assert_eq!(
             cert_reason_code("invalid peer certificate: NotValidForNameContext { expected: IpAddress(V4(Ipv4Addr([127, 0, 0, 1]))), presented: [] }"),
             "hostname_mismatch"

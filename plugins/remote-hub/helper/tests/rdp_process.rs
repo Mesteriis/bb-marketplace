@@ -307,3 +307,46 @@ fn g10_a_flooding_engine_does_not_starve_an_echo_session() {
     unsafe { libc::kill(h.pid() as libc::pid_t, libc::SIGKILL) };
     let _ = h.child.wait();
 }
+
+/// G19: the engine ends with its helper on every orderly shutdown path:
+/// SIGTERM to the helper and stdin EOF (client death) leave no engine behind.
+#[test]
+fn g19_sigterm_and_stdin_eof_leave_no_engine() {
+    let server = silent_server();
+    let mut h = start(&[]);
+    let (_rdp, engine_pid) = h.open_rdp(server.port);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(pid_alive(engine_pid));
+    unsafe { libc::kill(h.pid() as libc::pid_t, libc::SIGTERM) };
+    let status = h.child.wait().expect("helper exit");
+    assert_eq!(status.code(), Some(0), "helper must exit cleanly on SIGTERM");
+    assert!(wait_pid_gone(engine_pid, Duration::from_secs(2)), "engine survived helper SIGTERM");
+
+    let mut h = start(&[]);
+    let (_rdp, engine_pid) = h.open_rdp(server.port);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(pid_alive(engine_pid));
+    h.shutdown(); // closes stdin
+    assert!(wait_pid_gone(engine_pid, Duration::from_secs(2)), "engine survived stdin EOF");
+}
+
+/// G19 / B4: the password literal is in neither the engine's argv nor its
+/// environment (`ps eww` prints both); argv is exactly the fixed pair.
+#[test]
+fn g19_password_is_not_in_the_engine_argv_or_env() {
+    let server = silent_server();
+    let mut h = start(&[("SSLKEYLOGFILE", "/tmp/should-not-leak.log"), ("PEPPER", "env-marker")]);
+    let (_rdp, engine_pid) = h.open_rdp(server.port);
+    std::thread::sleep(Duration::from_millis(500));
+    let out = std::process::Command::new("ps")
+        .args(["eww", "-p", &engine_pid.to_string()])
+        .output()
+        .expect("ps");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.contains(&engine_pid.to_string()), "ps did not list the engine: {text}");
+    assert!(!text.contains("S3cr3t-MARK-91"), "password literal visible in ps: {text}");
+    assert!(!text.contains("SSLKEYLOGFILE"), "SSLKEYLOGFILE reached the engine: {text}");
+    assert!(!text.contains("env-marker"), "the helper's environment reached the engine: {text}");
+    assert!(text.contains("remote-hub-helper --rdp-engine"), "unexpected engine argv: {text}");
+    h.shutdown();
+}
