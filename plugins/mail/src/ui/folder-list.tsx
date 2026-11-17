@@ -504,7 +504,7 @@ export function UnifiedRail({ roles, folders, accounts, view, onSelect, error, s
           <RailButton
             key={role}
             icon={folderIcon(role)}
-            name={ROLE_NAMES[role]}
+            name={tx(`${ROLE_NAMES[role]}|folder`)}
             unread={unreadCount}
             selected={view.kind === "role" && view.role === role}
             indent={0}

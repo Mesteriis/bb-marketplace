@@ -510,7 +510,7 @@ function viewModel(props: MailPageProps & { status: StatusView }): ViewModel {
         (view.path === "INBOX" ? "inbox" : null));
   const pathsOf = (accountId: string) => viewPaths(view, all, accountId);
   return {
-    title: view.kind === "role" ? ROLE_NAMES[view.role] : folderName(view.accountId, view.path),
+    title: view.kind === "role" ? tx(`${ROLE_NAMES[view.role]}|folder`) : folderName(view.accountId, view.path),
     use,
     foldersOf,
     pathsOf,

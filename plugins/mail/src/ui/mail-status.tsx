@@ -4,7 +4,7 @@
 // the owner has to fix is a banner. Problems are read from the account's
 // stored line by `parseSyncProblems`; folder names in them are data.
 import type { Account, OutboxRow } from "../core/index.ts";
-import { isQuietlyOffline, parseSyncProblems, syncProblemText } from "../core/sync-problems.ts";
+import { isQuietlyOffline, parseSyncProblems, type SyncProblem } from "../core/sync-problems.ts";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -31,9 +31,41 @@ export function accountsNeedingAttention<T extends StatusAccount>(accounts: read
   return accounts.filter((a) => a.lastError !== null && !isQuietlyOffline(a, nowMs));
 }
 
+/** One problem as a sentence in the page's language; the folder, the count and the code go in as values. */
+export function problemShown(p: SyncProblem): string {
+  const where = p.folder !== null ? `${p.folder}: ` : "";
+  const code = p.detail !== null ? ` (${p.detail})` : "";
+  const folder = p.folder ?? "";
+  const count = p.count ?? 0;
+  switch (p.code) {
+    case "auth_failed":
+      return where + tx("The server refused the sign-in. Update the app password.");
+    case "credential_unreadable":
+      return tx("The saved password cannot be read. Enter it again.");
+    case "network":
+      return where + tx("The mail server could not be reached{code}.", { code });
+    case "server_busy":
+      return where + tx("The mail server is busy and asked to try later{code}.", { code });
+    case "tls":
+      return where + tx("The secure connection to the mail server failed{code}.", { code });
+    case "server":
+      return where + tx("Sync failed{code}.", { code });
+    case "folder_gone_moves_dropped":
+      return tx("{folder} no longer exists on the server; {count} queued moves were dropped.", { folder, count });
+    case "renumbered_moves_dropped":
+      return tx("{folder} was renumbered by the server; {count} queued moves were dropped.", { folder, count });
+    case "flags_not_saved":
+      return where + tx("Read and flag changes could not be saved on the server.");
+    case "moves_returned":
+      return tx("{count} messages could not be moved; they are back in {folder}.", { count, folder });
+    case "other":
+      return p.detail ?? tx("Sync failed{code}.", { code: "" });
+  }
+}
+
 /** The account's problems as sentences, each once. */
 export function accountProblemTexts(account: Pick<Account, "lastError">): string[] {
-  return [...new Set(parseSyncProblems(account.lastError).map(syncProblemText))];
+  return [...new Set(parseSyncProblems(account.lastError).map(problemShown))];
 }
 
 /** The header's label: syncing, the BB link, offline, or when mail was last synced. */
@@ -67,8 +99,8 @@ export function outboxStatusText(rows: readonly Pick<OutboxRow, "state">[]): str
   const waiting = rows.filter((r) => r.state === "waiting").length;
   const stuck = rows.filter((r) => r.state === "failed" || r.state === "unknown" || r.state === "held").length;
   const parts: string[] = [];
-  if (waiting > 0) parts.push(`${waiting} waiting to be sent`);
-  if (stuck > 0) parts.push(`${stuck} not sent`);
+  if (waiting > 0) parts.push(tx("{waiting} waiting to be sent", { waiting }));
+  if (stuck > 0) parts.push(tx("{stuck} not sent", { stuck }));
   return parts.length > 0 ? tx("Outbox: {p1}", { p1: parts.join(", ") }) : null;
 }
 

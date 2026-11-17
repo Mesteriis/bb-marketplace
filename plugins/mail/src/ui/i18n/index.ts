@@ -72,7 +72,8 @@ function formOf(forms: PluralForms, count: number): string {
  */
 export function t(text: string, params?: Params): string {
   const entry = current === "en" ? undefined : CATALOGS[current][text];
-  if (entry === undefined) return fill(text, params);
+  // "Sent|folder": the part after the bar tells two meanings of one English word apart; it is never shown.
+  if (entry === undefined) return fill(text.replace(/\|[a-z]+$/, ""), params);
   if (typeof entry === "string") return fill(entry, params);
   // The counted value: `count`, `n`, else the first number among the values.
   const count = Number(params?.count ?? params?.n ?? Object.values(params ?? {}).find((v) => typeof v === "number") ?? 0);
