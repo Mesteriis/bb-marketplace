@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MailStatusDialog,
@@ -9,6 +10,7 @@ import {
   syncStatusLabel,
 } from "./mail-status.tsx";
 
+installTestPluginRuntime();
 afterEach(cleanup);
 
 const NOW = Date.parse("2026-11-17T12:00:00.000Z");
