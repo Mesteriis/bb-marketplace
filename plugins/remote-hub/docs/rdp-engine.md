@@ -177,9 +177,24 @@ poll loop must not give up.
 the `png` crate (pinned 0.18) and returns `{frameId, width, height, timestamp,
 png}`. Refused before `desktop_ready`.
 
-## 8. Not implemented yet (honest status)
+## 8. Status (stage 2b-1)
 
-The engine (B1-B7), the `rdp_open`/`rdp_cert_decision`/`rdp_screenshot` RPC
-wiring (C1), the canvas UI (C3), the Rust/fake-engine/Docker test suites, and
-the release-size/check gates are not done in this stage-2b slice. This document
-records the pinned API so that work can proceed without re-deriving it.
+Implemented in the helper (Rust): the `--rdp-engine` process (B1,
+`helper/src/rdp/engine.rs`, `manager.rs`), the strict-TLS connect path with the
+certificate callback (B2/B3), the framebuffer + chunked updates + screenshot
+(B5/B7), and input encoding (B6). The RDP reaper reaps only its own engine
+pids (`waitpid(pid, WNOHANG)`), never `waitpid(-1)`, so it cannot steal PTY
+children from the SessionManager reaper.
+
+Verified against a real xrdp container (Docker, `tests/integration/rdp-Dockerfile`
++ `rdp-docker.py`): strict validation → `cert_prompt` with the correct SHA-256
+fingerprint; accept once → `desktop_ready` + PNG screenshot; a different
+`expectedFingerprint` → `cert_changed`; killing the container during
+`desktop_ready` → `network_error`. Keyboard/mouse/session-persistence cases are
+skipped there: the xrdp sesman X session does not start (xorgxrdp back-connection
+fails with "bad header length 0" / "X.224 CR-TPDU failed"), which is a test
+harness issue, not an engine issue.
+
+Still to do (later sub-stages): the TS service/RPC/socket wiring and fake-engine
+tests (2b-2) and the canvas UI (2b-3). Windows NLA/CredSSP is implemented
+through IronRDP but not verifiable here; see `docs/rdp-windows-check.md`.
