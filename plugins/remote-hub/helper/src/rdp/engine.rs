@@ -20,6 +20,7 @@ use super::framebuffer::{Framebuffer, Rect};
 use super::input::Geometry;
 use super::input_encode::{coalesce_moves, encode_input};
 use super::mapping::map_terminate;
+use super::pump::UpdatePump;
 use super::protocol::{self, EngineCommand, EngineEvent, ENGINE_UPDATE_OVERHEAD};
 use super::reasons::RdpClosedReason;
 
@@ -85,13 +86,63 @@ fn report_closed(out: &Out, reason: RdpClosedReason) -> std::io::Result<()> {
     out.closed(reason)
 }
 
+/// The framebuffer with its ack-driven update pacing: at most one update is in
+/// flight; later dirty regions coalesce until the consumer acks (see `pump`).
+pub struct Desk {
+    pub fb: Framebuffer,
+    pump: UpdatePump,
+    pub desktop_sent: bool,
+}
+
+impl Desk {
+    pub fn new(fb: Framebuffer) -> Self {
+        Desk { fb, pump: UpdatePump::new(), desktop_sent: false }
+    }
+
+    /// `rect` of the framebuffer changed (already applied). Announces the
+    /// desktop the first time, then sends the region unless an update is in
+    /// flight, in which case it is coalesced.
+    pub fn dirty(&mut self, out: &Out, rect: Rect) -> std::io::Result<()> {
+        if !self.desktop_sent {
+            self.desktop_sent = true;
+            out.send(&EngineEvent::Desktop {
+                frame_id: self.fb.frame_id(),
+                width: self.fb.width(),
+                height: self.fb.height(),
+                timestamp: self.fb.last_update_ms(),
+            })?;
+        }
+        if let Some(region) = self.pump.on_dirty(rect) {
+            self.send(out, region)?;
+        }
+        Ok(())
+    }
+
+    /// The consumer acked `frame_id`: send the coalesced pending region, if any.
+    pub fn ack(&mut self, out: &Out, frame_id: u64) -> std::io::Result<()> {
+        if let Some(region) = self.pump.on_ack(frame_id) {
+            self.send(out, region)?;
+        }
+        Ok(())
+    }
+
+    fn send(&mut self, out: &Out, rect: Rect) -> std::io::Result<()> {
+        send_region(&self.fb, out, rect)?;
+        self.pump.sent(self.fb.frame_id());
+        Ok(())
+    }
+
+    pub fn screenshot(&self, out: &Out) -> std::io::Result<()> {
+        send_screenshot(self, out)
+    }
+}
+
 struct Active {
     reader: FramedRead,
     writer: FramedWrite,
     stage: ActiveStage,
     image: DecodedImage,
-    framebuffer: Framebuffer,
-    desktop_sent: bool,
+    desk: Desk,
 }
 
 async fn run_active(
@@ -117,31 +168,74 @@ async fn run_active(
     }
     .build();
     let image = DecodedImage::new(PixelFormat::RgbA32, framebuffer.width() as u16, framebuffer.height() as u16);
-    let mut a = Active { reader, writer, stage, image, framebuffer, desktop_sent: false };
+    let mut a = Active { reader, writer, stage, image, desk: Desk::new(framebuffer) };
 
+    let mut held: Option<Control> = None;
     loop {
-        let outputs = tokio::select! {
-            reason = cancel.wait() => return report_closed(out, reason),
-            ctl = control.recv() => match ctl {
-                // The helper went away: end the session and exit.
-                None => return Ok(()),
-                Some(Control::Input(events)) => handle_input(&mut a, out, &events)?,
-                Some(Control::Screenshot) => {
-                    send_screenshot(&a, out)?;
-                    Vec::new()
-                }
-                Some(Control::Ack(_)) => Vec::new(),
-            },
-            frame = a.reader.read_pdu() => match frame {
-                Ok((action, payload)) => match a.stage.process(&mut a.image, action, &payload, None) {
-                    Ok(o) => o,
-                    Err(_) => return report_closed(out, RdpClosedReason::ProtocolError),
+        let outputs = if let Some(c) = held.take() {
+            handle_control(&mut a, out, c, &mut control, &mut held)?
+        } else {
+            tokio::select! {
+                reason = cancel.wait() => return report_closed(out, reason),
+                ctl = control.recv() => match ctl {
+                    // The helper went away: end the session and exit.
+                    None => return Ok(()),
+                    Some(c) => handle_control(&mut a, out, c, &mut control, &mut held)?,
                 },
-                Err(_) => return report_closed(out, RdpClosedReason::NetworkError),
-            },
+                frame = a.reader.read_pdu() => match frame {
+                    Ok((action, payload)) => match a.stage.process(&mut a.image, action, &payload, None) {
+                        Ok(o) => o,
+                        Err(_) => return report_closed(out, RdpClosedReason::ProtocolError),
+                    },
+                    Err(_) => return report_closed(out, RdpClosedReason::NetworkError),
+                },
+            }
         };
         if let Some(reason) = handle_outputs(&mut a, out, outputs).await? {
             return report_closed(out, reason);
+        }
+    }
+}
+
+/// One helper command. Queued input batches are merged first (see
+/// `drain_input`); the first non-input command found while draining is put
+/// back in `held` so ordering is kept.
+fn handle_control(
+    a: &mut Active,
+    out: &Out,
+    ctl: Control,
+    control: &mut tokio::sync::mpsc::Receiver<Control>,
+    held: &mut Option<Control>,
+) -> std::io::Result<Vec<ActiveStageOutput>> {
+    match ctl {
+        Control::Input(events) => {
+            let (batches, next) = drain_input(events, control);
+            *held = next;
+            handle_inputs(a, out, &batches)
+        }
+        Control::Screenshot => {
+            a.desk.screenshot(out)?;
+            Ok(Vec::new())
+        }
+        Control::Ack(frame_id) => {
+            a.desk.ack(out, frame_id)?;
+            Ok(Vec::new())
+        }
+    }
+}
+
+/// Collect every input batch already queued behind `first`, stopping at the
+/// first other command (returned so the caller can handle it next).
+pub fn drain_input(
+    first: Vec<protocol::InputEvent>,
+    control: &mut tokio::sync::mpsc::Receiver<Control>,
+) -> (Vec<Vec<protocol::InputEvent>>, Option<Control>) {
+    let mut batches = vec![first];
+    loop {
+        match control.try_recv() {
+            Ok(Control::Input(more)) => batches.push(more),
+            Ok(other) => return (batches, Some(other)),
+            Err(_) => return (batches, None),
         }
     }
 }
@@ -160,23 +254,14 @@ async fn handle_outputs(
                 }
             }
             ActiveStageOutput::GraphicsUpdate(region) => {
-                let Some(rect) = region_to_rect(&region, a.framebuffer.width(), a.framebuffer.height()) else {
+                let Some(rect) = region_to_rect(&region, a.desk.fb.width(), a.desk.fb.height()) else {
                     continue;
                 };
                 let stride = a.image.width() as usize * 4;
-                if a.framebuffer.apply_from_image(rect, a.image.data(), stride, now_ms()).is_err() {
+                if a.desk.fb.apply_from_image(rect, a.image.data(), stride, now_ms()).is_err() {
                     return Ok(Some(RdpClosedReason::ProtocolError));
                 }
-                if !a.desktop_sent {
-                    a.desktop_sent = true;
-                    out.send(&EngineEvent::Desktop {
-                        frame_id: a.framebuffer.frame_id(),
-                        width: a.framebuffer.width(),
-                        height: a.framebuffer.height(),
-                        timestamp: a.framebuffer.last_update_ms(),
-                    })?;
-                }
-                send_region(&a.framebuffer, out, rect)?;
+                a.desk.dirty(out, rect)?;
             }
             ActiveStageOutput::Terminate(reason) => return Ok(Some(map_terminate(&reason))),
             _ => {}
@@ -199,7 +284,7 @@ pub fn region_to_rect(region: &InclusiveRectangle, fb_w: u32, fb_h: u32) -> Opti
 
 /// Send the dirty region, split into update frames of at most 1 MiB on the
 /// wire with every header counted.
-fn send_region(fb: &Framebuffer, out: &Out, rect: Rect) -> std::io::Result<()> {
+pub(crate) fn send_region(fb: &Framebuffer, out: &Out, rect: Rect) -> std::io::Result<()> {
     let rows_per_chunk = protocol::rows_per_chunk(rect.w, ENGINE_UPDATE_OVERHEAD) as u32;
     let mut y = rect.y;
     let mut remaining = rect.h;
@@ -224,11 +309,11 @@ fn send_region(fb: &Framebuffer, out: &Out, rect: Rect) -> std::io::Result<()> {
     Ok(())
 }
 
-fn send_screenshot(a: &Active, out: &Out) -> std::io::Result<()> {
-    if !a.desktop_sent {
+fn send_screenshot(desk: &Desk, out: &Out) -> std::io::Result<()> {
+    if !desk.desktop_sent {
         return out.send(&EngineEvent::ScreenshotError { code: "not_ready".to_string() });
     }
-    let fb = &a.framebuffer;
+    let fb = &desk.fb;
     let mut png = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut png, fb.width(), fb.height());
@@ -264,15 +349,25 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
-/// Validate, encode and send one input batch. Rejected events are reported
-/// (with their index and a stable code); the rest are applied.
-fn handle_input(a: &mut Active, out: &Out, events: &[protocol::InputEvent]) -> std::io::Result<Vec<ActiveStageOutput>> {
-    let fb = Geometry { width: a.framebuffer.width(), height: a.framebuffer.height() };
-    let encoded = encode_input(events, fb);
-    if !encoded.rejected.is_empty() {
-        out.send(&EngineEvent::InputRejected { applied: encoded.applied, rejected: encoded.rejected })?;
+/// Validate and encode queued input batches against the current framebuffer
+/// geometry and send them as one FastPath burst. A rejected event is reported
+/// with its index (within its batch) and a stable code; the rest are applied.
+/// Runs of mouse moves collapse to the latest position, across batches too.
+fn handle_inputs(
+    a: &mut Active,
+    out: &Out,
+    batches: &[Vec<protocol::InputEvent>],
+) -> std::io::Result<Vec<ActiveStageOutput>> {
+    let fb = Geometry { width: a.desk.fb.width(), height: a.desk.fb.height() };
+    let mut fast = Vec::new();
+    for batch in batches {
+        let encoded = encode_input(batch, fb);
+        if !encoded.rejected.is_empty() {
+            out.send(&EngineEvent::InputRejected { applied: encoded.applied, rejected: encoded.rejected })?;
+        }
+        fast.extend(encoded.events);
     }
-    let fast = coalesce_moves(encoded.events);
+    let fast = coalesce_moves(fast);
     if fast.is_empty() {
         return Ok(Vec::new());
     }
@@ -302,6 +397,26 @@ mod tests {
         // outside or inverted
         assert_eq!(region_to_rect(&r(10, 0, 12, 1), 10, 10), None);
         assert_eq!(region_to_rect(&r(5, 5, 4, 6), 10, 10), None);
+    }
+
+    #[test]
+    fn queued_input_batches_merge_and_stop_at_another_command() {
+        use super::super::protocol::InputEvent;
+        let mv = |x| InputEvent::MouseMove { x, y: 0, geom_width: 10, geom_height: 10 };
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        tx.try_send(Control::Input(vec![mv(2)])).unwrap();
+        tx.try_send(Control::Input(vec![mv(3), mv(4)])).unwrap();
+        tx.try_send(Control::Screenshot).unwrap();
+        tx.try_send(Control::Input(vec![mv(9)])).unwrap();
+        let (batches, next) = drain_input(vec![mv(1)], &mut rx);
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches.iter().map(|b| b.len()).sum::<usize>(), 4);
+        assert!(matches!(next, Some(Control::Screenshot)));
+        // the input behind the screenshot is still queued, in order
+        assert!(matches!(rx.try_recv(), Ok(Control::Input(_))));
+        let (batches, next) = drain_input(vec![mv(1)], &mut rx);
+        assert_eq!(batches.len(), 1);
+        assert!(next.is_none());
     }
 
     #[test]

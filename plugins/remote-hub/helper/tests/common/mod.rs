@@ -101,6 +101,10 @@ impl Helper {
     }
 
     pub fn open_rdp(&mut self, port: u16) -> (u32, u32) {
+        self.open_rdp_sized(port, 800, 600)
+    }
+
+    pub fn open_rdp_sized(&mut self, port: u16, width: u32, height: u32) -> (u32, u32) {
         self.send(&Request::OpenRdp {
             id: 2,
             host: "127.0.0.1".to_string(),
@@ -108,8 +112,8 @@ impl Helper {
             username: "tester".to_string(),
             password: Secret::new("S3cr3t-MARK-91"),
             domain: None,
-            width: 800,
-            height: 600,
+            width,
+            height,
             expected_fingerprint: None,
         });
         match self.read_until(Duration::from_secs(10), |k, p| {
@@ -260,4 +264,78 @@ pub fn lsof_fds(pid: u32) -> Vec<(i32, String, String)> {
         rows.push((n, ty, name));
     }
     rows
+}
+
+/// One RDP update chunk as it arrives on the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateChunk {
+    pub frame_id: u64,
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+    /// Bytes on the wire: length prefix, kind, stream header, update header, pixels.
+    pub wire_len: usize,
+}
+
+pub fn parse_update_chunk(payload: &[u8]) -> UpdateChunk {
+    // stream header: sessionId u32, seq u32; update header: frameId u64,
+    // fbW, fbH, x, y, w, h (u32 each); then RGBA rows.
+    let u32_at = |i: usize| u32::from_le_bytes(payload[i..i + 4].try_into().unwrap());
+    UpdateChunk {
+        frame_id: u64::from_le_bytes(payload[8..16].try_into().unwrap()),
+        x: u32_at(24),
+        y: u32_at(28),
+        w: u32_at(32),
+        h: u32_at(36),
+        wire_len: 4 + 1 + payload.len(),
+    }
+}
+
+/// Frames read by a background thread. Update frames of `rdp_sid` are parsed
+/// into `updates` (pixels dropped); everything else is forwarded in `frames`.
+pub struct FrameRx {
+    pub frames: std::sync::mpsc::Receiver<(u8, Vec<u8>)>,
+    pub updates: std::sync::mpsc::Receiver<UpdateChunk>,
+}
+
+impl Helper {
+    /// Move stdout into a reader thread (stdin stays usable for requests).
+    pub fn frames_in_background(&mut self, rdp_sid: u32) -> FrameRx {
+        let mut stdout = self.stdout.try_clone_for_thread();
+        let (ftx, frames) = std::sync::mpsc::channel();
+        let (utx, updates) = std::sync::mpsc::channel();
+        std::thread::spawn(move || loop {
+            let mut header = [0u8; 4];
+            if stdout.read_exact(&mut header).is_err() {
+                return;
+            }
+            let mut body = vec![0u8; u32::from_le_bytes(header) as usize];
+            if stdout.read_exact(&mut body).is_err() {
+                return;
+            }
+            let (kind, payload) = (body[0], body[1..].to_vec());
+            if kind == FRAME_KIND_STREAM && u32::from_le_bytes(payload[0..4].try_into().unwrap()) == rdp_sid {
+                if utx.send(parse_update_chunk(&payload)).is_err() {
+                    return;
+                }
+            } else if ftx.send((kind, payload)).is_err() {
+                return;
+            }
+        });
+        FrameRx { frames, updates }
+    }
+}
+
+trait CloneForThread {
+    fn try_clone_for_thread(&self) -> std::fs::File;
+}
+
+impl CloneForThread for ChildStdout {
+    fn try_clone_for_thread(&self) -> std::fs::File {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let fd = unsafe { libc::dup(self.as_raw_fd()) };
+        assert!(fd >= 0, "dup stdout");
+        unsafe { std::fs::File::from_raw_fd(fd) }
+    }
 }

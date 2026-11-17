@@ -13,4 +13,9 @@ pub mod input_encode;
 pub mod mapping;
 pub mod manager;
 pub mod protocol;
+pub mod pump;
 pub mod reasons;
+
+/// Synthetic engines for the integration tests (never in a release helper).
+#[cfg(feature = "test-hooks")]
+pub mod fake_engine;

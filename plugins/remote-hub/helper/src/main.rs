@@ -5,6 +5,10 @@ fn main() {
     if args.iter().any(|a| a == "--rdp-engine") {
         std::process::exit(remote_hub_helper::rdp::engine::run_engine());
     }
+    #[cfg(feature = "test-hooks")]
+    if let Some(mode) = args.iter().find_map(|a| a.strip_prefix("--rdp-engine-fake=")) {
+        std::process::exit(remote_hub_helper::rdp::fake_engine::run_fake_engine(mode));
+    }
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("remote-hub-helper {}", env!("CARGO_PKG_VERSION"));
         std::process::exit(0);

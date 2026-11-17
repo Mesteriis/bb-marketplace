@@ -205,3 +205,105 @@ fn g16_unknown_session_input_and_decision_are_refused() {
     }
     h.shutdown();
 }
+
+const FAKE: &str = "REMOTE_HUB_RDP_FAKE_ENGINE";
+const FULL_FRAME_PIXELS: u32 = 1920 * 1080;
+
+fn drain_updates(rx: &FrameRx, limit: Duration) -> Vec<UpdateChunk> {
+    let mut got = Vec::new();
+    let deadline = std::time::Instant::now() + limit;
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match rx.updates.recv_timeout(left) {
+            Ok(c) => got.push(c),
+            Err(_) => break,
+        }
+    }
+    got
+}
+
+fn distinct_frames(chunks: &[UpdateChunk]) -> Vec<u64> {
+    let mut ids: Vec<u64> = chunks.iter().map(|c| c.frame_id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// G10: a view that never acks receives exactly ONE update however many times
+/// the desktop repaints; each frame on the wire is <= 1 MiB with every header
+/// counted; the ack releases ONE coalesced dirty region (not a full frame) and
+/// the engine then waits again.
+#[test]
+fn g10_an_unacked_view_gets_exactly_one_update_then_one_coalesced_region() {
+    let mut h = start(&[(FAKE, "ack")]);
+    let (rdp, _) = h.open_rdp_sized(closed_port(), 1920, 1080);
+    let rx = h.frames_in_background(rdp);
+
+    let first = drain_updates(&rx, Duration::from_millis(1500));
+    let ids = distinct_frames(&first);
+    assert_eq!(ids.len(), 1, "an un-acked view received more than one update: {ids:?}");
+    let pixels: u32 = first.iter().map(|c| c.w * c.h).sum();
+    assert_eq!(pixels, FULL_FRAME_PIXELS, "the first update must cover the whole desktop");
+    assert!(first.iter().all(|c| c.wire_len <= 1_048_576), "a chunk exceeded 1 MiB on the wire");
+    assert!(first.iter().all(|c| c.frame_id == ids[0]));
+
+    // The ack releases the coalesced region: the bounding box of the four
+    // 64x64 blocks the synthetic desktop paints, at (0,0).
+    h.send(&Request::RdpUpdateAck { id: 50, session_id: rdp, frame_id: ids[0] });
+    let second = drain_updates(&rx, Duration::from_millis(800));
+    let ids2 = distinct_frames(&second);
+    assert_eq!(ids2.len(), 1, "one ack must release exactly one update: {ids2:?}");
+    assert_ne!(ids2[0], ids[0]);
+    assert_eq!(second.len(), 1, "a 128x128 region is a single chunk");
+    assert_eq!((second[0].x, second[0].y, second[0].w, second[0].h), (0, 0, 128, 128));
+
+    // A stale ack (wrong frame id) releases nothing.
+    h.send(&Request::RdpUpdateAck { id: 51, session_id: rdp, frame_id: ids[0] });
+    assert!(drain_updates(&rx, Duration::from_millis(500)).is_empty(), "a stale ack released an update");
+    h.shutdown();
+}
+
+/// G10: a client that never reads stdout while a (buggy) engine floods 1920x1080
+/// updates without pacing cannot grow the helper: RSS growth < 32 MiB over 3 s.
+#[test]
+fn g10_unread_stdout_does_not_grow_the_helper() {
+    let mut h = start(&[(FAKE, "flood")]);
+    let base = rss_kb(h.pid());
+    let (_rdp, _) = h.open_rdp_sized(closed_port(), 1920, 1080);
+    std::thread::sleep(Duration::from_millis(500));
+    let early = rss_kb(h.pid());
+    std::thread::sleep(Duration::from_secs(3));
+    let late = rss_kb(h.pid());
+    assert!(late - base < 32 * 1024, "helper RSS grew {} KiB (base {base}, early {early}, late {late})", late - base);
+    // still bounded between the two samples, not just under the limit
+    assert!(late - early < 16 * 1024, "helper kept growing: early {early} -> late {late}");
+    unsafe { libc::kill(h.pid() as libc::pid_t, libc::SIGKILL) };
+    let _ = h.child.wait();
+}
+
+/// G10: while an engine floods, a parallel echo session still answers within 1 s.
+#[test]
+fn g10_a_flooding_engine_does_not_starve_an_echo_session() {
+    let mut h = start(&[(FAKE, "flood")]);
+    let (echo, _) = h.open_echo();
+    let (rdp, _) = h.open_rdp_sized(closed_port(), 1920, 1080);
+    let rx = h.frames_in_background(rdp);
+    std::thread::sleep(Duration::from_millis(500));
+    let t = std::time::Instant::now();
+    h.send(&Request::SessionInput { id: 60, session_id: echo, data: "flood-ping".to_string() });
+    let mut got = String::new();
+    while t.elapsed() < Duration::from_secs(5) {
+        let Ok((kind, payload)) = rx.frames.recv_timeout(Duration::from_millis(50)) else { continue };
+        if kind == remote_hub_helper::protocol::FRAME_KIND_STREAM
+            && u32::from_le_bytes(payload[0..4].try_into().unwrap()) == echo
+        {
+            got.push_str(&String::from_utf8_lossy(&payload[8..]));
+            if got.contains("flood-ping") {
+                break;
+            }
+        }
+    }
+    assert!(got.contains("flood-ping"), "the echo session never answered during the flood");
+    assert!(t.elapsed() < Duration::from_secs(1), "echo answered after {:?}", t.elapsed());
+    unsafe { libc::kill(h.pid() as libc::pid_t, libc::SIGKILL) };
+    let _ = h.child.wait();
+}

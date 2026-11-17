@@ -51,8 +51,11 @@ pub fn engine_env() -> Vec<CString> {
 }
 
 /// The fixed argv of the engine child.
-pub fn engine_argv(fake: bool) -> Vec<CString> {
-    let mode = if fake { "--rdp-engine-fake" } else { "--rdp-engine" };
+pub fn engine_argv(fake: Option<&str>) -> Vec<CString> {
+    let mode = match fake {
+        Some(mode) => format!("--rdp-engine-fake={mode}"),
+        None => "--rdp-engine".to_string(),
+    };
     vec![CString::new("remote-hub-helper").unwrap(), CString::new(mode).unwrap()]
 }
 
@@ -144,7 +147,8 @@ pub struct ClosedReport {
 pub struct RdpManager {
     sessions: HashMap<u32, RdpSession>,
     ids: SessionIds,
-    fake_engine: bool,
+    /// A synthetic engine mode (`test-hooks` builds only).
+    fake_engine: Option<String>,
 }
 
 fn set_nonblocking(fd: RawFd) {
@@ -245,9 +249,9 @@ impl RdpManager {
         // The synthetic engine exists for tests only; a release helper never
         // looks at the variable.
         #[cfg(feature = "test-hooks")]
-        let fake_engine = std::env::var("REMOTE_HUB_RDP_FAKE_ENGINE").is_ok();
+        let fake_engine = std::env::var("REMOTE_HUB_RDP_FAKE_ENGINE").ok();
         #[cfg(not(feature = "test-hooks"))]
-        let fake_engine = false;
+        let fake_engine: Option<String> = None;
         RdpManager { sessions: HashMap::new(), ids, fake_engine }
     }
 
@@ -302,7 +306,7 @@ impl RdpManager {
         expected_fingerprint: Option<String>,
     ) -> Result<(u32, libc::pid_t), String> {
         let exe = CString::new(current_exe).map_err(|_| "current exe has a NUL byte".to_string())?;
-        let argv_c = engine_argv(self.fake_engine);
+        let argv_c = engine_argv(self.fake_engine.as_deref());
         let argv: Vec<*const libc::c_char> =
             argv_c.iter().map(|a| a.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
         let envp_c = engine_env();
@@ -977,7 +981,7 @@ mod tests {
     #[test]
     fn engine_env_is_empty_and_argv_is_fixed() {
         assert!(engine_env().is_empty());
-        let argv: Vec<String> = engine_argv(false).iter().map(|a| a.to_str().unwrap().to_string()).collect();
+        let argv: Vec<String> = engine_argv(None).iter().map(|a| a.to_str().unwrap().to_string()).collect();
         assert_eq!(argv, vec!["remote-hub-helper", "--rdp-engine"]);
     }
 
