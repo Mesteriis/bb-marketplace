@@ -214,6 +214,35 @@ describe("createSyncLoop", () => {
     expect(notifier.changes).toHaveLength(1);
   });
 
+  it("a round cut short by the stop logs no sync error; the same failure while running does", async () => {
+    const run = async (abortFirst: boolean) => {
+      const { store, scripted, deps } = setup();
+      store.saveAccount(account("acc_1"));
+      let fail!: () => void;
+      let opened = false;
+      vi.spyOn(scripted, "openFolder").mockImplementation(
+        () =>
+          new Promise<FolderSession>((_, reject) => {
+            opened = true;
+            fail = () => reject(new Error("connection closed"));
+          }),
+      );
+      const lines: string[] = [];
+      const loop = createSyncLoop(deps, SETTINGS, { log: (line) => lines.push(line) });
+      const controller = new AbortController();
+      const done = loop.start(controller.signal);
+      await vi.waitFor(() => expect(opened).toBe(true));
+      if (abortFirst) controller.abort();
+      fail();
+      await new Promise((r) => setTimeout(r, 20));
+      controller.abort();
+      await done;
+      return lines.filter((line) => line.startsWith("sync "));
+    };
+    expect(await run(true)).toEqual([]);
+    expect(await run(false)).toEqual(["sync acc_1: error"]);
+  });
+
   it("abort resolves start while an account sync is stuck", async () => {
     const { store, deps } = setup();
     store.saveAccount(account("acc_1"));

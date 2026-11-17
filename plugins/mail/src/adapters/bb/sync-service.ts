@@ -206,6 +206,8 @@ export function createSyncLoop(
         }
         const outcome = await syncAccount(guarded, accountId, syncOptions);
         const label = syncOptions.only === "inbox" ? `${accountId} inbox` : accountId;
+        // A round cut short by the service stopping (a reload) is not a sync error worth a line.
+        if (outcome.status !== "ok" && signal.aborted) return;
         log(
           outcome.status === "ok"
             ? `sync ${label}: ok, fetched ${outcome.fetched}, removed ${outcome.removed}, marked read ${outcome.pushedSeen}, flags ${outcome.pushedFlags}`
