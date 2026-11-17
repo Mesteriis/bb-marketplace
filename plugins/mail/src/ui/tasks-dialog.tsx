@@ -20,6 +20,7 @@ import { useAiJob, type AiJobPorts } from "./ai-job.ts";
 import { AI_CAUTION, AiFailure, AiNotesList, AiText, CitationChips, aiLabel, type AiCitation } from "./ai-text.tsx";
 import { shownText } from "./agent-send-card.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 type TasksResult = Extract<AiResultView, { kind: "tasks" }>;
 
@@ -112,22 +113,22 @@ function TasksBody({ request, ports, onKeep, onCite, onClose, pollMs }: TasksDia
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Find tasks</DialogTitle>
+        <DialogTitle>{tx("Find tasks")}</DialogTitle>
         <DialogDescription>
-          {result !== null ? aiLabel(result.provider, result.model) : "A model reads the conversation and lists what to do."}
+          {result !== null ? aiLabel(result.provider, result.model) : tx("A model reads the conversation and lists what to do.")}
         </DialogDescription>
       </DialogHeader>
       {state.status === "running" ? (
         <p role="status" className="text-sm text-muted-foreground">
-          {"Finding tasks\u2026"}
+          {tx("Finding tasks\u2026")}
         </p>
       ) : null}
       {state.status === "failed" ? <AiFailure state={state} /> : null}
       {result !== null && rows !== null ? (
         rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No tasks found in this conversation.</p>
+          <p className="text-sm text-muted-foreground">{tx("No tasks found in this conversation.")}</p>
         ) : (
-          <ul aria-label="Tasks found" className="flex flex-col gap-3">
+          <ul aria-label={tx("Tasks found")} className="flex flex-col gap-3">
             {result.tasks.map((task) => {
               const row = rows.find((r) => r.index === task.index);
               if (row === undefined) return null;
@@ -163,7 +164,7 @@ function TasksBody({ request, ports, onKeep, onCite, onClose, pollMs }: TasksDia
                       </blockquote>
                     ) : null}
                     {!task.evidenceFound ? (
-                      <p className="text-xs text-destructive">Quote not found in the message; check it before keeping.</p>
+                      <p className="text-xs text-destructive">{tx("Quote not found in the message; check it before keeping.")}</p>
                     ) : null}
                   </div>
                 </li>
@@ -185,10 +186,10 @@ function TasksBody({ request, ports, onKeep, onCite, onClose, pollMs }: TasksDia
       ) : null}
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {tx("Cancel")}
         </Button>
         <Button disabled={picks.length === 0 || keeping} onClick={() => void keep()}>
-          {picks.length === 1 ? "Keep 1 task" : `Keep ${picks.length} tasks`}
+          {picks.length === 1 ? tx("Keep 1 task") : `Keep ${picks.length} tasks`}
         </Button>
       </DialogFooter>
     </>

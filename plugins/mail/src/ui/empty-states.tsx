@@ -1,6 +1,7 @@
 // What the Mail page shows when there is nothing to list or read yet.
 import type { ReactNode } from "react";
 import { Icon } from "@/components/ui/icon";
+import { tx } from "./i18n/index.ts";
 
 /** The command that sets the credential key (the server's needs-configuration message names the same). */
 export const CONFIGURE_VAULT_COMMAND =
@@ -49,11 +50,11 @@ function Command({ children }: { children: string }) {
 
 export function VaultNotReady() {
   return (
-    <EmptyState icon="Lock" title="Mail needs a credential key">
+    <EmptyState icon="Lock" title={tx("Mail needs a credential key")}>
       <div className="flex flex-col gap-2">
-        <p>Account passwords are encrypted with a key that is not set. Run:</p>
+        <p>{tx("Account passwords are encrypted with a key that is not set. Run:")}</p>
         <Command>{CONFIGURE_VAULT_COMMAND}</Command>
-        <p>then:</p>
+        <p>{tx("then:")}</p>
         <Command>{RELOAD_COMMAND}</Command>
       </div>
     </EmptyState>
@@ -62,15 +63,15 @@ export function VaultNotReady() {
 
 export function SyncingState() {
   return (
-    <EmptyState icon="Mail" title="Syncing your mail…">
-      Messages appear here as they arrive.
+    <EmptyState icon="Mail" title={tx("Syncing your mail\u2026")}>
+      {tx("Messages appear here as they arrive.")}
     </EmptyState>
   );
 }
 
 export function SyncErrorState({ message }: { message: string }) {
   return (
-    <EmptyState icon="CloudOff" title="Mail could not sync" role="alert">
+    <EmptyState icon="CloudOff" title={tx("Mail could not sync")} role="alert">
       {message}
     </EmptyState>
   );
@@ -78,8 +79,8 @@ export function SyncErrorState({ message }: { message: string }) {
 
 export function EmptyFolder({ name }: { name: string }) {
   return (
-    <EmptyState icon="MailOpen" title="No mail">
-      Nothing in {name} for the period Mail syncs.
+    <EmptyState icon="MailOpen" title={tx("No mail")}>
+      {tx("Nothing in")} {name} {tx("for the period Mail syncs.")}
     </EmptyState>
   );
 }
@@ -89,5 +90,5 @@ export function NoSearchResults({ query }: { query: string }) {
 }
 
 export function NothingSelected() {
-  return <EmptyState icon="Mail" title="Select a conversation to read it" />;
+  return <EmptyState icon="Mail" title={tx("Select a conversation to read it")} />;
 }

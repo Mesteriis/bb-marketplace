@@ -34,6 +34,7 @@ import { LabelChips } from "./label-chips.tsx";
 import { RelatedMail } from "./related-mail.tsx";
 import { LinkStatusLine, type LinkHover } from "./link-status.tsx";
 import { CryptoChip, cryptoPlaceholder, imagesHeldReason, RECEIPT_TEXT, securityOf, SenderWarnings } from "./sender-warnings.tsx";
+import { tx } from "./i18n/index.ts";
 
 export type BodyState =
   | { status: "loading" }
@@ -180,14 +181,14 @@ export function linkedItems(messages: readonly MessageHeader[]): BbLinkView[] {
 function LinkedItems({ items, bb }: { items: readonly BbLinkView[]; bb: ReadingBb }) {
   if (items.length === 0) return null;
   return (
-    <ul aria-label="In BB" className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+    <ul aria-label={tx("In BB")} className="flex flex-col gap-0.5 text-xs text-muted-foreground">
       {items.map((item) => {
         const key = `${item.kind}:${item.targetId}`;
         if (item.kind === "taskboard_task") {
           return (
             <li key={key} className="flex items-center gap-1">
               <Icon name="ListChecks" fallback="Check" className="size-3.5" aria-hidden />
-              <span>Task on Taskboard</span>
+              <span>{tx("Task on Taskboard")}</span>
             </li>
           );
         }
@@ -207,7 +208,7 @@ function LinkedItems({ items, bb }: { items: readonly BbLinkView[]; bb: ReadingB
             <Icon name="Bot" className="size-3.5 shrink-0" aria-hidden />
             <span className="min-w-0 truncate">{`${label}: ${item.title ?? "BB thread"}`}</span>
             <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => bb.onOpenThread(item.targetId)}>
-              Open
+              {tx("Open")}
             </Button>
           </li>
         );
@@ -341,7 +342,7 @@ function MessageBodyView({
   cleanLinks?: boolean;
 }) {
   if (state === undefined || state.status === "loading") {
-    return <LoadingState label="Loading message…" />;
+    return <LoadingState label={tx("Loading message\u2026")} />;
   }
   if (state.status === "error") {
     return (
@@ -542,7 +543,7 @@ function MessageItem({
             "size-7 shrink-0",
             message.isFlagged ? "text-primary [&_svg]:fill-current" : "text-muted-foreground",
           )}
-          aria-label="Flag message"
+          aria-label={tx("Flag message")}
           aria-pressed={message.isFlagged}
           onClick={onToggleFlag}
         >
@@ -608,7 +609,7 @@ function MessageItem({
             />
           )}
           {attachments.length > 0 ? (
-            <ul aria-label="Attachments" className="flex flex-wrap gap-2">
+            <ul aria-label={tx("Attachments")} className="flex flex-wrap gap-2">
               {attachments.map((attachment) => (
                 <AttachmentButton
                   key={attachment.partId}
@@ -624,16 +625,16 @@ function MessageItem({
             <div>
               <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => bb.onSaveAttachments(message, attachments)}>
                 <Icon name="FolderInput" fallback="Folder" aria-hidden />
-                {"Save all to project\u2026"}
+                {tx("Save all to project\u2026")}
               </Button>
             </div>
           ) : null}
           {inline.length > 0 ? (
             <details className="text-xs text-muted-foreground">
               <summary className="cursor-pointer select-none">
-                {inline.length === 1 ? "1 inline part" : `${inline.length} inline parts`}
+                {inline.length === 1 ? tx("1 inline part") : `${inline.length} inline parts`}
               </summary>
-              <ul aria-label="Inline parts" className="mt-2 flex flex-wrap gap-2">
+              <ul aria-label={tx("Inline parts")} className="mt-2 flex flex-wrap gap-2">
                 {inline.map((attachment) => (
                   <AttachmentButton
                     key={attachment.partId}
@@ -648,32 +649,32 @@ function MessageItem({
             {onEditDraft !== null ? (
               <Button variant="outline" size="sm" className="h-7 px-2" onClick={onEditDraft}>
                 <Icon name="Pencil" fallback="Mail" aria-hidden />
-                Edit draft
+                {tx("Edit draft")}
               </Button>
             ) : null}
             <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onDetails}>
               <Icon name="Info" fallback="Folder" aria-hidden />
-              Details
+              {tx("Details")}
             </Button>
             <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onDownloadEml}>
               <Icon name="Download" fallback="Paperclip" aria-hidden />
-              Download .eml
+              {tx("Download .eml")}
             </Button>
             {r3 !== undefined && view !== undefined ? (
               <>
                 <Button variant="ghost" size="sm" className="h-7 px-2" onClick={view.onTogglePlain}>
                   <Icon name="FileText" fallback="Mail" aria-hidden />
-                  {view.plain ? "Show original" : "Show plain text"}
+                  {view.plain ? tx("Show original") : tx("Show plain text")}
                 </Button>
                 {r3.dark && !view.plain ? (
                   <Button variant="ghost" size="sm" className="h-7 px-2" aria-pressed={view.original} onClick={view.onToggleOriginal}>
                     <Icon name="Palette" fallback="Eye" aria-hidden />
-                    {view.original ? "Adapt colors" : "Original colors"}
+                    {view.original ? tx("Adapt colors") : tx("Original colors")}
                   </Button>
                 ) : null}
                 <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => r3.onPrint([message])}>
                   <Icon name="Printer" fallback="Download" aria-hidden />
-                  {"Print\u2026"}
+                  {tx("Print\u2026")}
                 </Button>
               </>
             ) : null}
@@ -756,7 +757,7 @@ export function ReadingPane(props: ReadingPaneProps) {
     <div className="@3xl:hidden">
       <Button variant="ghost" size="sm" onClick={onBack}>
         <Icon name="ArrowLeft" aria-hidden />
-        Back
+        {tx("Back")}
       </Button>
     </div>
   );
@@ -770,7 +771,7 @@ export function ReadingPane(props: ReadingPaneProps) {
             {error}
           </p>
         ) : loading ? (
-          <LoadingState label="Loading conversation…" />
+          <LoadingState label={tx("Loading conversation\u2026")} />
         ) : null}
       </div>
     );
@@ -803,29 +804,29 @@ export function ReadingPane(props: ReadingPaneProps) {
       {props.hideToolbar !== true ? (
       <div
         role="toolbar"
-        aria-label="Conversation actions"
+        aria-label={tx("Conversation actions")}
         className="flex flex-wrap items-center gap-1 border-b border-border pb-2"
       >
         {back}
         {handed !== null && handedDraft ? (
           <Button variant="ghost" size="sm" onClick={() => props.onEditDraft(handed)}>
             <Icon name="Pencil" fallback="Mail" aria-hidden />
-            Edit draft
+            {tx("Edit draft")}
           </Button>
         ) : null}
         {handed !== null && !handedDraft ? (
           <>
             <Button variant="ghost" size="sm" onClick={() => props.onCompose("reply", handed)}>
               <Icon name="Reply" fallback="ArrowLeft" aria-hidden />
-              Reply
+              {tx("Reply")}
             </Button>
             <Button variant="ghost" size="sm" onClick={() => props.onCompose("reply_all", handed)}>
               <Icon name="ReplyAll" fallback="ArrowLeft" aria-hidden />
-              Reply all
+              {tx("Reply all")}
             </Button>
             <Button variant="ghost" size="sm" onClick={() => props.onCompose("forward", handed)}>
               <Icon name="Forward" fallback="Send" aria-hidden />
-              Forward
+              {tx("Forward")}
             </Button>
             {props.translation !== undefined ? (
               // A disabled button shows no tooltip of its own: the wrapper carries the reason.
@@ -838,7 +839,7 @@ export function ReadingPane(props: ReadingPaneProps) {
                   onClick={() => props.translation?.onToggle(handed)}
                 >
                   <Icon name="Languages" fallback="Mail" aria-hidden />
-                  {props.translation.shown?.messageId === handed.id ? "Show original" : "Translate"}
+                  {props.translation.shown?.messageId === handed.id ? tx("Show original") : tx("Translate")}
                 </Button>
               </span>
             ) : null}
@@ -862,16 +863,16 @@ export function ReadingPane(props: ReadingPaneProps) {
           <>
             <Button variant="ghost" size="sm" disabled={props.actionPending} onClick={props.onMoveTo}>
               <Icon name="Folder" aria-hidden />
-              Move to…
+              {tx("Move to\u2026")}
             </Button>
             <Button variant="ghost" size="sm" disabled={props.actionPending} onClick={props.onMarkUnread}>
               <Icon name="Mail" aria-hidden />
-              Mark unread
+              {tx("Mark unread")}
             </Button>
             {inbox !== undefined && folderUse === "inbox" ? (
               <Button variant="ghost" size="sm" disabled={props.actionPending} onClick={inbox.onSnooze}>
                 <Icon name="Clock" fallback="Info" aria-hidden />
-                Snooze
+                {tx("Snooze")}
               </Button>
             ) : null}
           </>
@@ -879,19 +880,19 @@ export function ReadingPane(props: ReadingPaneProps) {
         {inFolder && props.onLabels !== undefined ? (
           <Button variant="ghost" size="sm" disabled={props.actionPending} aria-keyshortcuts="L" onClick={props.onLabels}>
             <Icon name="Tag" fallback="Folder" aria-hidden />
-            {"Labels\u2026"}
+            {tx("Labels\u2026")}
           </Button>
         ) : null}
         {inbox !== undefined && blockable !== null ? (
           <Button variant="ghost" size="sm" disabled={props.actionPending} onClick={() => inbox.onBlock(blockable)}>
             <Icon name="Ban" fallback="AlertTriangle" aria-hidden />
-            Block
+            {tx("Block")}
           </Button>
         ) : null}
         {props.ai !== undefined && handed !== null && !handedDraft && props.ai.onRemind !== undefined ? (
           <Button variant="ghost" size="sm" onClick={() => props.ai?.onRemind?.(handed)}>
             <Icon name="Clock" fallback="Info" aria-hidden />
-            {"Remind me\u2026"}
+            {tx("Remind me\u2026")}
           </Button>
         ) : null}
         <span className="flex-1" />
@@ -906,12 +907,12 @@ export function ReadingPane(props: ReadingPaneProps) {
                 onClick={() => props.bb?.onNewThread(handed)}
               >
                 <Icon name="MessageSquarePlus" fallback="Bot" aria-hidden />
-                {"New thread\u2026"}
+                {tx("New thread\u2026")}
               </Button>
             </span>
             <Button variant="ghost" size="sm" aria-keyshortcuts="Shift+K" onClick={() => props.bb?.onMakeTask(handed)}>
               <Icon name="ListPlus" fallback="ListChecks" aria-hidden />
-              {"Make a task\u2026"}
+              {tx("Make a task\u2026")}
             </Button>
           </>
         ) : null}
@@ -922,7 +923,7 @@ export function ReadingPane(props: ReadingPaneProps) {
           <span title={handed.inAiScope ? undefined : OUTSIDE_AI_ACCESS} className="inline-flex">
             <Button variant="ghost" size="sm" disabled={!handed.inAiScope} onClick={() => props.onHandToAgent(handed)}>
               <Icon name="Bot" aria-hidden />
-              Hand to agent
+              {tx("Hand to agent")}
             </Button>
           </span>
         ) : null}
@@ -935,39 +936,39 @@ export function ReadingPane(props: ReadingPaneProps) {
           </h2>
           {inbox !== undefined && canUnsubscribe ? (
             <Button variant="outline" size="sm" className="h-7 shrink-0 px-2" onClick={inbox.onUnsubscribe}>
-              Unsubscribe
+              {tx("Unsubscribe")}
             </Button>
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-          <span className="mr-1">{messages.length === 1 ? "1 message" : `${messages.length} messages`}</span>
+          <span className="mr-1">{messages.length === 1 ? tx("1 message") : `${messages.length} messages`}</span>
           {r3 !== undefined && messages.length > 1 ? (
             <>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" aria-keyshortcuts=";" onClick={r3.onExpandAll}>
-                Expand all
+                {tx("Expand all")}
               </Button>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={r3.onCollapseAll}>
-                Collapse all
+                {tx("Collapse all")}
               </Button>
             </>
           ) : null}
           {r3 !== undefined ? (
             <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" aria-keyshortcuts="Shift+P" onClick={() => r3.onPrint(messages)}>
-              {"Print conversation\u2026"}
+              {tx("Print conversation\u2026")}
             </Button>
           ) : null}
         </div>
         {r3 !== undefined ? (
           <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
             {r3.conversation.state === "running" ? (
-              <span role="status">{"Loading the whole conversation\u2026"}</span>
+              <span role="status">{tx("Loading the whole conversation\u2026")}</span>
             ) : r3.conversation.note !== null ? (
               <span role="status">{r3.conversation.note}</span>
             ) : (
               <>
-                <span>Older messages of this conversation may be on the server</span>
+                <span>{tx("Older messages of this conversation may be on the server")}</span>
                 <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={r3.conversation.onLoad}>
-                  Load the whole conversation
+                  {tx("Load the whole conversation")}
                 </Button>
               </>
             )}
@@ -976,17 +977,17 @@ export function ReadingPane(props: ReadingPaneProps) {
         {inbox !== undefined && thread.snoozedUntil !== null ? (
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <Icon name="Clock" fallback="Info" className="size-3.5" aria-hidden />
-            <span>Snoozed until {formatUntil(thread.snoozedUntil)}</span>
+            <span>{tx("Snoozed until")} {formatUntil(thread.snoozedUntil)}</span>
             <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={inbox.onReturnNow}>
-              Return now
+              {tx("Return now")}
             </Button>
           </div>
         ) : null}
         {inbox !== undefined && already !== null ? (
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span>You asked to unsubscribe on {formatDay(already.at)}</span>
+            <span>{tx("You asked to unsubscribe on")} {formatDay(already.at)}</span>
             <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={inbox.onArchiveList}>
-              Archive all from this list
+              {tx("Archive all from this list")}
             </Button>
           </div>
         ) : null}
@@ -1109,7 +1110,7 @@ function StackButton({ messages, controls, onOpen }: { messages: readonly Messag
         onClick={onOpen}
         className="relative flex w-full flex-col gap-0.5 rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
-        <span className="text-sm text-foreground">{summary.count === 1 ? "1 earlier message" : `${summary.count} earlier messages`}</span>
+        <span className="text-sm text-foreground">{summary.count === 1 ? tx("1 earlier message") : `${summary.count} earlier messages`}</span>
         <span className="truncate text-xs text-muted-foreground">{line}</span>
       </button>
     </div>
@@ -1142,11 +1143,11 @@ function AiButtons({ ai, reason }: { ai: ReadingAi; reason: string | null }) {
     <span title={reason ?? undefined} className="inline-flex">
       <Button variant="ghost" size="sm" disabled={reason !== null} aria-description={reason ?? undefined} onClick={ai.onSummarize}>
         <Icon name="Sparkles" fallback="Bot" aria-hidden />
-        Summarize
+        {tx("Summarize")}
       </Button>
       <Button variant="ghost" size="sm" disabled={reason !== null} aria-description={reason ?? undefined} onClick={ai.onFindTasks}>
         <Icon name="ListChecks" fallback="Check" aria-hidden />
-        Find tasks
+        {tx("Find tasks")}
       </Button>
     </span>
   );

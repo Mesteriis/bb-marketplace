@@ -7,6 +7,7 @@ import type { RuleInput, RuleView } from "../core/contract.ts";
 import { Button } from "@/components/ui/button";
 import { errorText, projectName, useProjects, type BbCall } from "./bb-ports.ts";
 import { RuleForm } from "./rule-form.tsx";
+import { tx } from "./i18n/index.ts";
 
 export interface RulesSettingsProps {
   /** mailRules as BB has it. */
@@ -21,13 +22,12 @@ export interface RulesSettingsProps {
 export function RulesSettings({ on, call, notify, hint }: RulesSettingsProps) {
   return (
     <div className="flex flex-col gap-3">
-      <section aria-label="Mail rules switch" className="flex flex-col gap-1">
+      <section aria-label={tx("Mail rules switch")} className="flex flex-col gap-1">
         <p className="text-sm text-foreground">
-          {on ? "On: your rules run on new Inbox mail." : "Off: no rule runs."}
+          {on ? tx("On: your rules run on new Inbox mail.") : tx("Off: no rule runs.")}
         </p>
         <p className="text-xs text-muted-foreground">
-          Rules prepare agent threads from new Inbox mail for you to review, or start them if you chose that for a rule. Threads a rule
-          starts have no mail tools. {hint}
+          {tx("Rules prepare agent threads from new Inbox mail for you to review, or start them if you chose that for a rule. Threads a rule starts have no mail tools.")} {hint}
         </p>
       </section>
       {on ? <RuleList call={call} notify={notify} /> : null}
@@ -80,14 +80,14 @@ function RuleList({ call, notify }: Pick<RulesSettingsProps, "call" | "notify">)
   };
 
   return (
-    <section aria-label="Rules" className="flex flex-col gap-2">
+    <section aria-label={tx("Rules")} className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <h3 className="min-w-0 flex-1 text-sm font-semibold text-foreground">Rules</h3>
+        <h3 className="min-w-0 flex-1 text-sm font-semibold text-foreground">{tx("Rules")}</h3>
         <Button variant="ghost" size="sm" className="h-7 px-2" disabled={rules === null || !rules.some((r) => r.enabled)} onClick={() => void pauseAll()}>
-          Pause all
+          {tx("Pause all")}
         </Button>
         <Button variant="outline" size="sm" className="h-7 px-2" disabled={editing !== null} onClick={() => setEditing("new")}>
-          New rule
+          {tx("New rule")}
         </Button>
       </div>
       {problem !== null ? (
@@ -99,21 +99,21 @@ function RuleList({ call, notify }: Pick<RulesSettingsProps, "call" | "notify">)
         <RuleForm rule={editing === "new" ? null : editing} projects={projects} onSave={save} onCancel={() => setEditing(null)} />
       ) : null}
       {rules === null ? null : rules.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No rules yet.</p>
+        <p className="text-xs text-muted-foreground">{tx("No rules yet.")}</p>
       ) : (
-        <ul aria-label="Mail rules" className="flex flex-col divide-y divide-border rounded-md border border-border">
+        <ul aria-label={tx("Mail rules")} className="flex flex-col divide-y divide-border rounded-md border border-border">
           {rules.map((rule) => (
             <li key={rule.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
               <span className="min-w-0 flex-1 truncate text-foreground">{rule.name}</span>
               <span className="text-xs text-muted-foreground">
                 {`${rule.mode === "start" ? "Starts" : "Prepares"} in ${rule.projectName ?? projectName(projects, rule.projectId)}`}
               </span>
-              {!rule.enabled ? <span className="text-xs text-muted-foreground">Off</span> : null}
+              {!rule.enabled ? <span className="text-xs text-muted-foreground">{tx("Off")}</span> : null}
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" disabled={editing !== null} onClick={() => setEditing(rule)}>
-                Edit
+                {tx("Edit")}
               </Button>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => void remove(rule)}>
-                Delete
+                {tx("Delete")}
               </Button>
             </li>
           ))}

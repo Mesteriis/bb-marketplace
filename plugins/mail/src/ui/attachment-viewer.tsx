@@ -19,6 +19,7 @@ import { Icon } from "@/components/ui/icon";
 import { formatFileSize } from "./files-view.tsx";
 import { PdfView, type PdfEngine } from "./pdf-view.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export const NOT_VIEWABLE_TEXT = "This file type opens only after download";
 export const TEXT_CUT_TEXT = "Showing the first 2 MB";
@@ -156,7 +157,7 @@ export function AttachmentViewer({
       case "loading":
         body = (
           <p role="status" className="text-sm text-muted-foreground">
-            {"Loading\u2026"}
+            {tx("Loading\u2026")}
           </p>
         );
         break;
@@ -181,7 +182,7 @@ export function AttachmentViewer({
                 {TEXT_CUT_TEXT}
                 {" \u00b7 "}
                 <button type="button" className="underline" onClick={() => onDownload(request)}>
-                  Download
+                  {tx("Download")}
                 </button>
               </p>
             ) : null}
@@ -211,12 +212,12 @@ export function AttachmentViewer({
           <div className="flex flex-wrap items-center gap-1">
             <Button variant="outline" size="sm" className="h-7" onClick={() => onDownload(request)}>
               <Icon name="Download" fallback="Paperclip" aria-hidden />
-              Download
+              {tx("Download")}
             </Button>
             {onSave !== undefined ? (
               <Button variant="ghost" size="sm" className="h-7" onClick={() => onSave(request)}>
                 <Icon name="FolderInput" fallback="Folder" aria-hidden />
-                {"Save to project\u2026"}
+                {tx("Save to project\u2026")}
               </Button>
             ) : null}
           </div>

@@ -31,6 +31,7 @@ import {
 import { outboxAttention } from "./outbox.tsx";
 import { ActionMenu, type MenuEntry } from "./action-menu.tsx";
 import { SavedSearchesRail } from "./saved-searches.tsx";
+import { tx } from "./i18n/index.ts";
 
 /** A rail page: Today and Tasks (slice 3f), Dev and Projects (slice 3g), Files (slice 3h). */
 export type RailPage = "today" | "tasks" | "dev" | "projects" | "files";
@@ -118,7 +119,7 @@ function PageRows({
     ...(pages.files === true ? [{ page: "files" as const, label: "Files", icon: "Paperclip", count: null, unit: "" }] : []),
   ];
   return (
-    <ul aria-label="Today and tasks" className="flex flex-col gap-px px-1.5 pb-1">
+    <ul aria-label={tx("Today and tasks")} className="flex flex-col gap-px px-1.5 pb-1">
       {rows.map((row) => (
         <li key={row.page}>
           <button
@@ -169,7 +170,7 @@ function AccountChooser({
           onSelectAccount(choice);
         }}
       >
-        <SelectTrigger aria-label="Account" className="h-8 w-full max-w-none">
+        <SelectTrigger aria-label={tx("Account")} className="h-8 w-full max-w-none">
           <SelectValue />
         </SelectTrigger>
         <SelectContent
@@ -179,7 +180,7 @@ function AccountChooser({
             event.preventDefault();
           }}
         >
-          <SelectItem value={ALL_ACCOUNTS}>All accounts</SelectItem>
+          <SelectItem value={ALL_ACCOUNTS}>{tx("All accounts")}</SelectItem>
           {accounts.map((item) => (
             <SelectItem key={item.id} value={item.id}>
               {accountLabel(item)}
@@ -220,7 +221,7 @@ function OutboxRowButton({
 }) {
   const attention = outboxAttention(rows);
   return (
-    <ul aria-label="Outbox" className="flex flex-col gap-px px-1.5 py-1">
+    <ul aria-label={tx("Outbox")} className="flex flex-col gap-px px-1.5 py-1">
       <li>
         <button
           type="button"
@@ -228,7 +229,7 @@ function OutboxRowButton({
           className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-sm text-foreground transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
         >
           <Icon name="Send" className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="min-w-0 flex-1 truncate">Outbox</span>
+          <span className="min-w-0 flex-1 truncate">{tx("Outbox")}</span>
           <span
             className={cn(
               "shrink-0 text-xs tabular-nums",
@@ -321,9 +322,9 @@ export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, o
     };
   })();
   const body = (() => {
-    if (state === null) return <Notice>Loading mail…</Notice>;
-    if (!state.vaultReady) return <Notice>Mail is not set up yet.</Notice>;
-    if (state.accounts.length === 0) return <Notice>No mail account yet.</Notice>;
+    if (state === null) return <Notice>{tx("Loading mail\u2026")}</Notice>;
+    if (!state.vaultReady) return <Notice>{tx("Mail is not set up yet.")}</Notice>;
+    if (state.accounts.length === 0) return <Notice>{tx("No mail account yet.")}</Notice>;
     const attention = outboxAttention(state.outbox);
     const toOutbox = state.outbox.length > 0 ? outboxView(state) : null;
     return (
@@ -331,7 +332,7 @@ export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, o
         <div className="flex shrink-0 flex-col gap-1.5 px-1.5 pb-1.5 pt-2">
           <Button variant="outline" size="sm" className="w-full justify-start" onClick={onCompose}>
             <Icon name="Pencil" fallback="Plus" aria-hidden />
-            New message
+            {tx("New message")}
           </Button>
           <div className="flex items-center gap-1">
             <div className="min-w-0 flex-1">
@@ -342,7 +343,7 @@ export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, o
                 variant="ghost"
                 size="icon"
                 className="size-7 shrink-0 text-muted-foreground"
-                aria-label="Account options"
+                aria-label={tx("Account options")}
                 onClick={() => setMenu({ kind: "account", account: state.account! })}
               >
                 <Icon name="MoreHorizontal" fallback="Info" aria-hidden />
@@ -399,7 +400,7 @@ export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, o
               onClick={onOpenSettings}
             >
               <Icon name="Settings" fallback="Info" aria-hidden />
-              Mail settings
+              {tx("Mail settings")}
             </Button>
           </div>
         ) : null}
@@ -407,7 +408,7 @@ export function MailSidebar({ state, onCompose, onSelectAccount, onSelectView, o
     );
   })();
   return (
-    <nav aria-label="Folders" className="flex h-full min-h-0 min-w-0 flex-col">
+    <nav aria-label={tx("Folders")} className="flex h-full min-h-0 min-w-0 flex-col">
       {body}
       {menuView !== null ? (
         <ActionMenu

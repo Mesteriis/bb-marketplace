@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { errorText } from "./bb-ports.ts";
 import { LoadingState } from "./empty-states.tsx";
 import { formatListDate, participantsLabel, subjectOrPlaceholder } from "./thread-list.tsx";
+import { tx } from "./i18n/index.ts";
 
 export interface ProjectsViewProps {
   /** The project shown; null: the list of projects with bindings. */
@@ -47,15 +48,15 @@ export function ProjectsView(props: ProjectsViewProps) {
         {props.projectId !== null ? (
           <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => props.onSelectProject(null)}>
             <Icon name="ArrowLeft" aria-hidden />
-            Projects
+            {tx("Projects")}
           </Button>
         ) : null}
         <h1 className="min-w-0 flex-1 text-lg font-semibold text-foreground">
-          {props.projectId === null ? "Projects" : name(props.projectId)}
+          {props.projectId === null ? tx("Projects") : name(props.projectId)}
         </h1>
         {props.projectId !== null ? (
           <Button variant="outline" size="sm" className="h-7 px-2" onClick={() => props.onOpenInBb(props.projectId!)}>
-            Open in BB
+            {tx("Open in BB")}
           </Button>
         ) : null}
       </div>
@@ -69,7 +70,7 @@ export function ProjectsView(props: ProjectsViewProps) {
 }
 
 function ProjectList({ lists, onSelect }: { lists: { projects: ProjectListItem[]; bindings: BindingView[] } | null; onSelect: (id: string) => void }) {
-  if (lists === null) return <LoadingState label={"Loading projects\u2026"} />;
+  if (lists === null) return <LoadingState label={tx("Loading projects\u2026")} />;
   const bound = new Map<string, { name: string; rules: number; removed: boolean }>();
   for (const binding of lists.bindings) {
     const entry = bound.get(binding.projectId) ?? { name: binding.projectName ?? binding.projectId, rules: 0, removed: binding.removed };
@@ -80,9 +81,9 @@ function ProjectList({ lists, onSelect }: { lists: { projects: ProjectListItem[]
     ...lists.projects.map((p) => ({ id: p.id, name: p.name, rules: bound.get(p.id)?.rules ?? 0, removed: false })),
     ...[...bound.entries()].filter(([id]) => !lists.projects.some((p) => p.id === id)).map(([id, e]) => ({ id, ...e })),
   ];
-  if (rows.length === 0) return <p className="text-sm text-muted-foreground">No BB projects.</p>;
+  if (rows.length === 0) return <p className="text-sm text-muted-foreground">{tx("No BB projects.")}</p>;
   return (
-    <ul aria-label="Projects" className="flex flex-col divide-y divide-border rounded-md border border-border">
+    <ul aria-label={tx("Projects")} className="flex flex-col divide-y divide-border rounded-md border border-border">
       {rows.map((row) => (
         <li key={row.id}>
           <button
@@ -92,7 +93,7 @@ function ProjectList({ lists, onSelect }: { lists: { projects: ProjectListItem[]
           >
             <Icon name="Folder" className="size-4 shrink-0 text-muted-foreground" aria-hidden />
             <span className="min-w-0 flex-1 truncate text-foreground">{row.name}</span>
-            {row.removed ? <span className="text-xs text-muted-foreground">project removed</span> : null}
+            {row.removed ? <span className="text-xs text-muted-foreground">{tx("project removed")}</span> : null}
             {row.rules > 0 ? <span className="text-xs text-muted-foreground">{`${row.rules} ${row.rules === 1 ? "rule" : "rules"}`}</span> : null}
           </button>
         </li>
@@ -136,13 +137,13 @@ function ProjectMail({ projectId, loadMail, onOpen, refreshKey = 0 }: ProjectsVi
         </p>
       ) : null}
       {threads === null ? (
-        error === null ? <LoadingState label={"Loading mail\u2026"} /> : null
+        error === null ? <LoadingState label={tx("Loading mail\u2026")} /> : null
       ) : threads.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No conversation is bound to this project. Use the Project chip in a conversation, or Always for a sender.
+          {tx("No conversation is bound to this project. Use the Project chip in a conversation, or Always for a sender.")}
         </p>
       ) : (
-        <ul aria-label="Conversations" className="flex flex-col divide-y divide-border rounded-md border border-border">
+        <ul aria-label={tx("Conversations")} className="flex flex-col divide-y divide-border rounded-md border border-border">
           {threads.map((thread) => (
             <li key={`${thread.accountId}:${thread.id}`}>
               <button
@@ -169,7 +170,7 @@ function ProjectMail({ projectId, loadMail, onOpen, refreshKey = 0 }: ProjectsVi
       {next !== null ? (
         <div>
           <Button variant="outline" size="sm" onClick={() => void more()}>
-            Load more
+            {tx("Load more")}
           </Button>
         </div>
       ) : null}

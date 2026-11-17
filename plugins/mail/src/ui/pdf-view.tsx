@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { isAllowedLinkUrl } from "./sanitize.ts";
+import { tx } from "./i18n/index.ts";
 
 /** One open PDF (the adapter's pdf.js document). */
 export interface PdfDocument {
@@ -120,7 +121,7 @@ export function PdfView({
   const download = (
     <Button variant="outline" size="sm" className="h-7" onClick={onDownload}>
       <Icon name="Download" fallback="Paperclip" aria-hidden />
-      Download
+      {tx("Download")}
     </Button>
   );
 
@@ -137,21 +138,21 @@ export function PdfView({
   if (phase.kind === "opening") {
     return (
       <p role="status" className="text-sm text-muted-foreground">
-        {"Opening the PDF\u2026"}
+        {tx("Opening the PDF\u2026")}
       </p>
     );
   }
   return (
     <div className="flex min-h-0 flex-col gap-2">
       <div role="toolbar" aria-label="PDF" className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-        <Button variant="ghost" size="icon" className="size-7" aria-label="Previous page" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+        <Button variant="ghost" size="icon" className="size-7" aria-label={tx("Previous page")} disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
           <Icon name="ChevronLeft" fallback="ArrowLeft" aria-hidden />
         </Button>
         <span aria-live="polite">{`Page ${page} of ${pages}`}</span>
-        <Button variant="ghost" size="icon" className="size-7" aria-label="Next page" disabled={page >= pages} onClick={() => setPage((p) => Math.min(pages, p + 1))}>
+        <Button variant="ghost" size="icon" className="size-7" aria-label={tx("Next page")} disabled={page >= pages} onClick={() => setPage((p) => Math.min(pages, p + 1))}>
           <Icon name="ChevronRight" fallback="ArrowRight" aria-hidden />
         </Button>
-        <Button variant="ghost" size="icon" className="size-7" aria-label="Zoom out" disabled={zoom <= 0} onClick={() => setZoom((z) => Math.max(0, z - 1))}>
+        <Button variant="ghost" size="icon" className="size-7" aria-label={tx("Zoom out")} disabled={zoom <= 0} onClick={() => setZoom((z) => Math.max(0, z - 1))}>
           <Icon name="ZoomOut" fallback="Minus" aria-hidden />
         </Button>
         <span>{`${Math.round(scale * 100)}%`}</span>
@@ -159,7 +160,7 @@ export function PdfView({
           variant="ghost"
           size="icon"
           className="size-7"
-          aria-label="Zoom in"
+          aria-label={tx("Zoom in")}
           disabled={zoom >= PDF_ZOOMS.length - 1}
           onClick={() => setZoom((z) => Math.min(PDF_ZOOMS.length - 1, z + 1))}
         >
@@ -183,7 +184,7 @@ export function PdfView({
       {links.length > 0 ? (
         <details className="text-xs text-muted-foreground">
           <summary className="cursor-pointer select-none">{`Links in this PDF (${links.length})`}</summary>
-          <ul aria-label="Links in this PDF" className="mt-1 flex flex-col gap-0.5">
+          <ul aria-label={tx("Links in this PDF")} className="mt-1 flex flex-col gap-0.5">
             {links.map((url) => (
               <li key={url}>
                 <button type="button" className="break-all text-left text-foreground underline" onClick={() => onOpenLink(url)}>

@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { AiText } from "./ai-text.tsx";
 import { LoadingState } from "./empty-states.tsx";
 import { TASK_TITLE_MAX } from "./tasks-dialog.tsx";
+import { tx } from "./i18n/index.ts";
 
 export const TASK_GONE_TEXT = "The message is no longer in Makosh Mail";
 
@@ -88,13 +89,13 @@ export function TasksView({ load, update, remove, onOpen, refreshKey = 0 }: Task
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
-        <h1 className="min-w-0 flex-1 text-lg font-semibold text-foreground">Tasks</h1>
-        <div role="group" aria-label="Show" className="flex items-center rounded-md border border-border p-0.5">
+        <h1 className="min-w-0 flex-1 text-lg font-semibold text-foreground">{tx("Tasks")}</h1>
+        <div role="group" aria-label={tx("Show")} className="flex items-center rounded-md border border-border p-0.5">
           <Button variant={done ? "ghost" : "secondary"} size="sm" className="h-6 px-2 text-xs" aria-pressed={!done} onClick={() => setDone(false)}>
-            Open
+            {tx("Open")}
           </Button>
           <Button variant={done ? "secondary" : "ghost"} size="sm" className="h-6 px-2 text-xs" aria-pressed={done} onClick={() => setDone(true)}>
-            Done
+            {tx("Done")}
           </Button>
         </div>
       </div>
@@ -104,19 +105,19 @@ export function TasksView({ load, update, remove, onOpen, refreshKey = 0 }: Task
         </p>
       ) : null}
       {tasks === null ? (
-        problem === null ? <LoadingState label={"Loading tasks\u2026"} /> : null
+        problem === null ? <LoadingState label={tx("Loading tasks\u2026")} /> : null
       ) : tasks.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          {done ? "No finished tasks." : "No open tasks. Find tasks in a conversation keeps them here."}
+          {done ? tx("No finished tasks.") : tx("No open tasks. Find tasks in a conversation keeps them here.")}
         </p>
       ) : (
-        <ul aria-label="Tasks" className="flex flex-col divide-y divide-border rounded-md border border-border">
+        <ul aria-label={tx("Tasks")} className="flex flex-col divide-y divide-border rounded-md border border-border">
           {(done ? tasks : byDue(tasks)).map((task) =>
             editing?.id === task.id ? (
               <li key={task.id} className="px-3 py-2">
                 <form onSubmit={saveEdit} className="flex flex-wrap items-center gap-2">
                   <Input
-                    aria-label="Task title"
+                    aria-label={tx("Task title")}
                     value={editing.title}
                     maxLength={TASK_TITLE_MAX}
                     onChange={(event) => setEditing({ ...editing, title: event.target.value })}
@@ -124,16 +125,16 @@ export function TasksView({ load, update, remove, onOpen, refreshKey = 0 }: Task
                   />
                   <Input
                     type="date"
-                    aria-label="Due date"
+                    aria-label={tx("Due date")}
                     value={editing.due}
                     onChange={(event) => setEditing({ ...editing, due: event.target.value })}
                     className="h-8 w-40"
                   />
                   <Button type="submit" size="sm" className="h-8" disabled={editing.title.trim() === ""}>
-                    Save
+                    {tx("Save")}
                   </Button>
                   <Button type="button" variant="ghost" size="sm" className="h-8" onClick={() => setEditing(null)}>
-                    Cancel
+                    {tx("Cancel")}
                   </Button>
                 </form>
               </li>
@@ -150,14 +151,14 @@ export function TasksView({ load, update, remove, onOpen, refreshKey = 0 }: Task
                     <AiText text={task.title} />
                   </span>
                   <span className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                    {task.due !== null ? <span>{`Due ${task.due}`}</span> : <span>No due date</span>}
+                    {task.due !== null ? <span>{`Due ${task.due}`}</span> : <span>{tx("No due date")}</span>}
                     {task.messageId !== null && task.threadId !== null ? (
                       <button
                         type="button"
                         onClick={() => onOpen(task)}
                         className="text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       >
-                        Open the message
+                        {tx("Open the message")}
                       </button>
                     ) : (
                       <span>{TASK_GONE_TEXT}</span>
@@ -165,7 +166,7 @@ export function TasksView({ load, update, remove, onOpen, refreshKey = 0 }: Task
                   </span>
                   {task.note !== null && task.note !== undefined && task.note.trim() !== "" ? (
                     <details className="text-xs text-muted-foreground">
-                      <summary className="cursor-pointer select-none">Note</summary>
+                      <summary className="cursor-pointer select-none">{tx("Note")}</summary>
                       <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-xs text-foreground">{task.note}</pre>
                     </details>
                   ) : null}
@@ -176,7 +177,7 @@ export function TasksView({ load, update, remove, onOpen, refreshKey = 0 }: Task
                   className="h-7 px-2 text-xs"
                   onClick={() => setEditing({ id: task.id, title: task.title, due: task.due ?? "" })}
                 >
-                  Edit
+                  {tx("Edit")}
                 </Button>
                 {confirming === task.id ? (
                   <Button
@@ -188,11 +189,11 @@ export function TasksView({ load, update, remove, onOpen, refreshKey = 0 }: Task
                       run(() => remove(task.id));
                     }}
                   >
-                    Delete task
+                    {tx("Delete task")}
                   </Button>
                 ) : (
                   <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setConfirming(task.id)}>
-                    Delete
+                    {tx("Delete")}
                   </Button>
                 )}
               </li>
@@ -202,7 +203,7 @@ export function TasksView({ load, update, remove, onOpen, refreshKey = 0 }: Task
       )}
       {next !== null ? (
         <Button variant="outline" size="sm" onClick={() => void more()}>
-          Load more
+          {tx("Load more")}
         </Button>
       ) : null}
     </div>

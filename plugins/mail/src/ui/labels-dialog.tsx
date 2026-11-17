@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export const LABEL_REFUSAL_TEXT: Record<LabelNameRefusal, string> = {
   empty: "Type a name",
@@ -146,9 +147,9 @@ export function LabelsDialog({
     <Dialog open={open} onOpenChange={(next) => !next && !busy && onCancel()}>
       <DialogContent className="max-w-sm" onEscapeKeyDown={stopEscape}>
         <DialogHeader>
-          <DialogTitle>Labels</DialogTitle>
+          <DialogTitle>{tx("Labels")}</DialogTitle>
           <DialogDescription>
-            {request === null || request.count === 1 ? "Labels of this conversation's messages in Gmail" : `Labels of ${request.count} messages in Gmail`}
+            {request === null || request.count === 1 ? tx("Labels of this conversation's messages in Gmail") : `Labels of ${request.count} messages in Gmail`}
           </DialogDescription>
         </DialogHeader>
         {loadError !== null ? (
@@ -157,21 +158,21 @@ export function LabelsDialog({
           </p>
         ) : labels === null ? (
           <p role="status" className="text-sm text-muted-foreground">
-            {"Loading labels\u2026"}
+            {tx("Loading labels\u2026")}
           </p>
         ) : (
           <div className="flex flex-col gap-2">
             <Input
-              aria-label="Filter labels"
-              placeholder="Filter"
+              aria-label={tx("Filter labels")}
+              placeholder={tx("Filter")}
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
               className="h-8"
             />
             {shown.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{all.length === 0 ? "No labels yet." : "No label matches."}</p>
+              <p className="text-sm text-muted-foreground">{all.length === 0 ? tx("No labels yet.") : tx("No label matches.")}</p>
             ) : (
-              <ul aria-label="Labels" className="flex max-h-64 flex-col gap-1 overflow-y-auto">
+              <ul aria-label={tx("Labels")} className="flex max-h-64 flex-col gap-1 overflow-y-auto">
                 {shown.map((name) => {
                   const choice = choiceOf(name);
                   return (
@@ -190,7 +191,7 @@ export function LabelsDialog({
             {naming ? (
               <form onSubmit={addLabel} className="flex items-center gap-1">
                 <Input
-                  aria-label="New label name"
+                  aria-label={tx("New label name")}
                   autoFocus
                   value={newName}
                   maxLength={120}
@@ -198,13 +199,13 @@ export function LabelsDialog({
                   className="h-8"
                 />
                 <Button type="submit" variant="outline" size="sm">
-                  Add
+                  {tx("Add")}
                 </Button>
               </form>
             ) : (
               <div>
                 <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setNaming(true)}>
-                  {"New label\u2026"}
+                  {tx("New label\u2026")}
                 </Button>
               </div>
             )}
@@ -217,10 +218,10 @@ export function LabelsDialog({
         ) : null}
         <DialogFooter>
           <Button variant="ghost" onClick={onCancel} disabled={busy}>
-            Cancel
+            {tx("Cancel")}
           </Button>
           <Button onClick={() => void apply()} disabled={busy || labels === null}>
-            {busy ? "Applying\u2026" : "Apply"}
+            {busy ? tx("Applying\u2026") : tx("Apply")}
           </Button>
         </DialogFooter>
       </DialogContent>

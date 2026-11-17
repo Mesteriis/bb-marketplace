@@ -9,6 +9,7 @@ import type { LogActor, LogOutcome, LogTool } from "../core/agent-log.ts";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { subjectOrPlaceholder } from "./thread-list.tsx";
+import { tx } from "./i18n/index.ts";
 
 export const LOG_PAGE = 50;
 export const TERMINAL_NOT_LOGGED = "Commands in your own terminal are not logged.";
@@ -149,16 +150,15 @@ export function AgentActivity({ load, clear, onOpen }: AgentActivityProps) {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">
-        What agents and AI features did with your mail, kept on this computer for 90 days. The log keeps ids and counts,
-        never a query, subject or text. {TERMINAL_NOT_LOGGED}
+        {tx("What agents and AI features did with your mail, kept on this computer for 90 days. The log keeps ids and counts, never a query, subject or text.")} {TERMINAL_NOT_LOGGED}
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <Select value={thread} onValueChange={setThread}>
-          <SelectTrigger aria-label="Thread" className="h-8 w-auto max-w-64">
+          <SelectTrigger aria-label={tx("Thread")} className="h-8 w-auto max-w-64">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={ALL_THREADS}>Every thread</SelectItem>
+            <SelectItem value={ALL_THREADS}>{tx("Every thread")}</SelectItem>
             {threads.map((id) => (
               <SelectItem key={id} value={id}>
                 {`Thread ${id.slice(0, 8)}`}
@@ -169,17 +169,17 @@ export function AgentActivity({ load, clear, onOpen }: AgentActivityProps) {
         <span className="flex-1" />
         {confirming ? (
           <>
-            <span className="text-xs text-muted-foreground">Clear the whole log?</span>
+            <span className="text-xs text-muted-foreground">{tx("Clear the whole log?")}</span>
             <Button variant="destructive" size="sm" onClick={() => void doClear()}>
-              Clear log
+              {tx("Clear log")}
             </Button>
             <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
-              Cancel
+              {tx("Cancel")}
             </Button>
           </>
         ) : (
           <Button variant="outline" size="sm" disabled={entries === null || entries.length === 0} onClick={() => setConfirming(true)}>
-            {"Clear log\u2026"}
+            {tx("Clear log\u2026")}
           </Button>
         )}
       </div>
@@ -189,9 +189,9 @@ export function AgentActivity({ load, clear, onOpen }: AgentActivityProps) {
         </p>
       ) : null}
       {entries === null ? null : entries.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Nothing yet.</p>
+        <p className="text-sm text-muted-foreground">{tx("Nothing yet.")}</p>
       ) : (
-        <ul aria-label="Agent activity" className="flex flex-col divide-y divide-border">
+        <ul aria-label={tx("Agent activity")} className="flex flex-col divide-y divide-border">
           {entries.map((entry) => (
             <li key={entry.seq} className="flex flex-col gap-0.5 py-2">
               <p className="text-sm text-foreground">{logLine(entry)}</p>
@@ -223,7 +223,7 @@ export function AgentActivity({ load, clear, onOpen }: AgentActivityProps) {
       )}
       {next !== null ? (
         <Button variant="outline" size="sm" onClick={() => void more()}>
-          Load more
+          {tx("Load more")}
         </Button>
       ) : null}
     </div>

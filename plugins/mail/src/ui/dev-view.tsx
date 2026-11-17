@@ -10,6 +10,7 @@ import { Icon } from "@/components/ui/icon";
 import { errorText } from "./bb-ports.ts";
 import { LoadingState } from "./empty-states.tsx";
 import { formatListDate } from "./thread-list.tsx";
+import { tx } from "./i18n/index.ts";
 
 export interface DevViewProps {
   load: (cursor: string | null) => Promise<{ groups: DevGroup[]; next: string | null }>;
@@ -91,9 +92,9 @@ export function DevView({ load, onAction, onOpenProject, refreshKey = 0 }: DevVi
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-0.5">
-        <h1 className="text-lg font-semibold text-foreground">Dev</h1>
+        <h1 className="text-lg font-semibold text-foreground">{tx("Dev")}</h1>
         <p className="text-xs text-muted-foreground">
-          GitHub, GitLab, CI and monitoring mail of the last 7 days, recognised on this computer.
+          {tx("GitHub, GitLab, CI and monitoring mail of the last 7 days, recognised on this computer.")}
         </p>
       </div>
       {error !== null ? (
@@ -102,11 +103,11 @@ export function DevView({ load, onAction, onOpenProject, refreshKey = 0 }: DevVi
         </p>
       ) : null}
       {groups === null ? (
-        error === null ? <LoadingState label={"Loading Dev\u2026"} /> : null
+        error === null ? <LoadingState label={tx("Loading Dev\u2026")} /> : null
       ) : groups.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No dev notifications in the last 7 days.</p>
+        <p className="text-sm text-muted-foreground">{tx("No dev notifications in the last 7 days.")}</p>
       ) : (
-        <ul aria-label="Repositories" className="flex flex-col divide-y divide-border rounded-md border border-border">
+        <ul aria-label={tx("Repositories")} className="flex flex-col divide-y divide-border rounded-md border border-border">
           {groups.map((group) => {
             const key = `${group.source}:${group.repo ?? ""}`;
             return (
@@ -144,10 +145,10 @@ export function DevView({ load, onAction, onOpenProject, refreshKey = 0 }: DevVi
                     disabled={busy !== null || group.unread === 0}
                     onClick={() => void act(group, "mark_read")}
                   >
-                    Mark read
+                    {tx("Mark read")}
                   </Button>
                   <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" disabled={busy !== null} onClick={() => void act(group, "archive")}>
-                    Archive
+                    {tx("Archive")}
                   </Button>
                 </div>
               </li>
@@ -158,7 +159,7 @@ export function DevView({ load, onAction, onOpenProject, refreshKey = 0 }: DevVi
       {next !== null ? (
         <div>
           <Button variant="outline" size="sm" onClick={() => void more()}>
-            Load more
+            {tx("Load more")}
           </Button>
         </div>
       ) : null}

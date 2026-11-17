@@ -6,6 +6,7 @@ import type { RpcOut } from "../core/contract.ts";
 import type { SearchField } from "../core/index.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { tx } from "./i18n/index.ts";
 
 export type ServerJobView = RpcOut<"server_job_poll">;
 export type ServerAccountView = ServerJobView["accounts"][number];
@@ -85,7 +86,7 @@ export function ServerSearchStrip({
   const running = job.state === "running";
   const narrowed = [...new Set(localOnly.map((field) => FIELD_TEXT[field] ?? `${field}:`))];
   return (
-    <div role="status" aria-label="Server search" className="flex flex-col gap-1 border-b border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+    <div role="status" aria-label={tx("Server search")} className="flex flex-col gap-1 border-b border-border bg-card px-3 py-2 text-xs text-muted-foreground">
       <ul className="flex flex-col gap-0.5">
         {job.accounts.map((row) => (
           <li key={row.accountId} className="flex min-w-0 items-center gap-1">
@@ -97,17 +98,17 @@ export function ServerSearchStrip({
           </li>
         ))}
       </ul>
-      {job.state === "failed" ? <p role="alert" className="text-destructive">The server search failed</p> : null}
+      {job.state === "failed" ? <p role="alert" className="text-destructive">{tx("The server search failed")}</p> : null}
       {narrowed.length > 0 ? <p>{`Checked in Mail only: ${narrowed.join(", ")}`}</p> : null}
       <div className="flex flex-wrap items-center gap-1">
         {running ? (
           <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onCancel}>
-            Cancel
+            {tx("Cancel")}
           </Button>
         ) : null}
         {!running && job.moreAvailable ? (
           <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onMore}>
-            More from the server
+            {tx("More from the server")}
           </Button>
         ) : null}
       </div>

@@ -173,6 +173,7 @@ import type { SettingsSearchPorts } from "./src/ui/mail-settings.tsx";
 // The page-side pdf.js engine: pdf.js loads lazily, in a blob: worker only.
 import { browserPdfEngine } from "./src/adapters/bb/pdf-page.ts";
 import type { RuleRunView } from "./src/core/contract.ts";
+import { tx } from "./src/ui/i18n/index.ts";
 
 // The channel name is checked against the core constant without importing it
 // at runtime: a value import of the core would bundle its zod schemas.
@@ -1245,7 +1246,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const undo = useCallback(
     async (undoId: string | null, moving: boolean) => {
       if (undoId === null) {
-        toast("Nothing to undo", { id: UNDO_TOAST_ID });
+        toast(tx("Nothing to undo"), { id: UNDO_TOAST_ID });
         return;
       }
       try {
@@ -1264,7 +1265,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         }
         if (result.outcome === "done" && moving && result.restored > 0) {
           if (movingBack.current !== null) clearTimeout(movingBack.current.timer);
-          toast("Moving back…", { id: UNDO_TOAST_ID, duration: Number.POSITIVE_INFINITY });
+          toast(tx("Moving back\u2026"), { id: UNDO_TOAST_ID, duration: Number.POSITIVE_INFINITY });
           movingBack.current = {
             text,
             timer: setTimeout(() => {
@@ -1729,7 +1730,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
 
   const goToUrl = useCallback(
     (url: string) => {
-      if (!navigate.openUrl(url)) toast.error("This link cannot be opened here.");
+      if (!navigate.openUrl(url)) toast.error(tx("This link cannot be opened here."));
     },
     [navigate],
   );
@@ -1748,7 +1749,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       const own = ownEmails.current.map(addressDomain).filter((d): d is string => d !== null);
       const clean = cleanLink(url, text, { clean: cleanLinksOn.current, known: buildKnownDomains([...own, ...likes]) });
       if (clean === null) {
-        toast.error("This link cannot be opened here.");
+        toast.error(tx("This link cannot be opened here."));
         return;
       }
       if (clean.needsDialog) {
@@ -1996,23 +1997,23 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
             toast.dismiss(toastId);
             break;
           case "done":
-            toast.success("Sent", { id: toastId });
+            toast.success(tx("Sent"), { id: toastId });
             break;
           case "failed":
-            toast.error(row !== null ? outboxStateText(row) : "Not sent", {
+            toast.error(row !== null ? outboxStateText(row) : tx("Not sent"), {
               id: toastId,
               action: { label: "Retry", onClick: () => void outboxAction(event.id, "retry") },
             });
             break;
           case "unknown":
-            toast.error("May have been sent — see the Outbox in Sent", { id: toastId });
+            toast.error(tx("May have been sent \u2014 see the Outbox in Sent"), { id: toastId });
             break;
           case "sent_no_copy":
-            toast.error(row !== null ? outboxStateText(row) : "Sent; the copy to Sent failed", { id: toastId });
+            toast.error(row !== null ? outboxStateText(row) : tx("Sent; the copy to Sent failed"), { id: toastId });
             break;
           case "waiting":
             // Not an error yet: Mail tries again on its own (slice 3j).
-            toast(row !== null ? outboxStateText(row) : "Not sent yet. Mail will try again.", { id: toastId });
+            toast(row !== null ? outboxStateText(row) : tx("Not sent yet. Mail will try again."), { id: toastId });
             break;
           case "held":
           case "sent":
@@ -2157,7 +2158,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         });
         switch (result.outcome) {
           case "done":
-            toast.success("Unsubscribed");
+            toast.success(tx("Unsubscribed"));
             break;
           case "redirected":
             toast(REDIRECTED_TEXT, viaEmail !== undefined ? { action: viaEmail } : undefined);
@@ -2194,7 +2195,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         const { groups, undoable } = await rpc.call("unsubscribe_archive", { messageId: message.id, undoId });
         const queued = groupsOutcome(groups);
         if (queued === 0) {
-          if (groups.every((g) => g.error === null)) toast("Nothing from this list is left in the Inbox");
+          if (groups.every((g) => g.error === null)) toast(tx("Nothing from this list is left in the Inbox"));
           return;
         }
         if (undoable) recordUndo(undoId, "archive", queued, null, true);
@@ -2309,7 +2310,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       if (detail === null || detail.thread.id !== threadId) return;
       try {
         const { ok } = await rpc.call("message_unsnooze", { messageIds: detail.messages.map((m) => m.id) });
-        toast(ok ? "Coming back to the Inbox" : "Nothing here is snoozed any more");
+        toast(ok ? tx("Coming back to the Inbox") : tx("Nothing here is snoozed any more"));
         refreshAfterChange();
       } catch (error) {
         toast.error(messageOf(error));
@@ -2820,7 +2821,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const labelledToast = useCallback(
     (changed: number, undoId: string | null) => {
       if (changed === 0) {
-        toast("Nothing to label");
+        toast(tx("Nothing to label"));
         return;
       }
       toast(`Labelled ${plural(changed, "message", "messages")}`, {
@@ -2857,7 +2858,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       disabledReason: status?.translate.gateway === "gateway_missing" ? AI_ERROR_TEXT.gateway_missing : null,
       keepTasks: async (jobId: string, picks: TaskPick[]) => {
         const { kept } = await rpc.call("tasks_keep", { jobId, picks });
-        toast.success(kept === 1 ? "Kept 1 task" : `Kept ${kept} tasks`);
+        toast.success(kept === 1 ? tx("Kept 1 task") : `Kept ${kept} tasks`);
         return kept;
       },
       onOpenConversation: (accountId, threadId) =>
@@ -2897,10 +2898,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
           try {
             const ids = (await latestMessages(threadIds)).slice(0, 50);
             if (ids.length === 0) return;
-            toast("Suggesting categories\u2026");
+            toast(tx("Suggesting categories\u2026"));
             const result = await runAiToEnd({ kind: "categories", messageIds: ids });
             const suggested = result.kind === "categories" ? result.items.filter((item) => item.category !== null).length : 0;
-            toast(suggested === 1 ? "Suggested a category for 1 message" : `Suggested categories for ${suggested} messages`);
+            toast(suggested === 1 ? tx("Suggested a category for 1 message") : `Suggested categories for ${suggested} messages`);
             reloadAfterLabel();
           } catch (error) {
             toast.error(`Could not suggest categories: ${messageOf(error)}`);
@@ -3098,7 +3099,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       renderDiff: (patch, path) => <HostDiff patch={patch} path={path} overflow="wrap" />,
       copy: (text) => {
         void copy(text).then((done) => {
-          if (done === false) toast.error("Could not copy");
+          if (done === false) toast.error(tx("Could not copy"));
         });
       },
     }),
@@ -3129,7 +3130,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       .call("rules_pause", {})
       .then(({ paused }) => {
         void loadRuleRuns();
-        toast(paused === 1 ? "Paused 1 rule" : `Paused ${paused} rules`, {
+        toast(paused === 1 ? tx("Paused 1 rule") : `Paused ${paused} rules`, {
           action: {
             label: "Undo",
             onClick: () => {
@@ -3299,7 +3300,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     try {
       const { ok } = await rpc.call("server_search_more", { jobId: current.jobId });
       if (!ok) {
-        toast("Nothing more on the server");
+        toast(tx("Nothing more on the server"));
         return;
       }
       followServerJob(current.query, current.jobId);
@@ -3574,7 +3575,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       const accountIds = new Set(messages.map((m) => m.accountId));
       const accountId = messages[0]?.accountId;
       if (accountId === undefined || accountIds.size !== 1 || !gmailIds.has(accountId)) {
-        toast.error("Labels are for one Gmail account at a time");
+        toast.error(tx("Labels are for one Gmail account at a time"));
         return;
       }
       const byDedup = messages.slice(0, ACTION_CHUNK);
@@ -3597,7 +3598,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       const { changed } = await rpc.call("labels_change", { messageIds: ask.messageIds, ...change, undoId });
       setLabelsAsk(null);
       if (changed > 0) recordUndo(undoId, "labels", changed, null, true);
-      else toast("No label changed");
+      else toast(tx("No label changed"));
       refreshAfterChange();
       const open = latest.current.reading.threadId;
       if (open !== null) void loadThread(open, null);
@@ -3628,7 +3629,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         return;
       }
       if (target.accountId !== null && threads.some((t) => t.accountId !== target.accountId)) {
-        toast.error("Move mail between folders of one account at a time");
+        toast.error(tx("Move mail between folders of one account at a time"));
         return;
       }
       const current = latest.current.view;
@@ -3813,10 +3814,10 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       const save = () => {
         const fileName = printFileName(new Date(), subject);
         void experimental_saveFile({ fileName, blob: new Blob([html], { type: "text/html" }) }).catch(() => {
-          toast.error("The page could not be saved");
+          toast.error(tx("The page could not be saved"));
         });
       };
-      toast("Printing is not available here", { action: { label: "Save printable page", onClick: save } });
+      toast(tx("Printing is not available here"), { action: { label: "Save printable page", onClick: save } });
     },
     [rpc],
   );
@@ -4568,12 +4569,12 @@ async function emailFromBb(
 ): Promise<void> {
   const { rpc, navigate } = bridge;
   if (rpc === null) {
-    toast.error("Open Mail once, then try again");
+    toast.error(tx("Open Mail once, then try again"));
     return;
   }
   try {
     const { draftId, reply } = await rpc.call("draft_from_bb", { bbThreadId, source });
-    toast.success(reply ? "Reply draft ready in Mail" : "Draft ready in Mail");
+    toast.success(reply ? tx("Reply draft ready in Mail") : tx("Draft ready in Mail"));
     navigate?.toPluginPanel("mail", { subPath: draftSubPath(draftId) });
   } catch (error) {
     toast.error(`Could not make the draft: ${messageOf(error)}`);
@@ -4600,7 +4601,7 @@ function ThreadMailInfo({ threadId, projectId }: ExperimentalThreadInfoProps) {
       onOpen={(accountId, mailThreadId) => navigate.toPluginPanel("mail", { subPath: threadSubPath(accountId, mailThreadId) })}
       onShowAll={() => navigate.toPluginPanel("mail", { subPath: projectSubPath(projectId) })}
       frame={(content, total) => (
-        <HostInfoSection label="Mail" count={total}>
+        <HostInfoSection label={tx("Mail")} count={total}>
           {content}
         </HostInfoSection>
       )}

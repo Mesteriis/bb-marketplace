@@ -4,6 +4,7 @@
 import type { DevLinkView } from "../core/model.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { tx } from "./i18n/index.ts";
 
 const KIND_LABEL: Record<DevLinkView["kind"], string> = {
   repo: "Repository",
@@ -39,7 +40,7 @@ export interface DevLinksStripProps {
 export function DevLinksStrip({ links, projectName, onOpen, onOpenProject, onNewThread, inAiScope }: DevLinksStripProps) {
   if (links.length === 0) return null;
   return (
-    <ul aria-label="Links" className="flex flex-col gap-0.5 text-xs">
+    <ul aria-label={tx("Links")} className="flex flex-col gap-0.5 text-xs">
       {links.map((link) => (
         <li key={link.url} className="flex min-w-0 flex-wrap items-center gap-1">
           <Icon name="Link" fallback="Paperclip" className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
@@ -51,15 +52,15 @@ export function DevLinksStrip({ links, projectName, onOpen, onOpenProject, onNew
             {link.url}
           </span>
           <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => onOpen(link.url)}>
-            Open
+            {tx("Open")}
           </Button>
           {link.projectId !== null ? (
             <>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => onOpenProject(link.projectId!)}>
-                Open project
+                {tx("Open project")}
               </Button>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" disabled={!inAiScope} onClick={() => onNewThread(link)}>
-                {"New thread\u2026"}
+                {tx("New thread\u2026")}
               </Button>
             </>
           ) : null}

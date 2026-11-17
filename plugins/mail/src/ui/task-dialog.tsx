@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { BB_TEXT, errorText, FIELD_CLASS, type BbCall } from "./bb-ports.ts";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export interface TaskRequest {
   messageId: string;
@@ -120,19 +121,19 @@ function TaskBody({ request, call, onMade, onClose }: TaskDialogProps & { reques
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Make a task</DialogTitle>
+        <DialogTitle>{tx("Make a task")}</DialogTitle>
         <DialogDescription>
-          {where === "taskboard" ? "On your Taskboard board." : "Kept in Mail's own Tasks."}
+          {where === "taskboard" ? tx("On your Taskboard board.") : tx("Kept in Mail's own Tasks.")}
         </DialogDescription>
       </DialogHeader>
       <div className="flex flex-col gap-3">
         {targets === null ? (
           <p role="status" className="text-sm text-muted-foreground">
-            {"Looking for Taskboard\u2026"}
+            {tx("Looking for Taskboard\u2026")}
           </p>
         ) : boards.length > 0 ? (
           <fieldset className="flex flex-col gap-1">
-            <legend className="text-xs font-medium text-muted-foreground">Where</legend>
+            <legend className="text-xs font-medium text-muted-foreground">{tx("Where")}</legend>
             <div className="flex flex-wrap gap-3 text-sm">
               <label className="flex items-center gap-1.5">
                 <input
@@ -142,11 +143,11 @@ function TaskBody({ request, call, onMade, onClose }: TaskDialogProps & { reques
                   disabled={!request.inAiScope}
                   onChange={() => setWhere("taskboard")}
                 />
-                {request.inAiScope ? "Taskboard" : `Taskboard (${BB_TEXT.out_of_scope})`}
+                {request.inAiScope ? tx("Taskboard") : `Taskboard (${BB_TEXT.out_of_scope})`}
               </label>
               <label className="flex items-center gap-1.5">
                 <input type="radio" name="task-where" checked={where === "local"} onChange={() => setWhere("local")} />
-                Mail tasks
+                {tx("Mail tasks")}
               </label>
             </div>
           </fieldset>
@@ -156,7 +157,7 @@ function TaskBody({ request, call, onMade, onClose }: TaskDialogProps & { reques
         {where === "taskboard" && boards.length > 0 ? (
           <div className="flex flex-col gap-1">
             <label htmlFor={ids.board} className="text-xs font-medium text-muted-foreground">
-              Board
+              {tx("Board")}
             </label>
             <select id={ids.board} className={cn(FIELD_CLASS, "h-8")} value={boardId} onChange={(e) => setBoardId(e.target.value)}>
               {boards.map((board) => (
@@ -169,13 +170,13 @@ function TaskBody({ request, call, onMade, onClose }: TaskDialogProps & { reques
         ) : null}
         <div className="flex flex-col gap-1">
           <label htmlFor={ids.title} className="text-xs font-medium text-muted-foreground">
-            Title
+            {tx("Title")}
           </label>
           <Input id={ids.title} value={title} maxLength={500} onChange={(e) => setTitle(e.target.value)} />
         </div>
         <div className="flex flex-col gap-1">
           <label htmlFor={ids.note} className="text-xs font-medium text-muted-foreground">
-            Note (optional)
+            {tx("Note (optional)")}
           </label>
           <textarea
             id={ids.note}
@@ -192,13 +193,13 @@ function TaskBody({ request, call, onMade, onClose }: TaskDialogProps & { reques
             disabled={!request.inAiScope}
             onCheckedChange={(checked) => setExcerpt(checked === true)}
           />
-          Include an excerpt of the mail (passwords and codes hidden)
+          {tx("Include an excerpt of the mail (passwords and codes hidden)")}
         </label>
         {!request.inAiScope ? <p className="text-xs text-muted-foreground">{BB_TEXT.out_of_scope}</p> : null}
         {where === "local" ? (
           <div className="flex flex-col gap-1">
             <label htmlFor={ids.due} className="text-xs font-medium text-muted-foreground">
-              Due (optional)
+              {tx("Due (optional)")}
             </label>
             <Input id={ids.due} type="date" value={due} onChange={(e) => setDue(e.target.value)} />
           </div>
@@ -208,7 +209,7 @@ function TaskBody({ request, call, onMade, onClose }: TaskDialogProps & { reques
             <p>{`${unavailable}; keep the task in Mail?`}</p>
             <div>
               <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => void make("local")}>
-                Keep it in Mail
+                {tx("Keep it in Mail")}
               </Button>
             </div>
           </div>
@@ -221,14 +222,14 @@ function TaskBody({ request, call, onMade, onClose }: TaskDialogProps & { reques
       </div>
       <DialogFooter>
         <Button variant="ghost" size="sm" onClick={onClose}>
-          Cancel
+          {tx("Cancel")}
         </Button>
         <Button
           size="sm"
           disabled={busy || targets === null || title.trim() === "" || (where === "taskboard" && boardId === "")}
           onClick={() => void make(where)}
         >
-          Create
+          {tx("Create")}
         </Button>
       </DialogFooter>
     </>

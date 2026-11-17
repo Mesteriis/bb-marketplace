@@ -8,6 +8,7 @@ import type { BindingView } from "../core/contract.ts";
 import { PROJECT_PATH_REFUSAL_TEXT, projectFolder } from "../core/project-paths.ts";
 import { Button } from "@/components/ui/button";
 import { errorText, type BbCall } from "./bb-ports.ts";
+import { tx } from "./i18n/index.ts";
 
 export interface BbSettingsValues {
   attachmentFolder: string;
@@ -44,7 +45,7 @@ export function BbIntegrationSettings({ values, call, hint }: BbIntegrationSetti
   ];
   return (
     <div className="flex flex-col gap-4">
-      <section aria-label="Folders" className="flex flex-col gap-1">
+      <section aria-label={tx("Folders")} className="flex flex-col gap-1">
         {folders.map(([label, value, fallback]) => {
           const problem = folderProblem(value);
           return (
@@ -55,18 +56,17 @@ export function BbIntegrationSettings({ values, call, hint }: BbIntegrationSetti
           );
         })}
         <p className="text-xs text-muted-foreground">
-          Inside the project's own folder. Mail writes only new files there, never into .git or a folder that starts with a dot, and never
-          opens or runs them.
+          {tx("Inside the project's own folder. Mail writes only new files there, never into .git or a folder that starts with a dot, and never opens or runs them.")}
         </p>
       </section>
-      <section aria-label="Tasks" className="flex flex-col gap-1">
+      <section aria-label={tx("Tasks")} className="flex flex-col gap-1">
         <p className="text-sm text-foreground">{`Make a task puts tasks in: ${TARGET_TEXT[values.taskTarget]}`}</p>
       </section>
-      <section aria-label="Dev notifications" className="flex flex-col gap-1">
+      <section aria-label={tx("Dev notifications")} className="flex flex-col gap-1">
         <p className="text-sm text-foreground">
           {values.devNotifications
-            ? "Dev notifications: on. GitHub, GitLab, CI and monitoring mail is recognised on this computer."
-            : "Dev notifications: off."}
+            ? tx("Dev notifications: on. GitHub, GitLab, CI and monitoring mail is recognised on this computer.")
+            : tx("Dev notifications: off.")}
         </p>
       </section>
       <p className="text-xs text-muted-foreground">{hint}</p>
@@ -98,26 +98,26 @@ function Bindings({ call }: { call: BbCall }) {
     }
   };
   return (
-    <section aria-label="Project binding rules" className="flex flex-col gap-1">
-      <h3 className="text-sm font-semibold text-foreground">Project binding rules</h3>
+    <section aria-label={tx("Project binding rules")} className="flex flex-col gap-1">
+      <h3 className="text-sm font-semibold text-foreground">{tx("Project binding rules")}</h3>
       {problem !== null ? (
         <p role="alert" className="text-xs text-destructive">
           {problem}
         </p>
       ) : null}
       {bindings === null ? null : bindings.length === 0 ? (
-        <p className="text-xs text-muted-foreground">None. Always for a sender in a conversation's Project chip adds one.</p>
+        <p className="text-xs text-muted-foreground">{tx("None. Always for a sender in a conversation's Project chip adds one.")}</p>
       ) : (
-        <ul aria-label="Binding rules" className="flex flex-col gap-1">
+        <ul aria-label={tx("Binding rules")} className="flex flex-col gap-1">
           {bindings.map((binding) => (
             <li key={`${binding.kind}:${binding.value}`} className="flex items-center gap-2 text-sm">
               <span className="text-xs text-muted-foreground">{KIND_TEXT[binding.kind]}</span>
               <span className="min-w-0 flex-1 truncate text-foreground">{binding.value}</span>
               <span className="text-xs text-muted-foreground">
-                {binding.removed ? "project removed" : (binding.projectName ?? binding.projectId)}
+                {binding.removed ? tx("project removed") : (binding.projectName ?? binding.projectId)}
               </span>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => void remove(binding)}>
-                Remove
+                {tx("Remove")}
               </Button>
             </li>
           ))}

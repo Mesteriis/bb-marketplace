@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { BB_TEXT, FIELD_CLASS } from "./bb-ports.ts";
 import { ProjectSelect } from "./project-chip.tsx";
+import { tx } from "./i18n/index.ts";
 
 /** The fixed lines of the Start confirmation. */
 export function startConfirmText(projectName: string): string {
@@ -118,7 +119,7 @@ export function RuleForm({ rule, projects, onSave, onCancel }: RuleFormProps) {
         {label}
       </label>
       <select id={id} className={cn(FIELD_CLASS, "h-8")} value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">Any</option>
+        <option value="">{tx("Any")}</option>
         {options.map((option) => (
           <option key={option} value={option}>
             {option}
@@ -130,7 +131,7 @@ export function RuleForm({ rule, projects, onSave, onCancel }: RuleFormProps) {
 
   return (
     <form
-      aria-label={rule === null ? "New rule" : `Edit ${rule.name}`}
+      aria-label={rule === null ? tx("New rule") : `Edit ${rule.name}`}
       className="flex flex-col gap-3 rounded-md border border-border p-3"
       onSubmit={(event) => {
         event.preventDefault();
@@ -140,10 +141,10 @@ export function RuleForm({ rule, projects, onSave, onCancel }: RuleFormProps) {
       {field(ids.name, "Name", name, setName)}
       <label className="flex items-center gap-2 text-sm">
         <Checkbox checked={enabled} onCheckedChange={(checked) => setEnabled(checked === true)} />
-        On
+        {tx("On")}
       </label>
       <fieldset className="flex flex-col gap-2">
-        <legend className="text-xs font-semibold text-foreground">When new Inbox mail matches all of</legend>
+        <legend className="text-xs font-semibold text-foreground">{tx("When new Inbox mail matches all of")}</legend>
         {field(ids.from, "From addresses", from, setFrom, "Separated by commas")}
         {field(ids.domains, "Sender domains", domains, setDomains)}
         {field(ids.list, "Mailing list id", list, setList)}
@@ -155,10 +156,10 @@ export function RuleForm({ rule, projects, onSave, onCancel }: RuleFormProps) {
           {field(ids.repo, "Repository", repo, setRepo)}
         </div>
       </fieldset>
-      <ProjectSelect label="In project" projects={projects} value={projectId} onChange={setProjectId} />
+      <ProjectSelect label={tx("In project")} projects={projects} value={projectId} onChange={setProjectId} />
       <div className="flex flex-col gap-1">
         <label htmlFor={ids.template} className="text-xs font-medium text-muted-foreground">
-          Instruction for the agent
+          {tx("Instruction for the agent")}
         </label>
         <textarea
           id={ids.template}
@@ -170,10 +171,10 @@ export function RuleForm({ rule, projects, onSave, onCancel }: RuleFormProps) {
         />
       </div>
       <fieldset className="flex flex-col gap-1">
-        <legend className="text-xs font-semibold text-foreground">Then</legend>
+        <legend className="text-xs font-semibold text-foreground">{tx("Then")}</legend>
         <label className="flex items-center gap-1.5 text-sm">
           <input type="radio" name="rule-mode" checked={mode === "prepare"} onChange={() => setMode("prepare")} />
-          Prepare a thread for me to review
+          {tx("Prepare a thread for me to review")}
         </label>
         <label className="flex items-center gap-1.5 text-sm">
           <input
@@ -186,16 +187,16 @@ export function RuleForm({ rule, projects, onSave, onCancel }: RuleFormProps) {
               setConfirmed(false);
             }}
           />
-          Start the thread by itself
+          {tx("Start the thread by itself")}
         </label>
         {!startAllowed ? <p className="text-xs text-muted-foreground">{BB_TEXT.no_tree}</p> : null}
         {mode === "start" ? (
-          <div role="group" aria-label="Start confirmation" className="flex flex-col gap-1 rounded-md border border-border p-2 text-sm">
+          <div role="group" aria-label={tx("Start confirmation")} className="flex flex-col gap-1 rounded-md border border-border p-2 text-sm">
             <p>{startConfirmText(project?.name ?? "the project")}</p>
             <p className="text-xs text-muted-foreground">{START_MODE_LINE}</p>
             <label className="flex items-center gap-2">
               <Checkbox checked={confirmed} onCheckedChange={(checked) => setConfirmed(checked === true)} />
-              I understand
+              {tx("I understand")}
             </label>
           </div>
         ) : null}
@@ -208,10 +209,10 @@ export function RuleForm({ rule, projects, onSave, onCancel }: RuleFormProps) {
       ) : null}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
-          Cancel
+          {tx("Cancel")}
         </Button>
         <Button type="submit" size="sm" disabled={saving || (mode === "start" && !confirmed)}>
-          Save rule
+          {tx("Save rule")}
         </Button>
       </div>
     </form>

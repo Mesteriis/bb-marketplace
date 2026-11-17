@@ -21,6 +21,7 @@ import { shownText } from "./agent-send-card.tsx";
 import { useAiJob, type AiJobPorts } from "./ai-job.ts";
 import { AiFailure, aiLabel } from "./ai-text.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export type DraftMode = Extract<AiStartInput, { kind: "draft" }>["mode"];
 type DraftResult = Extract<AiResultView, { kind: "draft" }>;
@@ -78,7 +79,7 @@ export function ImproveMenu({
   return (
     <div
       role="dialog"
-      aria-label="Improve"
+      aria-label={tx("Improve")}
       onKeyDown={onKeyDown}
       className="mt-1 flex max-w-sm flex-col gap-1 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
     >
@@ -90,15 +91,15 @@ export function ImproveMenu({
       <form onSubmit={submit} className="flex items-center gap-1 px-1 pb-1">
         <Input
           id={`${id}-instruction`}
-          aria-label="Instruction for the AI"
-          placeholder="Or say how, in one line"
+          aria-label={tx("Instruction for the AI")}
+          placeholder={tx("Or say how, in one line")}
           value={instruction}
           maxLength={IMPROVE_INSTRUCTION_MAX}
           onChange={(event) => setInstruction(event.target.value)}
           className="h-7 flex-1 text-xs"
         />
         <Button type="submit" variant="outline" size="sm" className="h-7" disabled={cleanInstruction(instruction) === ""}>
-          Go
+          {tx("Go")}
         </Button>
       </form>
     </div>
@@ -157,20 +158,20 @@ function ImproveBody({ request, ports, onApply, onClose, pollMs }: ImproveDialog
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Improve</DialogTitle>
+        <DialogTitle>{tx("Improve")}</DialogTitle>
         <DialogDescription>
-          {result !== null ? aiLabel(result.provider, result.model) : "A model rewrites your own text; quotes and the signature stay."}
+          {result !== null ? aiLabel(result.provider, result.model) : tx("A model rewrites your own text; quotes and the signature stay.")}
         </DialogDescription>
       </DialogHeader>
       {state.status === "running" ? (
         <p role="status" className="text-sm text-muted-foreground">
-          {"Rewriting your text\u2026"}
+          {tx("Rewriting your text\u2026")}
         </p>
       ) : null}
       {state.status === "failed" ? <AiFailure state={state} /> : null}
       {result !== null ? (
         <div
-          aria-label="Changes"
+          aria-label={tx("Changes")}
           className="whitespace-pre-wrap break-words rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-foreground"
         >
           {ops.map((op, index) =>
@@ -189,11 +190,11 @@ function ImproveBody({ request, ports, onApply, onClose, pollMs }: ImproveDialog
         </div>
       ) : null}
       {result !== null ? (
-        <ul aria-label="Notes" className="flex flex-col text-xs text-muted-foreground">
+        <ul aria-label={tx("Notes")} className="flex flex-col text-xs text-muted-foreground">
           {improveNotes(result, request.hasMarks).map((note) => (
             <li key={note}>{note}</li>
           ))}
-          <li>AI can be wrong; read the text before you send it.</li>
+          <li>{tx("AI can be wrong; read the text before you send it.")}</li>
         </ul>
       ) : null}
       {problem !== null ? (
@@ -203,10 +204,10 @@ function ImproveBody({ request, ports, onApply, onClose, pollMs }: ImproveDialog
       ) : null}
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {tx("Cancel")}
         </Button>
         <Button disabled={result === null || problem !== null} onClick={apply}>
-          Apply
+          {tx("Apply")}
         </Button>
       </DialogFooter>
     </>

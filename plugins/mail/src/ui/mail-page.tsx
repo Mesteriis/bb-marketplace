@@ -111,6 +111,7 @@ import { SearchHelpButton, SearchNotes } from "./search-help.tsx";
 import { ServerSearchStrip, type ServerJobView } from "./server-search-strip.tsx";
 import { SAVED_SEARCH_GONE_TEXT } from "./saved-searches.tsx";
 import { SenderCardDialog } from "./sender-card.tsx";
+import { tx } from "./i18n/index.ts";
 
 export { ALL_ACCOUNTS };
 
@@ -402,7 +403,7 @@ export function MailPage(props: MailPageProps) {
   if (status === null) {
     return (
       <PageFrame>
-        <LoadingState label="Loading mail…" />
+        <LoadingState label={tx("Loading mail\u2026")} />
       </PageFrame>
     );
   }
@@ -421,10 +422,10 @@ export function MailPage(props: MailPageProps) {
           key={accountForm?.initial?.email ?? "new"}
           title={
             first
-              ? "Connect your mailbox"
+              ? tx("Connect your mailbox")
               : accountForm?.initial
                 ? `Reconnect ${accountForm.initial.email}`
-                : "Add an account"
+                : tx("Add an account")
           }
           initial={accountForm?.initial}
           onTest={props.onTestAccount}
@@ -1244,7 +1245,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
                 })
               }
             >
-              Update app password
+              {tx("Update app password")}
             </Button>
           ) : null}
         </div>
@@ -1290,7 +1291,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
                 disabled={ai.disabledReason !== null}
                 onClick={() => ai.onSuggestCategories(list.threads.map((t) => t.id))}
               >
-                Suggest categories
+                {tx("Suggest categories")}
               </Button>
               <Button
                 variant="ghost"
@@ -1301,7 +1302,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
                   ai.onAcceptPage(list.threads.filter((t) => t.category === null && t.categorySuggestion !== null).map((t) => t.id))
                 }
               >
-                Accept all on this page
+                {tx("Accept all on this page")}
               </Button>
             </div>
           ) : null}
@@ -1366,7 +1367,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         </section>
         <section
           ref={conversationRef}
-          aria-label="Conversation"
+          aria-label={tx("Conversation")}
           // Slice 3i: a click on message text focuses the conversation, where the arrows scroll.
           data-mail-reading=""
           tabIndex={-1}
@@ -1713,14 +1714,14 @@ function ListColumn(
               {` \u00b7 ${saved.query}`}
             </span>
             <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={saved.onEdit}>
-              Edit
+              {tx("Edit")}
             </Button>
           </div>
         ) : null}
         <SearchNotes notes={search.notes ?? []} />
         <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-1 text-xs text-muted-foreground">
           <span className="mr-1">
-            {search.loading ? "Searching\u2026" : `${search.hits.length}${(search.nextCursor ?? null) !== null ? "+" : ""} in Mail`}
+            {search.loading ? tx("Searching\u2026") : `${search.hits.length}${(search.nextCursor ?? null) !== null ? "+" : ""} in Mail`}
           </span>
           <Button
             variant="ghost"
@@ -1729,11 +1730,11 @@ function ListColumn(
             disabled={serverHere?.job?.state === "running"}
             onClick={() => s3.onServerSearch(search.query)}
           >
-            Search on the server
+            {tx("Search on the server")}
           </Button>
           {saved === null ? (
             <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => s3.onSaveSearch(search.query)}>
-              Save search
+              {tx("Save search")}
             </Button>
           ) : null}
         </div>
@@ -1779,7 +1780,7 @@ function ListColumn(
     return (
       <>
         <SearchResultList
-          label="Messages"
+          label={tx("Messages")}
           hits={list.messages}
           selectedThreadId={reading.threadId}
           marker={props.marker}
@@ -1904,7 +1905,7 @@ function MailHeader(
   return (
     <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
       {props.onAskMode !== undefined ? (
-        <div role="group" aria-label="Search or ask" className="flex shrink-0 items-center rounded-md border border-border p-0.5">
+        <div role="group" aria-label={tx("Search or ask")} className="flex shrink-0 items-center rounded-md border border-border p-0.5">
           <Button
             type="button"
             variant={asking ? "ghost" : "secondary"}
@@ -1913,7 +1914,7 @@ function MailHeader(
             aria-pressed={!asking}
             onClick={() => switchMode(false)}
           >
-            Search
+            {tx("Search")}
           </Button>
           <Button
             type="button"
@@ -1923,7 +1924,7 @@ function MailHeader(
             aria-pressed={asking}
             onClick={() => switchMode(true)}
           >
-            Ask
+            {tx("Ask")}
           </Button>
         </div>
       ) : null}
@@ -1931,8 +1932,8 @@ function MailHeader(
         <Input
           ref={props.searchRef}
           type="search"
-          aria-label={asking ? "Ask about your mail" : "Search mail"}
-          placeholder={asking ? "Ask about your mail (AI)" : "Search mail \u2014 from:, has:attachment, -in:trash"}
+          aria-label={asking ? tx("Ask about your mail") : tx("Search mail")}
+          placeholder={asking ? tx("Ask about your mail (AI)") : tx("Search mail \u2014 from:, has:attachment, -in:trash")}
           value={draft}
           maxLength={asking ? ASK_QUESTION_MAX : 500}
           onChange={(event) => setDraft(event.target.value)}
@@ -1940,7 +1941,7 @@ function MailHeader(
         />
         {props.search.query !== "" || (asking && draft !== "") ? (
           <Button type="button" variant="ghost" size="sm" onClick={clear}>
-            Clear
+            {tx("Clear")}
           </Button>
         ) : null}
         {props.slice3h !== undefined && !asking ? <SearchHelpButton /> : null}
@@ -1970,7 +1971,7 @@ function MailHeader(
       <Button
         variant="ghost"
         size="icon"
-        aria-label="Sync now"
+        aria-label={tx("Sync now")}
         disabled={props.syncing}
         onClick={props.onSync}
       >
@@ -1979,7 +1980,7 @@ function MailHeader(
       <Button
         variant="ghost"
         size="icon"
-        aria-label="Keyboard shortcuts"
+        aria-label={tx("Keyboard shortcuts")}
         onClick={props.onShowShortcuts}
       >
         <Icon name="Keyboard" fallback="Info" aria-hidden />
@@ -1987,7 +1988,7 @@ function MailHeader(
       <Button
         variant="ghost"
         size="icon"
-        aria-label="New message"
+        aria-label={tx("New message")}
         className="@4xl:hidden"
         onClick={props.onCompose}
       >
@@ -1996,7 +1997,7 @@ function MailHeader(
       <Button
         variant="ghost"
         size="icon"
-        aria-label="Add account"
+        aria-label={tx("Add account")}
         onClick={() => props.onOpenAccountForm({})}
       >
         <Icon name="Plus" aria-hidden />

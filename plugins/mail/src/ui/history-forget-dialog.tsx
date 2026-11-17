@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export interface ForgetRequest {
   accountId: string;
@@ -59,8 +60,8 @@ export function HistoryForgetDialog({
     <Dialog open={request !== null} onOpenChange={(open) => !open && !busy && onCancel()}>
       <DialogContent className="max-w-sm" onEscapeKeyDown={stopEscape}>
         <DialogHeader>
-          <DialogTitle>Forget older mail{request !== null ? ` in ${request.name}` : ""}</DialogTitle>
-          <DialogDescription>Messages you opened stay.</DialogDescription>
+          <DialogTitle>{tx("Forget older mail")}{request !== null ? ` in ${request.name}` : ""}</DialogTitle>
+          <DialogDescription>{tx("Messages you opened stay.")}</DialogDescription>
         </DialogHeader>
         {error !== null ? (
           <p role="alert" className="text-sm text-destructive">
@@ -68,7 +69,7 @@ export function HistoryForgetDialog({
           </p>
         ) : count === null ? (
           <p role="status" className="text-sm text-muted-foreground">
-            {"Counting\u2026"}
+            {tx("Counting\u2026")}
           </p>
         ) : (
           <p className="text-sm text-foreground">{forgetText(count)}</p>
@@ -80,10 +81,10 @@ export function HistoryForgetDialog({
         ) : null}
         <DialogFooter>
           <Button variant="ghost" onClick={onCancel} disabled={busy}>
-            Cancel
+            {tx("Cancel")}
           </Button>
           <Button variant="destructive" disabled={busy || count === null || count === 0} onClick={() => void confirm()}>
-            {busy ? "Removing\u2026" : "Forget"}
+            {busy ? tx("Removing\u2026") : tx("Forget")}
           </Button>
         </DialogFooter>
       </DialogContent>

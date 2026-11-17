@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { errorText, projectName, useProjects, type BbCall } from "./bb-ports.ts";
 import { ProjectSelect } from "./project-chip.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export interface SaveRequest {
   messageId: string;
@@ -149,24 +150,24 @@ function SaveBody({ request, call, defaultFolder, onSaved, onClose }: SaveToProj
   return (
     <>
       <DialogHeader>
-        <DialogTitle>{request.parts.length === 1 ? "Save to project" : `Save ${request.parts.length} attachments to project`}</DialogTitle>
+        <DialogTitle>{request.parts.length === 1 ? tx("Save to project") : `Save ${request.parts.length} attachments to project`}</DialogTitle>
         <DialogDescription>
-          Saved inside the project's folder. Mail never opens or runs a saved file, and never overwrites one without asking.
+          {tx("Saved inside the project's folder. Mail never opens or runs a saved file, and never overwrites one without asking.")}
         </DialogDescription>
       </DialogHeader>
       {step.kind === "choose" ? (
         <div className="flex flex-col gap-3">
-          <ul aria-label="Files to save" className="flex flex-col gap-0.5 text-sm text-foreground">
+          <ul aria-label={tx("Files to save")} className="flex flex-col gap-0.5 text-sm text-foreground">
             {request.parts.map((part) => (
               <li key={part.partId} className="truncate">
                 {part.name}
               </li>
             ))}
           </ul>
-          <ProjectSelect label="Project" projects={projects} value={projectId} onChange={setProjectId} requireTree />
+          <ProjectSelect label={tx("Project")} projects={projects} value={projectId} onChange={setProjectId} requireTree />
           <div className="flex flex-col gap-1">
             <label htmlFor={folderId} className="text-xs font-medium text-muted-foreground">
-              Folder in the project
+              {tx("Folder in the project")}
             </label>
             <Input id={folderId} list={listId} value={folder} maxLength={240} onChange={(e) => setFolder(e.target.value)} />
             <datalist id={listId}>
@@ -175,13 +176,13 @@ function SaveBody({ request, call, defaultFolder, onSaved, onClose }: SaveToProj
               ))}
             </datalist>
             <p className="text-xs text-muted-foreground">
-              Relative to the project; no folder that starts with a dot. Agent instruction and shortcut names are saved with .txt.
+              {tx("Relative to the project; no folder that starts with a dot. Agent instruction and shortcut names are saved with .txt.")}
             </p>
           </div>
         </div>
       ) : step.kind === "conflict" ? (
-        <div role="group" aria-label="Files that exist" className="flex flex-col gap-2 text-sm">
-          <p>{step.exists.length === 1 ? "A file with this name is already there:" : "Files with these names are already there:"}</p>
+        <div role="group" aria-label={tx("Files that exist")} className="flex flex-col gap-2 text-sm">
+          <p>{step.exists.length === 1 ? tx("A file with this name is already there:") : tx("Files with these names are already there:")}</p>
           <ul className="flex flex-col gap-0.5">
             {step.exists.map((file) => (
               <li key={file.partId} className="truncate font-mono text-xs">
@@ -189,7 +190,7 @@ function SaveBody({ request, call, defaultFolder, onSaved, onClose }: SaveToProj
               </li>
             ))}
           </ul>
-          <p className="text-xs text-muted-foreground">Keep both saves a numbered copy beside it.</p>
+          <p className="text-xs text-muted-foreground">{tx("Keep both saves a numbered copy beside it.")}</p>
         </div>
       ) : step.kind === "replace" ? (
         <div role="alert" className="flex flex-col gap-2 text-sm">
@@ -198,10 +199,10 @@ function SaveBody({ request, call, defaultFolder, onSaved, onClose }: SaveToProj
               ? `Replace ${step.exists[0]!.path}? The file in the project is overwritten.`
               : `Replace ${step.exists.length} files? The files in the project are overwritten.`}
           </p>
-          <p className="text-xs text-muted-foreground">If the file changed since, Mail does not replace it.</p>
+          <p className="text-xs text-muted-foreground">{tx("If the file changed since, Mail does not replace it.")}</p>
         </div>
       ) : (
-        <ul aria-label="Saved files" className="flex flex-col gap-1 text-sm">
+        <ul aria-label={tx("Saved files")} className="flex flex-col gap-1 text-sm">
           {results.map((result) => (
             <li key={result.partId} className="flex flex-col">
               <span className="truncate text-foreground">{nameOf(result.partId)}</span>
@@ -225,36 +226,36 @@ function SaveBody({ request, call, defaultFolder, onSaved, onClose }: SaveToProj
         {step.kind === "choose" ? (
           <>
             <Button variant="ghost" size="sm" onClick={onClose}>
-              Cancel
+              {tx("Cancel")}
             </Button>
             <Button size="sm" disabled={!canSave || busy} onClick={() => void save()}>
-              Save
+              {tx("Save")}
             </Button>
           </>
         ) : step.kind === "conflict" ? (
           <>
             <Button variant="ghost" size="sm" disabled={busy} onClick={() => cancelConflicts(step.exists)}>
-              Cancel
+              {tx("Cancel")}
             </Button>
             <Button variant="outline" size="sm" disabled={busy} onClick={() => setStep({ kind: "replace", exists: step.exists })}>
-              {"Replace\u2026"}
+              {tx("Replace\u2026")}
             </Button>
             <Button size="sm" autoFocus disabled={busy} onClick={() => void keepBoth(step.exists)}>
-              Keep both
+              {tx("Keep both")}
             </Button>
           </>
         ) : step.kind === "replace" ? (
           <>
             <Button variant="ghost" size="sm" disabled={busy} onClick={() => setStep({ kind: "conflict", exists: step.exists })}>
-              Back
+              {tx("Back")}
             </Button>
             <Button variant="destructive" size="sm" disabled={busy} onClick={() => void replace(step.exists)}>
-              Replace
+              {tx("Replace")}
             </Button>
           </>
         ) : (
           <Button size="sm" onClick={onClose}>
-            Done
+            {tx("Done")}
           </Button>
         )}
       </DialogFooter>

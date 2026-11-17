@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { defaultSmtpPort, smtpInput } from "./smtp-dialog.tsx";
+import { tx } from "./i18n/index.ts";
 
 const PRESET_ORDER: AccountPreset[] = ["icloud", "gmail", "other"];
 
@@ -139,13 +140,13 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
           {title}
         </h2>
         <p className="text-sm text-muted-foreground">
-          Mail signs in over IMAP with an app password, not your account password.
+          {tx("Mail signs in over IMAP with an app password, not your account password.")}
         </p>
       </div>
 
       <div className="flex flex-col gap-1.5">
         <label id={`${id}-preset`} className="text-sm font-medium text-foreground">
-          Provider
+          {tx("Provider")}
         </label>
         <Select value={preset} onValueChange={(next) => setPreset(next as AccountPreset)}>
           <SelectTrigger aria-labelledby={`${id}-preset`}>
@@ -163,7 +164,7 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
 
       <div className="flex flex-col gap-1.5">
         <label htmlFor={`${id}-email`} className="text-sm font-medium text-foreground">
-          Email
+          {tx("Email")}
         </label>
         <Input
           id={`${id}-email`}
@@ -176,12 +177,12 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
 
       <div className="flex flex-col gap-1.5">
         <label htmlFor={`${id}-password`} className="text-sm font-medium text-foreground">
-          App password
+          {tx("App password")}
         </label>
         <Input id={`${id}-password`} ref={passwordRef} type="password" autoComplete="off" />
         {appPasswordUrl !== null ? (
           <ExternalLink href={appPasswordUrl} className="text-xs text-primary underline-offset-4 hover:underline">
-            Create an app password for {PRESETS[preset].label}
+            {tx("Create an app password for")} {PRESETS[preset].label}
           </ExternalLink>
         ) : null}
       </div>
@@ -190,7 +191,7 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
         <div className="flex gap-3">
           <div className="flex min-w-0 flex-1 flex-col gap-1.5">
             <label htmlFor={`${id}-host`} className="text-sm font-medium text-foreground">
-              Server
+              {tx("Server")}
             </label>
             <Input
               id={`${id}-host`}
@@ -201,7 +202,7 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
           </div>
           <div className="flex w-24 flex-col gap-1.5">
             <label htmlFor={`${id}-port`} className="text-sm font-medium text-foreground">
-              Port
+              {tx("Port")}
             </label>
             <Input
               id={`${id}-port`}
@@ -215,11 +216,11 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
 
       {preset === "other" ? (
         <fieldset className="flex flex-col gap-3">
-          <legend className="pb-1.5 text-sm font-medium text-foreground">Sending (SMTP)</legend>
+          <legend className="pb-1.5 text-sm font-medium text-foreground">{tx("Sending (SMTP)")}</legend>
           <div className="flex gap-3">
             <div className="flex min-w-0 flex-1 flex-col gap-1.5">
               <label htmlFor={`${id}-smtp-host`} className="text-sm font-medium text-foreground">
-                SMTP server
+                {tx("SMTP server")}
               </label>
               <Input
                 id={`${id}-smtp-host`}
@@ -230,7 +231,7 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
             </div>
             <div className="flex w-24 flex-col gap-1.5">
               <label htmlFor={`${id}-smtp-port`} className="text-sm font-medium text-foreground">
-                SMTP port
+                {tx("SMTP port")}
               </label>
               <Input
                 id={`${id}-smtp-port`}
@@ -243,7 +244,7 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
           <div className="flex gap-3">
             <div className="flex min-w-0 flex-1 flex-col gap-1.5">
               <label id={`${id}-smtp-security`} className="text-sm font-medium text-foreground">
-                Security
+                {tx("Security")}
               </label>
               <Select
                 value={smtpSecurity}
@@ -257,20 +258,20 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="tls">TLS</SelectItem>
-                  <SelectItem value="starttls">STARTTLS</SelectItem>
+                  <SelectItem value="tls">{tx("TLS")}</SelectItem>
+                  <SelectItem value="starttls">{tx("STARTTLS")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div className="flex min-w-0 flex-1 flex-col gap-1.5">
               <label htmlFor={`${id}-smtp-username`} className="text-sm font-medium text-foreground">
-                SMTP username
+                {tx("SMTP username")}
               </label>
               <Input
                 id={`${id}-smtp-username`}
                 value={smtpUsername}
                 onChange={(event) => setSmtpUsername(event.target.value)}
-                placeholder="Same as the email"
+                placeholder={tx("Same as the email")}
               />
             </div>
           </div>
@@ -289,14 +290,14 @@ export function AccountForm({ initial, title, onTest, onSave, onCancel, External
       <div className="flex justify-end gap-2">
         {onCancel !== undefined ? (
           <Button type="button" variant="ghost" onClick={onCancel} disabled={busy !== null}>
-            Cancel
+            {tx("Cancel")}
           </Button>
         ) : null}
         <Button type="button" variant="outline" onClick={test} disabled={busy !== null}>
-          {busy === "test" ? "Testing…" : "Test"}
+          {busy === "test" ? tx("Testing\u2026") : tx("Test")}
         </Button>
         <Button type="submit" disabled={busy !== null}>
-          {busy === "save" ? "Saving…" : "Save"}
+          {busy === "save" ? tx("Saving\u2026") : tx("Save")}
         </Button>
       </div>
     </form>

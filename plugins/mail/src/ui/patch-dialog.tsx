@@ -21,6 +21,7 @@ import { PreparedPrompt } from "./bb-thread-dialog.tsx";
 import { DiffView } from "./code-blocks.tsx";
 import { ProjectSelect } from "./project-chip.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 /** "Patch - 3 files - +40 -12". */
 export function patchSummaryText(patch: { files: number; added: number; removed: number }): string {
@@ -29,11 +30,11 @@ export function patchSummaryText(patch: { files: number; added: number; removed:
 
 export function PatchCard({ patch, onReview }: { patch: { files: number; added: number; removed: number }; onReview: () => void }) {
   return (
-    <div role="region" aria-label="Patch" className="flex flex-wrap items-center gap-2 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">
+    <div role="region" aria-label={tx("Patch")} className="flex flex-wrap items-center gap-2 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">
       <Icon name="FileDiff" fallback="Paperclip" className="size-3.5" aria-hidden />
       <span className="min-w-0 flex-1">{patchSummaryText(patch)}</span>
       <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={onReview}>
-        Review
+        {tx("Review")}
       </Button>
     </div>
   );
@@ -169,8 +170,8 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Review the patch</DialogTitle>
-        <DialogDescription>From an email: treat it as untrusted. Mail never applies it; an agent can, in a new worktree.</DialogDescription>
+        <DialogTitle>{tx("Review the patch")}</DialogTitle>
+        <DialogDescription>{tx("From an email: treat it as untrusted. Mail never applies it; an agent can, in a new worktree.")}</DialogDescription>
       </DialogHeader>
       {loadError !== null ? (
         <p role="alert" className="text-sm text-destructive">
@@ -178,7 +179,7 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
         </p>
       ) : view === null ? (
         <p role="status" className="text-sm text-muted-foreground">
-          {"Reading the patch\u2026"}
+          {tx("Reading the patch\u2026")}
         </p>
       ) : (
         <div className="flex flex-col gap-3">
@@ -186,7 +187,7 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
             <p role="alert" className="text-sm text-destructive">{`Refused: ${refused}`}</p>
           ) : null}
           {view.warnings.length > 0 ? (
-            <ul aria-label="Warnings" className="flex flex-col gap-0.5 text-sm text-foreground">
+            <ul aria-label={tx("Warnings")} className="flex flex-col gap-0.5 text-sm text-foreground">
               {view.warnings.map((warning) => (
                 <li key={warning} className="flex items-start gap-1.5">
                   <Icon name="AlertTriangle" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
@@ -200,7 +201,7 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
               {view.commitMessage}
             </pre>
           ) : null}
-          <ul aria-label="Files" className="flex flex-col gap-3">
+          <ul aria-label={tx("Files")} className="flex flex-col gap-3">
             {view.files.map((file, index) => {
               const path = file.newPath ?? file.oldPath ?? `file ${index + 1}`;
               return (
@@ -209,9 +210,9 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
                     <span className="font-mono text-foreground">{path}</span>
                     <span>{file.status}</span>
                     <span>{`+${file.added} -${file.removed}`}</span>
-                    {file.binary ? <span>binary</span> : null}
-                    {file.executable ? <span>executable</span> : null}
-                    {file.symlink ? <span>symlink</span> : null}
+                    {file.binary ? <span>{tx("binary")}</span> : null}
+                    {file.executable ? <span>{tx("executable")}</span> : null}
+                    {file.symlink ? <span>{tx("symlink")}</span> : null}
                   </p>
                   {file.patch !== "" ? <DiffView patch={file.patch} path={path} renderers={renderers} /> : null}
                 </li>
@@ -220,7 +221,7 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
           </ul>
           {refused === null ? (
             <>
-              <ProjectSelect label="Project" projects={projects} value={projectId} onChange={(id) => { setProjectId(id); setOfferCheckout(false); setPrepared(null); }} />
+              <ProjectSelect label={tx("Project")} projects={projects} value={projectId} onChange={(id) => { setProjectId(id); setOfferCheckout(false); setPrepared(null); }} />
               {!request.inAiScope ? <p className="text-xs text-muted-foreground">{BB_TEXT.out_of_scope}</p> : null}
               {savedPath !== null ? <p role="status" className="text-xs text-muted-foreground">{`Saved as ${savedPath}`}</p> : null}
               {offerCheckout ? (
@@ -228,20 +229,20 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
                   <p>{CHECKOUT_WARNING}</p>
                   <div>
                     <Button variant="destructive" size="sm" className="h-7 px-2" disabled={busy} onClick={() => void prepareHandOff("checkout")}>
-                      Apply in my checkout
+                      {tx("Apply in my checkout")}
                     </Button>
                   </div>
                 </div>
               ) : null}
               {prepared !== null ? (
-                <section aria-label="Agent thread" className="flex flex-col gap-2 rounded-md border border-border p-2">
+                <section aria-label={tx("Agent thread")} className="flex flex-col gap-2 rounded-md border border-border p-2">
                   <p className="text-xs text-muted-foreground">
-                    {prepared.environment === "worktree" ? "Runs in a new worktree" : "Runs in your checkout"}
+                    {prepared.environment === "worktree" ? tx("Runs in a new worktree") : tx("Runs in your checkout")}
                   </p>
                   <PreparedPrompt prepared={prepared} testId="patch-prompt" />
                   <div>
                     <Button size="sm" className="h-7 px-2" disabled={busy || !request.inAiScope} onClick={() => void handOff()}>
-                      Start agent thread
+                      {tx("Start agent thread")}
                     </Button>
                   </div>
                 </section>
@@ -257,18 +258,18 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
       )}
       <DialogFooter>
         <Button variant="ghost" size="sm" onClick={onClose}>
-          Close
+          {tx("Close")}
         </Button>
         {view !== null && refused === null ? (
           <>
             <span title={project !== null && !project.hasTree ? BB_TEXT.no_tree : undefined} className="inline-flex">
               <Button variant="outline" size="sm" disabled={busy || project === null || !project.hasTree} onClick={() => void save()}>
-                Save .patch to project
+                {tx("Save .patch to project")}
               </Button>
             </span>
             <span title={request.inAiScope ? undefined : BB_TEXT.out_of_scope} className="inline-flex">
               <Button size="sm" disabled={busy || projectId === null || !request.inAiScope} onClick={() => void prepareHandOff("worktree")}>
-                Apply with an agent
+                {tx("Apply with an agent")}
               </Button>
             </span>
           </>

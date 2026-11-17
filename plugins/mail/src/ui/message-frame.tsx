@@ -12,6 +12,7 @@ import type { CodeRenderers } from "./bb-ports.ts";
 import { BodyParts, HtmlCodeBlocks } from "./code-blocks.tsx";
 import type { LinkHover } from "./link-status.tsx";
 import { isTypingTarget } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 /** Slice 3h: the fold of quoted text, in a plain body and under an HTML frame. */
 export const SHOW_QUOTES_TEXT = "\u00b7\u00b7\u00b7 Show quoted text";
@@ -210,7 +211,7 @@ export function MessageFrame({
     return text.trim() !== "" ? (
       <PlainBody text={text} renderers={renderers} quotesShown={quotesShown} {...(onToggleQuotes !== undefined ? { onToggleQuotes } : {})} />
     ) : (
-      <p className="text-sm text-muted-foreground">This message has no text.</p>
+      <p className="text-sm text-muted-foreground">{tx("This message has no text.")}</p>
     );
   }
 
@@ -218,7 +219,7 @@ export function MessageFrame({
     return body.text !== null && body.text.trim() !== "" ? (
       <PlainBody text={body.text} renderers={renderers} quotesShown={quotesShown} {...(onToggleQuotes !== undefined ? { onToggleQuotes } : {})} />
     ) : (
-      <p className="text-sm text-muted-foreground">This message has no text.</p>
+      <p className="text-sm text-muted-foreground">{tx("This message has no text.")}</p>
     );
   }
 
@@ -240,12 +241,12 @@ export function MessageFrame({
       {senderTrusted && senderAddress !== null && imagesHeld === null ? (
         <div
           role="region"
-          aria-label="Trusted sender"
+          aria-label={tx("Trusted sender")}
           className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-xs text-muted-foreground"
         >
-          <span className="min-w-0 flex-1 truncate">Images from {senderAddress} are always shown.</span>
+          <span className="min-w-0 flex-1 truncate">{tx("Images from")} {senderAddress} {tx("are always shown.")}</span>
           <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onStopImages}>
-            Stop showing
+            {tx("Stop showing")}
           </Button>
         </div>
       ) : null}
@@ -260,7 +261,7 @@ export function MessageFrame({
       <HtmlCodeBlocks blocks={body.codeBlocks ?? []} renderers={renderers} />
       {body.htmlTruncated ? (
         <p className="text-xs text-muted-foreground">
-          This message is very long; the end is not shown.
+          {tx("This message is very long; the end is not shown.")}
         </p>
       ) : null}
     </div>
@@ -292,7 +293,7 @@ function ImagesBar({
   return (
     <div
       role="region"
-      aria-label="Remote images"
+      aria-label={tx("Remote images")}
       className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-muted px-2 py-1 text-xs text-muted-foreground"
     >
       <Icon name="EyeOff" className="size-3.5 shrink-0" aria-hidden />
@@ -304,7 +305,7 @@ function ImagesBar({
             <span>
               {held !== null
                 ? `Images from this sender are not loaded automatically because ${held}.`
-                : "Images are hidden to protect your privacy."}
+                : tx("Images are hidden to protect your privacy.")}
             </span>
             {trackers > 0 ? <span>{` This message has ${trackersText(trackers)}; they stay blocked.`}</span> : null}
           </>
@@ -312,7 +313,7 @@ function ImagesBar({
       </span>
       {blocked ? (
         <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onShowImages}>
-          Show images
+          {tx("Show images")}
         </Button>
       ) : null}
       {blocked && held === null && senderAddress !== null ? (
@@ -322,7 +323,7 @@ function ImagesBar({
           className="h-6 max-w-full px-2 text-xs"
           onClick={onAlwaysShowImages}
         >
-          <span className="truncate">Always show from {senderAddress}</span>
+          <span className="truncate">{tx("Always show from")} {senderAddress}</span>
         </Button>
       ) : null}
     </div>

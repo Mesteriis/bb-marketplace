@@ -7,6 +7,7 @@ import { Icon } from "@/components/ui/icon";
 import type { DisguiseWarning, MessageHeader, SenderCheckView } from "../core/index.ts";
 import { addressDomain, autoImagesAllowed } from "../core/sender-basics.ts";
 import { shownText } from "./agent-send-card.tsx";
+import { tx } from "./i18n/index.ts";
 
 /** The header's 3i fields with their defaults (MessageHeader keeps them optional). */
 export function securityOf(message: Pick<MessageHeader, "senderCheck" | "warnings" | "receiptRequested" | "crypto">): {
@@ -51,7 +52,7 @@ function warningLine(warning: DisguiseWarning, fromDomain: string | null): React
     case "reply_to_elsewhere":
       return (
         <>
-          {"Replies go to "}
+          {tx("Replies go to ")}
           {warning.addresses.map((address, index) => (
             <span key={address}>
               {index > 0 ? ", " : null}
@@ -60,12 +61,12 @@ function warningLine(warning: DisguiseWarning, fromDomain: string | null): React
           ))}
           {fromDomain !== null ? (
             <>
-              {", not to "}
+              {tx(", not to ")}
               <Value>{fromDomain}</Value>
               {"."}
             </>
           ) : (
-            ", not to the sender."
+            tx(", not to the sender.")
           )}
         </>
       );
@@ -73,25 +74,25 @@ function warningLine(warning: DisguiseWarning, fromDomain: string | null): React
       return (
         <>
           <Value>{warning.domain}</Value>
-          {" looks like "}
+          {tx(" looks like ")}
           <Value>{warning.like}</Value>
-          {", which you write to."}
+          {tx(", which you write to.")}
         </>
       );
     case "mixed_script":
       return (
         <>
-          {"This domain mixes alphabets: "}
+          {tx("This domain mixes alphabets: ")}
           <Value>{warning.domain}</Value>
-          {" (shown as it really is)."}
+          {tx(" (shown as it really is).")}
         </>
       );
     case "name_shows_address":
       return (
         <>
-          {"The name shows "}
+          {tx("The name shows ")}
           <Value>{warning.shown}</Value>
-          {" but the address is "}
+          {tx(" but the address is ")}
           <Value>{warning.actual}</Value>
           {"."}
         </>
@@ -109,23 +110,23 @@ export function SenderWarnings({ message }: { message: Pick<MessageHeader, "from
       {check.state === "failed" ? (
         <div
           role="note"
-          aria-label="Sender not verified"
+          aria-label={tx("Sender not verified")}
           className="flex items-start gap-2 rounded-md border border-destructive/60 bg-destructive/10 px-2 py-1.5 text-xs text-foreground"
         >
           <Icon name="AlertTriangle" className="mt-0.5 size-3.5 shrink-0 text-destructive" aria-hidden />
           <span className="min-w-0">
-            <strong className="font-semibold">{"Sender not verified."}</strong>
+            <strong className="font-semibold">{tx("Sender not verified.")}</strong>
             {/* The words end before the space: a quote after "from" and a space reads as an import to tests/architecture. */}
-            {" Your mail provider could not confirm this came from"}
+            {tx(" Your mail provider could not confirm this came from")}
             {" "}
-            {fromDomain !== null ? <Value>{fromDomain}</Value> : "this sender"}
+            {fromDomain !== null ? <Value>{fromDomain}</Value> : tx("this sender")}
             {check.summary !== null ? ` (${check.summary})` : ""}
-            {". Don't trust links or requests in it."}
+            {tx(". Don't trust links or requests in it.")}
           </span>
         </div>
       ) : null}
       {warnings.length > 0 ? (
-        <ul aria-label="Sender warnings" className="flex flex-col gap-0.5 text-xs text-foreground">
+        <ul aria-label={tx("Sender warnings")} className="flex flex-col gap-0.5 text-xs text-foreground">
           {warnings.map((warning, index) => (
             <li key={`${warning.kind}-${index}`} className="flex items-start gap-1.5">
               <Icon name="AlertTriangle" className="mt-0.5 size-3.5 shrink-0 text-destructive" aria-hidden />

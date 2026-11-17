@@ -16,6 +16,7 @@ import {
 import { accountLabel } from "./folder-list.tsx";
 import { stopEscape } from "./shortcuts.ts";
 import { formatFullDate, formatListDate } from "./thread-list.tsx";
+import { tx } from "./i18n/index.ts";
 
 /** The page's own link to BB, as the host reports it. */
 export type BbLink = "connected" | "connecting" | "reconnecting";
@@ -78,11 +79,11 @@ export function MailStatusDialog(props: MailStatusDialogProps) {
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogContent className="max-w-md" onEscapeKeyDown={stopEscape}>
         <DialogHeader>
-          <DialogTitle>Mail status</DialogTitle>
+          <DialogTitle>{tx("Mail status")}</DialogTitle>
           <DialogDescription>
             {props.bbLink === "reconnecting"
-              ? "This page lost its link to BB and is reconnecting."
-              : "When each account was last synced, and what is in the way."}
+              ? tx("This page lost its link to BB and is reconnecting.")
+              : tx("When each account was last synced, and what is in the way.")}
           </DialogDescription>
         </DialogHeader>
         <ul className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto">
@@ -94,8 +95,8 @@ export function MailStatusDialog(props: MailStatusDialogProps) {
               <li key={account.id} aria-label={accountLabel(account)} className="flex flex-col gap-1 text-sm">
                 <span className="truncate font-medium text-foreground">{accountLabel(account)}</span>
                 <span className="text-xs text-muted-foreground">
-                  {account.lastSyncAt === null ? "Not synced yet" : `Synced ${formatFullDate(account.lastSyncAt)}`}
-                  {offline ? " · offline, Mail keeps trying" : ""}
+                  {account.lastSyncAt === null ? tx("Not synced yet") : `Synced ${formatFullDate(account.lastSyncAt)}`}
+                  {offline ? tx(" \u00b7 offline, Mail keeps trying") : ""}
                 </span>
                 {problems.map((text) => (
                   <span key={text} className={offline ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>
@@ -106,11 +107,11 @@ export function MailStatusDialog(props: MailStatusDialogProps) {
               </li>
             );
           })}
-          {accounts.length === 0 ? <li className="text-sm text-muted-foreground">No accounts yet.</li> : null}
+          {accounts.length === 0 ? <li className="text-sm text-muted-foreground">{tx("No accounts yet.")}</li> : null}
         </ul>
         <div className="flex justify-end">
           <Button variant="outline" size="sm" disabled={props.syncing} onClick={props.onSync}>
-            {props.syncing ? "Syncing…" : "Sync now"}
+            {props.syncing ? tx("Syncing\u2026") : tx("Sync now")}
           </Button>
         </div>
       </DialogContent>

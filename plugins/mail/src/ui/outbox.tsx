@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { subjectOrPlaceholder } from "./thread-list.tsx";
+import { tx } from "./i18n/index.ts";
 
 export type OutboxAction = "undo" | "send_now" | "edit" | "retry" | "resend" | "dismiss" | "retry_copy";
 
@@ -154,10 +155,10 @@ export function OutboxSection({ rows, onAction, pending, marker }: OutboxSection
   const shown = rows.filter((row) => row.state !== "done");
   if (shown.length === 0) return null;
   return (
-    <section aria-label="Outbox" className="shrink-0 border-b border-border">
+    <section aria-label={tx("Outbox")} className="shrink-0 border-b border-border">
       <h3 className="flex items-center gap-1.5 px-3 pb-1 pt-2 text-xs font-medium text-muted-foreground">
         <Icon name="Send" fallback="Mail" className="size-3.5" aria-hidden />
-        Outbox
+        {tx("Outbox")}
       </h3>
       <ul className="flex flex-col">
         {shown.map((row) => {
@@ -177,7 +178,7 @@ export function OutboxSection({ rows, onAction, pending, marker }: OutboxSection
                 </span>
                 {row.origin === "agent" ? (
                   <span className="shrink-0 rounded-sm bg-secondary px-1 text-xs text-secondary-foreground">
-                    Agent message
+                    {tx("Agent message")}
                   </span>
                 ) : null}
                 {label !== null ? (

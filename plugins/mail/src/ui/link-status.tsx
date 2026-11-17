@@ -16,6 +16,7 @@ import { cleanLink, type CleanLink } from "../core/link-clean.ts";
 import { orgDomain } from "../core/sender-basics.ts";
 import { shownText } from "./agent-send-card.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 /** A link under the pointer or focus in a message frame. */
 export interface LinkHover {
@@ -62,7 +63,7 @@ export function LinkStatusLine({ hover, cleanLinks }: { hover: LinkHover | null;
   return (
     <div
       role="status"
-      aria-label="Link address"
+      aria-label={tx("Link address")}
       data-mail-link-status=""
       className="sticky bottom-0 z-10 -mx-4 truncate border-t border-border bg-card px-4 py-1 font-mono text-xs text-muted-foreground"
     >
@@ -106,13 +107,13 @@ export function LinkDialog({ link, onOpen, onCancel }: LinkDialogProps) {
         onEscapeKeyDown={stopEscape}
       >
         <DialogHeader>
-          <DialogTitle>{text === null ? "Open this link?" : `Open ${shownText(text.host)}?`}</DialogTitle>
+          <DialogTitle>{text === null ? tx("Open this link?") : `Open ${shownText(text.host)}?`}</DialogTitle>
           <DialogDescription className="break-all">{text === null ? "" : shownText(text.reason)}</DialogDescription>
         </DialogHeader>
         {link !== null ? <p className="break-all font-mono text-xs text-muted-foreground">{shownText(displayUrl(link.url))}</p> : null}
         <DialogFooter>
           <Button ref={cancel} variant="outline" onClick={onCancel}>
-            Cancel
+            {tx("Cancel")}
           </Button>
           <Button
             variant="destructive"
@@ -120,7 +121,7 @@ export function LinkDialog({ link, onOpen, onCancel }: LinkDialogProps) {
               if (link !== null) onOpen(link);
             }}
           >
-            Open
+            {tx("Open")}
           </Button>
         </DialogFooter>
       </DialogContent>

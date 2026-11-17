@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export const FOLDER_NAME_TEXT: Record<FolderNameRefusal, string> = {
   empty: "Type a name",
@@ -93,7 +94,7 @@ function NameForm({
   return (
     <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-3">
       <Input
-        aria-label="Folder name"
+        aria-label={tx("Folder name")}
         autoFocus
         value={name}
         maxLength={FOLDER_NAME_MAX + 20}
@@ -106,10 +107,10 @@ function NameForm({
       ) : null}
       <DialogFooter>
         <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>
-          Cancel
+          {tx("Cancel")}
         </Button>
         <Button type="submit" disabled={busy}>
-          {request.kind === "create" ? (busy ? "Creating\u2026" : "Create") : busy ? "Renaming\u2026" : "Rename"}
+          {request.kind === "create" ? (busy ? tx("Creating\u2026") : tx("Create")) : busy ? tx("Renaming\u2026") : tx("Rename")}
         </Button>
       </DialogFooter>
     </form>
@@ -133,7 +134,7 @@ export function FolderNameDialog({
         {request !== null ? (
           <>
             <DialogHeader>
-              <DialogTitle>{request.kind === "create" ? (request.parent === null ? "New folder" : "New subfolder") : "Rename folder"}</DialogTitle>
+              <DialogTitle>{request.kind === "create" ? (request.parent === null ? tx("New folder") : tx("New subfolder")) : tx("Rename folder")}</DialogTitle>
               <DialogDescription>
                 {request.kind === "create"
                   ? request.parent === null
@@ -250,7 +251,7 @@ export function DeleteFolderDialog({
     } else if (check === null) {
       body = (
         <p role="status" className="text-sm text-muted-foreground">
-          {"Checking the folder on the server\u2026"}
+          {tx("Checking the folder on the server\u2026")}
         </p>
       );
     } else {
@@ -259,7 +260,7 @@ export function DeleteFolderDialog({
       if (plan.kind === "empty") {
         action = (
           <Button variant="destructive" disabled={busy} onClick={() => void run({ moveToTrash: false, expectedMessages: 0 })}>
-            {busy ? "Deleting\u2026" : "Delete"}
+            {busy ? tx("Deleting\u2026") : tx("Delete")}
           </Button>
         );
       } else if (plan.kind === "gmail") {
@@ -269,7 +270,7 @@ export function DeleteFolderDialog({
             disabled={busy}
             onClick={() => void run({ moveToTrash: false, expectedMessages: plan.messages })}
           >
-            {busy ? "Deleting\u2026" : "Delete label"}
+            {busy ? tx("Deleting\u2026") : tx("Delete label")}
           </Button>
         );
       } else if (plan.kind === "move") {
@@ -285,7 +286,7 @@ export function DeleteFolderDialog({
             disabled={busy}
             onClick={() => void run({ moveToTrash: true, expectedMessages: plan.messages })}
           >
-            {busy ? "Moving\u2026" : `Move ${plan.messages} to Trash, then delete`}
+            {busy ? tx("Moving\u2026") : `Move ${plan.messages} to Trash, then delete`}
           </Button>
         );
       }
@@ -295,8 +296,8 @@ export function DeleteFolderDialog({
     <Dialog open={request !== null} onOpenChange={(open) => !open && !busy && onCancel()}>
       <DialogContent className="max-w-sm" onEscapeKeyDown={stopEscape}>
         <DialogHeader>
-          <DialogTitle>{request !== null ? `Delete ${request.name}` : "Delete folder"}</DialogTitle>
-          <DialogDescription>Deleting a folder changes the mail server, not only Mail.</DialogDescription>
+          <DialogTitle>{request !== null ? `Delete ${request.name}` : tx("Delete folder")}</DialogTitle>
+          <DialogDescription>{tx("Deleting a folder changes the mail server, not only Mail.")}</DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-2">{body}</div>
         {problem !== null ? (
@@ -306,7 +307,7 @@ export function DeleteFolderDialog({
         ) : null}
         <DialogFooter>
           <Button variant="ghost" onClick={onCancel} disabled={busy}>
-            {action === null ? "Done" : "Cancel"}
+            {action === null ? tx("Done") : tx("Cancel")}
           </Button>
           {action}
         </DialogFooter>

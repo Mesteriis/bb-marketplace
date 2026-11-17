@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { LoadingState } from "./empty-states.tsx";
 import { accountLabel } from "./folder-list.tsx";
 import { addressLabel, formatListDate } from "./thread-list.tsx";
+import { tx } from "./i18n/index.ts";
 
 export const FILE_KIND_FILTERS: readonly { kind: FileKind; label: string }[] = [
   { kind: "image", label: "Images" },
@@ -140,9 +141,9 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
   };
 
   return (
-    <section aria-label="Files" className="flex flex-col gap-3">
-      <h2 className="text-lg font-semibold text-foreground">Files</h2>
-      <div role="group" aria-label="Type" className="flex flex-wrap items-center gap-1">
+    <section aria-label={tx("Files")} className="flex flex-col gap-3">
+      <h2 className="text-lg font-semibold text-foreground">{tx("Files")}</h2>
+      <div role="group" aria-label={tx("Type")} className="flex flex-wrap items-center gap-1">
         {[{ kind: undefined, label: "All" } as { kind: FileKind | undefined; label: string }, ...FILE_KIND_FILTERS].map(({ kind, label }) => {
           const on = filter.kind === kind;
           return (
@@ -170,15 +171,15 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
               })
             }
           />
-          Include Spam and Trash
+          {tx("Include Spam and Trash")}
         </label>
       </div>
       <form onSubmit={applyText} className="flex flex-wrap items-center gap-2">
-        <Input aria-label="Name" placeholder="Name" value={name} maxLength={200} onChange={(e) => setName(e.target.value)} className="h-8 w-40" />
-        <Input aria-label="From" placeholder="From (address)" value={sender} maxLength={320} onChange={(e) => setSender(e.target.value)} className="h-8 w-48" />
+        <Input aria-label={tx("Name")} placeholder={tx("Name")} value={name} maxLength={200} onChange={(e) => setName(e.target.value)} className="h-8 w-40" />
+        <Input aria-label={tx("From")} placeholder={tx("From (address)")} value={sender} maxLength={320} onChange={(e) => setSender(e.target.value)} className="h-8 w-48" />
         {accounts.length > 1 ? (
           <select
-            aria-label="Account"
+            aria-label={tx("Account")}
             value={filter.accountId ?? ""}
             onChange={(event) =>
               setFilter((prev) => {
@@ -190,7 +191,7 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
             }
             className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
           >
-            <option value="">All accounts</option>
+            <option value="">{tx("All accounts")}</option>
             {accounts.map((account) => (
               <option key={account.id} value={account.id}>
                 {accountLabel(account)}
@@ -199,7 +200,7 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
           </select>
         ) : null}
         <Button type="submit" variant="outline" size="sm" className="h-8">
-          Filter
+          {tx("Filter")}
         </Button>
       </form>
       {problem !== null ? (
@@ -208,22 +209,22 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
         </p>
       ) : null}
       {files === null ? (
-        <LoadingState label="Loading files\u2026" />
+        <LoadingState label={tx("Loading files\\u2026")} />
       ) : files.length === 0 ? (
-        problem === null ? <p className="text-sm text-muted-foreground">No files here.</p> : null
+        problem === null ? <p className="text-sm text-muted-foreground">{tx("No files here.")}</p> : null
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="text-xs text-muted-foreground">
               <tr>
-                <th className="py-1 pr-2 font-medium">Name</th>
-                <th className="py-1 pr-2 font-medium">Type</th>
-                <th className="py-1 pr-2 font-medium">Size</th>
-                <th className="py-1 pr-2 font-medium">From</th>
-                <th className="py-1 pr-2 font-medium">Date</th>
-                {accounts.length > 1 ? <th className="py-1 pr-2 font-medium">Account</th> : null}
+                <th className="py-1 pr-2 font-medium">{tx("Name")}</th>
+                <th className="py-1 pr-2 font-medium">{tx("Type")}</th>
+                <th className="py-1 pr-2 font-medium">{tx("Size")}</th>
+                <th className="py-1 pr-2 font-medium">{tx("From")}</th>
+                <th className="py-1 pr-2 font-medium">{tx("Date")}</th>
+                {accounts.length > 1 ? <th className="py-1 pr-2 font-medium">{tx("Account")}</th> : null}
                 <th className="py-1 font-medium">
-                  <span className="sr-only">Actions</span>
+                  <span className="sr-only">{tx("Actions")}</span>
                 </th>
               </tr>
             </thead>
@@ -270,7 +271,7 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
       {next !== null && files !== null ? (
         <div>
           <Button variant="outline" size="sm" disabled={loadingMore} onClick={() => void more()}>
-            {loadingMore ? "Loading\u2026" : "Load more"}
+            {loadingMore ? tx("Loading\u2026") : tx("Load more")}
           </Button>
         </div>
       ) : null}

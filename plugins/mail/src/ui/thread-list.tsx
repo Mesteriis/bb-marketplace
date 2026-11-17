@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { CategoryFilters, RowCategory, categoryLabel, type Category } from "./category-chips.tsx";
 import { dragLabel, writeMovePayload } from "./drag-move.ts";
 import { LabelChips } from "./label-chips.tsx";
+import { tx } from "./i18n/index.ts";
 
 export const NO_SUBJECT = "(no subject)";
 
@@ -110,7 +111,7 @@ export function QuickFilters({
   dev?: boolean;
 }) {
   return (
-    <div role="group" aria-label="Quick filters" className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-3 py-1">
+    <div role="group" aria-label={tx("Quick filters")} className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-3 py-1">
       {LIST_FILTERS.map(({ key, label }) => {
         const on = filter[key] === true;
         return (
@@ -144,7 +145,7 @@ export function QuickFilters({
             onChange(next);
           }}
         >
-          Hide dev notifications
+          {tx("Hide dev notifications")}
         </Button>
       ) : null}
       {categories ? (
@@ -168,7 +169,7 @@ export function FilteredEmpty({ filter, onClear }: { filter: ListFilter; onClear
     <div role="status" className="flex flex-col items-start gap-2 px-3 py-4">
       <p className="text-sm text-muted-foreground">{filterEmptyText(filter)}</p>
       <Button variant="outline" size="sm" className="h-7" onClick={onClear}>
-        Clear filters
+        {tx("Clear filters")}
       </Button>
     </div>
   );
@@ -349,7 +350,7 @@ function Row({
           ) : null}
         </span>
         <span className={cn("truncate pl-3.5 text-sm text-foreground", unread && "font-semibold")}>
-          {unread ? <span className="sr-only">Unread: </span> : null}
+          {unread ? <span className="sr-only">{tx("Unread:")} </span> : null}
           {label}
         </span>
         {compact ? null : <span className="truncate pl-3.5 text-xs text-muted-foreground">{snippet}</span>}
@@ -358,7 +359,7 @@ function Row({
             {fromServer ? (
               <span className="shrink-0 text-xs text-muted-foreground">
                 <Icon name="Server" fallback="Mail" className="mr-0.5 inline size-3" aria-hidden />
-                from the server
+                {tx("from the server")}
               </span>
             ) : null}
             <LabelChips labels={labels} />
@@ -367,14 +368,14 @@ function Row({
         {matches.map((match, index) => (
           <span key={index} className="truncate pl-3.5 text-xs text-muted-foreground">
             {"in "}
-            <span className="italic text-foreground">{match.filename ?? "an attachment"}</span>
+            <span className="italic text-foreground">{match.filename ?? tx("an attachment")}</span>
             {`: \u2026 ${match.excerpt} \u2026`}
           </span>
         ))}
         {snoozedUntil !== null ? (
           <span className="flex items-center gap-1 pl-3.5 text-xs text-muted-foreground">
             <Icon name="Clock" fallback="Info" className="size-3" aria-hidden />
-            until {formatUntil(snoozedUntil)}
+            {tx("until")} {formatUntil(snoozedUntil)}
           </span>
         ) : null}
       </button>
@@ -389,7 +390,7 @@ function Row({
                 ? "text-primary [&_svg]:fill-current"
                 : "text-muted-foreground opacity-0 focus-visible:opacity-100 group-hover:opacity-100",
             )}
-            aria-label="Flag conversation"
+            aria-label={tx("Flag conversation")}
             aria-pressed={star.flagged}
             onClick={star.onToggle}
           >
@@ -440,7 +441,7 @@ export const DRAG_HINT_ID = "makosh-mail-drag-hint";
 function DragHint() {
   return (
     <span id={DRAG_HINT_ID} className="sr-only">
-      Drag onto a folder to move, or press v to move
+      {tx("Drag onto a folder to move, or press v to move")}
     </span>
   );
 }
@@ -470,7 +471,7 @@ export function ThreadList({
   return (
     <div className="flex flex-col">
       {drag !== undefined ? <DragHint /> : null}
-      <ul aria-label="Conversations">
+      <ul aria-label={tx("Conversations")}>
         {threads.map((thread) => (
           <Row
             key={thread.id}
@@ -516,7 +517,7 @@ export function ThreadList({
             disabled={loadingMore}
             onClick={onLoadMore}
           >
-            {loadingMore ? "Loading…" : "Load more"}
+            {loadingMore ? tx("Loading\u2026") : tx("Load more")}
           </Button>
         </div>
       ) : (
@@ -579,7 +580,7 @@ export function SearchResultList({
         <div className="p-3">
           <LoadMoreOnScroll loading={more.loading} onLoadMore={more.onMore} />
           <Button variant="outline" size="sm" className="w-full" disabled={more.loading} onClick={more.onMore}>
-            {more.loading ? "Loading\u2026" : "Load more"}
+            {more.loading ? tx("Loading\u2026") : tx("Load more")}
           </Button>
         </div>
       ) : null}
@@ -614,9 +615,9 @@ export function HistoryStrip({
   if (state.kind === "running") {
     return (
       <div role="status" className="flex flex-wrap items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
-        <span>{state.total > 0 ? `Loading\u2026 ${state.fetched} of ~${state.total}` : "Loading\u2026"}</span>
+        <span>{state.total > 0 ? `Loading\u2026 ${state.fetched} of ~${state.total}` : tx("Loading\u2026")}</span>
         <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onStop}>
-          Stop
+          {tx("Stop")}
         </Button>
       </div>
     );
@@ -631,7 +632,7 @@ export function HistoryStrip({
       {state.kind === "idle" && state.note !== null ? <p>{state.note}</p> : null}
       <div className="flex flex-wrap items-center gap-2">
         <span>
-          {state.kind === "idle" && state.since !== null ? `Showing mail since ${formatDay(state.since)}` : "Older mail stays on the server"}
+          {state.kind === "idle" && state.since !== null ? `Showing mail since ${formatDay(state.since)}` : tx("Older mail stays on the server")}
         </span>
         <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={onLoad}>
           {`Load ${stepDays} more days`}

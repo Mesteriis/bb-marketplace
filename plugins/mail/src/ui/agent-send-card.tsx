@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { formatBytes } from "./attachments-input.tsx";
 import { presendIssueText } from "./presend-dialog.tsx";
 import { subjectOrPlaceholder } from "./thread-list.tsx";
+import { tx } from "./i18n/index.ts";
 
 export type ProposalViewResult =
   | { state: "ready"; view: ProposalView; viewToken: string }
@@ -200,7 +201,7 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
   if (loaded.kind === "loading") {
     return (
       <CardShell>
-        <p className="text-sm text-muted-foreground">Loading the email…</p>
+        <p className="text-sm text-muted-foreground">{tx("Loading the email\u2026")}</p>
       </CardShell>
     );
   }
@@ -209,11 +210,11 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
     return (
       <CardShell>
         <p role="alert" className="text-sm text-foreground">
-          {loaded.kind === "error" ? "Could not load this email. Nothing was sent." : CLOSED_TEXT[loaded.state]}
+          {loaded.kind === "error" ? tx("Could not load this email. Nothing was sent.") : CLOSED_TEXT[loaded.state]}
         </p>
         <div className="flex justify-end">
           <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void doCancel()}>
-            Cancel
+            {tx("Cancel")}
           </Button>
         </div>
       </CardShell>
@@ -233,48 +234,47 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
     <CardShell>
       <div className="flex flex-wrap items-center gap-2">
         <Icon name="Bot" fallback="Mail" className="size-4 text-muted-foreground" aria-hidden />
-        <h3 className="text-sm font-semibold text-foreground">An agent proposes an email</h3>
+        <h3 className="text-sm font-semibold text-foreground">{tx("An agent proposes an email")}</h3>
         <span className="rounded-sm border border-border px-1.5 text-xs text-muted-foreground">{KIND_LABELS[v.kind]}</span>
       </div>
       {v.source !== null ? (
         <p className="text-xs text-muted-foreground">
-          {v.kind === "forward" ? "Forwards" : "Replies to"} “{subjectOrPlaceholder(shownText(v.source.subject))}” from{" "}
+          {v.kind === "forward" ? tx("Forwards") : tx("Replies to")} “{subjectOrPlaceholder(shownText(v.source.subject))}{tx("\u201d from")}{" "}
           <span className="text-foreground">{shownText(v.source.fromAddress)}</span>
         </p>
       ) : null}
 
       {v.hiddenChars > 0 ? (
         <p role="note" className="rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive">
-          {v.hiddenChars === 1 ? "1 hidden character removed" : `${v.hiddenChars} hidden characters removed`} (invisible
-          marks in the subject, the addresses or the text).
+          {v.hiddenChars === 1 ? tx("1 hidden character removed") : `${v.hiddenChars} hidden characters removed`} {tx("(invisible marks in the subject, the addresses or the text).")}
         </p>
       ) : null}
 
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-1.5 text-sm">
-        <dt className="text-muted-foreground">From</dt>
+        <dt className="text-muted-foreground">{tx("From")}</dt>
         <dd className="min-w-0 break-all text-foreground">
           {v.fromName !== null ? <span>{shownText(v.fromName)} </span> : null}
           <span className="text-muted-foreground">&lt;{v.account.address}&gt;</span>
           {v.fromAlias ? (
-            <span className="ml-1.5 rounded-sm border border-border px-1 text-xs text-muted-foreground">alias</span>
+            <span className="ml-1.5 rounded-sm border border-border px-1 text-xs text-muted-foreground">{tx("alias")}</span>
           ) : null}
         </dd>
-        <RecipientRow label="To" list={v.to} acknowledged={acknowledged} onAcknowledge={acknowledge} />
-        <RecipientRow label="Cc" list={v.cc} acknowledged={acknowledged} onAcknowledge={acknowledge} />
+        <RecipientRow label={tx("To")} list={v.to} acknowledged={acknowledged} onAcknowledge={acknowledge} />
+        <RecipientRow label={tx("Cc")} list={v.cc} acknowledged={acknowledged} onAcknowledge={acknowledge} />
         <RecipientRow
-          label="Bcc"
+          label={tx("Bcc")}
           list={v.bcc}
           acknowledged={acknowledged}
           onAcknowledge={acknowledge}
           notice={v.bcc.length > 0 ? "Hidden recipients — the others will not see them" : null}
         />
-        <dt className="text-muted-foreground">Subject</dt>
+        <dt className="text-muted-foreground">{tx("Subject")}</dt>
         <dd className="min-w-0 break-words font-medium text-foreground">{subjectOrPlaceholder(shownText(v.subject))}</dd>
       </dl>
 
       {v.templateName !== null ? (
         <p className="text-xs text-muted-foreground">
-          Includes the template «<span className="text-foreground">{shownText(v.templateName)}</span>»
+          {tx("Includes the template \u00ab")}<span className="text-foreground">{shownText(v.templateName)}</span>»
         </p>
       ) : null}
       <div
@@ -300,7 +300,7 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
               className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
             >
               <Icon name={quoteOpen ? "ChevronDown" : "ChevronRight"} fallback="Mail" className="size-3.5" aria-hidden />
-              Quoted message (from the original)
+              {tx("Quoted message (from the original)")}
             </button>
             {quoteOpen ? (
               <div className="mt-1 whitespace-pre-wrap break-words border-l-2 border-border pl-2 text-xs text-muted-foreground">
@@ -311,10 +311,10 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
         ) : null}
       </div>
 
-      <section aria-label="Links" className="flex flex-col gap-1">
-        <h4 className="text-xs font-medium text-muted-foreground">Links in the text</h4>
+      <section aria-label={tx("Links")} className="flex flex-col gap-1">
+        <h4 className="text-xs font-medium text-muted-foreground">{tx("Links in the text")}</h4>
         {v.links.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No links</p>
+          <p className="text-xs text-muted-foreground">{tx("No links")}</p>
         ) : (
           <ul className="flex flex-col gap-0.5">
             {v.links.map((link) => (
@@ -327,10 +327,10 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
         )}
       </section>
 
-      <section aria-label="Attachments" className="flex flex-col gap-1">
-        <h4 className="text-xs font-medium text-muted-foreground">Attachments</h4>
+      <section aria-label={tx("Attachments")} className="flex flex-col gap-1">
+        <h4 className="text-xs font-medium text-muted-foreground">{tx("Attachments")}</h4>
         {v.attachments.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No attachments</p>
+          <p className="text-xs text-muted-foreground">{tx("No attachments")}</p>
         ) : (
           <>
             <ul className="flex flex-col gap-0.5">
@@ -338,26 +338,26 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
                 <li key={`${i}-${a.fileName}`} className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
                   <span className="min-w-0 whitespace-pre-wrap break-all text-foreground">{shownText(a.fileName)}</span>
                   <span className="shrink-0 rounded-sm border border-border px-1 font-medium text-foreground">
-                    {extensionOf(shownText(a.fileName)) ?? "no extension"}
+                    {extensionOf(shownText(a.fileName)) ?? tx("no extension")}
                   </span>
                   <span className="shrink-0 text-muted-foreground">{a.mimeType}</span>
                   <span className="shrink-0 text-muted-foreground">{formatBytes(a.size)}</span>
                 </li>
               ))}
             </ul>
-            <p className="text-xs text-muted-foreground">From the forwarded message</p>
+            <p className="text-xs text-muted-foreground">{tx("From the forwarded message")}</p>
           </>
         )}
         {v.leftOut > 0 ? (
           <p className="text-xs text-muted-foreground">
-            Left out: too large ({v.leftOut === 1 ? "1 attachment" : `${v.leftOut} attachments`})
+            {tx("Left out: too large (")}{v.leftOut === 1 ? tx("1 attachment") : `${v.leftOut} attachments`})
           </p>
         ) : null}
       </section>
 
       {v.checks.length > 0 ? (
-        <section aria-label="Before sending" className="flex flex-col gap-1 rounded-md bg-muted/50 px-2 py-1.5">
-          <h4 className="text-xs font-medium text-foreground">Before sending</h4>
+        <section aria-label={tx("Before sending")} className="flex flex-col gap-1 rounded-md bg-muted/50 px-2 py-1.5">
+          <h4 className="text-xs font-medium text-foreground">{tx("Before sending")}</h4>
           <ul className="flex flex-col gap-0.5">
             {v.checks.map((issue, index) => (
               <li key={`${issue.kind}-${index}`} className="flex items-start gap-1.5 text-xs text-foreground">
@@ -377,14 +377,14 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
       {gateText !== null ? <p className="text-xs text-muted-foreground">{gateText}</p> : null}
       <div className="flex flex-wrap justify-end gap-2">
         <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => void doCancel()}>
-          Cancel
+          {tx("Cancel")}
         </Button>
         <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void doSubmit("open")}>
-          Open in Mail
+          {tx("Open in Mail")}
         </Button>
         <Button size="sm" disabled={!sendEnabled} onClick={() => void doSubmit("send")}>
           <Icon name="Send" fallback="Mail" aria-hidden />
-          {busy === "send" ? "Sending…" : "Send"}
+          {busy === "send" ? tx("Sending\u2026") : tx("Send")}
         </Button>
       </div>
     </CardShell>
@@ -395,7 +395,7 @@ function CardShell({ children }: { children: ReactNode }) {
   return (
     <div
       data-question-form
-      aria-label="Email proposed by an agent"
+      aria-label={tx("Email proposed by an agent")}
       role="group"
       className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 text-card-foreground"
     >
@@ -458,7 +458,7 @@ function RecipientRow({
       >
         {warning ? <p className="text-xs font-medium text-destructive">{notice}</p> : null}
         {list.length === 0 ? (
-          <span className="text-muted-foreground">none</span>
+          <span className="text-muted-foreground">{tx("none")}</span>
         ) : (
           <ul className="flex flex-col gap-1">
             {shown.map((r) => (
@@ -478,7 +478,7 @@ function RecipientRow({
             onClick={() => setExpanded((open) => !open)}
             className="self-start text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
           >
-            {expanded ? "Show fewer" : `and ${hidden} more`}
+            {expanded ? tx("Show fewer") : `and ${hidden} more`}
           </button>
         ) : null}
         {long && newOnes.length > 0 ? (
@@ -488,7 +488,7 @@ function RecipientRow({
             className="h-7 self-start px-2"
             onClick={() => onAcknowledge(newOnes.map((r) => r.address))}
           >
-            {newOnes.length === 1 ? "I know this address" : `I know these ${newOnes.length} addresses`}
+            {newOnes.length === 1 ? tx("I know this address") : `I know these ${newOnes.length} addresses`}
           </Button>
         ) : null}
       </dd>
@@ -526,10 +526,10 @@ function RecipientChip({
       ))}
       {isNew && !acknowledged && onAcknowledge !== null ? (
         <Button variant="outline" size="sm" className="h-6 px-2" onClick={onAcknowledge}>
-          I know this address
+          {tx("I know this address")}
         </Button>
       ) : null}
-      {isNew && acknowledged ? <span className="text-xs text-muted-foreground">Confirmed</span> : null}
+      {isNew && acknowledged ? <span className="text-xs text-muted-foreground">{tx("Confirmed")}</span> : null}
     </li>
   );
 }

@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { isMacPlatform, SHORTCUT_SHEET, stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 const KBD = "rounded-sm border border-border bg-muted px-1.5 font-mono text-xs text-foreground";
 
@@ -34,11 +35,11 @@ export function ShortcutSheet({
         onAfterCloseAutoFocus={onAfterCloseAutoFocus}
       >
         <DialogHeader>
-          <DialogTitle>Keyboard shortcuts</DialogTitle>
+          <DialogTitle>{tx("Keyboard shortcuts")}</DialogTitle>
           <DialogDescription>
-            They work while the Mail page has focus and you are not typing.
+            {tx("They work while the Mail page has focus and you are not typing.")}
           </DialogDescription>
-          <p className="text-sm text-muted-foreground">On a Mac, Apple Mail keys work too.</p>
+          <p className="text-sm text-muted-foreground">{tx("On a Mac, Apple Mail keys work too.")}</p>
         </DialogHeader>
         {SHORTCUT_SHEET.map((section) => (
           <section key={section.title} aria-label={section.title} className="flex flex-col gap-1">
@@ -48,7 +49,7 @@ export function ShortcutSheet({
                 <div key={entry.label} className="flex items-center justify-between gap-3 text-sm">
                   <dt className="text-foreground">
                     {entry.label}
-                    {entry.soon ? <span className="ml-2 text-xs text-muted-foreground">soon</span> : null}
+                    {entry.soon ? <span className="ml-2 text-xs text-muted-foreground">{tx("soon")}</span> : null}
                   </dt>
                   <dd className="flex shrink-0 items-center gap-1">
                     {entry.keys.map((name, index) => (
@@ -58,7 +59,7 @@ export function ShortcutSheet({
                     ))}
                     {mac && entry.mac !== undefined ? (
                       <>
-                        {entry.keys.length > 0 ? <span className="text-xs text-muted-foreground">or</span> : null}
+                        {entry.keys.length > 0 ? <span className="text-xs text-muted-foreground">{tx("or")}</span> : null}
                         <kbd className={KBD}>{entry.mac.join("")}</kbd>
                       </>
                     ) : null}

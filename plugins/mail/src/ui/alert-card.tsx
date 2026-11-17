@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { BB_TEXT, errorText, useProjects, type BbCall } from "./bb-ports.ts";
 import { PreparedPrompt } from "./bb-thread-dialog.tsx";
 import { ProjectSelect } from "./project-chip.tsx";
+import { tx } from "./i18n/index.ts";
 
 export interface AlertCardProps {
   messageId: string;
@@ -62,7 +63,7 @@ export function AlertCard(props: AlertCardProps) {
   const facts = [alert.state, alert.severity, alert.service !== null ? `service ${alert.service}` : null, alert.environment]
     .filter((f): f is string => f !== null && f !== "");
   return (
-    <div role="region" aria-label="Alert" className="flex flex-col gap-1.5 rounded-md border border-border px-2 py-1.5 text-xs">
+    <div role="region" aria-label={tx("Alert")} className="flex flex-col gap-1.5 rounded-md border border-border px-2 py-1.5 text-xs">
       <div className="flex flex-wrap items-center gap-2">
         <Icon name="AlertTriangle" className={cn("size-3.5", alert.state === "firing" ? "text-destructive" : "text-muted-foreground")} aria-hidden />
         <span className="font-medium text-foreground">{alert.name}</span>
@@ -70,12 +71,12 @@ export function AlertCard(props: AlertCardProps) {
         <span className="text-muted-foreground">{alert.source}</span>
       </div>
       {alert.links.length > 0 ? (
-        <ul aria-label="Alert links" className="flex flex-col gap-0.5">
+        <ul aria-label={tx("Alert links")} className="flex flex-col gap-0.5">
           {alert.links.map((url) => (
             <li key={url} className="flex min-w-0 items-center gap-1">
               <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{url}</span>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => props.onOpenLink(url)}>
-                Open
+                {tx("Open")}
               </Button>
             </li>
           ))}
@@ -85,7 +86,7 @@ export function AlertCard(props: AlertCardProps) {
         {incident !== null ? (
           <>
             <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={() => props.onOpenThread(incident.bbThreadId)}>
-              {incident.title !== null ? `Open ${incident.title}` : "Open incident thread"}
+              {incident.title !== null ? `Open ${incident.title}` : tx("Open incident thread")}
             </Button>
             {incident.canAppend ? (
               <Button
@@ -99,13 +100,13 @@ export function AlertCard(props: AlertCardProps) {
                   })
                 }
               >
-                Add to incident thread
+                {tx("Add to incident thread")}
               </Button>
             ) : null}
           </>
         ) : (
           <Button size="sm" className="h-6 px-2 text-xs" disabled={!props.inAiScope} aria-expanded={picking} onClick={() => setPicking((v) => !v)}>
-            {"Open incident thread\u2026"}
+            {tx("Open incident thread\u2026")}
           </Button>
         )}
       </div>
@@ -174,7 +175,7 @@ function IncidentPicker({
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-end gap-2">
         <div className="min-w-48 flex-1">
-          <ProjectSelect label="Project" projects={projects} value={projectId} onChange={setProjectId} />
+          <ProjectSelect label={tx("Project")} projects={projects} value={projectId} onChange={setProjectId} />
         </div>
         <Button
           size="sm"
@@ -182,10 +183,10 @@ function IncidentPicker({
           disabled={busy || projectId === null || ready === null}
           onClick={() => projectId !== null && ready !== null && onStart(projectId, ready.promptRef)}
         >
-          Start incident thread
+          {tx("Start incident thread")}
         </Button>
       </div>
-      {prepared?.status === "loading" ? <p role="status" className="text-muted-foreground">{"Preparing the prompt\u2026"}</p> : null}
+      {prepared?.status === "loading" ? <p role="status" className="text-muted-foreground">{tx("Preparing the prompt\u2026")}</p> : null}
       {prepared?.status === "error" ? <p role="alert" className="text-destructive">{prepared.error}</p> : null}
       {ready !== null ? <PreparedPrompt prepared={ready} testId="incident-prompt" /> : null}
     </div>

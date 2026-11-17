@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { BB_TEXT, FIELD_CLASS } from "./bb-ports.ts";
+import { tx } from "./i18n/index.ts";
 
 export interface ProjectSelectProps {
   label: string;
@@ -38,7 +39,7 @@ export function ProjectSelect({ label, projects, value, onChange, requireTree = 
         }}
       >
         <option value="" disabled>
-          {projects === null ? "Loading projects\u2026" : projects.length === 0 ? "No projects in BB" : "Choose a project"}
+          {projects === null ? tx("Loading projects\u2026") : projects.length === 0 ? tx("No projects in BB") : tx("Choose a project")}
         </option>
         {(projects ?? []).map((project) => (
           <option key={project.id} value={project.id} disabled={requireTree && !project.hasTree}>
@@ -92,7 +93,7 @@ export function ProjectChip({ detail, projects, onSet, onAlways, onOpenProject }
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
         <Icon name="Folder" className="size-3.5" aria-hidden />
-        <span>Project:</span>
+        <span>{tx("Project:")}</span>
         {project !== null ? (
           <Button variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-foreground" onClick={() => onOpenProject(project.id)}>
             {project.name}
@@ -101,13 +102,13 @@ export function ProjectChip({ detail, projects, onSet, onAlways, onOpenProject }
           <>
             <span className="rounded-sm border border-dashed border-border px-1 text-foreground">{`${suggestion.name}?`}</span>
             <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={() => onSet(suggestion.id)}>
-              Accept
+              {tx("Accept")}
             </Button>
           </>
         ) : (
           <span>{"\u2014"}</span>
         )}
-        {project?.source === "rule" ? <span>(by a binding rule)</span> : null}
+        {project?.source === "rule" ? <span>{tx("(by a binding rule)")}</span> : null}
         <Button
           variant="ghost"
           size="sm"
@@ -115,12 +116,12 @@ export function ProjectChip({ detail, projects, onSet, onAlways, onOpenProject }
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
         >
-          Change
+          {tx("Change")}
         </Button>
       </div>
       {open ? (
-        <div role="group" aria-label="Conversation project" className="flex flex-col gap-2 rounded-md border border-border p-2">
-          <ProjectSelect label="Project" projects={projects} value={target} onChange={setPicked} />
+        <div role="group" aria-label={tx("Conversation project")} className="flex flex-col gap-2 rounded-md border border-border p-2">
+          <ProjectSelect label={tx("Project")} projects={projects} value={target} onChange={setPicked} />
           <div className="flex flex-wrap gap-1">
             <Button
               size="sm"
@@ -132,7 +133,7 @@ export function ProjectChip({ detail, projects, onSet, onAlways, onOpenProject }
                 setOpen(false);
               }}
             >
-              Bind this conversation
+              {tx("Bind this conversation")}
             </Button>
             {target !== null
               ? alwaysChoices(detail).map((choice) => (
@@ -160,7 +161,7 @@ export function ProjectChip({ detail, projects, onSet, onAlways, onOpenProject }
                   setOpen(false);
                 }}
               >
-                Unbind
+                {tx("Unbind")}
               </Button>
             ) : null}
           </div>

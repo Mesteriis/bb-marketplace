@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { TemplateView } from "./mail-settings.tsx";
 import { docPreview } from "./mail-settings.tsx";
+import { tx } from "./i18n/index.ts";
 
 export interface TemplatesPopoverProps {
   templates: readonly TemplateView[];
@@ -54,17 +55,17 @@ export function TemplatesPopover({ templates, onInsert, onManage, onClose }: Tem
   return (
     <div
       role="dialog"
-      aria-label="Templates"
+      aria-label={tx("Templates")}
       className="mt-1 flex max-w-sm flex-col gap-1 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
     >
       <Input
         autoFocus
         role="combobox"
-        aria-label="Find a template"
+        aria-label={tx("Find a template")}
         aria-expanded
         aria-controls={listId}
         aria-activedescendant={shown.length > 0 ? `${id}-option-${current}` : undefined}
-        placeholder="Find a template"
+        placeholder={tx("Find a template")}
         value={query}
         onChange={(event) => {
           setQuery(event.target.value);
@@ -74,7 +75,7 @@ export function TemplatesPopover({ templates, onInsert, onManage, onClose }: Tem
         className="h-7 text-xs"
       />
       {shown.length > 0 ? (
-        <ul id={listId} role="listbox" aria-label="Templates" className="flex max-h-64 flex-col overflow-y-auto">
+        <ul id={listId} role="listbox" aria-label={tx("Templates")} className="flex max-h-64 flex-col overflow-y-auto">
           {shown.map((template, index) => (
             <li
               key={template.id}
@@ -96,11 +97,11 @@ export function TemplatesPopover({ templates, onInsert, onManage, onClose }: Tem
         </ul>
       ) : (
         <p className="px-2 py-1 text-xs text-muted-foreground">
-          {templates.length === 0 ? "No templates yet." : "No template has this name."}
+          {templates.length === 0 ? tx("No templates yet.") : tx("No template has this name.")}
         </p>
       )}
       <Button variant="ghost" size="sm" className="h-7 justify-start" onClick={onManage}>
-        Manage templates…
+        {tx("Manage templates\u2026")}
       </Button>
     </div>
   );

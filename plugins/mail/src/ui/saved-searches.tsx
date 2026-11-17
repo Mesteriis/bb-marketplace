@@ -18,6 +18,7 @@ import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 /** A saved search's unread count as the rail shows it; capped counts read "499+". */
 export function savedCount(search: Pick<SavedSearchView, "unread" | "capped">): string | null {
@@ -41,8 +42,8 @@ export function SavedSearchesRail({
   if (searches.length === 0) return null;
   return (
     <div className="px-1.5 py-1">
-      <p className="px-2 pb-0.5 pt-1 text-xs font-medium text-muted-foreground">Saved</p>
-      <ul aria-label="Saved searches" className="flex flex-col gap-px">
+      <p className="px-2 pb-0.5 pt-1 text-xs font-medium text-muted-foreground">{tx("Saved")}</p>
+      <ul aria-label={tx("Saved searches")} className="flex flex-col gap-px">
         {searches.map((search) => {
           const count = savedCount(search);
           const selected = search.id === currentId;
@@ -63,7 +64,7 @@ export function SavedSearchesRail({
                 {count !== null ? (
                   <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                     {count}
-                    <span className="sr-only"> unread</span>
+                    <span className="sr-only"> {tx("unread")}</span>
                   </span>
                 ) : null}
               </button>
@@ -143,12 +144,12 @@ export function SaveSearchDialog({
       <DialogContent className="max-w-sm" onEscapeKeyDown={stopEscape}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>Saved searches show in the rail with their unread count.</DialogDescription>
+          <DialogDescription>{tx("Saved searches show in the rail with their unread count.")}</DialogDescription>
         </DialogHeader>
         <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-3">
           {request?.kind !== "edit" ? (
             <Input
-              aria-label="Name"
+              aria-label={tx("Name")}
               autoFocus
               value={name}
               maxLength={SAVED_SEARCH_NAME_MAX}
@@ -157,7 +158,7 @@ export function SaveSearchDialog({
           ) : null}
           {request?.kind !== "rename" ? (
             <Input
-              aria-label="Search"
+              aria-label={tx("Search")}
               autoFocus={request?.kind === "edit"}
               value={query}
               maxLength={SAVED_SEARCH_QUERY_MAX}
@@ -171,10 +172,10 @@ export function SaveSearchDialog({
           ) : null}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>
-              Cancel
+              {tx("Cancel")}
             </Button>
             <Button type="submit" disabled={busy}>
-              {busy ? "Saving\u2026" : "Save"}
+              {busy ? tx("Saving\u2026") : tx("Save")}
             </Button>
           </DialogFooter>
         </form>

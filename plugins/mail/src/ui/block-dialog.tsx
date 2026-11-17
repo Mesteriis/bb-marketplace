@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { shownText } from "./agent-send-card.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export type BlockKind = "address" | "domain";
 
@@ -114,12 +115,12 @@ export function BlockDialog({ messageId, load, onBlock, onCancel, onCloseAutoFoc
         onAfterCloseAutoFocus={onAfterCloseAutoFocus}
       >
         <DialogHeader>
-          <DialogTitle>Block this sender?</DialogTitle>
+          <DialogTitle>{tx("Block this sender?")}</DialogTitle>
           <DialogDescription>
-            New mail from them goes to Spam in every account while BB runs. Nothing is deleted.
+            {tx("New mail from them goes to Spam in every account while BB runs. Nothing is deleted.")}
           </DialogDescription>
         </DialogHeader>
-        {loaded.kind === "loading" ? <p className="text-sm text-muted-foreground">Checking the sender…</p> : null}
+        {loaded.kind === "loading" ? <p className="text-sm text-muted-foreground">{tx("Checking the sender\u2026")}</p> : null}
         {loaded.kind === "error" ? (
           <p role="alert" className="text-sm text-destructive">
             {loaded.text}
@@ -128,7 +129,7 @@ export function BlockDialog({ messageId, load, onBlock, onCancel, onCloseAutoFoc
         {check !== null ? (
           <div className="flex flex-col gap-3">
             <fieldset className="flex flex-col gap-1.5">
-              <legend className="sr-only">What to block</legend>
+              <legend className="sr-only">{tx("What to block")}</legend>
               <label className="flex items-start gap-2 text-sm text-foreground">
                 <input
                   type="radio"
@@ -137,7 +138,7 @@ export function BlockDialog({ messageId, load, onBlock, onCancel, onCloseAutoFoc
                   checked={kind === "address"}
                   onChange={() => choose("address")}
                 />
-                <span className="min-w-0 break-all">Block {shownText(check.address)}</span>
+                <span className="min-w-0 break-all">{tx("Block")} {shownText(check.address)}</span>
               </label>
               {check.domain !== null ? (
                 <label className="flex items-start gap-2 text-sm text-foreground">
@@ -148,7 +149,7 @@ export function BlockDialog({ messageId, load, onBlock, onCancel, onCloseAutoFoc
                     checked={kind === "domain"}
                     onChange={() => choose("domain")}
                   />
-                  <span className="min-w-0 break-all">Block everyone at {shownText(check.domain)}</span>
+                  <span className="min-w-0 break-all">{tx("Block everyone at")} {shownText(check.domain)}</span>
                 </label>
               ) : null}
             </fieldset>
@@ -172,7 +173,7 @@ export function BlockDialog({ messageId, load, onBlock, onCancel, onCloseAutoFoc
         ) : null}
         <DialogFooter>
           <Button ref={cancel} variant="outline" size="sm" onClick={onCancel}>
-            Cancel
+            {tx("Cancel")}
           </Button>
           <Button
             variant="destructive"
@@ -180,7 +181,7 @@ export function BlockDialog({ messageId, load, onBlock, onCancel, onCloseAutoFoc
             disabled={check === null || messageId === null}
             onClick={() => messageId !== null && onBlock(messageId, { kind, moveExisting: move && count > 0 })}
           >
-            Block
+            {tx("Block")}
           </Button>
         </DialogFooter>
       </DialogContent>

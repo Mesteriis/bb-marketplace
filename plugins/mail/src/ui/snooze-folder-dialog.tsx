@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { FolderPickList } from "./move-dialog.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 /** Folders that never hold snoozed mail (the server refuses them too). */
 const REFUSED_USES: ReadonlySet<SpecialUse> = new Set(["inbox", "sent", "drafts", "junk", "trash", "all"]);
@@ -91,22 +92,22 @@ export function SnoozeFolderDialog({ request, folders, onCreate, onUse, onCancel
         <DialogHeader>
           <DialogTitle>
             {changing
-              ? "Snoozed folder"
+              ? tx("Snoozed folder")
               : picking
-                ? "Use an existing folder"
+                ? tx("Use an existing folder")
                 : `Create a folder '${request?.proposedName ?? ""}' in ${request?.accountLabel ?? ""}?`}
           </DialogTitle>
           <DialogDescription>
             {changing
               ? `Snoozed mail of ${request?.accountLabel ?? ""} waits in '${request?.current ?? ""}'. Mail snoozed there now stays there until it returns.`
-              : "Snoozed mail waits there and comes back to the Inbox at the time you pick."}
+              : tx("Snoozed mail waits there and comes back to the Inbox at the time you pick.")}
           </DialogDescription>
         </DialogHeader>
         {picking && request !== null ? (
           folders === null ? (
-            <p className="text-sm text-muted-foreground">Loading folders…</p>
+            <p className="text-sm text-muted-foreground">{tx("Loading folders\u2026")}</p>
           ) : choices.length === 0 ? (
-            <p className="text-sm text-muted-foreground">There is no other folder that can hold snoozed mail.</p>
+            <p className="text-sm text-muted-foreground">{tx("There is no other folder that can hold snoozed mail.")}</p>
           ) : (
             <FolderPickList
               folders={folders}
@@ -125,19 +126,19 @@ export function SnoozeFolderDialog({ request, folders, onCreate, onUse, onCancel
         ) : null}
         <DialogFooter>
           <Button variant="outline" size="sm" disabled={busy} onClick={onCancel}>
-            Cancel
+            {tx("Cancel")}
           </Button>
           {!changing && !picking ? (
             <>
               <Button variant="outline" size="sm" disabled={busy} onClick={() => setPicking(true)}>
-                Use an existing folder…
+                {tx("Use an existing folder\u2026")}
               </Button>
               <Button
                 size="sm"
                 disabled={busy || request === null}
                 onClick={() => request !== null && void run(() => onCreate(request.accountId), "Could not create the folder.")}
               >
-                Create folder
+                {tx("Create folder")}
               </Button>
             </>
           ) : null}

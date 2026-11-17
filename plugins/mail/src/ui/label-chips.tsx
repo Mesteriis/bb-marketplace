@@ -4,6 +4,7 @@
 // again so a stale or foreign value never shows as one.
 import { ownerLabels } from "../core/labels.ts";
 import { cn } from "@/lib/utils";
+import { tx } from "./i18n/index.ts";
 
 export function LabelChips({
   labels,
@@ -20,7 +21,7 @@ export function LabelChips({
   const visible = shown.slice(0, max);
   const rest = shown.length - visible.length;
   return (
-    <span role="list" aria-label="Labels" className={cn("flex min-w-0 flex-wrap items-center gap-1", className)}>
+    <span role="list" aria-label={tx("Labels")} className={cn("flex min-w-0 flex-wrap items-center gap-1", className)}>
       {visible.map((label) => (
         <span
           key={label}
@@ -34,7 +35,7 @@ export function LabelChips({
       {rest > 0 ? (
         <span role="listitem" className="text-xs text-muted-foreground">
           +{rest}
-          <span className="sr-only">{rest === 1 ? " more label" : " more labels"}</span>
+          <span className="sr-only">{rest === 1 ? tx(" more label") : tx(" more labels")}</span>
         </span>
       ) : null}
     </span>

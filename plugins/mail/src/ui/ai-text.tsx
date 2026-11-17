@@ -10,6 +10,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { shownText } from "./agent-send-card.tsx";
 import type { AiJobState, AiPhase } from "./ai-job.ts";
+import { tx } from "./i18n/index.ts";
 
 export type AiCitation = AiResultView["citations"][number];
 export type AiNotes = AiResultView["notes"];
@@ -108,7 +109,7 @@ export function AiNotesList({ notes }: { notes: AiNotes }) {
   const lines = notesText(notes);
   if (lines.length === 0) return null;
   return (
-    <ul aria-label="Notes" className="flex flex-col text-xs text-muted-foreground">
+    <ul aria-label={tx("Notes")} className="flex flex-col text-xs text-muted-foreground">
       {lines.map((line) => (
         <li key={line}>{line}</li>
       ))}
@@ -122,7 +123,7 @@ export function AiFailure({ state }: { state: Extract<AiJobState, { status: "fai
     <div role="alert" className="flex flex-col gap-0.5 text-xs text-destructive">
       <p>{state.text}</p>
       {state.gatewayMessage !== null && state.gatewayMessage !== "" ? (
-        <p className="text-muted-foreground">Makosh AI says: {shownText(state.gatewayMessage)}</p>
+        <p className="text-muted-foreground">{tx("Makosh AI says:")} {shownText(state.gatewayMessage)}</p>
       ) : null}
     </div>
   );

@@ -7,6 +7,7 @@ import type { ThreadSummary } from "../core/model.ts";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { tx } from "./i18n/index.ts";
 
 export type Category = NonNullable<ThreadSummary["category"]>;
 
@@ -33,7 +34,7 @@ export function RowCategory({ category, suggestion }: { category: Category | nul
   if (suggestion !== null) {
     return (
       <span
-        title="Suggested category"
+        title={tx("Suggested category")}
         className="shrink-0 rounded-sm border border-dashed border-border px-1 text-xs text-muted-foreground"
       >
         {`${categoryLabel(suggestion)}?`}
@@ -59,7 +60,7 @@ export function CategoryChip({ category, suggestion, onAccept, onChange, onAlway
   const [changing, setChanging] = useState(false);
   const shown = category ?? suggestion;
   return (
-    <div role="group" aria-label="Category" className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+    <div role="group" aria-label={tx("Category")} className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
       {category !== null ? (
         <span>
           {"Category: "}
@@ -68,15 +69,15 @@ export function CategoryChip({ category, suggestion, onAccept, onChange, onAlway
       ) : suggestion !== null ? (
         <>
           <span>
-            {"Suggested category: "}
+            {tx("Suggested category: ")}
             <span className="text-foreground">{categoryLabel(suggestion)}</span>
           </span>
           <Button variant="outline" size="sm" className="h-6 px-2 text-xs" disabled={pending} onClick={onAccept}>
-            Accept
+            {tx("Accept")}
           </Button>
         </>
       ) : (
-        <span>No category</span>
+        <span>{tx("No category")}</span>
       )}
       {changing ? (
         <Select
@@ -90,7 +91,7 @@ export function CategoryChip({ category, suggestion, onAccept, onChange, onAlway
             if (!open) setChanging(false);
           }}
         >
-          <SelectTrigger aria-label="Change category" className="h-6 w-auto px-2 text-xs">
+          <SelectTrigger aria-label={tx("Change category")} className="h-6 w-auto px-2 text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -99,12 +100,12 @@ export function CategoryChip({ category, suggestion, onAccept, onChange, onAlway
                 {c.label}
               </SelectItem>
             ))}
-            <SelectItem value={NONE}>No category</SelectItem>
+            <SelectItem value={NONE}>{tx("No category")}</SelectItem>
           </SelectContent>
         </Select>
       ) : (
         <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" disabled={pending} onClick={() => setChanging(true)}>
-          {"Change\u2026"}
+          {tx("Change\u2026")}
         </Button>
       )}
       {onAlways !== null && shown !== null ? (

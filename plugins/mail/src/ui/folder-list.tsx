@@ -8,6 +8,7 @@ import { ROLE_NAMES, roleFolders } from "../core/actions.ts";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { carriesMove, MOVE_TYPE } from "./drag-move.ts";
+import { tx } from "./i18n/index.ts";
 
 /** The account chooser's value for All accounts. */
 export const ALL_ACCOUNTS = "__all_accounts__";
@@ -161,7 +162,7 @@ function RailButton({
             },
           }
         : {})}
-      title={over === "no" ? "Not allowed: another account" : undefined}
+      title={over === "no" ? tx("Not allowed: another account") : undefined}
     >
       <button
         type="button"
@@ -181,20 +182,20 @@ function RailButton({
         {attention > 0 ? (
           <span className="shrink-0 rounded-sm bg-destructive/10 px-1 text-xs tabular-nums text-destructive">
             {attention}
-            <span className="sr-only"> in the Outbox need you</span>
+            <span className="sr-only"> {tx("in the Outbox need you")}</span>
           </span>
         ) : null}
         {unread > 0 ? (
           <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
             {unread}
-            <span className="sr-only"> unread</span>
+            <span className="sr-only"> {tx("unread")}</span>
           </span>
         ) : null}
       </button>
       {onMenu !== undefined ? (
         <button
           type="button"
-          aria-label="Folder options"
+          aria-label={tx("Folder options")}
           title={`${name} options`}
           onClick={onMenu}
           className="absolute right-0.5 flex size-6 shrink-0 items-center justify-center rounded-md bg-background text-muted-foreground opacity-0 transition-opacity hover:bg-state-hover focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
@@ -295,10 +296,10 @@ export function FolderList({ folders, selectedPath, onSelect, error, sentAttenti
 function RailHint({ error }: { error: string | null }) {
   return error !== null ? (
     <p role="alert" className="px-3 py-2 text-xs text-destructive">
-      Could not load folders: {error}
+      {tx("Could not load folders:")} {error}
     </p>
   ) : (
-    <p className="px-3 py-2 text-xs text-muted-foreground">Folders appear after the first sync.</p>
+    <p className="px-3 py-2 text-xs text-muted-foreground">{tx("Folders appear after the first sync.")}</p>
   );
 }
 
@@ -446,14 +447,14 @@ function AccountGroup({
         {!open && unread > 0 ? (
           <span className="shrink-0 tabular-nums">
             {unread}
-            <span className="sr-only"> unread</span>
+            <span className="sr-only"> {tx("unread")}</span>
           </span>
         ) : null}
       </button>
       {onMenu !== undefined ? (
         <button
           type="button"
-          aria-label="Account options"
+          aria-label={tx("Account options")}
           title={`${label} options`}
           onClick={onMenu}
           className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-state-hover focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
@@ -498,7 +499,7 @@ export function UnifiedRail({ roles, folders, accounts, view, onSelect, error, s
   return (
     <>
       {error !== null || shownRoles.length === 0 ? <RailHint error={error} /> : null}
-      <ul aria-label="All accounts" className="flex flex-col gap-px px-1.5 py-1">
+      <ul aria-label={tx("All accounts")} className="flex flex-col gap-px px-1.5 py-1">
         {shownRoles.map(({ role, unreadCount }) => (
           <RailButton
             key={role}

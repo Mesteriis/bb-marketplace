@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { tx } from "./i18n/index.ts";
 
 /** The languages the server takes (SUPPORTED_LANGUAGES in the core), by tag. */
 export const TRANSLATE_LANGUAGES: readonly { tag: string; label: string }[] = [
@@ -124,12 +125,12 @@ export function TranslationBlock({
   ].join(" · ");
   const failed = state.status === "failed" && state.error !== null;
   return (
-    <section aria-label="Translation" className="flex flex-col gap-2 rounded-md border border-border bg-muted/40 px-3 py-2">
+    <section aria-label={tx("Translation")} className="flex flex-col gap-2 rounded-md border border-border bg-muted/40 px-3 py-2">
       <div className="flex flex-wrap items-center gap-2">
         <Icon name="Languages" fallback="Mail" className="size-4 text-muted-foreground" aria-hidden />
         <p className="min-w-0 flex-1 text-xs font-medium text-muted-foreground">{label}</p>
         <Select value={state.language} onValueChange={onLanguage} disabled={running}>
-          <SelectTrigger aria-label="Translate into" className="h-7 w-auto px-2 text-xs">
+          <SelectTrigger aria-label={tx("Translate into")} className="h-7 w-auto px-2 text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -142,45 +143,45 @@ export function TranslationBlock({
         </Select>
         {running ? (
           <Button variant="outline" size="sm" className="h-7 px-2" onClick={onStop}>
-            Stop
+            {tx("Stop")}
           </Button>
         ) : (
           <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onAgain}>
-            {failed ? "Retry" : "Translate again"}
+            {failed ? tx("Retry") : tx("Translate again")}
           </Button>
         )}
         <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onSettings}>
-          AI settings…
+          {tx("AI settings\u2026")}
         </Button>
       </div>
       {running ? (
         <p role="status" className="text-xs text-muted-foreground">
-          Translating…
+          {tx("Translating\u2026")}
         </p>
       ) : null}
       {failed ? (
         <div role="alert" className="flex flex-col gap-0.5 text-xs text-destructive">
           <p>{translationErrorText(state.error!, state.provider, state.model)}</p>
           {state.gatewayMessage !== null && state.gatewayMessage !== "" ? (
-            <p className="text-muted-foreground">Makosh AI says: {state.gatewayMessage}</p>
+            <p className="text-muted-foreground">{tx("Makosh AI says:")} {state.gatewayMessage}</p>
           ) : null}
         </div>
       ) : null}
       {state.status === "cancelled" ? (
-        <p className="text-xs text-muted-foreground">The translation was stopped.</p>
+        <p className="text-xs text-muted-foreground">{tx("The translation was stopped.")}</p>
       ) : null}
       {state.text !== "" ? (
         <div className={cn("whitespace-pre-wrap break-words text-sm text-foreground")}>{state.text}</div>
       ) : null}
       {state.truncatedInput ? (
-        <p className="text-xs text-muted-foreground">Translated the first part of a long message.</p>
+        <p className="text-xs text-muted-foreground">{tx("Translated the first part of a long message.")}</p>
       ) : null}
-      {state.cutShort ? <p className="text-xs text-muted-foreground">The translation was cut short.</p> : null}
+      {state.cutShort ? <p className="text-xs text-muted-foreground">{tx("The translation was cut short.")}</p> : null}
       {state.incomplete && !state.truncatedInput && !state.cutShort ? (
-        <p className="text-xs text-muted-foreground">This translation is not complete.</p>
+        <p className="text-xs text-muted-foreground">{tx("This translation is not complete.")}</p>
       ) : null}
       {state.text !== "" ? (
-        <p className="text-xs text-muted-foreground">Translated by a model; it may be wrong.</p>
+        <p className="text-xs text-muted-foreground">{tx("Translated by a model; it may be wrong.")}</p>
       ) : null}
     </section>
   );

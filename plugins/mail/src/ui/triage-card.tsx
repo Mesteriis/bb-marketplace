@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { shownText } from "./agent-send-card.tsx";
 import { formatFullDate, formatUntil, subjectOrPlaceholder } from "./thread-list.tsx";
 import { FOREIGN_MAILTO_NOTE, MailtoPreview, UNSUBSCRIBE_PRIVACY } from "./unsubscribe-dialog.tsx";
+import { tx } from "./i18n/index.ts";
 
 export type TriageAction = TriageItemView["action"];
 
@@ -165,7 +166,7 @@ export function TriageCard({ load, submit, cancel, registerAction }: TriageCardP
   if (loaded.kind === "loading") {
     return (
       <CardShell>
-        <p className="text-sm text-muted-foreground">Loading the inbox actions…</p>
+        <p className="text-sm text-muted-foreground">{tx("Loading the inbox actions\u2026")}</p>
       </CardShell>
     );
   }
@@ -173,11 +174,11 @@ export function TriageCard({ load, submit, cancel, registerAction }: TriageCardP
     return (
       <CardShell>
         <p role="alert" className="text-sm text-foreground">
-          {loaded.kind === "error" ? "Could not load these inbox actions. Nothing was applied." : CLOSED_TEXT[loaded.state]}
+          {loaded.kind === "error" ? tx("Could not load these inbox actions. Nothing was applied.") : CLOSED_TEXT[loaded.state]}
         </p>
         <div className="flex justify-end">
           <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void doCancel()}>
-            Cancel
+            {tx("Cancel")}
           </Button>
         </div>
       </CardShell>
@@ -208,18 +209,18 @@ export function TriageCard({ load, submit, cancel, registerAction }: TriageCardP
       <div className="flex flex-wrap items-center gap-2">
         <Icon name="Bot" fallback="Mail" className="size-4 text-muted-foreground" aria-hidden />
         <h3 className="text-sm font-semibold text-foreground">
-          {view.items.length === 1 ? "Review 1 inbox action" : `Review ${view.items.length} inbox actions`}
+          {view.items.length === 1 ? tx("Review 1 inbox action") : `Review ${view.items.length} inbox actions`}
         </h3>
       </div>
       {view.summary !== null && view.summary !== "" ? (
         <div className="flex flex-col gap-0.5">
-          <p className="text-xs font-medium text-muted-foreground">Agent's summary</p>
+          <p className="text-xs font-medium text-muted-foreground">{tx("Agent's summary")}</p>
           <p className="whitespace-pre-wrap break-words text-sm text-foreground">{shownText(view.summary)}</p>
         </div>
       ) : null}
 
       {view.needsFolder.length > 0 ? (
-        <section aria-label="Snooze folders" className="flex flex-col gap-1 rounded-md bg-muted/50 px-2 py-1.5">
+        <section aria-label={tx("Snooze folders")} className="flex flex-col gap-1 rounded-md bg-muted/50 px-2 py-1.5">
           {view.needsFolder.map((need) => {
             const text = `Create a '${shownText(need.proposedName)}' folder in ${shownText(need.accountEmail)}`;
             return (
@@ -241,7 +242,7 @@ export function TriageCard({ load, submit, cancel, registerAction }: TriageCardP
               </label>
             );
           })}
-          <p className="text-xs text-muted-foreground">Snoozes in that account wait for its folder.</p>
+          <p className="text-xs text-muted-foreground">{tx("Snoozes in that account wait for its folder.")}</p>
         </section>
       ) : null}
 
@@ -255,16 +256,16 @@ export function TriageCard({ load, submit, cancel, registerAction }: TriageCardP
                 {label} <span className="font-normal text-muted-foreground">{items.length}</span>
               </h4>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setGroup(items, true)}>
-                Select all
+                {tx("Select all")}
               </Button>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setGroup(items, false)}>
-                Select none
+                {tx("Select none")}
               </Button>
             </div>
             {action === "unsubscribe" ? <p className="text-xs text-muted-foreground">{UNSUBSCRIBE_PRIVACY}</p> : null}
             {action === "reply" ? (
               <p className="text-xs text-muted-foreground">
-                A tick lets the agent draft that reply; each reply comes back as its own card.
+                {tx("A tick lets the agent draft that reply; each reply comes back as its own card.")}
               </p>
             ) : null}
             <ul className="flex flex-col gap-1.5">
@@ -289,10 +290,10 @@ export function TriageCard({ load, submit, cancel, registerAction }: TriageCardP
       ) : null}
       <div className="flex flex-wrap justify-end gap-2">
         <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => void doCancel()}>
-          Cancel
+          {tx("Cancel")}
         </Button>
         <Button size="sm" disabled={busy !== null || approved.length === 0} onClick={() => void apply()}>
-          {busy === "apply" ? "Applying…" : `Apply ${approved.length}`}
+          {busy === "apply" ? tx("Applying\u2026") : `Apply ${approved.length}`}
         </Button>
       </div>
     </CardShell>
@@ -334,7 +335,7 @@ function TriageItemRow({
           {[formatFullDate(item.date), shownText(item.accountEmail), shownText(item.folder)].filter((part) => part !== "").join(" · ")}
         </p>
         {item.action === "snooze" && item.snoozeUntil !== null ? (
-          <p className="text-xs text-foreground">Until {formatUntil(item.snoozeUntil)}</p>
+          <p className="text-xs text-foreground">{tx("Until")} {formatUntil(item.snoozeUntil)}</p>
         ) : null}
         {item.action === "unsubscribe" && item.unsubscribe !== null ? (
           <p className="break-all text-xs text-foreground">
@@ -361,7 +362,7 @@ function TriageItemRow({
           <AgentNote>{shownText(item.note)}</AgentNote>
         ) : null}
         {!item.available ? (
-          <p className="text-xs text-destructive">{item.reason !== null ? shownText(item.reason) : "No longer available"}</p>
+          <p className="text-xs text-destructive">{item.reason !== null ? shownText(item.reason) : tx("No longer available")}</p>
         ) : null}
       </div>
     </li>
@@ -371,7 +372,7 @@ function TriageItemRow({
 function AgentNote({ children }: { children: ReactNode }) {
   return (
     <div className="mt-0.5 border-l-2 border-border pl-2">
-      <p className="text-xs font-medium text-muted-foreground">Agent's note</p>
+      <p className="text-xs font-medium text-muted-foreground">{tx("Agent's note")}</p>
       <p className="whitespace-pre-wrap break-words text-xs text-foreground">{children}</p>
     </div>
   );
@@ -381,7 +382,7 @@ function CardShell({ children }: { children: ReactNode }) {
   return (
     <div
       data-question-form
-      aria-label="Inbox actions proposed by an agent"
+      aria-label={tx("Inbox actions proposed by an agent")}
       role="group"
       className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 text-card-foreground"
     >

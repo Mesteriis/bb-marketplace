@@ -8,6 +8,7 @@ import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { isMacPlatform } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 /** "⌘" on Apple platforms, "Ctrl+" elsewhere (the platform rule is shortcuts.ts's isMacPlatform). */
 export function modKeyLabel(platform?: string): string {
@@ -159,7 +160,7 @@ export function ComposeToolbar({
       <div className="flex items-center gap-1">
         <div
           role="toolbar"
-          aria-label="Formatting"
+          aria-label={tx("Formatting")}
           aria-orientation="horizontal"
           onKeyDown={onKeyDown}
           className="flex flex-wrap items-center gap-0.5"
@@ -207,7 +208,7 @@ export function ComposeToolbar({
               onClick={onImprove}
             >
               <Icon name="Sparkles" fallback="Bot" aria-hidden />
-              Improve
+              {tx("Improve")}
               <Icon name="ChevronDown" fallback="ArrowDown" aria-hidden />
             </Button>
           </span>
@@ -226,7 +227,7 @@ export function ComposeToolbar({
             onClick={onTemplates}
           >
             <Icon name="FileText" fallback="Mail" aria-hidden />
-            Templates
+            {tx("Templates")}
           </Button>
         ) : null}
       </div>
@@ -264,10 +265,10 @@ function LinkField({ editor, onClose }: { editor: Editor; onClose: () => void })
   };
 
   return (
-    <form onSubmit={apply} className="flex flex-wrap items-center gap-1 pt-1" aria-label="Link">
+    <form onSubmit={apply} className="flex flex-wrap items-center gap-1 pt-1" aria-label={tx("Link")}>
       <Input
         autoFocus
-        aria-label="Link address"
+        aria-label={tx("Link address")}
         aria-invalid={problem !== null}
         aria-describedby={problem !== null ? "compose-link-problem" : undefined}
         placeholder="https://example.org"
@@ -287,7 +288,7 @@ function LinkField({ editor, onClose }: { editor: Editor; onClose: () => void })
         className="h-7 min-w-40 flex-1 text-xs"
       />
       <Button type="submit" variant="outline" size="sm" className="h-7">
-        Apply
+        {tx("Apply")}
       </Button>
       {current !== "" ? (
         <Button
@@ -300,7 +301,7 @@ function LinkField({ editor, onClose }: { editor: Editor; onClose: () => void })
             onClose();
           }}
         >
-          Remove link
+          {tx("Remove link")}
         </Button>
       ) : null}
       {problem !== null ? (

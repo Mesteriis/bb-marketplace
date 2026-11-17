@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 import { BB_TEXT, errorText, FIELD_CLASS, permissionText, useProjects, type BbCall } from "./bb-ports.ts";
 import { ProjectSelect } from "./project-chip.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export interface BbThreadRequest {
   messageId: string;
@@ -137,15 +138,15 @@ function ThreadBody({ request, call, onStarted, onEditInComposer, onClose }: BbT
   return (
     <>
       <DialogHeader>
-        <DialogTitle>New thread from this mail</DialogTitle>
+        <DialogTitle>{tx("New thread from this mail")}</DialogTitle>
         <DialogDescription>
-          The agent starts with the prompt below. The mail inside it is marked as untrusted.
+          {tx("The agent starts with the prompt below. The mail inside it is marked as untrusted.")}
         </DialogDescription>
       </DialogHeader>
       <div className="flex flex-col gap-3">
-        <ProjectSelect label="Project" projects={projects} value={projectId} onChange={setProjectId} />
+        <ProjectSelect label={tx("Project")} projects={projects} value={projectId} onChange={setProjectId} />
         <fieldset className="flex flex-col gap-1">
-          <legend className="text-xs font-medium text-muted-foreground">Include</legend>
+          <legend className="text-xs font-medium text-muted-foreground">{tx("Include")}</legend>
           <div className="flex flex-wrap gap-3 text-sm">
             {(
               [
@@ -167,7 +168,7 @@ function ThreadBody({ request, call, onStarted, onEditInComposer, onClose }: BbT
         </fieldset>
         <div className="flex flex-col gap-1">
           <label htmlFor={instructionId} className="text-xs font-medium text-muted-foreground">
-            Your instruction (optional)
+            {tx("Your instruction (optional)")}
           </label>
           <textarea
             id={instructionId}
@@ -180,9 +181,9 @@ function ThreadBody({ request, call, onStarted, onEditInComposer, onClose }: BbT
           {stale ? (
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" className="h-7 px-2" onClick={() => setApplied(instruction)}>
-                Update the preview
+                {tx("Update the preview")}
               </Button>
-              <span className="text-xs text-muted-foreground">Start sends the prompt shown below.</span>
+              <span className="text-xs text-muted-foreground">{tx("Start sends the prompt shown below.")}</span>
             </div>
           ) : null}
         </div>
@@ -193,23 +194,23 @@ function ThreadBody({ request, call, onStarted, onEditInComposer, onClose }: BbT
               disabled={project !== null && !project.hasTree}
               onCheckedChange={(checked) => setSaveAttachments(checked === true)}
             />
-            Also save the attachments to the project
+            {tx("Also save the attachments to the project")}
           </label>
         ) : null}
         {project !== null && !project.hasTree && request.hasAttachments ? (
           <p className="text-xs text-muted-foreground">{BB_TEXT.no_tree}</p>
         ) : null}
-        <section aria-label="Prompt preview" className="flex flex-col gap-1">
-          <h3 className="text-xs font-medium text-muted-foreground">Prompt preview</h3>
+        <section aria-label={tx("Prompt preview")} className="flex flex-col gap-1">
+          <h3 className="text-xs font-medium text-muted-foreground">{tx("Prompt preview")}</h3>
           {!request.inAiScope ? (
             <p role="note" className="text-sm text-muted-foreground">
               {BB_TEXT.out_of_scope}
             </p>
           ) : projectId === null ? (
-            <p className="text-sm text-muted-foreground">Choose a project to see the prompt.</p>
+            <p className="text-sm text-muted-foreground">{tx("Choose a project to see the prompt.")}</p>
           ) : preview.status === "loading" || preview.status === "idle" ? (
             <p className="text-sm text-muted-foreground" role="status">
-              {"Preparing the prompt\u2026"}
+              {tx("Preparing the prompt\u2026")}
             </p>
           ) : preview.status === "error" ? (
             <p role="alert" className="text-sm text-destructive">
@@ -245,7 +246,7 @@ function ThreadBody({ request, call, onStarted, onEditInComposer, onClose }: BbT
       </div>
       <DialogFooter>
         <Button variant="ghost" size="sm" onClick={onClose}>
-          Cancel
+          {tx("Cancel")}
         </Button>
         <Button
           variant="outline"
@@ -258,10 +259,10 @@ function ThreadBody({ request, call, onStarted, onEditInComposer, onClose }: BbT
             }
           }}
         >
-          Edit in composer
+          {tx("Edit in composer")}
         </Button>
         <Button size="sm" disabled={!ready || starting} onClick={() => void start()}>
-          {starting ? "Starting\u2026" : "Start thread"}
+          {starting ? tx("Starting\u2026") : tx("Start thread")}
         </Button>
       </DialogFooter>
     </>

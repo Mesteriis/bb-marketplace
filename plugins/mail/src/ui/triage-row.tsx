@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { tx } from "./i18n/index.ts";
 
 export type TriageStatus = {
   state: "pending" | "confirming" | "applying" | "applied" | "cancelled" | "changed" | "expired" | "interrupted";
@@ -92,18 +93,18 @@ export function TriageRow({ status, undo, version = 0 }: TriageRowProps) {
     }
   }, [reload, undo]);
 
-  if (loaded.kind === "loading") return <Line>Checking these inbox actions…</Line>;
-  if (loaded.kind === "error") return <Line>These inbox actions are no longer tracked here.</Line>;
+  if (loaded.kind === "loading") return <Line>{tx("Checking these inbox actions\u2026")}</Line>;
+  if (loaded.kind === "error") return <Line>{tx("These inbox actions are no longer tracked here.")}</Line>;
 
   const s = loaded.status;
   let body: ReactNode;
   switch (s.state) {
     case "pending":
-      body = <Line>Waiting for your review</Line>;
+      body = <Line>{tx("Waiting for your review")}</Line>;
       break;
     case "confirming":
     case "applying":
-      body = <Line>Applying…</Line>;
+      body = <Line>{tx("Applying\u2026")}</Line>;
       break;
     case "applied": {
       const { head, groups, notes } = appliedText(s);
@@ -113,7 +114,7 @@ export function TriageRow({ status, undo, version = 0 }: TriageRowProps) {
             <span className="text-foreground">{head}</span>
             {s.undoable ? (
               <Button variant="outline" size="sm" className="h-7 px-2" disabled={undoing} onClick={() => void onUndo()}>
-                Undo
+                {tx("Undo")}
               </Button>
             ) : null}
           </Line>
@@ -128,16 +129,16 @@ export function TriageRow({ status, undo, version = 0 }: TriageRowProps) {
       break;
     }
     case "interrupted":
-      body = <Line warning>A restart interrupted this; check your Inbox</Line>;
+      body = <Line warning>{tx("A restart interrupted this; check your Inbox")}</Line>;
       break;
     case "cancelled":
-      body = <Line>Cancelled. Nothing was applied.</Line>;
+      body = <Line>{tx("Cancelled. Nothing was applied.")}</Line>;
       break;
     case "changed":
-      body = <Line>Not applied: the batch changed</Line>;
+      body = <Line>{tx("Not applied: the batch changed")}</Line>;
       break;
     case "expired":
-      body = <Line>Expired. Nothing was applied.</Line>;
+      body = <Line>{tx("Expired. Nothing was applied.")}</Line>;
       break;
   }
   return (

@@ -8,6 +8,7 @@ import { codeBlocks, type BodyPart } from "../core/code-blocks.ts";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import type { CodeRenderers } from "./bb-ports.ts";
+import { tx } from "./i18n/index.ts";
 
 const TEXT_CLASS = "whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-foreground";
 const PRE_CLASS = "max-h-96 overflow-auto whitespace-pre rounded-md border border-border bg-muted p-2 font-mono text-xs text-foreground";
@@ -39,7 +40,7 @@ function CopyButton({ text, onCopy }: { text: string; onCopy?: (text: string) =>
       }}
     >
       <Icon name="Copy" fallback="Check" className="size-3" aria-hidden />
-      {copied ? "Copied" : "Copy"}
+      {copied ? tx("Copied") : tx("Copy")}
     </Button>
   );
 }

@@ -8,6 +8,7 @@ import type { ThreadSummary } from "../core/model.ts";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { formatListDate, participantsLabel, subjectOrPlaceholder } from "./thread-list.tsx";
+import { tx } from "./i18n/index.ts";
 
 export type ThreadMail = RpcOut<"bb_thread_mail">;
 
@@ -38,8 +39,8 @@ export function ThreadMailSection({ load, onOpen, onShowAll, frame }: ThreadMail
   if (mail === null || (mail.bound.length === 0 && mail.origin.length === 0)) return null;
   const content = (
     <div className="flex flex-col gap-2 text-sm">
-      {mail.origin.length > 0 ? <Rows label="Started from" threads={mail.origin} onOpen={onOpen} /> : null}
-      {mail.bound.length > 0 ? <Rows label="Bound to this project" threads={mail.bound} onOpen={onOpen} /> : null}
+      {mail.origin.length > 0 ? <Rows label={tx("Started from")} threads={mail.origin} onOpen={onOpen} /> : null}
+      {mail.bound.length > 0 ? <Rows label={tx("Bound to this project")} threads={mail.bound} onOpen={onOpen} /> : null}
       {mail.total > mail.bound.length ? (
         <div>
           <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onShowAll}>
@@ -59,7 +60,7 @@ function Rows({ label, threads, onOpen }: { label: string; threads: readonly Thr
       <ul className="flex flex-col gap-1">
         {threads.map((thread) => (
           <li key={`${thread.accountId}:${thread.id}`} className="flex min-w-0 items-center gap-2">
-            {thread.unreadCount > 0 ? <span aria-label="Unread" className="size-1.5 shrink-0 rounded-full bg-primary" /> : null}
+            {thread.unreadCount > 0 ? <span aria-label={tx("Unread")} className="size-1.5 shrink-0 rounded-full bg-primary" /> : null}
             <div className="flex min-w-0 flex-1 flex-col">
               <span className={cn("truncate text-xs text-foreground", thread.unreadCount > 0 && "font-semibold")}>
                 {subjectOrPlaceholder(thread.subject)}
@@ -70,7 +71,7 @@ function Rows({ label, threads, onOpen }: { label: string; threads: readonly Thr
               </span>
             </div>
             <Button variant="ghost" size="sm" className="h-6 shrink-0 px-2 text-xs" onClick={() => onOpen(thread.accountId, thread.id)}>
-              Open in Mail
+              {tx("Open in Mail")}
             </Button>
           </li>
         ))}

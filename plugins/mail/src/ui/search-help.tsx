@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export const SEARCH_OPERATORS: readonly { example: string; meaning: string }[] = [
   { example: "from:anna", meaning: "Sender name or address" },
@@ -65,7 +66,7 @@ export function searchNoteText(note: SearchNote): string {
 export function SearchNotes({ notes }: { notes: readonly SearchNote[] }) {
   if (notes.length === 0) return null;
   return (
-    <ul aria-label="Search notes" className="flex flex-col gap-0.5 border-b border-border px-3 py-1 text-xs text-muted-foreground">
+    <ul aria-label={tx("Search notes")} className="flex flex-col gap-0.5 border-b border-border px-3 py-1 text-xs text-muted-foreground">
       {notes.map((note, index) => (
         <li key={`${index}:${note.term}`}>{searchNoteText(note)}</li>
       ))}
@@ -77,14 +78,14 @@ export function SearchHelpButton() {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Button type="button" variant="ghost" size="icon" aria-label="Search help" onClick={() => setOpen(true)}>
+      <Button type="button" variant="ghost" size="icon" aria-label={tx("Search help")} onClick={() => setOpen(true)}>
         <Icon name="HelpCircle" fallback="Info" aria-hidden />
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-md" onEscapeKeyDown={stopEscape}>
           <DialogHeader>
-            <DialogTitle>Search operators</DialogTitle>
-            <DialogDescription>Combine them with words. Everything else is searched as text.</DialogDescription>
+            <DialogTitle>{tx("Search operators")}</DialogTitle>
+            <DialogDescription>{tx("Combine them with words. Everything else is searched as text.")}</DialogDescription>
           </DialogHeader>
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
             {SEARCH_OPERATORS.map((row) => (

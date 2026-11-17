@@ -51,6 +51,7 @@ import { BbFilePicker, type FilePickRequest } from "./bb-file-picker.tsx";
 import type { BbCall } from "./bb-ports.ts";
 import { findSignature, signatureKey } from "./signature-node.ts";
 import { TemplatesPopover } from "./templates-popover.tsx";
+import { tx } from "./i18n/index.ts";
 
 /** Typing rests this long before the draft is saved. */
 export const AUTOSAVE_MS = 1_500;
@@ -837,14 +838,14 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         {page ? (
           <Button variant="ghost" size="sm" onClick={() => void close()} disabled={closing}>
             <Icon name="ArrowLeft" aria-hidden />
-            Back
+            {tx("Back")}
           </Button>
         ) : null}
         <h2 className="min-w-0 flex-1 truncate px-1 text-sm font-semibold text-foreground">{TITLES[draft.kind]}</h2>
         {draft.origin === "agent" ? (
           <span className="flex shrink-0 items-center gap-1 rounded-sm bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground">
             <Icon name="Bot" fallback="Mail" className="size-3.5" aria-hidden />
-            Started by an agent
+            {tx("Started by an agent")}
           </span>
         ) : null}
         {!page ? (
@@ -852,7 +853,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
             variant="ghost"
             size="icon"
             className="size-7"
-            aria-label="Close"
+            aria-label={tx("Close")}
             disabled={closing}
             onClick={() => void close()}
           >
@@ -865,15 +866,15 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         <div role="alert" className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-3 py-2 text-sm">
           <span className="min-w-0 flex-1 text-foreground">
             {conflict.queued
-              ? "A send of this draft is queued. Undo it to edit the draft."
-              : "This draft changed in another window."}
+              ? tx("A send of this draft is queued. Undo it to edit the draft.")
+              : tx("This draft changed in another window.")}
           </span>
           <Button variant="outline" size="sm" onClick={() => void reload()}>
-            Reload
+            {tx("Reload")}
           </Button>
           {!conflict.queued ? (
             <Button variant="ghost" size="sm" onClick={keepMine}>
-              Keep mine
+              {tx("Keep mine")}
             </Button>
           ) : null}
         </div>
@@ -887,10 +888,10 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         </div>
       ) : null}
 
-      <FieldRow label="From">
+      <FieldRow label={tx("From")}>
         {fromChoices.length > 1 ? (
           <Select value={chosen?.key ?? ""} onValueChange={chooseFrom}>
-            <SelectTrigger aria-label="From" className="h-7 w-auto max-w-80 border-none px-1 text-sm">
+            <SelectTrigger aria-label={tx("From")} className="h-7 w-auto max-w-80 border-none px-1 text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -915,13 +916,13 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         <p role="status" className="flex items-start gap-1 border-b border-border px-3 py-1.5 text-xs text-destructive">
           <Icon name="TriangleAlert" fallback="Info" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
           {chosen.missing
-            ? "This sending address is no longer set up for the account; choose another From."
+            ? tx("This sending address is no longer set up for the account; choose another From.")
             : sendCheckText(chosen.sendCheck)}
         </p>
       ) : null}
       {keptSignature !== null ? (
         <div role="status" className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
-          <span>Kept your edited signature</span>
+          <span>{tx("Kept your edited signature")}</span>
           <span aria-hidden>·</span>
           <Button
             variant="link"
@@ -932,22 +933,22 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
               setKeptSignature(null);
             }}
           >
-            Use {keptSignature.address}'s
+            {tx("Use")} {keptSignature.address}'s
           </Button>
         </div>
       ) : null}
       {!smtpReady ? (
         <div role="alert" className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-sm">
-          <span className="min-w-0 flex-1 text-destructive">SMTP is not set for this account.</span>
+          <span className="min-w-0 flex-1 text-destructive">{tx("SMTP is not set for this account.")}</span>
           <Button variant="outline" size="sm" onClick={() => props.onOpenSmtpSettings(accountId)}>
-            Set up SMTP
+            {tx("Set up SMTP")}
           </Button>
         </div>
       ) : null}
 
-      <FieldRow label="To">
+      <FieldRow label={tx("To")}>
         <RecipientInput
-          label="To"
+          label={tx("To")}
           chips={to.chips}
           text={to.text}
           onChange={setField(setTo)}
@@ -957,21 +958,21 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         />
         {!showCopies ? (
           <Button variant="ghost" size="sm" className="h-7 shrink-0 px-2" onClick={() => setShowCopies(true)}>
-            Cc Bcc
+            {tx("Cc Bcc")}
           </Button>
         ) : null}
       </FieldRow>
       {showCopies ? (
         <>
-          <FieldRow label="Cc">
-            <RecipientInput label="Cc" chips={cc.chips} text={cc.text} onChange={setField(setCc)} suggest={(p) => portsRef.current.suggest(p)} marked={marked} />
+          <FieldRow label={tx("Cc")}>
+            <RecipientInput label={tx("Cc")} chips={cc.chips} text={cc.text} onChange={setField(setCc)} suggest={(p) => portsRef.current.suggest(p)} marked={marked} />
           </FieldRow>
-          <FieldRow label="Bcc">
-            <RecipientInput label="Bcc" chips={bcc.chips} text={bcc.text} onChange={setField(setBcc)} suggest={(p) => portsRef.current.suggest(p)} marked={marked} />
+          <FieldRow label={tx("Bcc")}>
+            <RecipientInput label={tx("Bcc")} chips={bcc.chips} text={bcc.text} onChange={setField(setBcc)} suggest={(p) => portsRef.current.suggest(p)} marked={marked} />
           </FieldRow>
         </>
       ) : null}
-      <FieldRow label="Subject" htmlFor={`compose-subject-${draft.id}`}>
+      <FieldRow label={tx("Subject")} htmlFor={`compose-subject-${draft.id}`}>
         <input
           id={`compose-subject-${draft.id}`}
           type="text"
@@ -1030,7 +1031,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <ComposeEditor
-          label="Message"
+          label={tx("Message")}
           initialDoc={draft.doc as EditorDoc}
           importFrom={draft.import}
           onChange={(next) => {
@@ -1061,7 +1062,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           aria-keyshortcuts="Control+Enter Meta+Enter"
         >
           <Icon name="Send" fallback="Mail" aria-hidden />
-          {sending ? "Sending…" : "Send"}
+          {sending ? tx("Sending\u2026") : tx("Send")}
         </Button>
         <AttachButton onAdd={addFiles} disabled={closing} />
         {props.bbFiles !== undefined ? (
@@ -1076,12 +1077,12 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
               disabled={closing}
               onClick={() => setBbMenuOpen((open) => !open)}
             >
-              {"Attach from BB \u25be"}
+              {tx("Attach from BB \u25be")}
             </Button>
             {bbMenuOpen ? (
               <span
                 role="menu"
-                aria-label="Attach from BB"
+                aria-label={tx("Attach from BB")}
                 className="absolute bottom-full left-0 z-10 mb-1 flex min-w-44 flex-col rounded-md border border-border bg-popover p-1 shadow-md"
                 onKeyDown={(event) => {
                   if (event.key === "Escape") {
@@ -1129,7 +1130,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
           variant="ghost"
           size="icon"
           className="size-8"
-          aria-label="Discard draft"
+          aria-label={tx("Discard draft")}
           disabled={closing || sending}
           onClick={() => void discard()}
         >
@@ -1177,12 +1178,12 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
       <Dialog open={escapeOpen} onOpenChange={setEscapeOpen}>
         <DialogContent className="max-w-sm" onEscapeKeyDown={stopEscape}>
           <DialogHeader>
-            <DialogTitle>Close this draft?</DialogTitle>
-            <DialogDescription>It has changes that are not saved yet.</DialogDescription>
+            <DialogTitle>{tx("Close this draft?")}</DialogTitle>
+            <DialogDescription>{tx("It has changes that are not saved yet.")}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" size="sm" onClick={() => setEscapeOpen(false)}>
-              Keep editing
+              {tx("Keep editing")}
             </Button>
             <Button
               variant="outline"
@@ -1192,7 +1193,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
                 void discard();
               }}
             >
-              Discard
+              {tx("Discard")}
             </Button>
             <Button
               size="sm"
@@ -1201,7 +1202,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
                 void close();
               }}
             >
-              Save draft
+              {tx("Save draft")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1265,9 +1266,9 @@ function fromItem(choice: FromChoice) {
     <SelectItem key={choice.key} value={choice.key}>
       <span className="flex min-w-0 items-center gap-1.5">
         <span className="truncate">{choice.label}</span>
-        {!choice.primary ? <span className="shrink-0 text-xs text-muted-foreground">alias</span> : null}
+        {!choice.primary ? <span className="shrink-0 text-xs text-muted-foreground">{tx("alias")}</span> : null}
         {warning ? (
-          <Icon name="TriangleAlert" fallback="Info" className="size-3.5 shrink-0 text-destructive" aria-label="Check this address" />
+          <Icon name="TriangleAlert" fallback="Info" className="size-3.5 shrink-0 text-destructive" aria-label={tx("Check this address")} />
         ) : null}
       </span>
     </SelectItem>

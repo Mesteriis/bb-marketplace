@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { BB_TEXT, errorText, FIELD_CLASS, useProjects, type BbCall } from "./bb-ports.ts";
 import { ProjectSelect } from "./project-chip.tsx";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 /** Most files one pick attaches. */
 export const PICK_MAX = 10;
@@ -154,7 +155,7 @@ function PickerBody({ request, call, currentProjectId, currentThreadId, onAttach
     return (
       <>
         <DialogHeader>
-          <DialogTitle>Attach anyway?</DialogTitle>
+          <DialogTitle>{tx("Attach anyway?")}</DialogTitle>
           <DialogDescription>
             {confirm.sources.length === 1
               ? `The name ${baseName(confirm.sources[0]!.path)} looks like it holds a password, key or token.`
@@ -182,10 +183,10 @@ function PickerBody({ request, call, currentProjectId, currentThreadId, onAttach
               onClose();
             }}
           >
-            Leave them out
+            {tx("Leave them out")}
           </Button>
           <Button size="sm" disabled={busy} onClick={() => void attach(confirm.sources, true, confirm.done)}>
-            Attach anyway
+            {tx("Attach anyway")}
           </Button>
         </DialogFooter>
       </>
@@ -195,7 +196,7 @@ function PickerBody({ request, call, currentProjectId, currentThreadId, onAttach
   return (
     <>
       <DialogHeader>
-        <DialogTitle>{request.kind === "project" ? "Attach from a project" : "Attach from a thread"}</DialogTitle>
+        <DialogTitle>{request.kind === "project" ? tx("Attach from a project") : tx("Attach from a thread")}</DialogTitle>
         <DialogDescription>{`Tick up to ${PICK_MAX} files. They are sent as they are; nothing is hidden in them.`}</DialogDescription>
       </DialogHeader>
       <div className="flex flex-col gap-3">
@@ -209,12 +210,12 @@ function PickerBody({ request, call, currentProjectId, currentThreadId, onAttach
                 setPicked([]);
               }}
             />
-            The thread Mail is open beside
+            {tx("The thread Mail is open beside")}
           </label>
         ) : null}
         {!useCurrentThread ? (
           <ProjectSelect
-            label="Project"
+            label={tx("Project")}
             projects={projects}
             value={projectId}
             onChange={(id) => {
@@ -228,7 +229,7 @@ function PickerBody({ request, call, currentProjectId, currentThreadId, onAttach
         {request.kind === "thread" && !useCurrentThread && projectId !== null ? (
           <div className="flex flex-col gap-1">
             <label htmlFor={ids.thread} className="text-xs font-medium text-muted-foreground">
-              Thread
+              {tx("Thread")}
             </label>
             <select
               id={ids.thread}
@@ -241,7 +242,7 @@ function PickerBody({ request, call, currentProjectId, currentThreadId, onAttach
               }}
             >
               <option value="" disabled>
-                {threads === null ? "Loading threads\u2026" : threads.length === 0 ? "No recent threads" : "Choose a thread"}
+                {threads === null ? tx("Loading threads\u2026") : threads.length === 0 ? tx("No recent threads") : tx("Choose a thread")}
               </option>
               {(threads ?? []).map((thread) => (
                 <option key={thread.id} value={thread.id}>
@@ -253,14 +254,14 @@ function PickerBody({ request, call, currentProjectId, currentThreadId, onAttach
         ) : null}
         <div className="flex flex-col gap-1">
           <label htmlFor={ids.search} className="text-xs font-medium text-muted-foreground">
-            Search
+            {tx("Search")}
           </label>
           <Input id={ids.search} value={query} maxLength={200} onChange={(e) => setQuery(e.target.value)} />
         </div>
         {files === null ? null : files.entries.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No files.</p>
+          <p className="text-sm text-muted-foreground">{tx("No files.")}</p>
         ) : (
-          <ul aria-label="Files" className="flex max-h-64 flex-col gap-0.5 overflow-y-auto">
+          <ul aria-label={tx("Files")} className="flex max-h-64 flex-col gap-0.5 overflow-y-auto">
             {files.entries.map((entry) => {
               const on = picked.includes(entry.path);
               return (
@@ -279,7 +280,7 @@ function PickerBody({ request, call, currentProjectId, currentThreadId, onAttach
             })}
           </ul>
         )}
-        {files?.truncated === true ? <p className="text-xs text-muted-foreground">More files match; search to narrow.</p> : null}
+        {files?.truncated === true ? <p className="text-xs text-muted-foreground">{tx("More files match; search to narrow.")}</p> : null}
         <p className="text-xs text-muted-foreground" role="status">{`${picked.length} of ${PICK_MAX} picked`}</p>
         {problem !== null ? (
           <p role="alert" className="text-sm text-destructive">
@@ -289,7 +290,7 @@ function PickerBody({ request, call, currentProjectId, currentThreadId, onAttach
       </div>
       <DialogFooter>
         <Button variant="ghost" size="sm" onClick={onClose}>
-          Cancel
+          {tx("Cancel")}
         </Button>
         <Button
           size="sm"
@@ -299,7 +300,7 @@ function PickerBody({ request, call, currentProjectId, currentThreadId, onAttach
             void attach(sources, false, []);
           }}
         >
-          Attach
+          {tx("Attach")}
         </Button>
       </DialogFooter>
     </>

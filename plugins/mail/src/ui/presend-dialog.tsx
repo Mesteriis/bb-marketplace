@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
 import { stopEscape } from "./shortcuts.ts";
+import { tx } from "./i18n/index.ts";
 
 export type { PresendIssue };
 
@@ -88,10 +89,10 @@ export function PresendDialog({ issues, onFix, onBack, onSendAnyway }: PresendDi
         }}
       >
         <DialogHeader>
-          <DialogTitle>Before you send</DialogTitle>
-          <DialogDescription>These may be on purpose; nothing stops the send.</DialogDescription>
+          <DialogTitle>{tx("Before you send")}</DialogTitle>
+          <DialogDescription>{tx("These may be on purpose; nothing stops the send.")}</DialogDescription>
         </DialogHeader>
-        <ul aria-label="Issues" className="flex flex-col gap-2">
+        <ul aria-label={tx("Issues")} className="flex flex-col gap-2">
           {(issues ?? []).map((issue, index) => {
             const { text, fix } = presendIssueText(issue);
             return (
@@ -114,10 +115,10 @@ export function PresendDialog({ issues, onFix, onBack, onSendAnyway }: PresendDi
         </ul>
         <DialogFooter>
           <Button ref={back} size="sm" onClick={onBack}>
-            Back to editing
+            {tx("Back to editing")}
           </Button>
           <Button variant="outline" size="sm" onClick={onSendAnyway}>
-            Send anyway
+            {tx("Send anyway")}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import type { RelatedHit, RelatedReason } from "../core/index.ts";
 import { Button } from "@/components/ui/button";
 import { addressLabel, formatListDate, subjectOrPlaceholder } from "./thread-list.tsx";
+import { tx } from "./i18n/index.ts";
 
 /** Why a message is related, as the owner reads it. */
 export function relatedReasonText(reason: RelatedReason): string {
@@ -56,10 +57,10 @@ export function RelatedMail({
   }, [open, hits, load, messageId]);
 
   return (
-    <section aria-label="Related mail" className="flex flex-col gap-1">
+    <section aria-label={tx("Related mail")} className="flex flex-col gap-1">
       <div>
         <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-          {hits === null ? "Related" : `Related (${hits.length})`}
+          {hits === null ? tx("Related") : `Related (${hits.length})`}
           <span aria-hidden>{open ? " \u25b4" : " \u25be"}</span>
         </Button>
       </div>
@@ -70,10 +71,10 @@ export function RelatedMail({
           </p>
         ) : hits === null ? (
           <p role="status" className="px-2 text-xs text-muted-foreground">
-            {"Looking\u2026"}
+            {tx("Looking\u2026")}
           </p>
         ) : hits.length === 0 ? (
-          <p className="px-2 text-xs text-muted-foreground">No related mail.</p>
+          <p className="px-2 text-xs text-muted-foreground">{tx("No related mail.")}</p>
         ) : (
           <ul className="flex flex-col">
             {hits.map((hit) => (
