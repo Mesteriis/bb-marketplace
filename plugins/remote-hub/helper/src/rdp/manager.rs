@@ -146,6 +146,9 @@ pub enum DecisionRefusal {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ClosedReport {
     pub session_id: u32,
+    /// Screenshot requests that never got an answer; each is answered with
+    /// `session_closed`.
+    pub pending_screenshots: Vec<u64>,
     pub reason: String,
     pub exit: EngineExit,
 }
@@ -311,6 +314,7 @@ impl RdpManager {
         height: u32,
         expected_fingerprint: Option<String>,
     ) -> Result<(u32, libc::pid_t), String> {
+        let id = self.ids.next().ok_or_else(|| "session ids are exhausted".to_string())?;
         let exe = CString::new(current_exe).map_err(|_| "current exe has a NUL byte".to_string())?;
         let argv_c = engine_argv(self.fake_engine.as_deref());
         let argv: Vec<*const libc::c_char> =
@@ -383,7 +387,7 @@ impl RdpManager {
 
         set_nonblocking(helper_fd);
         set_cloexec(helper_fd);
-        let id = self.adopt(Some(pid), helper_fd);
+        self.adopt_as(id, Some(pid), helper_fd);
 
         // All parameters, including the password, travel only over this
         // socketpair.
@@ -403,8 +407,14 @@ impl RdpManager {
 
     /// Register a session around an engine pid (None when no child is owned,
     /// as in tests) and the helper's end of its socket.
+    #[cfg(test)]
     pub(crate) fn adopt(&mut self, pid: Option<libc::pid_t>, fd: RawFd) -> u32 {
-        let id = self.ids.next();
+        let id = self.ids.next().expect("test ids are not exhausted");
+        self.adopt_as(id, pid, fd);
+        id
+    }
+
+    fn adopt_as(&mut self, id: u32, pid: Option<libc::pid_t>, fd: RawFd) {
         set_nonblocking(fd);
         self.sessions.insert(
             id,
@@ -425,7 +435,6 @@ impl RdpManager {
                 reported_closed: false,
             },
         );
-        id
     }
 
     pub fn enqueue_command(&mut self, id: u32, cmd: &EngineCommand) -> Result<(), EnqueueError> {
@@ -472,6 +481,11 @@ impl RdpManager {
         if let Some(s) = self.sessions.get_mut(&id) {
             s.screenshot_ids.push_back(request_id);
         }
+    }
+
+    /// Take every screenshot request still waiting for an answer (oldest first).
+    pub fn take_pending_screenshots(&mut self, id: u32) -> Vec<u64> {
+        self.sessions.get_mut(&id).map(|s| s.screenshot_ids.drain(..).collect()).unwrap_or_default()
     }
 
     pub fn pop_screenshot(&mut self, id: u32) -> Option<u64> {
@@ -535,7 +549,8 @@ impl RdpManager {
             return None;
         }
         s.reported_closed = true;
-        Some(ClosedReport { session_id: id, reason, exit: s.exit.unwrap_or_default() })
+        let pending_screenshots = s.screenshot_ids.drain(..).collect();
+        Some(ClosedReport { session_id: id, pending_screenshots, reason, exit: s.exit.unwrap_or_default() })
     }
 
     pub fn take_all_closed(&mut self) -> Vec<ClosedReport> {
@@ -1107,6 +1122,21 @@ mod tests {
         assert!(mgr.process_readable(id, usize::MAX).is_empty());
         assert_eq!(mgr.sessions[&id].close_reason.as_deref(), Some("protocol_error"));
         unsafe { libc::close(b) };
+    }
+
+    #[test]
+    fn a_closed_session_hands_over_its_unanswered_screenshot_requests_once() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        mgr.push_screenshot(id, 5);
+        mgr.push_screenshot(id, 6);
+        unsafe { libc::close(b) };
+        let _ = mgr.process_readable(id, usize::MAX); // EOF: engine_exited
+        let report = mgr.take_closed(id).expect("closed");
+        assert_eq!(report.pending_screenshots, vec![5, 6]);
+        assert_eq!(report.reason, "engine_exited");
+        assert!(mgr.take_closed(id).is_none());
     }
 
     #[test]

@@ -92,6 +92,8 @@ pub enum SessionError {
     Sys { step: &'static str, errno: i32 },
     Unknown,
     InputOverflow,
+    /// All 2^32 - 1 session ids have been issued.
+    IdsExhausted,
 }
 
 impl std::fmt::Display for SessionError {
@@ -100,6 +102,7 @@ impl std::fmt::Display for SessionError {
             SessionError::Sys { step, errno } => write!(f, "{step} failed: {}", errno_text(*errno)),
             SessionError::Unknown => write!(f, "no such session"),
             SessionError::InputOverflow => write!(f, "session input overflows the pending-input window"),
+            SessionError::IdsExhausted => write!(f, "session ids are exhausted"),
         }
     }
 }
@@ -404,6 +407,9 @@ impl SessionManager {
         rows: u16,
         kind: String,
     ) -> Result<u32, SessionError> {
+        // The id is taken before anything is spawned: exhaustion must not leave
+        // a child behind.
+        let id = self.ids.next().ok_or(SessionError::IdsExhausted)?;
         let exec = self.build_exec_argv(&spec);
         let mut master: libc::c_int = -1;
         let mut slave: libc::c_int = -1;
@@ -522,7 +528,6 @@ impl SessionManager {
         restore_signal_mask(&old_mask);
         drop(slave_owned);
         let master_raw = master_owned.into_raw_fd();
-        let id = self.ids.next();
         self.sessions.insert(
             id,
             Session {

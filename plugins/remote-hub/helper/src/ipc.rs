@@ -343,17 +343,25 @@ fn handle(
             // Ids come from one shared allocator, so an id belongs to exactly
             // one manager.
             if rdp.contains(session_id) {
+                let pending = rdp.take_pending_screenshots(session_id);
                 let reason = rdp.close(session_id).unwrap_or_else(|| "killed_by_close".to_string());
-                return Ok(protocol::encode_response(&Response::SessionClosed {
+                let mut frames = session_closed_errors(&pending);
+                frames.extend(protocol::encode_response(&Response::SessionClosed {
                     id: Some(id),
                     session_id,
                     exit_code: None,
                     signal: None,
                     reason,
                 }));
+                return Ok(frames);
             }
             handle_pty_close(manager, id, session_id)
         }
+        Request::OpenRdp { id, width, height, .. } if !rdp_geometry_ok(width, height) => Ok(rdp_error(
+            id,
+            "rdp_invalid_geometry",
+            format!("the desktop size must be 1..={RDP_MAX_WIDTH} x 1..={RDP_MAX_HEIGHT}"),
+        )),
         Request::OpenRdp {
             id,
             host,
@@ -437,6 +445,24 @@ fn rdp_not_ready(rdp: &RdpManager, id: u64, session_id: u32) -> Option<Vec<u8>> 
         return Some(rdp_error(id, "not_ready", "the desktop is not ready yet".to_string()));
     }
     None
+}
+
+/// Largest desktop a session may ask for (the framebuffer's own limit).
+const RDP_MAX_WIDTH: u32 = 3840;
+const RDP_MAX_HEIGHT: u32 = 2160;
+
+fn rdp_geometry_ok(width: u32, height: u32) -> bool {
+    (1..=RDP_MAX_WIDTH).contains(&width) && (1..=RDP_MAX_HEIGHT).contains(&height)
+}
+
+/// Every screenshot request still waiting when its session ends is answered
+/// with `session_closed`, oldest first.
+fn session_closed_errors(pending: &[u64]) -> Vec<u8> {
+    let mut frames = Vec::new();
+    for req in pending {
+        frames.extend(rdp_error(*req, "session_closed", "the rdp session ended before the screenshot".to_string()));
+    }
+    frames
 }
 
 fn rdp_error(id: u64, code: &str, message: String) -> Vec<u8> {
@@ -536,7 +562,8 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, rid: u32, f
             RdpFrame::Event(EngineEvent::Screenshot { frame_id, width, height, timestamp, png }) => {
                 // Answers are FIFO per session: the engine answers each
                 // screenshot request exactly once, in order.
-                let req_id = rdp.pop_screenshot(rid).unwrap_or(0);
+                // An answer nobody asked for is dropped: there is no request id 0.
+                let Some(req_id) = rdp.pop_screenshot(rid) else { continue };
                 outbox.extend(protocol::encode_response(&Response::RdpScreenshot {
                     id: req_id,
                     session_id: rid,
@@ -548,9 +575,9 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, rid: u32, f
                 }));
             }
             RdpFrame::Event(EngineEvent::ScreenshotError { code }) => {
-                let req_id = rdp.pop_screenshot(rid);
+                let Some(req_id) = rdp.pop_screenshot(rid) else { continue };
                 outbox.extend(protocol::encode_response(&Response::Error {
-                    id: req_id,
+                    id: Some(req_id),
                     code,
                     message: "the screenshot request was refused".to_string(),
                 }));
@@ -966,6 +993,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         guard.manager.reap();
         guard.rdp.reap();
         for closed in guard.rdp.take_all_closed() {
+            outbox.extend(session_closed_errors(&closed.pending_screenshots));
             outbox.extend(protocol::encode_response(&Response::SessionClosed {
                 id: None,
                 session_id: closed.session_id,
@@ -1100,4 +1128,131 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
     }
     // guard drops here: terminate_all on every path.
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rdp::protocol::EngineEvent;
+
+    #[test]
+    fn desktop_geometry_is_limited_to_1_3840_by_1_2160() {
+        for (w, h, ok) in [
+            (1, 1, true),
+            (3840, 2160, true),
+            (800, 600, true),
+            (0, 600, false),
+            (800, 0, false),
+            (3841, 600, false),
+            (800, 2161, false),
+            // 65536 truncates to 0 as a u16: it must be refused, not wrapped.
+            (65_536, 600, false),
+            (800, 65_537, false),
+        ] {
+            assert_eq!(rdp_geometry_ok(w, h), ok, "{w}x{h}");
+        }
+    }
+
+    /// Decode the (id, code-or-"png") of every response in `outbox`.
+    fn answers(outbox: &VecDeque<u8>) -> Vec<(Option<u64>, String)> {
+        let bytes: Vec<u8> = outbox.iter().copied().collect();
+        let mut at = 0;
+        let mut out = Vec::new();
+        while at < bytes.len() {
+            let len = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+            match protocol::decode_response(&bytes[at + 5..at + 4 + len]).unwrap() {
+                Response::RdpScreenshot { id, .. } => out.push((Some(id), "png".to_string())),
+                Response::Error { id, code, .. } => out.push((id, code)),
+                Response::SessionClosed { id, reason, .. } => out.push((id, format!("closed:{reason}"))),
+                other => panic!("unexpected {other:?}"),
+            }
+            at += 4 + len;
+        }
+        out
+    }
+
+    fn shot() -> RdpFrame {
+        RdpFrame::Event(EngineEvent::Screenshot { frame_id: 1, width: 1, height: 1, timestamp: 0, png: "AAAA".to_string() })
+    }
+
+    #[test]
+    fn screenshot_answers_go_to_requests_in_the_order_they_were_made() {
+        let mut rdp = RdpManager::new();
+        let (a, b) = unsafe {
+            let mut fds = [0i32; 2];
+            assert_eq!(libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()), 0);
+            (fds[0], fds[1])
+        };
+        let sid = rdp.adopt(None, a);
+        rdp.push_screenshot(sid, 41);
+        rdp.push_screenshot(sid, 42);
+        let mut outbox = VecDeque::new();
+        relay_rdp_frames(&mut rdp, &mut outbox, sid, vec![shot(), shot()]);
+        assert_eq!(answers(&outbox), vec![(Some(41), "png".to_string()), (Some(42), "png".to_string())]);
+        unsafe { libc::close(b) };
+    }
+
+    #[test]
+    fn a_screenshot_nobody_asked_for_is_dropped() {
+        let mut rdp = RdpManager::new();
+        let (a, b) = unsafe {
+            let mut fds = [0i32; 2];
+            assert_eq!(libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()), 0);
+            (fds[0], fds[1])
+        };
+        let sid = rdp.adopt(None, a);
+        let mut outbox = VecDeque::new();
+        relay_rdp_frames(&mut rdp, &mut outbox, sid, vec![shot()]);
+        assert!(outbox.is_empty(), "a response with no request id 0 was sent: {:?}", answers(&outbox));
+        unsafe { libc::close(b) };
+    }
+
+    #[test]
+    fn pending_screenshots_are_answered_with_session_closed_oldest_first() {
+        let frames: VecDeque<u8> = session_closed_errors(&[7, 9]).into_iter().collect();
+        assert_eq!(
+            answers(&frames),
+            vec![(Some(7), "session_closed".to_string()), (Some(9), "session_closed".to_string())]
+        );
+    }
+
+    /// Closing a session answers its unanswered screenshot requests with
+    /// `session_closed` BEFORE the close itself, oldest first.
+    #[test]
+    fn closing_a_session_answers_its_pending_screenshots() {
+        use std::io::Write as _;
+        let mut manager = SessionManager::new(None);
+        let mut rdp = RdpManager::new();
+        let mut fds = [0i32; 2];
+        assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) }, 0);
+        let sid = rdp.adopt(None, fds[0]);
+        // The engine announces its desktop, which makes the session ready.
+        let mut peer = unsafe { <std::os::unix::net::UnixStream as std::os::fd::FromRawFd>::from_raw_fd(fds[1]) };
+        peer.write_all(&crate::rdp::protocol::encode_control(&EngineEvent::Desktop {
+            frame_id: 1,
+            width: 8,
+            height: 8,
+            timestamp: 0,
+        }))
+        .unwrap();
+        while !rdp.is_ready(sid) {
+            let _ = rdp.process_readable(sid, usize::MAX);
+        }
+        let mut shake = true;
+        for id in [61u64, 62] {
+            let frames =
+                handle(&mut manager, &mut rdp, "/nonexistent", &mut shake, "g", Request::RdpScreenshot { id, session_id: sid }).unwrap();
+            assert!(frames.is_empty(), "an accepted screenshot has no immediate answer");
+        }
+        let frames = handle(&mut manager, &mut rdp, "/nonexistent", &mut shake, "g", Request::SessionClose { id: 70, session_id: sid }).unwrap();
+        let outbox: VecDeque<u8> = frames.into_iter().collect();
+        assert_eq!(
+            answers(&outbox),
+            vec![
+                (Some(61), "session_closed".to_string()),
+                (Some(62), "session_closed".to_string()),
+                (Some(70), "closed:killed_by_close".to_string()),
+            ]
+        );
+    }
 }

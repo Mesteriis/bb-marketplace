@@ -245,7 +245,13 @@ event does not drop the rest of its batch: the engine reports
 `src/core/rdp-keys.ts`. Unicode text is a press and a release per UTF-16 unit
 (characters above U+FFFF as a surrogate pair). `rdp.input`, `rdp.cert_decision`,
 `rdp.update_ack` and `rdp.screenshot` for an unknown session answer
-`session_not_found`.
+`session_not_found`. `rdp.open` refuses a desktop outside 1..=3840 × 1..=2160
+with `rdp_invalid_geometry` before any engine starts. Screenshot answers are
+matched to requests in FIFO order; an answer with no outstanding request is
+dropped (there is no request id 0), and a session that ends with requests still
+outstanding answers each of them with `session_closed` before its own close.
+Session ids come from one allocator that is never reused: after 2³² − 1 ids it
+refuses to open (`session_open_failed` / `rdp_open_failed`) instead of wrapping.
 
 ## 6. Process model (B1)
 
@@ -336,5 +342,5 @@ messages added in the repair round: `rdp.certificate`, `rdp.input_rejected`,
 `rdp.update_ack` (request), the cert-prompt `reason` code + `detail`, the
 `server_disconnected` closed reason and the errors `not_ready`,
 `fingerprint_mismatch`, `no_pending_prompt`, `rdp_input_overflow`,
-`screenshot_busy`, `screenshot_too_large`, `response_too_large`,
+`screenshot_busy`, `screenshot_too_large`, `rdp_invalid_geometry`, `response_too_large`,
 `session_closed`.

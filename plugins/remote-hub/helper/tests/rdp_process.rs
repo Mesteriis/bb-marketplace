@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use common::*;
 use remote_hub_helper::protocol::{Request, Response};
+use remote_hub_helper::secret::Secret;
 
 /// G7: one echo and one RDP session never share an id; closing each closes only
 /// itself; input never crosses.
@@ -427,4 +428,34 @@ fn h1_input_and_acks_before_the_desktop_are_refused_and_helper_death_is_noticed(
     unsafe { libc::kill(h.pid() as libc::pid_t, libc::SIGKILL) };
     let _ = h.child.wait();
     assert!(wait_pid_gone(engine_pid, Duration::from_secs(1)), "the engine outlived its helper by more than 1 s");
+}
+
+/// H9: a desktop size outside 1..=3840 x 1..=2160 is refused by the helper with
+/// a stable code before any engine is started (65536 would wrap to 0 as u16).
+#[test]
+fn h9_rdp_open_refuses_a_desktop_size_out_of_range() {
+    let mut h = start(&[]);
+    for (i, (w, ht)) in [(65_536u32, 600u32), (0, 600), (800, 2_161), (3_841, 600)].into_iter().enumerate() {
+        let id = 50 + i as u64;
+        h.send(&Request::OpenRdp {
+            id,
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            username: "tester".to_string(),
+            password: Secret::new("S3cr3t-MARK-91"),
+            domain: None,
+            width: w,
+            height: ht,
+            expected_fingerprint: None,
+        });
+        match h.read_reply(id) {
+            Response::Error { code, .. } => assert_eq!(code, "rdp_invalid_geometry", "{w}x{ht}"),
+            other => panic!("{w}x{ht}: expected rdp_invalid_geometry, got {other:?}"),
+        }
+    }
+    // The largest allowed desktop still opens.
+    let server = silent_server();
+    let (_rdp, pid) = h.open_rdp_sized(server.port, 3840, 2160);
+    assert!(pid_alive(pid));
+    h.shutdown();
 }
