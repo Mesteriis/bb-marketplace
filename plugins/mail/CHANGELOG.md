@@ -8,6 +8,11 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Subscriptions (slice 3n). Mail settings → Subscriptions: the mailing
+  lists of the stored mail with message counts, and unsubscribing from up
+  to 10 at once. Each request is the message's own Unsubscribe, shown
+  before it is sent; nothing new is stored.
+
 - Filters (slice 3m). Mail settings → Filters: a filter matches new Inbox
   mail by sender, sender domain, mailing list or subject words and moves
   it to a folder, the archive or Trash, marks it read or flags it. The

@@ -451,6 +451,28 @@ while BB runs: on your phone it waits in Snoozed, and overdue mail returns at
 the next start. Renaming or deleting the folder elsewhere ends those snoozes
 (the mail stays where it is).
 
+**Subscriptions** (Mail settings → Subscriptions) lists the mailing lists
+in the mail stored on this machine, outside Spam, Trash, Drafts and Sent,
+largest first: the list's name, the sender, how many messages and how many
+unread, the date of the newest, and the latest unsubscribe request if there
+was one. Tick up to 10 lists and **Unsubscribe from N lists**: Mail shows
+the requests it would make — one request to the list's host, or an email
+with its exact subject and text — and nothing goes out until you confirm.
+Each request is the same one **Unsubscribe** in a message makes, with the
+same checks, one after another; each row then says what happened, and an
+email waits in the Outbox with its Undo.
+
+- A list has no tick when Mail has no way to unsubscribe that it can trust,
+  when its latest request is done or waiting, or when its unsubscribe
+  address is not at the sender's domain. The last kind is unsubscribed from
+  a message of that list, where the address is shown.
+- A list is a List-Id, or for mail without one the sender's address. Only
+  mail whose unsubscribe headers are already stored is counted, and only
+  the newest 50,000 such messages; the 200 largest lists are shown.
+- The same caution applies as for one message: unsubscribing tells the
+  sender the address is read. For mail you never signed up for, use Spam or
+  Block.
+
 **Block** a sender's address, or everyone at their domain (not offered for
 public providers like gmail.com). It says when you have written to them and
 can also move their stored Inbox mail (ticked for an address, unticked for a
