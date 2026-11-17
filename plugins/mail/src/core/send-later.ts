@@ -35,7 +35,7 @@ export function sendLaterPresets(now: Date): SendLaterPreset[] {
   if (now.getHours() < 17) presets.push({ id: "this_evening", label: "This evening", at: at(0, 18) });
   presets.push({ id: "tomorrow_morning", label: "Tomorrow morning", at: at(1, 8) });
   presets.push({ id: "tomorrow_afternoon", label: "Tomorrow afternoon", at: at(1, 13) });
-  const day = now.getDay(); // 0 Sunday … 6 Saturday
+  const day = now.getDay(); // 0 Sunday \u2026 6 Saturday
   if (day !== 0) presets.push({ id: "monday_morning", label: "Monday morning", at: at(8 - day, 8) });
   return presets;
 }

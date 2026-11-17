@@ -31,7 +31,8 @@ export function outboxActions(
 ): OutboxAction[] {
   if (row.state === "queued" && row.scheduled === true) return ["edit"];
   const actions = stateActions(row);
-  return row.purpose === "unsubscribe" ? actions.filter((action) => action !== "edit") : actions;
+  // A send Mail wrote itself (an unsubscribe email, an invitation answer) has no draft to edit.
+  return row.purpose != null ? actions.filter((action) => action !== "edit") : actions;
 }
 
 /** The row's title: its subject, or "Unsubscribe request" for the plugin's own unsubscribe email. */
@@ -73,6 +74,7 @@ export function outboxRowHint(
 ): string | null {
   if (row.state === "queued" && row.scheduled === true) return tx("Edit cancels the send and reopens the draft.");
   if (row.purpose === "unsubscribe") return row.state === "failed" || row.state === "unknown" || row.state === "waiting" ? tx("Discard deletes the request.") : null;
+  if (row.purpose === "invite_reply") return row.state === "failed" || row.state === "unknown" || row.state === "waiting" ? tx("Discard deletes the answer.") : null;
   switch (row.state) {
     case "failed":
     case "waiting":

@@ -776,7 +776,7 @@ export const outboxRowSchema = z.object({
    * "unsubscribe": a send the plugin made for the owner's Unsubscribe click
    * (slice 3e): the Outbox labels it "Unsubscribe request" and offers no Edit.
    */
-  purpose: z.enum(["unsubscribe"]).nullable().optional(),
+  purpose: z.enum(["unsubscribe", "invite_reply"]).nullable().optional(),
   /** Slice 3l: the owner picked `sendAfter` as the time to send ("Send later"). */
   scheduled: z.boolean().optional(),
 });
@@ -806,6 +806,11 @@ export type OutgoingMessage = {
   html: string;
   text: string;
   attachments: OutgoingAttachment[];
+  /**
+   * Slice 3l: the answer to a calendar invitation, sent as a text/calendar
+   * alternative of the body so the organizer's calendar reads it.
+   */
+  calendar?: { method: "REPLY"; content: string };
 };
 
 /** What a reply or forward reads from the original on the server. */
@@ -879,7 +884,7 @@ export type NewDraft = DraftFields & {
   createdAt: string;
 };
 
-export type DraftPurpose = "unsubscribe";
+export type DraftPurpose = "unsubscribe" | "invite_reply";
 
 /** A compose_drafts row. Starts at revision 1; every save bumps it. */
 export type DraftRecord = NewDraft & {

@@ -36,6 +36,8 @@ import { LinkStatusLine, type LinkHover } from "./link-status.tsx";
 import { CryptoChip, cryptoPlaceholder, imagesHeldReason, RECEIPT_TEXT, securityOf, SenderWarnings } from "./sender-warnings.tsx";
 import { dateLocale, tx } from "./i18n/index.ts";
 import { PgpPanel, type PgpReadingPorts } from "./pgp-panel.tsx";
+import { InviteCard, type InvitePorts } from "./invite-card.tsx";
+import { isCalendarPart } from "../core/calendar-invite.ts";
 
 export type BodyState =
   | { status: "loading" }
@@ -108,6 +110,8 @@ export interface ReadingPaneProps {
 export interface ReadingSlice3h {
   /** Slice 3k: Decrypt and Check signature for OpenPGP mail; absent: the placeholder only. */
   pgp?: PgpReadingPorts;
+  /** Slice 3l: the calendar invitation a message carries; absent: its part stays a plain attachment. */
+  invite?: InvitePorts;
   /** Whether an attachment opens in the viewer (else a click downloads it). */
   viewable: (attachment: AttachmentView) => boolean;
   onView: (message: MessageHeader, attachment: AttachmentView) => void;
@@ -593,6 +597,9 @@ function MessageItem({
           ) : null}
           {bb !== undefined && message.patch != null ? (
             <PatchCard patch={message.patch} onReview={() => bb.onReviewPatch(message)} />
+          ) : null}
+          {r3?.invite !== undefined && message.attachments.some(isCalendarPart) ? (
+            <InviteCard messageId={message.id} ports={r3.invite} />
           ) : null}
           {r3?.pgp !== undefined && security.crypto?.kind === "pgp_signed" ? (
             <PgpPanel messageId={message.id} mode="signed" ports={r3.pgp} />

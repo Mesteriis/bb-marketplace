@@ -22,6 +22,9 @@ import {
   OWNER_TERMINAL_MESSAGE,
   PGP_EXISTS_MESSAGE,
   PGP_NOT_OWN_ADDRESS_MESSAGE,
+  INVITE_HIDDEN_MESSAGE,
+  INVITE_NONE_MESSAGE,
+  INVITE_NOT_ANSWERABLE_MESSAGE,
   REMOVE_IN_THREAD_MESSAGE,
   renderSource,
   PROPOSE_OFF_INSTRUCTIONS,
@@ -67,7 +70,7 @@ import { createHash } from "node:crypto";
 import { createPgpEngine } from "./src/adapters/bb/pgp-openpgp.ts";
 import { extractEncrypted, extractSigned, wrapEncrypted, wrapSigned } from "./src/core/pgp-mime.ts";
 import { PGP_SEND_TEXT } from "./src/core/compose-outbox.ts";
-import { SLICE_3K_METHODS } from "./src/core/contract.ts";
+import { SLICE_3K_METHODS, SLICE_3L_METHODS } from "./src/core/contract.ts";
 import { readFileSync } from "node:fs";
 import type {
   AccountPreset,
@@ -8807,5 +8810,186 @@ describe("slice 3k: OpenPGP", () => {
       result: "added",
       added: [{ kind: "contact", addresses: ["other@example.net"], source: "message" }],
     });
+  });
+});
+
+describe("calendar invitations (slice 3l)", () => {
+  const OWNER = "owner@example.org";
+  const ICS = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "METHOD:REQUEST",
+    "BEGIN:VEVENT",
+    "UID:event-77@example.com",
+    "SEQUENCE:1",
+    "DTSTART:20261120T090000Z",
+    "DTEND:20261120T093000Z",
+    "SUMMARY:Invented planning",
+    "LOCATION:Room 4",
+    'ORGANIZER;CN="Olga Organizer":mailto:olga@example.com',
+    `ATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${OWNER}`,
+    "ATTENDEE;PARTSTAT=ACCEPTED:mailto:bob@example.com",
+    "END:VEVENT",
+    "END:VCALENDAR",
+    "",
+  ].join("\r\n");
+
+  /** A message with the calendar text as a text/calendar alternative of its body. */
+  const inviteMail = (ics: string) =>
+    new TextEncoder().encode(
+      [
+        "From: Olga Organizer <olga@example.com>",
+        `To: ${OWNER}`,
+        "Subject: Invitation: Invented planning",
+        "Message-ID: <invite-77@example.com>",
+        "MIME-Version: 1.0",
+        'Content-Type: multipart/alternative; boundary="alt"',
+        "",
+        "--alt",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "You are invited.",
+        "--alt",
+        "Content-Type: text/calendar; charset=utf-8; method=REQUEST",
+        "",
+        ics,
+        "--alt--",
+        "",
+      ].join("\r\n"),
+    );
+
+  async function loadInvite(raw: Uint8Array, folder = "INBOX") {
+    const message = await storedFor(raw);
+    const host = await load({
+      settings: { vaultKey: COMPOSE_KEY },
+      seed: (bb) => {
+        seedCompose(bb);
+        const store = createSqliteStore(bb.storage.database());
+        store.saveFolders("acc_1", [
+          { path: "INBOX", name: "INBOX", delimiter: "/", specialUse: "inbox", selectable: true, subscribed: true },
+          { path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "drafts", selectable: true, subscribed: true },
+          { path: "Sent", name: "Sent", delimiter: "/", specialUse: "sent", selectable: true, subscribed: true },
+          { path: "Junk", name: "Junk", delimiter: "/", specialUse: "junk", selectable: true, subscribed: true },
+        ]);
+        store.upsertMessages("acc_1", folder, [message]);
+        store.saveSyncState("acc_1", folder, { uidValidity: 3, lastUid: 1, syncedSince: "2026-10-01T00:00:00.000Z" });
+      },
+      server: (gateway) => {
+        composeServer(gateway);
+        if (folder !== "INBOX") gateway.addFolder({ path: folder, specialUse: "junk" }, { uidValidity: 3, uidNext: 2, messages: [] });
+        gateway.setRaw(folder, 1, raw);
+      },
+      outboxIntervalMs: 5,
+    });
+    return { host, messageId: messageIdAt(host, folder, 1) };
+  }
+
+  it("the stored message lists its calendar part, and invite_view reads the event for the owner", async () => {
+    const { host, messageId } = await loadInvite(inviteMail(ICS));
+    const stored = createSqliteStore(host.bb.storage.database()).getMessage(messageId)!;
+    expect(stored.attachments).toMatchObject([{ mimeType: "text/calendar" }]);
+    expect(await call(host, "invite_view", { messageId })).toMatchObject({
+      answerable: true,
+      invite: {
+        method: "request",
+        uid: "event-77@example.com",
+        sequence: 1,
+        summary: "Invented planning",
+        location: "Room 4",
+        start: { utc: "2026-11-20T09:00:00.000Z", allDay: false },
+        organizer: { name: "Olga Organizer", address: "olga@example.com" },
+        attendeesTotal: 2,
+        self: { address: OWNER, status: "needs_action" },
+      },
+    });
+    // Reading it stores and sends nothing.
+    expect(await call(host, "outbox_list", { accountId: null })).toEqual({ rows: [] });
+  });
+
+  it("both methods refuse other plugins, and are no tool or command", async () => {
+    const { host, messageId } = await loadInvite(inviteMail(ICS));
+    const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    const inputs: [string, unknown][] = [
+      ["invite_view", { messageId }],
+      ["invite_reply", { messageId, answer: "accepted", requestId: REQUEST_ID }],
+    ];
+    expect(inputs.map(([method]) => method)).toEqual([...SLICE_3L_METHODS]);
+    for (const [method, input] of inputs) {
+      await expect(host.harness.behavior.callRpc(method, input, asPlugin)).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    }
+    expect(await call(host, "outbox_list", { accountId: null })).toEqual({ rows: [] });
+    expect(host.harness.inspection.registrations.agentTools.some((tool) => /invite|calendar/i.test(tool.name))).toBe(false);
+  });
+
+  it("Accept sends the organizer one REPLY through the Outbox, once per requestId, with its Undo window", async () => {
+    const { host, messageId } = await loadInvite(inviteMail(ICS));
+    const service = host.harness.behavior.runService("sync");
+    const first = await call(host, "invite_reply", { messageId, answer: "accepted", requestId: REQUEST_ID });
+    expect(first).toEqual({ outboxId: REQUEST_ID, sendAfter: new Date(NOW.getTime() + UNDO_MS).toISOString() });
+    expect(await call(host, "invite_reply", { messageId, answer: "accepted", requestId: REQUEST_ID })).toEqual(first);
+    const { rows } = (await call(host, "outbox_list", { accountId: null })) as { rows: object[] };
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ state: "queued", purpose: "invite_reply", subject: "Accepted: Invented planning", origin: "owner" });
+    // The hidden draft is no draft of the owner's.
+    const draft = host.bb.storage.database().prepare("SELECT id, purpose FROM compose_drafts").get() as { id: string; purpose: string };
+    expect(draft.purpose).toBe("invite_reply");
+    await expect(call(host, "compose_open", { draftId: draft.id })).rejects.toThrow();
+
+    await new Promise((r) => setTimeout(r, 40));
+    expect(host.transport.sent).toEqual([]);
+    host.clock.set(new Date(NOW.getTime() + UNDO_MS));
+    await vi.waitFor(() => expect(outboxStates(host)).toContain("done"));
+    service.controller.abort();
+    await service.done;
+
+    expect(host.transport.sent).toHaveLength(1);
+    const sent = host.transport.sent[0]!;
+    expect(sent.envelopeTo).toEqual(["olga@example.com"]);
+    const parsed = await parseMail(sent.raw);
+    expect(parsed.subject).toBe("Accepted: Invented planning");
+    expect(parsed.from?.address).toBe(OWNER);
+    const calendar = parsed.attachments.find((a) => a.mimeType === "text/calendar")!;
+    expect(calendar.method).toBe("REPLY");
+    const text = typeof calendar.content === "string" ? calendar.content : new TextDecoder().decode(calendar.content as ArrayBuffer);
+    expect(text).toContain("METHOD:REPLY");
+    expect(text).toContain("UID:event-77@example.com");
+    expect(text).toContain("SEQUENCE:1");
+    expect(text).toContain(`ATTENDEE;PARTSTAT=ACCEPTED`);
+    expect(text).toContain(`:mailto:${OWNER}`);
+    expect(text).not.toContain("bob@example.com");
+  });
+
+  it("Undo removes the answer and its hidden draft", async () => {
+    const { host, messageId } = await loadInvite(inviteMail(ICS));
+    await call(host, "invite_reply", { messageId, answer: "declined", requestId: REQUEST_ID });
+    expect(await call(host, "outbox_cancel", { id: REQUEST_ID })).toEqual({ cancelled: true, draftId: null });
+    expect(await call(host, "outbox_list", { accountId: null })).toEqual({ rows: [] });
+    expect(host.bb.storage.database().prepare("SELECT COUNT(*) AS n FROM compose_drafts").get()).toEqual({ n: 0 });
+    // The same click arriving late is not sent after all.
+    await expect(call(host, "invite_reply", { messageId, answer: "declined", requestId: REQUEST_ID })).rejects.toThrow();
+  });
+
+  it("answers only an open invitation to one of the account's addresses, outside Spam", async () => {
+    const reply = async (raw: Uint8Array, folder?: string) => {
+      const { host, messageId } = await loadInvite(raw, folder);
+      const view = (await call(host, "invite_view", { messageId })) as { answerable: boolean };
+      const refused = await call(host, "invite_reply", { messageId, answer: "accepted", requestId: REQUEST_ID }).then(
+        () => null,
+        (error: Error) => error.message,
+      );
+      expect(await call(host, "outbox_list", { accountId: null })).toEqual({ rows: [] });
+      expect(host.bb.storage.database().prepare("SELECT COUNT(*) AS n FROM compose_drafts").get()).toEqual({ n: 0 });
+      return { answerable: view.answerable, refused };
+    };
+    expect(await reply(inviteMail(ICS.replace("METHOD:REQUEST", "METHOD:CANCEL")))).toEqual({
+      answerable: false,
+      refused: INVITE_NOT_ANSWERABLE_MESSAGE,
+    });
+    expect(await reply(inviteMail(ICS.replace(OWNER, "someone-else@example.net")))).toEqual({
+      answerable: false,
+      refused: INVITE_NOT_ANSWERABLE_MESSAGE,
+    });
+    expect(await reply(inviteMail(ICS), "Junk")).toEqual({ answerable: false, refused: INVITE_HIDDEN_MESSAGE });
+    expect(await reply(inviteMail("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"))).toEqual({ answerable: false, refused: INVITE_NONE_MESSAGE });
   });
 });

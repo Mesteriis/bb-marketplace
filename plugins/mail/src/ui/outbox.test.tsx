@@ -151,3 +151,13 @@ describe("a scheduled send (slice 3l)", () => {
     expect(outboxAttention([held])).toBe(1);
   });
 });
+
+describe("an invitation answer (slice 3l)", () => {
+  it("is shown by its subject, is never edited, and says what Discard deletes", () => {
+    const failed = row("failed", { purpose: "invite_reply", subject: "Accepted: Invented planning", errorKind: "auth" });
+    expect(outboxActions(failed)).toEqual(["retry", "dismiss"]);
+    expect(outboxRowHint(failed)).toBe("Discard deletes the answer.");
+    expect(outboxRowHint(row("queued", { purpose: "invite_reply" }))).toBeNull();
+    expect(outboxActions(row("queued", { purpose: "invite_reply" }))).toEqual(["undo"]);
+  });
+});

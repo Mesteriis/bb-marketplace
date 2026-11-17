@@ -398,6 +398,35 @@ export type PgpCert = z.infer<typeof pgpCertSchema>;
 
 export const pgpImportResultSchema = z.enum(["added", "exists", "full", "unreadable", "locked", "wrong_phrase", "revoked"]);
 
+const inviteMomentSchema = z.object({
+  /** The instant, when the zone could be resolved. */
+  utc: z.string().nullable(),
+  /** The time as written: "2026-11-20T09:00", or "2026-11-20" for a whole day. */
+  wall: z.string(),
+  zone: z.string().nullable(),
+  allDay: z.boolean(),
+});
+const invitePersonSchema = z.object({ name: z.string().nullable(), address: z.string() });
+const inviteStatusSchema = z.enum(["accepted", "tentative", "declined", "needs_action", "delegated", "unknown"]);
+
+/** A calendar invitation as the reading pane shows it (slice 3l, core calendar-invite.ts). */
+export const inviteViewSchema = z.object({
+  method: z.enum(["request", "cancel", "reply", "publish", "other"]),
+  uid: z.string().nullable(),
+  sequence: z.number().int(),
+  summary: z.string(),
+  location: z.string().nullable(),
+  description: z.string().nullable(),
+  start: inviteMomentSchema.nullable(),
+  end: inviteMomentSchema.nullable(),
+  organizer: invitePersonSchema.nullable(),
+  attendees: z.array(invitePersonSchema.extend({ status: inviteStatusSchema, optional: z.boolean() })),
+  attendeesTotal: z.number().int(),
+  recurring: z.boolean(),
+  cancelled: z.boolean(),
+  self: z.object({ address: z.string(), status: inviteStatusSchema }).nullable(),
+});
+
 export const rpcSchemas = {
   status_get: {
     input: z.null(),
@@ -1592,6 +1621,23 @@ export const rpcSchemas = {
       fromSender: z.boolean(),
     }),
   },
+  /**
+   * Slice 3l: the calendar invitation a message carries, read from the server
+   * for the owner's page; null when it carries none. Nothing is stored.
+   */
+  invite_view: {
+    input: z.object({ messageId: idInput }),
+    /** `answerable`: an open invitation to one of the account's addresses, outside Spam and Trash. */
+    output: z.object({ invite: inviteViewSchema.nullable(), answerable: z.boolean() }),
+  },
+  /**
+   * Slice 3l: the owner's answer to an invitation, queued as a message to the
+   * organizer with the usual Undo window. Only the owner's click asks.
+   */
+  invite_reply: {
+    input: z.object({ messageId: idInput, answer: z.enum(["accepted", "tentative", "declined"]), requestId: z.uuid() }),
+    output: z.object({ outboxId: z.string(), sendAfter: z.string() }),
+  },
   /** Opens an encrypted message for the owner's page; the text is never stored. */
   pgp_open: {
     input: z.object({ messageId: idInput }),
@@ -1643,6 +1689,9 @@ export const SLICE_3H_METHODS = [
   "related_messages",
   "sender_card",
 ] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The two owner-only methods slice 3l adds. */
+export const SLICE_3L_METHODS = ["invite_view", "invite_reply"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** The 9 owner-only methods slice 3k adds. */
 export const SLICE_3K_METHODS = [

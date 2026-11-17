@@ -1983,7 +1983,14 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         });
         return;
       }
-      const label = purpose === "unsubscribe" ? tx("Unsubscribe email queued \u00b7 ") : origin === "agent" ? tx("Agent message \u00b7 ") : "";
+      const label =
+        purpose === "unsubscribe"
+          ? tx("Unsubscribe email queued \u00b7 ")
+          : purpose === "invite_reply"
+            ? tx("Answer to the invitation \u00b7 ")
+            : origin === "agent"
+              ? tx("Agent message \u00b7 ")
+              : "";
       toast(`${label}Sending in ${Math.max(1, Math.ceil(left / 1000))} s`, {
         id: sendToastId(outboxId),
         duration: left + 2_000,
@@ -3899,6 +3906,15 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         open: (messageId) => rpc.call("pgp_open", { messageId }),
         verify: (messageId) => rpc.call("pgp_verify", { messageId }),
         importFromMessage: async (messageId) => (await rpc.call("pgp_cert_import_message", { messageId })).added.length,
+      },
+      // Slice 3l: a calendar invitation. The answer is queued like any send and keeps its Undo.
+      invite: {
+        view: (messageId) => rpc.call("invite_view", { messageId }),
+        reply: async (messageId, answer) => {
+          const queued = await rpc.call("invite_reply", { messageId, answer, requestId: crypto.randomUUID() });
+          showUndo(queued.outboxId, queued.sendAfter, "owner", "invite_reply");
+          void loadOutbox();
+        },
       },
       viewable: (attachment) => viewerShows(attachment.kind, attachment.mimeType),
       onView: (_message, attachment) =>

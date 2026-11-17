@@ -73,6 +73,8 @@ import { MIGRATIONS, createSqliteStore, hardenDatabase } from "./src/adapters/bb
 import { createSenderChecks, type SenderChecks } from "./src/adapters/bb/sender-checks.ts";
 import { createPgpEngine } from "./src/adapters/bb/pgp-openpgp.ts";
 import { createPgpService, type PgpService } from "./src/adapters/bb/pgp-service.ts";
+import { readCalendarText } from "./src/adapters/bb/invite.ts";
+import { buildInviteReply, parseInvite, type InviteAnswer, type InviteView } from "./src/core/calendar-invite.ts";
 import type { PgpEngine } from "./src/core/pgp.ts";
 import { createServerJobs } from "./src/adapters/bb/server-search-jobs.ts";
 import { RetryLater, charsetOf, createAttachmentIndexer, matchingPart } from "./src/adapters/bb/attachment-indexer.ts";
@@ -281,6 +283,7 @@ import {
   effectiveSpecialUse,
   offeredMethods,
   planUnsubscribe,
+  planInviteReply,
   unsubscribeInfoOf,
   type UnsubscribeInfo,
   type UnsubscribeInfoView,
@@ -927,7 +930,7 @@ function aliasErrorText(store: MailStore, row: OutboxRecord): string | null {
   return outboxErrorText(row.errorKind, from, alias?.sendCheck ?? "unknown", PROVIDER_NAMES[account.preset]);
 }
 
-function toOutboxRow(row: OutboxRecord, errorText: string | null = null, purpose: "unsubscribe" | null = null): OutboxRow {
+function toOutboxRow(row: OutboxRecord, errorText: string | null = null, purpose: OutboxRow["purpose"] = null): OutboxRow {
   return {
     errorText,
     purpose,
@@ -2823,6 +2826,95 @@ async function unsubscribeOnce(
   return { outcome: "queued", reason: null, outboxId: queued.outboxId };
 }
 
+export const INVITE_NONE_MESSAGE = "This message carries no calendar invitation";
+export const INVITE_NOT_ANSWERABLE_MESSAGE = "Only an invitation sent to one of this account's addresses can be answered";
+export const INVITE_HIDDEN_MESSAGE = "An invitation in Spam or Trash is not answered";
+
+const INVITE_ANSWER_TEXT: Record<InviteAnswer, { subject: string; body: string }> = {
+  accepted: { subject: "Accepted", body: "accepted this invitation." },
+  tentative: { subject: "Tentative", body: "tentatively accepted this invitation." },
+  declined: { subject: "Declined", body: "declined this invitation." },
+};
+
+/** Why the invitation cannot be answered, or null when it can. */
+function inviteRefusal(invite: InviteView | null, role: string | null): string | null {
+  if (invite === null) return INVITE_NONE_MESSAGE;
+  if (role === "junk" || role === "trash") return INVITE_HIDDEN_MESSAGE;
+  const open = invite.method === "request" && !invite.cancelled;
+  return open && invite.self !== null && invite.organizer !== null && invite.uid !== null ? null : INVITE_NOT_ANSWERABLE_MESSAGE;
+}
+
+/** The invitation a stored message carries, read from the server; `own` are the account's sending addresses. */
+async function readInvite(deps: RpcDeps, messageId: string): Promise<{ invite: InviteView | null; role: string | null; accountId: string }> {
+  const { store } = deps;
+  const message = store.getMessage(messageId);
+  if (message === null) throw refuse("not_found", "Unknown message");
+  const account = store.getAccount(message.accountId);
+  if (account === null) throw refuse("not_found", "Unknown message");
+  const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
+    throw rawRefusal(error);
+  });
+  const text = await readCalendarText(fetched.raw);
+  const own = new Set(accountIdentities(store, account).map((identity) => identity.address.toLowerCase()));
+  return {
+    invite: text === null ? null : parseInvite(text, own),
+    role: roleOfFolder(store, message.accountId, message.folder),
+    accountId: account.id,
+  };
+}
+
+/**
+ * invite_reply (slice 3l): the owner's answer goes to the organizer as a
+ * hidden purpose draft queued at once with origin owner, like an unsubscribe
+ * email, so it keeps the Outbox Undo. Idempotent per requestId.
+ */
+async function replyToInvite(
+  deps: RpcDeps,
+  input: { messageId: string; answer: InviteAnswer; requestId: string },
+  log: (line: string) => void,
+): Promise<{ outboxId: string; sendAfter: string }> {
+  const { store, composeDeps } = deps;
+  const repeated = store.getOutbox(input.requestId);
+  if (repeated !== null) return { outboxId: repeated.id, sendAfter: repeated.sendAfter };
+  if (!deps.vaultReady()) throw refuse("conflict", NEEDS_KEY_MESSAGE);
+  const { invite, role, accountId } = await readInvite(deps, input.messageId);
+  const refusal = inviteRefusal(invite, role);
+  if (invite === null || refusal !== null) throw refuse("conflict", refusal ?? INVITE_NONE_MESSAGE);
+  const account = store.getAccount(accountId)!;
+  if (account.authFailed) throw refuse("conflict", PASSWORD_NEEDED_MESSAGE);
+  if (deps.queueDeps.undone.has(input.requestId)) throw new ComposeError("undone");
+  const self = invite.self!;
+  const identity = accountIdentities(store, account).find((entry) => entry.address.toLowerCase() === self.address);
+  const name = identity?.displayName?.trim() || null;
+  const calendar = buildInviteReply(invite, { name, address: self.address }, input.answer, composeDeps.clock.now());
+  if (calendar === null) throw refuse("conflict", INVITE_NOT_ANSWERABLE_MESSAGE);
+  const words = INVITE_ANSWER_TEXT[input.answer];
+  const plan = planInviteReply(composeDeps, input.messageId, {
+    from: self.address,
+    to: invite.organizer!,
+    subject: `${words.subject}: ${invite.summary}`.trim(),
+    body: `${name ?? self.address} ${words.body}`,
+    calendar,
+  });
+  const { draftId } = await createComposeDraft(composeDeps, plan, { origin: "owner", proposalId: null, purpose: "invite_reply" });
+  let queued: { outboxId: string; sendAfter: string };
+  try {
+    queued = await queueSend(deps.queueDeps, {
+      draftId,
+      baseRevision: store.getDraft(draftId)!.revision,
+      requestId: input.requestId,
+      origin: "owner",
+    });
+  } catch (error) {
+    // Nothing was queued: the hidden draft goes with the refusal.
+    store.deleteDraft(draftId);
+    throw error;
+  }
+  deps.worker.wake(accountId);
+  log(`invite reply ${input.messageId}: ${input.answer} queued`);
+  return { outboxId: queued.outboxId, sendAfter: queued.sendAfter };
+}
+
 function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const { store, accountDeps, composeDeps, publishChanged } = deps;
   const log = (line: string) => bb.log.warn(line);
@@ -3642,6 +3734,12 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         log(`pgp verify ${messageId}: ${checked.state}`);
         return "fingerprint" in checked ? checked : { state: checked.state, fingerprint: null, signer: null, fromSender: false };
       },
+      invite_view: async ({ messageId }, context) => {
+        refusePluginCaller(context);
+        const { invite, role } = await readInvite(deps, messageId);
+        return { invite, answerable: inviteRefusal(invite, role) === null };
+      },
+      invite_reply: owner("invite_reply", (input) => replyToInvite(deps, input, log)),
       pgp_open: async ({ messageId }, context) => {
         refusePluginCaller(context);
         const fetched = await fetchRawGuarded(deps.rawDeps, messageId).catch((error: unknown) => {
