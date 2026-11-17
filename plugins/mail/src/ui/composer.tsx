@@ -663,9 +663,10 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         const wanted = new Set(issue.addresses.map((a) => a.toLowerCase()));
         setMarked(wanted);
         const holds = (field: Field) => field.chips.some((chip) => wanted.has(chipAddress(chip)));
-        const field = holds(to) ? "To" : holds(cc) ? "Cc" : holds(bcc) ? tx("Bcc") : "To";
+        const field = holds(to) ? "To" : holds(cc) ? "Cc" : holds(bcc) ? "Bcc" : "To";
         if (field !== "To") setShowCopies(true);
-        return () => within(`input[role="combobox"][aria-label="${field}"]`)?.focus();
+        // The field is found by its label, which is shown in the page's language.
+        return () => within(`input[role="combobox"][aria-label="${tx(field)}"]`)?.focus();
       }
       case "bb_files":
       case "looks_secret":
