@@ -51,6 +51,7 @@
     "dompurify": "^3.4.18",
     "imapflow": "^2.11.0",
     "nodemailer": "10.3.1",
+    "openpgp": "6.3.2",
     "pdfjs-dist": "6.5.438",
     "postal-mime": "4.2.1",
     "zod": "^4.6.5"
