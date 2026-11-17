@@ -895,7 +895,21 @@ export class InMemoryMailStore implements MailStore {
       }));
   }
 
+  /** How many times assignThreads ran, for tests of the rethread-on-change rule. */
+  assignThreadsCalls = 0;
+  /** Tests set this to false to model a round that changed no rows. */
+  staleThreads: boolean | null = null;
+
+  threadsStale(_accountId: string): boolean {
+    return this.staleThreads ?? true;
+  }
+
+  repairThreads(accountId: string): number {
+    return new Set(this.state.rows.filter((r) => r.accountId === accountId).map((r) => r.threadId)).size;
+  }
+
   assignThreads(accountId: string, threadOf: Map<string, string>): void {
+    this.assignThreadsCalls++;
     this.excludedStale = true;
     for (const row of this.state.rows) {
       if (row.accountId !== accountId) continue;

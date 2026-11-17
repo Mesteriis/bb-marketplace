@@ -42,6 +42,8 @@ const EPOCH = "1970-01-01T00:00:00.000Z";
 const PAGE_MS = 250;
 /** Test timeout for tests that seed thousands of rows; seeding is never inside a timed span. */
 const SEEDING_TIMEOUT_MS = 60_000;
+/** Bound for the store's part of one sync round at scale (slice 3j). */
+const ROUND_MS = 1_500;
 
 /** Times one call alone. */
 function timeOne<T>(fn: () => T): { value: T; ms: number } {
@@ -6310,5 +6312,118 @@ describe.each(storeKinds)("slice-3i store semantics (%s)", (_kind, make) => {
   it("knows the domains the owner writes to and owns", () => {
     s.upsertMessages("acc_1", "Sent", [makeFetchedMessage(1, { to: [{ name: null, address: "x@mail.example.com" }] })]);
     expect([...s.knownDomainList(100)].sort()).toEqual(["example.com", "example.org"]);
+  });
+});
+
+describe("slice 3j: rethreading only what changed", () => {
+  let db: Database.Database;
+  let s: MailStore;
+  const threadRows = () =>
+    db.prepare("SELECT * FROM threads ORDER BY id").all() as Record<string, unknown>[];
+  const rethread = () => s.assignThreads("acc_1", buildThreads(s.threadingInputs("acc_1")));
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    migrate(db);
+    s = createSqliteStore(db);
+    s.saveAccount(makeStoredAccount());
+  });
+
+  it("is stale until threads are assigned, and again after an insert or a delete", () => {
+    expect(s.threadsStale("acc_1")).toBe(true);
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    rethread();
+    expect(s.threadsStale("acc_1")).toBe(false);
+
+    s.applyFlags("acc_1", INBOX, [{ uid: 1, seen: true, flagged: false }]);
+    expect(s.threadsStale("acc_1")).toBe(false);
+
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(2)]);
+    expect(s.threadsStale("acc_1")).toBe(true);
+    rethread();
+    s.deleteByUids("acc_1", INBOX, [2]);
+    expect(s.threadsStale("acc_1")).toBe(true);
+  });
+
+  it("keeps the thread rows equal to a full rebuild as rows join, leave and change", () => {
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(1, { subject: "Invented plan", date: "2026-11-11T10:00:00.000Z" }),
+      makeFetchedMessage(2, { subject: "Invented lunch", date: "2026-11-11T11:00:00.000Z" }),
+    ]);
+    rethread();
+    // Second assignment is incremental: a reply joins the first thread.
+    s.upsertMessages("acc_1", INBOX, [
+      makeFetchedMessage(3, {
+        subject: "Re: Invented plan",
+        date: "2026-11-12T10:00:00.000Z",
+        inReplyTo: "msg-1@example.org",
+        references: ["msg-1@example.org"],
+      }),
+    ]);
+    rethread();
+    s.applyFlags("acc_1", INBOX, [{ uid: 3, seen: true, flagged: true }]);
+    s.deleteByUids("acc_1", INBOX, [2]);
+    rethread();
+
+    const incremental = threadRows();
+    expect(incremental).toHaveLength(1);
+    expect(incremental[0]).toMatchObject({ message_count: 2 });
+    expect(s.repairThreads("acc_1")).toBe(1);
+    expect(threadRows()).toEqual(incremental);
+  });
+
+  it(
+    "rethreads one new message in a 20,000-row account without rewriting every thread row",
+    () => {
+      // 50,000 rows when MAIL_SCALE=1 is set (measured by hand, not in `npm run check`).
+      const rows = process.env.MAIL_SCALE === "1" ? 50_000 : 20_000;
+      const start = Date.UTC(2026, 0, 1);
+      for (let from = 0; from < rows; from += 5_000) {
+        s.upsertMessages(
+          "acc_1",
+          INBOX,
+          Array.from({ length: 5_000 }, (_, i) =>
+            makeFetchedMessage(from + i + 1, {
+              messageId: `scale-${from + i}@example.org`,
+              date: new Date(start + (from + i) * 60_000).toISOString(),
+            }),
+          ),
+        );
+      }
+      rethread();
+      s.upsertMessages("acc_1", INBOX, [
+        makeFetchedMessage(rows + 1, {
+          messageId: "scale-new@example.org",
+          inReplyTo: "scale-7@example.org",
+          references: ["scale-7@example.org"],
+        }),
+      ]);
+      const inputs = s.threadingInputs("acc_1");
+      const threadOf = buildThreads(inputs);
+      const deletes: string[] = [];
+      db.function("mail_test_note", (id: string) => {
+        deletes.push(id);
+        return 0;
+      });
+      db.exec(
+        "CREATE TEMP TRIGGER note_thread_delete AFTER DELETE ON threads BEGIN SELECT mail_test_note(old.id); END",
+      );
+      const { ms } = timeOne(() => s.assignThreads("acc_1", threadOf));
+      // The reply's own thread and the one it joined: nothing else is rewritten.
+      expect(deletes.length).toBeLessThanOrEqual(2);
+      expect(ms).toBeLessThan(ROUND_MS);
+      expect(count(db, "threads")).toBe(rows);
+      expect(timeOne(() => s.threadsStale("acc_1")).ms).toBeLessThan(PAGE_MS);
+    },
+    SEEDING_TIMEOUT_MS * 3,
+  );
+
+  it("rebuilds every thread row on the first assignment after a load", () => {
+    s.upsertMessages("acc_1", INBOX, [makeFetchedMessage(1)]);
+    rethread();
+    db.prepare("UPDATE threads SET message_count = 99").run();
+    const reloaded = createSqliteStore(db);
+    reloaded.assignThreads("acc_1", buildThreads(reloaded.threadingInputs("acc_1")));
+    expect(threadRows()[0]).toMatchObject({ message_count: 1 });
   });
 });

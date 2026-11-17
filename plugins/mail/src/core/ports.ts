@@ -443,8 +443,15 @@ export interface MailStore {
    */
   markOpened(messageId: string): { accountId: string } | null;
   threadingInputs(accountId: string): ThreadingInput[];
-  /** Assigns messages to threads, then recomputes the thread rows. */
+  /**
+   * Assigns messages to threads, then recomputes the rows of the threads a
+   * message left or joined (every thread row on the first call after a load).
+   */
   assignThreads(accountId: string, threadOf: Map<string, string>): void;
+  /** True when rows were inserted or deleted since the last assignThreads (slice 3j). */
+  threadsStale(accountId: string): boolean;
+  /** Rebuilds every thread row of the account from its messages; returns the thread count (slice 3j, doctor). */
+  repairThreads(accountId: string): number;
   /** Threads with at least one message in `folder` (matching `filter` on one row, slice 3e). */
   listThreads(
     accountId: string,

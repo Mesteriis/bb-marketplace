@@ -2037,3 +2037,20 @@ describe("slice 3i: sender check, crypto and receipt at sync", () => {
     expect(JSON.parse(sentRow!.senderCheckJson!)).toMatchObject({ state: "unchecked", basis: "own" });
   });
 });
+
+describe("slice 3j: rethread only on change", () => {
+  it("skips threading in a round that changed no rows", async () => {
+    const { store, deps } = setup(mailbox(2));
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok" });
+    const before = store.assignThreadsCalls;
+    expect(before).toBeGreaterThan(0);
+
+    store.staleThreads = false;
+    expect(await syncAccount(deps, ACCOUNT_ID, OPTIONS)).toMatchObject({ status: "ok", fetched: 0 });
+    expect(store.assignThreadsCalls).toBe(before);
+
+    store.staleThreads = true;
+    await syncAccount(deps, ACCOUNT_ID, OPTIONS);
+    expect(store.assignThreadsCalls).toBe(before + 1);
+  });
+});

@@ -2221,6 +2221,11 @@ export function createSqliteStore(db: Database.Database): MailStore {
    * just joined is out before the round ends (or when it fails).
    */
   let excludedStale = false;
+  // Slice 3j: accounts whose thread assignment matches their rows. An insert
+  // or a delete makes an account stale; a round rethreads stale accounts only.
+  // Empty at load, so the first round of each account rebuilds every thread row.
+  const threadsCurrent = new Set<string>();
+  const threadsRebuilt = new Set<string>();
   function freshScope(): void {
     if (!excludedStale) return;
     excludedStale = false;
@@ -2440,6 +2445,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
 
   /** Deletes the given rows with their attachment metadata and inline parts; returns their thread ids. */
   function deleteRows(rows: { id: string; thread_id: string }[]): Set<string> {
+    if (rows.length > 0) threadsCurrent.clear();
     const remove = db.prepare("DELETE FROM messages WHERE id = ?");
     const removeTranslations = db.prepare("DELETE FROM translations WHERE message_id = ?");
     const removeSnooze = db.prepare("DELETE FROM snoozes WHERE message_id = ?");
@@ -3209,6 +3215,7 @@ export function createSqliteStore(db: Database.Database): MailStore {
 
     upsertMessages(accountId, folder, messages: FetchedMessage[], opts) {
       if (sendersExcluded()) excludedStale = true;
+      if (messages.length > 0) threadsCurrent.delete(accountId);
       return atomic(() => {
         const touched = new Set<string>();
         const inserted: string[] = [];
@@ -3548,18 +3555,43 @@ export function createSqliteStore(db: Database.Database): MailStore {
         }));
     },
 
+    threadsStale(accountId) {
+      return !threadsCurrent.has(accountId);
+    },
+
     assignThreads(accountId, threadOf) {
       if (sendersExcluded()) excludedStale = true;
       return atomic(() => {
-        const ids = db
-          .prepare<[string], { id: string }>("SELECT id FROM messages WHERE account_id = ?")
+        const rows = db
+          .prepare<[string], { id: string; thread_id: string }>("SELECT id, thread_id FROM messages WHERE account_id = ?")
           .all(accountId);
-        const update = db.prepare("UPDATE messages SET thread_id = ? WHERE id = ? AND thread_id != ?");
-        for (const { id } of ids) {
+        const update = db.prepare("UPDATE messages SET thread_id = ? WHERE id = ?");
+        // Every other path refreshes the threads it touches itself, so only
+        // the threads a row left or joined need their rows rebuilt here.
+        const touched = new Set<string>();
+        for (const { id, thread_id: before } of rows) {
           const threadId = threadOf.get(id) ?? `t_${id}`;
-          update.run(threadId, id, threadId);
+          if (threadId === before) continue;
+          update.run(threadId, id);
+          touched.add(before);
+          touched.add(threadId);
         }
+        // The first assignment after a load rebuilds everything once, so a
+        // thread row left wrong by an earlier version or a crash is repaired.
+        if (threadsRebuilt.has(accountId)) refreshThreads(accountId, touched);
+        else refreshThreads(accountId, null);
+        threadsRebuilt.add(accountId);
+        threadsCurrent.add(accountId);
+      });
+    },
+
+    repairThreads(accountId) {
+      return atomic(() => {
         refreshThreads(accountId, null);
+        const count = db
+          .prepare<[string], { n: number }>("SELECT COUNT(*) AS n FROM threads WHERE account_id = ?")
+          .get(accountId);
+        return count?.n ?? 0;
       });
     },
 

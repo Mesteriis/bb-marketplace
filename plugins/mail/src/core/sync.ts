@@ -167,6 +167,16 @@ type RoundProgress = {
   describe: (error: unknown) => string;
 };
 
+/**
+ * Rethreads the account when rows were inserted or deleted since the last
+ * time (slice 3j): a round that only changed flags, or nothing, skips the
+ * read of every row that threading needs.
+ */
+function rethreadIfStale(store: MailStore, accountId: string): void {
+  if (!store.threadsStale(accountId)) return;
+  store.assignThreads(accountId, buildThreads(store.threadingInputs(accountId)));
+}
+
 /** An account-level failure whose message is fixed text, safe to show. */
 class SyncRoundError extends Error {
   constructor(message: string) {
@@ -258,7 +268,7 @@ export async function syncAccount(
       }
     }
 
-    store.assignThreads(accountId, buildThreads(store.threadingInputs(accountId)));
+    rethreadIfStale(store, accountId);
     const lastError = problemText(progress);
     if (folders.length > 0 && synced === 0) {
       // Every folder failed: like a failed slice-1 round, lastSyncAt stays.
@@ -299,9 +309,7 @@ export async function syncAccount(
     const authFailed = error instanceof ImapAuthError;
     const message = redact(describeError(error), password);
     try {
-      if (progress.changed) {
-        store.assignThreads(accountId, buildThreads(store.threadingInputs(accountId)));
-      }
+      if (progress.changed) rethreadIfStale(store, accountId);
       const roundError = [message, problemText(progress)].filter((t) => t !== null).join("; ");
       store.recordSyncResult(accountId, {
         lastSyncAt: account.lastSyncAt,
