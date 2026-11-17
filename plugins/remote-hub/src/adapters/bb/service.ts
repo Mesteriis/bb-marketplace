@@ -136,7 +136,13 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
             }
             const ends = sessionEndListeners.get(key);
             if (ends !== undefined) {
-              for (const cb of ends) cb(info);
+              for (const cb of ends) {
+                try {
+                  cb(info);
+                } catch {
+                  // one listener's throw must not skip the others
+                }
+              }
             }
             maybeEvictClosed(key);
           });
@@ -244,7 +250,13 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       }
       const ends = sessionEndListeners.get(key);
       if (ends !== undefined) {
-        for (const cb of ends) cb(info);
+        for (const cb of ends) {
+          try {
+            cb(info);
+          } catch {
+            // one listener's throw must not skip the others
+          }
+        }
       }
       maybeEvictClosed(key);
       return info;

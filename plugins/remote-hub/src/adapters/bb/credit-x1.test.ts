@@ -316,6 +316,73 @@ describe("credit window X1 (real service + real socket)", () => {
     expect(granted - 100_000).toBe(262_144);
   });
 
+  it("Y1: session end during the credit await delivers closed after the tail", async () => {
+    const { helper, service, wire } = makeServiceAndSocket();
+    const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+    helper.credit = async (h: SessionHandle, b: number) => {
+      helper.creditFrames.push({ sessionId: h.sessionId, bytes: b });
+      helper.emitOutput(h.sessionId, new Uint8Array([66]));
+      helper.emitClosed(h.sessionId, { exitCode: 7, signal: null, reason: "exited" });
+    };
+    const s = makeSocket();
+    await wire("ws://x/attach?attach=" + service.sessionAttach(handle)).onOpen(s);
+    const rendered = s.sent.map((d) => (typeof d === "string" ? d : Array.from(d as Uint8Array)));
+    expect(rendered).toEqual([
+      JSON.stringify({ type: "snapshot", bytes: 0 }),
+      JSON.stringify({ type: "live" }),
+      [66],
+      JSON.stringify({ type: "closed", exitCode: 7, signal: null, reason: "exited" }),
+    ]);
+    expect(s.closed.map((c) => c.code)).toContain(4000);
+  });
+
+  it("Y1: helper exit during the credit await closes 4410 without rejecting", async () => {
+    const { helper, service, wire } = makeServiceAndSocket();
+    const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+    helper.credit = async () => {
+      helper.emitExit();
+      throw new Error("helper_exited");
+    };
+    const s = makeSocket();
+    let err: unknown = null;
+    await wire("ws://x/attach?attach=" + service.sessionAttach(handle)).onOpen(s).catch((e) => {
+      err = e;
+    });
+    expect(err).toBeNull();
+    expect(s.closed.map((c) => c.code)).toContain(4410);
+  });
+
+  it("Y5: a throwing end listener does not skip the others", async () => {
+    const { service } = makeServiceAndSocket();
+    const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+    let secondFired = false;
+    service.subscribeSessionEnd(handle, () => {
+      throw new Error("boom");
+    });
+    service.subscribeSessionEnd(handle, () => {
+      secondFired = true;
+    });
+    await service.sessionClose(handle);
+    expect(secondFired).toBe(true);
+  });
+
+  it("Y5: helper-exit records are evicted after 5 minutes", async () => {
+    vi.useFakeTimers();
+    try {
+      const { helper, service, wire } = makeServiceAndSocket();
+      const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+      const token = service.sessionAttach(handle);
+      const s = makeSocket();
+      await wire("ws://x/attach?attach=" + token).onOpen(s);
+      expect(service.creditState(handle)).toBeDefined();
+      helper.emitExit();
+      vi.advanceTimersByTime(300_001);
+      expect(service.creditState(handle)).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("scenario 8: eviction deletes credit state (fake clock)", async () => {
     vi.useFakeTimers();
     try {

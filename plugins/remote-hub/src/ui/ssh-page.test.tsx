@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const xtermArgs: Array<{ theme?: { background: string; foreground: string }; fontFamily?: string }> = [];
+const writeCallbacks: Array<() => void> = [];
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     constructor(opts: { theme?: { background: string; foreground: string }; fontFamily?: string }) {
@@ -10,7 +11,9 @@ vi.mock("@xterm/xterm", () => ({
     }
     open() {}
     loadAddon() {}
-    write() {}
+    write(_data: Uint8Array, cb?: () => void) {
+      if (cb) writeCallbacks.push(cb);
+    }
     onData() {}
     dispose() {}
     cols = 80;
@@ -58,6 +61,7 @@ beforeEach(() => {
   (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = FakeResizeObserver;
   FakeWebSocket.instances = [];
   xtermArgs.length = 0;
+  writeCallbacks.length = 0;
 });
 
 afterEach(() => {
@@ -159,6 +163,17 @@ describe("SshPage state transitions", () => {
       socket.onclose?.({ code: 1006 });
     });
     expect(screen.getByTestId("ssh-state").textContent).toContain("error");
+  });
+
+  it("acks only live frames even when write callbacks run later", async () => {
+    await connectAndRun();
+    const socket = FakeWebSocket.instances[0];
+    socket.onmessage?.({ data: new Uint8Array(100) }); // snapshot bytes
+    socket.onmessage?.({ data: JSON.stringify({ type: "live" }) });
+    socket.onmessage?.({ data: new Uint8Array(200) }); // live bytes
+    for (const cb of writeCallbacks) cb();
+    const acks = socket.sent.filter((d) => typeof d === "string" && d.includes('"ack"'));
+    expect(acks).toEqual([JSON.stringify({ type: "ack", bytes: 200 })]);
   });
 
   it("resolves theme colours via getComputedStyle", async () => {

@@ -89,7 +89,12 @@ export function createCreditState(): CreditState {
       const clamped = Math.min(bytes, v.sentLive - v.acked);
       if (clamped <= 0) return 0;
       v.acked += clamped;
-      return owner === viewId ? addGrant(clamped) : 0;
+      if (owner !== viewId) return 0;
+      // Grant only the headroom that keeps the invariant, so a promoted owner
+      // that has fallen behind cannot push the helper's unconsumed credit past
+      // one window.
+      const outstanding = v.sentLive - v.acked;
+      return addGrant(Math.max(0, CREDIT_WINDOW_BYTES - (granted - consumed) - outstanding));
     },
     granted: () => granted,
     consumed: () => consumed,

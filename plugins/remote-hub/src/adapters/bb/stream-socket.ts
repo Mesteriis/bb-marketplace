@@ -112,6 +112,23 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
           closeStale(socket);
           return;
         }
+
+        // Register termination handling BEFORE any await so an end/exit event in
+        // the credit window is never missed. Until the live tail is flushed the
+        // end event is buffered, then delivered after the tail.
+        let bufferedEnd: { exitCode: number | null; signal: number | null; reason: string } | null = null;
+        let liveSubscribed = false;
+        const sendEnd = (info: { exitCode: number | null; signal: number | null; reason: string }): void => {
+          guardSend(socket, JSON.stringify({ type: "closed", exitCode: info.exitCode, signal: info.signal, reason: info.reason }));
+          socket.close(WS_SESSION_ENDED, "session ended");
+        };
+        offExit = deps.service.onHelperExit(() => socket.close(WS_GENERATION_STALE, "helper exited"));
+        offEnd = deps.service.subscribeSessionEnd(handle!, (info) => {
+          if (!attached) return;
+          if (liveSubscribed) sendEnd(info);
+          else bufferedEnd = info;
+        });
+
         if (grant > 0) {
           await deps.service.sessionCredit(handle!, grant).catch(() => closeStale(socket));
         }
@@ -125,14 +142,17 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
           deps.service.creditLiveSent(handle!, attachId, data.byteLength);
           guardSend(socket, data);
         });
-        offExit = deps.service.onHelperExit(() => socket.close(WS_GENERATION_STALE, "helper exited"));
-        offEnd = deps.service.subscribeSessionEnd(handle!, (info) => {
-          guardSend(
-            socket,
-            JSON.stringify({ type: "closed", exitCode: info.exitCode, signal: info.signal, reason: info.reason }),
-          );
-          socket.close(WS_SESSION_ENDED, "session ended");
-        });
+        liveSubscribed = true;
+        if (bufferedEnd !== null) {
+          sendEnd(bufferedEnd);
+        } else {
+          const record = deps.service
+            .sessionList()
+            .find((s) => s.generation === handle!.generation && s.sessionId === handle!.sessionId);
+          if (record !== undefined && record.state === "closed") {
+            sendEnd({ exitCode: record.exitCode, signal: record.signal, reason: record.reason ?? "exited" });
+          }
+        }
       },
       onMessage(socket, data) {
         if (!attached || handle === null) return;

@@ -98,10 +98,12 @@ export function SshTerminal(props: SshTerminalProps) {
         return;
       }
       const bytes = new Uint8Array(event.data);
+      // Capture the live flag BEFORE write; xterm defers the callback, so the
+      // queued {type:"live"} message could otherwise flip it for a large
+      // snapshot's callbacks.
+      const ackable = live;
       terminal.write(bytes, () => {
-        // Ack only live bytes (after {type:"live"}); snapshot bytes are replay
-        // and must never be acknowledged.
-        if (live && !disposed && socket.readyState === WebSocket.OPEN) {
+        if (ackable && !disposed && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: "ack", bytes: bytes.byteLength }));
         }
       });

@@ -127,6 +127,24 @@
       "error": "invalid_knownHostsFile"
     },
     {
+      "name": "config-dotdot",
+      "target": { "host": "example.com", "configFile": "/tmp/../cfg", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-F", "/tmp/../cfg", "--", "example.com"],
+      "error": "invalid_configFile"
+    },
+    {
+      "name": "identity-dot",
+      "target": { "host": "example.com", "identityFile": "/tmp/./id", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-i", "/tmp/./id", "-o", "IdentitiesOnly=yes", "--", "example.com"],
+      "error": "invalid_identityFile"
+    },
+    {
+      "name": "host-c1-control",
+      "target": { "host": "exa\u0085mple", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "--", "exa\u0085mple"],
+      "error": "invalid_host"
+    },
+    {
       "name": "host-del-control",
       "target": { "host": "exa\u007fmple", "extraOptions": [] },
       "argv": ["ssh", "-tt", "--", "exa\u007fmple"],

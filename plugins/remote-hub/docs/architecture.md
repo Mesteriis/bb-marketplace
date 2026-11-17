@@ -98,7 +98,13 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   reattach after every view left), the new view becomes owner and the helper's
   unconsumed credit is topped back up to one window:
   grant = max(0, 262144 - (granted - consumed)). A renderer that never acks
-  stalls its session after 262144 bytes: that is intended backpressure.
+  stalls its session after 262144 bytes: that is intended backpressure. An
+  owner that never acks stalls the session even if another attached view acks;
+  a slow non-owner's output queue is not bounded in stage 2a (two views are
+  not reachable from the 2a UI) and will be bounded in a later stage.
+- stdin hang-up guards: the read_now '|| hung_up' and 'hung_up && is_full ->
+  mark_eof' branches in helper/src/ipc.rs are defensive and not covered by a
+  test on darwin (poll does not report POLLHUP while stdin events are 0).
 - Attach/detach semantics: one WebSocket per attached view, bound to a single
   session handle by a single-use attach token; closing the socket detaches the
   view but the session keeps running in the helper. service.attachStream takes
