@@ -7,6 +7,10 @@
 //!   pump, exactly like the real engine. Every 25th paint it reports
 //!   `state = "paint=<n>"` (n = paints so far) so a test can wait for "the
 //!   desktop has repainted N more times" as an event instead of sleeping.
+//! * `flood-signal:<path>` — as `flood`, and it creates the file `<path>` once its
+//!   writes to the helper have been BLOCKED for 3 consecutive 200 ms waits (the
+//!   socket stayed full: the helper stopped reading because its bounded buffers
+//!   are full). A test waits for the file instead of guessing from RSS.
 //! * `flood` — ignores acks and sends a full 1920x1080-class frame every
 //!   millisecond: a hostile / buggy engine, to prove the HELPER stays bounded.
 use std::os::fd::FromRawFd;
@@ -36,13 +40,48 @@ pub fn run_fake_engine(mode: &str) -> i32 {
     let Ok(out) = stream.try_clone().map(|s| Arc::new(Out::new(s))) else { return 2 };
     let inbox = spawn_reader(stream);
     let Ok(rt) = tokio::runtime::Builder::new_multi_thread().enable_all().build() else { return 2 };
-    match rt.block_on(run(mode == "flood", width, height, out, inbox)) {
+    let signal = mode.strip_prefix("flood-signal:").map(std::path::PathBuf::from);
+    let flood = mode == "flood" || signal.is_some();
+    match rt.block_on(run(flood, signal, width, height, out, inbox)) {
         Ok(()) => 0,
         Err(_) => 2,
     }
 }
 
-async fn run(flood: bool, width: u32, height: u32, out: Arc<Out>, inbox: Inbox) -> std::io::Result<()> {
+/// True when the helper's socket (fd 3) has stayed unwritable for 200 ms.
+fn socket_blocked_for_200ms() -> bool {
+    let mut pfd = libc::pollfd { fd: 3, events: libc::POLLOUT, revents: 0 };
+    let r = unsafe { libc::poll(&mut pfd, 1, 200) };
+    r == 0
+}
+
+async fn run(
+    flood: bool,
+    signal: Option<std::path::PathBuf>,
+    width: u32,
+    height: u32,
+    out: Arc<Out>,
+    inbox: Inbox,
+) -> std::io::Result<()> {
+    if let Some(path) = signal {
+        // A watchdog beside the flooding writer: the writer blocks INSIDE a write
+        // when the helper stops reading, so only another thread can see it. The
+        // socket (fd 3) has to stay unwritable for 3 consecutive 200 ms waits.
+        std::thread::spawn(move || {
+            let mut blocked_waits = 0u32;
+            loop {
+                if socket_blocked_for_200ms() {
+                    blocked_waits += 1;
+                    if blocked_waits == 3 {
+                        let _ = std::fs::File::create(&path);
+                    }
+                } else {
+                    blocked_waits = 0;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        });
+    }
     let Inbox { mut control, cancel, .. } = inbox;
     for state in ["connecting", "tls", "authenticating"] {
         out.state(state)?;

@@ -289,24 +289,23 @@ fn g10_an_unacked_view_gets_exactly_one_update_then_one_coalesced_region() {
 /// updates without pacing cannot grow the helper: RSS growth < 32 MiB over 3 s.
 #[test]
 fn g10_unread_stdout_does_not_grow_the_helper() {
-    let mut h = start(&[(FAKE, "flood")]);
+    let signal = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("g10-blocked-{}", std::process::id()));
+    let _ = std::fs::remove_file(&signal);
+    let mut h = start(&[(FAKE, &format!("flood-signal:{}", signal.display()))]);
     let base = rss_kb(h.pid());
     let (_rdp, _) = h.open_rdp_sized(closed_port(), 1920, 1080);
-    // Start the observation window once the helper has FILLED its bounded
-    // buffers (its RSS stops climbing), not after a fixed delay: under load the
-    // filling itself takes longer than any fixed delay, and that one-off growth
-    // is not the unbounded growth this test is about. The 60 s limit is a hang
-    // guard.
+    // Start the observation window on a POSITIVE signal that the helper's bounded
+    // buffers are full: the flooding engine reports (by creating `signal`) that
+    // its writes have been BLOCKED for 600 ms, which happens only because the
+    // helper has stopped reading it. That is independent of how big the fill is
+    // and of how slowly it happens under load; "RSS is flat" is not (RSS sits flat
+    // before the fill starts). The 60 s limit is a hang guard.
     let hang_guard = std::time::Instant::now() + Duration::from_secs(60);
-    let mut last = rss_kb(h.pid());
-    let mut steady = 0;
-    while steady < 4 {
-        assert!(std::time::Instant::now() < hang_guard, "hang guard: the helper's RSS never levelled off");
-        std::thread::sleep(Duration::from_millis(250));
-        let now = rss_kb(h.pid());
-        steady = if now.saturating_sub(last) < 1024 { steady + 1 } else { 0 };
-        last = now;
+    while !signal.exists() {
+        assert!(std::time::Instant::now() < hang_guard, "hang guard: the engine's writes never blocked");
+        std::thread::sleep(Duration::from_millis(50));
     }
+    let _ = std::fs::remove_file(&signal);
     let early = rss_kb(h.pid());
     std::thread::sleep(Duration::from_secs(3));
     let late = rss_kb(h.pid());
