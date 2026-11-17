@@ -652,7 +652,12 @@ impl RdpManager {
                 if errno == libc::EAGAIN || errno == libc::EINTR {
                     return;
                 }
-                Self::on_eof(s);
+                // The engine is gone (or going). Drop what could not be sent and
+                // leave the end of the session to the read path: it reads the
+                // engine's Closed event first and only then sees the EOF.
+                // Recording `engine_exited` here would discard that event.
+                s.write_buf.clear();
+                s.pending_ack = None;
                 return;
             }
             s.write_buf.drain(..n as usize);
@@ -1174,11 +1179,30 @@ mod tests {
         mgr.push_screenshot(id, 5);
         mgr.push_screenshot(id, 6);
         unsafe { libc::close(b) };
-        let _ = mgr.process_readable(id, usize::MAX); // EOF: engine_exited
+        // EOF arrives once no forked child still holds the peer (another test may
+        // be between fork and exec): wait for it as an event.
+        read_until_closed(&mut mgr, id);
         let report = mgr.take_closed(id).expect("closed");
         assert_eq!(report.pending_screenshots, vec![5, 6]);
         assert_eq!(report.reason, "engine_exited");
         assert!(mgr.take_closed(id).is_none());
+    }
+
+    /// J1: the engine writes Closed and exits; an ack is queued; the helper's
+    /// write sees the dead peer BEFORE it reads the event. The event's reason
+    /// must win over `engine_exited`.
+    #[test]
+    fn a_write_to_a_dead_engine_does_not_discard_its_closed_event() {
+        let (a, b) = socketpair();
+        write_all(b, &encode_control(&EngineEvent::Closed { reason: "network_error".to_string() }));
+        unsafe { libc::close(b) };
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        assert_eq!(mgr.enqueue_command(id, &EngineCommand::Ack { frame_id: 1 }), Ok(()));
+        mgr.write_pending(id); // EPIPE, as the poll loop does before reading
+        read_until_closed(&mut mgr, id);
+        let report = mgr.take_closed(id).expect("closed");
+        assert_eq!(report.reason, "network_error");
     }
 
     #[test]
