@@ -8658,6 +8658,34 @@ describe("slice 3j: doctor and backup", () => {
     expect(unknown.stderr).toContain("unknown account 'nope'");
   });
 
+  it("doctor turns sync back on for an account the server refused earlier, once the saved password is accepted again", async () => {
+    const host = await load({ settings: { vaultKey: generateVaultKey() } });
+    const { accountId } = await addAndSync(host);
+    const db = host.bb.storage.database();
+    const flagged = () => db.prepare("SELECT auth_failed AS failed, last_error AS error FROM accounts WHERE id = ?").get(accountId);
+    db.prepare("UPDATE accounts SET auth_failed = 1, last_error = 'Authentication failed' WHERE id = ?").run(accountId);
+
+    const resumed = await host.harness.behavior.runCli(["doctor", accountId]);
+    expect(resumed.exitCode).toBe(0);
+    expect(resumed.stdout).toContain("It accepts the saved password now, so sync is on again.");
+    expect(resumed.stdout).not.toContain("Update the app password");
+    expect(flagged()).toEqual({ failed: 0, error: null });
+    expect(logText(host)).toContain(`doctor ${accountId}: sign-in works again, sync resumed`);
+    expect(host.harness.inspection.realtimeSignals.at(-1)).toEqual({ channel: MAIL_CHANGED_CHANNEL, payload: { accountId } });
+
+    // An account that is not stopped gets no such line, and nothing is written.
+    const again = await host.harness.behavior.runCli(["doctor", accountId]);
+    expect(again.stdout).not.toContain("sync is on again");
+
+    // While the server still refuses the password, the stop stays.
+    db.prepare("UPDATE accounts SET auth_failed = 1, last_error = 'Authentication failed' WHERE id = ?").run(accountId);
+    host.gateway.failOpen(new ImapAuthError());
+    const refused = await host.harness.behavior.runCli(["doctor", accountId]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stdout).toContain("The mail server refused the sign-in. Update the app password.");
+    expect(flagged()).toEqual({ failed: 1, error: "Authentication failed" });
+  });
+
   it("doctor --repair-threads rebuilds conversations and tells the page", async () => {
     const host = await load({ settings: { vaultKey: generateVaultKey() } });
     const { accountId } = await addAndSync(host);

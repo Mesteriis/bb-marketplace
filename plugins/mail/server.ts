@@ -62,6 +62,7 @@ import {
   BackupRefused,
   accountSection,
   backupDatabase,
+  RESUMED_CHECK,
   databaseSection,
   doctorText,
   worstLevel,
@@ -5991,6 +5992,11 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
               sections.push(section);
               // The one log line: the account id and the outcome, nothing else.
               deps.log(`doctor ${id}: ${worstLevel([section])}`);
+              if (section.lines.some((entry) => entry.check === RESUMED_CHECK)) {
+                deps.log(`doctor ${id}: sign-in works again, sync resumed`);
+                deps.publishChanged(id);
+                loop.wake(id);
+              }
               if (options["repair-threads"] === true) deps.publishChanged(id);
             }
             const worst = worstLevel(sections);

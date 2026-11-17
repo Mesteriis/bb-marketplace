@@ -29,6 +29,9 @@ export type DoctorDeps = {
 
 const line = (level: DoctorLevel, check: string, text: string): DoctorLine => ({ level, check, text });
 
+/** The check name of the line that says doctor turned an account's sync back on. */
+export const RESUMED_CHECK = "resumed";
+
 /** The database's own state: integrity, sizes and thread rows that do not match their messages. */
 export function databaseSection(db: Database.Database): DoctorSection {
   const lines: DoctorLine[] = [];
@@ -85,6 +88,7 @@ export async function accountSection(
   const lines: DoctorLine[] = [];
 
   let opens = false;
+  let resumed = false;
   if (deps.vault === null) {
     lines.push(line("fail", "credential", "The credential key is not set; saved passwords cannot be read."));
   } else {
@@ -103,7 +107,18 @@ export async function accountSection(
       .run(accountId, () => deps.gateway.test(imapConfigOf(account, vault)))
       .catch(() => null);
     if (login === null) lines.push(line("fail", "imap", "The mail server could not be reached."));
-    else if (login.ok) lines.push(line("ok", "imap", "Sign-in to the mail server works."));
+    else if (login.ok) {
+      lines.push(line("ok", "imap", "Sign-in to the mail server works."));
+      if (account.authFailed) {
+        // A server can refuse a good password for a while (too many sign-ins).
+        // The saved one was just accepted, so the stop on this account is stale.
+        await deps.run(accountId, async () =>
+          store.recordSyncResult(accountId, { lastSyncAt: account.lastSyncAt, lastError: null, authFailed: false }),
+        );
+        resumed = true;
+        lines.push(line("ok", RESUMED_CHECK, "The server refused the sign-in earlier. It accepts the saved password now, so sync is on again."));
+      }
+    }
     else if (login.authFailed) lines.push(line("fail", "imap", "The mail server refused the sign-in. Update the app password."));
     else lines.push(line("fail", "imap", "The mail server could not be reached or refused the connection."));
 
@@ -146,7 +161,8 @@ export async function accountSection(
     const minutes = Math.max(0, Math.round((deps.now().getTime() - Date.parse(account.lastSyncAt)) / 60_000));
     lines.push(line("ok", "sync", `Last full sync ${minutes} minutes ago.`));
   }
-  for (const problem of parseSyncProblems(account.lastError)) {
+  // The refusal doctor just cleared is not a problem any more.
+  for (const problem of resumed ? [] : parseSyncProblems(account.lastError)) {
     // `other` is text this version does not know: never printed as it came.
     lines.push(
       line("fail", "sync", problem.code === "other" ? "Sync reported a problem this version cannot name." : syncProblemText(problem)),
