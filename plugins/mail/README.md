@@ -181,12 +181,23 @@ recognises such mail; OpenPGP works, see [OpenPGP](#openpgp)).
   which brings the draft back. Then the BB server sends it over SMTP with
   TLS and saves the Sent copy. The Sent copy keeps the Bcc line; the
   message on the wire has none. Gmail's own Sent copy does not show Bcc.
+- **Send later** picks the time a message goes out: In an hour, This
+  evening, Tomorrow morning, Tomorrow afternoon, Monday morning, or a date
+  and time from one minute to a year ahead. The message waits in the Outbox
+  as "Scheduled for …" and carries the picked time as its Date. It is built
+  when you schedule it, so to change it use **Edit**, which cancels the send
+  and reopens the draft. The BB server sends it, so BB must be running at
+  that time. A send that came due while BB was closed goes out when BB next
+  starts if it is less than a day late; later than that it is held ("Not
+  sent: its time passed while BB was closed") and you choose **Send now**
+  or **Edit**. Agents cannot schedule a send.
 - **Outbox**, at the top of Sent, lists every send that is not done and
   offers only what is safe from its state:
 
   | State | Means | You can |
   | --- | --- | --- |
   | Sending soon | inside the Undo window | Undo |
+  | Scheduled for … | waits for the time you picked in **Send later** | Edit (the send is cancelled, the draft reopens) |
   | Held | was waiting when BB restarted; nothing sent | Send now, Edit |
   | Sending… / saving a copy | in progress | — |
   | Not sent | the server refused it or could not be reached | Retry, Edit (draft back), Discard (message and draft deleted) |
@@ -399,6 +410,14 @@ remote BB server uses its own hours. Nothing is saved for later. A forged
 From naming someone you write to can toast too; the address shown is the
 one in the message. A snoozed message that comes back toasts by the same
 rule.
+
+**Important senders.** The `importantSenders` setting takes addresses and
+domains (`ana@example.com`, `example.org`), separated by commas; a domain
+covers its subdomains, and the list holds up to 200 entries. Mail from them
+toasts during quiet hours, toasts even when you never wrote to them, and
+toasts when it is a mailing list. Your own addresses and blocked senders
+still never toast. `notifyImportantOnly` limits toasts to these senders at
+all hours. With no important senders named, quiet hours silence everything.
 
 **Unsubscribe.** A message with `List-Unsubscribe` gets **Unsubscribe** in
 the reading pane (never in Spam or Trash, which says "Use Spam or Block for
@@ -1075,6 +1094,30 @@ element is not found (Mail does no layout).
   attachments and **Download .eml**.
 - **OpenPGP mail** can be signed, encrypted, checked and opened; see
   [OpenPGP](#openpgp) below.
+
+### Calendar invitations
+
+A message with a calendar part (`text/calendar`, or an `.ics` file) shows
+the event above its text: the title, when, where, the organizer and who is
+invited with their answers. Mail reads the part from the server when you
+open the message and stores nothing.
+
+- **Time.** A time is shown in this computer's time when the invitation
+  gives it in UTC, in a zone with a standard name (`Europe/Madrid`), or in
+  a zone the invitation defines itself, as Outlook does. Otherwise it is
+  shown as written, with the zone's name beside it. A repeating event shows
+  its first time and says that it repeats.
+- **Answering.** **Accept**, **Maybe** and **Decline** send your answer to
+  the organizer as an email their calendar reads (iTIP `REPLY`). It goes
+  through the Outbox with the 10-second Undo, from the address that was
+  invited. The buttons appear only for an open invitation sent to one of
+  the account's addresses, outside Spam and Trash; a cancellation or
+  someone else's answer is shown without them. Nothing is answered without
+  your click, and agents cannot answer.
+- **Limits.** Mail has no calendar: the event is not saved anywhere, and
+  Mail does not remember your answer after you close the message. Only the
+  first event of a file is shown. The invitation's text is untrusted: it is
+  shown as plain text and nothing in it is opened or followed.
 
 ### OpenPGP
 

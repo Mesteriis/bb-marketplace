@@ -8,6 +8,17 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Send later, important senders and calendar invitations (slice 3l).
+  **Send later** in the composer picks the time a message goes out; it
+  waits in the Outbox as "Scheduled for …", carries that time as its Date,
+  and is sent by the BB server while BB runs (under a day late after a
+  restart it still goes; later it is held). The `importantSenders` setting
+  names addresses and domains whose mail toasts through quiet hours, and
+  `notifyImportantOnly` limits toasts to them. A message with a calendar
+  part shows the event (what, when, where, who), and Accept, Maybe and
+  Decline send the answer to the organizer through the Outbox with Undo.
+  Database migration 16 (`outbox.scheduled`). No new dependency.
+
 - OpenPGP (slice 3k). A key pair for a sending address is made in Mail
   settings and kept sealed with the credential key; a backup leaves locked
   by a passphrase. Public keys of other people are pasted in or saved from
