@@ -1708,8 +1708,21 @@ fn w4_hup_does_not_block_the_loop() {
         }
     }
 
-    // 50 ssh-kind sessions whose child really closes its tty fds, then lives
-    // 1.5 s and exits 7.
+    // Open the echo session first, then the 50 children WITHOUT credit so they
+    // only close their tty fds once credit is granted during the echo loop.
+    send_req(
+        &mut stdin,
+        &Request::OpenEcho {
+            id: 400,
+            cols: 80,
+            rows: 24,
+        },
+    );
+    echo_sid = match read_until_id(&mut stdout, 400, &mut closed, 0, &mut echo_buf) {
+        Response::SessionOpened { session_id, .. } => session_id,
+        other => panic!("expected session.opened, got {other:?}"),
+    };
+
     let mut ssh_sids = Vec::new();
     for i in 0..50u64 {
         send_req(
@@ -1732,38 +1745,26 @@ fn w4_hup_does_not_block_the_loop() {
             Response::SessionOpened { session_id, .. } => session_id,
             other => panic!("expected session.opened, got {other:?}"),
         };
-        send_req(
-            &mut stdin,
-            &Request::SessionCredit {
-                id: 200 + i,
-                session_id: sid,
-                bytes: 65_536,
-            },
-        );
-        match read_until_id(&mut stdout, 200 + i, &mut closed, 0, &mut echo_buf) {
-            Response::SessionCreditAck { .. } => {}
-            other => panic!("expected session.credit_ack, got {other:?}"),
-        }
         ssh_sids.push(sid);
     }
 
-    send_req(
-        &mut stdin,
-        &Request::OpenEcho {
-            id: 400,
-            cols: 80,
-            rows: 24,
-        },
-    );
-    echo_sid = match read_until_id(&mut stdout, 400, &mut closed, 0, &mut echo_buf) {
-        Response::SessionOpened { session_id, .. } => session_id,
-        other => panic!("expected session.opened, got {other:?}"),
-    };
-
     let deadline = Instant::now() + Duration::from_millis(3000);
     let mut times: Vec<Duration> = Vec::new();
+    let mut closed_list: Vec<(Option<i32>, Option<i32>)> = Vec::new();
     let mut n = 0u64;
     while Instant::now() < deadline {
+        // Grant credit to the next child (once each) so its tty close is
+        // observed during the echo loop, overlapping the reap window.
+        if (n as usize) < ssh_sids.len() {
+            send_req(
+                &mut stdin,
+                &Request::SessionCredit {
+                    id: 200 + n,
+                    session_id: ssh_sids[n as usize],
+                    bytes: 65_536,
+                },
+            );
+        }
         let line = format!("ping-{n}\n");
         let t0 = Instant::now();
         send_req(
@@ -1783,12 +1784,9 @@ fn w4_hup_does_not_block_the_loop() {
                 match decode_response(&payload).unwrap() {
                     Response::SessionInputAck { id, .. } if id == 500 + n => acked = true,
                     Response::SessionClosed {
-                        session_id,
-                        exit_code,
-                        signal,
-                        ..
+                        exit_code, signal, ..
                     } => {
-                        closed.insert(session_id, (exit_code, signal));
+                        closed_list.push((exit_code, signal));
                     }
                     _ => {}
                 }
@@ -1814,11 +1812,9 @@ fn w4_hup_does_not_block_the_loop() {
     );
     assert!(max < Duration::from_secs(1), "max echo round trip {max:?} >= 1 s");
 
-    for sid in ssh_sids {
-        let (code, sig) = closed
-            .get(&sid)
-            .copied()
-            .unwrap_or_else(|| panic!("session {sid} never closed"));
+    // All 50 must have reported exit 7 with no signal.
+    assert_eq!(closed_list.len(), 50, "got {} closed frames", closed_list.len());
+    for (code, sig) in closed_list {
         assert_eq!(code, Some(7));
         assert_eq!(sig, None);
     }
