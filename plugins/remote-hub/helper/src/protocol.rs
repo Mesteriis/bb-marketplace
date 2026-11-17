@@ -283,8 +283,14 @@ pub fn encode_request(req: &Request) -> Vec<u8> {
 pub fn encode_response(resp: &Response) -> Vec<u8> {
     let json = serde_json::to_vec(resp).expect("serialize response");
     if 1 + json.len() > MAX_FRAME_BODY_BYTES {
+        // Keep the request id: the request must still be answered.
+        #[derive(Deserialize)]
+        struct IdOnly {
+            id: Option<u64>,
+        }
+        let id = serde_json::from_slice::<IdOnly>(&json).ok().and_then(|v| v.id);
         let error = Response::Error {
-            id: None,
+            id,
             code: "response_too_large".to_string(),
             message: "a response exceeded the frame size limit and was dropped".to_string(),
         };
@@ -325,7 +331,10 @@ mod frame_limit_tests {
         let frame = encode_response(&big);
         assert!(frame.len() <= 4 + MAX_FRAME_BODY_BYTES, "{} bytes", frame.len());
         match decode_response(&frame[5..]).unwrap() {
-            Response::Error { code, .. } => assert_eq!(code, "response_too_large"),
+            Response::Error { id, code, .. } => {
+                assert_eq!(code, "response_too_large");
+                assert_eq!(id, Some(9), "the request id must survive");
+            }
             other => panic!("expected an error frame, got {other:?}"),
         }
     }
