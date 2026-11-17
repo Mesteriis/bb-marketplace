@@ -1,12 +1,9 @@
-# Remote Hub — RDP engine (stage 2b, B0 design record)
+# Remote Hub — RDP engine (stage 2b)
 
-This is the "before code" record required by B0. It pins the exact IronRDP
-crates, names the API called for each step, quotes the TLS defaults of the
-pinned source with `file:line`, and records licences. **The engine code that
-consumes these crates is not yet implemented**; `helper/Cargo.toml` is unchanged
-and no IronRDP dependency has been added. Pinning (`=x.y.z` in Cargo.toml,
-`Cargo.lock`, `THIRD_PARTY_NOTICES.md`) lands together with the engine so the
-tree never carries unused native deps.
+Design record and as-built description of the RDP engine. The engine is
+implemented (stage 2b-1, repaired after two independent reviews); this file
+says what the code does today. Where it records a limit or a deviation it says
+so explicitly.
 
 ## 1. Pinned crate set
 
@@ -24,10 +21,15 @@ coherent latest set (verified against crates.io on 2026-11-17) is:
 | ironrdp-input | =0.9.0 | keyboard/mouse state → `FastPathInputEvent` | MIT OR Apache-2.0 |
 | ironrdp-core | =0.3.1 | `WriteBuf`, codec traits | MIT OR Apache-2.0 |
 | ironrdp-svc | =0.10.0 | static/dynamic channel plumbing | MIT OR Apache-2.0 |
-| tokio | =1.x | async runtime for the engine process | MIT |
-| x509-cert | =0.3 | parse the server cert for fingerprint/fields | Apache-2.0 OR MIT |
-| sha2 | =0.11 | SHA-256 fingerprint | MIT OR Apache-2.0 |
-| png | =0.18 | screenshot encoder | MIT OR Apache-2.0 |
+| tokio | =1.54.1 | async runtime for the engine process | MIT |
+| x509-cert | =0.3.0 | parse the server cert for fields | Apache-2.0 OR MIT |
+| sha2 | =0.11.1 | SHA-256 fingerprint | MIT OR Apache-2.0 |
+| png | =0.18.1 | screenshot encoder | MIT OR Apache-2.0 |
+
+Every direct dependency in `helper/Cargo.toml` is an exact `=x.y.z` pin (libc
+=0.2.191, serde =1.0.229, serde_json =1.0.154, and the rows above), so `Cargo.lock`
+plus the manifest fix the whole tree. Dev-only: rustls =0.23.46, tokio-rustls
+=0.26.6 (fake RDP server and test CA client).
 
 Transitive IronRDP crates the above pull in: ironrdp-error 0.2, ironrdp-dvc
 0.10, ironrdp-displaycontrol 0.10, ironrdp-bulk 0.2, ironrdp-egfx 0.5. All are
@@ -44,26 +46,57 @@ tls crate lacks it.
 States: `connecting` → `tls` → (`cert_prompt`) → `authenticating` →
 `desktop_ready` → `closed`.
 
-The sequence is driven with `ironrdp-tokio` + `ironrdp-connector`
-(mirrors `ironrdp-client-0.1.0/src/rdp.rs`):
+The sequence lives in `helper/src/rdp/connect.rs` and is driven with
+`ironrdp-tokio` + `ironrdp-connector` (mirrors `ironrdp-client-0.1.0/src/rdp.rs`).
+Each phase has its own budget (`Timeouts`): TCP + X.224 15 s, TLS 15 s
+(excluding the time the user spends deciding), authentication/finalize 15 s;
+the certificate prompt waits up to 60 s on its own.
 
 1. `connecting`: `TcpStream::connect((host, port))`, then
    `ironrdp_tokio::TokioFramed::new(stream)`.
 2. `ironrdp_tokio::connect_begin(&mut framed, &mut connector)` — X.224
-   negotiation up to the point where the transport must upgrade to TLS.
+   negotiation up to the TLS upgrade. **Nothing identifying is sent here**: the
+   connector `request_data` is the fixed cookie `remote-hub`; without it IronRDP
+   would build the routing cookie from the username and send it in clear.
 3. `tls`: `ironrdp_tls::upgrade_with_certificate_validation_callback_for_endpoint(
-   stream, server_name, endpoint, callback)` — strict chain+hostname validation
-   with a callback that reports a failed cert (B3). `cert_prompt` is emitted
-   from inside this callback; it may wait up to 60 s for
-   `rdp_cert_decision`, then `cert_rejected`.
-4. `ironrdp_tls::extract_tls_server_public_key(&tls_cert)` — the server public
-   key CredSSP needs.
+   stream, server_name, endpoint, callback)` (behind the `TlsUpgrader` seam) —
+   strict chain+hostname validation. `cert_prompt` is emitted from inside the
+   callback, which blocks (`block_in_place`) up to 60 s for `rdp.cert_decision`,
+   then `cert_rejected`. The prompt carries the real host and port, the
+   fingerprint, subject/issuer/validity, a stable reason code
+   (`untrusted_root`, `hostname_mismatch`, `expired`, `other`) and the library
+   text only as `detail`.
+4. After EVERY handshake (validated or not): the SHA-256 of the peer leaf is
+   computed, reported as `rdp.certificate {fingerprint, validated}`, and compared
+   with `expectedFingerprint` BEFORE `connect_finalize`; a mismatch is closed
+   `cert_changed` and nothing is sent. This is needed because the pinned
+   `ironrdp-tls` calls the callback only when strict validation FAILS — a
+   certificate that validates never reaches it. Then
+   `ironrdp_tls::extract_tls_server_public_key(&tls_cert)` gives the key CredSSP
+   needs.
 5. `authenticating`: `ironrdp_tokio::connect_finalize(upgraded, connector,
-   &mut framed, &mut ReqwestNetworkClient::new(), destination, server_public_key,
-   kerberos_config)` — security + licensing + capabilities + CredSSP/NLA when
-   negotiated, then connection activation.
+   &mut framed, &mut NoopNetworkClient, destination, server_public_key, None)` —
+   security + licensing + capabilities + CredSSP/NLA when negotiated, then
+   connection activation. **Kerberos is not supported**: `NoopNetworkClient`
+   (the stand-in for IronRDP's reqwest-based client, which would add an HTTP
+   stack) fails every network request, so KDC proxying is unavailable and NLA
+   uses NTLM. `autologon: true` only sets `INFO_AUTOLOGON` in the Client Info
+   PDU; the username/password travel in that PDU (encrypted, after TLS) or in
+   CredSSP either way.
 6. `desktop_ready`: after `connect_finalize` returns `ConnectionResult`, build
-   the active stage and apply the first non-empty graphics update (§4).
+   the active stage; `rdp.desktop` is emitted when the first graphics update has
+   been applied (§4).
+
+Closed reasons are the literals `auth_failed`, `cert_rejected`, `cert_changed`,
+`tls_error`, `protocol_error`, `network_error`, `timeout`, `killed_by_close`,
+`engine_exited`, `helper_shutdown` and — added in the repair round —
+`server_disconnected` (an orderly server-side end of the session, which is not a
+protocol error). Mapping rules (`mapping.rs`, literal-tested): a server that
+refuses TLS/HYBRID → `tls_error`; a CredSSP public-key echo/hash mismatch →
+`tls_error` (a possible man in the middle, never `auth_failed`, never retried);
+other CredSSP/`AccessDenied` failures → `auth_failed`; I/O failures →
+`network_error`; anything else → `protocol_error`. `client_name` is the fixed
+string `remote-hub`, never the target host.
 
 Connector `Config` (ironrdp-connector 0.12.0 `src/lib.rs:150`) carries
 `desktop_size`, `credentials: Credentials::UsernamePassword { username, password }`
@@ -101,11 +134,25 @@ The strict path is the only one the engine may use:
   &str) -> bool>`, `src/lib.rs:59`) with the leaf DER, endpoint and error; a
   `true` return accepts that cert for this handshake only.
 
-TLS transport is `tokio-rustls 0.26` → `rustls 0.23`, crypto provider
-`aws_lc_rs` or `ring` (feature choice). One thing to fix before release:
+TLS transport is `tokio-rustls 0.26` → `rustls 0.23`, crypto provider `ring`
+(the only one linked; `aws-lc-rs` is in the lockfile but not built).
 `src/rustls_verifier.rs:28` sets `config.key_log = Arc::new(KeyLogFile::new())`
-(SSLKEYLOGFILE) unconditionally; the engine must build its own `ClientConfig`
-without that line, or the build must not honour SSLKEYLOGFILE.
+unconditionally, which honours `SSLKEYLOGFILE` from the process environment. The
+engine therefore always execs with an EMPTY environment (`manager::engine_env()`
+is what `open` passes as `envp`; tested against `ps eww` of the real engine, with
+`SSLKEYLOGFILE` set in the helper).
+
+System roots with an empty environment: `rustls-native-certs 0.8.5` uses
+Security.framework on macOS. Checked in a scratch binary: `env -i`, `env -u HOME`
+and the normal environment all load 161 certificates with 0 errors on this Mac,
+and the engine (empty env) validates strictly in the Docker run (xrdp's
+self-signed certificate is reported as `untrusted_root`, not as a missing
+store). Not verified: a corporate CA that is trusted only in the *user*
+keychain domain — the count was identical with and without `HOME`, so this Mac
+gave no evidence either way; if it does not load, the symptom is an
+`untrusted_root` prompt for a certificate the user already trusts (a false
+prompt, never a false accept). On non-macOS platforms `SSL_CERT_FILE` /
+`SSL_CERT_DIR` would be ignored for the same reason.
 
 So B3 is satisfiable with the pinned crate as written: use
 `upgrade_with_certificate_validation_callback_for_endpoint` (Strict + callback),
@@ -116,19 +163,35 @@ called.
 
 ## 4. Active stage, framebuffer and updates (B5)
 
-- `DecodedImage::new(PixelFormat::RgbA32, width, height)` allocates the RGBA8
-  framebuffer (ironrdp-session 0.13.0 `image::DecodedImage`).
-- `ActiveStageBuilder { static_channels, user_channel_id, io_channel_id,
-  message_channel_id, share_id, compression_type, enable_server_pointer,
-  pointer_software_rendering }.build()` → active stage.
-- Read loop: `reader.read_pdu()` → `active_stage.process(&mut image, action,
-  &payload)` → `Vec<ActiveStageOutput>`.
-- `ActiveStageOutput::GraphicsUpdate(_region)` means the framebuffer changed;
-  the engine copies the dirty region out of `image` (RGBA8 rows) and publishes
-  it as a view update. `ActiveStageOutput::Terminate(reason)` ends the session.
-- First video path: plain bitmap updates (`ironrdp-graphics`), no RemoteFX,
-  no native deps. `desktop_ready` fires only after the first non-empty
+- `DecodedImage::new(PixelFormat::RgbA32, width, height)` is the decode target;
+  the engine copies only the dirty rectangle of each `GraphicsUpdate` into its
+  own RGBA8 `Framebuffer` (`apply_from_image`, checked arithmetic).
+- `ActiveStageBuilder { … }.build()` → active stage. Read loop:
+  `reader.read_pdu()` → `active_stage.process(…)` → `Vec<ActiveStageOutput>`,
+  multiplexed with the helper's commands and the cancel signal in one
+  `tokio::select!` (a screenshot or ack therefore wakes an idle desktop).
+- `ActiveStageOutput::Terminate(reason)` ends the session as
+  `server_disconnected`.
+- **Pacing (`pump.rs`, wired through `engine::Desk`)**: the engine sends only the
+  dirty region, never the whole frame; at most ONE update is in flight; further
+  regions coalesce into one pending region (taken from the framebuffer at send
+  time, latest pixels win) until the consumer acks it with
+  `rdp.update_ack {sessionId, frameId}` (helper request → `Ack` command). A
+  stale ack (any frame id but the one in flight) releases nothing. An update
+  larger than one wire frame is split into chunks sharing a `frameId`; every
+  frame on either hop is at most 1 048 576 bytes **including all headers**
+  (`rows_per_chunk`; at width 512 that is 511 rows, 1 046 569 bytes).
+- **Helper bounds**: engine fds are polled and read only while the outbox has
+  room for a whole update frame, with a per-turn frame/byte budget, so a client
+  that stops reading stdout holds the engine back instead of growing the helper;
+  a session whose transport ended leaves the poll set. The helper validates every
+  engine frame (length, kind, JSON, pixel byte length `w*h*4`, rectangle inside a
+  framebuffer ≤ 3840×2160, no overflow); any violation closes THAT session with
+  `protocol_error` (engine killed and reaped, no resync attempt). Input is
+  refused past 1 MiB of pending helper→engine bytes (`rdp_input_overflow`).
+- `desktop_ready` (`rdp.desktop`) fires only after the first non-empty
   `GraphicsUpdate` has been applied (B2).
+- First video path: plain bitmap updates (`ironrdp-graphics`), no native deps.
 
 ## 5. Input (B6)
 
@@ -153,23 +216,45 @@ and `Database::apply(...) -> SmallVec<[FastPathInputEvent; 2]>`
 (`src/lib.rs:217`), plus `release_all()` (`src/lib.rs:359`) for the "keys held
 when focus is lost are released" rule.
 
-Mouse moves are coalesced to the latest position while the engine is busy
-(B6); input arrives as validated control messages over the socketpair (§6).
+Mouse moves are coalesced to the latest position (runs of moves collapse,
+across queued batches, ordering with clicks and keys preserved). A rejected
+event does not drop the rest of its batch: the engine reports
+`rdp.input_rejected {applied, rejected: [{index, code}]}` with `stale_geometry`,
+`out_of_bounds`, `invalid_scancode` or `invalid_button`. Accepted scancodes are
+0x01–0x58 plus 0x5B, 0x5C, 0x5D (Windows/menu keys) when extended — exactly
+`src/core/rdp-keys.ts`. Unicode text is a press and a release per UTF-16 unit
+(characters above U+FFFF as a surrogate pair). `rdp.input`, `rdp.cert_decision`,
+`rdp.update_ack` and `rdp.screenshot` for an unknown session answer
+`session_not_found`.
 
 ## 6. Process model (B1)
 
 Each RDP session runs in its own engine process: the helper re-execs itself as
-`remote-hub-helper --rdp-engine`, absolute path of the current executable,
-allowlisted env, no shell, one `socketpair` fd passed through the existing fd
-allowlist. The main helper stays single-threaded and poll-driven; the engine
-process runs a tokio runtime. All parameters (including the password) travel as
-length-prefixed frames over the socketpair — never argv, never env, never a
-file. The password exists only in the connect RPC payload, the socketpair frame
-and engine memory (B4). Engine death closes only its session with
-`engine_exited`. This design is chosen over in-process threads because the
-engine needs a tokio runtime, a TLS/certificate callback that may block on the
-cert prompt, and independent crash/teardown — isolation the single-threaded
-poll loop must not give up.
+`remote-hub-helper --rdp-engine` (absolute path of the current executable, fixed
+argv, **empty environment**, no shell) with one `socketpair` as fd 3. Everything
+between `fork` and `exec` is precomputed (fd close list, argv, envp, signal
+reset): the child allocates nothing. fds 0, 1 and 2 are `/dev/null` (the
+helper's RPC stdin and its stderr never reach the engine). The main helper stays
+single-threaded and poll-driven; the engine runs a tokio runtime plus one reader
+thread. All parameters (including the password) travel as length-prefixed frames
+over the socketpair — never argv, never env, never a file. The password exists
+only in the connect RPC payload, the socketpair frame and engine memory; it
+travels in a `Secret` wrapper whose `Debug` prints `<redacted>`. **It is not
+zeroized** (the connector owns it as a plain `String`; core dumps and swap are
+out of scope).
+
+- One session-id allocator is shared by PTY and RDP sessions, so a wire
+  `sessionId` names exactly one session.
+- Reaping is by owned pid in both managers (`waitpid(pid)`, never `-1`);
+  `engine_pid` is cleared the instant the child is reaped and a reaped pid is
+  never signalled; blocking waits retry on EINTR. `session.closed` for an engine
+  carries its exit code or signal, and is held until the engine is reaped (an
+  engine that outlives its closed socket by 2 s is killed).
+- The first terminal reason wins (a Closed event followed by EOF keeps its
+  reason).
+- When the helper dies hard the engine sees EOF on fd 3, ends its session and
+  exits; every write error toward the helper is fatal for the engine.
+- Engine death (crash, kill) closes only its session with `engine_exited`.
 
 ## 7. Screenshot (B7)
 
@@ -177,24 +262,44 @@ poll loop must not give up.
 the `png` crate (pinned 0.18) and returns `{frameId, width, height, timestamp,
 png}`. Refused before `desktop_ready`.
 
-## 8. Status (stage 2b-1)
+## 8. Status (stage 2b-1, after the repair round)
 
-Implemented in the helper (Rust): the `--rdp-engine` process (B1,
-`helper/src/rdp/engine.rs`, `manager.rs`), the strict-TLS connect path with the
-certificate callback (B2/B3), the framebuffer + chunked updates + screenshot
-(B5/B7), and input encoding (B6). The RDP reaper reaps only its own engine
-pids (`waitpid(pid, WNOHANG)`), never `waitpid(-1)`, so it cannot steal PTY
-children from the SessionManager reaper.
+Implemented in the helper (Rust): the `--rdp-engine` process (`engine.rs`,
+`connect.rs`, `engine_io.rs`, `pump.rs`, `manager.rs`), the strict-TLS connect
+path with the certificate decision and the post-handshake pin check, the
+ack-paced framebuffer updates and PNG screenshot, input encoding, and the
+closed-reason mapping. `test-hooks` builds additionally contain synthetic
+engines (`REMOTE_HUB_RDP_FAKE_ENGINE=ack|flood`, `rdp/fake_engine.rs`) used by
+`helper/tests/rdp_process.rs`; a release helper never reads that variable.
 
-Verified against a real xrdp container (Docker, `tests/integration/rdp-Dockerfile`
-+ `rdp-docker.py`): strict validation → `cert_prompt` with the correct SHA-256
-fingerprint; accept once → `desktop_ready` + PNG screenshot; a different
-`expectedFingerprint` → `cert_changed`; killing the container during
-`desktop_ready` → `network_error`. Keyboard/mouse/session-persistence cases are
-skipped there: the xrdp sesman X session does not start (xorgxrdp back-connection
-fails with "bad header length 0" / "X.224 CR-TPDU failed"), which is a test
-harness issue, not an engine issue.
+Verified against a real xrdp container (`tests/integration/rdp-Dockerfile` +
+`rdp-docker.py`): case 1 (cert prompt, exact state trace, real endpoint),
+case 2 (accept once → desktop, screenshot 800×600, > 16 distinct pixel values),
+case 3 (typed `hello-rdp\n`), case 4 (pointer `x:200 y:150`, click logged by
+xev), case 9 (session survives `session.close`), case 6 (mismatching
+`expectedFingerprint` → `cert_changed`, trace `[connecting, tls]`), case 7
+(`network_error` within 10 s, engine gone).
+
+Not covered, with reasons:
+
+- Case 5 (wrong password → `auth_failed`): xrdp with TLS-only security does not
+  authenticate at the RDP protocol level — a wrong password reaches
+  `desktop_ready` and fails in xrdp's own PAM login (state trace
+  `connecting, tls, cert_prompt, authenticating`; xrdp-sesman log
+  `pam_authenticate failed`). The mapping of CredSSP/`AccessDenied` failures to
+  `auth_failed` is covered by literal unit tests; Windows NLA by
+  `docs/rdp-windows-check.md`.
+- Case 6b (a trusted certificate replaced → prompt with reason `cert_changed`)
+  and case 8 (two views of one session): the trust store and the views live in
+  the TS service, wired in 2b-2.
+- Kerberos / KDC proxying is unsupported (`NoopNetworkClient`).
+- Windows NLA/CredSSP is implemented through IronRDP but cannot be verified
+  here; see `docs/rdp-windows-check.md`.
 
 Still to do (later sub-stages): the TS service/RPC/socket wiring and fake-engine
-tests (2b-2) and the canvas UI (2b-3). Windows NLA/CredSSP is implemented
-through IronRDP but not verifiable here; see `docs/rdp-windows-check.md`.
+tests (2b-2) and the canvas UI (2b-3). The TS side must accept the helper
+messages added in the repair round: `rdp.certificate`, `rdp.input_rejected`,
+`rdp.update_ack` (request), the cert-prompt `reason` code + `detail`, the
+`server_disconnected` closed reason and the errors `not_ready`,
+`fingerprint_mismatch`, `no_pending_prompt`, `rdp_input_overflow`,
+`session_closed`.

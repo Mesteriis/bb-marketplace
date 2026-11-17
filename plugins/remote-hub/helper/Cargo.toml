@@ -34,9 +34,9 @@ path = "tests/rdp_process.rs"
 required-features = ["test-hooks"]
 
 [dependencies]
-libc = "0.2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+libc = "=0.2.191"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
 
 # IronRDP, pinned per docs/rdp-engine.md. Each crate moves at its own pace, so
 # the exact versions below are the coherent set verified against crates.io.
@@ -49,10 +49,10 @@ ironrdp-graphics = "=0.11.0"
 ironrdp-input = "=0.9.0"
 ironrdp-core = "=0.3.1"
 
-tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
-x509-cert = { version = "0.3", default-features = false, features = ["std"] }
-sha2 = "0.11"
-png = "0.18"
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+x509-cert = { version = "=0.3.0", default-features = false, features = ["std"] }
+sha2 = "=0.11.1"
+png = "=0.18.1"
 
 [dev-dependencies]
 # Test-only: a fake RDP server that presents the fixture certificates, and a

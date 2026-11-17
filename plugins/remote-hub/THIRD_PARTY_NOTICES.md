@@ -63,11 +63,6 @@ licensed under the ISC-style license plus the OpenSSL and SSLeay licenses (see
 the ring LICENSE). Used as the rustls crypto provider.
 https://github.com/briansmith/ring
 
-## aws-lc-rs
-
-Copyright Amazon.com, Inc. or its affiliates. Apache-2.0. Used by the sspi
-crate as its rustls crypto provider. https://github.com/aws/aws-lc-rs
-
 ## sspi
 
 Copyright (c) 2021 Devolutions Inc. MIT OR Apache-2.0. CredSSP/NLA security
@@ -89,3 +84,54 @@ https://github.com/RustCrypto/hashes
 
 Copyright (c) The image-rs Developers. MIT OR Apache-2.0. PNG encoder for the
 RDP screenshot. https://github.com/image-rs/image-png
+
+## picky, picky-asn1*, picky-krb
+
+Copyright (c) Devolutions Inc. MIT OR Apache-2.0. ASN.1/X.509/Kerberos
+building blocks pulled in by sspi (picky 7.0.0-rc.26, a release candidate, is
+the version sspi 0.23.0 requires). https://github.com/Devolutions/picky-rs
+
+## rustls-native-certs, security-framework
+
+rustls-native-certs: Apache-2.0 OR ISC OR MIT. security-framework: MIT OR
+Apache-2.0. Load the macOS system roots for strict TLS validation of the RDP
+server certificate. https://github.com/rustls/rustls-native-certs
+
+## rustls-webpki, untrusted
+
+ISC. Certificate path validation and the byte parser it uses.
+https://github.com/rustls/webpki
+
+## RustCrypto and related cryptography crates
+
+aes, aes-gcm, aes-kw, cbc, ctr, des, rc2, rsa, hkdf, hmac, pbkdf2, sha1, sha2,
+sha3, md-5, md4, p256, p384, p521, ecdsa, ed25519, elliptic-curve, der, spki,
+pkcs1, pkcs8, sec1, signature, crypto-bigint and the supporting crates: MIT OR
+Apache-2.0 (some Apache-2.0 OR MIT). curve25519-dalek, ed25519-dalek,
+x25519-dalek and subtle: BSD-3-Clause. Pulled in by sspi / picky for
+NTLM/CredSSP and by x509-cert. https://github.com/RustCrypto
+
+## Other linked crates
+
+Every crate in the helper's release dependency tree (`cargo tree --locked
+--target aarch64-apple-darwin -e normal`) is permissively licensed:
+
+- MIT OR Apache-2.0 (and Apache-2.0 OR MIT): the majority, including serde,
+  serde_json, libc, futures, png, flate2, thiserror,
+  time, url, asn1-rs, der-parser, ironrdp-*.
+- MIT: tokio, mio, bytes, tracing, nom, bitvec, generic-array, async-dnssd.
+- Unicode-3.0: the icu_*, zerovec, yoke, tinystr, litemap and related crates
+  (via idna/url).
+- ISC: ring (with its OpenSSL/SSLeay-derived parts: Apache-2.0 AND ISC),
+  libloading, iso7816-tlv.
+- BSD-3-Clause, BSD-2-Clause OR Apache-2.0 OR MIT (zerocopy), Zlib OR
+  Apache-2.0 OR MIT (bytemuck, wide, miniz_oxide), Unlicense OR MIT (memchr,
+  byteorder), 0BSD OR MIT OR Apache-2.0 (adler2), Apache-2.0 (cryptoki,
+  flagset).
+
+aws-lc-rs is in the lockfile but not linked into any target Remote Hub builds;
+the only rustls crypto provider is ring.
+
+Test-only (never in the shipped binary): rustls and tokio-rustls as
+dev-dependencies, and a throwaway test CA and leaf certificate under
+`helper/tests/fixtures/tls-*.der` generated with openssl.
