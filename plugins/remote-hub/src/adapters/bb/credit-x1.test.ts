@@ -438,6 +438,65 @@ describe("credit window X1 (real service + real socket)", () => {
     }
   });
 
+  it("A1: credit throws while the record is running closes 4410 and sends no closed frame", async () => {
+    const { helper, service, wire } = makeServiceAndSocket();
+    const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+    helper.credit = async () => {
+      throw new Error("session_not_found");
+    };
+    const s = makeSocket();
+    let err: unknown = null;
+    await wire("ws://x/attach?attach=" + service.sessionAttach(handle)).onOpen(s).catch((e) => {
+      err = e;
+    });
+    expect(err).toBeNull();
+    expect(s.closed.map((c) => c.code)).toContain(4410);
+    const closedFrames = s.sent.filter((d) => {
+      if (typeof d !== "string") return false;
+      try {
+        return (JSON.parse(d) as { type?: string }).type === "closed";
+      } catch {
+        return false;
+      }
+    });
+    expect(closedFrames).toEqual([]);
+  });
+
+  it("A3: a slow non-owner view is detached at 1 MiB outstanding (4409), owner and credit unaffected", async () => {
+    const { helper, service, wire } = makeServiceAndSocket();
+    const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+
+    const tokenA = service.sessionAttach(handle);
+    const a = makeSocket();
+    const ha = wire("ws://x/attach?attach=" + tokenA);
+    await ha.onOpen(a);
+
+    const tokenB = service.sessionAttach(handle);
+    const b = makeSocket();
+    const hb = wire("ws://x/attach?attach=" + tokenB);
+    await hb.onOpen(b);
+
+    // 1_048_576 live bytes to a non-owner: exactly at the bound, still attached.
+    helper.emitOutput(handle.sessionId, new Uint8Array(1_048_576).fill(65));
+    await flush();
+    await flush();
+    expect(b.closed.map((c) => c.code)).not.toContain(4409);
+
+    // One more byte pushes the non-owner past the bound: detached with 4409.
+    helper.emitOutput(handle.sessionId, new Uint8Array(1).fill(66));
+    await flush();
+    await flush();
+    expect(b.closed.map((c) => c.code)).toContain(4409);
+    expect(b.closed.find((c) => c.code === 4409)?.reason).toBe("view too slow");
+
+    // Owner outstanding is untouched and no further helper credit was granted.
+    expect(service.creditState(handle)!.outstanding(tokenA)).toBe(1_048_577);
+    expect(helper.creditFrames.map((f) => f.bytes)).toEqual([262_144]);
+    // The slow view left the credit state; only the owner remains.
+    expect(service.creditState(handle)!.size()).toBe(1);
+    expect(service.creditState(handle)!.owner()).toBe(tokenA);
+  });
+
   it("scenario 8: eviction deletes credit state (fake clock)", async () => {
     vi.useFakeTimers();
     try {

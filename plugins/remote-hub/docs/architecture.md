@@ -96,8 +96,7 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   0 <= granted - consumed <= 262144, and when the owner has acked everything,
   granted - consumed == 262144. The stronger sum
   granted - consumed + (owner.sentLive - owner.acked) <= 262144 does NOT hold at
-  the moment a lagging non-owner is promoted (two views are not reachable from
-  the 2a UI; bounding a slow non-owner's queue is deferred). When the owner
+  the moment a lagging non-owner is promoted. When the owner
   detaches, the oldest remaining view is promoted and
   granted the remaining window. When NO view is attached (first attach or a
   reattach after every view left), the new view becomes owner and the helper's
@@ -105,15 +104,22 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   grant = max(0, 262144 - (granted - consumed)). A renderer that never acks
   stalls its session after 262144 bytes: that is intended backpressure. An
   owner that never acks stalls the session even if another attached view acks;
-  a slow non-owner's output queue is not bounded in stage 2a (two views are
-  not reachable from the 2a UI) and will be bounded in a later stage.
+  a slow non-owner view is bounded at 1 048 576 unacked live bytes
+  (src/core/credit.ts SLOW_VIEW_BYTES): when a non-owner's sentLive - acked
+  exceeds that bound the service detaches that view and closes its socket with
+  code 4409 ("view too slow"); it may reattach and gets a fresh snapshot. The
+  owner is never detached for slowness, and detaching a non-owner grants no
+  credit, so the owner and the helper's credit window are unaffected.
 - Reap grace constants (helper/src/sessions.rs): LINGER_GRACE is how long the
   helper waits for a descendant to release the PTY after the direct child exits
   (2 s) before reaping the process group. REAP_GRACE is how long an EOF/HUP with
   no reaped child is allowed before that child is treated as an orphan and
   SIGTERMed (1 s). Both are user-visible: a session whose child stays alive
   after closing its tty shows "running" with no possible output for up to
-  REAP_GRACE, then is reaped and reports its real status.
+  REAP_GRACE, then is reaped and reports its real status. LINGER_GRACE delays
+  the SessionClosed notification by up to 2 s when the PTY is never drained,
+  for example an unattended session with zero credit whose descendant holds
+  the PTY open.
 - stdin hang-up guards: the read_now '|| hung_up' and 'hung_up && is_full ->
   mark_eof' branches in helper/src/ipc.rs are defensive and not covered by a
   test on darwin (poll does not report POLLHUP while stdin events are 0).

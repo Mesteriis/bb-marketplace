@@ -9,6 +9,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { SessionHandle } from "../../core/rpc.ts";
+import { SLOW_VIEW_BYTES } from "../../core/credit.ts";
 import type { RemoteHubService } from "./service.ts";
 
 export interface StreamSocketDeps {
@@ -18,6 +19,7 @@ export interface StreamSocketDeps {
 const WS_TOKEN_EXPIRED = 4401;
 const WS_GENERATION_STALE = 4410;
 const WS_SESSION_ENDED = 4000;
+const WS_VIEW_TOO_SLOW = 4409;
 
 const controlSchema = z.discriminatedUnion("type", [
   z.object({
@@ -153,8 +155,28 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         }
         // Output that arrived during the credit await is buffered; subscribe
         // flushes it after the live marker.
+        const detachSlow = (): void => {
+          attached = false;
+          if (unsubscribe !== null) {
+            unsubscribe();
+            unsubscribe = null;
+          }
+          if (handle !== null) {
+            const grant = deps.service.creditDetach(handle, attachId);
+            if (grant > 0) deps.service.sessionCredit(handle, grant).catch(() => {});
+          }
+          guardedClose(WS_VIEW_TOO_SLOW, "view too slow");
+        };
         unsubscribe = stream.subscribe((data) => {
           deps.service.creditLiveSent(handle!, attachId, data.byteLength);
+          // Bound a slow NON-owner view: above SLOW_VIEW_BYTES of unacked live
+          // bytes it is detached and may reattach for a fresh snapshot. The
+          // owner is never detached; its backpressure is the intended stall.
+          const credit = deps.service.creditState(handle!);
+          if (credit !== undefined && credit.owner() !== attachId && credit.outstanding(attachId) > SLOW_VIEW_BYTES) {
+            detachSlow();
+            return;
+          }
           guardSend(socket, data);
         });
         liveSubscribed = true;

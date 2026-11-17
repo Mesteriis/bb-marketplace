@@ -11,6 +11,10 @@
 // - snapshot bytes are not live: they change neither sentLive nor consumed and
 //   are never acked.
 export const CREDIT_WINDOW_BYTES = 262_144;
+/** Per-view bound on unacked live bytes for a NON-owner view: above it
+ *  the view is detached (stage 2b). The owner is never detached for
+ *  slowness; its backpressure is the intended session stall. */
+export const SLOW_VIEW_BYTES = 1_048_576;
 
 interface View {
   sentLive: number;
