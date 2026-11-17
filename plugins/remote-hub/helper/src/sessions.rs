@@ -74,6 +74,15 @@ pub struct Session {
 }
 
 impl Session {
+    /// The terminal can no longer take input (hung up, or its child is gone):
+    /// anything still queued can never be delivered, and keeping it would keep
+    /// the fd in the poll set for POLLOUT, which a hung-up pty answers with an
+    /// immediate POLLHUP every turn (a CPU spin while the client is not reading
+    /// the output that still waits for room).
+    fn end_input(&mut self) {
+        self.pending_in.clear();
+    }
+
     fn finished(&self) -> bool {
         self.child_exited && self.pty_done && self.pending_out.is_empty()
     }
@@ -280,7 +289,36 @@ impl SessionManager {
     }
 
     pub fn wants_write(&self, id: u32) -> bool {
-        self.sessions.get(&id).map(|s| !s.pending_in.is_empty()).unwrap_or(false)
+        self.sessions
+            .get(&id)
+            .map(|s| !s.pending_in.is_empty() && !s.child_exited && !s.pty_done)
+            .unwrap_or(false)
+    }
+
+    /// The events a session's fd asks of one poll turn.
+    pub fn poll_interest(&self, id: u32) -> libc::c_short {
+        let mut events = 0;
+        if self.can_read_output(id) {
+            events |= libc::POLLIN;
+        }
+        if self.wants_write(id) {
+            events |= libc::POLLOUT;
+        }
+        events
+    }
+
+    /// One poll turn's handling for a session, in the order the loop uses:
+    /// read, hang-up, write.
+    pub fn handle_poll_events(&mut self, id: u32, revents: libc::c_short) {
+        if revents & libc::POLLIN != 0 {
+            let _ = self.read_output(id);
+        }
+        if revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+            self.mark_hup(id);
+        }
+        if revents & libc::POLLOUT != 0 {
+            let _ = self.write_pending_input(id);
+        }
     }
 
     pub fn can_read_output(&self, id: u32) -> bool {
@@ -633,11 +671,13 @@ impl SessionManager {
                 return Ok(0);
             }
             session.pty_done = true;
+            session.end_input();
             session.reap_deadline = Some(Instant::now() + REAP_GRACE);
             return Err(SessionError::Sys { step: "read", errno });
         }
         if n == 0 {
             session.pty_done = true;
+            session.end_input();
             session.reap_deadline = Some(Instant::now() + REAP_GRACE);
             if !session.child_exited {
                 record_hup_before_reap();
@@ -656,6 +696,7 @@ impl SessionManager {
         for session in self.sessions.values_mut() {
             if session.child == pid && !session.child_exited {
                 session.child_exited = true;
+                session.end_input();
                 session.exit_code = code;
                 session.signal = sig;
                 // ssh exits 255 for a closed interactive session; surface it
@@ -701,6 +742,7 @@ impl SessionManager {
         if let Some(session) = self.sessions.get_mut(&id) {
             if !session.pty_done {
                 session.pty_done = true;
+                session.end_input();
                 session.reap_deadline = Some(Instant::now() + REAP_GRACE);
                 if !session.child_exited {
                     record_hup_before_reap();
@@ -740,6 +782,7 @@ impl SessionManager {
             if let Some(session) = self.sessions.get_mut(&id) {
                 kill_process_group(session.child);
                 session.pty_done = true;
+                session.end_input();
             }
         }
 
@@ -894,4 +937,107 @@ fn make_token_pipe() -> Option<i32> {
     }
     unsafe { libc::close(fds[1]) };
     Some(fds[0])
+}
+
+#[cfg(test)]
+mod hangup_tests {
+    //! A real pty, no child process (a fork in this multi-threaded test binary is
+    //! not allowed): the session's slave side is written to and closed, so the
+    //! master is hung up with output still queued.
+    use super::*;
+
+    /// A manager holding one session on a hung-up pty: `output` is already read
+    /// and waiting for outbox room (macOS drops what is unread on a pty when the
+    /// slave closes, so it is queued directly), `input` is queued for the dead
+    /// terminal.
+    fn hung_up_session(output: &[u8], input: &[u8]) -> (SessionManager, u32) {
+        let (mut master, mut slave) = (-1, -1);
+        let r = unsafe {
+            libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut())
+        };
+        assert_eq!(r, 0, "openpty failed");
+        set_nonblocking(master).unwrap();
+        // Raw, so the bytes pass through unchanged.
+        unsafe {
+            let mut tio: libc::termios = std::mem::zeroed();
+            libc::tcgetattr(slave, &mut tio);
+            libc::cfmakeraw(&mut tio);
+            libc::tcsetattr(slave, libc::TCSANOW, &tio);
+            libc::close(slave);
+        }
+        let mut mgr = SessionManager::with_ids(None, crate::ids::SessionIds::new());
+        let id = mgr.ids.next().unwrap();
+        mgr.sessions.insert(
+            id,
+            Session {
+                id,
+                child: 0,
+                master,
+                seq: 0,
+                pending_out: output.to_vec(),
+                pending_in: input.to_vec(),
+                child_exited: false,
+                pty_done: false,
+                credit: u64::MAX,
+                exit_code: None,
+                signal: None,
+                close_reason: None,
+                child_exited_at: None,
+                reap_deadline: None,
+                kind: "echo".to_string(),
+            },
+        );
+        (mgr, id)
+    }
+
+    /// Run the loop's per-session decision for `turns` turns with the outbox FULL
+    /// (queued output is not drained). Returns the number of turns that polled.
+    fn polled_turns(mgr: &mut SessionManager, id: u32, turns: usize) -> usize {
+        let fd = mgr.sessions[&id].master;
+        let mut polled = 0;
+        for _ in 0..turns {
+            let events = mgr.poll_interest(id);
+            if events == 0 {
+                break;
+            }
+            let mut pfd = libc::pollfd { fd, events, revents: 0 };
+            unsafe { libc::poll(&mut pfd, 1, 0) };
+            polled += 1;
+            mgr.handle_poll_events(id, pfd.revents);
+        }
+        polled
+    }
+
+    /// K4: input queued for a terminal that hung up must not keep the fd in the
+    /// poll set. The output that was still queued is delivered afterwards and the
+    /// exit status is still reported.
+    #[test]
+    fn queued_input_for_a_hung_up_pty_does_not_spin_and_output_is_still_delivered() {
+        let (mut mgr, id) = hung_up_session(b"queued-output", &[b'x'; 4096]);
+        let polled = polled_turns(&mut mgr, id, 100);
+        assert!(polled <= 3, "the helper polled a hung-up pty {polled} times in 100 turns");
+        assert!(!mgr.wants_write(id));
+        assert!(mgr.sessions[&id].pty_done, "the hang-up must have been seen");
+        // The outbox now has room: the queued output comes out, then the exit.
+        let (_, data) = mgr.take_pending_output_chunk(id).expect("queued output");
+        assert_eq!(data, b"queued-output");
+        let s = mgr.sessions.get_mut(&id).unwrap();
+        s.child_exited = true;
+        s.exit_code = Some(7);
+        s.close_reason = Some("exited".to_string());
+        let closed = mgr.remove_finished(false);
+        assert_eq!(closed.len(), 1);
+        assert_eq!((closed[0].0, closed[0].1, closed[0].2), (id, Some(7), None));
+    }
+
+    /// K4: once the child has exited, input queued for it is not polled for either
+    /// (its pty may stay open for a while through a lingering descendant: POLLOUT
+    /// would be ready at once, and nothing is written after the exit).
+    #[test]
+    fn input_queued_for_an_exited_child_is_not_polled_for() {
+        let (mut mgr, id) = hung_up_session(b"", b"typed");
+        mgr.sessions.get_mut(&id).unwrap().child_exited = true;
+        assert!(!mgr.wants_write(id));
+        assert_eq!(mgr.poll_interest(id) & libc::POLLOUT, 0);
+    }
 }

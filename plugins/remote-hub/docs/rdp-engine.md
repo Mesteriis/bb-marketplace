@@ -300,6 +300,11 @@ out of scope).
   already gone drains the socket first. A reaped engine's transport that has not
   reported EOF `EOF_GRACE` (2 s) after the engine ended is ended by the next
   `reap()` after draining.
+  The PTY sessions follow the same rule (`sessions.rs`): once a terminal has hung
+  up or its child has exited, input still queued for it is dropped and the fd no
+  longer asks for POLLOUT (a hung-up pty answers it with an immediate POLLHUP every
+  turn); output already read keeps waiting for outbox room and the exit status is
+  reported as before.
   Limits, stated plainly:
   - A write error on an engine that is still alive drops the queued commands and
     the ack silently. It cannot happen today (non-blocking AF_UNIX stream, SIGPIPE

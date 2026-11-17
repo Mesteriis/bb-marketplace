@@ -887,13 +887,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
             fds.push(pollfd(1, libc::POLLOUT));
         }
         for (sid, mfd) in &session_fds {
-            let mut events = 0;
-            if guard.manager.can_read_output(*sid) {
-                events |= libc::POLLIN;
-            }
-            if guard.manager.wants_write(*sid) {
-                events |= libc::POLLOUT;
-            }
+            let events = guard.manager.poll_interest(*sid);
             roles.push(PollRole::Session(*sid));
             fds.push(pollfd(*mfd, events));
         }
@@ -957,15 +951,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                     }
                 }
                 PollRole::Session(sid) => {
-                    if revents & libc::POLLIN != 0 {
-                        let _ = guard.manager.read_output(*sid);
-                    }
-                    if revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
-                        guard.manager.mark_hup(*sid);
-                    }
-                    if revents & libc::POLLOUT != 0 {
-                        let _ = guard.manager.write_pending_input(*sid);
-                    }
+                    guard.manager.handle_poll_events(*sid, revents);
                 }
                 PollRole::Rdp(rid) => {
                     guard.rdp.handle_poll_events(*rid, revents);
