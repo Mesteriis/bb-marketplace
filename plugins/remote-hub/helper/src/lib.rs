@@ -3,4 +3,5 @@
 pub mod ipc;
 pub mod protocol;
 pub mod sessions;
+pub mod rdp;
 pub mod ssh_args;
