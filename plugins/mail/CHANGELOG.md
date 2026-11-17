@@ -8,6 +8,11 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Export (slice 3o). `bb makosh-mail export <accountId> <folder> <file>`
+  in the owner's terminal writes a folder from the mail server as one mbox
+  file or, with `--format eml`, a directory of `.eml` files; read-only, and
+  never over an existing file.
+
 - Subscriptions (slice 3n). Mail settings → Subscriptions: the mailing
   lists of the stored mail with message counts, and unsubscribing from up
   to 10 at once. Each request is the message's own Unsubscribe, shown
@@ -360,6 +365,10 @@ All notable changes to Makosh Mail are recorded here. The format follows
   and says why; provider, model, sign-in, quota and refusal failures have
   their own texts. At most 30 translations an hour.
 - The `d/<draftId>` page route opens a draft in the composer.
+
+### Fixed
+
+- A sync round cut short by a plugin reload no longer logs "sync …: error".
 
 ### Changed
 

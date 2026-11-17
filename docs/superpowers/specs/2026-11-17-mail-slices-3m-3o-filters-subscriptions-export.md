@@ -85,3 +85,36 @@ Backlog item 87, built right after the filters.
   list's mail from it, no per-account view.
 - Not tried on the owner's real mail; no second review pass and no rendered
   preview of the tab.
+
+# Mail slice 3o: export
+
+Backlog item 94 (the database backup was slice 3j).
+
+## Decisions
+
+- **From the server, not from the local store.** Mail keeps text and a
+  window of history, never whole messages; an export that is worth keeping
+  has every byte. One read-only session per export (BODY.PEEK).
+- **A command in the owner's terminal**, like doctor and backup: it writes
+  to a path of the owner's choosing and refuses inside a thread. No button
+  on the page yet.
+- **mbox as mboxrd** (LF line ends, `>From ` quoting at every depth), or a
+  directory of `.eml` files named by UID. Created new, mode 0600 / 0700;
+  nothing existing is ever written over.
+- **Bounded**: the newest 2,000 by default, `--max` up to 50,000,
+  `--since` by the server's date. A failure midway keeps what was written.
+- Logs: the account id, the outcome and counts.
+
+## What was built
+
+- `src/core/mbox.ts`, `src/adapters/bb/export.ts`, the `export` CLI command.
+
+## Not done
+
+- Import (backlog 95). The backlog asks for an old archive to be opened
+  and searched in BB without uploading it to a server. That needs mail
+  that lives only in the local store, which today holds nothing but copies
+  of server mail: a design decision for the owner.
+- No flags or labels in the export, no export of a search or of one
+  conversation, no button in the page, no progress while it runs.
+- Not opened in another mail program; not run against a real server.

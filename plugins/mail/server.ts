@@ -74,6 +74,14 @@ import { createSenderChecks, type SenderChecks } from "./src/adapters/bb/sender-
 import { createPgpEngine } from "./src/adapters/bb/pgp-openpgp.ts";
 import { createPgpService, type PgpService } from "./src/adapters/bb/pgp-service.ts";
 import { readCalendarText } from "./src/adapters/bb/invite.ts";
+import {
+  EXPORT_MAX_DEFAULT,
+  EXPORT_MAX_LIMIT,
+  EXPORT_REFUSALS,
+  ExportRefused,
+  exportFolder,
+  type ExportResult,
+} from "./src/adapters/bb/export.ts";
 import { buildInviteReply, parseInvite, type InviteAnswer, type InviteView } from "./src/core/calendar-invite.ts";
 import type { PgpEngine } from "./src/core/pgp.ts";
 import { createServerJobs } from "./src/adapters/bb/server-search-jobs.ts";
@@ -5989,6 +5997,59 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
             const exitCode = worst === "fail" ? 1 : 0;
             if (options.json) return { exitCode, stdout: json({ result: worst, sections }) };
             return { exitCode, stdout: `${doctorText(sections)}\n` };
+          },
+        }),
+        export: cliCommand({
+          summary: "Write a folder's messages to a new mbox file or a directory of .eml files (owner's terminal only)",
+          positionals: [
+            { name: "accountId", description: "Account id", required: true },
+            { name: "folder", description: "The folder's full name, for example INBOX", required: true },
+            { name: "file", description: "Full path of the file (mbox) or directory (eml) to create", required: true },
+          ],
+          options: {
+            format: { type: "string", description: "mbox (default) or eml" },
+            since: { type: "string", description: "Only messages from this day on, YYYY-MM-DD" },
+            max: { type: "string", description: `At most this many, the newest (default ${EXPORT_MAX_DEFAULT}, up to ${EXPORT_MAX_LIMIT})` },
+            ...jsonOption,
+          },
+          run: async ({ positionals, options }, ctx) => {
+            refuseRuleThread(ctx);
+            if (ctx.threadId !== undefined) {
+              throw new PluginCliError(OWNER_TERMINAL_MESSAGE, { code: "owner_terminal_only" });
+            }
+            if (store.getAccount(positionals.accountId) === null) throw unknownAccount(positionals.accountId);
+            const format = options.format ?? "mbox";
+            if (format !== "mbox" && format !== "eml") throw new PluginCliError("--format is mbox or eml", { code: "export_format" });
+            const since = options.since === undefined ? null : new Date(`${options.since}T00:00:00.000Z`);
+            if (since !== null && (!/^\d{4}-\d{2}-\d{2}$/.test(options.since ?? "") || Number.isNaN(since.getTime()))) {
+              throw new PluginCliError("--since is a day, YYYY-MM-DD", { code: "export_since" });
+            }
+            const max = options.max === undefined ? EXPORT_MAX_DEFAULT : Number(options.max);
+            if (!Number.isInteger(max) || max < 1 || max > EXPORT_MAX_LIMIT) {
+              throw new PluginCliError(`--max is a number from 1 to ${EXPORT_MAX_LIMIT}`, { code: "export_max" });
+            }
+            const { store: exportStore, gateway, vault, now } = deps.doctor();
+            let result: ExportResult;
+            try {
+              result = await exportFolder(
+                { store: exportStore, gateway, vault, now },
+                { accountId: positionals.accountId, folder: positionals.folder, file: positionals.file, format, since, max },
+              );
+            } catch (error) {
+              const reason = error instanceof ExportRefused ? error.reason : "failed";
+              const written = error instanceof ExportRefused ? error.written : 0;
+              // The account id, the outcome and a count: never the folder, the path or anything of a message.
+              deps.log(`export ${positionals.accountId}: ${reason}, ${written} written`);
+              const partial = written > 0 ? ` ${written} messages were written before that.` : "";
+              throw new PluginCliError(`${EXPORT_REFUSALS[reason]}${partial}`, { code: `export_${reason}` });
+            }
+            deps.log(`export ${positionals.accountId}: ok, ${result.messages} written, ${result.skipped} skipped`);
+            if (options.json) return { exitCode: 0, stdout: json({ written: true, format, ...result }) };
+            const megabytes = (result.bytes / (1024 * 1024)).toFixed(1);
+            const lines = [`Exported ${result.messages} messages, ${megabytes} MB. Keep it as private as the mailbox itself.`];
+            if (result.skipped > 0) lines.push(`${result.skipped} could not be read (gone meanwhile, or over 50 MB).`);
+            if (result.left > 0) lines.push(`${result.left} older messages were left out; raise --max or narrow with --since to get them.`);
+            return { exitCode: 0, stdout: `${lines.join("\n")}\n` };
           },
         }),
         backup: cliCommand({

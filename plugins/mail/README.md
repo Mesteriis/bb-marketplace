@@ -996,6 +996,34 @@ bb makosh-mail backup /full/path/mail-backup.db
   are not in it. Keep it as private as the mailbox. To restore: quit BB,
   replace the plugin's database file with the copy, start BB.
 
+### `bb makosh-mail export`
+
+Writes one folder of an account as files other mail programs read. Like
+doctor and backup it runs in your own terminal and refuses inside an agent
+thread.
+
+```bash
+bb makosh-mail export <accountId> INBOX /full/path/inbox.mbox
+bb makosh-mail export <accountId> "Work/Reports" /full/path/reports --format eml --since 2026-01-01
+```
+
+- The messages come from the mail server, whole, through a read-only
+  session: the export reads everything the folder holds there, not only
+  what Mail keeps on this machine, and marks nothing read.
+- `mbox` (the default) is one file in the "mboxrd" form; `--format eml`
+  makes a new directory with one `.eml` file per message, named by the
+  message's number in the folder. The files are readable by you only.
+- The path must be absolute, its folder must exist, and Mail never writes
+  over anything that exists.
+- It takes the newest 2,000 messages unless you give `--max` (up to
+  50,000); `--since YYYY-MM-DD` takes only messages from that day on. The
+  command says how many older messages it left out.
+- A message that is gone meanwhile or larger than 50 MB is skipped and
+  counted. If the connection drops, what was written so far is kept and
+  the command says how many messages that is.
+- Flags (read, flagged) and Gmail labels are not written. There is no
+  import yet.
+
 ### Layout
 
 Two BB settings of the plugin: **List rows** (comfortable, or compact with

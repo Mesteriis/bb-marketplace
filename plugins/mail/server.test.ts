@@ -1264,6 +1264,7 @@ describe("makosh-mail server", () => {
       "accounts",
       "backup",
       "doctor",
+      "export",
       "read",
       "remove",
       "search",
@@ -2975,7 +2976,7 @@ describe("agent proposals", () => {
     await expect(call(host, "proposal_view", { proposalId: "p_1", contentHash: "a".repeat(64) })).resolves.toEqual({ state: "gone" });
     const { registrations } = host.harness.inspection;
     expect(registrations.experimental_publishedRpcMethods).toEqual([]);
-    expect(registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "backup", "doctor", "read", "remove", "search", "sync"]);
+    expect(registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "backup", "doctor", "export", "read", "remove", "search", "sync"]);
     expect(registrations.mentionProviders.map((m) => m.id)).toEqual(["mail"]);
   });
 
@@ -3545,7 +3546,7 @@ describe("sending polish: agent tools", () => {
       "mail_templates",
       "mail_triage",
     ]);
-    expect(on.harness.inspection.registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "backup", "doctor", "read", "remove", "search", "sync"]);
+    expect(on.harness.inspection.registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "backup", "doctor", "export", "read", "remove", "search", "sync"]);
   });
 
   it("mail_propose with a template and an alias: the card shows them, and nothing leaks to logs or realtime", async () => {
@@ -5593,6 +5594,8 @@ const CLI_FIXTURES = (ids: ReturnType<typeof canaryIds>): Record<string, string[
   // Slice 3j: both refuse inside a thread; the fixture proves the refusal says nothing.
   doctor: [[]],
   backup: [["/tmp/makosh-mail-canary-never-written.db"]],
+  // Slice 3o: refuses inside a thread as well.
+  export: [["acc_1", "INBOX", "/tmp/makosh-mail-canary-never-written.mbox"]],
 });
 
 /** Every agent path's output: tools (from the registry), CLI in a thread (text and --json), mentions, Hand to agent. */
@@ -8670,7 +8673,7 @@ describe("slice 3j: doctor and backup", () => {
   it("doctor and backup refuse inside an agent thread", async () => {
     const host = await load({ settings: { vaultKey: generateVaultKey(), agentTools: true } });
     await addAndSync(host);
-    for (const args of [["doctor"], ["backup", "/tmp/never-written.db"]]) {
+    for (const args of [["doctor"], ["backup", "/tmp/never-written.db"], ["export", "acc_1", "INBOX", "/tmp/never-written.mbox"]]) {
       const refused = await host.harness.behavior.runCli(args, { threadId: "thread-1" });
       expect(refused.exitCode).toBe(1);
       expect(refused.stderr).toContain(OWNER_TERMINAL_MESSAGE);
@@ -8706,6 +8709,65 @@ describe("slice 3j: doctor and backup", () => {
       expect(nowhere.stderr).toContain("does not exist");
       expect(logText(host)).toContain("backup: ok");
       expect(logText(host)).not.toContain(dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("slice 3o: export", () => {
+  it("export writes a folder from the server as mbox or .eml, read-only, and never over a file", async () => {
+    const { mkdtemp, readFile, readdir, stat, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const host = await load({ settings: { vaultKey: generateVaultKey() } });
+    const { accountId } = await addAndSync(host);
+    const raw = new TextEncoder().encode(
+      "From: Invented Sender <sender@example.com>\r\nDate: Fri, 13 Nov 2026 08:30:00 +0000\r\nSubject: Invented quarterly note\r\n\r\nFrom the garden fence.\r\n",
+    );
+    host.gateway.setRaw("INBOX", 1, raw);
+    const dir = await mkdtemp(join(tmpdir(), "makosh-mail-export-"));
+    try {
+      const file = join(dir, "inbox.mbox");
+      const sessionsBefore = host.gateway.sessions.length;
+      const written = await host.harness.behavior.runCli(["export", accountId, "INBOX", file]);
+      expect(written.stderr).toBe("");
+      expect(written.exitCode).toBe(0);
+      expect(written.stdout).toMatch(/^Exported 1 messages, [\d.]+ MB\. Keep it as private as the mailbox itself\./);
+      expect(await readFile(file, "utf8")).toBe(
+        "From sender@example.com Fri Nov 13 08:30:00 2026\nFrom: Invented Sender <sender@example.com>\nDate: Fri, 13 Nov 2026 08:30:00 +0000\nSubject: Invented quarterly note\n\n>From the garden fence.\n\n",
+      );
+      expect((await stat(file)).mode & 0o777).toBe(0o600);
+      const session = host.gateway.sessions[sessionsBefore]!;
+      expect(session).toMatchObject({ path: "INBOX", readOnly: true, closed: true });
+
+      const eml = await host.harness.behavior.runCli(["export", accountId, "INBOX", join(dir, "eml"), "--format", "eml", "--json"]);
+      expect(JSON.parse(eml.stdout)).toMatchObject({ written: true, format: "eml", messages: 1, skipped: 0, left: 0 });
+      expect(await readdir(join(dir, "eml"))).toEqual(["00000001.eml"]);
+      expect(new Uint8Array(await readFile(join(dir, "eml", "00000001.eml")))).toEqual(raw);
+
+      const again = await host.harness.behavior.runCli(["export", accountId, "INBOX", file]);
+      expect(again.exitCode).toBe(1);
+      expect(again.stderr).toContain("already exists");
+      for (const [args, text] of [
+        [[accountId, "Nope", join(dir, "x.mbox")], "no such folder"],
+        [["acc_nope", "INBOX", join(dir, "x.mbox")], "unknown account"],
+        [[accountId, "INBOX", "relative.mbox"], "full path"],
+        [[accountId, "INBOX", join(dir, "x.mbox"), "--format", "zip"], "--format is mbox or eml"],
+        [[accountId, "INBOX", join(dir, "x.mbox"), "--since", "yesterday"], "--since is a day"],
+        [[accountId, "INBOX", join(dir, "x.mbox"), "--max", "0"], "--max is a number"],
+      ] as const) {
+        const refused = await host.harness.behavior.runCli(["export", ...args]);
+        expect(refused.exitCode).toBe(1);
+        expect(refused.stderr).toContain(text);
+      }
+      expect(await readdir(dir)).toEqual(["eml", "inbox.mbox"]);
+      // The log has the account and counts: never the path, the folder's mail or a sender.
+      expect(logText(host)).toContain(`export ${accountId}: ok, 1 written, 0 skipped`);
+      expect(logText(host)).not.toContain(dir);
+      expect(logText(host)).not.toContain("sender@example.com");
+      // The message was not marked read by the export.
+      expect(host.gateway.sessions.slice(sessionsBefore).flatMap((s) => s.calls.map((c) => c.method))).not.toContain("setFlags");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
