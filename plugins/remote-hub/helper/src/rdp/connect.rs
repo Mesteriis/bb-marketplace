@@ -796,6 +796,8 @@ mod tests {
         cancel: Arc<Cancel>,
         clock: Arc<ManualClock>,
         captured: Arc<(Mutex<Vec<u8>>, Condvar)>,
+        /// Set the moment `connect_sequence` returns (not when the run is joined).
+        completed: Arc<AtomicBool>,
     }
 
     impl Ctl {
@@ -845,21 +847,24 @@ mod tests {
         let collector = Collector::start(peer);
         let (dec_tx, dec_rx) = channel();
         let cancel = Arc::new(Cancel::new());
+        let completed = Arc::new(AtomicBool::new(false));
         let ctl = Ctl {
             decisions: dec_tx.clone(),
             collector: collector.clone(),
             cancel: cancel.clone(),
             clock: clock.clone(),
             captured: captured.clone(),
+            completed: completed.clone(),
         };
         let helper = std::thread::spawn(move || user(ctl));
         // The 30 s limit is a hang guard: no outcome here depends on it.
         let result = rt
             .block_on(async {
-                tokio::time::timeout(
-                    Duration::from_secs(30),
-                    connect_sequence(params(port, expected), timeouts, out, dec_rx, cancel, clock, tls),
-                )
+                tokio::time::timeout(Duration::from_secs(30), async {
+                    let r = connect_sequence(params(port, expected), timeouts, out, dec_rx, cancel, clock, tls).await;
+                    completed.store(true, Ordering::SeqCst);
+                    r
+                })
                 .await
                 .expect("hang guard: connect_sequence did not finish")
             })
@@ -1008,19 +1013,17 @@ mod tests {
     /// the clock again and the session is still running), 16 s is `timeout`.
     #[test]
     fn the_tls_budget_runs_out_without_a_prompt() {
-        let finished = Arc::new(AtomicBool::new(false));
-        let seen = finished.clone();
         let out = run(Server::Tls, None, budgets(60_000), &StuckTls, move |ctl| {
             ctl.collector.wait_for(|e| matches!(e, EngineEvent::State { state } if state == "tls"));
             ctl.clock.advance(Duration::from_secs(14));
-            // Two more clock reads: the engine has re-checked its budget at 14 s
-            // (a Timeout at 14 s would end the sequence and the reads would stop).
+            // Two more clock reads: the engine has re-checked its budget at 14 s.
+            // A Timeout at 14 s would have completed the sequence by now or stop
+            // the reads (the hang guard); `completed` is set at that return.
             ctl.clock.wait_for_reads(2);
-            assert!(!seen.load(Ordering::SeqCst), "the sequence ended at 14 s of a 15 s budget");
+            assert!(!ctl.completed.load(Ordering::SeqCst), "the sequence ended at 14 s of a 15 s budget");
             assert!(ctl.cancel.reason().is_none());
             ctl.clock.advance(Duration::from_secs(2));
         });
-        finished.store(true, Ordering::SeqCst);
         assert_eq!(out.result.err(), Some(RdpClosedReason::Timeout));
     }
 
