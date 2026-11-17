@@ -358,6 +358,9 @@ fn handle_validation_failure(ctx: &PromptContext, der: &[u8], error: &str) -> bo
         *ctx.forced.lock().unwrap() = Some(RdpClosedReason::CertChanged);
         return false;
     }
+    // The prompt clock starts BEFORE the prompt is announced: once the user can
+    // see it they may decide at any moment, and all of that time is theirs.
+    let started = ctx.meter.clock.now();
     let fields = parse_cert_fields(der).unwrap_or(CertFields {
         subject: String::new(),
         issuer: String::new(),
@@ -381,7 +384,6 @@ fn handle_validation_failure(ctx: &PromptContext, der: &[u8], error: &str) -> bo
         *ctx.forced.lock().unwrap() = Some(RdpClosedReason::HelperShutdown);
         return false;
     }
-    let started = ctx.meter.clock.now();
     // The wait blocks this thread; `block_in_place` hands the runtime's other
     // work to another worker while it does.
     let outcome = tokio::task::block_in_place(|| {
@@ -698,7 +700,11 @@ mod tests {
                     return e.clone();
                 }
                 let left = deadline.saturating_duration_since(Instant::now());
-                assert!(!left.is_zero(), "hang guard: the awaited engine event never arrived");
+                assert!(
+                    !left.is_zero(),
+                    "hang guard: the awaited engine event never arrived; events so far: {:?}",
+                    *guard
+                );
                 guard = cv.wait_timeout(guard, left).unwrap().0;
             }
         }
@@ -935,6 +941,77 @@ mod tests {
             ctl.clock.advance(Duration::from_secs(2));
         });
         assert_eq!(out.result.err(), Some(RdpClosedReason::Timeout));
+    }
+
+    /// A clock that notes whether the certificate prompt had already been written
+    /// to the helper's socket at the moment it was read.
+    struct PeekClock {
+        peer: std::os::unix::net::UnixStream,
+        reads: AtomicU64,
+        /// Whether the prompt frame was in the socket at read number 2: read 1 is
+        /// `Meter::new`, read 2 is the callback starting its prompt clock, read 3
+        /// (after the decision) legitimately follows the prompt.
+        prompt_visible_at_start: AtomicBool,
+    }
+
+    impl Clock for PeekClock {
+        fn now(&self) -> Duration {
+            use std::os::fd::AsRawFd;
+            let mut buf = vec![0u8; 65536];
+            let n = unsafe {
+                libc::recv(
+                    self.peer.as_raw_fd(),
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    buf.len(),
+                    libc::MSG_PEEK | libc::MSG_DONTWAIT,
+                )
+            };
+            let read_no = self.reads.fetch_add(1, Ordering::SeqCst) + 1;
+            if read_no == 2
+                && n > 0
+                && String::from_utf8_lossy(&buf[..n as usize]).contains("\"type\":\"cert_prompt\"")
+            {
+                self.prompt_visible_at_start.store(true, Ordering::SeqCst);
+            }
+            Duration::ZERO
+        }
+    }
+
+    /// The prompt clock starts BEFORE the prompt can be seen. If it started
+    /// after, a user who decided (and a test clock that advanced) in between would
+    /// be charged to the TLS budget — the race behind a load-only failure of the
+    /// late-decision test. Deterministic: the clock reports whether the prompt
+    /// frame was already in the socket whenever the callback read it.
+    #[test]
+    fn the_prompt_clock_starts_before_the_prompt_is_announced() {
+        let (engine_end, peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let clock = Arc::new(PeekClock {
+            peer,
+            reads: AtomicU64::new(0),
+            prompt_visible_at_start: AtomicBool::new(false),
+        });
+        let (dec_tx, dec_rx) = channel();
+        let ctx = Arc::new(PromptContext {
+            out: Arc::new(Out::new(engine_end)),
+            decisions: Mutex::new(dec_rx),
+            host: "127.0.0.1".to_string(),
+            port: 3389,
+            expected: None,
+            prompt_timeout: Duration::from_secs(30),
+            forced: Mutex::new(None),
+            meter: Meter::new(clock.clone(), Duration::from_secs(15)),
+            invoked: AtomicBool::new(false),
+        });
+        dec_tx.send(Decision::Cert { fingerprint: LEAF_FP.to_string(), accept: "once".to_string() }).unwrap();
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        // block_in_place needs a runtime context.
+        let accepted = rt.block_on(async { handle_validation_failure(&ctx, LEAF_DER, "invalid peer certificate: UnknownIssuer") });
+        assert!(accepted);
+        assert!(
+            !clock.prompt_visible_at_start.load(Ordering::SeqCst),
+            "the prompt clock started after the prompt frame was already written"
+        );
+        assert_eq!(clock.reads.load(Ordering::SeqCst), 3, "Meter::new, prompt start, prompt end");
     }
 
     #[test]
