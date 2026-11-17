@@ -1723,6 +1723,23 @@ fn w4_hup_does_not_block_the_loop() {
         other => panic!("expected session.opened, got {other:?}"),
     };
 
+    // Two gates the test controls, as FIFOs held open read-write here: a child
+    // first waits on gate A, then closes its tty, then lives on until gate B.
+    // So every child's tty hang-up happens before ANY child can exit, however
+    // slow the machine is; nothing depends on a sleep.
+    let gate_dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("w4-gates-{}", std::process::id()));
+    std::fs::create_dir_all(&gate_dir).unwrap();
+    let gate = |name: &str| -> (String, std::fs::File) {
+        let path = gate_dir.join(name);
+        let _ = std::fs::remove_file(&path);
+        let c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo failed");
+        let file = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        (path.to_str().unwrap().to_string(), file)
+    };
+    let (gate_a_path, mut gate_a) = gate("a");
+    let (gate_b_path, mut gate_b) = gate("b");
+
     let mut ssh_sids = Vec::new();
     for i in 0..50u64 {
         send_req(
@@ -1735,7 +1752,11 @@ fn w4_hup_does_not_block_the_loop() {
                 argv: vec![
                     "perl".to_string(),
                     "-e".to_string(),
-                    "close STDIN; close STDOUT; close STDERR; select(undef,undef,undef,0.5); exit 7".to_string(),
+                    "open(A,'<',$ARGV[0]) or exit 9; open(B,'<',$ARGV[1]) or exit 9; \
+                     sysread(A,$x,1); close STDIN; close STDOUT; close STDERR; sysread(B,$x,1); exit 7"
+                        .to_string(),
+                    gate_a_path.clone(),
+                    gate_b_path.clone(),
                 ],
                 env: HashMap::new(),
                 cwd: None,
@@ -1748,23 +1769,32 @@ fn w4_hup_does_not_block_the_loop() {
         ssh_sids.push(sid);
     }
 
+    // Gate A: the children close their ttys; every session has credit, so the
+    // hang-up is read as EOF.
+    for (n, sid) in ssh_sids.iter().enumerate() {
+        send_req(&mut stdin, &Request::SessionCredit { id: 200 + n as u64, session_id: *sid, bytes: 65_536 });
+    }
+    gate_a.write_all(&[b'a'; 50]).unwrap();
+    // Wait (hang guard 60 s) until the helper has seen all 50 hang-ups while
+    // every child is still alive.
+    let hang_guard = Instant::now() + Duration::from_secs(60);
+    loop {
+        let count = seen.lock().unwrap().lines().filter(|l| l.starts_with("helper-hup-before-reap")).count();
+        if count >= 50 {
+            break;
+        }
+        assert!(Instant::now() < hang_guard, "hang guard: only {count} hang-ups seen");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Gate B: the children exit with 7 while the echo loop below measures the
+    // event loop through the reaping.
+    gate_b.write_all(&[b'b'; 50]).unwrap();
+
     let deadline = Instant::now() + Duration::from_millis(3000);
     let mut times: Vec<Duration> = Vec::new();
     let mut closed_list: Vec<(Option<i32>, Option<i32>)> = Vec::new();
     let mut n = 0u64;
     while Instant::now() < deadline {
-        // Grant credit to the next child (once each) so its tty close is
-        // observed during the echo loop, overlapping the reap window.
-        if (n as usize) < ssh_sids.len() {
-            send_req(
-                &mut stdin,
-                &Request::SessionCredit {
-                    id: 200 + n,
-                    session_id: ssh_sids[n as usize],
-                    bytes: 65_536,
-                },
-            );
-        }
         let line = format!("ping-{n}\n");
         let t0 = Instant::now();
         send_req(
@@ -1812,6 +1842,16 @@ fn w4_hup_does_not_block_the_loop() {
     );
     assert!(max < Duration::from_secs(1), "max echo round trip {max:?} >= 1 s");
 
+    // The remaining closes arrive as events; the read has no timeout, so a
+    // missing one is a hang that the test runner reports.
+    while closed_list.len() < 50 {
+        let (kind, payload) = read_frame_io(&mut stdout);
+        if kind == FRAME_KIND_CONTROL {
+            if let Response::SessionClosed { exit_code, signal, .. } = decode_response(&payload).unwrap() {
+                closed_list.push((exit_code, signal));
+            }
+        }
+    }
     // All 50 must have reported exit 7 with no signal.
     assert_eq!(closed_list.len(), 50, "got {} closed frames", closed_list.len());
     for (code, sig) in closed_list {
@@ -1824,7 +1864,8 @@ fn w4_hup_does_not_block_the_loop() {
         .lines()
         .filter(|l| l.starts_with("helper-hup-before-reap"))
         .count();
-    assert!(hup_count >= 40, "only {hup_count} hup-before-reap events observed");
+    assert_eq!(hup_count, 50, "every child's hang-up must precede its reap");
+    let _ = std::fs::remove_dir_all(&gate_dir);
 
     drop(stdin);
     let status = wait_timeout(&mut child, Duration::from_secs(5)).expect("helper did not exit");
