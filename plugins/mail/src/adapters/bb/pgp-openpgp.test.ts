@@ -11,7 +11,7 @@ import {
   wrapSigned,
 } from "../../core/pgp-mime.ts";
 import { createMimeBuilder } from "./mime-builder.ts";
-import { createPgpEngine } from "./pgp-openpgp.ts";
+import { DECRYPTED_MAX_BYTES, createPgpEngine } from "./pgp-openpgp.ts";
 
 const engine = createPgpEngine();
 const builder = createMimeBuilder();
@@ -163,4 +163,21 @@ describe("publicKeyBlocks", () => {
     expect(publicKeyBlocks("no keys")).toEqual([]);
     expect(publicKeyBlocks(Array.from({ length: 9 }, () => alice.publicArmor).join("\n"))).toHaveLength(5);
   });
+});
+
+describe("hostile input", () => {
+  it("refuses a message that unpacks past the cap instead of unpacking it", async () => {
+    const openpgp = await import("openpgp");
+    const key = await engine.generate({ name: null, address: "zip@example.org" });
+    const big = new Uint8Array(DECRYPTED_MAX_BYTES + 1024 * 1024);
+    const message = await openpgp.createMessage({ binary: big });
+    const armor = (await openpgp.encrypt({
+      message,
+      encryptionKeys: await openpgp.readKey({ armoredKey: key.publicArmor }),
+      config: { preferredCompressionAlgorithm: openpgp.enums.compression.zlib },
+    })) as string;
+    // The zeros pack down to a small block.
+    expect(armor.length).toBeLessThan(2 * 1024 * 1024);
+    expect(await engine.decrypt(armor, [key.privateArmor], [])).toBeNull();
+  }, 120_000);
 });

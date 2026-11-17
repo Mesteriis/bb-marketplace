@@ -4,6 +4,9 @@
 import * as openpgp from "openpgp";
 import type { PgpEngine, PgpKeyInfo, PgpSignature } from "../../core/pgp.ts";
 
+/** The most a decrypted message may unpack to. */
+export const DECRYPTED_MAX_BYTES = 64 * 1024 * 1024;
+
 const ADDRESS = /<([^<>\s]+@[^<>\s]+)>\s*$|^([^<>\s]+@[^<>\s]+)$/;
 
 function hex(fingerprint: string): string {
@@ -182,6 +185,8 @@ export function createPgpEngine(): PgpEngine {
           decryptionKeys: keys,
           verificationKeys: verification,
           format: "binary",
+          // A small message that unpacks into gigabytes is refused, not unpacked.
+          config: { maxDecompressedMessageSize: DECRYPTED_MAX_BYTES },
         });
         const first = signatures[0];
         return {
