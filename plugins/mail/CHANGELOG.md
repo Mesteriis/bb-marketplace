@@ -8,6 +8,13 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Filters (slice 3m). Mail settings → Filters: a filter matches new Inbox
+  mail by sender, sender domain, mailing list or subject words and moves
+  it to a folder, the archive or Trash, marks it read or flags it. The
+  first matching filter applies; blocked senders, the owner's own mail and
+  messages whose sender check failed are never sorted. Database migration
+  17 (`mail_filters`).
+
 - Send later, important senders and calendar invitations (slice 3l).
   **Send later** in the composer picks the time a message goes out; it
   waits in the Outbox as "Scheduled for …", carries that time as its Date,

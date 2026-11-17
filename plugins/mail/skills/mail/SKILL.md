@@ -247,7 +247,7 @@ with shell access to the BB server, which could call the owner's Mail page
 methods (such as `ai_start`, `message_body`, `thread_get` or `search`, and
 those that write into BB: `attachment_save`, `bb_thread_start`,
 `task_from_mail`, `patch_save`, `patch_handoff`, `incident_start` or
-`rule_save`; those that change the owner's mail server: `folder_create`,
+`rule_save` or `filter_save`; those that change the owner's mail server: `folder_create`,
 `folder_rename`, `folder_delete`, `folder_subscribe` and `labels_change`;
 and those that fetch from it: `server_search_start`, `server_search_more`,
 `history_load`, `conversation_load` and `sender_check_refresh`) with

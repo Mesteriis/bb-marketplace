@@ -461,7 +461,31 @@ out of Spam, is not moved again. "Blocked · Undo" takes a rule back; Mail
 settings → Inbox → Blocked senders lists them with **Unblock** (mail already
 in Spam stays there).
 
-**Filters.** **Unread**, **Flagged** and **Attachments** above the list
+**Filters for new mail** (Mail settings → Filters) sort Inbox mail as it
+arrives, without an agent. A filter matches all of what you give it: sender
+addresses, sender domains (a domain covers its subdomains), a mailing list
+id, whole subject words, and one account or every account. It can move the
+message to a folder, to the archive or to Trash, mark it read and flag it.
+
+- The first filter in the list that matches a message applies; later ones
+  are not looked at. The list is in the order you made the filters, and an
+  edit keeps a filter's place. Up to 50 filters; each can be turned off.
+- Filters see only mail that arrives after they are saved. Mail already in
+  the Inbox, mail that comes back from a snooze, and mail you move into the
+  Inbox yourself are left alone.
+- A blocked sender's mail goes to Spam before any filter. Your own mail is
+  never sorted. A message whose sender check failed is never sorted either,
+  so a forged sender cannot have mail filed away or marked read.
+- A message a filter moved out of the Inbox does not toast and does not
+  start a mail rule. Moving to a folder needs one account chosen, since
+  folders belong to an account; if the folder, the archive or Trash is
+  missing, the message stays in the Inbox and the rest of the filter still
+  applies.
+- Filters are kept on this machine and run while BB runs. They are not
+  server-side rules: mail that arrives while BB is closed is sorted when BB
+  next syncs it, and other mail apps see it in the Inbox until then.
+
+**List filters.** **Unread**, **Flagged** and **Attachments** above the list
 narrow it; each view keeps its own while the page is open, and the open
 conversation stays listed until you open another. Search has `is:unread`
 instead.
