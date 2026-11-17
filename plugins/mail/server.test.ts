@@ -4026,6 +4026,30 @@ describe("makosh-mail server: new mail, block and notifications (slice 3e)", () 
     }
   });
 
+  it("important senders notify through quiet hours, and alone when the owner asks for that (slice 3l)", async () => {
+    const STRANGER = "boss@example.net";
+    const quiet = await started({ settings: { quietHours: "00:00-23:59", importantSenders: `other@example.net, ${STRANGER}` } });
+    quiet.host.gateway.deliver({ from: { name: "Known", address: KNOWN }, date: recent });
+    quiet.host.gateway.deliver({ from: { name: "Boss", address: STRANGER }, date: recent });
+    await wakeAndWait(quiet.host, quiet.accountId);
+    await vi.waitFor(() => expect(newMailSignals(quiet.host)).toHaveLength(1));
+    const got = (await quiet.host.harness.behavior.callRpc("new_mail_get", newMailSignals(quiet.host)[0]!.payload)) as {
+      items: { address: string }[];
+    };
+    // The known sender is silent in quiet hours; the important one, never written to, comes through.
+    expect(got.items.map((item) => item.address)).toEqual([STRANGER]);
+    expect(logText(quiet.host)).not.toContain(STRANGER);
+    quiet.service.controller.abort();
+    await quiet.service.done;
+
+    const only = await started({ settings: { notifyImportantOnly: true, importantSenders: "example.net" } });
+    only.host.gateway.deliver({ from: { name: "Known", address: KNOWN }, date: recent });
+    await wakeAndWait(only.host, only.accountId);
+    expect(newMailSignals(only.host)).toEqual([]);
+    only.service.controller.abort();
+    await only.service.done;
+  });
+
   it("block moves new Inbox mail of a blocked sender to Spam and does not toast it; stored, own and rescued mail stay", async () => {
     const { host, accountId, service } = await started({
       junk: [{ messageId: "<rescued@example.com>", from: { name: "Blocked", address: "blocked@example.com" }, date: recent }],

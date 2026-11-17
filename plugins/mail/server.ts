@@ -272,6 +272,7 @@ import {
   matchesBlock,
   notifiable,
   ownAddresses,
+  parseImportantSenders,
   parseQuietHours,
   NEW_MAIL_TOAST_ITEMS,
   toastName,
@@ -546,6 +547,19 @@ function defineSettings(bb: BbPluginApi) {
       label: "Notify about new mail from people you write to",
       default: true,
     },
+    importantSenders: {
+      type: "string",
+      label: "Important senders",
+      description:
+        "Addresses or domains, separated by commas. They notify during quiet hours, and even when you never wrote to them.",
+      default: "",
+      experimental_schema: z.string().max(20_000),
+    },
+    notifyImportantOnly: {
+      type: "boolean",
+      label: "Notify only about mail from important senders",
+      default: false,
+    },
     quietHours: {
       type: "string",
       label: "Quiet hours",
@@ -715,6 +729,9 @@ type NewMailDeps = {
   publishNew: (token: string) => void;
   notifyOn: () => boolean;
   quietHours: () => string;
+  /** Slice 3l: the owner's important senders, and whether only they notify. */
+  importantSenders: () => string;
+  importantOnly: () => boolean;
   log: (line: string) => void;
 };
 
@@ -778,7 +795,10 @@ function blockNewInbox(deps: NewMailDeps, accountId: string, ids: string[], only
 function notifyNew(deps: NewMailDeps, accountId: string, ids: string[], returned: boolean): void {
   if (ids.length === 0 || !deps.notifyOn()) return;
   const now = deps.clock.now();
-  if (inQuietHours(parseQuietHours(deps.quietHours()), now.getHours() * 60 + now.getMinutes())) return;
+  const important = parseImportantSenders(deps.importantSenders());
+  const quiet = inQuietHours(parseQuietHours(deps.quietHours()), now.getHours() * 60 + now.getMinutes());
+  // Quiet hours let important senders through; with none named they silence everything, as before.
+  if (quiet && important.addresses.size === 0 && important.domains.length === 0) return;
   const { store } = deps;
   const nowIso = now.toISOString();
   const rows = store.notifyRows(ids, nowIso);
@@ -788,6 +808,8 @@ function notifyNew(deps: NewMailDeps, accountId: string, ids: string[], returned
     sentTo: store.addressesSentTo(rows.map((row) => row.fromAddress)),
     rules: store.listBlockRules(),
     now,
+    important,
+    importantOnly: quiet || deps.importantOnly(),
     ...(returned ? { ageFrom: () => nowIso } : {}),
   });
   if (kept.length === 0) return;
@@ -1300,6 +1322,8 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       publishNew: (token) => bb.realtime.publish(NEW_MAIL_CHANNEL, { token } satisfies NewMailPayload),
       notifyOn: () => current.notifyNewMail,
       quietHours: () => current.quietHours,
+      importantSenders: () => current.importantSenders,
+      importantOnly: () => current.notifyImportantOnly,
       log: (line) => bb.log.info(line),
     };
 
