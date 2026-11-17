@@ -19,6 +19,7 @@ import {
   GATEWAY_CACHE_MS,
   UNKNOWN_TRANSLATION_MESSAGE,
   PLUGIN_CALLER_MESSAGE,
+  OWNER_TERMINAL_MESSAGE,
   REMOVE_IN_THREAD_MESSAGE,
   renderSource,
   PROPOSE_OFF_INSTRUCTIONS,
@@ -8398,5 +8399,90 @@ describe("slice 3i paths leak no canary", () => {
     await call(host, "sender_check_refresh", { messageIds: [ids.inside, ids.outside], force: true });
     expect(logText(host)).toContain(`sender_check ${ids.outside}: fetch failed`);
     expectNoCanary(host, [...outputs, read]);
+  });
+});
+
+describe("slice 3j: doctor and backup", () => {
+  it("doctor reports the database and each account, and names no mail", async () => {
+    const host = await load({ settings: { vaultKey: generateVaultKey(), agentTools: true } });
+    const { accountId } = await addAndSync(host);
+
+    const text = await host.harness.behavior.runCli(["doctor"]);
+    expect(text.exitCode).toBe(0);
+    expect(text.stdout).toContain("Database");
+    expect(text.stdout).toContain("The database passed its integrity check.");
+    expect(text.stdout).toContain("Every conversation matches its messages.");
+    expect(text.stdout).toContain("owner@example.org");
+    expect(text.stdout).toContain("Sign-in to the mail server works.");
+    expect(text.stdout).toContain("The saved password can be read.");
+    expect(text.stdout).not.toMatch(/Invented/);
+
+    const asJson = await host.harness.behavior.runCli(["doctor", accountId, "--json"]);
+    const report = JSON.parse(asJson.stdout) as { result: string; sections: { accountId: string | null; lines: { level: string; check: string }[] }[] };
+    expect(report.sections.map((section) => section.accountId)).toEqual([null, accountId]);
+    expect(report.sections[1]!.lines.map((l) => l.check)).toEqual(
+      expect.arrayContaining(["credential", "imap", "folders", "sync", "outbox"]),
+    );
+    expect(logText(host)).toContain(`doctor ${accountId}: `);
+
+    const unknown = await host.harness.behavior.runCli(["doctor", "nope"]);
+    expect(unknown.exitCode).toBe(1);
+    expect(unknown.stderr).toContain("unknown account 'nope'");
+  });
+
+  it("doctor --repair-threads rebuilds conversations and tells the page", async () => {
+    const host = await load({ settings: { vaultKey: generateVaultKey() } });
+    const { accountId } = await addAndSync(host);
+    const repaired = await host.harness.behavior.runCli(["doctor", accountId, "--repair-threads"]);
+    expect(repaired.exitCode).toBe(0);
+    expect(repaired.stdout).toMatch(/Rebuilt \d+ conversations from their messages\./);
+    expect(host.harness.inspection.realtimeSignals.at(-1)).toEqual({
+      channel: MAIL_CHANGED_CHANNEL,
+      payload: { accountId },
+    });
+  });
+
+  it("doctor and backup refuse inside an agent thread", async () => {
+    const host = await load({ settings: { vaultKey: generateVaultKey(), agentTools: true } });
+    await addAndSync(host);
+    for (const args of [["doctor"], ["backup", "/tmp/never-written.db"]]) {
+      const refused = await host.harness.behavior.runCli(args, { threadId: "thread-1" });
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stderr).toContain(OWNER_TERMINAL_MESSAGE);
+    }
+  });
+
+  it("backup writes a private copy once and never over a file", async () => {
+    const { mkdtemp, stat, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { default: Database } = await import("better-sqlite3");
+    const host = await load({ settings: { vaultKey: generateVaultKey() } });
+    await addAndSync(host);
+    const dir = await mkdtemp(join(tmpdir(), "makosh-mail-backup-"));
+    try {
+      const file = join(dir, "copy.db");
+      const written = await host.harness.behavior.runCli(["backup", file]);
+      expect(written.exitCode).toBe(0);
+      expect(written.stdout).toMatch(/^Backup written: [\d.]+ MB, \d+ messages\./);
+      const info = await stat(file);
+      expect(info.size).toBeGreaterThan(0);
+      expect(info.mode & 0o777).toBe(0o600);
+      const copy = new Database(file, { readonly: true });
+      expect((copy.prepare("SELECT COUNT(*) AS n FROM messages").get() as { n: number }).n).toBeGreaterThan(0);
+      copy.close();
+
+      const again = await host.harness.behavior.runCli(["backup", file]);
+      expect(again.exitCode).toBe(1);
+      expect(again.stderr).toContain("already exists");
+      const relative = await host.harness.behavior.runCli(["backup", "copy.db"]);
+      expect(relative.stderr).toContain("full path");
+      const nowhere = await host.harness.behavior.runCli(["backup", join(dir, "missing", "copy.db")]);
+      expect(nowhere.stderr).toContain("does not exist");
+      expect(logText(host)).toContain("backup: ok");
+      expect(logText(host)).not.toContain(dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

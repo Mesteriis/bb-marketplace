@@ -57,6 +57,17 @@ import { createMimeBuilder } from "./src/adapters/bb/mime-builder.ts";
 import { createOriginalReader } from "./src/adapters/bb/original-reader.ts";
 import { createOutboxWorker, type OutboxWorker } from "./src/adapters/bb/outbox-worker.ts";
 import { createSmtpTransport } from "./src/adapters/bb/smtp-transport.ts";
+import {
+  BACKUP_REFUSALS,
+  BackupRefused,
+  accountSection,
+  backupDatabase,
+  databaseSection,
+  doctorText,
+  worstLevel,
+  type DoctorDeps,
+  type DoctorSection,
+} from "./src/adapters/bb/doctor.ts";
 import { UploadBook, UploadError } from "./src/adapters/bb/uploads.ts";
 import { MIGRATIONS, createSqliteStore, hardenDatabase } from "./src/adapters/bb/sqlite-store.ts";
 import { createSenderChecks, type SenderChecks } from "./src/adapters/bb/sender-checks.ts";
@@ -312,6 +323,10 @@ export const AGENT_MAIL_OFF_MESSAGE =
 
 export const REMOVE_IN_THREAD_MESSAGE =
   "Removing an account works only in the owner's own terminal, not inside an agent thread.";
+
+/** Slice 3j: doctor and backup read the owner's own setup and write files. */
+export const OWNER_TERMINAL_MESSAGE =
+  "This command works only in the owner's own terminal, not inside an agent thread.";
 
 export const MESSAGE_GONE_CONTEXT = "This email is no longer available in Makosh Mail.";
 /** What an agent gets for an unknown id, and for an id outside the AI scope (never told apart). */
@@ -1756,6 +1771,16 @@ export function createMailPlugin(overrides: MailPluginOverrides = {}) {
       agentTools: () => current.agentTools,
       agentLog: agentLog.log,
       secure: secureOne,
+      doctor: () => ({
+        store,
+        gateway,
+        transport,
+        vault,
+        run: (accountId, work) => queue.run(accountId, work),
+        db,
+        now: () => clock.now(),
+      }),
+      log: (line) => bb.log.info(line),
     });
   };
 }
@@ -5372,6 +5397,9 @@ type CliDeps = {
   now: () => Date;
   /** Slice 3i: a header with its sender check, warnings and crypto, for agent text. */
   secure: (header: MessageHeader) => MessageHeader;
+  /** Slice 3j: what doctor needs; `vault` is read at call time. */
+  doctor: () => DoctorDeps;
+  log: (line: string) => void;
 };
 
 function unknownAccount(accountId: string): PluginCliError {
@@ -5568,6 +5596,63 @@ function registerCli(bb: BbPluginApi, store: MailStore, deps: CliDeps): void {
             deps.publishChanged(accountId);
             if (options.json) return { exitCode: 0, stdout: json({ removed: true, accountId }) };
             return { exitCode: 0, stdout: `Removed ${accountId}.\n` };
+          },
+        }),
+        doctor: cliCommand({
+          summary: "Check accounts, servers and the database (owner's terminal only)",
+          positionals: [{ name: "accountId", description: "Only this account id", required: false }],
+          options: {
+            "repair-threads": { type: "boolean", description: "Rebuild every conversation from its messages" },
+            ...jsonOption,
+          },
+          run: async ({ positionals, options }, ctx) => {
+            refuseRuleThread(ctx);
+            if (ctx.threadId !== undefined) {
+              throw new PluginCliError(OWNER_TERMINAL_MESSAGE, { code: "owner_terminal_only" });
+            }
+            const doctorDeps = deps.doctor();
+            const only = positionals.accountId ?? null;
+            if (only !== null && store.getAccount(only) === null) throw unknownAccount(only);
+            const ids = only !== null ? [only] : store.listAccounts().map((account) => account.id);
+            const sections: DoctorSection[] = [databaseSection(doctorDeps.db)];
+            for (const id of ids) {
+              const section = await accountSection(doctorDeps, id, { repairThreads: options["repair-threads"] === true });
+              if (section === null) continue;
+              sections.push(section);
+              // The one log line: the account id and the outcome, nothing else.
+              deps.log(`doctor ${id}: ${worstLevel([section])}`);
+              if (options["repair-threads"] === true) deps.publishChanged(id);
+            }
+            const worst = worstLevel(sections);
+            const exitCode = worst === "fail" ? 1 : 0;
+            if (options.json) return { exitCode, stdout: json({ result: worst, sections }) };
+            return { exitCode, stdout: `${doctorText(sections)}\n` };
+          },
+        }),
+        backup: cliCommand({
+          summary: "Write a copy of Mail's database to a new file (owner's terminal only)",
+          positionals: [{ name: "file", description: "Full path of the file to create", required: true }],
+          options: jsonOption,
+          run: async ({ positionals, options }, ctx) => {
+            refuseRuleThread(ctx);
+            if (ctx.threadId !== undefined) {
+              throw new PluginCliError(OWNER_TERMINAL_MESSAGE, { code: "owner_terminal_only" });
+            }
+            let written: { bytes: number; messages: number };
+            try {
+              written = await backupDatabase(deps.doctor().db, positionals.file);
+            } catch (error) {
+              const reason = error instanceof BackupRefused ? error.reason : "failed";
+              deps.log(`backup: ${reason}`);
+              throw new PluginCliError(BACKUP_REFUSALS[reason], { code: `backup_${reason}` });
+            }
+            deps.log("backup: ok");
+            if (options.json) return { exitCode: 0, stdout: json({ written: true, ...written }) };
+            const megabytes = (written.bytes / (1024 * 1024)).toFixed(1);
+            return {
+              exitCode: 0,
+              stdout: `Backup written: ${megabytes} MB, ${written.messages} messages. Keep it as private as the mailbox itself.\n`,
+            };
           },
         }),
       },
