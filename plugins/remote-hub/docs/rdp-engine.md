@@ -289,14 +289,29 @@ out of scope).
   exits; every write error toward the helper is fatal for the engine.
 - Engine death (crash, kill) closes only its session with `engine_exited`.
 - **Closed-reason precedence** (helper, `RdpManager`): a `Closed{reason}` event
-  the engine wrote and the helper read wins; otherwise `engine_exited` (the engine
+  the engine wrote and the helper READ wins; otherwise `engine_exited` (the engine
   ended by itself: EOF, an exit seen by `reap()`, or found already exited by an
   explicit close); otherwise `killed_by_close` (the client's close had to kill a
   live engine). The helper never records `engine_exited` before it has read what
-  is readable: a failed write only drops the unsent bytes, `reap()` leaves an open
-  transport to the poll loop, and an explicit close drains the socket first. A
-  reaped engine's transport that has not reported EOF `EOF_GRACE` (2 s) after the
-  engine ended is ended by the next `reap()` after draining.
+  is readable: a failed write only drops the unsent bytes, a hang-up (POLLHUP /
+  POLLERR / POLLNVAL) drops them too without closing the transport or recording a
+  reason (so a full outbox cannot make a dead engine spin the loop), `reap()` leaves
+  an open transport to the poll loop, and an explicit close of an engine that is
+  already gone drains the socket first. A reaped engine's transport that has not
+  reported EOF `EOF_GRACE` (2 s) after the engine ended is ended by the next
+  `reap()` after draining.
+  Limits, stated plainly:
+  - A write error on an engine that is still alive drops the queued commands and
+    the ack silently. It cannot happen today (non-blocking AF_UNIX stream, SIGPIPE
+    ignored, the engine never half-closes fd 3).
+  - An explicit close of a LIVE engine whose `Closed` event is buffered but unread
+    reports `killed_by_close`: only an event that was read wins.
+  - Draining (`drain_for_closed`) can yield `protocol_error` when a framing
+    violation precedes the `Closed` frame in the bytes it reads; that reason then
+    takes precedence like any other first reason.
+  - `EOF_GRACE` bounds the end of the TRANSPORT, not delivery of the close report
+    to a client whose stdout is blocked: the report waits in the outbox like every
+    other frame.
 
 ## 7. Screenshot (B7)
 
