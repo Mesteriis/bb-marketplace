@@ -325,3 +325,16 @@ See [the import inventory](subtrees.json) for per-package upstream sources and m
 ## Independent plugins imported with git subtree
 
 The source repository, directory, pinned revision, maintained fork and branch for every imported plugin are recorded in [subtrees.json](subtrees.json). Each plugin keeps its original package license and notices; the root MIT license does not relicense these packages. Root-level upstream notices are preserved under [licenses](licenses/). Local configuration, credentials and runtime data are excluded.
+
+## OpenPGP.js (openpgp)
+
+- Source: <https://github.com/openpgpjs/openpgpjs>, npm `openpgp` 6.3.2, an
+  exact dependency of `plugins/mail`.
+- Paths: bundled into `plugins/mail/dist/server.js` only (never the page),
+  used through `plugins/mail/src/adapters/bb/pgp-openpgp.ts` for making
+  keys, signing, verifying, encrypting and decrypting.
+- License: LGPL-3.0-or-later, Copyright ProtonMail and the OpenPGP.js
+  contributors. The library is used unmodified. Its source is the npm
+  package at the version above; `plugins/mail` builds its bundle from that
+  package with `npm ci && npm run build`, so a changed copy of the library
+  can be put in its place and the plugin rebuilt.

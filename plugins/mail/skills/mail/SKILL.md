@@ -255,6 +255,12 @@ and those that fetch from it: `server_search_start`, `server_search_more`,
 bypass the owner's AI access and the log, and calling them is not something
 the owner asked you to do.
 
+OpenPGP belongs to the owner: you cannot decrypt mail, check a signature,
+or read, make, import or export a key, and mail you propose is never signed
+or encrypted. An encrypted message reads "[encrypted message — not
+readable]"; do not ask the owner to paste decrypted text or a key into a
+thread, and never call the `pgp_*` methods.
+
 `bb makosh-mail doctor` and `bb makosh-mail backup` are the owner's own
 commands: they refuse inside a thread. Do not run them, and do not ask the
 owner to paste their output into a thread unless they offer it.

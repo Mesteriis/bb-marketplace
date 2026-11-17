@@ -8,6 +8,14 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- OpenPGP (slice 3k). A key pair for a sending address is made in Mail
+  settings and kept sealed with the credential key; a backup leaves locked
+  by a passphrase. Public keys of other people are pasted in or saved from
+  a message. The composer signs and encrypts (PGP/MIME) on request; an
+  encrypted message is opened for one view and never stored; a signed one
+  is checked against the saved keys. New dependency: `openpgp` 6.3.2
+  (LGPL-3.0-or-later). S/MIME stays recognised only.
+
 - Reliability, layout and language (slice 3j). Sync rethreads an account
   only when messages were inserted or deleted, and rewrites only the
   conversations they touched. List rows far from view are not laid out or

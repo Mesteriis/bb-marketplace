@@ -157,8 +157,8 @@ that runs the BB server.
 
 Not yet: Gmail API or OAuth, scheduled send, system notifications, semantic
 search, export to mbox or .eml archives, writing categories or reminders to
-the mail server, and PGP or S/MIME signing, checking and decryption (Mail only
-recognises such mail; see [Security and privacy](#security-and-privacy)).
+the mail server, and S/MIME signing, checking and decryption (Mail only
+recognises such mail; OpenPGP works, see [OpenPGP](#openpgp)).
 
 ## Writing and sending
 
@@ -1066,15 +1066,64 @@ element is not found (Mail does no layout).
 - **Read receipts are never sent.** When a message asks for one, the header
   says "The sender asked for a read receipt. Makosh Mail does not send
   receipts." Mail's own mail never asks for one either.
-- **Signed and encrypted mail is recognised only.** PGP and S/MIME get a
-  neutral chip ("Signed (PGP)": Mail does not check signatures; "Encrypted
-  (S/MIME)": Mail cannot read it). Nothing is verified or decrypted and no
-  key is read. An encrypted body is never stored: the pane says "This
-  message is encrypted. Open it in a mail client that has your key.", agents
-  and BB get "[encrypted message — not readable]", and the search and
-  attachment-text indexes hold none of it. The ciphertext stays reachable
-  through the attachments and **Download .eml**. Signing and encryption are
-  planned for slice 3k.
+- **S/MIME mail is recognised only.** It gets a neutral chip ("Signed
+  (S/MIME)", "Encrypted (S/MIME)"); Mail does not check or open it. An
+  encrypted body is never stored: the pane says "This message is encrypted.
+  Open it in a mail client that has your key.", agents and BB get
+  "[encrypted message — not readable]", and the search and attachment-text
+  indexes hold none of it. The ciphertext stays reachable through the
+  attachments and **Download .eml**.
+- **OpenPGP mail** can be signed, encrypted, checked and opened; see
+  [OpenPGP](#openpgp) below.
+
+### OpenPGP
+
+Mail signs and encrypts with OpenPGP (PGP/MIME, RFC 3156) between people
+who exchanged keys. Everything happens on this computer.
+
+- **Your key.** Mail settings → **Encryption (OpenPGP)** → **Make a key**
+  next to a sending address makes a Curve25519 key pair for it. The private
+  half is stored in Mail's database sealed with the same credential key as
+  your passwords (`vaultKey`), and is unsealed on the server for one
+  signature or one decryption. It never goes to the page, an agent, a model
+  or BB, and no log line names a key, an address or a fingerprint.
+- **Back it up.** **Back up…** asks for a passphrase of at least 8
+  characters and shows the private key locked by it, to copy into a file.
+  Mail does not keep the passphrase. Without a backup, losing the database
+  or the credential key loses the key, and mail encrypted to it cannot be
+  read again. To restore, paste the backup under **Add a key** with the
+  passphrase.
+- **Other people's keys.** Paste a public key under **Add a key**, or use
+  **Save the key from this message** on a signed message that carries one.
+  Mail does not look keys up anywhere on the network, and a saved key is
+  trusted only because you saved it: compare the fingerprint with its owner
+  another way first. Revoked keys are refused; expired keys are not used.
+- **Sending.** The composer shows **Sign** and **Encrypt** when the From
+  address has a key; both are off until you tick them, for that message
+  only. Encrypt needs a saved key for every To and Cc address and refuses a
+  message with Bcc (each recipient's key id is visible in an encrypted
+  message). The message is also encrypted to your own key, so the copy in
+  Sent stays readable to you. **The subject, the addresses and the dates
+  are not encrypted**, and a draft's copy on the mail server is not either:
+  Mail removes it when the message is sent. Mail an agent proposes is never
+  signed or encrypted.
+- **Reading.** An encrypted message shows **Decrypt**: Mail fetches the
+  message, opens it with your key and shows the text as plain text for that
+  view. The text is not stored, indexed or given to agents, AI features,
+  search or BB, and it is gone when you leave the message. Attachments
+  inside an encrypted message are listed by name only for now. A signed
+  message shows **Check signature**: "Signed by a key you saved for this
+  sender", "by a key you saved, but not for this sender's address", "does
+  not match this message", or "Mail has no key for the signer". A sender
+  check from your provider and an OpenPGP signature are separate facts.
+- **Limits.** Only PGP/MIME and a body that is one armored block are read;
+  clear-signed text is not checked. Mail does not publish your key, does
+  not fetch keys (no WKD, no key servers, no Autocrypt), and does not
+  rotate or revoke keys. An agent with shell access to the machine that
+  runs BB can read the database and the credential key, as with passwords.
+- **S/MIME** is not supported: it needs a certificate issued to you by a
+  certificate authority, and a self-made one would not be trusted by the
+  people you write to.
 
 ### Deleted mail on disk
 
