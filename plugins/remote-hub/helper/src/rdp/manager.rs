@@ -23,7 +23,9 @@ use crate::ids::SessionIds;
 
 /// Pending helper → engine bytes beyond which input is refused (the client
 /// retries); small control commands are always accepted.
-pub const WRITE_INPUT_SOFT_CAP: usize = 1024 * 1024;
+pub const WRITE_INPUT_SOFT_CAP: usize = 256 * 1024;
+/// Screenshot requests that may be outstanding per session.
+pub const MAX_PENDING_SCREENSHOTS: usize = 4;
 /// At most this many engine frames are taken per session per loop turn.
 pub const MAX_FRAMES_PER_TURN: usize = 16;
 /// How long an engine may linger after its socket closed before it is killed.
@@ -106,6 +108,8 @@ pub struct RdpSession {
     desktop_ready: bool,
     close_reason: Option<String>,
     screenshot_ids: VecDeque<u64>,
+    /// The newest unsent update acknowledgement; older ones are superseded.
+    pending_ack: Option<u64>,
     pending_prompt: Option<String>,
     /// When the engine's transport ended (Closed event or EOF); an engine that
     /// outlives it by EOF_GRACE is killed. The report waits for its exit status.
@@ -124,8 +128,10 @@ pub enum EnqueueError {
     UnknownSession,
     /// The engine is gone; the session only waits for its close.
     Dead,
-    /// Too many pending input bytes; retry later.
+    /// Too many pending bytes for the engine; retry later.
     Full,
+    /// Too many screenshot requests are already outstanding.
+    TooManyScreenshots,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -269,7 +275,7 @@ impl RdpManager {
     }
 
     pub fn wants_write(&self, id: u32) -> bool {
-        self.sessions.get(&id).map(|s| s.fd >= 0 && !s.write_buf.is_empty()).unwrap_or(false)
+        self.sessions.get(&id).map(|s| s.fd >= 0 && (!s.write_buf.is_empty() || s.pending_ack.is_some())).unwrap_or(false)
     }
 
     /// True when a complete engine frame is already buffered, so the loop must
@@ -413,6 +419,7 @@ impl RdpManager {
                 desktop_ready: false,
                 close_reason: None,
                 screenshot_ids: VecDeque::new(),
+                pending_ack: None,
                 pending_prompt: None,
                 ended_at: None,
                 reported_closed: false,
@@ -426,8 +433,23 @@ impl RdpManager {
         if s.fd < 0 {
             return Err(EnqueueError::Dead);
         }
-        if matches!(cmd, EngineCommand::Input { .. }) && s.write_buf.len() > WRITE_INPUT_SOFT_CAP {
+        // One bound for every command kind that a client can repeat. Decisions
+        // and Close are single-shot (a decision needs a pending prompt) and
+        // always get through.
+        let bounded = matches!(cmd, EngineCommand::Input { .. } | EngineCommand::Ack { .. } | EngineCommand::Screenshot);
+        if bounded && s.write_buf.len() > WRITE_INPUT_SOFT_CAP {
             return Err(EnqueueError::Full);
+        }
+        match cmd {
+            EngineCommand::Ack { frame_id } => {
+                // Acknowledgements coalesce: only the newest is ever sent.
+                s.pending_ack = Some(*frame_id);
+                return Ok(());
+            }
+            EngineCommand::Screenshot if s.screenshot_ids.len() >= MAX_PENDING_SCREENSHOTS => {
+                return Err(EnqueueError::TooManyScreenshots);
+            }
+            _ => {}
         }
         s.write_buf.extend(protocol::encode_control(cmd));
         Ok(())
@@ -472,6 +494,7 @@ impl RdpManager {
         }
         s.read_buf.clear();
         s.write_buf.clear();
+        s.pending_ack = None;
     }
 
     fn on_eof(s: &mut RdpSession) {
@@ -601,6 +624,12 @@ impl RdpManager {
 
     pub fn write_pending(&mut self, id: u32) {
         let Some(s) = self.sessions.get_mut(&id) else { return };
+        // The coalesced acknowledgement goes out behind everything queued.
+        if s.write_buf.is_empty() {
+            if let Some(frame_id) = s.pending_ack.take() {
+                s.write_buf.extend(protocol::encode_control(&EngineCommand::Ack { frame_id }));
+            }
+        }
         while s.fd >= 0 && !s.write_buf.is_empty() {
             let (a, b) = s.write_buf.as_slices();
             let buf = if !a.is_empty() { a } else { b };
@@ -995,17 +1024,51 @@ mod tests {
     }
 
     #[test]
-    fn input_is_refused_over_the_soft_cap_but_control_is_not() {
+    fn every_repeatable_command_is_refused_over_the_cap_but_a_decision_is_not() {
         let (a, b) = socketpair();
         let mut mgr = RdpManager::new();
         let id = mgr.adopt(None, a);
         mgr.sessions.get_mut(&id).unwrap().write_buf.extend(vec![0u8; WRITE_INPUT_SOFT_CAP + 1]);
+        for cmd in [EngineCommand::Input { events: vec![] }, EngineCommand::Ack { frame_id: 1 }, EngineCommand::Screenshot] {
+            assert_eq!(mgr.enqueue_command(id, &cmd), Err(EnqueueError::Full), "{cmd:?}");
+        }
         assert_eq!(
-            mgr.enqueue_command(id, &EngineCommand::Input { events: vec![] }),
-            Err(EnqueueError::Full)
+            mgr.enqueue_command(id, &EngineCommand::CertDecision { fingerprint: "AA".into(), accept: "once".into() }),
+            Ok(())
         );
-        assert_eq!(mgr.enqueue_command(id, &EngineCommand::Ack { frame_id: 1 }), Ok(()));
         assert_eq!(mgr.enqueue_command(999, &EngineCommand::Screenshot), Err(EnqueueError::UnknownSession));
+        unsafe { libc::close(b) };
+    }
+
+    #[test]
+    fn acknowledgements_coalesce_to_the_newest_frame_id() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        for frame_id in 1..=100_000u64 {
+            assert_eq!(mgr.enqueue_command(id, &EngineCommand::Ack { frame_id }), Ok(()));
+        }
+        // 100 000 acknowledgements occupy no queue bytes; one is sent.
+        assert_eq!(mgr.sessions[&id].write_buf.len(), 0);
+        mgr.write_pending(id);
+        let mut buf = vec![0u8; 4096];
+        let n = unsafe { libc::read(b, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        assert!(n > 0);
+        let want = encode_control(&EngineCommand::Ack { frame_id: 100_000 });
+        assert_eq!(&buf[..n as usize], &want[..]);
+        unsafe { libc::close(b) };
+    }
+
+    #[test]
+    fn outstanding_screenshot_requests_are_capped() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        for i in 0..MAX_PENDING_SCREENSHOTS as u64 {
+            assert_eq!(mgr.enqueue_command(id, &EngineCommand::Screenshot), Ok(()));
+            mgr.push_screenshot(id, i);
+        }
+        assert_eq!(mgr.enqueue_command(id, &EngineCommand::Screenshot), Err(EnqueueError::TooManyScreenshots));
         unsafe { libc::close(b) };
     }
 

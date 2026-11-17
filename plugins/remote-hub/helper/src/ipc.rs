@@ -400,9 +400,15 @@ fn handle(
             rdp_command(rdp, id, session_id, &EngineCommand::CertDecision { fingerprint, accept })
         }
         Request::RdpInput { id, session_id, events } => {
+            if let Some(refusal) = rdp_not_ready(rdp, id, session_id) {
+                return Ok(refusal);
+            }
             rdp_command(rdp, id, session_id, &EngineCommand::Input { events })
         }
         Request::RdpUpdateAck { id, session_id, frame_id } => {
+            if let Some(refusal) = rdp_not_ready(rdp, id, session_id) {
+                return Ok(refusal);
+            }
             rdp_command(rdp, id, session_id, &EngineCommand::Ack { frame_id })
         }
         Request::RdpScreenshot { id, session_id } => {
@@ -424,6 +430,15 @@ fn handle(
     }
 }
 
+/// Input and acknowledgements mean something only once a desktop exists. An
+/// unknown session keeps its own error; a known one that is not ready is told so.
+fn rdp_not_ready(rdp: &RdpManager, id: u64, session_id: u32) -> Option<Vec<u8>> {
+    if rdp.contains(session_id) && !rdp.is_ready(session_id) {
+        return Some(rdp_error(id, "not_ready", "the desktop is not ready yet".to_string()));
+    }
+    None
+}
+
 fn rdp_error(id: u64, code: &str, message: String) -> Vec<u8> {
     protocol::encode_response(&Response::Error { id: Some(id), code: code.to_string(), message })
 }
@@ -434,6 +449,9 @@ fn rdp_enqueue_error(id: u64, session_id: u32, e: EnqueueError) -> Vec<u8> {
         EnqueueError::Dead => rdp_error(id, "session_closed", "the rdp engine has ended".to_string()),
         EnqueueError::Full => {
             rdp_error(id, "rdp_input_overflow", "too much pending input for this session; retry".to_string())
+        }
+        EnqueueError::TooManyScreenshots => {
+            rdp_error(id, "screenshot_busy", "too many screenshot requests are outstanding; retry".to_string())
         }
     }
 }

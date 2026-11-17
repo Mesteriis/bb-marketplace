@@ -26,18 +26,11 @@ fn g7_ids_are_distinct_and_close_is_per_session() {
     assert_eq!(reason, "killed_by_close");
     assert!(wait_pid_gone(echo_pid, Duration::from_secs(5)), "echo child survived its close");
     assert!(pid_alive(engine_pid), "closing the echo session killed the rdp engine");
+    // The session is still there: a not-yet-ready desktop answers `not_ready`,
+    // an unknown one `session_not_found`.
     h.send(&Request::RdpInput { id: 21, session_id: rdp, events: vec![] });
-    let reply = h.read_until(Duration::from_secs(5), |k, p| {
-        if k != remote_hub_helper::protocol::FRAME_KIND_CONTROL {
-            return None;
-        }
-        match remote_hub_helper::protocol::decode_response(p).ok()? {
-            r @ (Response::RdpAck { .. } | Response::Error { .. }) => Some(r),
-            _ => None, // state events interleave
-        }
-    });
-    match reply {
-        Response::RdpAck { session_id, .. } => assert_eq!(session_id, rdp),
+    match h.read_reply(21) {
+        Response::Error { code, .. } => assert_eq!(code, "not_ready"),
         other => panic!("rdp session was lost: {other:?}"),
     }
 
@@ -408,4 +401,30 @@ fn g14_the_helper_stays_single_threaded_across_forks() {
     let _ = h.read_closed(echo);
     assert_eq!(thread_count_of(h.pid()), 1, "after closing everything");
     h.shutdown();
+}
+
+/// H1 (d)/(b): input and acknowledgements before `desktop_ready` are refused
+/// with `not_ready` and queue nothing; a helper that then dies still takes its
+/// engine with it within 1 s.
+#[test]
+fn h1_input_and_acks_before_the_desktop_are_refused_and_helper_death_is_noticed() {
+    let server = silent_server();
+    let mut h = start(&[]);
+    let (rdp, engine_pid) = h.open_rdp(server.port);
+    h.wait_state(rdp, "connecting");
+    for i in 0..100u64 {
+        h.send(&Request::RdpInput { id: 1000 + i, session_id: rdp, events: vec![] });
+        match h.read_reply(1000 + i) {
+            Response::Error { code, .. } => assert_eq!(code, "not_ready"),
+            other => panic!("input {i}: expected not_ready, got {other:?}"),
+        }
+    }
+    h.send(&Request::RdpUpdateAck { id: 2000, session_id: rdp, frame_id: 1 });
+    match h.read_reply(2000) {
+        Response::Error { code, .. } => assert_eq!(code, "not_ready"),
+        other => panic!("ack: expected not_ready, got {other:?}"),
+    }
+    unsafe { libc::kill(h.pid() as libc::pid_t, libc::SIGKILL) };
+    let _ = h.child.wait();
+    assert!(wait_pid_gone(engine_pid, Duration::from_secs(1)), "the engine outlived its helper by more than 1 s");
 }

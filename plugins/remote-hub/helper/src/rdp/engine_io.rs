@@ -1,9 +1,11 @@
 //! The engine's channel to the helper: framed writes, the reader thread that
 //! turns helper commands into bounded channels, and the cancellation signal.
 //!
-//! Boundedness: the reader thread blocks (`blocking_send`) when the engine
-//! falls behind, which backs the socket up into the helper's own bounded
-//! queue. When the helper's end closes (it died or closed the session) the
+//! Boundedness: the reader thread never blocks on the engine. The helper
+//! bounds what it sends (a byte cap, coalesced acknowledgements, a screenshot
+//! cap), so a full control channel means the engine stopped consuming; that
+//! ends the session (`protocol_error`) instead of stalling the one reader that
+//! must still see a certificate decision, a close and the helper's EOF. When the helper's end closes (it died or closed the session) the
 //! thread records it, wakes every waiter and drops its senders, so the engine
 //! never lingers as an orphan holding a logged-in session.
 use std::io::Write as _;
@@ -17,7 +19,7 @@ use super::protocol::{self, EngineCommand, EngineEvent, InputEvent};
 use super::reasons::RdpClosedReason;
 
 /// Capacity of the helper → engine command channel.
-pub const CONTROL_CAPACITY: usize = 64;
+pub const CONTROL_CAPACITY: usize = 4096;
 
 /// Writes whole frames to the helper. Shared (`Arc`) so the TLS certificate
 /// callback can report from inside the handshake.
@@ -133,10 +135,34 @@ pub fn read_frame(stream: &mut impl std::io::Read) -> std::io::Result<Option<Vec
     Ok(Some(body))
 }
 
+/// Hand one control item to the engine without ever blocking. False ends the
+/// reader: the engine dropped its receiver, or the channel overflowed (which
+/// cancels the session).
+fn forward(
+    tx: &tokio::sync::mpsc::Sender<Control>,
+    item: Control,
+    cancel: &Cancel,
+    dec_tx: &mpsc::Sender<Decision>,
+) -> bool {
+    match tx.try_send(item) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            cancel.trigger(RdpClosedReason::ProtocolError);
+            let _ = dec_tx.send(Decision::Cancel(RdpClosedReason::ProtocolError));
+            false
+        }
+    }
+}
+
 /// Start the thread that reads helper commands. Frames that fail to parse are
 /// skipped; a framing error or EOF ends the thread and cancels the engine.
-pub fn spawn_reader(mut stream: UnixStream) -> Inbox {
-    let (ctl_tx, control) = tokio::sync::mpsc::channel::<Control>(CONTROL_CAPACITY);
+pub fn spawn_reader(stream: UnixStream) -> Inbox {
+    spawn_reader_with_capacity(stream, CONTROL_CAPACITY)
+}
+
+pub(crate) fn spawn_reader_with_capacity(mut stream: UnixStream, capacity: usize) -> Inbox {
+    let (ctl_tx, control) = tokio::sync::mpsc::channel::<Control>(capacity);
     let (dec_tx, decisions) = mpsc::channel::<Decision>();
     let cancel = Arc::new(Cancel::new());
     let thread_cancel = cancel.clone();
@@ -150,17 +176,17 @@ pub fn spawn_reader(mut stream: UnixStream) -> Inbox {
                             let _ = dec_tx.send(Decision::Cert { fingerprint, accept });
                         }
                         EngineCommand::Input { events } => {
-                            if ctl_tx.blocking_send(Control::Input(events)).is_err() {
+                            if !forward(&ctl_tx, Control::Input(events), &thread_cancel, &dec_tx) {
                                 break;
                             }
                         }
                         EngineCommand::Screenshot => {
-                            if ctl_tx.blocking_send(Control::Screenshot).is_err() {
+                            if !forward(&ctl_tx, Control::Screenshot, &thread_cancel, &dec_tx) {
                                 break;
                             }
                         }
                         EngineCommand::Ack { frame_id } => {
-                            if ctl_tx.blocking_send(Control::Ack(frame_id)).is_err() {
+                            if !forward(&ctl_tx, Control::Ack(frame_id), &thread_cancel, &dec_tx) {
                                 break;
                             }
                         }
@@ -241,5 +267,54 @@ mod tests {
             inbox.decisions.recv_timeout(Duration::from_secs(30)),
             Ok(Decision::Cert { fingerprint: "AA".into(), accept: "once".into() })
         );
+    }
+
+    fn input_frame() -> Vec<u8> {
+        protocol::encode_control(&EngineCommand::Input { events: vec![] })
+    }
+
+    #[test]
+    fn a_decision_arrives_while_control_items_are_queued_unconsumed() {
+        let (engine_end, mut helper_end) = pair();
+        let inbox = spawn_reader_with_capacity(engine_end, 8);
+        for _ in 0..5 {
+            helper_end.write_all(&input_frame()).unwrap();
+        }
+        helper_end
+            .write_all(&protocol::encode_control(&EngineCommand::CertDecision { fingerprint: "AA".into(), accept: "once".into() }))
+            .unwrap();
+        assert_eq!(
+            inbox.decisions.recv_timeout(Duration::from_secs(30)),
+            Ok(Decision::Cert { fingerprint: "AA".into(), accept: "once".into() })
+        );
+    }
+
+    #[test]
+    fn an_overflowing_control_channel_ends_the_session_instead_of_blocking_the_reader() {
+        // Nothing consumes `control`; capacity 8; 65 inputs are written. A
+        // reader that blocked would never see the frames after the ninth.
+        let (engine_end, mut helper_end) = pair();
+        let inbox = spawn_reader_with_capacity(engine_end, 8);
+        for _ in 0..65 {
+            helper_end.write_all(&input_frame()).unwrap();
+        }
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let reason = rt.block_on(async { tokio::time::timeout(Duration::from_secs(30), inbox.cancel.wait()).await }).unwrap();
+        assert_eq!(reason, RdpClosedReason::ProtocolError);
+    }
+
+    #[test]
+    fn helper_eof_is_seen_with_a_full_control_channel() {
+        // Capacity 8 is filled exactly, nothing consumes it, then the helper
+        // goes away. The reader must still observe EOF.
+        let (engine_end, mut helper_end) = pair();
+        let inbox = spawn_reader_with_capacity(engine_end, 8);
+        for _ in 0..8 {
+            helper_end.write_all(&input_frame()).unwrap();
+        }
+        drop(helper_end);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let reason = rt.block_on(async { tokio::time::timeout(Duration::from_secs(30), inbox.cancel.wait()).await }).unwrap();
+        assert_eq!(reason, RdpClosedReason::HelperShutdown);
     }
 }
