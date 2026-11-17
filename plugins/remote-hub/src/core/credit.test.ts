@@ -43,6 +43,10 @@ describe("credit state invariant fuzz (Y3)", () => {
         if (avail > CREDIT_WINDOW_BYTES) {
           throw new Error("helper unconsumed credit exceeds window: " + avail);
         }
+        const owner = c.owner();
+        if (owner !== null && attached.length > 0 && c.outstanding(owner) === 0 && avail !== CREDIT_WINDOW_BYTES) {
+          throw new Error("liveness: owner acked everything but unconsumed credit != window: " + avail);
+        }
       }
     }
   });

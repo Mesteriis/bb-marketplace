@@ -91,9 +91,14 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   live bytes received from the helper; each attached view tracks sentLive and
   acked (acked <= sentLive). The oldest attached view is the owner, and only
   the owner's ack produces a grant, clamped to sentLive - acked. Snapshot bytes
-  are never live and never acked. The invariant kept is
-  granted - consumed + (owner.sentLive - owner.acked) <= 262144 while a view is
-  attached. When the owner detaches, the oldest remaining view is promoted and
+  are never live and never acked. The property actually guaranteed and tested
+  is that the helper's unconsumed credit stays in [0, 262144]:
+  0 <= granted - consumed <= 262144, and when the owner has acked everything,
+  granted - consumed == 262144. The stronger sum
+  granted - consumed + (owner.sentLive - owner.acked) <= 262144 does NOT hold at
+  the moment a lagging non-owner is promoted (two views are not reachable from
+  the 2a UI; bounding a slow non-owner's queue is deferred). When the owner
+  detaches, the oldest remaining view is promoted and
   granted the remaining window. When NO view is attached (first attach or a
   reattach after every view left), the new view becomes owner and the helper's
   unconsumed credit is topped back up to one window:
@@ -102,6 +107,13 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   owner that never acks stalls the session even if another attached view acks;
   a slow non-owner's output queue is not bounded in stage 2a (two views are
   not reachable from the 2a UI) and will be bounded in a later stage.
+- Reap grace constants (helper/src/sessions.rs): LINGER_GRACE is how long the
+  helper waits for a descendant to release the PTY after the direct child exits
+  (2 s) before reaping the process group. REAP_GRACE is how long an EOF/HUP with
+  no reaped child is allowed before that child is treated as an orphan and
+  SIGTERMed (1 s). Both are user-visible: a session whose child stays alive
+  after closing its tty shows "running" with no possible output for up to
+  REAP_GRACE, then is reaped and reports its real status.
 - stdin hang-up guards: the read_now '|| hung_up' and 'hung_up && is_full ->
   mark_eof' branches in helper/src/ipc.rs are defensive and not covered by a
   test on darwin (poll does not report POLLHUP while stdin events are 0).

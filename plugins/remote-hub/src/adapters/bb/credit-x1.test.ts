@@ -355,6 +355,51 @@ describe("credit window X1 (real service + real socket)", () => {
     expect(s.closed.map((c) => c.code)).toContain(4410);
   });
 
+  it("Z1: credit rejection after session end still delivers the stored closed status", async () => {
+    const { helper, service, wire } = makeServiceAndSocket();
+    const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+    helper.credit = async (h: SessionHandle, b: number) => {
+      helper.creditFrames.push({ sessionId: h.sessionId, bytes: b });
+      helper.emitClosed(h.sessionId, { exitCode: 255, signal: null, reason: "ssh_error" });
+      throw new Error("session_not_found");
+    };
+    const s = makeSocket();
+    await wire("ws://x/attach?attach=" + service.sessionAttach(handle)).onOpen(s);
+    const rendered = s.sent.map((d) => (typeof d === "string" ? d : Array.from(d as Uint8Array)));
+    expect(rendered).toEqual([
+      JSON.stringify({ type: "snapshot", bytes: 0 }),
+      JSON.stringify({ type: "live" }),
+      JSON.stringify({ type: "closed", exitCode: 255, signal: null, reason: "ssh_error" }),
+    ]);
+    expect(s.closed.map((c) => c.code)).toContain(4000);
+    expect(s.closed.map((c) => c.code)).not.toContain(4410);
+  });
+
+  it("Z2: helper exit after attach closes the socket 4410", async () => {
+    const { helper, service, wire } = makeServiceAndSocket();
+    const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+    const s = makeSocket();
+    await wire("ws://x/attach?attach=" + service.sessionAttach(handle)).onOpen(s);
+    helper.emitExit();
+    expect(s.closed.map((c) => c.code)).toContain(4410);
+  });
+
+  it("Z2: a throwing close on one socket does not skip 4410 for another", async () => {
+    const { helper, service, wire } = makeServiceAndSocket();
+    const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+    const a = makeSocket();
+    a.close = () => {
+      throw new Error("close boom");
+    };
+    const ha = wire("ws://x/attach?attach=" + service.sessionAttach(handle));
+    await ha.onOpen(a);
+    const b = makeSocket();
+    const hb = wire("ws://x/attach?attach=" + service.sessionAttach(handle));
+    await hb.onOpen(b);
+    helper.emitExit();
+    expect(b.closed.map((c) => c.code)).toContain(4410);
+  });
+
   it("Y5: a throwing end listener does not skip the others", async () => {
     const { service } = makeServiceAndSocket();
     const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
@@ -377,10 +422,17 @@ describe("credit window X1 (real service + real socket)", () => {
       const token = service.sessionAttach(handle);
       const s = makeSocket();
       await wire("ws://x/attach?attach=" + token).onOpen(s);
-      expect(service.creditState(handle)).toBeDefined();
       helper.emitExit();
+      const before = service
+        .sessionList()
+        .find((r) => r.generation === handle.generation && r.sessionId === handle.sessionId);
+      expect(before?.state).toBe("closed");
+      expect(before?.reason).toBe("helper_exited");
       vi.advanceTimersByTime(300_001);
-      expect(service.creditState(handle)).toBeUndefined();
+      const after = service
+        .sessionList()
+        .find((r) => r.generation === handle.generation && r.sessionId === handle.sessionId);
+      expect(after).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }

@@ -122,7 +122,13 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
                 if (key.startsWith(generation + ":")) maybeEvictClosed(key);
               }
               attachTokens.revokeGeneration(generation);
-              for (const cb of helperExitCallbacks) cb();
+              for (const cb of helperExitCallbacks) {
+                try {
+                  cb();
+                } catch {
+                  // one socket's throw must not skip the others
+                }
+              }
             }
           });
           started.onSessionClosed((sessionId, info) => {

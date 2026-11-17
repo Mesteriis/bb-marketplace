@@ -118,11 +118,18 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         // end event is buffered, then delivered after the tail.
         let bufferedEnd: { exitCode: number | null; signal: number | null; reason: string } | null = null;
         let liveSubscribed = false;
+        const guardedClose = (code: number, reason: string): void => {
+          try {
+            socket.close(code, reason);
+          } catch {
+            // renderer gone
+          }
+        };
         const sendEnd = (info: { exitCode: number | null; signal: number | null; reason: string }): void => {
           guardSend(socket, JSON.stringify({ type: "closed", exitCode: info.exitCode, signal: info.signal, reason: info.reason }));
-          socket.close(WS_SESSION_ENDED, "session ended");
+          guardedClose(WS_SESSION_ENDED, "session ended");
         };
-        offExit = deps.service.onHelperExit(() => socket.close(WS_GENERATION_STALE, "helper exited"));
+        offExit = deps.service.onHelperExit(() => guardedClose(WS_GENERATION_STALE, "helper exited"));
         offEnd = deps.service.subscribeSessionEnd(handle!, (info) => {
           if (!attached) return;
           if (liveSubscribed) sendEnd(info);
@@ -130,7 +137,15 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         });
 
         if (grant > 0) {
-          await deps.service.sessionCredit(handle!, grant).catch(() => closeStale(socket));
+          await deps.service.sessionCredit(handle!, grant).catch(() => {
+            // A credit rejection after the session already ended must not
+            // swallow the buffered/recorded exit status (Z1).
+            const record = deps.service
+              .sessionList()
+              .find((s) => s.generation === handle!.generation && s.sessionId === handle!.sessionId);
+            const ended = bufferedEnd !== null || (record !== undefined && record.state === "closed");
+            if (!ended) closeStale(socket);
+          });
         }
         if (!attached || !isOpen(socket)) {
           stream.cancel();

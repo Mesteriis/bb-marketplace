@@ -1735,7 +1735,7 @@ fn w4_hup_does_not_block_the_loop() {
                 argv: vec![
                     "perl".to_string(),
                     "-e".to_string(),
-                    "close STDIN; close STDOUT; close STDERR; select(undef,undef,undef,1.5); exit 7".to_string(),
+                    "close STDIN; close STDOUT; close STDERR; select(undef,undef,undef,0.5); exit 7".to_string(),
                 ],
                 env: HashMap::new(),
                 cwd: None,

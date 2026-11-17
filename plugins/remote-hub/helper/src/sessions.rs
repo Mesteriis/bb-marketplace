@@ -21,7 +21,7 @@ pub const WRITE_CHUNK: usize = 64 * 1024;
 pub const LINGER_GRACE: Duration = Duration::from_secs(2);
 /// How long an EOF/HUP without a reaped child may wait before the child is
 /// treated as an orphan (checked on later event-loop iterations, never slept).
-pub const REAP_GRACE: Duration = Duration::from_millis(2000);
+pub const REAP_GRACE: Duration = Duration::from_millis(1000);
 
 #[cfg(feature = "test-hooks")]
 static HUP_BEFORE_REAP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
