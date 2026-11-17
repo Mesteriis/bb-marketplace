@@ -79,7 +79,14 @@ export type ComposerSaveResult = { revision: number; originalKept?: true } | { c
 /** The RPC surface the composer needs, injected by the host adapter. */
 export interface ComposerPorts {
   save(input: ComposerSaveInput): Promise<ComposerSaveResult>;
-  send(input: { draftId: string; baseRevision: number; requestId: string; remindAfterDays?: number }): Promise<{
+  send(input: {
+    draftId: string;
+    baseRevision: number;
+    requestId: string;
+    remindAfterDays?: number;
+    /** Slice 3k: sign or encrypt this message with OpenPGP. */
+    protect?: { sign: boolean; encrypt: boolean };
+  }): Promise<{
     outboxId: string;
     sendAfter: string;
   }>;
@@ -91,6 +98,8 @@ export interface ComposerPorts {
   reload(draftId: string): Promise<DraftView>;
   /** compose_check: the advisory pre-send issues (slice 3d). Any failure sends anyway. */
   check?(input: { draftId: string; baseRevision: number }): Promise<{ issues: PresendIssue[] }>;
+  /** Slice 3k: whether From has an OpenPGP key, and the recipients Mail has no key for. Absent: no OpenPGP row. */
+  pgpCheck?(from: string, recipients: string[]): Promise<{ canSign: boolean; missing: string[] }>;
 }
 
 export interface ComposerProps {
@@ -311,6 +320,11 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   const [improveRequest, setImproveRequest] = useState<ImproveRequest | null>(null);
   const [remind, setRemind] = useState(false);
   const remindRef = useRef(remind);
+  // Slice 3k: OpenPGP for this message. Both start off; the choice is not kept with the draft.
+  const [pgpSign, setPgpSign] = useState(false);
+  const [pgpEncrypt, setPgpEncrypt] = useState(false);
+  const [pgpState, setPgpState] = useState<{ canSign: boolean; missing: string[] } | null>(null);
+  const pgpRef = useRef({ sign: false, encrypt: false });
   remindRef.current = remind;
   const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
   const [templatesOpen, setTemplatesOpen] = useState(false);
@@ -522,6 +536,47 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
     }
   };
 
+  // Slice 3k: which OpenPGP options this message can use, asked again when From or the recipients change.
+  const pgpRecipients = [...to.chips, ...cc.chips].map(chipAddress).filter((a) => a !== "").join("\n");
+  const hasBcc = bcc.chips.length > 0;
+  const pgpCheck = props.ports.pgpCheck;
+  // A null From is the account's own address.
+  const pgpFrom = from.address ?? accounts.find((account) => account.id === accountId)?.email ?? "";
+  useEffect(() => {
+    if (pgpCheck === undefined || pgpFrom === "") return;
+    let stale = false;
+    const timer = setTimeout(() => {
+      pgpCheck(pgpFrom, pgpRecipients === "" ? [] : pgpRecipients.split("\n")).then(
+        (state) => {
+          if (!stale) setPgpState(state);
+        },
+        () => {
+          // Without an answer the row stays as it was; sending without OpenPGP still works.
+        },
+      );
+    }, 300);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [pgpCheck, pgpFrom, pgpRecipients]);
+  /** Why Encrypt cannot be ticked, or null when it can. */
+  const pgpEncryptBlock =
+    pgpState === null
+      ? null
+      : !pgpState.canSign
+        ? tx("Make an OpenPGP key for this address in Mail settings to sign or encrypt.")
+        : pgpRecipients === ""
+          ? tx("Add a recipient to encrypt.")
+          : hasBcc
+            ? tx("An encrypted message cannot have Bcc recipients.")
+            : pgpState.missing.length > 0
+              ? tx("No OpenPGP key for: {missing}", { missing: pgpState.missing.join(", ") })
+              : null;
+  const pgpSignOn = pgpSign && pgpState?.canSign === true;
+  const pgpEncryptOn = pgpEncrypt && pgpEncryptBlock === null && pgpState !== null;
+  pgpRef.current = { sign: pgpSignOn, encrypt: pgpEncryptOn };
+
   /** Queues the saved revision: one request id per Send of it, retried once. */
   const queue = async (baseRevision: number) => {
     // One request id per Send of this revision: a retried call is the same send.
@@ -531,7 +586,14 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
         : (props.newRequestId ?? (() => crypto.randomUUID()))();
     attempt.current = { revision: baseRevision, requestId };
     const remindAfterDays = remindRef.current && props.reminderDays !== undefined ? props.reminderDays : undefined;
-    const input = { draftId: draft.id, baseRevision, requestId, ...(remindAfterDays !== undefined ? { remindAfterDays } : {}) };
+    const protect = pgpRef.current;
+    const input = {
+      draftId: draft.id,
+      baseRevision,
+      requestId,
+      ...(remindAfterDays !== undefined ? { remindAfterDays } : {}),
+      ...(protect.sign || protect.encrypt ? { protect } : {}),
+    };
     let outbox: { outboxId: string; sendAfter: string };
     try {
       outbox = await portsRef.current.send(input);
@@ -1124,6 +1186,30 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
             />
             {tx("Remind me if no reply in {p1}", { p1: daysText(props.reminderDays) })}
           </label>
+        ) : null}
+        {pgpState !== null ? (
+          <span role="group" aria-label={tx("OpenPGP")} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <label className="flex items-center gap-1.5">
+              <Checkbox
+                aria-label={tx("Sign with OpenPGP")}
+                checked={pgpSignOn}
+                disabled={!pgpState.canSign}
+                onCheckedChange={(checked) => setPgpSign(checked === true)}
+              />
+              {tx("Sign")}
+            </label>
+            <label className="flex items-center gap-1.5">
+              <Checkbox
+                aria-label={tx("Encrypt with OpenPGP")}
+                checked={pgpEncryptOn}
+                disabled={pgpEncryptBlock !== null}
+                onCheckedChange={(checked) => setPgpEncrypt(checked === true)}
+              />
+              {tx("Encrypt")}
+            </label>
+            {pgpEncryptOn ? <span>{tx("The subject and the addresses are not encrypted.")}</span> : null}
+            {!pgpEncryptOn && pgpEncryptBlock !== null && (pgpEncrypt || pgpState.canSign) ? <span>{pgpEncryptBlock}</span> : null}
+          </span>
         ) : null}
         <SaveStateLine state={saveState} serverCopy={draft.serverCopy} />
         <span className="flex-1" />

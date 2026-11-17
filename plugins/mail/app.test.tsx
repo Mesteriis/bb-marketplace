@@ -5461,9 +5461,18 @@ describe("Slice 3i: sender checks, images and links", () => {
   it("an encrypted message shows the placeholder and its chip, and loads no body frame", async () => {
     const slot = render(folderRpc({ thread_get: () => judged("ok", { crypto: { kind: "pgp_encrypted", opaque: false } }) }));
     await openA(slot);
-    expect(await slot.findByText("This message is encrypted. Open it in a mail client that has your key.")).toBeTruthy();
+    // Slice 3k: an OpenPGP message offers Decrypt in place of the placeholder; nothing is asked for until the click.
+    expect(await slot.findByRole("button", { name: "Decrypt" })).toBeTruthy();
     expect(slot.getAllByText("Encrypted (PGP)").length).toBeGreaterThan(0);
     expect(slot.queryByTitle("Message from Ada Example")).toBeNull();
+    expect(callsTo(slot, "pgp_open")).toHaveLength(0);
+  });
+
+  it("an S/MIME encrypted message keeps the placeholder: Mail cannot open it", async () => {
+    const slot = render(folderRpc({ thread_get: () => judged("ok", { crypto: { kind: "smime_encrypted", opaque: false } }) }));
+    await openA(slot);
+    expect(await slot.findByText("This message is encrypted. Open it in a mail client that has your key.")).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Decrypt" })).toBeNull();
   });
 
   it("Details shows Authenticity, and Check again forces a refresh and reloads", async () => {

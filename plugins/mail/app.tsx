@@ -7,6 +7,7 @@
 // This file is the BB adapter: it owns RPC, realtime refreshes, navigation and
 // the composer, and hands plain data and callbacks to the host-agnostic page
 // in src/ui.
+import type { SettingsPgpPorts } from "./src/ui/pgp-settings.tsx";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   definePluginApp,
@@ -1915,6 +1916,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     () => ({
       save: (input) => rpc.call("compose_save", input),
       send: (input) => rpc.call("compose_send", input),
+      pgpCheck: (from, recipients) => rpc.call("pgp_check", { from, recipients }),
       discard: async (draftId) => {
         await rpc.call("compose_discard", { draftId });
       },
@@ -2634,6 +2636,21 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   );
   // ---- Slice 3f: plugin settings the page reads, and Mail settings' AI tabs ----
 
+  // Slice 3k: OpenPGP keys in Mail settings.
+  const settingsPgp = useMemo<SettingsPgpPorts>(
+    () => ({
+      list: () => rpc.call("pgp_certs_list", {}),
+      generate: async (accountId, address) => {
+        await rpc.call("pgp_cert_generate", { accountId, address });
+      },
+      importArmor: (armor, phrase) => rpc.call("pgp_cert_import", phrase === undefined ? { armor } : { armor, phrase }),
+      remove: async (id) => {
+        await rpc.call("pgp_cert_remove", { id });
+      },
+      exportArmor: (id, phrase) => rpc.call("pgp_cert_export", phrase === undefined ? { id } : { id, phrase }),
+    }),
+    [rpc],
+  );
   const pluginSettings = useSettings().values;
   cleanLinksOn.current = pluginSettings?.cleanLinks !== false;
   // Slice 3h: the reading settings and the Search and reading tab.
@@ -2783,6 +2800,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
         },
       }}
       search={settingsSearch}
+      pgp={settingsPgp}
     />
   );
 
@@ -3863,6 +3881,12 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     onLabels: (threadIds) => void openLabels(threadIds),
     gmail: (accountId) => gmailIds.has(accountId),
     reading: {
+      // Slice 3k: OpenPGP in a message. What pgp_open returns stays in the panel's state.
+      pgp: {
+        open: (messageId) => rpc.call("pgp_open", { messageId }),
+        verify: (messageId) => rpc.call("pgp_verify", { messageId }),
+        importFromMessage: async (messageId) => (await rpc.call("pgp_cert_import_message", { messageId })).added.length,
+      },
       viewable: (attachment) => viewerShows(attachment.kind, attachment.mimeType),
       onView: (_message, attachment) =>
         setViewing({

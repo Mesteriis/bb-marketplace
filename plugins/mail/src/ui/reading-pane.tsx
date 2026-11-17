@@ -35,6 +35,7 @@ import { RelatedMail } from "./related-mail.tsx";
 import { LinkStatusLine, type LinkHover } from "./link-status.tsx";
 import { CryptoChip, cryptoPlaceholder, imagesHeldReason, RECEIPT_TEXT, securityOf, SenderWarnings } from "./sender-warnings.tsx";
 import { dateLocale, tx } from "./i18n/index.ts";
+import { PgpPanel, type PgpReadingPorts } from "./pgp-panel.tsx";
 
 export type BodyState =
   | { status: "loading" }
@@ -105,6 +106,8 @@ export interface ReadingPaneProps {
 
 /** The reading pane's part of slice 3h. */
 export interface ReadingSlice3h {
+  /** Slice 3k: Decrypt and Check signature for OpenPGP mail; absent: the placeholder only. */
+  pgp?: PgpReadingPorts;
   /** Whether an attachment opens in the viewer (else a click downloads it). */
   viewable: (attachment: AttachmentView) => boolean;
   onView: (message: MessageHeader, attachment: AttachmentView) => void;
@@ -591,7 +594,12 @@ function MessageItem({
           {bb !== undefined && message.patch != null ? (
             <PatchCard patch={message.patch} onReview={() => bb.onReviewPatch(message)} />
           ) : null}
-          {placeholder !== null ? (
+          {r3?.pgp !== undefined && security.crypto?.kind === "pgp_signed" ? (
+            <PgpPanel messageId={message.id} mode="signed" ports={r3.pgp} />
+          ) : null}
+          {r3?.pgp !== undefined && security.crypto?.kind === "pgp_encrypted" ? (
+            <PgpPanel messageId={message.id} mode="encrypted" ports={r3.pgp} />
+          ) : placeholder !== null ? (
             <p role="note" className="rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-muted-foreground">
               {placeholder}
             </p>

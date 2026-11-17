@@ -39,7 +39,8 @@ import { dateLocale, tx } from "./i18n/index.ts";
 export type TemplateView = { id: string; name: string; doc: EditorDoc; updatedAt: string };
 export type SuggestionView = { address: string; count: number; lastDate: string };
 export type IdentityKey = { accountId: string; address: string };
-export type SettingsSection = "addresses" | "templates" | "inbox" | "ai_access" | "activity" | "ai" | "bb" | "rules" | "search";
+import { PgpSettings, type SettingsPgpPorts } from "./pgp-settings.tsx";
+export type SettingsSection = "addresses" | "templates" | "inbox" | "ai_access" | "activity" | "ai" | "bb" | "rules" | "search" | "pgp";
 
 /** attachment_text_status (slice 3h). */
 export interface AttachmentTextStatus {
@@ -217,6 +218,8 @@ export interface MailSettingsProps {
   bb?: SettingsBbPorts;
   /** Search and reading (slice 3h); absent: no tab. */
   search?: SettingsSearchPorts;
+  /** OpenPGP keys (slice 3k); absent: no tab. */
+  pgp?: SettingsPgpPorts;
 }
 
 function messageOf(error: unknown, fallback: string): string {
@@ -305,6 +308,7 @@ export function MailSettings(props: MailSettingsProps) {
                   ] as const)
                 : []),
               ...(props.search !== undefined ? ([["search", "Search and reading"]] as const) : []),
+              ...(props.pgp !== undefined ? ([["pgp", "Encryption (OpenPGP)"]] as const) : []),
             ] as const
           ).map(([id, label]) => (
             <button
@@ -320,7 +324,7 @@ export function MailSettings(props: MailSettingsProps) {
                   : "border-transparent text-muted-foreground hover:text-foreground",
               )}
             >
-              {label}
+              {tx(label)}
             </button>
           ))}
         </div>
@@ -346,6 +350,8 @@ export function MailSettings(props: MailSettingsProps) {
             <BbIntegrationSettings values={props.bb.values} call={props.bb.call} hint={PLUGIN_SETTINGS_HINT} />
           ) : section === "rules" && props.bb !== undefined ? (
             <RulesSettings on={props.bb.mailRules} call={props.bb.call} notify={props.bb.notify} hint={PLUGIN_SETTINGS_HINT} />
+          ) : section === "pgp" && props.pgp !== undefined ? (
+            <PgpSettings ports={props.pgp} identities={props.identities} />
           ) : section === "search" && props.search !== undefined ? (
             <SearchSection search={props.search} hint={PLUGIN_SETTINGS_HINT} />
           ) : section === "inbox" && props.onUnblock !== undefined ? (

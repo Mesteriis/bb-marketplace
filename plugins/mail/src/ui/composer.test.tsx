@@ -813,3 +813,57 @@ describe("Composer: files from BB (slice 3g)", () => {
     expect(screen.queryByRole("button", { name: "Attach from BB \u25be" })).toBeNull();
   });
 });
+
+describe("Composer: OpenPGP (slice 3k)", () => {
+  const withPgp = (answer: { canSign: boolean; missing: string[] }) => {
+    const ports = { ...fakePorts(), pgpCheck: vi.fn(async (_from: string, _recipients: string[]) => answer) };
+    return ports;
+  };
+
+  it("shows no OpenPGP row without the port, and sends as before", async () => {
+    const { ports, onSent } = mount();
+    addRecipient();
+    expect(screen.queryByRole("group", { name: "OpenPGP" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+    expect(ports.send.mock.calls[0]![0]).not.toHaveProperty("protect");
+  });
+
+  it("signs and encrypts when ticked, asking with the From and the recipients", async () => {
+    const ports = withPgp({ canSign: true, missing: [] });
+    const { onSent } = mount({}, ports);
+    addRecipient();
+    const group = await screen.findByRole("group", { name: "OpenPGP" });
+    await waitFor(() => expect(ports.pgpCheck).toHaveBeenLastCalledWith(account.email, ["ada@example.org"]));
+    // Off until the owner ticks them.
+    expect(group.textContent).not.toContain("The subject and the addresses are not encrypted.");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sign with OpenPGP" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Encrypt with OpenPGP" }));
+    expect(group.textContent).toContain("The subject and the addresses are not encrypted.");
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+    expect(ports.send.mock.calls[0]![0]).toMatchObject({ protect: { sign: true, encrypt: true } });
+  });
+
+  it("cannot encrypt to a recipient without a key, and says who", async () => {
+    const ports = withPgp({ canSign: true, missing: ["ada@example.org"] });
+    const { onSent } = mount({}, ports);
+    addRecipient();
+    const group = await screen.findByRole("group", { name: "OpenPGP" });
+    await waitFor(() => expect(group.textContent).toContain("No OpenPGP key for: ada@example.org"));
+    expect((screen.getByRole("checkbox", { name: "Encrypt with OpenPGP" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sign with OpenPGP" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+    expect(ports.send.mock.calls[0]![0]).toMatchObject({ protect: { sign: true, encrypt: false } });
+  });
+
+  it("offers nothing to tick for an address with no key", async () => {
+    const ports = withPgp({ canSign: false, missing: [] });
+    mount({}, ports);
+    addRecipient();
+    await screen.findByRole("group", { name: "OpenPGP" });
+    expect((screen.getByRole("checkbox", { name: "Sign with OpenPGP" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("checkbox", { name: "Encrypt with OpenPGP" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
