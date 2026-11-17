@@ -36,6 +36,7 @@ import {
   triageBatchStateSchema,
   triageViewSchema,
   unsubscribeInfoViewSchema,
+  unsubscribeStateSchema,
   aiErrorKindSchema,
   aiResultViewSchema,
   aiScopeModeSchema,
@@ -452,6 +453,27 @@ export const inviteViewSchema = z.object({
   cancelled: z.boolean(),
   self: z.object({ address: z.string(), status: inviteStatusSchema }).nullable(),
 });
+
+/** One mailing list of the overview (slice 3n, core subscriptions.ts). */
+export const subscriptionViewSchema = z.object({
+  messageId: z.string(),
+  accountId: z.string(),
+  name: z.string(),
+  address: z.string(),
+  total: z.number().int(),
+  unread: z.number().int(),
+  lastDate: z.string().nullable(),
+  method: z.enum(["one_click", "mailto"]).nullable(),
+  /** Where the request goes: the one-click host, or the mailto address. */
+  target: z.string().nullable(),
+  /** May be unsubscribed together with others (false: decided in the message). */
+  batch: z.boolean(),
+  /** For the mailto: the exact subject and text the email carries. */
+  mail: z.object({ subject: z.string(), body: z.string(), hiddenChars: z.number().int() }).nullable(),
+  /** The latest request for this list, if any. */
+  already: z.object({ state: unsubscribeStateSchema, at: z.string() }).nullable(),
+});
+export type SubscriptionView = z.infer<typeof subscriptionViewSchema>;
 
 export const rpcSchemas = {
   status_get: {
@@ -909,6 +931,19 @@ export const rpcSchemas = {
   unsubscribe_info: {
     input: z.object({ messageId: idInput }),
     output: unsubscribeInfoViewSchema,
+  },
+  /**
+   * Slice 3n: the mailing lists the stored mail comes from, largest first
+   * (never a list's own key). `messageId` is the list's newest stored message:
+   * unsubscribe_run is asked with it. `truncated`: more mail than one
+   * overview reads.
+   */
+  subscriptions_list: {
+    input: z.object({ accountId: idInput.nullable() }),
+    output: z.object({
+      subscriptions: z.array(subscriptionViewSchema),
+      truncated: z.boolean(),
+    }),
   },
   /** Idempotent per requestId; refuses a method unsubscribe_info would not offer now. */
   unsubscribe_run: {
@@ -1728,6 +1763,9 @@ export const SLICE_3H_METHODS = [
   "related_messages",
   "sender_card",
 ] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
+/** The owner-only method slice 3n adds. */
+export const SLICE_3N_METHODS = ["subscriptions_list"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
 /** The three owner-only methods slice 3m adds. */
 export const SLICE_3M_METHODS = ["filters_list", "filter_save", "filter_delete"] as const satisfies readonly (keyof typeof rpcSchemas)[];

@@ -46,6 +46,7 @@ export * from "./idle-policy.ts";
 export * from "./snooze.ts";
 export * from "./send-later.ts";
 export * from "./mail-filters.ts";
+export * from "./subscriptions.ts";
 export * from "./calendar-invite.ts";
 export * from "./triage.ts";
 export { removeControls, removeInvisible } from "./html-entities.ts";

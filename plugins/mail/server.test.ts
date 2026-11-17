@@ -72,7 +72,7 @@ import { createHash } from "node:crypto";
 import { createPgpEngine } from "./src/adapters/bb/pgp-openpgp.ts";
 import { extractEncrypted, extractSigned, wrapEncrypted, wrapSigned } from "./src/core/pgp-mime.ts";
 import { PGP_SEND_TEXT } from "./src/core/compose-outbox.ts";
-import { SLICE_3K_METHODS, SLICE_3L_METHODS, SLICE_3M_METHODS } from "./src/core/contract.ts";
+import { SLICE_3K_METHODS, SLICE_3L_METHODS, SLICE_3M_METHODS, SLICE_3N_METHODS } from "./src/core/contract.ts";
 import { readFileSync } from "node:fs";
 import type {
   AccountPreset,
@@ -9143,5 +9143,77 @@ describe("calendar invitations (slice 3l)", () => {
     });
     expect(await reply(inviteMail(ICS), "Junk")).toEqual({ answerable: false, refused: INVITE_HIDDEN_MESSAGE });
     expect(await reply(inviteMail("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"))).toEqual({ answerable: false, refused: INVITE_NONE_MESSAGE });
+  });
+});
+
+describe("subscriptions overview (slice 3n)", () => {
+  type Lists = { subscriptions: Record<string, unknown>[]; truncated: boolean };
+
+  it("lists the stored mail's lists with counts, outside Spam, without the list key; a request made from it shows as done", async () => {
+    const poster = new FakePoster();
+    const host = await loadUnsubscribe({ poster });
+    const store = sqlStore(host);
+    store.upsertMessages("acc_1", "INBOX", [
+      makeFetchedMessage(3, { messageId: "<list-4@example.com>", from: LIST_FROM, bulkHeaders: LIST_BULK, unsubscribe: UNSUB_INFO, seen: true, date: "2026-11-14T09:00:00.000Z" }),
+      makeFetchedMessage(4, {
+        messageId: "<shop-1@example.net>",
+        from: { name: "Invented Shop", address: "offers@shop.example.net" },
+        unsubscribe: { listKey: "from:offers@shop.example.net", listName: null, https: null, oneClick: false, mailto: { address: "stop@elsewhere.example.org", subject: "", body: "" }, trust: "no_dkim" },
+        date: "2026-11-13T09:00:00.000Z",
+      }),
+    ]);
+    const newest = messageIdAt(host, "INBOX", 3);
+    const before = (await call(host, "subscriptions_list", { accountId: null })) as Lists;
+    expect(before.truncated).toBe(false);
+    expect(before.subscriptions).toEqual([
+      {
+        messageId: newest,
+        accountId: "acc_1",
+        name: "Invented Weekly",
+        address: "news@example.com",
+        // uid 1 and uid 3; uid 2 has no stored info yet, and the copy in Spam does not count.
+        total: 2,
+        unread: 1,
+        lastDate: "2026-11-14T09:00:00.000Z",
+        method: "one_click",
+        target: "unsub.example.com",
+        batch: true,
+        mail: null,
+        already: null,
+      },
+      {
+        messageId: messageIdAt(host, "INBOX", 4),
+        accountId: "acc_1",
+        name: "Invented Shop",
+        address: "offers@shop.example.net",
+        total: 1,
+        unread: 1,
+        lastDate: "2026-11-13T09:00:00.000Z",
+        method: "mailto",
+        target: "stop@elsewhere.example.org",
+        // Its address is at another domain: not for a batch.
+        batch: false,
+        mail: { subject: "unsubscribe", body: "", hiddenChars: 0 },
+        already: null,
+      },
+    ]);
+    expect(JSON.stringify(before)).not.toContain("weekly.example.com");
+    // Reading the overview sends nothing.
+    expect(poster.urls).toEqual([]);
+    expect(host.gateway.sessions).toEqual([]);
+    expect(((await call(host, "subscriptions_list", { accountId: "acc_nope" })) as Lists).subscriptions).toEqual([]);
+
+    expect(await call(host, "unsubscribe_run", { messageId: newest, method: "one_click", requestId: REQ_A })).toMatchObject({ outcome: "done" });
+    const after = (await call(host, "subscriptions_list", { accountId: "acc_1" })) as Lists;
+    expect(after.subscriptions[0]).toMatchObject({ messageId: newest, already: { state: "done", at: NOW.toISOString() } });
+    expect(after.subscriptions[1]).toMatchObject({ already: null });
+  });
+
+  it("refuses other plugins and is no tool", async () => {
+    const host = await loadUnsubscribe();
+    const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+    expect([...SLICE_3N_METHODS]).toEqual(["subscriptions_list"]);
+    await expect(host.harness.behavior.callRpc("subscriptions_list", { accountId: null }, asPlugin)).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+    expect(host.harness.inspection.registrations.agentTools.some((tool) => /subscription/i.test(tool.name))).toBe(false);
   });
 });

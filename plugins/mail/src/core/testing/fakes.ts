@@ -54,6 +54,7 @@ import type { ProposalDeps } from "../agent-proposals.ts";
 import { SendRateLimit, UndoneSends } from "../compose-outbox.ts";
 import { SCHEDULE_LATE_MS } from "../send-later.ts";
 import { FILTERS_MAX, type MailFilter } from "../mail-filters.ts";
+import type { SubscriptionRow } from "../subscriptions.ts";
 import { TRANSLATION_CACHE_ROWS } from "../translate.ts";
 import {
   CONTACT_SCAN,
@@ -2054,6 +2055,27 @@ export class InMemoryMailStore implements MailStore {
         bulk: r.bulk,
         unsubscribe: r.unsubscribe === null ? null : structuredClone(r.unsubscribe),
         snoozedUntil: this.state.snoozes.get(r.id)?.dueAt ?? null,
+      }));
+  }
+
+  subscriptionRows(accountId: string | null, limit: number): SubscriptionRow[] {
+    const skipped: (SpecialUse | null)[] = ["junk", "trash", "drafts", "sent"];
+    return this.state.rows
+      .filter(
+        (r) =>
+          (accountId === null || r.accountId === accountId) && r.unsubscribe !== null && !skipped.includes(this.roleOf(r.accountId, r.folder)),
+      )
+      .sort((a, b) => oldestFirst(b, a))
+      .slice(0, limit)
+      .map((r) => ({
+        id: r.id,
+        accountId: r.accountId,
+        dedupKey: r.dedupKey,
+        fromName: r.message.from.name,
+        fromAddress: r.message.from.address,
+        date: r.message.date,
+        isRead: r.isRead,
+        info: structuredClone(r.unsubscribe!),
       }));
   }
 

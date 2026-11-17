@@ -5449,6 +5449,43 @@ export function createSqliteStore(db: Database.Database): MailStore {
       return row?.unsubscribe_json ? (JSON.parse(row.unsubscribe_json) as UnsubscribeInfo) : null;
     },
 
+    subscriptionRows(accountId, limit) {
+      const rows = db
+        .prepare<
+          [string | null, string | null, number],
+          { id: string; account_id: string; dedup_key: string; from_name: string | null; from_address: string; date: string | null; is_read: number; unsubscribe_json: string }
+        >(
+          `SELECT m.id, m.account_id, m.dedup_key, m.from_name, m.from_address, m.date, m.is_read, m.unsubscribe_json
+           FROM messages m LEFT JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder
+           WHERE m.unsubscribe_json IS NOT NULL AND (? IS NULL OR m.account_id = ?)
+             AND (f.special_use IS NULL OR f.special_use NOT IN ('junk', 'trash', 'drafts', 'sent'))
+           ORDER BY m.date IS NULL, m.date DESC, m.id DESC
+           LIMIT ?`,
+        )
+        .all(accountId, accountId, limit);
+      return rows.flatMap((row) => {
+        let info: UnsubscribeInfo;
+        try {
+          info = JSON.parse(row.unsubscribe_json) as UnsubscribeInfo;
+        } catch {
+          return [];
+        }
+        if (info === null || typeof info !== "object" || typeof info.listKey !== "string") return [];
+        return [
+          {
+            id: row.id,
+            accountId: row.account_id,
+            dedupKey: row.dedup_key,
+            fromName: row.from_name,
+            fromAddress: row.from_address,
+            date: row.date,
+            isRead: row.is_read === 1,
+            info,
+          },
+        ];
+      });
+    },
+
     getUnsubscribe(accountId, listKey) {
       const row = db
         .prepare<[string, string], UnsubscribeDbRow>("SELECT * FROM unsubscribes WHERE account_id = ? AND list_key = ?")

@@ -9,6 +9,7 @@
 // in src/ui.
 import type { SettingsPgpPorts } from "./src/ui/pgp-settings.tsx";
 import type { SettingsFilterPorts } from "./src/ui/filters-settings.tsx";
+import type { SettingsSubscriptionPorts } from "./src/ui/subscriptions-settings.tsx";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   definePluginApp,
@@ -2686,6 +2687,21 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     }),
     [rpc],
   );
+  // Slice 3n: the subscriptions overview. Each request is the message's own Unsubscribe.
+  const settingsSubscriptions = useMemo<SettingsSubscriptionPorts>(
+    () => ({
+      list: () => rpc.call("subscriptions_list", { accountId: null }),
+      run: async (messageId, method) => {
+        const result = await rpc.call("unsubscribe_run", { messageId, method, requestId: crypto.randomUUID() });
+        if (result.outcome === "queued") {
+          if (result.outboxId !== null) showUndo(result.outboxId, null, "owner", "unsubscribe");
+          void loadOutbox();
+        }
+        return { outcome: result.outcome, reason: result.reason };
+      },
+    }),
+    [loadOutbox, rpc, showUndo],
+  );
   const pluginSettings = useSettings().values;
   cleanLinksOn.current = pluginSettings?.cleanLinks !== false;
   // Slice 3h: the reading settings and the Search and reading tab.
@@ -2837,6 +2853,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       search={settingsSearch}
       pgp={settingsPgp}
       filters={settingsFilters}
+      subscriptions={settingsSubscriptions}
     />
   );
 

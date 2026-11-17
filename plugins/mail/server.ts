@@ -274,6 +274,8 @@ import {
   isHiddenDraft,
   matchesBlock,
   filterFor,
+  groupSubscriptions,
+  SUBSCRIPTIONS_SCAN_MAX,
   validateFilter,
   notifiable,
   ownAddresses,
@@ -3531,6 +3533,17 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         refusePluginCaller(context);
         return unsubscribeView(deps, messageId, (line) => bb.log.info(line));
       },
+      // Slice 3n: the lists the stored mail comes from. Owner only; the list keys stay here.
+      subscriptions_list: owner("subscriptions_list", ({ accountId }) => {
+        const rows = store.subscriptionRows(accountId, SUBSCRIPTIONS_SCAN_MAX);
+        return {
+          subscriptions: groupSubscriptions(rows).map(({ listKey, ...list }) => {
+            const earlier = store.getUnsubscribe(list.accountId, listKey);
+            return { ...list, already: earlier === null ? null : { state: earlier.state, at: earlier.requestedAt } };
+          }),
+          truncated: rows.length >= SUBSCRIPTIONS_SCAN_MAX,
+        };
+      }),
       unsubscribe_run: owner("unsubscribe_run", (input) => runUnsubscribe(deps, input, (line) => bb.log.info(line))),
       // "Archive all from this list": an ordinary archive of the account's stored Inbox rows of that list.
       unsubscribe_archive: owner("unsubscribe_archive", ({ messageId, undoId }) => {

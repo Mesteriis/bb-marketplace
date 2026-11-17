@@ -68,6 +68,7 @@ import type { DevClass, DevKind, DevSource } from "./dev-notify.ts";
 import type { ProjectInfo } from "./projects.ts";
 import type { Rule, RuleMode } from "./mail-rules.ts";
 import type { MailFilter } from "./mail-filters.ts";
+import type { SubscriptionRow } from "./subscriptions.ts";
 import type { BbLinkRowKind } from "./model.ts";
 import type { MailCrypto } from "./mail-crypto.ts";
 import type { SenderCheck } from "./sender-check.ts";
@@ -889,6 +890,12 @@ export interface MailStore {
     limit: number,
   ): { uid: number; from: MailAddress }[];
   getUnsubscribeInfo(messageId: string): UnsubscribeInfo | null;
+  /**
+   * Slice 3n: stored messages that carry unsubscribe headers, outside Spam,
+   * Trash, Drafts and Sent, newest first, at most `limit`; `accountId` null:
+   * every account. One row per stored copy (the caller counts distinct keys).
+   */
+  subscriptionRows(accountId: string | null, limit: number): SubscriptionRow[];
   getUnsubscribe(accountId: string, listKey: string): UnsubscribeRecord | null;
   /**
    * mail_inbox (slice 3e): attached Inbox-role messages not moving, one per
