@@ -76,7 +76,7 @@ fn g8_engine_exit_code_is_reported_and_close_after_reap_signals_nothing() {
     let (_echo, _) = h.open_echo(); // keep a PTY session around
     let (rdp, engine_pid) = h.open_rdp(closed_port());
     let (code, signal, reason) = h.read_closed(rdp);
-    assert_eq!(reason, "network_error");
+    assert_eq!(reason, "network_error", "closed with exit code {code:?}, signal {signal:?}");
     assert_eq!((code, signal), (Some(0), None));
     // The closed report is only sent once the engine has been reaped, so the
     // close below always follows the reap.

@@ -59,7 +59,16 @@ fn engine_main(mut stream: UnixStream) -> std::io::Result<i32> {
     let params = Params { host, port, username, password, domain, width, height, expected_fingerprint };
     let out = Arc::new(Out::new(stream.try_clone()?));
     let inbox = spawn_reader(stream);
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            // No runtime (e.g. thread limit): say so instead of exiting silently.
+            // (fd 2 is /dev/null by design, so the helper hears it as an event.)
+            let _ = out.send(&EngineEvent::Error { code: "engine_start_failed".to_string(), message: e.kind().to_string() });
+            let _ = out.closed(RdpClosedReason::ProtocolError);
+            return Ok(1);
+        }
+    };
     rt.block_on(run(params, Timeouts::default(), out, inbox, Arc::new(SystemClock::new()), &SystemTls))?;
     Ok(0)
 }

@@ -688,8 +688,17 @@ impl RdpManager {
             }
             s.engine_pid = None;
             s.exit = Some(parse_status(status));
-            Self::set_reason(s, "engine_exited");
-            Self::close_transport(s);
+            if s.fd >= 0 {
+                // The transport is still open: the engine may have written its
+                // Closed event (the real reason) just before it exited, and that
+                // event is still unread. Leave the transport to the poll loop,
+                // which reads it and then sees the EOF (a dead process has no
+                // open socket); only an EOF without a Closed event is
+                // `engine_exited`.
+                s.ended_at.get_or_insert_with(Instant::now);
+            } else {
+                Self::set_reason(s, "engine_exited");
+            }
             out.push(s.id);
         }
         out
@@ -711,9 +720,12 @@ impl RdpManager {
 
     pub fn close(&mut self, id: u32) -> Option<String> {
         let mut s = self.sessions.remove(&id)?;
+        // An engine that was already reaped ended by itself, whatever the
+        // client does next; one that is stopped now was closed by the client.
+        let fallback = if s.engine_pid.is_none() && s.exit.is_some() { "engine_exited" } else { "killed_by_close" };
         Self::stop_engine(&mut s);
         Self::close_transport(&mut s);
-        Some(s.close_reason.unwrap_or_else(|| "killed_by_close".to_string()))
+        Some(s.close_reason.unwrap_or_else(|| fallback.to_string()))
     }
 
     pub fn terminate_all(&mut self) {
@@ -734,7 +746,14 @@ mod tests {
 
     /// A socketpair that spawned test children cannot inherit (close-on-exec),
     /// so an EOF is seen as soon as the peer is closed.
+    /// macOS has no atomic close-on-exec socketpair, and every test spawns real
+    /// children: a child spawned between `socketpair` and `set_cloexec` would
+    /// inherit an end and keep it open, so an EOF the test waits for never
+    /// comes. Creation and spawning are serialised.
+    static SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn socketpair() -> (RawFd, RawFd) {
+        let _guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut fds = [0i32; 2];
         assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) }, 0);
         set_cloexec(fds[0]);
@@ -760,6 +779,7 @@ mod tests {
     /// The `Child` handle is dropped without waiting: the manager under test
     /// reaps the pid.
     fn spawn_exit(code: i32) -> libc::pid_t {
+        let _guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let child = std::process::Command::new("/bin/sh")
             .args(["-c", &format!("exit {code}")])
             .spawn()
@@ -769,6 +789,7 @@ mod tests {
 
     /// A real child that stays alive until it is killed.
     fn spawn_sleeper() -> libc::pid_t {
+        let _guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let child = std::process::Command::new("/bin/sleep").arg("600").spawn().expect("spawn /bin/sleep");
         child.id() as libc::pid_t
     }
@@ -830,12 +851,33 @@ mod tests {
         let (a, b) = socketpair();
         let mut mgr = RdpManager::new();
         let id = mgr.adopt(Some(pid), a);
+        // A dead engine holds no socket: its end is closed.
+        unsafe { libc::close(b) };
         wait_until(|| !mgr.reap().is_empty());
+        read_until_closed(&mut mgr, id);
         let report = mgr.take_closed(id).expect("closed after reap");
         assert_eq!(report.reason, "engine_exited");
         assert_eq!(report.exit, EngineExit { code: Some(9), signal: None });
         assert_eq!(mgr.engine_pid(id), None, "pid must be cleared once reaped");
-        unsafe { libc::close(b) };
+    }
+
+    /// The race behind a load-only g8 failure: the engine writes its Closed event
+    /// and exits; the helper reaps it BEFORE it has read the event. The reason
+    /// the engine reported must win over `engine_exited`.
+    #[test]
+    fn a_reaped_engine_keeps_the_closed_reason_it_wrote_before_exiting() {
+        let (a, b) = socketpair();
+        write_all(b, &encode_control(&EngineEvent::Closed { reason: "network_error".to_string() }));
+        unsafe { libc::close(b) }; // the engine is gone: EOF follows the event
+        let pid = spawn_exit(0);
+        wait_until_exited_unreaped(pid);
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(Some(pid), a);
+        assert_eq!(mgr.reap(), vec![id], "the engine is reaped before anything is read");
+        read_until_closed(&mut mgr, id);
+        let report = mgr.take_closed(id).expect("closed");
+        assert_eq!(report.reason, "network_error");
+        assert_eq!(report.exit, EngineExit { code: Some(0), signal: None });
     }
 
     /// An engine that was reaped is never signalled again: close() after reap
