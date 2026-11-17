@@ -5909,3 +5909,32 @@ describe("slice 3j: density and the reading pane", () => {
     expect(conversation!.className).not.toContain("hidden");
   });
 });
+
+describe("slice 3j: the page in Russian", () => {
+  function renderIn(language: string) {
+    return renderSlot({ component: MailWithSidebar }, { subPath: "" }, {
+      rpc: rowsRpc() as never,
+      settings: { language },
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+  }
+
+  it("shows Mail's own texts in Russian and leaves mail data as it came", async () => {
+    const { RU } = await import("./src/ui/i18n/ru.ts");
+    const slot = renderIn("ru");
+    // Subjects are mail data: never translated.
+    await slot.findByText("Tickets");
+    expect(pageRoot(slot as never).getAttribute("lang")).toBe("ru");
+    expect(slot.getByRole("button", { name: RU["Sync now"] as string })).toBeTruthy();
+    expect(slot.getByRole("button", { name: RU["Keyboard shortcuts"] as string })).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Sync now" })).toBeNull();
+    expect(slot.getByRole("group", { name: RU["Quick filters"] as string })).toBeTruthy();
+  });
+
+  it("stays English when the setting says English", async () => {
+    const slot = renderIn("en");
+    await slot.findByText("Tickets");
+    expect(pageRoot(slot as never).getAttribute("lang")).toBe("en");
+    expect(slot.getByRole("button", { name: "Sync now" })).toBeTruthy();
+  });
+});

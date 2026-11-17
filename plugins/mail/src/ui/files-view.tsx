@@ -209,7 +209,7 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
         </p>
       ) : null}
       {files === null ? (
-        <LoadingState label={tx("Loading files\\u2026")} />
+        <LoadingState label={tx("Loading files\u2026")} />
       ) : files.length === 0 ? (
         problem === null ? <p className="text-sm text-muted-foreground">{tx("No files here.")}</p> : null
       ) : (

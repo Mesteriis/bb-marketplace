@@ -74,7 +74,8 @@ export function t(text: string, params?: Params): string {
   const entry = current === "en" ? undefined : CATALOGS[current][text];
   if (entry === undefined) return fill(text, params);
   if (typeof entry === "string") return fill(entry, params);
-  const count = Number(params?.count ?? params?.n ?? 0);
+  // The counted value: `count`, `n`, else the first number among the values.
+  const count = Number(params?.count ?? params?.n ?? Object.values(params ?? {}).find((v) => typeof v === "number") ?? 0);
   return fill(formOf(entry, Number.isFinite(count) ? count : 0), params);
 }
 
