@@ -52,7 +52,7 @@ export function TasksView({ load, update, remove, onOpen, refreshKey = 0 }: Task
       setNext(page.next);
       setProblem(null);
     } catch (error) {
-      setProblem(error instanceof Error && error.message !== "" ? error.message : "Tasks could not be loaded");
+      setProblem(tx(error instanceof Error && error.message !== "" ? error.message : "Tasks could not be loaded"));
     }
   }, [done, load]);
   useEffect(() => {
@@ -62,7 +62,7 @@ export function TasksView({ load, update, remove, onOpen, refreshKey = 0 }: Task
   const run = (work: () => Promise<void>) => {
     work().then(
       () => void reload(),
-      (error: unknown) => setProblem(error instanceof Error && error.message !== "" ? error.message : "The change failed"),
+      (error: unknown) => setProblem(tx(error instanceof Error && error.message !== "" ? error.message : "The change failed")),
     );
   };
   const more = async () => {

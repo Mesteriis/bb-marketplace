@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AiStartInput, AiStartOutput, AiPollOutput } from "../core/contract.ts";
 import type { AiErrorKind, AiResultView } from "../core/model.ts";
-import { msg } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 export interface AiJobPorts {
   start: (input: AiStartInput) => Promise<AiStartOutput>;
@@ -52,7 +52,7 @@ export const AI_ERROR_TEXT: Record<AiErrorKind, string> = {
 };
 
 function messageOf(error: unknown): string {
-  return error instanceof Error && error.message !== "" ? error.message : AI_ERROR_TEXT.failed;
+  return tx(error instanceof Error && error.message !== "" ? error.message : AI_ERROR_TEXT.failed);
 }
 
 /**
@@ -126,7 +126,7 @@ export function useAiJob(ports: AiJobPorts, pollMs: number = AI_POLL_MS) {
           setState({
             status: "failed",
             error: kind,
-            text: AI_ERROR_TEXT[kind],
+            text: tx(AI_ERROR_TEXT[kind]),
             gatewayMessage: poll.gatewayMessage ?? null,
             provider: poll.provider ?? null,
             model: poll.model ?? null,

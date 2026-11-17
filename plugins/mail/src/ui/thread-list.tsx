@@ -128,7 +128,7 @@ export function QuickFilters({
               onChange(next);
             }}
           >
-            {label}
+            {tx(label)}
           </Button>
         );
       })}

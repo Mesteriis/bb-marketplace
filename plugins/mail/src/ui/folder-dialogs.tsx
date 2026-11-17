@@ -49,7 +49,7 @@ export function folderRefusalText(refusal: FolderOpRefusal, op: "rename" | "dele
 }
 
 export function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return tx(error instanceof Error ? error.message : String(error));
 }
 
 /** A new folder (parent null: at the top of the account) or a rename. */
@@ -75,7 +75,7 @@ function NameForm({
     // The delimiter and the special-use names are the server's; it checks them again.
     const checked = validFolderName(name, { delimiter: "", siblings, namedLikeSpecialUse: () => false });
     if (!checked.ok) {
-      setProblem(FOLDER_NAME_TEXT[checked.reason]);
+      setProblem(tx(FOLDER_NAME_TEXT[checked.reason]));
       return;
     }
     if (request.kind === "rename" && checked.name === request.name) {

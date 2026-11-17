@@ -21,7 +21,7 @@ const KIND_LABEL: Record<DevLinkView["kind"], string> = {
 
 /** "PR #42 example-org/demo". */
 export function linkLabel(link: DevLinkView): string {
-  const kind = KIND_LABEL[link.kind];
+  const kind = tx(KIND_LABEL[link.kind]);
   const number = link.number === null ? "" : link.kind === "commit" ? ` ${link.number.slice(0, 7)}` : link.kind === "tracker" || link.kind === "release" ? ` ${link.number}` : ` #${link.number}`;
   const repo = link.repo !== null ? ` ${link.repo.path}` : "";
   return `${kind}${number}${repo}`;

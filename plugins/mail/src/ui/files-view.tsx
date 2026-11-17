@@ -89,7 +89,7 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
       if (mine !== token.current) return;
       setFiles([]);
       setNext(null);
-      setProblem(error instanceof Error && error.message !== "" ? error.message : "Files could not be loaded");
+      setProblem(tx(error instanceof Error && error.message !== "" ? error.message : "Files could not be loaded"));
     }
   }, [filter, load]);
   useEffect(() => {
@@ -107,7 +107,7 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
       setNext(page.nextCursor);
     } catch (error) {
       if (mine !== token.current) return;
-      setProblem(error instanceof Error && error.message !== "" ? error.message : "Files could not be loaded");
+      setProblem(tx(error instanceof Error && error.message !== "" ? error.message : "Files could not be loaded"));
     } finally {
       if (mine === token.current) setLoadingMore(false);
     }
@@ -144,7 +144,7 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
     <section aria-label={tx("Files")} className="flex flex-col gap-3">
       <h2 className="text-lg font-semibold text-foreground">{tx("Files")}</h2>
       <div role="group" aria-label={tx("Type")} className="flex flex-wrap items-center gap-1">
-        {[{ kind: undefined, label: tx("All") } as { kind: FileKind | undefined; label: string }, ...FILE_KIND_FILTERS].map(({ kind, label }) => {
+        {[{ kind: undefined, label: tx("All") } as { kind: FileKind | undefined; label: string }, ...FILE_KIND_FILTERS.map((entry) => ({ ...entry, label: tx(entry.label) }))].map(({ kind, label }) => {
           const on = filter.kind === kind;
           return (
             <Button
@@ -236,7 +236,7 @@ export function FilesView({ accounts, load, initial = {}, onView, onDownload, on
                     <td className="max-w-56 truncate py-1 pr-2 text-foreground" title={fileName}>
                       {fileName}
                     </td>
-                    <td className="py-1 pr-2 text-muted-foreground">{KIND_TEXT[file.kind]}</td>
+                    <td className="py-1 pr-2 text-muted-foreground">{tx(KIND_TEXT[file.kind])}</td>
                     <td className="py-1 pr-2 tabular-nums text-muted-foreground">{formatFileSize(file.size)}</td>
                     <td className="max-w-40 truncate py-1 pr-2 text-muted-foreground">{addressLabel(file.from)}</td>
                     <td className="py-1 pr-2 text-muted-foreground">{formatListDate(file.date)}</td>

@@ -30,7 +30,8 @@ export const TRANSLATE_LANGUAGES: readonly { tag: string; label: string }[] = [
 ];
 
 export function languageLabel(tag: string): string {
-  return TRANSLATE_LANGUAGES.find((l) => l.tag === tag)?.label ?? tag;
+  const known = TRANSLATE_LANGUAGES.find((l) => l.tag === tag)?.label;
+  return known !== undefined ? tx(known) : tag;
 }
 
 export interface TranslationState {
@@ -136,7 +137,7 @@ export function TranslationBlock({
           <SelectContent>
             {languages.map((l) => (
               <SelectItem key={l.tag} value={l.tag}>
-                {l.label}
+                {tx(l.label)}
               </SelectItem>
             ))}
           </SelectContent>

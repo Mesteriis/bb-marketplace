@@ -143,7 +143,7 @@ function TaskBody({ request, call, onMade, onClose }: TaskDialogProps & { reques
                   disabled={!request.inAiScope}
                   onChange={() => setWhere("taskboard")}
                 />
-                {request.inAiScope ? tx("Taskboard") : `Taskboard (${BB_TEXT.out_of_scope})`}
+                {request.inAiScope ? tx("Taskboard") : `Taskboard (${tx(BB_TEXT.out_of_scope)})`}
               </label>
               <label className="flex items-center gap-1.5">
                 <input type="radio" name="task-where" checked={where === "local"} onChange={() => setWhere("local")} />
@@ -187,7 +187,7 @@ function TaskBody({ request, call, onMade, onClose }: TaskDialogProps & { reques
             onChange={(e) => setNote(e.target.value)}
           />
         </div>
-        <label className="flex items-center gap-2 text-sm" title={request.inAiScope ? undefined : BB_TEXT.out_of_scope}>
+        <label className="flex items-center gap-2 text-sm" title={request.inAiScope ? undefined : tx(BB_TEXT.out_of_scope)}>
           <Checkbox
             checked={excerpt && request.inAiScope}
             disabled={!request.inAiScope}
@@ -195,7 +195,7 @@ function TaskBody({ request, call, onMade, onClose }: TaskDialogProps & { reques
           />
           {tx("Include an excerpt of the mail (passwords and codes hidden)")}
         </label>
-        {!request.inAiScope ? <p className="text-xs text-muted-foreground">{BB_TEXT.out_of_scope}</p> : null}
+        {!request.inAiScope ? <p className="text-xs text-muted-foreground">{tx(BB_TEXT.out_of_scope)}</p> : null}
         {where === "local" ? (
           <div className="flex flex-col gap-1">
             <label htmlFor={ids.due} className="text-xs font-medium text-muted-foreground">

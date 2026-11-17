@@ -104,7 +104,7 @@ function TasksBody({ request, ports, onKeep, onCite, onClose, pollMs }: TasksDia
       await onKeep(state.jobId, picks);
       onClose();
     } catch (error) {
-      setProblem(error instanceof Error && error.message !== "" ? error.message : "The tasks could not be kept");
+      setProblem(tx(error instanceof Error && error.message !== "" ? error.message : "The tasks could not be kept"));
     } finally {
       setKeeping(false);
     }

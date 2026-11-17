@@ -114,7 +114,7 @@ export function LabelsDialog({
     event.preventDefault();
     const checked = validLabelName(newName);
     if (!checked.ok) {
-      setProblem(LABEL_REFUSAL_TEXT[checked.reason]);
+      setProblem(tx(LABEL_REFUSAL_TEXT[checked.reason]));
       return;
     }
     const existing = all.find((name) => name.toLowerCase() === checked.name.toLowerCase());

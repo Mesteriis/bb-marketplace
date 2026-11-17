@@ -809,7 +809,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
   return (
     <section
       ref={rootRef}
-      aria-label={TITLES[draft.kind]}
+      aria-label={tx(TITLES[draft.kind])}
       data-mail-composer=""
       onKeyDown={onKeyDown}
       onFocus={() => props.onFocusWithin?.(true)}
@@ -841,7 +841,7 @@ function ComposerBody(props: ComposerProps & { onReloaded: (draft: DraftView) =>
             {tx("Back")}
           </Button>
         ) : null}
-        <h2 className="min-w-0 flex-1 truncate px-1 text-sm font-semibold text-foreground">{TITLES[draft.kind]}</h2>
+        <h2 className="min-w-0 flex-1 truncate px-1 text-sm font-semibold text-foreground">{tx(TITLES[draft.kind])}</h2>
         {draft.origin === "agent" ? (
           <span className="flex shrink-0 items-center gap-1 rounded-sm bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground">
             <Icon name="Bot" fallback="Mail" className="size-3.5" aria-hidden />

@@ -36,7 +36,7 @@ export function RuleStrip({ runs, onReview, onDismiss, onPauseAll }: RuleStripPr
           <li key={run.id} className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
             <span className="shrink-0 text-muted-foreground">{run.ruleName ?? tx("A deleted rule")}</span>
             <span className="min-w-0 flex-1 truncate text-foreground">{subjectOrPlaceholder(run.subject)}</span>
-            {STATE_TEXT[run.state] !== undefined ? <span className="text-muted-foreground">{STATE_TEXT[run.state]}</span> : null}
+            {STATE_TEXT[run.state] !== undefined ? <span className="text-muted-foreground">{tx(STATE_TEXT[run.state]!)}</span> : null}
             <Button variant="outline" size="sm" className="h-6 px-2 text-xs" disabled={run.ruleName === null} onClick={() => onReview(run)}>
               {tx("Review")}
             </Button>

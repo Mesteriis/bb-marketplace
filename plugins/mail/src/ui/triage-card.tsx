@@ -174,7 +174,7 @@ export function TriageCard({ load, submit, cancel, registerAction }: TriageCardP
     return (
       <CardShell>
         <p role="alert" className="text-sm text-foreground">
-          {loaded.kind === "error" ? tx("Could not load these inbox actions. Nothing was applied.") : CLOSED_TEXT[loaded.state]}
+          {loaded.kind === "error" ? tx("Could not load these inbox actions. Nothing was applied.") : tx(CLOSED_TEXT[loaded.state])}
         </p>
         <div className="flex justify-end">
           <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void doCancel()}>
@@ -250,10 +250,10 @@ export function TriageCard({ load, submit, cancel, registerAction }: TriageCardP
         const items = view.items.filter((item) => item.action === action);
         if (items.length === 0) return null;
         return (
-          <section key={action} aria-label={label} className="flex flex-col gap-1.5">
+          <section key={action} aria-label={tx(label)} className="flex flex-col gap-1.5">
             <div className="flex flex-wrap items-center gap-2">
               <h4 className="min-w-0 flex-1 text-xs font-semibold text-foreground">
-                {label} <span className="font-normal text-muted-foreground">{items.length}</span>
+                {tx(label)} <span className="font-normal text-muted-foreground">{items.length}</span>
               </h4>
               <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setGroup(items, true)}>
                 {tx("Select all")}

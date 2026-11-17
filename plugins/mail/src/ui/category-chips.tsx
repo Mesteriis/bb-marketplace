@@ -19,7 +19,8 @@ export const CATEGORIES: readonly { value: Category; label: string }[] = [
 ];
 
 export function categoryLabel(category: Category): string {
-  return CATEGORIES.find((c) => c.value === category)?.label ?? category;
+  const known = CATEGORIES.find((c) => c.value === category)?.label;
+  return known !== undefined ? tx(known) : category;
 }
 
 const NONE = "none";
@@ -97,7 +98,7 @@ export function CategoryChip({ category, suggestion, onAccept, onChange, onAlway
           <SelectContent>
             {CATEGORIES.map((c) => (
               <SelectItem key={c.value} value={c.value}>
-                {c.label}
+                {tx(c.label)}
               </SelectItem>
             ))}
             <SelectItem value={NONE}>{tx("No category")}</SelectItem>
@@ -138,7 +139,7 @@ export function CategoryFilters({
             aria-pressed={on}
             onClick={() => onChange(on ? undefined : c.value)}
           >
-            {c.label}
+            {tx(c.label)}
           </Button>
         );
       })}

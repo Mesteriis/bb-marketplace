@@ -60,7 +60,7 @@ export function BbIntegrationSettings({ values, call, hint }: BbIntegrationSetti
         </p>
       </section>
       <section aria-label={tx("Tasks")} className="flex flex-col gap-1">
-        <p className="text-sm text-foreground">{tx("Make a task puts tasks in: {p1}", { p1: TARGET_TEXT[values.taskTarget] })}</p>
+        <p className="text-sm text-foreground">{tx("Make a task puts tasks in: {p1}", { p1: tx(TARGET_TEXT[values.taskTarget]) })}</p>
       </section>
       <section aria-label={tx("Dev notifications")} className="flex flex-col gap-1">
         <p className="text-sm text-foreground">
@@ -111,7 +111,7 @@ function Bindings({ call }: { call: BbCall }) {
         <ul aria-label={tx("Binding rules")} className="flex flex-col gap-1">
           {bindings.map((binding) => (
             <li key={`${binding.kind}:${binding.value}`} className="flex items-center gap-2 text-sm">
-              <span className="text-xs text-muted-foreground">{KIND_TEXT[binding.kind]}</span>
+              <span className="text-xs text-muted-foreground">{tx(KIND_TEXT[binding.kind])}</span>
               <span className="min-w-0 flex-1 truncate text-foreground">{binding.value}</span>
               <span className="text-xs text-muted-foreground">
                 {binding.removed ? tx("project removed") : (binding.projectName ?? binding.projectId)}

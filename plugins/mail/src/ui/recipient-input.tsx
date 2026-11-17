@@ -29,7 +29,7 @@ const PROBLEM_TEXT: Record<AddressProblem, string> = {
 };
 
 export function addressProblemText(problem: AddressProblem): string {
-  return PROBLEM_TEXT[problem];
+  return tx(PROBLEM_TEXT[problem]);
 }
 
 /** A stored address as chip text: "Name <address>", the name quoted when it needs it. */

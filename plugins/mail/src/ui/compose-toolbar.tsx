@@ -167,7 +167,7 @@ export function ComposeToolbar({
         >
           {TOOLS.map((tool, index) => {
             const pressed = tool.id === "clear" ? undefined : (active?.[tool.id] ?? false);
-            const hint = tool.key !== undefined ? `${tool.label} (${mod}${tool.key})` : tool.label;
+            const hint = tool.key !== undefined ? `${tx(tool.label)} (${mod}${tool.key})` : tx(tool.label);
             return (
               <Button
                 key={tool.id}

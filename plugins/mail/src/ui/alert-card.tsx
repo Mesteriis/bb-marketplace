@@ -82,7 +82,7 @@ export function AlertCard(props: AlertCardProps) {
           ))}
         </ul>
       ) : null}
-      <div className="flex flex-wrap items-center gap-1" title={props.inAiScope ? undefined : BB_TEXT.out_of_scope}>
+      <div className="flex flex-wrap items-center gap-1" title={props.inAiScope ? undefined : tx(BB_TEXT.out_of_scope)}>
         {incident !== null ? (
           <>
             <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={() => props.onOpenThread(incident.bbThreadId)}>
@@ -110,7 +110,7 @@ export function AlertCard(props: AlertCardProps) {
           </Button>
         )}
       </div>
-      {!props.inAiScope ? <p className="text-muted-foreground">{BB_TEXT.out_of_scope}</p> : null}
+      {!props.inAiScope ? <p className="text-muted-foreground">{tx(BB_TEXT.out_of_scope)}</p> : null}
       {picking && incident === null ? (
         <IncidentPicker
           call={call}

@@ -4,7 +4,7 @@
 // shows what it answers as plain text.
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { ProjectListItem, RpcIn, RpcMethod, RpcOut } from "../core/contract.ts";
-import { msg } from "./i18n/index.ts";
+import { msg, tx } from "./i18n/index.ts";
 
 /** One owner RPC, as app.tsx's useRpc().call. */
 export type BbCall = <M extends RpcMethod>(method: M, input: RpcIn<M>) => Promise<RpcOut<M>>;
@@ -30,7 +30,8 @@ export const BB_TEXT = {
 
 /** An error's message for the owner, or the fallback. */
 export function errorText(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message !== "" ? error.message : fallback;
+  // Mail's own refusals are fixed sentences the catalog knows; the page shows them in its language.
+  return tx(error instanceof Error && error.message !== "" ? error.message : fallback);
 }
 
 /** The permission line of a thread dialog (spec resolution 15). */

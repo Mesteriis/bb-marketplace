@@ -139,7 +139,7 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
       );
     } catch (error) {
       const text = errorText(error, "The patch could not be handed to an agent");
-      if (environment === "worktree" && text === BB_TEXT.no_tree) setOfferCheckout(true);
+      if (environment === "worktree" && text === tx(BB_TEXT.no_tree)) setOfferCheckout(true);
       else setProblem(text);
     } finally {
       setBusy(false);
@@ -222,7 +222,7 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
           {refused === null ? (
             <>
               <ProjectSelect label={tx("Project")} projects={projects} value={projectId} onChange={(id) => { setProjectId(id); setOfferCheckout(false); setPrepared(null); }} />
-              {!request.inAiScope ? <p className="text-xs text-muted-foreground">{BB_TEXT.out_of_scope}</p> : null}
+              {!request.inAiScope ? <p className="text-xs text-muted-foreground">{tx(BB_TEXT.out_of_scope)}</p> : null}
               {savedPath !== null ? <p role="status" className="text-xs text-muted-foreground">{tx("Saved as {savedPath}", { savedPath })}</p> : null}
               {offerCheckout ? (
                 <div role="alert" className="flex flex-col gap-2 rounded-md border border-border p-2 text-sm">
@@ -262,12 +262,12 @@ function PatchBody({ request, call, renderers, onSaved, onHandedOff, onClose }: 
         </Button>
         {view !== null && refused === null ? (
           <>
-            <span title={project !== null && !project.hasTree ? BB_TEXT.no_tree : undefined} className="inline-flex">
+            <span title={project !== null && !project.hasTree ? tx(BB_TEXT.no_tree) : undefined} className="inline-flex">
               <Button variant="outline" size="sm" disabled={busy || project === null || !project.hasTree} onClick={() => void save()}>
                 {tx("Save .patch to project")}
               </Button>
             </span>
-            <span title={request.inAiScope ? undefined : BB_TEXT.out_of_scope} className="inline-flex">
+            <span title={request.inAiScope ? undefined : tx(BB_TEXT.out_of_scope)} className="inline-flex">
               <Button size="sm" disabled={busy || projectId === null || !request.inAiScope} onClick={() => void prepareHandOff("worktree")}>
                 {tx("Apply with an agent")}
               </Button>

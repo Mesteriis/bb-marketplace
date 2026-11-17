@@ -280,8 +280,9 @@ function movesMail(action: UndoAction): boolean {
     action === "spam" || action === "not_spam" || action === "archive" || action === "delete";
 }
 
+/** The error's text in the page's language: Mail's own refusals are fixed English sentences the catalog knows. */
 function messageOf(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : String(error);
+  return tx(error instanceof Error && error.message ? error.message : String(error));
 }
 
 /** The accountId of a mail-changed payload; undefined when it names none. */
@@ -2855,7 +2856,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const mailAi = useMemo<MailAiPorts>(
     () => ({
       jobs: aiJobs,
-      disabledReason: status?.translate.gateway === "gateway_missing" ? AI_ERROR_TEXT.gateway_missing : null,
+      disabledReason: status?.translate.gateway === "gateway_missing" ? tx(AI_ERROR_TEXT.gateway_missing) : null,
       keepTasks: async (jobId: string, picks: TaskPick[]) => {
         const { kept } = await rpc.call("tasks_keep", { jobId, picks });
         toast.success(kept === 1 ? tx("Kept 1 task") : tx("Kept {kept} tasks", { kept }));

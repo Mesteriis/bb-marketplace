@@ -90,7 +90,7 @@ export function RuleForm({ rule, projects, onSave, onCancel }: RuleFormProps) {
       return;
     }
     if (mode === "start" && !startAllowed) {
-      setProblem(BB_TEXT.no_tree);
+      setProblem(tx(BB_TEXT.no_tree));
       return;
     }
     setSaving(true);
@@ -98,7 +98,7 @@ export function RuleForm({ rule, projects, onSave, onCancel }: RuleFormProps) {
     try {
       await onSave(next);
     } catch (error) {
-      setProblem(error instanceof Error && error.message !== "" ? error.message : "The rule could not be saved");
+      setProblem(tx(error instanceof Error && error.message !== "" ? error.message : "The rule could not be saved"));
     } finally {
       setSaving(false);
     }
@@ -189,7 +189,7 @@ export function RuleForm({ rule, projects, onSave, onCancel }: RuleFormProps) {
           />
           {tx("Start the thread by itself")}
         </label>
-        {!startAllowed ? <p className="text-xs text-muted-foreground">{BB_TEXT.no_tree}</p> : null}
+        {!startAllowed ? <p className="text-xs text-muted-foreground">{tx(BB_TEXT.no_tree)}</p> : null}
         {mode === "start" ? (
           <div role="group" aria-label={tx("Start confirmation")} className="flex flex-col gap-1 rounded-md border border-border p-2 text-sm">
             <p>{startConfirmText(project?.name ?? "the project")}</p>

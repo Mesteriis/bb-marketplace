@@ -113,7 +113,7 @@ export function AttachmentViewer({
       try {
         ticket = await host.getTicket(request);
       } catch (error) {
-        return refuse(error instanceof Error && error.message !== "" ? error.message : NOT_VIEWABLE_TEXT);
+        return refuse(tx(error instanceof Error && error.message !== "" ? error.message : NOT_VIEWABLE_TEXT));
       }
       if (!viewerShows(ticket.kind, ticket.mimeType)) return refuse(NOT_VIEWABLE_TEXT);
       let response: Response;

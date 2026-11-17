@@ -199,7 +199,7 @@ export function TranslationSettings({ open, onOpenChange, load, save, clear, onS
                 <SelectContent>
                   {TRANSLATE_LANGUAGES.map((l) => (
                     <SelectItem key={l.tag} value={l.tag}>
-                      {l.label}
+                      {tx(l.label)}
                     </SelectItem>
                   ))}
                 </SelectContent>

@@ -76,7 +76,7 @@ export function TodayView(props: TodayViewProps) {
       setData(await load());
       setError(null);
     } catch (problem) {
-      setError(problem instanceof Error && problem.message !== "" ? problem.message : "Today could not be loaded");
+      setError(tx(problem instanceof Error && problem.message !== "" ? problem.message : "Today could not be loaded"));
     }
   }, [load]);
   useEffect(() => {

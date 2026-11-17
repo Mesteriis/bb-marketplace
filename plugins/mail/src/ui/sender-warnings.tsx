@@ -148,7 +148,9 @@ const CRYPTO_LABELS: Record<NonNullable<MessageHeader["crypto"]>["kind"], { labe
 
 /** The neutral chip for signed or encrypted mail (#92, #97 partial). */
 export function CryptoChip({ crypto }: { crypto: NonNullable<MessageHeader["crypto"]> }) {
-  const { label, title } = CRYPTO_LABELS[crypto.kind];
+  const entry = CRYPTO_LABELS[crypto.kind];
+  const label = tx(entry.label);
+  const title = tx(entry.title);
   return (
     <span title={title} aria-label={`${label}: ${title}`} className="shrink-0 rounded-sm border border-border px-1 text-xs text-muted-foreground">
       {label}

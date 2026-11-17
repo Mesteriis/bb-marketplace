@@ -173,7 +173,7 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
       setSenders(view.senders);
       setState({ kind: "saved" });
     } catch (error) {
-      setState({ kind: "error", text: error instanceof Error && error.message !== "" ? error.message : tx("AI access could not be saved") });
+      setState({ kind: "error", text: tx(error instanceof Error && error.message !== "" ? error.message : tx("AI access could not be saved")) });
     }
   };
 
@@ -197,7 +197,7 @@ export function AiAccessSettings({ accounts, load, save, folders }: AiAccessSett
                 <SelectContent>
                   {MODES.map((m) => (
                     <SelectItem key={m.value} value={m.value}>
-                      {m.label}
+                      {tx(m.label)}
                     </SelectItem>
                   ))}
                 </SelectContent>

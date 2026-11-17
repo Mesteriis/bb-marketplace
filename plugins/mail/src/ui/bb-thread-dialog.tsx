@@ -198,13 +198,13 @@ function ThreadBody({ request, call, onStarted, onEditInComposer, onClose }: BbT
           </label>
         ) : null}
         {project !== null && !project.hasTree && request.hasAttachments ? (
-          <p className="text-xs text-muted-foreground">{BB_TEXT.no_tree}</p>
+          <p className="text-xs text-muted-foreground">{tx(BB_TEXT.no_tree)}</p>
         ) : null}
         <section aria-label={tx("Prompt preview")} className="flex flex-col gap-1">
           <h3 className="text-xs font-medium text-muted-foreground">{tx("Prompt preview")}</h3>
           {!request.inAiScope ? (
             <p role="note" className="text-sm text-muted-foreground">
-              {BB_TEXT.out_of_scope}
+              {tx(BB_TEXT.out_of_scope)}
             </p>
           ) : projectId === null ? (
             <p className="text-sm text-muted-foreground">{tx("Choose a project to see the prompt.")}</p>

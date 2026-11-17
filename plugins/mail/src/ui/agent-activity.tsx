@@ -87,7 +87,7 @@ export function logTime(iso: string, now: Date = new Date()): string {
 
 /** One row's line, without the messages. */
 export function logLine(entry: LogEntryView, now?: Date): string {
-  const parts = [logTime(entry.at, now), ACTORS[entry.actor], TOOLS[entry.tool], OUTCOMES[entry.outcome]];
+  const parts = [logTime(entry.at, now), tx(ACTORS[entry.actor]), tx(TOOLS[entry.tool]), tx(OUTCOMES[entry.outcome])];
   if (entry.count > 0) parts.push(entry.count === 1 ? "1 item" : `${entry.count} items`);
   if (entry.hiddenCount > 0) parts.push(entry.hiddenCount === 1 ? "1 hidden value" : `${entry.hiddenCount} hidden values`);
   if (entry.model !== null && entry.model !== "") parts.push(entry.model);
@@ -119,7 +119,7 @@ export function AgentActivity({ load, clear, onOpen }: AgentActivityProps) {
         setThreads([...new Set(page.entries.map((e) => e.threadId).filter((id): id is string => id !== null))]);
       }
     } catch (error) {
-      setProblem(error instanceof Error && error.message !== "" ? error.message : "Agent activity could not be loaded");
+      setProblem(tx(error instanceof Error && error.message !== "" ? error.message : "Agent activity could not be loaded"));
     }
   }, [load, thread]);
   useEffect(() => {
@@ -143,7 +143,7 @@ export function AgentActivity({ load, clear, onOpen }: AgentActivityProps) {
       setThread(ALL_THREADS);
       await reload();
     } catch (error) {
-      setProblem(error instanceof Error && error.message !== "" ? error.message : "The log could not be cleared");
+      setProblem(tx(error instanceof Error && error.message !== "" ? error.message : "The log could not be cleared"));
     }
   };
 

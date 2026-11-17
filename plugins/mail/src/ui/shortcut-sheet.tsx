@@ -42,13 +42,13 @@ export function ShortcutSheet({
           <p className="text-sm text-muted-foreground">{tx("On a Mac, Apple Mail keys work too.")}</p>
         </DialogHeader>
         {SHORTCUT_SHEET.map((section) => (
-          <section key={section.title} aria-label={section.title} className="flex flex-col gap-1">
-            <h3 className="text-xs font-medium text-muted-foreground">{section.title}</h3>
+          <section key={section.title} aria-label={tx(section.title)} className="flex flex-col gap-1">
+            <h3 className="text-xs font-medium text-muted-foreground">{tx(section.title)}</h3>
             <dl className="flex flex-col gap-1">
               {section.entries.filter((entry) => entry.keys.length > 0 || (mac && entry.mac !== undefined)).map((entry) => (
                 <div key={entry.label} className="flex items-center justify-between gap-3 text-sm">
                   <dt className="text-foreground">
-                    {entry.label}
+                    {tx(entry.label)}
                     {entry.soon ? <span className="ml-2 text-xs text-muted-foreground">{tx("soon")}</span> : null}
                   </dt>
                   <dd className="flex shrink-0 items-center gap-1">

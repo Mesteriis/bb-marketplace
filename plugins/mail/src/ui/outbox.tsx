@@ -60,7 +60,7 @@ function stateActions(row: Pick<OutboxRow, "state">): OutboxAction[] {
 /** The label of an action on a row; Discard reads Dismiss once the message was sent. */
 export function outboxActionLabel(row: Pick<OutboxRow, "state">, action: OutboxAction): string {
   if (action === "dismiss" && row.state === "sent_no_copy") return tx("Dismiss");
-  return ACTION_LABELS[action];
+  return tx(ACTION_LABELS[action]);
 }
 
 /** A line under a row that says what its buttons keep and delete, or null. */
@@ -78,30 +78,30 @@ export function outboxRowHint(row: Pick<OutboxRow, "state"> & Partial<Pick<Outbo
 }
 
 const REASONS: Record<SendErrorKind, string> = {
-  auth: "sign-in refused",
-  tls: "the secure connection failed",
-  connect: "the server could not be reached",
-  timeout_before_data: "the server did not answer",
-  temporary: "the server asked to try again later",
-  rejected_all: "recipients refused",
-  rejected_message: "the server refused the message",
-  too_large: "too large for the server",
-  unknown_after_data: "the connection was lost while sending",
-  no_sent_folder: "no Sent folder to copy to",
-  sender_refused: "the server refused to send from this address",
-  append_failed: "the copy to Sent failed",
-  no_smtp: "this account has no outgoing server set",
+  auth: msg("sign-in refused"),
+  tls: msg("the secure connection failed"),
+  connect: msg("the server could not be reached"),
+  timeout_before_data: msg("the server did not answer"),
+  temporary: msg("the server asked to try again later"),
+  rejected_all: msg("recipients refused"),
+  rejected_message: msg("the server refused the message"),
+  too_large: msg("too large for the server"),
+  unknown_after_data: msg("the connection was lost while sending"),
+  no_sent_folder: msg("no Sent folder to copy to"),
+  sender_refused: msg("the server refused to send from this address"),
+  append_failed: msg("the copy to Sent failed"),
+  no_smtp: msg("this account has no outgoing server set"),
 };
 
 export function sendErrorText(kind: SendErrorKind): string {
-  return REASONS[kind];
+  return tx(REASONS[kind]);
 }
 
 /** Where a send stands, in words. */
 export function outboxStateText(
   row: Pick<OutboxRow, "state" | "errorKind" | "rejected"> & Partial<Pick<OutboxRow, "sendAfter" | "attempts">>,
 ): string {
-  const reason = row.errorKind !== null ? REASONS[row.errorKind] : null;
+  const reason = row.errorKind !== null ? tx(REASONS[row.errorKind]) : null;
   switch (row.state) {
     case "queued":
       return tx("Sending soon");

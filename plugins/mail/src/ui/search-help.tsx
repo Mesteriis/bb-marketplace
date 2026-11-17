@@ -91,7 +91,7 @@ export function SearchHelpButton() {
             {SEARCH_OPERATORS.map((row) => (
               <div key={row.example} className="contents">
                 <dt className="font-mono text-xs text-foreground">{row.example}</dt>
-                <dd className="text-muted-foreground">{row.meaning}</dd>
+                <dd className="text-muted-foreground">{tx(row.meaning)}</dd>
               </div>
             ))}
           </dl>

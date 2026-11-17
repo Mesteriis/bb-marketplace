@@ -85,7 +85,7 @@ export function ImproveMenu({
     >
       {IMPROVE_MODES.map(({ mode, label }) => (
         <Button key={mode} type="button" variant="ghost" size="sm" className="h-7 justify-start px-2" onClick={() => onPick(mode)}>
-          {label}
+          {tx(label)}
         </Button>
       ))}
       <form onSubmit={submit} className="flex items-center gap-1 px-1 pb-1">

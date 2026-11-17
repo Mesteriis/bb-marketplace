@@ -210,7 +210,7 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
     return (
       <CardShell>
         <p role="alert" className="text-sm text-foreground">
-          {loaded.kind === "error" ? tx("Could not load this email. Nothing was sent.") : CLOSED_TEXT[loaded.state]}
+          {loaded.kind === "error" ? tx("Could not load this email. Nothing was sent.") : tx(CLOSED_TEXT[loaded.state])}
         </p>
         <div className="flex justify-end">
           <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void doCancel()}>
@@ -235,7 +235,7 @@ export function AgentSendCard({ load, submit, cancel, openDraft, registerAction 
       <div className="flex flex-wrap items-center gap-2">
         <Icon name="Bot" fallback="Mail" className="size-4 text-muted-foreground" aria-hidden />
         <h3 className="text-sm font-semibold text-foreground">{tx("An agent proposes an email")}</h3>
-        <span className="rounded-sm border border-border px-1.5 text-xs text-muted-foreground">{KIND_LABELS[v.kind]}</span>
+        <span className="rounded-sm border border-border px-1.5 text-xs text-muted-foreground">{tx(KIND_LABELS[v.kind])}</span>
       </div>
       {v.source !== null ? (
         <p className="text-xs text-muted-foreground">
@@ -521,7 +521,7 @@ function RecipientChip({
             QUIET_FLAGS.has(flag) ? "border border-border text-muted-foreground" : "bg-destructive/10 text-destructive",
           )}
         >
-          {FLAG_LABELS[flag]}
+          {tx(FLAG_LABELS[flag])}
         </span>
       ))}
       {isNew && !acknowledged && onAcknowledge !== null ? (

@@ -131,7 +131,7 @@ function PickerBody({ request, call, currentProjectId, currentThreadId, onAttach
             await call("compose_attach_bb", { draftId: request.draftId, source, ...(confirmed ? { confirmed: true } : {}) }),
           );
         } catch (error) {
-          if (!confirmed && errorText(error, "") === BB_TEXT.confirm_needed) ask.push(source);
+          if (!confirmed && errorText(error, "") === tx(BB_TEXT.confirm_needed)) ask.push(source);
           else throw error;
         }
       }

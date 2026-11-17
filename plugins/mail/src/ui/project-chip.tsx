@@ -48,7 +48,7 @@ export function ProjectSelect({ label, projects, value, onChange, requireTree = 
         ))}
       </select>
       {requireTree && value !== null && projects?.find((p) => p.id === value)?.hasTree === false ? (
-        <p className="text-xs text-muted-foreground">{BB_TEXT.no_tree}</p>
+        <p className="text-xs text-muted-foreground">{tx(BB_TEXT.no_tree)}</p>
       ) : null}
     </div>
   );
