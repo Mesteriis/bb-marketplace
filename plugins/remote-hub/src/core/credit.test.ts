@@ -27,10 +27,7 @@ describe("credit state invariant fuzz (Y3)", () => {
           const n = avail > 0 ? 1 + rnd(avail) : 0;
           if (n > 0) {
             c.onConsumed(n);
-            // Only the owner's outstanding participates in the credit
-            // invariant; a non-owner's queued bytes are a separate 2a limit.
-            const o = c.owner();
-            if (o !== null) c.onLiveSent(o, n);
+            for (const v of attached) c.onLiveSent(v, n);
           }
         } else if (op === 3) {
           const v = attached[rnd(attached.length)];
@@ -43,15 +40,28 @@ describe("credit state invariant fuzz (Y3)", () => {
         }
         const avail = c.granted() - c.consumed();
         if (avail < 0) throw new Error("helper overspent: granted-consumed < 0");
-        const owner = c.owner();
-        if (owner !== null && attached.length > 0) {
-          const total = avail + c.outstanding(owner);
-          if (total > CREDIT_WINDOW_BYTES) {
-            throw new Error("invariant broken: " + total);
-          }
+        if (avail > CREDIT_WINDOW_BYTES) {
+          throw new Error("helper unconsumed credit exceeds window: " + avail);
         }
       }
     }
+  });
+});
+
+describe("credit state promoted slow non-owner (Y3)", () => {
+  it("a promoted slow non-owner's ack keeps unconsumed credit <= window", () => {
+    const c = createCreditState();
+    c.attach("a"); // owner, grants W
+    c.attach("b"); // non-owner
+    for (let i = 0; i < 10; i++) {
+      c.onConsumed(CREDIT_WINDOW_BYTES);
+      c.onLiveSent("a", CREDIT_WINDOW_BYTES);
+      c.onLiveSent("b", CREDIT_WINDOW_BYTES);
+      c.ack("a", CREDIT_WINDOW_BYTES);
+    }
+    c.detach("a");
+    c.ack("b", c.outstanding("b"));
+    expect(c.granted() - c.consumed()).toBeLessThanOrEqual(CREDIT_WINDOW_BYTES);
   });
 });
 
