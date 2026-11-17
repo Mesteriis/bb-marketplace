@@ -68,7 +68,7 @@ pub enum Request {
         host: String,
         port: u16,
         username: String,
-        password: String,
+        password: crate::secret::Secret,
         domain: Option<String>,
         width: u32,
         height: u32,
@@ -95,6 +95,15 @@ pub enum Request {
         id: u64,
         #[serde(rename = "sessionId")]
         session_id: u32,
+    },
+    /// The consumer received the update in flight; releases the next one.
+    #[serde(rename = "rdp.update_ack")]
+    RdpUpdateAck {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        #[serde(rename = "frameId")]
+        frame_id: u64,
     },
 }
 
@@ -183,7 +192,27 @@ pub enum Response {
         not_before: String,
         #[serde(rename = "notAfter")]
         not_after: String,
+        /// Stable code: untrusted_root, hostname_mismatch, expired, other.
         reason: String,
+        /// The TLS library's own text; diagnostic only.
+        detail: Option<String>,
+    },
+    /// The peer certificate of the finished TLS handshake and whether it
+    /// validated against the system roots.
+    #[serde(rename = "rdp.certificate")]
+    RdpCertificate {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        fingerprint: String,
+        validated: bool,
+    },
+    /// Input events the engine refused; the rest of the batch was applied.
+    #[serde(rename = "rdp.input_rejected")]
+    RdpInputRejected {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        applied: u32,
+        rejected: Vec<crate::rdp::protocol::InputRejection>,
     },
     #[serde(rename = "rdp.desktop")]
     RdpDesktop {

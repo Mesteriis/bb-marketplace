@@ -28,6 +28,11 @@ required-features = ["test-hooks"]
 name = "production"
 path = "tests/production.rs"
 
+[[test]]
+name = "rdp_process"
+path = "tests/rdp_process.rs"
+required-features = ["test-hooks"]
+
 [dependencies]
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }

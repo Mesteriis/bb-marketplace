@@ -81,7 +81,7 @@ impl Session {
 
 pub struct SessionManager {
     sessions: HashMap<u32, Session>,
-    next_id: u32,
+    ids: crate::ids::SessionIds,
     /// Test-only argv hook (never exposed over RPC): when set, open_echo execs
     /// this argv instead of /bin/cat.
     echo_argv: Option<Vec<CString>>,
@@ -172,7 +172,7 @@ fn clear_cloexec(fd: RawFd) -> Result<(), SessionError> {
     Ok(())
 }
 
-fn open_fds_above_two() -> Result<Vec<i32>, SessionError> {
+pub(crate) fn open_fds_above_two() -> Result<Vec<i32>, SessionError> {
     let mut fds: Vec<i32> = Vec::new();
     match std::fs::read_dir("/dev/fd") {
         Ok(entries) => {
@@ -199,7 +199,7 @@ fn open_fds_above_two() -> Result<Vec<i32>, SessionError> {
     Ok(fds)
 }
 
-fn block_all_signals(old_mask: &mut libc::sigset_t) {
+pub(crate) fn block_all_signals(old_mask: &mut libc::sigset_t) {
     unsafe {
         let mut all: libc::sigset_t = std::mem::zeroed();
         libc::sigfillset(&mut all);
@@ -207,11 +207,11 @@ fn block_all_signals(old_mask: &mut libc::sigset_t) {
     }
 }
 
-fn restore_signal_mask(old_mask: &libc::sigset_t) {
+pub(crate) fn restore_signal_mask(old_mask: &libc::sigset_t) {
     unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, old_mask, std::ptr::null_mut()) };
 }
 
-fn reset_signals_and_unblock() {
+pub(crate) fn reset_signals_and_unblock() {
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = libc::SIG_DFL;
@@ -250,6 +250,12 @@ fn close_reason_for(kind: &str, code: Option<i32>) -> String {
 
 impl SessionManager {
     pub fn new(echo_argv: Option<Vec<String>>) -> Self {
+        Self::with_ids(echo_argv, crate::ids::SessionIds::new())
+    }
+
+    /// A manager that draws session ids from a shared allocator, so ids never
+    /// collide with another session kind's.
+    pub fn with_ids(echo_argv: Option<Vec<String>>, ids: crate::ids::SessionIds) -> Self {
         let argv = echo_argv.map(|args| {
             args.iter()
                 .map(|a| CString::new(a.as_str()).expect("echo argv has no NUL"))
@@ -257,7 +263,7 @@ impl SessionManager {
         });
         SessionManager {
             sessions: HashMap::new(),
-            next_id: 1,
+            ids,
             echo_argv: argv,
         }
     }
@@ -514,8 +520,7 @@ impl SessionManager {
         restore_signal_mask(&old_mask);
         drop(slave_owned);
         let master_raw = master_owned.into_raw_fd();
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1);
+        let id = self.ids.next();
         self.sessions.insert(
             id,
             Session {
@@ -658,13 +663,22 @@ impl SessionManager {
         None
     }
 
+    /// Reap the children THIS manager owns, by pid. Never `waitpid(-1)`: that
+    /// would steal exits that belong to another owner of children (the RDP
+    /// engines), which then lose their exit status.
     pub fn reap(&mut self) -> Vec<u32> {
+        let live: Vec<libc::pid_t> = self
+            .sessions
+            .values()
+            .filter(|s| !s.child_exited)
+            .map(|s| s.child)
+            .collect();
         let mut newly = Vec::new();
-        loop {
+        for pid in live {
             let mut status: libc::c_int = 0;
-            let r = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-            if r <= 0 {
-                break;
+            let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            if r != pid {
+                continue;
             }
             if let Some(id) = self.reap_one(r, status) {
                 newly.push(id);

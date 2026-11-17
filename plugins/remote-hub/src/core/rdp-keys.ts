@@ -3,7 +3,11 @@
 // layout set the plugin supports is listed; an unknown code returns null so
 // the caller falls back to unicode text input for printable keys.
 export interface RdpKey {
-  /** PC/XT set 1 make code (0x01..0x58), without the E0 prefix. */
+  /**
+   * PC/XT set 1 make code, without the E0 prefix: 0x01..0x58, plus 0x5B, 0x5C
+   * and 0x5D for the extended Windows and context-menu keys. The helper's
+   * `valid_key` accepts exactly this set.
+   */
   scancode: number;
   /** True when the key must be sent with the 0xE0 extended prefix. */
   extended: boolean;

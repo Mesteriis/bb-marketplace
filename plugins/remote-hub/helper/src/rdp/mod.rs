@@ -7,6 +7,8 @@ pub mod cert;
 pub mod engine;
 pub mod framebuffer;
 pub mod input;
+pub mod input_encode;
+pub mod mapping;
 pub mod manager;
 pub mod protocol;
 pub mod reasons;

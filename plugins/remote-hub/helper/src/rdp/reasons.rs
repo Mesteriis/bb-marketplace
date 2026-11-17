@@ -14,6 +14,9 @@ pub enum RdpClosedReason {
     KilledByClose,
     EngineExited,
     HelperShutdown,
+    /// The server ended the session in an orderly way (logoff, disconnect,
+    /// idle timeout). Not a protocol failure.
+    ServerDisconnected,
 }
 
 impl RdpClosedReason {
@@ -29,6 +32,7 @@ impl RdpClosedReason {
             RdpClosedReason::KilledByClose => "killed_by_close",
             RdpClosedReason::EngineExited => "engine_exited",
             RdpClosedReason::HelperShutdown => "helper_shutdown",
+            RdpClosedReason::ServerDisconnected => "server_disconnected",
         }
     }
 }
@@ -50,6 +54,7 @@ mod tests {
             (RdpClosedReason::KilledByClose, "killed_by_close"),
             (RdpClosedReason::EngineExited, "engine_exited"),
             (RdpClosedReason::HelperShutdown, "helper_shutdown"),
+            (RdpClosedReason::ServerDisconnected, "server_disconnected"),
         ];
         for (reason, literal) in cases {
             assert_eq!(reason.as_str(), literal);
@@ -69,6 +74,7 @@ mod tests {
             RdpClosedReason::KilledByClose,
             RdpClosedReason::EngineExited,
             RdpClosedReason::HelperShutdown,
+            RdpClosedReason::ServerDisconnected,
         ];
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {

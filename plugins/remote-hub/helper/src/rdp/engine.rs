@@ -28,7 +28,7 @@ use tokio::net::TcpStream;
 
 use super::cert::{fingerprint_matches, fingerprint_sha256, parse_cert_fields, CertFields};
 use super::framebuffer::{Framebuffer, Rect};
-use super::input::{validate_pointer, Geometry, PointerPosition};
+use super::input::Geometry;
 use super::protocol::{self, EngineCommand, EngineEvent, InputEvent};
 use super::reasons::RdpClosedReason;
 
@@ -72,7 +72,7 @@ fn read_frame(stream: &mut UnixStream) -> std::io::Result<Option<Vec<u8>>> {
         }
     }
     let len = u32::from_le_bytes(len_buf) as usize;
-    if len == 0 || len > protocol::RDP_MAX_FRAME_BODY {
+    if len == 0 || len > protocol::RDP_MAX_COMMAND_BODY {
         return Err(std::io::Error::other("frame body length out of range"));
     }
     let mut body = vec![0u8; len];
@@ -200,6 +200,7 @@ fn engine_main(mut stream: UnixStream) -> Result<i32, std::io::Error> {
                         EngineCommand::Screenshot => {
                             *screenshot_requested.lock().unwrap() = true;
                         }
+                        EngineCommand::Ack { .. } => {}
                         EngineCommand::Close => {
                             *close_requested.lock().unwrap() = true;
                             let _ = decision_tx.send((String::new(), "reject".to_string()));
@@ -221,7 +222,7 @@ fn engine_main(mut stream: UnixStream) -> Result<i32, std::io::Error> {
         host,
         port,
         username,
-        password,
+        password.expose().to_string(),
         domain,
         width,
         height,
@@ -334,7 +335,8 @@ async fn connect_sequence(
             issuer: fields.issuer,
             not_before: fields.not_before,
             not_after: fields.not_after,
-            reason: error.to_string(),
+            reason: super::mapping::cert_reason_code(error).to_string(),
+            detail: Some(error.to_string()),
         });
         match decision_rx.lock().unwrap().recv_timeout(CERT_PROMPT_TIMEOUT) {
             Ok((decision_fp, accept)) if fingerprint_matches(&presented, &decision_fp) && (accept == "once" || accept == "session_trust") => true,
@@ -545,96 +547,9 @@ fn base64_encode(data: &[u8]) -> String {
 }
 
 fn encode_and_apply_input(session: &mut Session, events: &[InputEvent]) -> Result<Vec<ActiveStageOutput>, ()> {
-    use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
-    use ironrdp_pdu::input::mouse::{MousePdu, PointerFlags};
     let fb = Geometry { width: session.framebuffer.width(), height: session.framebuffer.height() };
-    let mut fast = Vec::new();
-    for event in events {
-        match event {
-            InputEvent::MouseMove { x, y, geom_width, geom_height } => {
-                validate_pointer(Geometry { width: *geom_width, height: *geom_height }, fb, PointerPosition { x: *x, y: *y }).map_err(|_| ())?;
-                fast.push(FastPathInputEvent::MouseEvent(MousePdu {
-                    flags: PointerFlags::MOVE,
-                    number_of_wheel_rotation_units: 0,
-                    x_position: *x as u16,
-                    y_position: *y as u16,
-                }));
-            }
-            InputEvent::MouseButton { button, down, x, y, geom_width, geom_height } => {
-                validate_pointer(Geometry { width: *geom_width, height: *geom_height }, fb, PointerPosition { x: *x, y: *y }).map_err(|_| ())?;
-                let mut flags = match button.as_str() {
-                    "left" => PointerFlags::LEFT_BUTTON,
-                    "right" => PointerFlags::RIGHT_BUTTON,
-                    "middle" => PointerFlags::MIDDLE_BUTTON_OR_WHEEL,
-                    _ => return Err(()),
-                };
-                if *down {
-                    flags |= PointerFlags::DOWN;
-                }
-                fast.push(FastPathInputEvent::MouseEvent(MousePdu {
-                    flags,
-                    number_of_wheel_rotation_units: 0,
-                    x_position: *x as u16,
-                    y_position: *y as u16,
-                }));
-            }
-            InputEvent::MouseWheel { vertical, horizontal, x, y, geom_width, geom_height } => {
-                validate_pointer(Geometry { width: *geom_width, height: *geom_height }, fb, PointerPosition { x: *x, y: *y }).map_err(|_| ())?;
-                if *vertical != 0 {
-                    let mut flags = PointerFlags::VERTICAL_WHEEL;
-                    if *vertical < 0 {
-                        flags |= PointerFlags::WHEEL_NEGATIVE;
-                    }
-                    fast.push(FastPathInputEvent::MouseEvent(MousePdu {
-                        flags,
-                        number_of_wheel_rotation_units: (*vertical).clamp(-256, 255) as i16,
-                        x_position: *x as u16,
-                        y_position: *y as u16,
-                    }));
-                }
-                if *horizontal != 0 {
-                    let mut flags = PointerFlags::HORIZONTAL_WHEEL;
-                    if *horizontal < 0 {
-                        flags |= PointerFlags::WHEEL_NEGATIVE;
-                    }
-                    fast.push(FastPathInputEvent::MouseEvent(MousePdu {
-                        flags,
-                        number_of_wheel_rotation_units: (*horizontal).clamp(-256, 255) as i16,
-                        x_position: *x as u16,
-                        y_position: *y as u16,
-                    }));
-                }
-            }
-            InputEvent::Key { scancode, extended, down } => {
-                if !super::input::valid_scancode(*scancode) {
-                    return Err(());
-                }
-                let mut flags = KeyboardFlags::empty();
-                if !*down {
-                    flags |= KeyboardFlags::RELEASE;
-                }
-                if *extended {
-                    flags |= KeyboardFlags::EXTENDED;
-                }
-                fast.push(FastPathInputEvent::KeyboardEvent(flags, *scancode));
-            }
-            InputEvent::CtrlAltDel => {
-                fast.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1D));
-                fast.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x38));
-                fast.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, 0x53));
-                fast.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED | KeyboardFlags::RELEASE, 0x53));
-                fast.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x38));
-                fast.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x1D));
-            }
-            InputEvent::Unicode { text } => {
-                for ch in text.chars() {
-                    if (ch as u32) <= 0xFFFF {
-                        fast.push(FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), ch as u16));
-                    }
-                }
-            }
-        }
-    }
+    let encoded = super::input_encode::encode_input(events, fb);
+    let fast = super::input_encode::coalesce_moves(encoded.events);
     if fast.is_empty() {
         return Ok(Vec::new());
     }

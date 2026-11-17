@@ -19,8 +19,8 @@ impl Rect {
     pub fn union(self, other: Rect) -> Rect {
         let x = self.x.min(other.x);
         let y = self.y.min(other.y);
-        let right = (self.x + self.w).max(other.x + other.w);
-        let bottom = (self.y + self.h).max(other.y + other.h);
+        let right = self.x.saturating_add(self.w).max(other.x.saturating_add(other.w));
+        let bottom = self.y.saturating_add(self.h).max(other.y.saturating_add(other.h));
         Rect { x, y, w: right - x, h: bottom - y }
     }
 }
@@ -86,10 +86,13 @@ impl Framebuffer {
         rgba: &[u8],
         now_ms: u64,
     ) -> Result<(), FramebufferError> {
-        if x + w > self.width || y + h > self.height {
+        let (Some(right), Some(bottom)) = (x.checked_add(w), y.checked_add(h)) else {
+            return Err(FramebufferError("update rectangle overflows"));
+        };
+        if right > self.width || bottom > self.height {
             return Err(FramebufferError("update rectangle outside the framebuffer"));
         }
-        let expected = (w as usize) * (h as usize) * 4;
+        let expected = (w as usize).saturating_mul(h as usize).saturating_mul(4);
         if rgba.len() != expected {
             return Err(FramebufferError("update payload has the wrong byte length"));
         }
@@ -104,13 +107,46 @@ impl Framebuffer {
         Ok(())
     }
 
+    /// Copy `rect` out of a whole-desktop RGBA image (`stride` bytes per row,
+    /// `src_height` rows) into the framebuffer, bump the frame id and record the
+    /// timestamp. Only the dirty rectangle is touched.
+    pub fn apply_from_image(
+        &mut self,
+        rect: Rect,
+        src: &[u8],
+        stride: usize,
+        now_ms: u64,
+    ) -> Result<(), FramebufferError> {
+        let (Some(right), Some(bottom)) = (rect.x.checked_add(rect.w), rect.y.checked_add(rect.h)) else {
+            return Err(FramebufferError("update rectangle overflows"));
+        };
+        if rect.w == 0 || rect.h == 0 || right > self.width || bottom > self.height {
+            return Err(FramebufferError("update rectangle outside the framebuffer"));
+        }
+        if stride != self.width as usize * 4 {
+            return Err(FramebufferError("image stride does not match the framebuffer"));
+        }
+        let needed = (bottom as usize).saturating_mul(stride);
+        if src.len() < needed {
+            return Err(FramebufferError("image is smaller than the framebuffer"));
+        }
+        let row_bytes = rect.w as usize * 4;
+        for row in 0..rect.h as usize {
+            let start = (rect.y as usize + row) * stride + rect.x as usize * 4;
+            self.pixels[start..start + row_bytes].copy_from_slice(&src[start..start + row_bytes]);
+        }
+        self.frame_id = self.frame_id.wrapping_add(1);
+        self.last_update_ms = now_ms;
+        Ok(())
+    }
+
     /// Copy the RGBA bytes of a rectangle into `out` (row-major), clamped to the
     /// framebuffer bounds. Returns the clamped rectangle actually copied.
     pub fn copy_region(&self, x: u32, y: u32, w: u32, h: u32, out: &mut Vec<u8>) -> Rect {
         let x2 = x.min(self.width);
         let y2 = y.min(self.height);
-        let w = (x + w).min(self.width) - x2;
-        let h = (y + h).min(self.height) - y2;
+        let w = x.saturating_add(w).min(self.width) - x2;
+        let h = y.saturating_add(h).min(self.height) - y2;
         out.clear();
         out.reserve((w as usize) * (h as usize) * 4);
         for row in 0..h as usize {
@@ -195,6 +231,44 @@ mod tests {
         assert!(Framebuffer::new(3841, 2160).is_err());
         assert!(Framebuffer::new(3840, 2161).is_err());
         assert!(Framebuffer::new(3840, 2160).is_ok());
+    }
+
+    #[test]
+    fn arithmetic_is_checked_not_panicking() {
+        let mut fb = Framebuffer::new(100, 100).unwrap();
+        // x + w overflows u32
+        assert!(fb.apply(u32::MAX, 0, 2, 1, &[0u8; 8], 1).is_err());
+        assert!(fb.apply(0, u32::MAX, 1, 2, &[0u8; 8], 1).is_err());
+        let mut out = Vec::new();
+        let r = fb.copy_region(u32::MAX, u32::MAX, u32::MAX, u32::MAX, &mut out);
+        assert_eq!((r.w, r.h), (0, 0));
+        assert!(out.is_empty());
+        let r = Rect { x: u32::MAX, y: 0, w: 2, h: 1 }.union(Rect { x: 0, y: 0, w: 1, h: 1 });
+        assert_eq!(r.x, 0);
+    }
+
+    #[test]
+    fn apply_from_image_copies_only_the_dirty_rectangle() {
+        let mut fb = Framebuffer::new(4, 3).unwrap();
+        // 4x3 image whose pixel (x, y) has red = 10 * y + x
+        let mut img = vec![0u8; 4 * 3 * 4];
+        for y in 0..3usize {
+            for x in 0..4usize {
+                img[(y * 4 + x) * 4] = (10 * y + x) as u8;
+                img[(y * 4 + x) * 4 + 3] = 255;
+            }
+        }
+        fb.apply_from_image(Rect { x: 1, y: 1, w: 2, h: 1 }, &img, 16, 7).unwrap();
+        assert_eq!(fb.pixel(1, 1), [11, 0, 0, 255]);
+        assert_eq!(fb.pixel(2, 1), [12, 0, 0, 255]);
+        assert_eq!(fb.pixel(0, 1), [0, 0, 0, 0]); // outside the rectangle
+        assert_eq!(fb.pixel(1, 0), [0, 0, 0, 0]);
+        assert_eq!(fb.frame_id(), 1);
+        assert_eq!(fb.last_update_ms(), 7);
+        assert!(fb.apply_from_image(Rect { x: 3, y: 0, w: 2, h: 1 }, &img, 16, 8).is_err());
+        assert!(fb.apply_from_image(Rect { x: 0, y: 0, w: 1, h: 1 }, &img, 12, 8).is_err());
+        // rows 0..=2 need 48 bytes; 40 are not enough
+        assert!(fb.apply_from_image(Rect { x: 0, y: 2, w: 1, h: 1 }, &img[..40], 16, 8).is_err());
     }
 
     #[test]

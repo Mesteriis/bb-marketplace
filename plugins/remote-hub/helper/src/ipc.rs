@@ -12,8 +12,10 @@ use crate::protocol::{
     self, Request, Response, FRAME_KIND_CONTROL, FRAME_KIND_STREAM, MAX_FRAME_BODY_BYTES,
     PROTOCOL_VERSION, STREAM_HEADER_BYTES,
 };
-use crate::rdp::manager::{RdpFrame, RdpManager};
-use crate::rdp::protocol::{EngineCommand, EngineEvent, UpdateHeader};
+use crate::rdp::manager::{DecisionRefusal, EnqueueError, RdpFrame, RdpManager};
+use crate::rdp::protocol::{
+    rows_per_chunk, EngineCommand, EngineEvent, UpdateHeader, CLIENT_UPDATE_OVERHEAD,
+};
 use crate::sessions::{SessionError, SessionManager, SpawnSpec, READ_CHUNK};
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -27,6 +29,9 @@ const OUTBOX_CAP: usize = 4 * 1024 * 1024;
 const OUTBOX_RESERVE: usize = 512 * 1024;
 /// Bounded ingress buffer for stdin frames not yet dispatched.
 const INGRESS_CAP: usize = MAX_FRAME_BODY_BYTES + 4;
+/// Outbox room required before an RDP engine fd is read: one update frame
+/// (<= 1 MiB) plus slack for its relayed events.
+const RDP_RESERVE: usize = 1024 * 1024 + 256 * 1024;
 
 static SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -136,6 +141,7 @@ fn request_id(req: &Request) -> Option<u64> {
         | Request::RdpCertDecision { id, .. }
         | Request::RdpInput { id, .. }
         | Request::RdpScreenshot { id, .. }
+        | Request::RdpUpdateAck { id, .. }
         | Request::SessionInput { id, .. }
         | Request::SessionResize { id, .. }
         | Request::SessionCredit { id, .. }
@@ -334,7 +340,10 @@ fn handle(
             }
         }
         Request::SessionClose { id, session_id } => {
-            if let Some(reason) = rdp.close(session_id) {
+            // Ids come from one shared allocator, so an id belongs to exactly
+            // one manager.
+            if rdp.contains(session_id) {
+                let reason = rdp.close(session_id).unwrap_or_else(|| "killed_by_close".to_string());
                 return Ok(protocol::encode_response(&Response::SessionClosed {
                     id: Some(id),
                     session_id,
@@ -371,19 +380,74 @@ fn handle(
             })),
         },
         Request::RdpCertDecision { id, session_id, fingerprint, accept } => {
-            rdp.enqueue_command(session_id, &EngineCommand::CertDecision { fingerprint, accept });
-            Ok(protocol::encode_response(&Response::RdpAck { id, session_id }))
+            if let Err(refusal) = rdp.check_decision(session_id, &fingerprint) {
+                let (code, message) = match refusal {
+                    DecisionRefusal::UnknownSession => ("session_not_found", format!("no rdp session {session_id}")),
+                    DecisionRefusal::NoPendingPrompt => {
+                        ("no_pending_prompt", "no certificate prompt is pending for this session".to_string())
+                    }
+                    DecisionRefusal::FingerprintMismatch => (
+                        "fingerprint_mismatch",
+                        "the decision names a different fingerprint than the pending prompt".to_string(),
+                    ),
+                };
+                return Ok(protocol::encode_response(&Response::Error {
+                    id: Some(id),
+                    code: code.to_string(),
+                    message,
+                }));
+            }
+            rdp_command(rdp, id, session_id, &EngineCommand::CertDecision { fingerprint, accept })
         }
         Request::RdpInput { id, session_id, events } => {
-            rdp.enqueue_command(session_id, &EngineCommand::Input { events });
-            Ok(protocol::encode_response(&Response::RdpAck { id, session_id }))
+            rdp_command(rdp, id, session_id, &EngineCommand::Input { events })
+        }
+        Request::RdpUpdateAck { id, session_id, frame_id } => {
+            rdp_command(rdp, id, session_id, &EngineCommand::Ack { frame_id })
         }
         Request::RdpScreenshot { id, session_id } => {
-            rdp.enqueue_command(session_id, &EngineCommand::Screenshot);
-            rdp.mark_screenshot_pending(session_id, id);
-            // The screenshot response arrives asynchronously from the engine.
-            Ok(Vec::new())
+            if !rdp.contains(session_id) {
+                return Ok(rdp_error(id, "session_not_found", format!("no rdp session {session_id}")));
+            }
+            if !rdp.is_ready(session_id) {
+                return Ok(rdp_error(id, "not_ready", "the desktop is not ready yet".to_string()));
+            }
+            match rdp.enqueue_command(session_id, &EngineCommand::Screenshot) {
+                Ok(()) => {
+                    rdp.push_screenshot(session_id, id);
+                    // The screenshot response arrives asynchronously from the engine.
+                    Ok(Vec::new())
+                }
+                Err(e) => Ok(rdp_enqueue_error(id, session_id, e)),
+            }
         }
+    }
+}
+
+fn rdp_error(id: u64, code: &str, message: String) -> Vec<u8> {
+    protocol::encode_response(&Response::Error { id: Some(id), code: code.to_string(), message })
+}
+
+fn rdp_enqueue_error(id: u64, session_id: u32, e: EnqueueError) -> Vec<u8> {
+    match e {
+        EnqueueError::UnknownSession => rdp_error(id, "session_not_found", format!("no rdp session {session_id}")),
+        EnqueueError::Dead => rdp_error(id, "session_closed", "the rdp engine has ended".to_string()),
+        EnqueueError::Full => {
+            rdp_error(id, "rdp_input_overflow", "too much pending input for this session; retry".to_string())
+        }
+    }
+}
+
+/// Queue one command for an engine and answer with `rdp.ack` or the error.
+fn rdp_command(
+    rdp: &mut RdpManager,
+    id: u64,
+    session_id: u32,
+    cmd: &EngineCommand,
+) -> Result<Vec<u8>, (String, String)> {
+    match rdp.enqueue_command(session_id, cmd) {
+        Ok(()) => Ok(protocol::encode_response(&Response::RdpAck { id, session_id })),
+        Err(e) => Ok(rdp_enqueue_error(id, session_id, e)),
     }
 }
 
@@ -415,17 +479,13 @@ fn handle_pty_close(manager: &mut SessionManager, id: u64, session_id: u32) -> R
     }
 }
 
-/// Largest helper -> client stream frame for an RDP update (<= 1 MiB per the
-/// stage 2b contract B5).
-const RDP_UPDATE_CHUNK_BYTES: usize = 1024 * 1024;
-
 fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, rid: u32, frames: Vec<RdpFrame>) {
     for frame in frames {
         match frame {
             RdpFrame::Event(EngineEvent::State { state }) => {
                 outbox.extend(protocol::encode_response(&Response::RdpState { session_id: rid, state }));
             }
-            RdpFrame::Event(EngineEvent::CertPrompt { host, port, fingerprint, subject, issuer, not_before, not_after, reason }) => {
+            RdpFrame::Event(EngineEvent::CertPrompt { host, port, fingerprint, subject, issuer, not_before, not_after, reason, detail }) => {
                 outbox.extend(protocol::encode_response(&Response::RdpCertPrompt {
                     session_id: rid,
                     host,
@@ -436,6 +496,14 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, rid: u32, f
                     not_before,
                     not_after,
                     reason,
+                    detail,
+                }));
+            }
+            RdpFrame::Event(EngineEvent::Certificate { fingerprint, validated }) => {
+                outbox.extend(protocol::encode_response(&Response::RdpCertificate {
+                    session_id: rid,
+                    fingerprint,
+                    validated,
                 }));
             }
             RdpFrame::Event(EngineEvent::Desktop { frame_id, width, height, timestamp }) => {
@@ -448,7 +516,9 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, rid: u32, f
                 }));
             }
             RdpFrame::Event(EngineEvent::Screenshot { frame_id, width, height, timestamp, png }) => {
-                let req_id = rdp.take_screenshot_id(rid).unwrap_or(0);
+                // Answers are FIFO per session: the engine answers each
+                // screenshot request exactly once, in order.
+                let req_id = rdp.pop_screenshot(rid).unwrap_or(0);
                 outbox.extend(protocol::encode_response(&Response::RdpScreenshot {
                     id: req_id,
                     session_id: rid,
@@ -457,6 +527,21 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, rid: u32, f
                     height,
                     timestamp,
                     png,
+                }));
+            }
+            RdpFrame::Event(EngineEvent::ScreenshotError { code }) => {
+                let req_id = rdp.pop_screenshot(rid);
+                outbox.extend(protocol::encode_response(&Response::Error {
+                    id: req_id,
+                    code,
+                    message: "the screenshot request was refused".to_string(),
+                }));
+            }
+            RdpFrame::Event(EngineEvent::InputRejected { applied, rejected }) => {
+                outbox.extend(protocol::encode_response(&Response::RdpInputRejected {
+                    session_id: rid,
+                    applied,
+                    rejected,
                 }));
             }
             RdpFrame::Event(EngineEvent::Error { code, message }) => {
@@ -470,14 +555,16 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, rid: u32, f
     }
 }
 
-/// Split one engine update into <= 1 MiB helper stream frames, each with its
-/// own {frameId, fbWidth, fbHeight, x, y, w, h} header + RGBA rows.
+/// Split one engine update into helper stream frames of at most 1 MiB on the
+/// wire (every header counted), each with its own {frameId, fbWidth, fbHeight,
+/// x, y, w, h} header + RGBA rows. The manager already validated that `rgba`
+/// is exactly `w * h * 4` bytes inside the framebuffer.
 fn relay_rdp_update(outbox: &mut VecDeque<u8>, rid: u32, header: UpdateHeader, rgba: &[u8]) {
     let bytes_per_row = header.w as usize * 4;
     if bytes_per_row == 0 {
         return;
     }
-    let rows_per_chunk = (RDP_UPDATE_CHUNK_BYTES / bytes_per_row).max(1);
+    let rows_per_chunk = rows_per_chunk(header.w, CLIENT_UPDATE_OVERHEAD);
     let mut y = header.y;
     let mut remaining = header.h;
     let mut off = 0usize;
@@ -485,9 +572,9 @@ fn relay_rdp_update(outbox: &mut VecDeque<u8>, rid: u32, header: UpdateHeader, r
     while remaining > 0 {
         let chunk_h = remaining.min(rows_per_chunk as u32);
         let row_bytes = bytes_per_row * chunk_h as usize;
-        let data = &rgba[off..off + row_bytes];
+        let Some(data) = rgba.get(off..off + row_bytes) else { return };
         off += row_bytes;
-        let mut payload = Vec::with_capacity(32 + data.len());
+        let mut payload = Vec::with_capacity(28 + data.len());
         payload.extend_from_slice(&header.frame_id.to_le_bytes());
         payload.extend_from_slice(&header.fb_width.to_le_bytes());
         payload.extend_from_slice(&header.fb_height.to_le_bytes());
@@ -703,9 +790,12 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
     let current_exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "remote-hub-helper".to_string());
+    // One id allocator for every session kind, so a sessionId on the wire
+    // names exactly one session.
+    let ids = crate::ids::SessionIds::new();
     let mut guard = CleanupGuard {
-        manager: SessionManager::new(echo_argv),
-        rdp: RdpManager::new(),
+        manager: SessionManager::with_ids(echo_argv, ids.clone()),
+        rdp: RdpManager::with_ids(ids),
     };
     let mut reader = FrameReader::new();
     let mut outbox: VecDeque<u8> = VecDeque::new();
@@ -762,17 +852,32 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
             roles.push(PollRole::Session(*sid));
             fds.push(pollfd(*mfd, events));
         }
-        let rdp_fds = guard.rdp.fds();
-        for (rid, rfd) in &rdp_fds {
-            let mut events = libc::POLLIN;
-            if guard.rdp.wants_write(*rid) {
+        // Engine fds are read only while the outbox has room for a whole update
+        // frame; otherwise the engine is held back by its full socket (and a
+        // hung-up fd is left out so it cannot spin the loop).
+        let rdp_room = outbox.len() + RDP_RESERVE <= OUTBOX_CAP;
+        let mut rdp_buffered = false;
+        for (rid, rfd) in guard.rdp.fds() {
+            let mut events = 0;
+            if rdp_room {
+                events |= libc::POLLIN;
+                if guard.rdp.has_buffered_frame(rid) {
+                    rdp_buffered = true;
+                }
+            }
+            if guard.rdp.wants_write(rid) {
                 events |= libc::POLLOUT;
             }
-            roles.push(PollRole::Rdp(*rid));
-            fds.push(pollfd(*rfd, events));
+            if events == 0 {
+                continue;
+            }
+            roles.push(PollRole::Rdp(rid));
+            fds.push(pollfd(rfd, events));
         }
 
-        let r = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 50) };
+        // Buffered engine frames are work that poll cannot signal.
+        let poll_timeout = if rdp_buffered { 0 } else { 50 };
+        let r = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, poll_timeout) };
         if r < 0 {
             let err = io::Error::last_os_error();
             if err.kind() == io::ErrorKind::Interrupted {
@@ -827,8 +932,11 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                     if revents & libc::POLLOUT != 0 {
                         guard.rdp.write_pending(*rid);
                     }
-                    if revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
-                        let frames = guard.rdp.process_readable(*rid);
+                    let readable = revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+                        || guard.rdp.has_buffered_frame(*rid);
+                    if readable && outbox.len() + RDP_RESERVE <= OUTBOX_CAP {
+                        let budget = OUTBOX_CAP.saturating_sub(outbox.len());
+                        let frames = guard.rdp.process_readable(*rid, budget);
                         relay_rdp_frames(&mut guard.rdp, &mut outbox, *rid, frames);
                     }
                 }
@@ -839,13 +947,13 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         // Reap children that exited on their own (never shuts down the helper).
         guard.manager.reap();
         guard.rdp.reap();
-        for (rid, reason) in guard.rdp.take_all_closed() {
+        for closed in guard.rdp.take_all_closed() {
             outbox.extend(protocol::encode_response(&Response::SessionClosed {
                 id: None,
-                session_id: rid,
-                exit_code: None,
-                signal: None,
-                reason,
+                session_id: closed.session_id,
+                exit_code: closed.exit.code,
+                signal: closed.exit.signal,
+                reason: closed.reason,
             }));
         }
 
