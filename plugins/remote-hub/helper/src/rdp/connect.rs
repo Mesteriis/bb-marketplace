@@ -952,6 +952,32 @@ mod tests {
         assert!(out.collector.all().contains(&EngineEvent::Certificate { fingerprint: LEAF_FP.to_string(), validated: false }));
     }
 
+    /// H4: a certificate that FAILS validation but is exactly the pinned one
+    /// connects without a prompt; the engine still reports it as not validated.
+    #[test]
+    fn a_failing_certificate_matching_the_pin_connects_without_a_prompt() {
+        let out = run(Server::Tls12, Some(LEAF_FP), budgets(60_000), &SystemTls, |ctl| {
+            ctl.collector.wait_for(|e| matches!(e, EngineEvent::State { state } if state == "authenticating"));
+            ctl.cancel.trigger(RdpClosedReason::KilledByClose);
+        });
+        let states = out.collector.states();
+        assert!(states.contains(&"authenticating".to_string()), "{states:?} / {:?}", out.result.err());
+        assert!(!states.contains(&"cert_prompt".to_string()), "{states:?}");
+        assert!(out
+            .collector
+            .all()
+            .contains(&EngineEvent::Certificate { fingerprint: LEAF_FP.to_string(), validated: false }));
+    }
+
+    /// H4: a failing certificate that is NOT the pinned one is `cert_changed`
+    /// at once: no prompt, no authentication.
+    #[test]
+    fn a_failing_certificate_not_matching_the_pin_is_cert_changed_without_a_prompt() {
+        let out = run(Server::Tls12, Some(OTHER_FP), budgets(60_000), &SystemTls, |_| {});
+        assert_eq!(out.result.err(), Some(RdpClosedReason::CertChanged));
+        assert_eq!(out.collector.states(), vec!["connecting", "tls"]);
+    }
+
     /// A TLS step that never finishes.
     struct StuckTls;
 

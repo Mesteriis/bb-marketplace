@@ -373,6 +373,20 @@ def cases(tmp, cid, port, user, password):
           "which is wired in 2b-2; the helper/engine only reports the fingerprint.", flush=True)
     h6.terminate()
 
+    mark("6a")
+    # Case 6a: expectedFingerprint of THIS (self-signed, failing-validation)
+    # certificate -> connects with no prompt; the certificate is still reported
+    # as not validated.
+    h6a = Helper()
+    sid6a, pid6a = h6a.open_rdp("127.0.0.1", port, user, password, expected=fp)
+    desktop6a = h6a.read_until(lambda m: m.get("type") == "rdp.desktop", timeout=30)
+    assert desktop6a is not None, ("pinned match must connect", h6a.states())
+    assert "cert_prompt" not in h6a.states(), h6a.states()
+    certs6a = [m for m in h6a.trace if m.get("type") == "rdp.certificate"]
+    assert certs6a and certs6a[0]["fingerprint"] == fp and certs6a[0]["validated"] is False, certs6a
+    no_password_in(h6a, password, "session 6a")
+    h6a.terminate()
+
     mark("7")
     # Case 7: kill the container during desktop_ready -> network_error within
     # 10 s, and the engine is gone.
