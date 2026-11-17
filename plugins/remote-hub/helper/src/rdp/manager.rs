@@ -763,26 +763,33 @@ impl RdpManager {
 
     /// Tear one engine down for good: reap it if it already exited, otherwise
     /// SIGKILL it and wait. A pid that was already reaped is never signalled.
-    fn stop_engine(s: &mut RdpSession) {
-        let Some(pid) = s.engine_pid.take() else { return };
+    /// Stop the engine. True when it had to be killed; false when it was
+    /// already gone (reaped earlier, or exited and is reaped here).
+    fn stop_engine(s: &mut RdpSession) -> bool {
+        let Some(pid) = s.engine_pid.take() else { return s.exit.is_none() };
         let mut status: libc::c_int = 0;
         let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
         if r == pid {
             s.exit = Some(parse_status(status));
-            return;
+            return false;
         }
         kill_engine(pid);
         s.exit = wait_pid(pid).map(parse_status);
+        true
     }
 
+    /// Close a session at the client's request. Reason precedence: a Closed
+    /// event the engine wrote (read first), then `engine_exited` (it ended by
+    /// itself), then `killed_by_close` (this close had to kill it).
     pub fn close(&mut self, id: u32) -> Option<String> {
         let mut s = self.sessions.remove(&id)?;
-        // An engine that was already reaped ended by itself, whatever the
-        // client does next; one that is stopped now was closed by the client.
-        let fallback = if s.engine_pid.is_none() && s.exit.is_some() { "engine_exited" } else { "killed_by_close" };
-        Self::stop_engine(&mut s);
+        let killed = Self::stop_engine(&mut s);
+        if !killed {
+            Self::drain_for_closed(&mut s);
+            Self::set_reason(&mut s, "engine_exited");
+        }
         Self::close_transport(&mut s);
-        Some(s.close_reason.unwrap_or_else(|| fallback.to_string()))
+        Some(s.close_reason.unwrap_or_else(|| "killed_by_close".to_string()))
     }
 
     pub fn terminate_all(&mut self) {
@@ -1292,6 +1299,29 @@ mod tests {
         let (mut mgr, id, b) = reaped_but_open(Some("network_error"));
         assert_eq!(mgr.reap(), vec![id]);
         assert_eq!(mgr.take_closed(id).expect("closed").reason, "network_error");
+        unsafe { libc::close(b) };
+    }
+
+    /// J3(a): an explicit close after the engine was reaped but before its
+    /// Closed event was read reports that event's reason.
+    #[test]
+    fn close_after_reap_reads_the_buffered_closed_event_first() {
+        let (mut mgr, id, b) = reaped_but_open(Some("network_error"));
+        assert_eq!(mgr.close(id).as_deref(), Some("network_error"));
+        unsafe { libc::close(b) };
+    }
+
+    /// J3(b): when close itself finds the engine already exited (unreaped), the
+    /// reason is `engine_exited`, not `killed_by_close`, and nothing is killed.
+    #[test]
+    fn close_of_an_already_exited_unreaped_engine_is_engine_exited() {
+        let pid = spawn_exit(0);
+        wait_until_exited_unreaped(pid);
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(Some(pid), a);
+        assert_eq!(mgr.close(id).as_deref(), Some("engine_exited"));
+        assert!(!ENGINE_KILLS.lock().unwrap().contains(&pid), "an exited engine was signalled");
         unsafe { libc::close(b) };
     }
 
