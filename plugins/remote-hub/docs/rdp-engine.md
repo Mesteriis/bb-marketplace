@@ -50,7 +50,13 @@ The sequence lives in `helper/src/rdp/connect.rs` and is driven with
 `ironrdp-tokio` + `ironrdp-connector` (mirrors `ironrdp-client-0.1.0/src/rdp.rs`).
 Each phase has its own budget (`Timeouts`): TCP + X.224 15 s, TLS 15 s
 (excluding the time the user spends deciding), authentication/finalize 15 s;
-the certificate prompt waits up to 60 s on its own.
+the certificate prompt waits up to 60 s on its own. Loading the system root
+certificates happens INSIDE the TLS handshake (the pinned ironrdp-tls does it
+when it builds the client config), so a slow or cold root store is charged to
+the TLS budget and, past 15 s, ends the session as `timeout` — a real product
+bound, not a test artefact. The TLS budget is measured on an injectable `Clock`
+(`connect.rs`, `Meter`): production uses `SystemClock`; tests use a manual
+clock so no test depends on handshake speed.
 
 1. `connecting`: `TcpStream::connect((host, port))`, then
    `ironrdp_tokio::TokioFramed::new(stream)`.
@@ -228,6 +234,13 @@ event does not drop the rest of its batch: the engine reports
 `session_not_found`.
 
 ## 6. Process model (B1)
+
+**Invariant: the main helper is single-threaded.** The engine is spawned with
+`fork` + prebuilt, allocation-free child code + `execve`, which is sound only
+because the helper has exactly one thread (see docs/architecture.md §2; a
+`test-hooks` build asserts it at every fork, and `rdp_process.rs`
+`g14_the_helper_stays_single_threaded_across_forks` checks it). All threads and
+the tokio runtime live in the engine process, which never forks.
 
 Each RDP session runs in its own engine process: the helper re-execs itself as
 `remote-hub-helper --rdp-engine` (absolute path of the current executable, fixed

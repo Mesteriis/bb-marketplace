@@ -9,11 +9,14 @@
 //!   handshake, reported to the helper, and compared with `expectedFingerprint`
 //!   BEFORE `connect_finalize`, whether or not the certificate validated (the
 //!   pinned `ironrdp-tls` calls its callback only on validation failure);
-//! * the connect budget is time-boxed per phase; the certificate prompt waits
-//!   up to its own 60 s and is not charged to the connect budget.
+//! * the connect budget is time-boxed per phase (TCP+X.224, TLS, finalize,
+//!   15 s each); the certificate prompt waits up to its own 60 s and is not
+//!   charged to the TLS budget. Loading the system roots happens inside the TLS
+//!   handshake and IS charged to it (bound: `Timeouts::tls`, then `timeout`).
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::Poll;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -41,11 +44,76 @@ pub const CLIENT_NAME: &str = "remote-hub";
 /// The non-identifying X.224 routing cookie value.
 pub const ROUTING_COOKIE: &str = "remote-hub";
 
+/// A monotonic clock the TLS time budget is measured on. Production uses
+/// `SystemClock`; a test injects a manual clock so no test depends on how fast
+/// the machine completes a handshake.
+pub trait Clock: Send + Sync {
+    /// Time since an arbitrary fixed origin.
+    fn now(&self) -> Duration;
+}
+
+pub struct SystemClock {
+    origin: Instant,
+}
+
+impl SystemClock {
+    pub fn new() -> Self {
+        SystemClock { origin: Instant::now() }
+    }
+}
+
+impl Default for SystemClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clock for SystemClock {
+    fn now(&self) -> Duration {
+        self.origin.elapsed()
+    }
+}
+
+/// The TLS phase budget: elapsed time on `clock` since the phase started, MINUS
+/// the time the user spent deciding on a certificate.
+struct Meter {
+    clock: Arc<dyn Clock>,
+    started: Duration,
+    budget: Duration,
+    prompt_spent: Mutex<Duration>,
+}
+
+impl Meter {
+    fn new(clock: Arc<dyn Clock>, budget: Duration) -> Self {
+        let started = clock.now();
+        Meter { clock, started, budget, prompt_spent: Mutex::new(Duration::ZERO) }
+    }
+
+    fn add_prompt_time(&self, spent: Duration) {
+        *self.prompt_spent.lock().unwrap() += spent;
+    }
+
+    fn active(&self) -> Duration {
+        let spent = *self.prompt_spent.lock().unwrap();
+        self.clock.now().saturating_sub(self.started).saturating_sub(spent)
+    }
+
+    fn exceeded(&self) -> bool {
+        self.active() >= self.budget
+    }
+}
+
+/// How often an idle TLS handshake re-checks its budget.
+const BUDGET_TICK: Duration = Duration::from_millis(50);
+
 #[derive(Debug, Clone, Copy)]
 pub struct Timeouts {
-    /// TCP connect + X.224 negotiation, and separately the TLS handshake
-    /// (excluding time spent waiting for the user's certificate decision).
+    /// TCP connect + X.224 negotiation.
     pub connect: Duration,
+    /// The TLS handshake, INCLUDING loading the system root certificates (done
+    /// inside the handshake by the pinned ironrdp-tls) but excluding the time
+    /// the user spends deciding on a certificate.
+    pub tls: Duration,
     /// How long the certificate prompt waits for a decision.
     pub prompt: Duration,
     /// Security exchange, licensing, capabilities, activation.
@@ -54,7 +122,12 @@ pub struct Timeouts {
 
 impl Default for Timeouts {
     fn default() -> Self {
-        Timeouts { connect: Duration::from_secs(15), prompt: Duration::from_secs(60), finalize: Duration::from_secs(15) }
+        Timeouts {
+            connect: Duration::from_secs(15),
+            tls: Duration::from_secs(15),
+            prompt: Duration::from_secs(60),
+            finalize: Duration::from_secs(15),
+        }
     }
 }
 
@@ -267,8 +340,8 @@ struct PromptContext {
     expected: Option<String>,
     prompt_timeout: Duration,
     forced: Mutex<Option<RdpClosedReason>>,
-    /// Milliseconds spent waiting for the user, excluded from the TLS budget.
-    prompt_spent_ms: AtomicU64,
+    /// The TLS budget; the callback credits the time the user spent deciding.
+    meter: Meter,
     /// Set when strict validation failed (the callback ran).
     invoked: AtomicBool,
 }
@@ -308,14 +381,14 @@ fn handle_validation_failure(ctx: &PromptContext, der: &[u8], error: &str) -> bo
         *ctx.forced.lock().unwrap() = Some(RdpClosedReason::HelperShutdown);
         return false;
     }
-    let started = Instant::now();
+    let started = ctx.meter.clock.now();
     // The wait blocks this thread; `block_in_place` hands the runtime's other
     // work to another worker while it does.
     let outcome = tokio::task::block_in_place(|| {
         let rx = ctx.decisions.lock().unwrap();
         wait_for_decision(&rx, &presented, ctx.prompt_timeout)
     });
-    ctx.prompt_spent_ms.fetch_add(started.elapsed().as_millis() as u64, Ordering::SeqCst);
+    ctx.meter.add_prompt_time(ctx.meter.clock.now().saturating_sub(started));
     match outcome {
         DecisionOutcome::Accepted => true,
         DecisionOutcome::Rejected | DecisionOutcome::TimedOut => {
@@ -329,34 +402,33 @@ fn handle_validation_failure(ctx: &PromptContext, der: &[u8], error: &str) -> bo
     }
 }
 
-/// The TLS handshake with a deadline that does not run while the user decides
-/// on a certificate.
+/// The TLS handshake under its budget (`Meter`): the budget does not run while
+/// the user decides on a certificate. It is re-checked after every poll that
+/// leaves the handshake waiting, and on a short tick while it is idle.
 async fn tls_phase(
     ctx: &Arc<PromptContext>,
     cancel: &Cancel,
     tls: &dyn TlsUpgrader,
     tcp: TcpStream,
-    budget: Duration,
 ) -> Result<std::io::Result<TlsOutcome>, RdpClosedReason> {
     let callback_ctx = ctx.clone();
     let callback: CertificateValidationCallback =
         Arc::new(move |der, _endpoint, error| handle_validation_failure(&callback_ctx, der, error));
     let upgrade = tls.upgrade(tcp, ctx.host.clone(), callback);
     tokio::pin!(upgrade);
-    let mut deadline = tokio::time::Instant::now() + budget;
-    let mut counted_ms = 0u64;
     loop {
+        let guarded = std::future::poll_fn(|cx| match upgrade.as_mut().poll(cx) {
+            Poll::Ready(r) => Poll::Ready(Some(r)),
+            Poll::Pending if ctx.meter.exceeded() => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        });
         tokio::select! {
-            r = &mut upgrade => return Ok(r),
+            r = guarded => return r.ok_or(RdpClosedReason::Timeout),
             reason = cancel.wait() => return Err(reason),
-            _ = tokio::time::sleep_until(deadline) => {
-                let spent = ctx.prompt_spent_ms.load(Ordering::SeqCst);
-                if spent > counted_ms {
-                    deadline += Duration::from_millis(spent - counted_ms);
-                    counted_ms = spent;
-                    continue;
+            _ = tokio::time::sleep(BUDGET_TICK) => {
+                if ctx.meter.exceeded() {
+                    return Err(RdpClosedReason::Timeout);
                 }
-                return Err(RdpClosedReason::Timeout);
             }
         }
     }
@@ -374,6 +446,7 @@ pub async fn connect_sequence(
     out: Arc<Out>,
     decisions: Receiver<Decision>,
     cancel: Arc<Cancel>,
+    clock: Arc<dyn Clock>,
     tls: &dyn TlsUpgrader,
 ) -> Result<Connected, RdpClosedReason> {
     helper_gone(out.state("connecting"))?;
@@ -405,10 +478,10 @@ pub async fn connect_sequence(
         expected: params.expected_fingerprint.clone(),
         prompt_timeout: timeouts.prompt,
         forced: Mutex::new(None),
-        prompt_spent_ms: AtomicU64::new(0),
+        meter: Meter::new(clock, timeouts.tls),
         invoked: AtomicBool::new(false),
     });
-    let upgraded = tls_phase(&ctx, &cancel, tls, tcp, timeouts.connect).await?;
+    let upgraded = tls_phase(&ctx, &cancel, tls, tcp).await?;
     let outcome = match upgraded {
         Ok(o) => o,
         Err(_) => {
@@ -447,7 +520,14 @@ pub async fn connect_sequence(
 
 #[cfg(test)]
 mod tests {
+    //! No test here depends on how fast the machine runs: the TLS budget is
+    //! measured on a manual clock the test advances explicitly, and every
+    //! "wait for X" is an event (a condition variable on the collected engine
+    //! events), not a sleep. Real-time values that remain are the prompt wait
+    //! (a `recv_timeout` whose outcome is the same at any speed) and hang
+    //! guards.
     use super::*;
+    use std::sync::atomic::AtomicU64;
     use std::sync::mpsc::{channel, Sender};
     use std::sync::Condvar;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -458,6 +538,24 @@ mod tests {
     /// `openssl x509 -in leaf.pem -noout -fingerprint -sha256` of the fixture.
     const LEAF_FP: &str = "B6:88:41:D8:62:DD:80:8C:E2:A8:39:E1:26:D1:66:00:9D:51:54:09:DD:16:E2:A7:CB:DF:0D:3B:E1:1D:43:2E";
     const OTHER_FP: &str = "AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA";
+
+    /// A clock that only moves when a test says so.
+    struct ManualClock(AtomicU64);
+
+    impl ManualClock {
+        fn new() -> Arc<Self> {
+            Arc::new(ManualClock(AtomicU64::new(0)))
+        }
+        fn advance(&self, by: Duration) {
+            self.0.fetch_add(by.as_millis() as u64, Ordering::SeqCst);
+        }
+    }
+
+    impl Clock for ManualClock {
+        fn now(&self) -> Duration {
+            Duration::from_millis(self.0.load(Ordering::SeqCst))
+        }
+    }
 
     /// Server-side TLS config presenting the fixture leaf.
     fn server_tls(tls12_only: bool) -> tokio_rustls::TlsAcceptor {
@@ -512,17 +610,17 @@ mod tests {
         /// fixture leaf and read until the client goes away.
         Tls,
         /// As `Tls`, but TLS 1.2 only. Its client handshake waits for the
-        /// server after verifying the certificate, so a deadline that expired
-        /// while the user decided is observed (what Windows servers do).
+        /// server after verifying the certificate, so the handshake is still
+        /// pending when the callback returns (what Windows servers do).
         Tls12,
     }
 
     /// Spawns the fake server; returns its port and the bytes the client sent
     /// before any TLS.
-    fn spawn_server(rt: &tokio::runtime::Runtime, mode: Server) -> (u16, Arc<Mutex<Vec<u8>>>) {
+    fn spawn_server(rt: &tokio::runtime::Runtime, mode: Server) -> (u16, Arc<(Mutex<Vec<u8>>, Condvar)>) {
         let listener = rt.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let captured = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
         let cap = captured.clone();
         rt.spawn(async move {
             let Ok((mut sock, _)) = listener.accept().await else { return };
@@ -536,10 +634,14 @@ mod tests {
             if sock.read_exact(&mut body).await.is_err() {
                 return;
             }
-            cap.lock().unwrap().extend_from_slice(&hdr);
-            cap.lock().unwrap().extend_from_slice(&body);
+            {
+                let mut got = cap.0.lock().unwrap();
+                got.extend_from_slice(&hdr);
+                got.extend_from_slice(&body);
+                cap.1.notify_all();
+            }
             match mode {
-                Server::Silent => tokio::time::sleep(Duration::from_secs(5)).await,
+                Server::Silent => tokio::time::sleep(Duration::from_secs(60)).await,
                 Server::Tls | Server::Tls12 => {
                     // X.224 Connection Confirm selecting PROTOCOL_SSL (1):
                     // TPKT(19) + LI 14 + CC + RDP_NEG_RSP{type 2, len 8, SSL}.
@@ -559,6 +661,7 @@ mod tests {
     }
 
     /// Engine events as the helper would see them, collected from the socket.
+    #[derive(Clone)]
     struct Collector {
         events: Arc<(Mutex<Vec<EngineEvent>>, Condvar)>,
         ended: Arc<(Mutex<bool>, Condvar)>,
@@ -585,34 +688,31 @@ mod tests {
             Collector { events, ended }
         }
 
-        /// Wait until every writer is gone and every event has been read, so
-        /// the trace is complete (bounded, never hangs the test).
-        fn finish(&self) {
-            let (lock, cv) = &*self.ended;
-            let deadline = Instant::now() + Duration::from_secs(3);
-            let mut ended = lock.lock().unwrap();
-            while !*ended {
-                let left = deadline.saturating_duration_since(Instant::now());
-                if left.is_zero() {
-                    return;
-                }
-                ended = cv.wait_timeout(ended, left).unwrap().0;
-            }
-        }
-
-        fn wait_for(&self, limit: Duration, pred: impl Fn(&EngineEvent) -> bool) -> Option<EngineEvent> {
+        /// Block until an event matches. The limit is a hang guard only.
+        fn wait_for(&self, pred: impl Fn(&EngineEvent) -> bool) -> EngineEvent {
             let (lock, cv) = &*self.events;
-            let deadline = Instant::now() + limit;
+            let deadline = Instant::now() + Duration::from_secs(30);
             let mut guard = lock.lock().unwrap();
             loop {
                 if let Some(e) = guard.iter().find(|e| pred(e)) {
-                    return Some(e.clone());
+                    return e.clone();
                 }
                 let left = deadline.saturating_duration_since(Instant::now());
-                if left.is_zero() {
-                    return None;
-                }
+                assert!(!left.is_zero(), "hang guard: the awaited engine event never arrived");
                 guard = cv.wait_timeout(guard, left).unwrap().0;
+            }
+        }
+
+        /// Wait until every writer is gone and every event has been read, so
+        /// the trace is complete.
+        fn finish(&self) {
+            let (lock, cv) = &*self.ended;
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut ended = lock.lock().unwrap();
+            while !*ended {
+                let left = deadline.saturating_duration_since(Instant::now());
+                assert!(!left.is_zero(), "hang guard: the engine's event stream never ended");
+                ended = cv.wait_timeout(ended, left).unwrap().0;
             }
         }
 
@@ -647,28 +747,53 @@ mod tests {
         }
     }
 
-    fn short(connect_ms: u64, prompt_ms: u64, finalize_ms: u64) -> Timeouts {
+    /// Generous phase budgets: only the tests that are ABOUT a timeout shorten one.
+    fn budgets(prompt_ms: u64) -> Timeouts {
         Timeouts {
-            connect: Duration::from_millis(connect_ms),
+            connect: Duration::from_secs(120),
+            tls: Duration::from_secs(15),
             prompt: Duration::from_millis(prompt_ms),
-            finalize: Duration::from_millis(finalize_ms),
+            finalize: Duration::from_secs(120),
+        }
+    }
+
+    /// What a test's driver thread can see and do while the engine connects.
+    struct Ctl {
+        decisions: Sender<Decision>,
+        collector: Collector,
+        cancel: Arc<Cancel>,
+        clock: Arc<ManualClock>,
+        captured: Arc<(Mutex<Vec<u8>>, Condvar)>,
+    }
+
+    impl Ctl {
+        fn prompt(&self) -> EngineEvent {
+            self.collector.wait_for(|e| matches!(e, EngineEvent::CertPrompt { .. }))
+        }
+
+        /// Block until the server has seen the X.224 request.
+        fn wait_request_seen(&self) {
+            let (lock, cv) = &*self.captured;
+            let mut got = lock.lock().unwrap();
+            while got.is_empty() {
+                got = cv.wait_timeout(got, Duration::from_secs(30)).unwrap().0;
+            }
         }
     }
 
     struct Outcome {
         result: Result<(), RdpClosedReason>,
         collector: Collector,
-        captured: Arc<Mutex<Vec<u8>>>,
+        captured: Arc<(Mutex<Vec<u8>>, Condvar)>,
     }
 
-    /// Run one connect against a fake server. `user` drives the decision side
-    /// (it gets the decision sender and the collector).
+    /// Run one connect against a fake server. `user` drives the decision side.
     fn run(
         mode: Server,
         expected: Option<&str>,
         timeouts: Timeouts,
         tls: &dyn TlsUpgrader,
-        user: impl FnOnce(Sender<Decision>, &Collector) + Send + 'static,
+        user: impl FnOnce(Ctl) + Send + 'static,
     ) -> Outcome {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let (port, captured) = spawn_server(&rt, mode);
@@ -676,12 +801,26 @@ mod tests {
         let out = Arc::new(Out::new(engine_end));
         let collector = Collector::start(peer);
         let (dec_tx, dec_rx) = channel();
-        let user_collector = Collector { events: collector.events.clone(), ended: collector.ended.clone() };
-        let user_tx = dec_tx.clone();
-        let helper = std::thread::spawn(move || user(user_tx, &user_collector));
         let cancel = Arc::new(Cancel::new());
+        let clock = ManualClock::new();
+        let ctl = Ctl {
+            decisions: dec_tx.clone(),
+            collector: collector.clone(),
+            cancel: cancel.clone(),
+            clock: clock.clone(),
+            captured: captured.clone(),
+        };
+        let helper = std::thread::spawn(move || user(ctl));
+        // The 30 s limit is a hang guard: no outcome here depends on it.
         let result = rt
-            .block_on(connect_sequence(params(port, expected), timeouts, out, dec_rx, cancel, tls))
+            .block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(30),
+                    connect_sequence(params(port, expected), timeouts, out, dec_rx, cancel, clock, tls),
+                )
+                .await
+                .expect("hang guard: connect_sequence did not finish")
+            })
             .map(|_| ());
         let _ = helper.join();
         drop(dec_tx);
@@ -690,17 +829,17 @@ mod tests {
         Outcome { result, collector, captured }
     }
 
-    fn prompt_of(c: &Collector) -> EngineEvent {
-        c.wait_for(Duration::from_secs(10), |e| matches!(e, EngineEvent::CertPrompt { .. })).expect("cert prompt")
-    }
-
     /// G2: the username and password never leave before TLS; the routing
-    /// cookie is the fixed product string.
+    /// cookie is the fixed product string. The session is cancelled once the
+    /// server has the request (no timeout involved).
     #[test]
     fn nothing_identifying_is_sent_before_tls() {
-        let out = run(Server::Silent, None, short(700, 1000, 1000), &SystemTls, |_, _| {});
-        assert_eq!(out.result.err(), Some(RdpClosedReason::Timeout));
-        let sent = out.captured.lock().unwrap().clone();
+        let out = run(Server::Silent, None, budgets(1000), &SystemTls, |ctl| {
+            ctl.wait_request_seen();
+            ctl.cancel.trigger(RdpClosedReason::KilledByClose);
+        });
+        assert_eq!(out.result.err(), Some(RdpClosedReason::KilledByClose));
+        let sent = out.captured.0.lock().unwrap().clone();
         assert!(!sent.is_empty(), "the server saw no X.224 request");
         let text = String::from_utf8_lossy(&sent).to_string();
         assert!(!text.contains("tester-user"), "username in the pre-TLS request: {text:?}");
@@ -713,7 +852,7 @@ mod tests {
     /// fingerprint, and the sequence never reaches `authenticating`.
     #[test]
     fn a_validating_certificate_with_another_fingerprint_is_cert_changed() {
-        let out = run(Server::Tls, Some(OTHER_FP), short(3000, 3000, 3000), &TestCaTls, |_, _| {});
+        let out = run(Server::Tls, Some(OTHER_FP), budgets(1000), &TestCaTls, |_| {});
         assert_eq!(out.result.err(), Some(RdpClosedReason::CertChanged));
         let states = out.collector.states();
         assert_eq!(states, vec!["connecting", "tls"], "credentials must not be reachable: {states:?}");
@@ -728,7 +867,12 @@ mod tests {
     /// reported (validated) and proceeds to authentication.
     #[test]
     fn a_validating_certificate_with_the_expected_fingerprint_proceeds() {
-        let out = run(Server::Tls, Some(&LEAF_FP.to_lowercase().replace(':', "")), short(3000, 3000, 800), &TestCaTls, |_, _| {});
+        let expected = LEAF_FP.to_lowercase().replace(':', "");
+        let out = run(Server::Tls, Some(&expected), budgets(1000), &TestCaTls, |ctl| {
+            // Reaching `authenticating` is the assertion; end the session there.
+            ctl.collector.wait_for(|e| matches!(e, EngineEvent::State { state } if state == "authenticating"));
+            ctl.cancel.trigger(RdpClosedReason::KilledByClose);
+        });
         let states = out.collector.states();
         assert!(states.contains(&"authenticating".to_string()), "{states:?}");
         assert!(!states.contains(&"cert_prompt".to_string()));
@@ -738,60 +882,116 @@ mod tests {
             .contains(&EngineEvent::Certificate { fingerprint: LEAF_FP.to_string(), validated: true }));
     }
 
-    /// G3 + G4: the user decides AFTER the connect budget; a decision naming
-    /// another fingerprint is ignored (the prompt stays pending); the matching
-    /// one connects. The prompt carries the real endpoint and a stable code.
+    /// G3 + G4: the user decides far AFTER the TLS budget (20 s on the test
+    /// clock against a 15 s budget); a decision naming another fingerprint is
+    /// ignored (the prompt stays pending); the matching one connects. The prompt
+    /// carries the real endpoint and a stable code.
     #[test]
     fn a_late_decision_still_connects_and_a_wrong_fingerprint_is_ignored() {
-        let out = run(Server::Tls12, None, short(1000, 8000, 800), &SystemTls, |tx, c| {
-            let EngineEvent::CertPrompt { host, port, fingerprint, reason, detail, .. } = prompt_of(c) else { unreachable!() };
+        let out = run(Server::Tls12, None, budgets(60_000), &SystemTls, |ctl| {
+            let EngineEvent::CertPrompt { host, port, fingerprint, reason, detail, .. } = ctl.prompt() else { unreachable!() };
             assert_eq!(host, "127.0.0.1");
             assert!(port > 0);
             assert_eq!(fingerprint, LEAF_FP);
             assert_eq!(reason, "untrusted_root");
             assert!(detail.unwrap_or_default().contains("UnknownIssuer"));
-            tx.send(Decision::Cert { fingerprint: OTHER_FP.to_string(), accept: "once".to_string() }).unwrap();
-            // 2.5 s: far past the 1 s connect budget.
-            std::thread::sleep(Duration::from_millis(2500));
-            tx.send(Decision::Cert { fingerprint: fingerprint.clone(), accept: "once".to_string() }).unwrap();
+            ctl.decisions.send(Decision::Cert { fingerprint: OTHER_FP.to_string(), accept: "once".to_string() }).unwrap();
+            // The user takes 20 s: longer than the whole 15 s TLS budget.
+            ctl.clock.advance(Duration::from_secs(20));
+            ctl.decisions.send(Decision::Cert { fingerprint: fingerprint.clone(), accept: "once".to_string() }).unwrap();
+            ctl.collector.wait_for(|e| matches!(e, EngineEvent::State { state } if state == "authenticating"));
+            ctl.cancel.trigger(RdpClosedReason::KilledByClose);
         });
         let states = out.collector.states();
         assert!(
             states.contains(&"authenticating".to_string()),
-            "the prompt time was charged to the connect timeout: {states:?} / {:?}",
+            "the prompt time was charged to the TLS budget: {states:?} / {:?}",
             out.result.err()
         );
         assert!(out.collector.all().contains(&EngineEvent::Certificate { fingerprint: LEAF_FP.to_string(), validated: false }));
     }
 
+    /// A TLS step that never finishes.
+    struct StuckTls;
+
+    impl TlsUpgrader for StuckTls {
+        fn upgrade(&self, _tcp: TcpStream, _host: String, _callback: CertificateValidationCallback) -> UpgradeFuture {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    /// The TLS budget does run while the handshake is slow and nobody is
+    /// deciding: 14 s on the test clock is within budget, 16 s is `timeout`.
+    #[test]
+    fn the_tls_budget_runs_out_without_a_prompt() {
+        let out = run(Server::Tls, None, budgets(60_000), &StuckTls, |ctl| {
+            ctl.collector.wait_for(|e| matches!(e, EngineEvent::State { state } if state == "tls"));
+            ctl.clock.advance(Duration::from_secs(14));
+            // Still within budget: the session is alive, so cancel would be
+            // the only way out. Prove it by waiting for a real tick, then push
+            // the clock over the line.
+            std::thread::sleep(Duration::from_millis(150));
+            assert!(ctl.cancel.reason().is_none());
+            ctl.clock.advance(Duration::from_secs(2));
+        });
+        assert_eq!(out.result.err(), Some(RdpClosedReason::Timeout));
+    }
+
+    #[test]
+    fn meter_charges_active_time_only() {
+        let clock = ManualClock::new();
+        let meter = Meter::new(clock.clone(), Duration::from_secs(15));
+        assert!(!meter.exceeded());
+        clock.advance(Duration::from_secs(14));
+        assert!(!meter.exceeded());
+        clock.advance(Duration::from_secs(1));
+        assert!(meter.exceeded(), "15 s of active time exhausts a 15 s budget");
+
+        let clock = ManualClock::new();
+        let meter = Meter::new(clock.clone(), Duration::from_secs(15));
+        clock.advance(Duration::from_secs(20));
+        meter.add_prompt_time(Duration::from_secs(20)); // the user decided for 20 s
+        assert_eq!(meter.active(), Duration::ZERO);
+        assert!(!meter.exceeded());
+        clock.advance(Duration::from_secs(15));
+        assert!(meter.exceeded(), "time after the prompt counts again");
+    }
+
     #[test]
     fn rejecting_the_prompt_is_cert_rejected() {
-        let out = run(Server::Tls, None, short(2000, 8000, 800), &SystemTls, |tx, c| {
-            let EngineEvent::CertPrompt { fingerprint, .. } = prompt_of(c) else { unreachable!() };
-            tx.send(Decision::Cert { fingerprint, accept: "reject".to_string() }).unwrap();
+        let out = run(Server::Tls, None, budgets(60_000), &SystemTls, |ctl| {
+            let EngineEvent::CertPrompt { fingerprint, .. } = ctl.prompt() else { unreachable!() };
+            ctl.decisions.send(Decision::Cert { fingerprint, accept: "reject".to_string() }).unwrap();
         });
         assert_eq!(out.result.err(), Some(RdpClosedReason::CertRejected));
         assert!(!out.collector.states().contains(&"authenticating".to_string()));
     }
 
+    /// An unanswered prompt ends as `cert_rejected` after its own wait. The
+    /// wait is a `recv_timeout` that starts when the prompt is shown, so the
+    /// outcome does not depend on how long the handshake took to get there.
     #[test]
     fn an_unanswered_prompt_times_out_as_cert_rejected() {
-        let out = run(Server::Tls, None, short(2000, 700, 800), &SystemTls, |_, _| {});
+        let out = run(Server::Tls, None, budgets(300), &SystemTls, |_| {});
         assert_eq!(out.result.err(), Some(RdpClosedReason::CertRejected));
     }
 
     #[test]
     fn closing_during_the_prompt_cancels_the_session() {
-        let out = run(Server::Tls, None, short(2000, 8000, 800), &SystemTls, |tx, c| {
-            let _ = prompt_of(c);
-            tx.send(Decision::Cancel(RdpClosedReason::KilledByClose)).unwrap();
+        let out = run(Server::Tls, None, budgets(60_000), &SystemTls, |ctl| {
+            let _ = ctl.prompt();
+            ctl.decisions.send(Decision::Cancel(RdpClosedReason::KilledByClose)).unwrap();
         });
         assert_eq!(out.result.err(), Some(RdpClosedReason::KilledByClose));
     }
 
+    /// A phase that never completes ends as `timeout`: the server never
+    /// answers the X.224 request, so the 300 ms connect budget runs out. The
+    /// outcome is the same at any machine speed (there is nothing to finish).
     #[test]
     fn the_connect_phase_times_out() {
-        let out = run(Server::Silent, None, short(500, 1000, 1000), &SystemTls, |_, _| {});
+        let t = Timeouts { connect: Duration::from_millis(300), ..budgets(1000) };
+        let out = run(Server::Silent, None, t, &SystemTls, |_| {});
         assert_eq!(out.result.err(), Some(RdpClosedReason::Timeout));
     }
 
@@ -803,12 +1003,12 @@ mod tests {
         // Neither names the prompt's fingerprint: still waiting -> times out.
         assert!(matches!(wait_for_decision(&rx, LEAF_FP, Duration::from_millis(100)), DecisionOutcome::TimedOut));
         tx.send(Decision::Cert { fingerprint: LEAF_FP.to_lowercase(), accept: "session_trust".to_string() }).unwrap();
-        assert!(matches!(wait_for_decision(&rx, LEAF_FP, Duration::from_secs(1)), DecisionOutcome::Accepted));
+        assert!(matches!(wait_for_decision(&rx, LEAF_FP, Duration::from_secs(60)), DecisionOutcome::Accepted));
         tx.send(Decision::Cert { fingerprint: LEAF_FP.to_string(), accept: "maybe".to_string() }).unwrap();
-        assert!(matches!(wait_for_decision(&rx, LEAF_FP, Duration::from_secs(1)), DecisionOutcome::Rejected));
+        assert!(matches!(wait_for_decision(&rx, LEAF_FP, Duration::from_secs(60)), DecisionOutcome::Rejected));
         tx.send(Decision::Cancel(RdpClosedReason::HelperShutdown)).unwrap();
         assert!(matches!(
-            wait_for_decision(&rx, LEAF_FP, Duration::from_secs(1)),
+            wait_for_decision(&rx, LEAF_FP, Duration::from_secs(60)),
             DecisionOutcome::Cancelled(RdpClosedReason::HelperShutdown)
         ));
     }

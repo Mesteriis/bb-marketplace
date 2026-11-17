@@ -7,3 +7,4 @@ pub mod secret;
 pub mod sessions;
 pub mod rdp;
 pub mod ssh_args;
+pub mod threads;

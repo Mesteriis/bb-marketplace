@@ -343,6 +343,8 @@ impl RdpManager {
             }
         };
 
+        // fork-without-exec work is only sound in a single-threaded process.
+        crate::threads::assert_single_threaded("rdp engine fork");
         let mut old_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
         crate::sessions::block_all_signals(&mut old_mask);
         let pid = unsafe { libc::fork() };
@@ -688,9 +690,13 @@ mod tests {
     use super::*;
     use crate::rdp::protocol::{encode_control, encode_update};
 
+    /// A socketpair that spawned test children cannot inherit (close-on-exec),
+    /// so an EOF is seen as soon as the peer is closed.
     fn socketpair() -> (RawFd, RawFd) {
         let mut fds = [0i32; 2];
         assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) }, 0);
+        set_cloexec(fds[0]);
+        set_cloexec(fds[1]);
         (fds[0], fds[1])
     }
 
@@ -703,17 +709,40 @@ mod tests {
         }
     }
 
-    fn fork_exit(code: i32) -> libc::pid_t {
-        let pid = unsafe { libc::fork() };
-        assert!(pid >= 0);
-        if pid == 0 {
-            unsafe { libc::_exit(code) };
-        }
-        pid
+    /// A real, exec'd child that exits with `code`. Never `fork()` without
+    /// `exec` in this multi-threaded test binary: the forked child inherits a
+    /// single thread and libSystem's half-initialised `os_once` state from
+    /// whichever other test thread was mid-initialisation (the connect tests load
+    /// the system roots), and macOS kills it with SIGKILL inside `fork()`
+    /// ("os_once_t is corrupt ... crashed on child side of fork pre-exec").
+    /// The `Child` handle is dropped without waiting: the manager under test
+    /// reaps the pid.
+    fn spawn_exit(code: i32) -> libc::pid_t {
+        let child = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("exit {code}")])
+            .spawn()
+            .expect("spawn /bin/sh");
+        child.id() as libc::pid_t
     }
 
-    /// Read until the session's transport is closed. A forked test child may
-    /// briefly hold a copy of the peer fd, delaying the EOF, so poll for it.
+    /// A real child that stays alive until it is killed.
+    fn spawn_sleeper() -> libc::pid_t {
+        let child = std::process::Command::new("/bin/sleep").arg("600").spawn().expect("spawn /bin/sleep");
+        child.id() as libc::pid_t
+    }
+
+    /// Wait until `pid` has exited WITHOUT reaping it (waitid WNOWAIT), so the
+    /// test can then observe who reaps it.
+    fn wait_until_exited_unreaped(pid: libc::pid_t) {
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let r = unsafe {
+            libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT)
+        };
+        assert_eq!(r, 0, "waitid failed: {}", std::io::Error::last_os_error());
+    }
+
+    /// Read until the session's transport is closed (event-driven; the loop
+    /// limit is a hang guard).
     fn read_until_closed(mgr: &mut RdpManager, id: u32) {
         wait_until(|| {
             let _ = mgr.process_readable(id, usize::MAX);
@@ -722,32 +751,40 @@ mod tests {
     }
 
     fn wait_until(mut f: impl FnMut() -> bool) {
-        for _ in 0..200 {
+        // A hang guard, not a timing assertion: the condition is event-driven.
+        for _ in 0..6000 {
             if f() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        panic!("condition not reached in 2 s");
+        panic!("condition not reached in 60 s");
     }
 
-    /// The RDP reaper must only reap its own engine pids. With waitpid(-1) it
-    /// steals the unrelated child and the following waitpid returns -1.
+    /// The RDP reaper must only reap its own engine pids. The manager owns one
+    /// live engine; an UNRELATED child exits and stays a zombie. With
+    /// waitpid(-1) the reaper steals it, and the owner's own waitpid fails.
     #[test]
     fn rdp_reap_does_not_steal_unrelated_children() {
-        let pid = fork_exit(7);
-        std::thread::sleep(Duration::from_millis(200));
+        let own = spawn_sleeper();
+        let other = spawn_exit(7);
+        wait_until_exited_unreaped(other);
+        let (a, b) = socketpair();
         let mut mgr = RdpManager::new();
-        assert!(mgr.reap().is_empty(), "empty manager reaped something");
+        let id = mgr.adopt(Some(own), a);
+        assert!(mgr.reap().is_empty(), "the live engine was reported as exited");
         let mut status: libc::c_int = 0;
-        let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-        assert_eq!(r, pid, "RDP reaper stole an unrelated child");
+        let r = unsafe { libc::waitpid(other, &mut status, libc::WNOHANG) };
+        assert_eq!(r, other, "RDP reaper stole an unrelated child");
+        assert!(libc::WIFEXITED(status));
         assert_eq!(libc::WEXITSTATUS(status), 7);
+        assert_eq!(mgr.close(id).as_deref(), Some("killed_by_close"));
+        unsafe { libc::close(b) };
     }
 
     #[test]
     fn rdp_reap_reports_own_engine_exit_code() {
-        let pid = fork_exit(9);
+        let pid = spawn_exit(9);
         let (a, b) = socketpair();
         let mut mgr = RdpManager::new();
         let id = mgr.adopt(Some(pid), a);
@@ -763,7 +800,7 @@ mod tests {
     /// sends no kill to that pid (pid reuse would hit an unrelated process).
     #[test]
     fn close_after_reap_signals_nothing() {
-        let pid = fork_exit(0);
+        let pid = spawn_exit(0);
         let (a, b) = socketpair();
         let mut mgr = RdpManager::new();
         let id = mgr.adopt(Some(pid), a);
@@ -776,13 +813,7 @@ mod tests {
     /// A live engine is killed on close and waited for (no zombie, no orphan).
     #[test]
     fn close_kills_and_reaps_a_live_engine() {
-        let pid = unsafe { libc::fork() };
-        if pid == 0 {
-            unsafe {
-                libc::pause();
-                libc::_exit(0)
-            };
-        }
+        let pid = spawn_sleeper();
         let (a, b) = socketpair();
         let mut mgr = RdpManager::new();
         let id = mgr.adopt(Some(pid), a);

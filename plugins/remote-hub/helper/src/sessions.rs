@@ -472,6 +472,8 @@ impl SessionManager {
         let inherited = open_fds_above_two()?;
         let allow_fds = spec.allow_fds.clone();
 
+        // fork-without-exec work is only sound in a single-threaded process.
+        crate::threads::assert_single_threaded("pty session fork");
         let mut old_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
         block_all_signals(&mut old_mask);
         let mut pid: libc::pid_t;

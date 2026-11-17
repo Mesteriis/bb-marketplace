@@ -209,16 +209,32 @@ fn g16_unknown_session_input_and_decision_are_refused() {
 const FAKE: &str = "REMOTE_HUB_RDP_FAKE_ENGINE";
 const FULL_FRAME_PIXELS: u32 = 1920 * 1080;
 
-fn drain_updates(rx: &FrameRx, limit: Duration) -> Vec<UpdateChunk> {
-    let mut got = Vec::new();
-    let deadline = std::time::Instant::now() + limit;
-    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
-        match rx.updates.recv_timeout(left) {
-            Ok(c) => got.push(c),
-            Err(_) => break,
+/// Chunks already received (non-blocking).
+fn queued_updates(rx: &FrameRx) -> Vec<UpdateChunk> {
+    rx.updates.try_iter().collect()
+}
+
+/// Block until the next update chunk (the limit is a hang guard).
+fn next_update(rx: &FrameRx) -> UpdateChunk {
+    rx.updates.recv_timeout(Duration::from_secs(60)).expect("hang guard: no update arrived")
+}
+
+/// Block until the synthetic desktop has reported at least `n` paints.
+/// Returns the paint count seen.
+fn wait_paints(rx: &FrameRx, n: u32) -> u32 {
+    loop {
+        let (kind, payload) = rx.frames.recv_timeout(Duration::from_secs(60)).expect("hang guard: no paint marker");
+        if kind != remote_hub_helper::protocol::FRAME_KIND_CONTROL {
+            continue;
+        }
+        if let Ok(Response::RdpState { state, .. }) = remote_hub_helper::protocol::decode_response(&payload) {
+            if let Some(count) = state.strip_prefix("paint=").and_then(|c| c.parse::<u32>().ok()) {
+                if count >= n {
+                    return count;
+                }
+            }
         }
     }
-    got
 }
 
 fn distinct_frames(chunks: &[UpdateChunk]) -> Vec<u64> {
@@ -231,34 +247,47 @@ fn distinct_frames(chunks: &[UpdateChunk]) -> Vec<u64> {
 /// G10: a view that never acks receives exactly ONE update however many times
 /// the desktop repaints; each frame on the wire is <= 1 MiB with every header
 /// counted; the ack releases ONE coalesced dirty region (not a full frame) and
-/// the engine then waits again.
+/// the engine then waits again; a stale ack releases nothing.
+///
+/// No sleeps or windows: "the desktop repainted N more times" is an event (the
+/// synthetic engine's `paint=<n>` marker, which reaches the client after every
+/// update chunk sent before it).
 #[test]
 fn g10_an_unacked_view_gets_exactly_one_update_then_one_coalesced_region() {
     let mut h = start(&[(FAKE, "ack")]);
     let (rdp, _) = h.open_rdp_sized(closed_port(), 1920, 1080);
     let rx = h.frames_in_background(rdp);
 
-    let first = drain_updates(&rx, Duration::from_millis(1500));
+    // The first update goes out; then the desktop repaints 100 more times with
+    // nobody acking.
+    let first_chunk = next_update(&rx);
+    let seen = wait_paints(&rx, 100);
+    let mut first = vec![first_chunk];
+    first.extend(queued_updates(&rx));
     let ids = distinct_frames(&first);
     assert_eq!(ids.len(), 1, "an un-acked view received more than one update: {ids:?}");
     let pixels: u32 = first.iter().map(|c| c.w * c.h).sum();
     assert_eq!(pixels, FULL_FRAME_PIXELS, "the first update must cover the whole desktop");
     assert!(first.iter().all(|c| c.wire_len <= 1_048_576), "a chunk exceeded 1 MiB on the wire");
-    assert!(first.iter().all(|c| c.frame_id == ids[0]));
 
     // The ack releases the coalesced region: the bounding box of the four
-    // 64x64 blocks the synthetic desktop paints, at (0,0).
+    // 64x64 blocks the synthetic desktop cycles through, at (0,0).
     h.send(&Request::RdpUpdateAck { id: 50, session_id: rdp, frame_id: ids[0] });
-    let second = drain_updates(&rx, Duration::from_millis(800));
+    let second_chunk = next_update(&rx);
+    let seen = wait_paints(&rx, seen + 100);
+    let mut second = vec![second_chunk];
+    second.extend(queued_updates(&rx));
     let ids2 = distinct_frames(&second);
     assert_eq!(ids2.len(), 1, "one ack must release exactly one update: {ids2:?}");
     assert_ne!(ids2[0], ids[0]);
     assert_eq!(second.len(), 1, "a 128x128 region is a single chunk");
     assert_eq!((second[0].x, second[0].y, second[0].w, second[0].h), (0, 0, 128, 128));
 
-    // A stale ack (wrong frame id) releases nothing.
+    // A stale ack (the first frame's id) releases nothing, however long the
+    // desktop keeps repainting.
     h.send(&Request::RdpUpdateAck { id: 51, session_id: rdp, frame_id: ids[0] });
-    assert!(drain_updates(&rx, Duration::from_millis(500)).is_empty(), "a stale ack released an update");
+    let _ = wait_paints(&rx, seen + 100);
+    assert!(queued_updates(&rx).is_empty(), "a stale ack released an update");
     h.shutdown();
 }
 
@@ -348,5 +377,37 @@ fn g19_password_is_not_in_the_engine_argv_or_env() {
     assert!(!text.contains("SSLKEYLOGFILE"), "SSLKEYLOGFILE reached the engine: {text}");
     assert!(!text.contains("env-marker"), "the helper's environment reached the engine: {text}");
     assert!(text.contains("remote-hub-helper --rdp-engine"), "unexpected engine argv: {text}");
+    h.shutdown();
+}
+
+fn thread_count_of(pid: u32) -> usize {
+    // `ps -M` prints one row per thread after a header row.
+    let out = std::process::Command::new("ps").args(["-M", "-p", &pid.to_string()]).output().expect("ps -M");
+    assert!(out.status.success(), "ps -M failed: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).lines().count().saturating_sub(1)
+}
+
+/// G14: the helper forks children without exec in between work, which is only
+/// sound while it is single-threaded. It has exactly one thread at idle, with
+/// PTY sessions, with RDP engines and after they close; and (test-hooks) every
+/// fork site asserts it, so a change that adds a thread makes the first spawn
+/// fail instead of silently risking a poisoned child.
+#[test]
+fn g14_the_helper_stays_single_threaded_across_forks() {
+    let server = silent_server();
+    let mut h = start(&[]);
+    assert_eq!(thread_count_of(h.pid()), 1, "idle helper");
+    let (echo, _) = h.open_echo();
+    assert_eq!(thread_count_of(h.pid()), 1, "after a PTY session");
+    let (rdp, engine_pid) = h.open_rdp(server.port);
+    assert_eq!(thread_count_of(h.pid()), 1, "after an RDP session");
+    // The engine, by contrast, is multi-threaded (tokio + reader); it never
+    // forks. Documented here so nobody "fixes" the difference.
+    assert!(thread_count_of(engine_pid) >= 2, "the engine process runs a runtime");
+    h.send(&Request::SessionClose { id: 70, session_id: rdp });
+    let _ = h.read_closed(rdp);
+    h.send(&Request::SessionClose { id: 71, session_id: echo });
+    let _ = h.read_closed(echo);
+    assert_eq!(thread_count_of(h.pid()), 1, "after closing everything");
     h.shutdown();
 }

@@ -4,7 +4,9 @@
 //! `send_region` path, but paint a synthetic desktop instead of talking RDP.
 //!
 //! * `ack`   — paints 64x64 blocks and paces updates through the ack-driven
-//!   pump, exactly like the real engine.
+//!   pump, exactly like the real engine. Every 25th paint it reports
+//!   `state = "paint=<n>"` (n = paints so far) so a test can wait for "the
+//!   desktop has repainted N more times" as an event instead of sleeping.
 //! * `flood` — ignores acks and sends a full 1920x1080-class frame every
 //!   millisecond: a hostile / buggy engine, to prove the HELPER stays bounded.
 use std::os::fd::FromRawFd;
@@ -64,6 +66,9 @@ async fn run(flood: bool, width: u32, height: u32, out: Arc<Out>, inbox: Inbox) 
             _ = tokio::time::sleep(Duration::from_millis(1)) => {
                 tick = tick.wrapping_add(1);
                 let shade = (tick % 251) as u8;
+                if !flood && tick % 25 == 0 {
+                    out.state(&format!("paint={tick}"))?;
+                }
                 let rect = if flood || tick == 1 {
                     for px in pixels.chunks_exact_mut(4) {
                         px.copy_from_slice(&[shade, shade ^ 0x55, 7, 255]);

@@ -32,6 +32,21 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
 - Sessions are owned by the helper's `SessionManager`
   (helper/src/sessions.rs), independent of the React mount: the UI can detach
   without ending a session.
+- **The helper process is single-threaded, by design and as an invariant.** It
+  forks PTY children (`sessions.rs`) and RDP engine children (`rdp/manager.rs`)
+  and does a handful of async-signal-safe calls between `fork` and `execve`
+  (fd close list, argv and envp prebuilt before the fork). That is only sound
+  while no other thread exists: a forked child inherits locks and libc
+  once-state from any thread that was mid-operation (macOS kills such a child
+  inside `fork()` with "os_once_t is corrupt ... crashed on child side of fork
+  pre-exec"). Do not add a thread, a thread-spawning dependency or an async
+  runtime to the helper loop; put such work in a separate process (the RDP
+  engine is exactly that: it runs tokio, and never forks). `helper/src/threads.rs`
+  enforces it: in a `test-hooks` build every fork site asserts a thread count of
+  one, and `helper/tests/rdp_process.rs` (`g14_…`) checks the helper has one
+  thread at idle, with PTY and RDP sessions, and after they close. The same
+  rule applies to tests: code that forks inside a multi-threaded test binary
+  must exec (`std::process::Command`), never `fork()` and continue.
 
 ## 3. How commands, terminal data and RDP frames travel
 

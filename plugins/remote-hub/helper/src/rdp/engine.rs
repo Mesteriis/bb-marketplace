@@ -14,7 +14,9 @@ use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_tokio::FramedWrite as _;
 
-use super::connect::{connect_sequence, Connected, FramedRead, FramedWrite, Params, SystemTls, Timeouts, TlsUpgrader};
+use super::connect::{
+    connect_sequence, Clock, Connected, FramedRead, FramedWrite, Params, SystemClock, SystemTls, Timeouts, TlsUpgrader,
+};
 use super::engine_io::{read_frame, spawn_reader, Cancel, Control, Inbox, Out};
 use super::framebuffer::{Framebuffer, Rect};
 use super::input::Geometry;
@@ -58,7 +60,7 @@ fn engine_main(mut stream: UnixStream) -> std::io::Result<i32> {
     let out = Arc::new(Out::new(stream.try_clone()?));
     let inbox = spawn_reader(stream);
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-    rt.block_on(run(params, Timeouts::default(), out, inbox, &SystemTls))?;
+    rt.block_on(run(params, Timeouts::default(), out, inbox, Arc::new(SystemClock::new()), &SystemTls))?;
     Ok(0)
 }
 
@@ -68,10 +70,11 @@ pub async fn run(
     timeouts: Timeouts,
     out: Arc<Out>,
     inbox: Inbox,
+    clock: Arc<dyn Clock>,
     tls: &dyn TlsUpgrader,
 ) -> std::io::Result<()> {
     let Inbox { control, decisions, cancel } = inbox;
-    match connect_sequence(params, timeouts, out.clone(), decisions, cancel.clone(), tls).await {
+    match connect_sequence(params, timeouts, out.clone(), decisions, cancel.clone(), clock, tls).await {
         Ok(connected) => run_active(connected, &out, control, &cancel).await,
         Err(reason) => report_closed(&out, reason),
     }
