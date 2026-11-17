@@ -2,7 +2,7 @@
 // bold, and the quick filters above them (slice 3e). Slice 3h: rows drag
 // onto rail folders, message rows carry Gmail label chips and the "from the
 // server" mark, and a folder's end offers Load more days.
-import { createContext, useContext, type DragEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, type CSSProperties, type DragEvent, type ReactNode } from "react";
 import type { AttachmentMatch, MailAddress, MessageSummary, ThreadSummary } from "../core/index.ts";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -215,6 +215,45 @@ interface RowProps {
   onDragEnd?: () => void;
 }
 
+/**
+ * Slice 3j (#74): a row that is far from the visible part of the list is not
+ * laid out or painted. The browser keeps a placeholder of the row's last
+ * measured height (the estimate until it has been seen once), so the scroll
+ * bar stays right. The row stays in the document, so the keys, focus, drag
+ * and the selection work on it exactly as on a visible row.
+ */
+export function offscreenRowStyle(compact: boolean): CSSProperties {
+  return { contentVisibility: "auto", containIntrinsicSize: `auto ${compact ? 44 : 68}px` };
+}
+
+/** How close to the end of the loaded rows the list gets before it asks for the next page. */
+export const LOAD_MORE_MARGIN_PX = 600;
+
+/**
+ * Slice 3j: asks for the next page when the end of the list scrolls near.
+ * The mark sits after the rows; where the browser cannot watch it (no
+ * IntersectionObserver), the Load more button below does the same by hand.
+ */
+function LoadMoreOnScroll({ loading, onLoadMore }: { loading: boolean; onLoadMore: () => void }) {
+  const mark = useRef<HTMLDivElement | null>(null);
+  const latest = useRef({ loading, onLoadMore });
+  latest.current = { loading, onLoadMore };
+  useEffect(() => {
+    const element = mark.current;
+    if (element === null || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // Once per approach: the next page moves the mark away, which arms it again.
+        if (entries.some((entry) => entry.isIntersecting) && !latest.current.loading) latest.current.onLoadMore();
+      },
+      { rootMargin: `0px 0px ${LOAD_MORE_MARGIN_PX}px 0px` },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return <div ref={mark} aria-hidden data-load-more-mark="" className="h-px" />;
+}
+
 /** Slice 3j: how tall the list rows are. Compact rows drop the preview line. */
 export type ListDensity = "comfortable" | "compact";
 export const ListDensityContext = createContext<ListDensity>("comfortable");
@@ -247,6 +286,7 @@ function Row({
   return (
     <li
       data-density={compact ? "compact" : "comfortable"}
+      style={offscreenRowStyle(compact)}
       {...(onDragStart !== undefined
         ? { draggable: true, onDragStart, onDragEnd, "aria-describedby": DRAG_HINT_ID }
         : {})}
@@ -468,6 +508,7 @@ export function ThreadList({
       </ul>
       {hasMore ? (
         <div className="p-3">
+          <LoadMoreOnScroll loading={loadingMore} onLoadMore={onLoadMore} />
           <Button
             variant="outline"
             size="sm"
@@ -536,6 +577,7 @@ export function SearchResultList({
     </ul>
       {more !== null ? (
         <div className="p-3">
+          <LoadMoreOnScroll loading={more.loading} onLoadMore={more.onMore} />
           <Button variant="outline" size="sm" className="w-full" disabled={more.loading} onClick={more.onMore}>
             {more.loading ? "Loading\u2026" : "Load more"}
           </Button>
