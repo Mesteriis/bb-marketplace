@@ -254,3 +254,7 @@ and those that fetch from it: `server_search_start`, `server_search_more`,
 `bb plugin rpc call`. Never do that: those methods are the owner's, they
 bypass the owner's AI access and the log, and calling them is not something
 the owner asked you to do.
+
+`bb makosh-mail doctor` and `bb makosh-mail backup` are the owner's own
+commands: they refuse inside a thread. Do not run them, and do not ask the
+owner to paste their output into a thread unless they offer it.

@@ -699,3 +699,58 @@ Each task ends with `npm run check`. The last also runs `npm run build` and
 - That BB's settings page shows new `select` settings with
   `experimental_optionLabels` in Cyrillic correctly (`"Русский"`).
 - Real-mail scrolling performance with thousands of rows (live step 1).
+
+## What was built (2026-11-17), and where it departs from the design above
+
+The owner accepted the proposed decisions with the recommended defaults
+(language `auto`, 24-hour retry, English outgoing text, backup in 3j, owner
+proofreads Russian live). The slice was then built in one session, without a
+separate builder check or plan; this section is the record of the result and
+overrides the Design section where they differ.
+
+1. **Rethreading (decision 3).** As designed, with the dirty flag kept by
+   the store (`threadsStale`): an insert (`upsertMessages`) or a delete
+   (`deleteRows`) makes an account stale, `assignThreads` clears it, and a
+   round rethreads stale accounts only. `assignThreads` rewrites only the
+   threads a row left or joined; the first assignment after a load rebuilds
+   every thread row. `repairThreads` is the full rebuild for doctor. There
+   is no `rowsChanged` on `RoundProgress`.
+2. **Windowed list (decision 4) is not a windowing hook.** Rows stay in the
+   document and get `content-visibility: auto` with an intrinsic size, so
+   the browser skips layout and paint of rows far from view. This keeps the
+   3i keyboard flow, focus, drag and selection untouched, at the cost that
+   React still holds every loaded row. Scroll loading uses an
+   `IntersectionObserver` mark; Load more stays. No `aria-setsize`.
+3. **Scale test (decision 5):** one store test at 20 000 rows (50 000 with
+   `MAIL_SCALE=1`) for the incremental rethread; the other timed calls keep
+   their existing 6 000-row tests. No numbers were recorded.
+4. **Outbox retry (decision 6):** as designed (`waiting`, `no_smtp`, 24
+   hours, backoff 1/5/15/30/60 minutes, release on an ok round, staggered 7
+   seconds apart, the shared cap moves an automatic try back by a minute).
+5. **Sync problems (decision 7) need no migration.** There is no element
+   15 and no `sync_problems` or `error_since` column. `parseSyncProblems`
+   reads the stored `lastError` line back into codes; "quietly offline" is
+   decided from `lastSyncAt` (network or busy only, last good sync under 30
+   minutes old). `status_get` is unchanged; `nextSyncAt` and `instantMail`
+   were not added.
+6. **Doctor (decision 9):** as designed except that server capabilities
+   (IDLE, MOVE and the rest) are not listed, and `quick_check` is not
+   time-boxed.
+7. **Backup (decision 10):** as designed.
+8. **Density and pane (decision 11):** two BB settings only. There is no
+   View menu and no `view_settings_set` RPC; Mail settings does not list
+   them.
+9. **Russian (decisions 12-14):** `src/ui/i18n` with `tx`, `txn`, `msg`
+   and a catalog keyed by the English text; a module-level language set by
+   every slot component from the `language` setting. Static texts were
+   wrapped by a script, tables are marked with `msg` and shown with `tx`,
+   server refusals are looked up by exact text. A test checks that every
+   literal text passed to `tx`/`txn`/`msg` has an entry. Not covered: texts
+   built in `src/core` and shown as they come (parts of pre-send issues,
+   durations such as "3 days", some lowercase fragments), which stay
+   English; sentences split around a link or a bold word are translated
+   piece by piece.
+10. **Rendered previews P1-P5 were not made.** The owner sees the result
+    in the live check.
+11. **Migrations:** unchanged, elements 0-14; the pin stays
+    `MIGRATIONS.slice(0, 15)`.

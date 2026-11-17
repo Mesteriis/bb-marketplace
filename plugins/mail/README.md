@@ -156,8 +156,8 @@ setting, generated on first load. Mail and credentials stay on the machine
 that runs the BB server.
 
 Not yet: Gmail API or OAuth, scheduled send, system notifications, semantic
-search, a virtualized list, writing categories or reminders to the mail
-server, and PGP or S/MIME signing, checking and decryption (Mail only
+search, export to mbox or .eml archives, writing categories or reminders to
+the mail server, and PGP or S/MIME signing, checking and decryption (Mail only
 recognises such mail; see [Security and privacy](#security-and-privacy)).
 
 ## Writing and sending
@@ -193,8 +193,18 @@ recognises such mail; see [Security and privacy](#security-and-privacy)).
   | May have been sent | the connection dropped after the message went out | Send again (a second copy may arrive), Discard |
   | Sent; the copy failed | sent, but the copy to Sent failed | Retry copy, Dismiss |
 
-  Nothing resends on its own. A Gmail send that may have been sent is
-  marked done when it shows up in Sent within 5 minutes.
+  A send that never reached the server retries on its own: when the
+  outgoing server could not be reached, did not answer before the message
+  was handed over, or asked to try again later (a 4xx reply). The row reads
+  "Not sent yet … Next try at 10:42"; the waits are 1, 5, 15, 30 and then
+  60 minutes, and the tries end 24 hours after Send, when the row becomes
+  "Not sent". An ok sync round of that account sends the waiting rows at
+  once, a few seconds apart, within the same cap of 10 sends a minute.
+  **Send now**, **Edit** and **Discard** work on a waiting row. A send that
+  may have reached the server, one the server refused, a sign-in or TLS
+  failure, and an account with no outgoing server never retry. A Gmail send
+  that may have been sent is marked done when it shows up in Sent within 5
+  minutes.
 
 ### SMTP setup
 
@@ -865,6 +875,78 @@ also install its optional `@napi-rs/canvas` package into `node_modules`;
 Mail never loads it (the server worker blocks it) and it is not in the
 build. `dist/app.js` contains one inert mention of it in pdf.js's Node-only
 code path, which never runs in BB's page.
+
+## Reliability, layout and language
+
+### Big mailboxes
+
+- **Threading.** A sync round groups mail into conversations again only
+  when it inserted or deleted messages; a round that changed flags, or
+  nothing, skips it. When it runs, only the conversations a message left or
+  joined are rewritten. The first round after BB starts rebuilds every
+  conversation once, which also repairs rows left wrong by a crash.
+- **Lists.** Every loaded row stays in the list, so the keys, the selection
+  and drag reach it; a row far from view is not laid out or painted
+  (`content-visibility`). The next page loads by itself as the end of the
+  list scrolls near; **Load more** stays for a browser that cannot watch
+  the list. BB's own find-in-page (⌘F) therefore sees loaded rows only; use
+  Mail's search to find a message.
+- Tested with 20 000 messages in one account in `npm run check` (50 000
+  with `MAIL_SCALE=1`).
+
+### Sync status
+
+- The header's status is a button: **Mail status** lists each account's last
+  sync, what is in the way, and its waiting and unsent messages, with
+  **Sync now**.
+- **Offline.** When the only problem is the network or a busy server and
+  the last good sync is under 30 minutes old, the header reads
+  "Offline · synced 10:42" and there is no banner; Mail keeps trying. After
+  30 minutes, and for any other problem (a refused sign-in, an unreadable
+  password, flags or moves that could not be saved), the red banner shows
+  the problem in words. "Reconnecting to BB…" means the page itself lost
+  its link to BB.
+
+### `bb makosh-mail doctor` and `backup`
+
+Both work only in your own terminal; inside an agent thread they refuse.
+
+```bash
+bb makosh-mail doctor              # every account and the database
+bb makosh-mail doctor <accountId> --repair-threads
+bb makosh-mail backup /full/path/mail-backup.db
+```
+
+- **doctor** prints one line per check, `ok`, `warn` or `fail`: the
+  database's integrity, sizes and conversation rows; for each account
+  whether the saved password can be read, the IMAP sign-in, the outgoing
+  server, the known folders, the last sync and its problems, and the
+  Outbox. It prints no password, no server reply and no mail. Exit code 1
+  when a check failed; `--json` for a script. `--repair-threads` rebuilds
+  every conversation from its messages.
+- **backup** writes a consistent copy of Mail's database to a new file that
+  only you can read. The path must be absolute, its folder must exist, and
+  Mail never writes over an existing file. The copy holds your mail text
+  and the passwords in their sealed form, without the key; BB's settings
+  are not in it. Keep it as private as the mailbox. To restore: quit BB,
+  replace the plugin's database file with the copy, start BB.
+
+### Layout
+
+Two BB settings of the plugin: **List rows** (comfortable, or compact with
+no preview line; search results stay comfortable) and **Reading pane**
+(right of the list, or below it in a wide window; a narrow window keeps one
+column).
+
+### Language
+
+**Language of Mail's pages**: same as the system, Russian or English.
+Russian covers Mail's own pages, dialogs, toasts and the refusals its
+server answers; dates follow the language. These stay English: the labels
+of BB's settings, the `bb makosh-mail` commands, what agents read, the
+logs, and the words Mail puts into outgoing mail (`Re:`, `Fwd:`, the
+"On … wrote:" line). A text with no translation yet is shown in English.
+Mail data (subjects, names, folders, labels) is never translated.
 
 ## Security and privacy
 

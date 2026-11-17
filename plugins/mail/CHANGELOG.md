@@ -8,6 +8,18 @@ All notable changes to Makosh Mail are recorded here. The format follows
 
 ### Added
 
+- Reliability, layout and language (slice 3j). Sync rethreads an account
+  only when messages were inserted or deleted, and rewrites only the
+  conversations they touched. List rows far from view are not laid out or
+  painted, and the next page loads as the end scrolls near. A send that
+  never reached the server retries on its own for 24 hours (new Outbox
+  state "Not sent yet"); an account with no outgoing server fails at once.
+  The header's status opens Mail status; a lost network is a quiet
+  "Offline" for 30 minutes before it becomes a banner, and sync problems
+  are shown in words. `bb makosh-mail doctor` and `backup` in the owner's
+  terminal. Settings for list density, the reading pane below the list and
+  the language of Mail's pages; Mail's pages in Russian.
+
 - Security and privacy (slice 3i, part A). A sender check from the
   provider's own `Authentication-Results` (trusted ids only: Gmail; iCloud
   "Not checked" until its id is pinned live; the topmost trusted header,
