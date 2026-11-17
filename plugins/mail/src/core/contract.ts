@@ -303,6 +303,32 @@ const ruleMatchSchema = z.object({
 });
 const ruleModeSchema = z.enum(["prepare", "start"]);
 
+const filterMatchSchema = ruleMatchSchema.omit({ dev: true });
+const filterActionsSchema = z.object({
+  move: z.enum(["none", "archive", "trash", "folder"]),
+  /** The folder's path for `move: "folder"`; null otherwise. */
+  folder: z.string().min(1).max(1_000).refine(noLineBreaks, NO_LINE_BREAKS).nullable(),
+  markRead: z.boolean(),
+  flag: z.boolean(),
+});
+
+/** A filter from the settings form (slice 3m, core mail-filters.ts). */
+export const filterInputSchema = z.object({
+  id: idInput.optional(),
+  name: z.string().min(1).max(80).refine(noLineBreaks, NO_LINE_BREAKS),
+  enabled: z.boolean(),
+  match: filterMatchSchema,
+  actions: filterActionsSchema,
+});
+
+export const filterViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  enabled: z.boolean(),
+  match: filterMatchSchema,
+  actions: filterActionsSchema,
+});
+
 /** A rule from the settings form; `mode: "start"` only with the form's confirmation. */
 export const ruleInputSchema = z
   .object({
@@ -1349,6 +1375,19 @@ export const rpcSchemas = {
       total: z.number().int().min(0),
     }),
   },
+  /** Slice 3m: the filters that sort new Inbox mail, in the order they apply. */
+  filters_list: {
+    input: z.object({}),
+    output: z.object({ filters: z.array(filterViewSchema) }),
+  },
+  filter_save: {
+    input: filterInputSchema,
+    output: filterViewSchema,
+  },
+  filter_delete: {
+    input: z.object({ id: idInput }),
+    output: okOutput,
+  },
   rules_list: {
     input: z.object({}),
     output: z.object({ rules: z.array(ruleViewSchema) }),
@@ -1690,6 +1729,9 @@ export const SLICE_3H_METHODS = [
   "sender_card",
 ] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
+/** The three owner-only methods slice 3m adds. */
+export const SLICE_3M_METHODS = ["filters_list", "filter_save", "filter_delete"] as const satisfies readonly (keyof typeof rpcSchemas)[];
+
 /** The two owner-only methods slice 3l adds. */
 export const SLICE_3L_METHODS = ["invite_view", "invite_reply"] as const satisfies readonly (keyof typeof rpcSchemas)[];
 
@@ -1767,6 +1809,8 @@ export type PatchFileView = z.output<typeof patchFileSchema>;
 export type AlertViewOutput = z.output<typeof alertViewSchema>;
 export type BindingView = z.output<typeof bindingViewSchema>;
 export type RuleView = z.output<typeof ruleViewSchema>;
+export type FilterView = z.output<typeof filterViewSchema>;
+export type FilterInput = z.input<typeof filterInputSchema>;
 export type RuleRunView = z.output<typeof ruleRunViewSchema>;
 export type RuleInput = z.input<typeof ruleInputSchema>;
 export type BbThreadPrepareOutput = Out<"bb_thread_prepare">;

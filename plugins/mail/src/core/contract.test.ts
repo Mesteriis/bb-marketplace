@@ -16,6 +16,7 @@ import {
   SLICE_3I_METHODS,
   SLICE_3K_METHODS,
   SLICE_3L_METHODS,
+  SLICE_3M_METHODS,
 } from "./contract.ts";
 import {
   accountSchema,
@@ -212,7 +213,7 @@ describe("rpcSchemas", () => {
         ...SLICE_3F_METHODS,
         ...SLICE_3H_METHODS,
         ...SLICE_3I_METHODS,
-        ...SLICE_3K_METHODS, ...SLICE_3L_METHODS,
+        ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS,
         "status_get",
         "accounts_test",
         "accounts_add",
@@ -525,7 +526,7 @@ describe("slice-3b contract", () => {
 
   it("adds exactly 19 methods to the 17 before it", () => {
     expect(COMPOSE_METHODS).toHaveLength(19);
-    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS];
+    const later: readonly string[] = [...SLICE_3C_METHODS, ...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(36);
   });
 
@@ -836,7 +837,7 @@ describe("slice-3c contract", () => {
 
   it("adds exactly 8 methods to the 36 before it", () => {
     expect(SLICE_3C_METHODS).toHaveLength(8);
-    const later: readonly string[] = [...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS];
+    const later: readonly string[] = [...SLICE_3D_METHODS, ...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(44);
     expect(COMPOSE_METHODS).toHaveLength(19);
   });
@@ -1074,7 +1075,7 @@ describe("slice-3d contract", () => {
 
   it("adds exactly 11 methods to the 44 before it", () => {
     expect(SLICE_3D_METHODS).toHaveLength(11);
-    const later: readonly string[] = [...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS];
+    const later: readonly string[] = [...SLICE_3E_METHODS, ...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(55);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
@@ -1253,7 +1254,7 @@ describe("slice-3e contract", () => {
 
   it("adds exactly 14 methods to the 55 before it", () => {
     expect(SLICE_3E_METHODS).toHaveLength(14);
-    const later: readonly string[] = [...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS];
+    const later: readonly string[] = [...SLICE_3F_METHODS, ...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(69);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
@@ -1399,7 +1400,7 @@ describe("slice-3f contract", () => {
 
   it("adds exactly 24 methods to the 69 before it", () => {
     expect(SLICE_3F_METHODS).toHaveLength(24);
-    const later: readonly string[] = [...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS];
+    const later: readonly string[] = [...SLICE_3G_METHODS, ...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS];
     expect(Object.keys(rpcSchemas).filter((m) => !later.includes(m))).toHaveLength(93);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
@@ -1571,7 +1572,7 @@ describe("slice-3g contract", () => {
     // 31 at the build, then incident_prepare and patch_handoff_prepare (review C5).
     expect(SLICE_3G_METHODS).toHaveLength(33);
     expect(
-      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS] as readonly string[]).includes(m)),
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3H_METHODS, ...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS] as readonly string[]).includes(m)),
     ).toHaveLength(126);
     expect(COMPOSE_METHODS).toHaveLength(19);
     expect(SLICE_3C_METHODS).toHaveLength(8);
@@ -1713,7 +1714,7 @@ describe("slice 3h contract", () => {
     expect(SLICE_3H_METHODS).toHaveLength(28);
     expect(new Set(SLICE_3H_METHODS).size).toBe(28);
     expect(
-      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS] as readonly string[]).includes(m)),
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3I_METHODS, ...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS] as readonly string[]).includes(m)),
     ).toHaveLength(154);
     for (const method of SLICE_3H_METHODS) expect(earlier as readonly string[], method).not.toContain(method);
     expect(SLICE_3G_METHODS).toHaveLength(33);
@@ -1805,7 +1806,7 @@ describe("slice 3i contract", () => {
   it("adds exactly one method to the 154 before it", () => {
     expect(SLICE_3I_METHODS).toEqual(["sender_check_refresh"]);
     expect(
-      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3K_METHODS, ...SLICE_3L_METHODS] as readonly string[]).includes(m)),
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3K_METHODS, ...SLICE_3L_METHODS, ...SLICE_3M_METHODS] as readonly string[]).includes(m)),
     ).toHaveLength(155);
   });
 
@@ -1901,7 +1902,9 @@ describe("slice 3k contract (OpenPGP)", () => {
   it("adds exactly nine methods to the 155 before it", () => {
     expect(SLICE_3K_METHODS).toHaveLength(9);
     expect(new Set(SLICE_3K_METHODS).size).toBe(9);
-    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3L_METHODS as readonly string[]).includes(m))).toHaveLength(164);
+    expect(
+      Object.keys(rpcSchemas).filter((m) => !([...SLICE_3L_METHODS, ...SLICE_3M_METHODS] as readonly string[]).includes(m)),
+    ).toHaveLength(164);
   });
 
   it("names no output after a credential, and offers a private key only as an export locked by a passphrase", () => {
@@ -1937,7 +1940,7 @@ describe("slice 3l contract (Send later, calendar invitations)", () => {
 
   it("adds exactly two methods to the 164 before it", () => {
     expect(SLICE_3L_METHODS).toEqual(["invite_view", "invite_reply"]);
-    expect(Object.keys(rpcSchemas)).toHaveLength(166);
+    expect(Object.keys(rpcSchemas).filter((m) => !(SLICE_3M_METHODS as readonly string[]).includes(m))).toHaveLength(166);
     for (const method of SLICE_3L_METHODS) {
       expect(keysOf(rpcSchemas[method].output).filter((name) => SECRET_KEY.test(name)), method).toEqual([]);
     }
@@ -1962,5 +1965,35 @@ describe("slice 3l contract (Send later, calendar invitations)", () => {
     expect(outboxRowSchema.shape.purpose.unwrap().unwrap().options).toEqual(["unsubscribe", "invite_reply"]);
     expect(outboxRowSchema.shape.scheduled.safeParse(true).success).toBe(true);
     expect(outboxRowSchema.shape.scheduled.safeParse(undefined).success).toBe(true);
+  });
+});
+
+describe("slice 3m contract (filters)", () => {
+  const parses = (input: unknown) => rpcSchemas.filter_save.input.safeParse(input).success;
+  const base = {
+    name: "Invented",
+    enabled: true,
+    match: { domains: ["news.example.com"] },
+    actions: { move: "none", folder: null, markRead: true, flag: false },
+  };
+
+  it("adds exactly three methods to the 166 before it", () => {
+    expect(SLICE_3M_METHODS).toEqual(["filters_list", "filter_save", "filter_delete"]);
+    expect(Object.keys(rpcSchemas)).toHaveLength(169);
+    for (const method of SLICE_3M_METHODS) {
+      expect(keysOf(rpcSchemas[method].output).filter((name) => SECRET_KEY.test(name)), method).toEqual([]);
+    }
+  });
+
+  it("bounds a filter: four moves, no dev match, no line breaks in a name or a folder", () => {
+    expect(parses(base)).toBe(true);
+    for (const move of ["none", "archive", "trash", "folder"]) expect(parses({ ...base, actions: { ...base.actions, move } })).toBe(true);
+    expect(parses({ ...base, actions: { ...base.actions, move: "delete" } })).toBe(false);
+    expect(parses({ ...base, actions: { ...base.actions, folder: "A\r\nB" } })).toBe(false);
+    expect(parses({ ...base, actions: { ...base.actions, folder: "x".repeat(1001) } })).toBe(false);
+    expect(parses({ ...base, name: "A\nB" })).toBe(false);
+    expect(parses({ ...base, match: { from: Array.from({ length: 21 }, (_, i) => `a${i}@example.com`) } })).toBe(false);
+    const withDev = rpcSchemas.filter_save.input.parse({ ...base, match: { ...base.match, dev: { kind: "alert" } } });
+    expect("dev" in withDev.match).toBe(false);
   });
 });

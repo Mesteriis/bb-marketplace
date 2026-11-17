@@ -97,6 +97,7 @@ import {
   bbRefusal,
   createBbRpc,
   reconcileRuleStarts,
+  normalizeRuleMatch,
   type BbSettings,
   type RuleDeps,
 } from "./src/adapters/bb/bb-rpc.ts";
@@ -272,6 +273,8 @@ import {
   inQuietHours,
   isHiddenDraft,
   matchesBlock,
+  filterFor,
+  validateFilter,
   notifiable,
   ownAddresses,
   parseImportantSenders,
@@ -791,6 +794,73 @@ function blockNewInbox(deps: NewMailDeps, accountId: string, ids: string[], only
 }
 
 /**
+ * Filters after a round (slice 3m): genuinely new Inbox rows (never
+ * returning ones, never one a block rule just queued to Spam, never the
+ * owner's own mail, never a sender whose check failed) get the actions of
+ * the first filter that matches: \Seen, \Flagged, and a move to the
+ * archive, Trash or the filter's folder. A missing folder skips the move
+ * and keeps the rest. Returns the ids queued to move. Logs counts only.
+ */
+function sortNewInbox(deps: NewMailDeps, accountId: string, ids: string[], only: "inbox" | undefined): string[] {
+  if (ids.length === 0) return [];
+  const { store } = deps;
+  const filters = store.listMailFilters().filter((filter) => filter.enabled);
+  if (filters.length === 0) return [];
+  const account = store.getAccount(accountId);
+  if (account === null) return [];
+  const rows = store.notifyRows(ids, deps.clock.now().toISOString());
+  const own = new Set(ownAddresses(store).map(lower));
+  const listIds = store.listIds(ids);
+  const failed = failedSenderIds(store, ids);
+  const folders = store.listFolders(accountId);
+  const where = new Map(store.undoRows(ids).map((row) => [row.id, row.folder]));
+  const read: string[] = [];
+  const flagged: string[] = [];
+  const moves: { id: string; destination: string }[] = [];
+  let noFolder = false;
+  for (const row of rows) {
+    if (row.accountId !== accountId || row.uid === null || row.movePending !== null || row.folderRole !== "inbox") continue;
+    if (own.has(lower(row.fromAddress))) continue;
+    const subject = store.getMessage(row.id)?.subject;
+    if (subject === undefined) continue;
+    const filter = filterFor(filters, {
+      accountId,
+      fromAddress: row.fromAddress,
+      listId: listIds.get(row.id) ?? null,
+      subject,
+      senderFailed: failed.has(row.id),
+    });
+    if (filter === null) continue;
+    const { move, folder, markRead, flag } = filter.actions;
+    if (markRead) read.push(row.id);
+    if (flag) flagged.push(row.id);
+    if (move === "none") continue;
+    const source = where.get(row.id);
+    if (source === undefined) continue;
+    let destination: string | null = null;
+    if (move === "folder") {
+      const target = folders.find((entry) => entry.path === folder);
+      destination = target !== undefined && target.selectable && target.path !== source ? target.path : null;
+    } else {
+      const resolved = resolveActionDestination(move === "trash" ? "delete" : "archive", source, folders, account.preset);
+      destination = "refusal" in resolved ? null : resolved.destination.path;
+    }
+    if (destination === null) noFolder = true;
+    else moves.push({ id: row.id, destination });
+  }
+  if (read.length > 0) store.setDesired(read, { seen: true });
+  if (flagged.length > 0) store.setDesired(flagged, { flagged: true });
+  const moved = moves.filter((entry) => store.queueMove([entry.id], entry.destination) !== null).map((entry) => entry.id);
+  if (noFolder) deps.log(`filter ${accountId}: a folder to move to is missing`);
+  if (read.length + flagged.length + moved.length > 0) {
+    deps.log(`filter ${accountId}: moved ${moved.length}, read ${read.length}, flagged ${flagged.length}`);
+    deps.publishChanged(accountId);
+    deps.wake(accountId, only === "inbox" ? { only: "inbox" } : undefined);
+  }
+  return moved;
+}
+
+/**
  * Toasts rows by the new-mail filter (spec "Which messages"), outside quiet
  * hours and with notifyNewMail on: the kept ids go into the book and only a
  * token is published. `returned`: a snooze return, aged from now.
@@ -834,6 +904,12 @@ function afterRound(
     moved = new Set(blockNewInbox(deps, accountId, fresh, only));
   } catch (error) {
     deps.log(`block ${accountId}: failed (${errorKind(error)})`);
+  }
+  try {
+    // Filters sort what block rules left; what they move away does not toast either.
+    for (const id of sortNewInbox(deps, accountId, fresh.filter((id) => !moved.has(id)), only)) moved.add(id);
+  } catch (error) {
+    deps.log(`filter ${accountId}: failed (${errorKind(error)})`);
   }
   try {
     notifyNew(
@@ -2826,6 +2902,10 @@ async function unsubscribeOnce(
   return { outcome: "queued", reason: null, outboxId: queued.outboxId };
 }
 
+export const UNKNOWN_FILTER_MESSAGE = "Unknown filter";
+export const FILTER_FOLDER_MESSAGE = "Choose a folder of the chosen account to move to";
+export const FILTERS_FULL_MESSAGE = "There are 50 filters already; delete one first";
+
 export const INVITE_NONE_MESSAGE = "This message carries no calendar invitation";
 export const INVITE_NOT_ANSWERABLE_MESSAGE = "Only an invitation sent to one of this account's addresses can be answered";
 export const INVITE_HIDDEN_MESSAGE = "An invitation in Spam or Trash is not answered";
@@ -3734,6 +3814,34 @@ function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         log(`pgp verify ${messageId}: ${checked.state}`);
         return "fingerprint" in checked ? checked : { state: checked.state, fingerprint: null, signer: null, fromSender: false };
       },
+      // Slice 3m: filters. Owner only; saving one changes what happens to new mail.
+      filters_list: owner("filters_list", () => ({ filters: store.listMailFilters() })),
+      filter_save: owner("filter_save", (input) => {
+        const match = normalizeRuleMatch(input.match);
+        const accounts = input.match.accounts ?? [];
+        if (accounts.some((id) => store.getAccount(id) === null)) throw refuse("invalid", "Unknown account");
+        const filter = {
+          id: input.id ?? `flt_${randomUUID()}`,
+          name: input.name.trim(),
+          enabled: input.enabled,
+          match: { ...match, ...(accounts.length > 0 ? { accounts } : {}) },
+          actions: input.actions,
+        };
+        const checked = validateFilter(filter);
+        if (!checked.ok) throw refuse("invalid", checked.reason);
+        if (input.id !== undefined && !store.listMailFilters().some((entry) => entry.id === input.id)) {
+          throw refuse("not_found", UNKNOWN_FILTER_MESSAGE);
+        }
+        if (filter.actions.move === "folder") {
+          const target = store.listFolders(accounts[0] ?? "").find((entry) => entry.path === filter.actions.folder);
+          if (target === undefined || !target.selectable || target.specialUse === "inbox") throw refuse("invalid", FILTER_FOLDER_MESSAGE);
+        }
+        const saved = store.saveMailFilter(filter, composeDeps.clock.now().toISOString());
+        if ("full" in saved) throw refuse("conflict", FILTERS_FULL_MESSAGE);
+        log(`filter saved: ${saved.filter.id}`);
+        return saved.filter;
+      }),
+      filter_delete: owner("filter_delete", ({ id }) => ({ ok: store.deleteMailFilter(id) })),
       invite_view: async ({ messageId }, context) => {
         refusePluginCaller(context);
         const { invite, role } = await readInvite(deps, messageId);

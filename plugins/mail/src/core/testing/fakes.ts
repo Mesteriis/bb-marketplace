@@ -53,6 +53,7 @@ import type { ProposalCapRow, ProposalState } from "../agent-propose.ts";
 import type { ProposalDeps } from "../agent-proposals.ts";
 import { SendRateLimit, UndoneSends } from "../compose-outbox.ts";
 import { SCHEDULE_LATE_MS } from "../send-later.ts";
+import { FILTERS_MAX, type MailFilter } from "../mail-filters.ts";
 import { TRANSLATION_CACHE_ROWS } from "../translate.ts";
 import {
   CONTACT_SCAN,
@@ -400,6 +401,7 @@ type StoreState = {
   bindings: Map<string, BindingRow>;
   incidents: Map<string, IncidentRow>;
   rules: Map<string, RuleRecord>;
+  filters: Map<string, { filter: MailFilter; createdAt: string }>;
   ruleRuns: (RuleRunRecord & { messageKey: string })[];
   /** bb thread id to its rule thread row (review C1): never dropped with mail. */
   ruleThreads: Map<string, { ruleId: string; runId: string | null; createdAt: string }>;
@@ -511,6 +513,7 @@ export class InMemoryMailStore implements MailStore {
     bindings: new Map(),
     incidents: new Map(),
     rules: new Map(),
+    filters: new Map(),
     ruleRuns: [],
     ruleThreads: new Map(),
     history: new Map(),
@@ -2814,6 +2817,22 @@ export class InMemoryMailStore implements MailStore {
     if (row === undefined) return false;
     row.lastAt = nowIso;
     return true;
+  }
+
+  listMailFilters(): MailFilter[] {
+    // A Map keeps the order filters were made in, and an edit keeps its place.
+    return [...this.state.filters.values()].map((entry) => structuredClone(entry.filter));
+  }
+
+  saveMailFilter(filter: MailFilter, nowIso: string): { filter: MailFilter } | { full: true } {
+    const existing = this.state.filters.get(filter.id);
+    if (existing === undefined && this.state.filters.size >= FILTERS_MAX) return { full: true };
+    this.state.filters.set(filter.id, { filter: structuredClone(filter), createdAt: existing?.createdAt ?? nowIso });
+    return { filter: structuredClone(filter) };
+  }
+
+  deleteMailFilter(id: string): boolean {
+    return this.state.filters.delete(id);
   }
 
   listRules(): RuleRecord[] {

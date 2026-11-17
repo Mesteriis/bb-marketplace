@@ -67,6 +67,7 @@ import type { ReminderState } from "./reminders.ts";
 import type { DevClass, DevKind, DevSource } from "./dev-notify.ts";
 import type { ProjectInfo } from "./projects.ts";
 import type { Rule, RuleMode } from "./mail-rules.ts";
+import type { MailFilter } from "./mail-filters.ts";
 import type { BbLinkRowKind } from "./model.ts";
 import type { MailCrypto } from "./mail-crypto.ts";
 import type { SenderCheck } from "./sender-check.ts";
@@ -1077,6 +1078,11 @@ export interface MailStore {
   releaseIncident(fingerprint: string, token: string): void;
   /** Sets `last_at`; false when there is no incident. */
   touchIncident(fingerprint: string, nowIso: string): boolean;
+  /** Filters (slice 3m) in the order they apply: the order they were made in; an edit keeps its place. */
+  listMailFilters(): MailFilter[];
+  /** Inserts or replaces a filter; `full` when a new one would exceed FILTERS_MAX. */
+  saveMailFilter(filter: MailFilter, nowIso: string): { filter: MailFilter } | { full: true };
+  deleteMailFilter(id: string): boolean;
   listRules(): RuleRecord[];
   /** Inserts or updates by id (an edit keeps the id and its run counts); `full` at RULES_MAX. */
   saveRule(rule: Rule, nowIso: string): { rule: RuleRecord } | { full: true };

@@ -23,6 +23,8 @@ import {
   PGP_EXISTS_MESSAGE,
   PGP_NOT_OWN_ADDRESS_MESSAGE,
   INVITE_HIDDEN_MESSAGE,
+  FILTER_FOLDER_MESSAGE,
+  UNKNOWN_FILTER_MESSAGE,
   INVITE_NONE_MESSAGE,
   INVITE_NOT_ANSWERABLE_MESSAGE,
   REMOVE_IN_THREAD_MESSAGE,
@@ -70,7 +72,7 @@ import { createHash } from "node:crypto";
 import { createPgpEngine } from "./src/adapters/bb/pgp-openpgp.ts";
 import { extractEncrypted, extractSigned, wrapEncrypted, wrapSigned } from "./src/core/pgp-mime.ts";
 import { PGP_SEND_TEXT } from "./src/core/compose-outbox.ts";
-import { SLICE_3K_METHODS, SLICE_3L_METHODS } from "./src/core/contract.ts";
+import { SLICE_3K_METHODS, SLICE_3L_METHODS, SLICE_3M_METHODS } from "./src/core/contract.ts";
 import { readFileSync } from "node:fs";
 import type {
   AccountPreset,
@@ -3944,13 +3946,21 @@ describe("makosh-mail server: new mail, block and notifications (slice 3e)", () 
   const recent = new Date(NOW.getTime() - HOUR).toISOString();
 
   /** An account whose Sent folder shows the owner wrote to KNOWN, with Junk and Archive, synced once. */
-  async function started(options: { settings?: Record<string, string | number | boolean>; archive?: Partial<FetchedMessage>[]; junk?: Partial<FetchedMessage>[] } = {}) {
+  async function started(
+    options: {
+      settings?: Record<string, string | number | boolean>;
+      archive?: Partial<FetchedMessage>[];
+      junk?: Partial<FetchedMessage>[];
+      folders?: string[];
+    } = {},
+  ) {
     const host = await load({
       settings: { vaultKey: generateVaultKey(), ...options.settings },
       server: (gateway) => {
         gateway.addFolder({ path: "Sent", specialUse: "sent" });
         gateway.addFolder({ path: "Junk", specialUse: "junk" });
         gateway.addFolder({ path: "Archive", specialUse: "archive" });
+        for (const path of options.folders ?? []) gateway.addFolder({ path });
         gateway.deliver({ from: { name: null, address: "owner@example.org" }, to: [{ name: null, address: KNOWN }] }, "Sent");
         for (const message of options.archive ?? []) gateway.deliver(message, "Archive");
         for (const message of options.junk ?? []) gateway.deliver(message, "Junk");
@@ -4129,6 +4139,148 @@ describe("makosh-mail server: new mail, block and notifications (slice 3e)", () 
     expect(movePending(host, messageIdAt(host, "INBOX", 2))).toBeNull();
     service.controller.abort();
     await service.done;
+  });
+
+  describe("filters (slice 3m)", () => {
+    const flags = (host: Host, id: string) =>
+      host.bb.storage.database().prepare("SELECT is_read AS read, is_flagged AS flagged FROM messages WHERE id = ?").get(id) as {
+        read: number;
+        flagged: number;
+      };
+    const filterInput = (extra: Record<string, unknown> = {}) => ({
+      name: "Invented newsletters",
+      enabled: true,
+      match: { domains: ["news.example.com"] },
+      actions: { move: "none", folder: null, markRead: true, flag: false },
+      ...extra,
+    });
+
+    it("sorts new Inbox mail by the first matching filter: a folder, the archive, read and flagged; and does not toast what it moved", async () => {
+      const { host, accountId, service } = await started({ settings: { importantSenders: "example.com" }, folders: ["Lists"] });
+      const stored = messageIdAt(host, "INBOX", 1);
+      await call(host, "filter_save", {
+        name: "To Lists",
+        enabled: true,
+        match: { domains: ["News.Example.com"], accounts: [accountId] },
+        actions: { move: "folder", folder: "Lists", markRead: true, flag: false },
+      });
+      // Never reached for news.example.com: the first match wins.
+      await call(host, "filter_save", filterInput({ actions: { move: "archive", folder: null, markRead: false, flag: true } }));
+      await call(host, "filter_save", {
+        name: "Invoices",
+        enabled: true,
+        match: { subjectWords: ["Invoice"] },
+        actions: { move: "archive", folder: null, markRead: false, flag: true },
+      });
+      host.gateway.deliver({ from: { name: "News", address: "digest@news.example.com" }, date: recent, subject: "Invented digest" }); // uid 2
+      host.gateway.deliver({ from: { name: "Shop", address: "billing@shop.example.com" }, date: recent, subject: "Your invoice 12" }); // uid 3
+      host.gateway.deliver({ from: { name: "Friend", address: "friend@example.com" }, date: recent, subject: "Invented hello" }); // uid 4
+      host.gateway.deliver({ from: { name: "Me", address: "owner@example.org" }, date: recent, subject: "Invoice to self" }); // uid 5: own
+      await wakeAndWait(host, accountId);
+      await vi.waitFor(() => expect(logText(host)).toContain(`filter ${accountId}: moved 2, read 1, flagged 1`));
+      const [news, invoice, friend, own] = [2, 3, 4, 5].map((uid) => messageIdAt(host, "INBOX", uid)) as [string, string, string, string];
+      expect(movePending(host, news)).toBe("Lists");
+      expect(flags(host, news)).toEqual({ read: 1, flagged: 0 });
+      expect(movePending(host, invoice)).toBe("Archive");
+      expect(flags(host, invoice)).toEqual({ read: 0, flagged: 1 });
+      expect(movePending(host, friend)).toBeNull();
+      expect(flags(host, friend)).toEqual({ read: 0, flagged: 0 });
+      expect(movePending(host, own)).toBeNull();
+      expect(movePending(host, stored)).toBeNull();
+      // All three senders are important, so each would toast: only the one left in the Inbox does.
+      await vi.waitFor(() => expect(newMailSignals(host)).toHaveLength(1));
+      const got = (await host.harness.behavior.callRpc("new_mail_get", newMailSignals(host)[0]!.payload)) as { items: { address: string }[] };
+      expect(got.items.map((item) => item.address)).toEqual(["friend@example.com"]);
+      // The log names no sender, subject or folder.
+      expect(logText(host)).not.toMatch(/news\.example|Invented digest|invoice 12|Lists/);
+      service.controller.abort();
+      await service.done;
+    });
+
+    it("mail already stored, an off filter and a missing folder move nothing; read and flag still apply", async () => {
+      const { host, accountId, service } = await started();
+      const stored = messageIdAt(host, "INBOX", 1);
+      await call(host, "filter_save", filterInput({ enabled: false }));
+      await call(host, "filter_save", {
+        name: "To Trash",
+        enabled: true,
+        match: { from: ["noise@example.net"] },
+        actions: { move: "trash", folder: null, markRead: true, flag: false },
+      });
+      host.gateway.deliver({ from: { name: "News", address: "digest@news.example.com" }, date: recent }); // uid 2: the filter is off
+      host.gateway.deliver({ from: { name: "Noise", address: "noise@example.net" }, date: recent }); // uid 3: no Trash folder
+      await wakeAndWait(host, accountId);
+      await vi.waitFor(() => expect(logText(host)).toContain(`filter ${accountId}: moved 0, read 1, flagged 0`));
+      expect(logText(host)).toContain(`filter ${accountId}: a folder to move to is missing`);
+      expect(movePending(host, messageIdAt(host, "INBOX", 2))).toBeNull();
+      expect(flags(host, messageIdAt(host, "INBOX", 2)).read).toBe(0);
+      expect(movePending(host, messageIdAt(host, "INBOX", 3))).toBeNull();
+      expect(flags(host, messageIdAt(host, "INBOX", 3)).read).toBe(1);
+      expect(movePending(host, stored)).toBeNull();
+      service.controller.abort();
+      await service.done;
+    });
+
+    it("a blocked sender goes to Spam, not where a filter would put it", async () => {
+      const { host, accountId, service } = await started();
+      addRule(host, "address", "digest@news.example.com");
+      await call(host, "filter_save", filterInput({ actions: { move: "archive", folder: null, markRead: false, flag: true } }));
+      host.gateway.deliver({ from: { name: "News", address: "digest@news.example.com" }, date: recent });
+      await wakeAndWait(host, accountId);
+      await vi.waitFor(() => expect(logText(host)).toContain(`block ${accountId}: moved 1`));
+      const id = messageIdAt(host, "INBOX", 2);
+      expect(movePending(host, id)).toBe("Junk");
+      expect(flags(host, id).flagged).toBe(0);
+      service.controller.abort();
+      await service.done;
+    });
+
+    it("saves, lists in order, edits and deletes; refuses what cannot work", async () => {
+      const { host, accountId, service } = await started();
+      const first = (await call(host, "filter_save", filterInput())) as { id: string };
+      const second = (await call(host, "filter_save", filterInput({ name: "Second", match: { from: ["Ana@Example.com"] } }))) as {
+        id: string;
+        match: { from: string[] };
+      };
+      expect(second.match.from).toEqual(["ana@example.com"]);
+      expect(((await call(host, "filters_list", {})) as { filters: { name: string }[] }).filters.map((f) => f.name)).toEqual([
+        "Invented newsletters",
+        "Second",
+      ]);
+      await call(host, "filter_save", filterInput({ id: first.id, name: "Renamed" }));
+      expect(((await call(host, "filters_list", {})) as { filters: { name: string }[] }).filters.map((f) => f.name)).toEqual(["Renamed", "Second"]);
+      await expect(call(host, "filter_save", filterInput({ id: "flt_nope" }))).rejects.toThrow(UNKNOWN_FILTER_MESSAGE);
+      await expect(call(host, "filter_save", filterInput({ match: {} }))).rejects.toThrow(/needs a sender/);
+      await expect(call(host, "filter_save", filterInput({ match: { domains: ["news.example.com"], accounts: ["acc_nope"] } }))).rejects.toThrow(
+        "Unknown account",
+      );
+      const toFolder = (folder: string) =>
+        filterInput({ match: { domains: ["news.example.com"], accounts: [accountId] }, actions: { move: "folder", folder, markRead: false, flag: false } });
+      await expect(call(host, "filter_save", toFolder("No such folder"))).rejects.toThrow(FILTER_FOLDER_MESSAGE);
+      await expect(call(host, "filter_save", toFolder("INBOX"))).rejects.toThrow(FILTER_FOLDER_MESSAGE);
+      expect(await call(host, "filter_delete", { id: second.id })).toEqual({ ok: true });
+      expect(await call(host, "filter_delete", { id: second.id })).toEqual({ ok: false });
+      service.controller.abort();
+      await service.done;
+    });
+
+    it("every method refuses other plugins, and is no tool", async () => {
+      const { host, service } = await started();
+      const asPlugin = { experimental_caller: { kind: "plugin", pluginId: "other" } } as const;
+      const inputs: [string, unknown][] = [
+        ["filters_list", {}],
+        ["filter_save", filterInput()],
+        ["filter_delete", { id: "flt_1" }],
+      ];
+      expect(inputs.map(([method]) => method)).toEqual([...SLICE_3M_METHODS]);
+      for (const [method, input] of inputs) {
+        await expect(host.harness.behavior.callRpc(method, input, asPlugin)).rejects.toThrow(PLUGIN_CALLER_MESSAGE);
+      }
+      expect(host.bb.storage.database().prepare("SELECT COUNT(*) AS n FROM mail_filters").get()).toEqual({ n: 0 });
+      expect(host.harness.inspection.registrations.agentTools.some((tool) => /filter/i.test(tool.name))).toBe(false);
+      service.controller.abort();
+      await service.done;
+    });
   });
 
   it("the sync service starts and stops the IDLE supervisor and the snooze clock", async () => {

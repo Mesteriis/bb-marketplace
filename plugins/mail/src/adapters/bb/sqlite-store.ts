@@ -121,6 +121,7 @@ import { fitSenderCheck, orgDomain, type SenderCheck } from "../../core/sender-c
 import { matchesBlock, type BlockRule } from "../../core/blocking.ts";
 import { SNOOZES_MAX_PER_ACCOUNT, type SnoozeRow, type SnoozeState } from "../../core/snooze.ts";
 import { SCHEDULE_LATE_MS } from "../../core/send-later.ts";
+import { FILTERS_MAX, type FilterActions, type FilterMatch, type MailFilter } from "../../core/mail-filters.ts";
 import type { TriageAction, TriageBatchState, TriageItemOutcome } from "../../core/triage.ts";
 import { UNSUBSCRIBE_INFO_MAX_BYTES, type UnsubscribeInfo } from "../../core/unsubscribe.ts";
 import type { ProposalCapRow, ProposalState } from "../../core/agent-propose.ts";
@@ -942,6 +943,19 @@ export const MIGRATIONS: string[] = [
   // 16: slice 3l - "Send later". A queued row the owner gave a send time.
   `
   ALTER TABLE outbox ADD COLUMN scheduled INTEGER NOT NULL DEFAULT 0;
+  `,
+  // 17: slice 3m - filters that sort new Inbox mail. No REFERENCES: a filter
+  // names accounts and a folder by value and simply stops matching without them.
+  `
+  CREATE TABLE mail_filters (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    match_json TEXT NOT NULL,
+    actions_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
   `,
 ];
 
@@ -1942,6 +1956,18 @@ function toOutbox(row: OutboxRow): OutboxRecord {
     rejected: JSON.parse(row.rejected_json) as string[],
     updatedAt: row.updated_at,
     scheduled: row.scheduled === 1,
+  };
+}
+
+type FilterDbRow = { id: string; name: string; enabled: number; match_json: string; actions_json: string };
+
+function toFilter(row: FilterDbRow): MailFilter {
+  return {
+    id: row.id,
+    name: row.name,
+    enabled: row.enabled === 1,
+    match: JSON.parse(row.match_json) as FilterMatch,
+    actions: JSON.parse(row.actions_json) as FilterActions,
   };
 }
 
@@ -6983,6 +7009,45 @@ export function createSqliteStore(db: Database.Database): MailStore {
 
     touchIncident(fingerprint, nowIso) {
       return db.prepare("UPDATE incident_threads SET last_at = ? WHERE fingerprint = ?").run(nowIso, fingerprint).changes > 0;
+    },
+
+    // Filters (slice 3m) -------------------------------------------------------
+
+    listMailFilters() {
+      // By rowid: the order filters were made in, which an edit keeps. Two made in one instant still have an order.
+      return db.prepare<[], FilterDbRow>("SELECT * FROM mail_filters ORDER BY rowid").all().map(toFilter);
+    },
+
+    saveMailFilter(filter, nowIso) {
+      return atomic(() => {
+        const params = {
+          id: filter.id,
+          name: filter.name,
+          enabled: filter.enabled ? 1 : 0,
+          match: JSON.stringify(filter.match),
+          actions: JSON.stringify(filter.actions),
+          now: isoOf(nowIso),
+        };
+        const exists = db.prepare<[string], { id: string }>("SELECT id FROM mail_filters WHERE id = ?").get(filter.id) !== undefined;
+        if (exists) {
+          db.prepare(
+            `UPDATE mail_filters SET name = @name, enabled = @enabled, match_json = @match, actions_json = @actions,
+               updated_at = @now WHERE id = @id`,
+          ).run(params);
+        } else {
+          const count = db.prepare<[], { n: number }>("SELECT count(*) AS n FROM mail_filters").get()!.n;
+          if (count >= FILTERS_MAX) return { full: true as const };
+          db.prepare(
+            `INSERT INTO mail_filters (id, name, enabled, match_json, actions_json, created_at, updated_at)
+             VALUES (@id, @name, @enabled, @match, @actions, @now, @now)`,
+          ).run(params);
+        }
+        return { filter: toFilter(db.prepare<[string], FilterDbRow>("SELECT * FROM mail_filters WHERE id = ?").get(filter.id)!) };
+      });
+    },
+
+    deleteMailFilter(id) {
+      return db.prepare("DELETE FROM mail_filters WHERE id = ?").run(id).changes > 0;
     },
 
     listRules() {

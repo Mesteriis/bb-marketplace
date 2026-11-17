@@ -33,6 +33,7 @@ import { editorDocEmpty, SignatureEditor } from "./signature-editor.tsx";
 import { stopEscape } from "./shortcuts.ts";
 import { BbIntegrationSettings, type BbSettingsValues } from "./bb-integration-settings.tsx";
 import { RulesSettings } from "./rules-settings.tsx";
+import { FiltersSettings, type SettingsFilterPorts } from "./filters-settings.tsx";
 import type { BbCall } from "./bb-ports.ts";
 import { dateLocale, tx } from "./i18n/index.ts";
 
@@ -40,7 +41,7 @@ export type TemplateView = { id: string; name: string; doc: EditorDoc; updatedAt
 export type SuggestionView = { address: string; count: number; lastDate: string };
 export type IdentityKey = { accountId: string; address: string };
 import { PgpSettings, type SettingsPgpPorts } from "./pgp-settings.tsx";
-export type SettingsSection = "addresses" | "templates" | "inbox" | "ai_access" | "activity" | "ai" | "bb" | "rules" | "search" | "pgp";
+export type SettingsSection = "addresses" | "templates" | "inbox" | "ai_access" | "activity" | "ai" | "bb" | "rules" | "search" | "pgp" | "filters";
 
 /** attachment_text_status (slice 3h). */
 export interface AttachmentTextStatus {
@@ -220,6 +221,8 @@ export interface MailSettingsProps {
   search?: SettingsSearchPorts;
   /** OpenPGP keys (slice 3k); absent: no tab. */
   pgp?: SettingsPgpPorts;
+  /** Filters over new Inbox mail (slice 3m); absent: no tab. */
+  filters?: SettingsFilterPorts;
 }
 
 function messageOf(error: unknown, fallback: string): string {
@@ -294,6 +297,7 @@ export function MailSettings(props: MailSettingsProps) {
               ["addresses", "Sending addresses"],
               ["templates", "Templates"],
               ...(props.onUnblock !== undefined ? ([["inbox", "Inbox"]] as const) : []),
+              ...(props.filters !== undefined ? ([["filters", "Filters"]] as const) : []),
               ...(props.ai !== undefined
                 ? ([
                     ["ai_access", "AI access"],
@@ -350,6 +354,8 @@ export function MailSettings(props: MailSettingsProps) {
             <BbIntegrationSettings values={props.bb.values} call={props.bb.call} hint={PLUGIN_SETTINGS_HINT} />
           ) : section === "rules" && props.bb !== undefined ? (
             <RulesSettings on={props.bb.mailRules} call={props.bb.call} notify={props.bb.notify} hint={PLUGIN_SETTINGS_HINT} />
+          ) : section === "filters" && props.filters !== undefined ? (
+            <FiltersSettings ports={props.filters} accounts={props.accounts} />
           ) : section === "pgp" && props.pgp !== undefined ? (
             <PgpSettings ports={props.pgp} identities={props.identities} />
           ) : section === "search" && props.search !== undefined ? (

@@ -8,6 +8,7 @@
 // the composer, and hands plain data and callbacks to the host-agnostic page
 // in src/ui.
 import type { SettingsPgpPorts } from "./src/ui/pgp-settings.tsx";
+import type { SettingsFilterPorts } from "./src/ui/filters-settings.tsx";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   definePluginApp,
@@ -2671,6 +2672,20 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
     }),
     [rpc],
   );
+  // Slice 3m: filters over new Inbox mail.
+  const settingsFilters = useMemo<SettingsFilterPorts>(
+    () => ({
+      list: async () => (await rpc.call("filters_list", {})).filters,
+      save: async (input) => {
+        await rpc.call("filter_save", input);
+      },
+      remove: async (id) => {
+        await rpc.call("filter_delete", { id });
+      },
+      folders: async (accountId) => (await rpc.call("folders_list", { accountId })).folders,
+    }),
+    [rpc],
+  );
   const pluginSettings = useSettings().values;
   cleanLinksOn.current = pluginSettings?.cleanLinks !== false;
   // Slice 3h: the reading settings and the Search and reading tab.
@@ -2821,6 +2836,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       }}
       search={settingsSearch}
       pgp={settingsPgp}
+      filters={settingsFilters}
     />
   );
 

@@ -763,7 +763,7 @@ describe("slice-2 migrations (SQLite)", () => {
 
   it("shipped migration elements are unchanged", () => {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    expect(MIGRATIONS.slice(0, 17).map(sha)).toEqual([
+    expect(MIGRATIONS.slice(0, 18).map(sha)).toEqual([
       "023f294a929e0c6d2aea10f38acb89287dbeba167e67f2b31c85103fd74ec5b4",
       "e34d0e9cbe94c27a6da39809436d656dcf4f787e1d35dd82fef86889bb22758f",
       "9430a1b0edb5ab94a14189c472a81384b3869786c2c5c56a00a56c2b02097396",
@@ -793,7 +793,39 @@ describe("slice-2 migrations (SQLite)", () => {
       "692137cda01ae3f12987900d2ec20feae427352122f78ddb1b5a515c73c1b93a",
       // Element 16 (slice 3l: the scheduled mark of a "Send later" row).
       "62597e0677e25aefadc475f6a6afadbc30e89474c48400d85c576bc82b14e929",
+      // Element 17 (slice 3m: filters).
+      "32a4f62febff3500b7c877687dc2defc39bc8ab3a4fc4620b1761953fa1f380c",
     ]);
+  });
+
+  it("filters keep the order they were made in, an edit keeps its place, and the list is capped (slice 3m)", () => {
+    const db = new Database(":memory:");
+    db.transaction(() => MIGRATIONS.forEach((statement) => db.exec(statement)))();
+    const s = createSqliteStore(db);
+    const at = "2026-11-17T10:00:00.000Z";
+    const make = (id: string, name = id) => ({
+      id,
+      name,
+      enabled: true,
+      match: { domains: ["news.example.com"], accounts: ["acc_1"] },
+      actions: { move: "folder" as const, folder: "Lists", markRead: true, flag: false },
+    });
+    // Ids out of order, all made in one instant.
+    for (const id of ["flt_z", "flt_a", "flt_m"]) expect(s.saveMailFilter(make(id), at)).toEqual({ filter: make(id) });
+    expect(s.listMailFilters().map((f) => f.id)).toEqual(["flt_z", "flt_a", "flt_m"]);
+    s.saveMailFilter({ ...make("flt_z", "Renamed"), enabled: false }, "2026-11-18T10:00:00.000Z");
+    expect(s.listMailFilters().map((f) => [f.id, f.name, f.enabled])).toEqual([
+      ["flt_z", "Renamed", false],
+      ["flt_a", "flt_a", true],
+      ["flt_m", "flt_m", true],
+    ]);
+    expect(s.deleteMailFilter("flt_a")).toBe(true);
+    expect(s.deleteMailFilter("flt_a")).toBe(false);
+    for (let i = 0; i < 48; i++) s.saveMailFilter(make(`flt_${i}`), at);
+    expect(s.listMailFilters()).toHaveLength(50);
+    expect(s.saveMailFilter(make("flt_over"), at)).toEqual({ full: true });
+    // An edit of an existing one still goes through at the cap.
+    expect(s.saveMailFilter(make("flt_m", "Edited"), at)).toMatchObject({ filter: { name: "Edited" } });
   });
 
   it("listThreads by folder stays fast for a few thousand messages", () => {
@@ -3400,7 +3432,7 @@ describe("slice-3e migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(9).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(17);
+    expect(MIGRATIONS).toHaveLength(18);
     const migrated = createSqliteStore(old);
     expect(migrated.getUnsubscribeInfo(ids[0]!)).toEqual({ ...INFO, listKey: "id:weekly.example.com" });
     expect(migrated.getUnsubscribeInfo(ids[1]!)?.listKey).toBe("from:news@example.com");
@@ -4048,7 +4080,7 @@ describe("slice-3f migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(10).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(17);
+    expect(MIGRATIONS).toHaveLength(18);
     const migrated = createSqliteStore(old);
     migrated.assignThreads("acc_1", new Map());
     expect(migrated.listThreads("acc_1", INBOX, null, 10).threads).toEqual([
@@ -4854,7 +4886,7 @@ describe("slice-3g migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(12).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(17);
+    expect(MIGRATIONS).toHaveLength(18);
     const runs = old.prepare("SELECT id, message_id, message_key, project_id FROM rule_runs ORDER BY id").all();
     expect(runs).toEqual([
       { id: "a1", message_id: messageId, message_key: expect.stringMatching(/^acc_1:/), project_id: "p_api" },
@@ -5439,7 +5471,7 @@ describe("slice-3h migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(13).forEach((s) => old.exec(s)))();
 
-    expect(MIGRATIONS).toHaveLength(17);
+    expect(MIGRATIONS).toHaveLength(18);
     const kinds = old.prepare("SELECT part_id, kind FROM attachments ORDER BY CAST(part_id AS INTEGER)").all() as {
       part_id: string;
       kind: string;
@@ -6109,7 +6141,7 @@ describe("slice-3i migration (SQLite)", () => {
 
     old.transaction(() => MIGRATIONS.slice(14).forEach((statement) => old.exec(statement)))();
 
-    expect(MIGRATIONS).toHaveLength(17);
+    expect(MIGRATIONS).toHaveLength(18);
     const columns = (old.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name);
     expect(columns).toEqual(expect.arrayContaining(["sender_check_json", "receipt_requested", "crypto"]));
     expect(old.prepare("SELECT sender_check_json, receipt_requested, crypto FROM messages").all()).toEqual([
