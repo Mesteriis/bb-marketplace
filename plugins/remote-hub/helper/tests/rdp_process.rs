@@ -60,7 +60,7 @@ fn g8_engine_exit_status_survives_the_pty_reaper() {
     let mut h = start(&[]);
     let (echo, _) = h.open_echo();
     let (rdp, engine_pid) = h.open_rdp(server.port);
-    std::thread::sleep(Duration::from_millis(200));
+    h.wait_state(rdp, "connecting");
     unsafe { libc::kill(engine_pid as libc::pid_t, libc::SIGKILL) };
     let (code, signal, reason) = h.read_closed(rdp);
     assert_eq!(reason, "engine_exited");
@@ -84,7 +84,8 @@ fn g8_engine_exit_code_is_reported_and_close_after_reap_signals_nothing() {
     let (code, signal, reason) = h.read_closed(rdp);
     assert_eq!(reason, "network_error");
     assert_eq!((code, signal), (Some(0), None));
-    std::thread::sleep(Duration::from_millis(300));
+    // The closed report is only sent once the engine has been reaped, so the
+    // close below always follows the reap.
     h.send(&Request::SessionClose { id: 30, session_id: rdp });
     // The session is already reported closed; the close is still answered.
     let _ = h.read_reply(30);
@@ -102,10 +103,9 @@ fn g9_dead_engine_does_not_busy_loop_the_helper() {
     let server = silent_server();
     let mut h = start(&[]);
     let (rdp, engine_pid) = h.open_rdp(server.port);
-    std::thread::sleep(Duration::from_millis(200));
+    h.wait_state(rdp, "connecting");
     unsafe { libc::kill(engine_pid as libc::pid_t, libc::SIGKILL) };
     let _ = h.read_closed(rdp);
-    std::thread::sleep(Duration::from_millis(300));
     let t0 = cpu_seconds(h.pid());
     std::thread::sleep(Duration::from_secs(3));
     let cpu = cpu_seconds(h.pid()) - t0;
@@ -119,8 +119,8 @@ fn g9_dead_engine_does_not_busy_loop_the_helper() {
 fn g6_engine_inherits_only_its_socket() {
     let server = silent_server();
     let mut h = start(&[]);
-    let (_rdp, engine_pid) = h.open_rdp(server.port);
-    std::thread::sleep(Duration::from_millis(500));
+    let (rdp, engine_pid) = h.open_rdp(server.port);
+    h.wait_state(rdp, "connecting"); // the engine has exec'd and is running
     let rows = lsof_fds(engine_pid);
     let by = |n: i32| rows.iter().find(|(fd, _, _)| *fd == n).cloned();
     for n in 0..=2 {
@@ -142,8 +142,8 @@ fn g6_engine_inherits_only_its_socket() {
 fn g12_engine_exits_when_the_helper_is_killed() {
     let server = silent_server();
     let mut h = start(&[]);
-    let (_rdp, engine_pid) = h.open_rdp(server.port);
-    std::thread::sleep(Duration::from_millis(300));
+    let (rdp, engine_pid) = h.open_rdp(server.port);
+    h.wait_state(rdp, "connecting");
     assert!(pid_alive(engine_pid));
     unsafe { libc::kill(h.pid() as libc::pid_t, libc::SIGKILL) };
     let _ = h.child.wait();
@@ -316,7 +316,7 @@ fn g10_a_flooding_engine_does_not_starve_an_echo_session() {
     let (echo, _) = h.open_echo();
     let (rdp, _) = h.open_rdp_sized(closed_port(), 1920, 1080);
     let rx = h.frames_in_background(rdp);
-    std::thread::sleep(Duration::from_millis(500));
+    let _ = next_update(&rx); // the engine is flooding
     let t = std::time::Instant::now();
     h.send(&Request::SessionInput { id: 60, session_id: echo, data: "flood-ping".to_string() });
     let mut got = String::new();
@@ -343,8 +343,8 @@ fn g10_a_flooding_engine_does_not_starve_an_echo_session() {
 fn g19_sigterm_and_stdin_eof_leave_no_engine() {
     let server = silent_server();
     let mut h = start(&[]);
-    let (_rdp, engine_pid) = h.open_rdp(server.port);
-    std::thread::sleep(Duration::from_millis(300));
+    let (rdp, engine_pid) = h.open_rdp(server.port);
+    h.wait_state(rdp, "connecting");
     assert!(pid_alive(engine_pid));
     unsafe { libc::kill(h.pid() as libc::pid_t, libc::SIGTERM) };
     let status = h.child.wait().expect("helper exit");
@@ -352,8 +352,8 @@ fn g19_sigterm_and_stdin_eof_leave_no_engine() {
     assert!(wait_pid_gone(engine_pid, Duration::from_secs(2)), "engine survived helper SIGTERM");
 
     let mut h = start(&[]);
-    let (_rdp, engine_pid) = h.open_rdp(server.port);
-    std::thread::sleep(Duration::from_millis(300));
+    let (rdp, engine_pid) = h.open_rdp(server.port);
+    h.wait_state(rdp, "connecting");
     assert!(pid_alive(engine_pid));
     h.shutdown(); // closes stdin
     assert!(wait_pid_gone(engine_pid, Duration::from_secs(2)), "engine survived stdin EOF");
@@ -365,8 +365,8 @@ fn g19_sigterm_and_stdin_eof_leave_no_engine() {
 fn g19_password_is_not_in_the_engine_argv_or_env() {
     let server = silent_server();
     let mut h = start(&[("SSLKEYLOGFILE", "/tmp/should-not-leak.log"), ("PEPPER", "env-marker")]);
-    let (_rdp, engine_pid) = h.open_rdp(server.port);
-    std::thread::sleep(Duration::from_millis(500));
+    let (rdp, engine_pid) = h.open_rdp(server.port);
+    h.wait_state(rdp, "connecting");
     let out = std::process::Command::new("ps")
         .args(["eww", "-p", &engine_pid.to_string()])
         .output()

@@ -60,7 +60,17 @@ impl Helper {
         self.stdin.flush().expect("flush");
     }
 
+    /// Wait until stdout is readable. A hang guard, not a timing assertion: a
+    /// helper that falls silent fails the test instead of hanging it.
+    fn wait_readable(&self) {
+        use std::os::fd::AsRawFd;
+        let mut pfd = libc::pollfd { fd: self.stdout.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        let r = unsafe { libc::poll(&mut pfd, 1, 60_000) };
+        assert!(r != 0, "hang guard: the helper sent nothing for 60 s");
+    }
+
     pub fn read_frame(&mut self) -> (u8, Vec<u8>) {
+        self.wait_readable();
         let mut header = [0u8; 4];
         self.stdout.read_exact(&mut header).expect("read header");
         let len = u32::from_le_bytes(header) as usize;
@@ -140,21 +150,28 @@ impl Helper {
             height,
             expected_fingerprint: None,
         });
-        match self.read_until(Duration::from_secs(10), |k, p| {
-            if k != FRAME_KIND_CONTROL {
-                return None;
-            }
-            match decode_response(p).ok()? {
-                r @ (Response::SessionOpened { .. } | Response::Error { .. }) => Some(r),
-                _ => None,
-            }
-        }) {
+        match self.read_reply(2) {
             Response::SessionOpened { session_id, pid, kind, .. } => {
                 assert_eq!(kind, "rdp");
                 (session_id, pid)
             }
             other => panic!("expected session.opened, got {other:?}"),
         }
+    }
+
+    /// Block until the RDP session reports `state` (the engine's first event,
+    /// `connecting`, proves it has exec'd and is running). Unrelated frames are
+    /// skipped.
+    pub fn wait_state(&mut self, rdp_sid: u32, state: &str) {
+        self.read_until(Duration::from_secs(60), |k, p| {
+            if k != FRAME_KIND_CONTROL {
+                return None;
+            }
+            match decode_response(p).ok()? {
+                Response::RdpState { session_id, state: s } if session_id == rdp_sid && s == state => Some(()),
+                _ => None,
+            }
+        })
     }
 
     /// Echo `text` through an echo session and wait for it to come back.

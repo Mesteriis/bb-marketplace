@@ -188,6 +188,7 @@ pub fn spawn_reader(mut stream: UnixStream) -> Inbox {
 
 #[cfg(test)]
 mod tests {
+    //! The 30 s limits below are hang guards: each event is awaited, never raced.
     use super::*;
     use std::time::Duration;
 
@@ -202,12 +203,12 @@ mod tests {
         drop(helper_end);
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
-            let reason = tokio::time::timeout(Duration::from_secs(2), inbox.cancel.wait()).await.unwrap();
+            let reason = tokio::time::timeout(Duration::from_secs(30), inbox.cancel.wait()).await.unwrap();
             assert_eq!(reason, RdpClosedReason::HelperShutdown);
-            let next = tokio::time::timeout(Duration::from_secs(2), inbox.control.recv()).await.unwrap();
+            let next = tokio::time::timeout(Duration::from_secs(30), inbox.control.recv()).await.unwrap();
             assert!(next.is_none(), "the control channel must close when the helper is gone");
         });
-        assert_eq!(inbox.decisions.recv_timeout(Duration::from_secs(2)), Ok(Decision::Cancel(RdpClosedReason::HelperShutdown)));
+        assert_eq!(inbox.decisions.recv_timeout(Duration::from_secs(30)), Ok(Decision::Cancel(RdpClosedReason::HelperShutdown)));
     }
 
     #[test]
@@ -216,7 +217,7 @@ mod tests {
         let inbox = spawn_reader(engine_end);
         helper_end.write_all(&protocol::encode_control(&EngineCommand::Close)).unwrap();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let reason = rt.block_on(async { tokio::time::timeout(Duration::from_secs(2), inbox.cancel.wait()).await }).unwrap();
+        let reason = rt.block_on(async { tokio::time::timeout(Duration::from_secs(30), inbox.cancel.wait()).await }).unwrap();
         assert_eq!(reason, RdpClosedReason::KilledByClose);
     }
 
@@ -237,7 +238,7 @@ mod tests {
             assert!(matches!(inbox.control.recv().await, Some(Control::Ack(7))));
         });
         assert_eq!(
-            inbox.decisions.recv_timeout(Duration::from_secs(2)),
+            inbox.decisions.recv_timeout(Duration::from_secs(30)),
             Ok(Decision::Cert { fingerprint: "AA".into(), accept: "once".into() })
         );
     }
