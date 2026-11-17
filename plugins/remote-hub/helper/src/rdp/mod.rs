@@ -4,7 +4,9 @@
 //! allowlist. See docs/rdp-engine.md.
 
 pub mod cert;
+pub mod engine;
 pub mod framebuffer;
 pub mod input;
+pub mod manager;
 pub mod protocol;
 pub mod reasons;

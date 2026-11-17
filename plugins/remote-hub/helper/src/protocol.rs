@@ -62,6 +62,40 @@ pub enum Request {
         #[serde(rename = "sessionId")]
         session_id: u32,
     },
+    #[serde(rename = "session.open_rdp")]
+    OpenRdp {
+        id: u64,
+        host: String,
+        port: u16,
+        username: String,
+        password: String,
+        domain: Option<String>,
+        width: u32,
+        height: u32,
+        #[serde(rename = "expectedFingerprint")]
+        expected_fingerprint: Option<String>,
+    },
+    #[serde(rename = "rdp.cert_decision")]
+    RdpCertDecision {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        fingerprint: String,
+        accept: String,
+    },
+    #[serde(rename = "rdp.input")]
+    RdpInput {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        events: Vec<crate::rdp::protocol::InputEvent>,
+    },
+    #[serde(rename = "rdp.screenshot")]
+    RdpScreenshot {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -123,6 +157,55 @@ pub enum Response {
         id: Option<u64>,
         code: String,
         message: String,
+    },
+    #[serde(rename = "rdp.ack")]
+    RdpAck {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+    },
+    #[serde(rename = "rdp.state")]
+    RdpState {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        state: String,
+    },
+    #[serde(rename = "rdp.cert_prompt")]
+    RdpCertPrompt {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        host: String,
+        port: u16,
+        fingerprint: String,
+        subject: String,
+        issuer: String,
+        #[serde(rename = "notBefore")]
+        not_before: String,
+        #[serde(rename = "notAfter")]
+        not_after: String,
+        reason: String,
+    },
+    #[serde(rename = "rdp.desktop")]
+    RdpDesktop {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        #[serde(rename = "frameId")]
+        frame_id: u64,
+        width: u32,
+        height: u32,
+        timestamp: u64,
+    },
+    #[serde(rename = "rdp.screenshot")]
+    RdpScreenshot {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        #[serde(rename = "frameId")]
+        frame_id: u64,
+        width: u32,
+        height: u32,
+        timestamp: u64,
+        png: String,
     },
 }
 

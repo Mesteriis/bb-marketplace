@@ -136,6 +136,7 @@ pub fn encode_update(
     encode_frame(FRAME_BINARY, &payload)
 }
 
+#[derive(Debug)]
 pub struct UpdateHeader {
     pub session_id: u32,
     pub frame_id: u64,

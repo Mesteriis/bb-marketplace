@@ -12,6 +12,8 @@ use crate::protocol::{
     self, Request, Response, FRAME_KIND_CONTROL, FRAME_KIND_STREAM, MAX_FRAME_BODY_BYTES,
     PROTOCOL_VERSION, STREAM_HEADER_BYTES,
 };
+use crate::rdp::manager::{RdpFrame, RdpManager};
+use crate::rdp::protocol::{EngineCommand, EngineEvent, UpdateHeader};
 use crate::sessions::{SessionError, SessionManager, SpawnSpec, READ_CHUNK};
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -130,6 +132,10 @@ fn request_id(req: &Request) -> Option<u64> {
         Request::Ping { id }
         | Request::OpenEcho { id, .. }
         | Request::OpenSsh { id, .. }
+        | Request::OpenRdp { id, .. }
+        | Request::RdpCertDecision { id, .. }
+        | Request::RdpInput { id, .. }
+        | Request::RdpScreenshot { id, .. }
         | Request::SessionInput { id, .. }
         | Request::SessionResize { id, .. }
         | Request::SessionCredit { id, .. }
@@ -176,6 +182,8 @@ fn build_spawn_spec(
 /// (code, message) that stops the helper.
 fn handle(
     manager: &mut SessionManager,
+    rdp: &mut RdpManager,
+    current_exe: &str,
     handshaken: &mut bool,
     generation: &str,
     req: Request,
@@ -325,31 +333,173 @@ fn handle(
                 }))
             }
         }
-        Request::SessionClose { id, session_id } => match manager.close(session_id) {
-            Some((base_seq, chunks, exit_code, signal, reason)) => {
-                let mut out = Vec::new();
-                for (i, chunk) in chunks.iter().enumerate() {
-                    out.extend_from_slice(&protocol::encode_stream(
-                        session_id,
-                        base_seq.wrapping_add(i as u32),
-                        chunk,
-                    ));
-                }
-                out.extend_from_slice(&protocol::encode_response(&Response::SessionClosed {
+        Request::SessionClose { id, session_id } => {
+            if let Some(reason) = rdp.close(session_id) {
+                return Ok(protocol::encode_response(&Response::SessionClosed {
                     id: Some(id),
                     session_id,
-                    exit_code,
-                    signal,
+                    exit_code: None,
+                    signal: None,
                     reason,
                 }));
-                Ok(out)
             }
-            None => Ok(protocol::encode_response(&Response::Error {
+            handle_pty_close(manager, id, session_id)
+        }
+        Request::OpenRdp {
+            id,
+            host,
+            port,
+            username,
+            password,
+            domain,
+            width,
+            height,
+            expected_fingerprint,
+        } => match rdp.open(current_exe, host, port, username, password, domain, width, height, expected_fingerprint) {
+            Ok((session_id, pid)) => Ok(protocol::encode_response(&Response::SessionOpened {
+                id,
+                session_id,
+                cols: 0,
+                rows: 0,
+                pid: pid as u32,
+                kind: "rdp".to_string(),
+            })),
+            Err(message) => Ok(protocol::encode_response(&Response::Error {
                 id: Some(id),
-                code: "session_not_found".to_string(),
-                message: format!("no echo session {session_id}"),
+                code: "rdp_open_failed".to_string(),
+                message,
             })),
         },
+        Request::RdpCertDecision { id, session_id, fingerprint, accept } => {
+            rdp.enqueue_command(session_id, &EngineCommand::CertDecision { fingerprint, accept });
+            Ok(protocol::encode_response(&Response::RdpAck { id, session_id }))
+        }
+        Request::RdpInput { id, session_id, events } => {
+            rdp.enqueue_command(session_id, &EngineCommand::Input { events });
+            Ok(protocol::encode_response(&Response::RdpAck { id, session_id }))
+        }
+        Request::RdpScreenshot { id, session_id } => {
+            rdp.enqueue_command(session_id, &EngineCommand::Screenshot);
+            rdp.mark_screenshot_pending(session_id, id);
+            // The screenshot response arrives asynchronously from the engine.
+            Ok(Vec::new())
+        }
+    }
+}
+
+fn handle_pty_close(manager: &mut SessionManager, id: u64, session_id: u32) -> Result<Vec<u8>, (String, String)> {
+    match manager.close(session_id) {
+        Some((base_seq, chunks, exit_code, signal, reason)) => {
+            let mut out = Vec::new();
+            for (i, chunk) in chunks.iter().enumerate() {
+                out.extend_from_slice(&protocol::encode_stream(
+                    session_id,
+                    base_seq.wrapping_add(i as u32),
+                    chunk,
+                ));
+            }
+            out.extend_from_slice(&protocol::encode_response(&Response::SessionClosed {
+                id: Some(id),
+                session_id,
+                exit_code,
+                signal,
+                reason,
+            }));
+            Ok(out)
+        }
+        None => Ok(protocol::encode_response(&Response::Error {
+            id: Some(id),
+            code: "session_not_found".to_string(),
+            message: format!("no echo session {session_id}"),
+        })),
+    }
+}
+
+/// Largest helper -> client stream frame for an RDP update (<= 1 MiB per the
+/// stage 2b contract B5).
+const RDP_UPDATE_CHUNK_BYTES: usize = 1024 * 1024;
+
+fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, rid: u32, frames: Vec<RdpFrame>) {
+    for frame in frames {
+        match frame {
+            RdpFrame::Event(EngineEvent::State { state }) => {
+                outbox.extend(protocol::encode_response(&Response::RdpState { session_id: rid, state }));
+            }
+            RdpFrame::Event(EngineEvent::CertPrompt { host, port, fingerprint, subject, issuer, not_before, not_after, reason }) => {
+                outbox.extend(protocol::encode_response(&Response::RdpCertPrompt {
+                    session_id: rid,
+                    host,
+                    port,
+                    fingerprint,
+                    subject,
+                    issuer,
+                    not_before,
+                    not_after,
+                    reason,
+                }));
+            }
+            RdpFrame::Event(EngineEvent::Desktop { frame_id, width, height, timestamp }) => {
+                outbox.extend(protocol::encode_response(&Response::RdpDesktop {
+                    session_id: rid,
+                    frame_id,
+                    width,
+                    height,
+                    timestamp,
+                }));
+            }
+            RdpFrame::Event(EngineEvent::Screenshot { frame_id, width, height, timestamp, png }) => {
+                let req_id = rdp.take_screenshot_id(rid).unwrap_or(0);
+                outbox.extend(protocol::encode_response(&Response::RdpScreenshot {
+                    id: req_id,
+                    session_id: rid,
+                    frame_id,
+                    width,
+                    height,
+                    timestamp,
+                    png,
+                }));
+            }
+            RdpFrame::Event(EngineEvent::Error { code, message }) => {
+                outbox.extend(protocol::encode_response(&Response::Error { id: None, code, message }));
+            }
+            RdpFrame::Event(EngineEvent::Closed { .. }) => {
+                // Reported once via RdpManager::take_all_closed().
+            }
+            RdpFrame::Update { header, rgba } => relay_rdp_update(outbox, rid, header, &rgba),
+        }
+    }
+}
+
+/// Split one engine update into <= 1 MiB helper stream frames, each with its
+/// own {frameId, fbWidth, fbHeight, x, y, w, h} header + RGBA rows.
+fn relay_rdp_update(outbox: &mut VecDeque<u8>, rid: u32, header: UpdateHeader, rgba: &[u8]) {
+    let bytes_per_row = header.w as usize * 4;
+    if bytes_per_row == 0 {
+        return;
+    }
+    let rows_per_chunk = (RDP_UPDATE_CHUNK_BYTES / bytes_per_row).max(1);
+    let mut y = header.y;
+    let mut remaining = header.h;
+    let mut off = 0usize;
+    let mut seq = 0u32;
+    while remaining > 0 {
+        let chunk_h = remaining.min(rows_per_chunk as u32);
+        let row_bytes = bytes_per_row * chunk_h as usize;
+        let data = &rgba[off..off + row_bytes];
+        off += row_bytes;
+        let mut payload = Vec::with_capacity(32 + data.len());
+        payload.extend_from_slice(&header.frame_id.to_le_bytes());
+        payload.extend_from_slice(&header.fb_width.to_le_bytes());
+        payload.extend_from_slice(&header.fb_height.to_le_bytes());
+        payload.extend_from_slice(&header.x.to_le_bytes());
+        payload.extend_from_slice(&y.to_le_bytes());
+        payload.extend_from_slice(&header.w.to_le_bytes());
+        payload.extend_from_slice(&chunk_h.to_le_bytes());
+        payload.extend_from_slice(data);
+        outbox.extend(protocol::encode_stream(rid, seq, &payload));
+        seq = seq.wrapping_add(1);
+        y += chunk_h;
+        remaining -= chunk_h;
     }
 }
 
@@ -503,11 +653,13 @@ fn flush_stdout(outbox: &mut VecDeque<u8>) -> bool {
 /// panic (Drop runs during unwinding).
 struct CleanupGuard {
     manager: SessionManager,
+    rdp: RdpManager,
 }
 
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
         self.manager.terminate_all();
+        self.rdp.terminate_all();
     }
 }
 
@@ -517,6 +669,7 @@ enum PollRole {
     Signal,
     Stdout,
     Session(u32),
+    Rdp(u32),
 }
 
 pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
@@ -547,8 +700,12 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
     let keep_finished = std::env::var("REMOTE_HUB_KEEP_FINISHED").is_ok();
     #[cfg(not(feature = "test-hooks"))]
     let keep_finished = false;
+    let current_exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "remote-hub-helper".to_string());
     let mut guard = CleanupGuard {
         manager: SessionManager::new(echo_argv),
+        rdp: RdpManager::new(),
     };
     let mut reader = FrameReader::new();
     let mut outbox: VecDeque<u8> = VecDeque::new();
@@ -605,6 +762,15 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
             roles.push(PollRole::Session(*sid));
             fds.push(pollfd(*mfd, events));
         }
+        let rdp_fds = guard.rdp.fds();
+        for (rid, rfd) in &rdp_fds {
+            let mut events = libc::POLLIN;
+            if guard.rdp.wants_write(*rid) {
+                events |= libc::POLLOUT;
+            }
+            roles.push(PollRole::Rdp(*rid));
+            fds.push(pollfd(*rfd, events));
+        }
 
         let r = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 50) };
         if r < 0 {
@@ -657,12 +823,31 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                         let _ = guard.manager.write_pending_input(*sid);
                     }
                 }
+                PollRole::Rdp(rid) => {
+                    if revents & libc::POLLOUT != 0 {
+                        guard.rdp.write_pending(*rid);
+                    }
+                    if revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                        let frames = guard.rdp.process_readable(*rid);
+                        relay_rdp_frames(&mut guard.rdp, &mut outbox, *rid, frames);
+                    }
+                }
                 PollRole::Stdin => {}
             }
         }
 
         // Reap children that exited on their own (never shuts down the helper).
         guard.manager.reap();
+        guard.rdp.reap();
+        for (rid, reason) in guard.rdp.take_all_closed() {
+            outbox.extend(protocol::encode_response(&Response::SessionClosed {
+                id: None,
+                session_id: rid,
+                exit_code: None,
+                signal: None,
+                reason,
+            }));
+        }
 
         // Drain pending output into the bounded outbox in READ_CHUNK frames so
         // per-session sequence numbers stay consecutive.
@@ -723,7 +908,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         while outbox.len() + OUTBOX_RESERVE <= OUTBOX_CAP {
             match reader.try_take() {
                 Ok(Some(IncomingFrame::Control(req))) => {
-                    match handle(&mut guard.manager, &mut handshaken, &generation, req) {
+                    match handle(&mut guard.manager, &mut guard.rdp, &current_exe, &mut handshaken, &generation, req) {
                         Ok(frames) => outbox.extend(frames),
                         Err((code, message)) => {
                             outbox.extend(protocol::encode_response(&Response::Error {

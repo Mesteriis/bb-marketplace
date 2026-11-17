@@ -2,6 +2,9 @@ use remote_hub_helper::ipc;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--rdp-engine") {
+        std::process::exit(remote_hub_helper::rdp::engine::run_engine());
+    }
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("remote-hub-helper {}", env!("CARGO_PKG_VERSION"));
         std::process::exit(0);
