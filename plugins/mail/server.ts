@@ -642,6 +642,28 @@ function defineSettings(bb: BbPluginApi) {
       label: "Hide quoted text in replies",
       default: true,
     },
+    // Slice 3j: how the lists and the reading pane are laid out.
+    listDensity: {
+      type: "select",
+      label: "List rows",
+      options: ["comfortable", "compact"],
+      experimental_optionLabels: { comfortable: "Comfortable", compact: "Compact (no preview line)" },
+      default: "comfortable",
+    },
+    readingPane: {
+      type: "select",
+      label: "Reading pane",
+      options: ["right", "bottom"],
+      experimental_optionLabels: { right: "Right of the list", bottom: "Below the list" },
+      default: "right",
+    },
+    language: {
+      type: "select",
+      label: "Language of Mail's pages",
+      options: ["auto", "ru", "en"],
+      experimental_optionLabels: { auto: "Same as the system", ru: "\u0420\u0443\u0441\u0441\u043a\u0438\u0439", en: "English" },
+      default: "auto",
+    },
     // Slice 3i: off keeps every parameter and wrapper; the status line, tracking note and dialog stay.
     cleanLinks: {
       type: "boolean",

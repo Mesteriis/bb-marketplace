@@ -104,6 +104,8 @@ import {
   ThreadList,
   type HistoryState,
   type ListFilter,
+  ListDensityContext,
+  type ListDensity,
 } from "./thread-list.tsx";
 import { SearchHelpButton, SearchNotes } from "./search-help.tsx";
 import { ServerSearchStrip, type ServerJobView } from "./server-search-strip.tsx";
@@ -278,6 +280,10 @@ export interface MailPageProps {
   onSync: () => void;
   /** The page's own link to BB (slice 3j); absent means connected. */
   bbLink?: BbLink;
+  /** Slice 3j: row height of the lists; absent means comfortable. */
+  density?: ListDensity;
+  /** Slice 3j: where the reading pane sits in a wide window; absent means right. */
+  readingPane?: "right" | "bottom";
   reading: ReadingState;
   onSelectThread: (threadId: string, messageId: string | null, accountId: string) => void;
   onCloseThread: () => void;
@@ -581,6 +587,8 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   const searching = search.query !== "";
   const selecting = selection.size > 0;
   const wide = useWideLayout(rootRef);
+  // Slice 3j: the reading pane below the list, in a wide window only.
+  const paneBelow = wide && props.readingPane === "bottom";
   const markers = accountMarkers(status.accounts);
   const marker = (accountId: string) => (props.unified ? (markers.get(accountId) ?? null) : null);
   /** Ours (a server copy of a compose draft), or any message in a Drafts folder. */
@@ -1241,12 +1249,17 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           ) : null}
         </div>
       ))}
-      <div className="flex min-h-0 flex-1">
+      <ListDensityContext.Provider value={props.density ?? "comfortable"}>
+      <div className={cn("flex min-h-0 flex-1", paneBelow && "flex-col")} data-reading-pane={paneBelow ? "bottom" : "right"}>
         <section
           aria-label={model.title}
           className={cn(
-            "min-h-0 w-full shrink-0 flex-col overflow-y-auto @3xl:flex @3xl:w-80 @3xl:border-r @3xl:border-border @6xl:w-96",
-            threadOpen && !selecting ? "hidden" : "flex",
+            "min-h-0 w-full shrink-0 flex-col overflow-y-auto",
+            // Slice 3j: with the pane below, the list keeps the full width and two fifths of the height.
+            paneBelow
+              ? "flex h-2/5 min-h-48 border-b border-border"
+              : "@3xl:flex @3xl:w-80 @3xl:border-r @3xl:border-border @6xl:w-96",
+            !paneBelow && (threadOpen && !selecting ? "hidden" : "flex"),
           )}
         >
           {!searching ? (
@@ -1359,7 +1372,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           tabIndex={-1}
           className={cn(
             "min-h-0 min-w-0 flex-1 flex-col overflow-y-auto outline-none @3xl:flex",
-            threadOpen && !selecting ? "flex" : "hidden",
+            paneBelow ? "flex" : threadOpen && !selecting ? "flex" : "hidden",
           )}
         >
           {composerView !== null && !docked ? (
@@ -1503,6 +1516,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
           )}
         </section>
       </div>
+      </ListDensityContext.Provider>
       </>
       )}
       <MoveDialog

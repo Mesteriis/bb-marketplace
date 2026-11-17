@@ -2,7 +2,7 @@
 // bold, and the quick filters above them (slice 3e). Slice 3h: rows drag
 // onto rail folders, message rows carry Gmail label chips and the "from the
 // server" mark, and a folder's end offers Load more days.
-import type { DragEvent, ReactNode } from "react";
+import { createContext, useContext, type DragEvent, type ReactNode } from "react";
 import type { AttachmentMatch, MailAddress, MessageSummary, ThreadSummary } from "../core/index.ts";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -215,6 +215,10 @@ interface RowProps {
   onDragEnd?: () => void;
 }
 
+/** Slice 3j: how tall the list rows are. Compact rows drop the preview line. */
+export type ListDensity = "comfortable" | "compact";
+export const ListDensityContext = createContext<ListDensity>("comfortable");
+
 function Row({
   rowKey,
   selected,
@@ -238,8 +242,11 @@ function Row({
   onDragEnd,
 }: RowProps) {
   const label = subjectOrPlaceholder(subject);
+  // Search rows stay comfortable: their matches are the point.
+  const compact = useContext(ListDensityContext) === "compact" && matches.length === 0 && !fromServer;
   return (
     <li
+      data-density={compact ? "compact" : "comfortable"}
       {...(onDragStart !== undefined
         ? { draggable: true, onDragStart, onDragEnd, "aria-describedby": DRAG_HINT_ID }
         : {})}
@@ -250,7 +257,7 @@ function Row({
       )}
     >
       {check !== undefined ? (
-        <span className="flex shrink-0 self-stretch items-start pl-3 pt-2.5">
+        <span className={cn("flex shrink-0 self-stretch items-start pl-3", compact ? "pt-1.5" : "pt-2.5")}>
           <Checkbox
             aria-label={`Select ${label}`}
             checked={check.checked}
@@ -268,7 +275,8 @@ function Row({
         onClick={onSelect}
         aria-current={selected ? "true" : undefined}
         className={cn(
-          "flex min-w-0 flex-1 flex-col gap-0.5 py-2 pr-1 text-left outline-none",
+          "flex min-w-0 flex-1 flex-col pr-1 text-left outline-none",
+          compact ? "gap-0 py-1" : "gap-0.5 py-2",
           check === undefined ? "pl-3" : "pl-2",
         )}
       >
@@ -304,7 +312,7 @@ function Row({
           {unread ? <span className="sr-only">Unread: </span> : null}
           {label}
         </span>
-        <span className="truncate pl-3.5 text-xs text-muted-foreground">{snippet}</span>
+        {compact ? null : <span className="truncate pl-3.5 text-xs text-muted-foreground">{snippet}</span>}
         {labels.length > 0 || fromServer ? (
           <span className="flex min-w-0 items-center gap-1 pl-3.5">
             {fromServer ? (
@@ -331,7 +339,7 @@ function Row({
         ) : null}
       </button>
       {star !== undefined ? (
-        <span className="shrink-0 pr-1.5 pt-1.5">
+        <span className={cn("shrink-0 pr-1.5", compact ? "pt-0.5" : "pt-1.5")}>
           <Button
             variant="ghost"
             size="icon"

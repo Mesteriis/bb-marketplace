@@ -4016,6 +4016,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       onSearch={onSearchQuery}
       syncing={syncing}
       bbLink={bbLink}
+      density={pluginSettings?.listDensity === "compact" ? "compact" : "comfortable"}
+      readingPane={pluginSettings?.readingPane === "bottom" ? "bottom" : "right"}
       onSync={() => void sync()}
       reading={reading}
       onSelectThread={(threadId, messageId, accountId) => {

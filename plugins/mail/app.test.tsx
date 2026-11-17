@@ -5870,3 +5870,42 @@ describe("Slice 3i part B: the next conversation, undo, frame keys and the stack
     });
   });
 });
+
+describe("slice 3j: density and the reading pane", () => {
+  function renderSet(settings: Record<string, string | number | boolean>) {
+    return renderSlot({ component: MailWithSidebar }, { subPath: "" }, {
+      rpc: rowsRpc() as never,
+      settings,
+      composer: { scope: { kind: "new-thread", projectId: null } },
+    });
+  }
+
+  it("shows comfortable rows with their preview by default, the pane to the right", async () => {
+    const slot = renderSet({});
+    await slot.findByText("Tickets");
+    const row = rowButton(slot as never, /Quarterly plan/).closest("li")!;
+    expect(row.getAttribute("data-density")).toBe("comfortable");
+    expect(row.querySelectorAll("button[data-row-key] > span")).toHaveLength(3);
+    expect(slot.container.querySelector("[data-reading-pane]")!.getAttribute("data-reading-pane")).toBe("right");
+  });
+
+  it("compact rows drop the preview line", async () => {
+    const slot = renderSet({ listDensity: "compact" });
+    await slot.findByText("Tickets");
+    const row = rowButton(slot as never, /Quarterly plan/).closest("li")!;
+    expect(row.getAttribute("data-density")).toBe("compact");
+    expect(row.querySelectorAll("button[data-row-key] > span")).toHaveLength(2);
+  });
+
+  it("puts the reading pane below the list in a wide window, with both visible", async () => {
+    const slot = renderSet({ readingPane: "bottom" });
+    await slot.findByText("Tickets");
+    const layout = slot.container.querySelector("[data-reading-pane]")!;
+    await waitFor(() => expect(layout.getAttribute("data-reading-pane")).toBe("bottom"));
+    expect(layout.className).toContain("flex-col");
+    const [list, conversation] = Array.from(layout.children) as HTMLElement[];
+    expect(list!.className).toContain("h-2/5");
+    expect(list!.className).not.toContain("hidden");
+    expect(conversation!.className).not.toContain("hidden");
+  });
+});
