@@ -988,7 +988,11 @@ bb makosh-mail backup /full/path/mail-backup.db
   server, the known folders, the last sync and its problems, and the
   Outbox. It prints no password, no server reply and no mail. Exit code 1
   when a check failed; `--json` for a script. `--repair-threads` rebuilds
-  every conversation from its messages.
+  every conversation from its messages. When an account was stopped
+  because the server refused the sign-in, and the server accepts the saved
+  password during this check, doctor turns the account's sync back on and
+  says so: some servers refuse a good password for a while after many
+  sign-ins.
 - **backup** writes a consistent copy of Mail's database to a new file that
   only you can read. The path must be absolute, its folder must exist, and
   Mail never writes over an existing file. The copy holds your mail text

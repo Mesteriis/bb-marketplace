@@ -369,6 +369,9 @@ All notable changes to Makosh Mail are recorded here. The format follows
 ### Fixed
 
 - A sync round cut short by a plugin reload no longer logs "sync …: error".
+- `bb makosh-mail doctor` turns sync back on for an account that was
+  stopped by a refused sign-in once the server accepts the saved password
+  again.
 
 ### Changed
 
