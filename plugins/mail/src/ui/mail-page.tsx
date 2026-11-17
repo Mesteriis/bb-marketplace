@@ -61,6 +61,13 @@ import { TasksDialog, type TaskPick } from "./tasks-dialog.tsx";
 import { SnoozeMenu } from "./snooze-menu.tsx";
 import { OutboxSection, type OutboxAction } from "./outbox.tsx";
 import {
+  MailStatusDialog,
+  accountProblemTexts,
+  accountsNeedingAttention,
+  syncStatusLabel,
+  type BbLink,
+} from "./mail-status.tsx";
+import {
   conversationAiReason,
   messageToHand,
   ReadingPane,
@@ -269,6 +276,8 @@ export interface MailPageProps {
   onSearch: (query: string) => void;
   syncing: boolean;
   onSync: () => void;
+  /** The page's own link to BB (slice 3j); absent means connected. */
+  bbLink?: BbLink;
   reading: ReadingState;
   onSelectThread: (threadId: string, messageId: string | null, accountId: string) => void;
   onCloseThread: () => void;
@@ -1174,8 +1183,9 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
   );
   const moveAccount = moveAccounts.size === 1 ? [...moveAccounts][0]! : null;
   const openAccount = reading.detail?.thread.accountId ?? null;
-  const errors = status.accounts.filter(
-    (a) => a.lastError !== null && (props.unified || a.id === props.account?.id),
+  const errors = accountsNeedingAttention(
+    status.accounts.filter((a) => props.unified || a.id === props.account?.id),
+    Date.now(),
   );
 
   return (
@@ -1209,7 +1219,7 @@ function Mailbox(props: MailPageProps & { status: StatusView }) {
         >
           <span className="min-w-0 flex-1">
             {props.unified ? `${accountLabel(account)}: ` : ""}
-            {account.lastError}
+            {accountProblemTexts(account).join(" ")}
           </span>
           {account.authFailed ? (
             <Button
@@ -1836,13 +1846,6 @@ function ListMessage({ text, role = "status" }: { text: string; role?: "status" 
   );
 }
 
-/** "Synced …" for the account, or the stalest of all accounts. */
-function syncLabel(accounts: readonly Account[], syncing: boolean): string {
-  if (syncing) return "Syncing…";
-  if (accounts.length === 0 || accounts.some((a) => a.lastSyncAt === null)) return "Not synced yet";
-  const oldest = accounts.map((a) => a.lastSyncAt!).sort()[0]!;
-  return `Synced ${formatListDate(oldest)}`;
-}
 
 function MailHeader(
   props: MailPageProps & {
@@ -1855,6 +1858,7 @@ function MailHeader(
     onAsk?: (question: string) => void;
   },
 ) {
+  const [statusOpen, setStatusOpen] = useState(false);
   const [draft, setDraft] = useState(props.search.query);
   const asking = props.askMode === true;
 
@@ -1928,7 +1932,27 @@ function MailHeader(
         {props.slice3h !== undefined && !asking ? <SearchHelpButton /> : null}
       </form>
 
-      <span className="text-xs text-muted-foreground">{syncLabel(shown, props.syncing)}</span>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 px-2 text-xs font-normal text-muted-foreground"
+        aria-haspopup="dialog"
+        aria-label={`Mail status: ${syncStatusLabel(shown, props.syncing, Date.now(), props.bbLink)}`}
+        onClick={() => setStatusOpen(true)}
+      >
+        {syncStatusLabel(shown, props.syncing, Date.now(), props.bbLink)}
+      </Button>
+      <MailStatusDialog
+        open={statusOpen}
+        onOpenChange={setStatusOpen}
+        accounts={shown}
+        outbox={props.outbox}
+        syncing={props.syncing}
+        onSync={props.onSync}
+        nowMs={Date.now()}
+        bbLink={props.bbLink}
+      />
       <Button
         variant="ghost"
         size="icon"

@@ -25,6 +25,7 @@ import {
   useBbNavigate,
   useComposer,
   useRealtime,
+  useRealtimeConnectionState,
   useRpc,
   useSettings,
   type ExperimentalBadge,
@@ -544,6 +545,8 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
   const [selection, setSelection] = useState<ReadonlySet<string>>(NO_SELECTION);
   const [details, setDetails] = useState<DetailsState | null>(null);
   const [syncing, setSyncing] = useState(false);
+  // Slice 3j: the page's own link to the BB server, for the header's status.
+  const bbLink = useRealtimeConnectionState();
   const [accountForm, setAccountForm] = useState<AccountFormRequest>(null);
   const [mailComposer, setComposer] = useState<ComposerState | null>(null);
   const [outbox, setOutbox] = useState<OutboxRow[]>([]);
@@ -4012,6 +4015,7 @@ function MailPanel({ subPath }: PluginNavPanelProps) {
       search={search}
       onSearch={onSearchQuery}
       syncing={syncing}
+      bbLink={bbLink}
       onSync={() => void sync()}
       reading={reading}
       onSelectThread={(threadId, messageId, accountId) => {
