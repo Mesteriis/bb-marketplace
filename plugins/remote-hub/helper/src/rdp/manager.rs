@@ -517,6 +517,48 @@ impl RdpManager {
         Self::close_transport(s);
     }
 
+    /// Read what is already readable on a session whose engine has ended and
+    /// record its Closed event, if one is there (the first reason wins). Other
+    /// frames are discarded: the session is over. Bounded; never blocks.
+    fn drain_for_closed(s: &mut RdpSession) {
+        const DRAIN_LIMIT: usize = 8 * 1024 * 1024;
+        let mut read_total = 0usize;
+        while s.fd >= 0 {
+            match take_frame(&mut s.read_buf) {
+                Take::Frame(frame) => {
+                    if let Some(RdpFrame::Event(EngineEvent::Closed { reason })) = classify_frame(&frame) {
+                        Self::set_reason(s, &reason);
+                    }
+                    continue;
+                }
+                Take::Violation => {
+                    Self::set_reason(s, "protocol_error");
+                    return;
+                }
+                Take::Incomplete => {}
+            }
+            if read_total >= DRAIN_LIMIT {
+                return;
+            }
+            let mut chunk = [0u8; 65536];
+            let n = unsafe { libc::read(s.fd, chunk.as_mut_ptr() as *mut libc::c_void, chunk.len()) };
+            if n <= 0 {
+                return; // EAGAIN, EINTR, EOF or an error: nothing more to read now
+            }
+            read_total += n as usize;
+            s.read_buf.extend_from_slice(&chunk[..n as usize]);
+        }
+    }
+
+    /// End the transport of a session whose engine is gone, after draining what
+    /// is readable. Reason precedence: a Closed event that was read, then
+    /// `engine_exited`.
+    fn finish_ended(s: &mut RdpSession) {
+        Self::drain_for_closed(s);
+        Self::set_reason(s, "engine_exited");
+        Self::close_transport(s);
+    }
+
     /// Fail one session for a protocol violation by its engine: kill and reap
     /// the engine, stop polling, record `protocol_error`. Nothing else is
     /// affected.
@@ -671,7 +713,16 @@ impl RdpManager {
     pub fn reap(&mut self) -> Vec<u32> {
         let mut out = Vec::new();
         for s in self.sessions.values_mut() {
-            let Some(pid) = s.engine_pid else { continue };
+            let Some(pid) = s.engine_pid else {
+                // A reaped engine's transport is bounded too: if no EOF has come
+                // EOF_GRACE after the engine ended, end it here, whoever still
+                // holds the peer.
+                if s.fd >= 0 && s.ended_at.map(|t| t.elapsed() >= EOF_GRACE).unwrap_or(false) {
+                    Self::finish_ended(s);
+                    out.push(s.id);
+                }
+                continue;
+            };
             let mut status: libc::c_int = 0;
             let mut r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
             if r != pid && s.ended_at.map(|t| t.elapsed() >= EOF_GRACE).unwrap_or(false) {
@@ -699,7 +750,8 @@ impl RdpManager {
                 // event is still unread. Leave the transport to the poll loop,
                 // which reads it and then sees the EOF (a dead process has no
                 // open socket); only an EOF without a Closed event is
-                // `engine_exited`.
+                // `engine_exited`. If no EOF ever comes, the next `reap()` after
+                // EOF_GRACE ends the transport (see the top of this loop).
                 s.ended_at.get_or_insert_with(Instant::now);
             } else {
                 Self::set_reason(s, "engine_exited");
@@ -1203,6 +1255,44 @@ mod tests {
         read_until_closed(&mut mgr, id);
         let report = mgr.take_closed(id).expect("closed");
         assert_eq!(report.reason, "network_error");
+    }
+
+    /// A session whose engine was reaped but whose peer is still open (retained
+    /// by someone) with `ended_at` already past `EOF_GRACE`.
+    fn reaped_but_open(closed_event: Option<&str>) -> (RdpManager, u32, RawFd) {
+        let (a, b) = socketpair();
+        if let Some(reason) = closed_event {
+            write_all(b, &encode_control(&EngineEvent::Closed { reason: reason.to_string() }));
+        }
+        let pid = spawn_exit(0);
+        wait_until_exited_unreaped(pid);
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(Some(pid), a);
+        assert_eq!(mgr.reap(), vec![id]);
+        assert!(mgr.take_closed(id).is_none(), "the transport is still open: not closed yet");
+        mgr.sessions.get_mut(&id).unwrap().ended_at = Instant::now().checked_sub(EOF_GRACE + Duration::from_secs(1));
+        (mgr, id, b)
+    }
+
+    /// J2: a retained peer keeps no session open past EOF_GRACE.
+    #[test]
+    fn a_reaped_sessions_open_transport_expires_after_the_grace() {
+        let (mut mgr, id, b) = reaped_but_open(None);
+        assert_eq!(mgr.reap(), vec![id]);
+        let report = mgr.take_closed(id).expect("closed after the grace");
+        assert_eq!(report.reason, "engine_exited");
+        assert_eq!(report.exit, EngineExit { code: Some(0), signal: None });
+        assert!(mgr.fds().is_empty());
+        unsafe { libc::close(b) };
+    }
+
+    /// J2: a Closed event that is readable when the grace expires still wins.
+    #[test]
+    fn a_closed_event_readable_at_expiry_wins_over_engine_exited() {
+        let (mut mgr, id, b) = reaped_but_open(Some("network_error"));
+        assert_eq!(mgr.reap(), vec![id]);
+        assert_eq!(mgr.take_closed(id).expect("closed").reason, "network_error");
+        unsafe { libc::close(b) };
     }
 
     #[test]
