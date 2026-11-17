@@ -1251,6 +1251,8 @@ describe("makosh-mail server", () => {
     expect(resolved.tools.map((t) => t.name).sort()).toEqual(["mail_contacts", "mail_read", "mail_search"]);
     expect(registrations.cli!.commands.map((c) => c.name).sort()).toEqual([
       "accounts",
+      "backup",
+      "doctor",
       "read",
       "remove",
       "search",
@@ -2927,7 +2929,7 @@ describe("agent proposals", () => {
     await expect(call(host, "proposal_view", { proposalId: "p_1", contentHash: "a".repeat(64) })).resolves.toEqual({ state: "gone" });
     const { registrations } = host.harness.inspection;
     expect(registrations.experimental_publishedRpcMethods).toEqual([]);
-    expect(registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "read", "remove", "search", "sync"]);
+    expect(registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "backup", "doctor", "read", "remove", "search", "sync"]);
     expect(registrations.mentionProviders.map((m) => m.id)).toEqual(["mail"]);
   });
 
@@ -3497,7 +3499,7 @@ describe("sending polish: agent tools", () => {
       "mail_templates",
       "mail_triage",
     ]);
-    expect(on.harness.inspection.registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "read", "remove", "search", "sync"]);
+    expect(on.harness.inspection.registrations.cli!.commands.map((c) => c.name).sort()).toEqual(["accounts", "backup", "doctor", "read", "remove", "search", "sync"]);
   });
 
   it("mail_propose with a template and an alias: the card shows them, and nothing leaks to logs or realtime", async () => {
@@ -5368,6 +5370,9 @@ const CLI_FIXTURES = (ids: ReturnType<typeof canaryIds>): Record<string, string[
   read: [[ids.inside], [ids.outside], [ids.excluded], ...ids.codes.map((id) => [id])],
   sync: [[]],
   remove: [["acc_1"]],
+  // Slice 3j: both refuse inside a thread; the fixture proves the refusal says nothing.
+  doctor: [[]],
+  backup: [["/tmp/makosh-mail-canary-never-written.db"]],
 });
 
 /** Every agent path's output: tools (from the registry), CLI in a thread (text and --json), mentions, Hand to agent. */
