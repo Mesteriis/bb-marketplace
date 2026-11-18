@@ -79,12 +79,18 @@ export const pveTargetsResultSchema = z.object({
   nodes: z.array(pveNodeSchema),
   guests: z.array(pveGuestSchema),
 });
+export const PVE_STEP_OUTCOMES = ["done", "kept", "failed", "not_attempted", "unknown"] as const;
+/** What happened to each step of an onboarding apply. `unknown`: a write was sent and no answer came. */
+export const pveStepsSchema = z.object({ role: z.enum(PVE_STEP_OUTCOMES), user: z.enum(PVE_STEP_OUTCOMES), acl: z.enum(PVE_STEP_OUTCOMES) });
+export type PveSteps = z.infer<typeof pveStepsSchema>;
+
 export const pveFailedSchema = z.object({
   type: z.literal("pve.failed"),
   id: idSchema,
   code: z.string().min(1),
   message: z.string(),
   fingerprint: fingerprintSchema.optional(),
+  steps: pveStepsSchema.optional(),
 });
 
 /** Closed set of failure codes the helper reports for PVE (helper/src/pve/api.rs `ApiError::code`, plus helper-side ones). */
@@ -103,7 +109,7 @@ export const PVE_ERROR_CODES = [
 ] as const;
 export type PveErrorCode = (typeof PVE_ERROR_CODES)[number];
 
-/** Onboarding mode 1. `connect` is the admin's own login (a password, used once). A dry run only reads and answers
+/** Onboarding mode 1. `connect` is the admin's own login (a password, used for this request only). A dry run only reads and answers
  *  `pve.plan`; an apply names where the created user's password is saved and answers `pve.provisioned`. */
 export const pveProvisionRequestSchema = z.object({
   type: z.literal("pve.provision"),
@@ -111,25 +117,34 @@ export const pveProvisionRequestSchema = z.object({
   connect: pveConnectSchema,
   dryRun: z.boolean(),
   aclPath: z.string().min(1).max(80),
-  save: z.object({ ref: z.string().min(1).max(96), bind: credentialBindSchema }).optional(),
+  /** The managed user, name@pve. */
+  userId: z.string().min(1).max(64),
+  /** Replacing the privileges of a differing role needs its own confirmation. */
+  replaceRole: z.boolean().optional(),
+  /** An apply carries the digest of the plan the owner confirmed; each digest is accepted once. */
+  planDigest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  /** Every credential bound to this endpoint and user: all of them receive the new password. */
+  save: z.array(z.object({ ref: z.string().min(1).max(96), bind: credentialBindSchema })).max(8).optional(),
 });
 
-export const PVE_PROVISION_ACTIONS = ["create", "keep", "update", "rotate_password"] as const;
-const provisionActionSchema = z.enum(PVE_PROVISION_ACTIONS);
+export const PVE_ROLE_ACTIONS = ["create", "keep", "differs"] as const;
+export const PVE_USER_ACTIONS = ["create", "rotate_password", "name_taken"] as const;
+export const PVE_ACL_ACTIONS = ["create", "keep"] as const;
+export const pveGrantSchema = z.object({ path: z.string(), role: z.string() });
+export const pvePlanExtrasSchema = z.object({ acl: z.array(pveGrantSchema), groups: z.array(z.string()), tokens: z.array(z.string()) });
 export const pvePlanSchema = z.object({
   type: z.literal("pve.plan"),
   id: idSchema,
-  role: provisionActionSchema,
-  user: provisionActionSchema,
-  acl: provisionActionSchema,
+  role: z.enum(PVE_ROLE_ACTIONS),
+  user: z.enum(PVE_USER_ACTIONS),
+  acl: z.enum(PVE_ACL_ACTIONS),
+  userId: z.string(),
+  rolePrivs: z.string().nullable(),
+  extras: pvePlanExtrasSchema,
+  digest: z.string().regex(/^[0-9a-f]{64}$/),
 });
-export const pveProvisionedSchema = z.object({
-  type: z.literal("pve.provisioned"),
-  id: idSchema,
-  role: provisionActionSchema,
-  user: provisionActionSchema,
-  acl: provisionActionSchema,
-});
+export type PvePlan = Omit<z.infer<typeof pvePlanSchema>, "type" | "id">;
+export const pveProvisionedSchema = z.object({ type: z.literal("pve.provisioned"), id: idSchema, steps: pveStepsSchema });
 
 /** What mode 1 creates: fixed, and shown to the owner before anything is written. */
 export const PVE_PROVISION = { role: "RemoteHubConsole", user: "remotehub@pve", privileges: ["Sys.Audit", "Sys.Console", "VM.Audit", "VM.Console"] } as const;

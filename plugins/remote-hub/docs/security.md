@@ -109,7 +109,7 @@
 ## Proxmox VE (stages 0 and 1)
 
 - The PVE engine (`--pve-engine`) is a separate process like the RDP engine: empty environment, the helper's stdio and stderr
-  closed, one socketpair. The secret (a typed password used once, or a Keychain item the helper resolves itself) travels only in
+  closed, one socketpair. The secret (a typed password used for one request, or a Keychain item the helper resolves itself) travels only in
   its `Open` frame; the helper checks that a saved secret was saved for exactly this `pve` host, port and user or token id.
 - TLS is strict in every mode: the system roots, one CA the owner supplied, or one pinned leaf certificate. There is no
   setting that skips verification. No login is sent before the handshake passed. A refusal carries the presented SHA-256
@@ -118,11 +118,30 @@
 - A refused login, an expired ticket or a refused console ticket is one `login_failed`; nothing retries it (the server delays a
   refused login by 3 seconds and an account can be locked by repeats).
 - Onboarding mode 1 is the only place the plugin changes anything on Proxmox, and only through the owner's RPC after a reviewed
-  plan: it creates the role `RemoteHubConsole` (Sys.Audit, Sys.Console, VM.Audit, VM.Console), the user `remotehub@pve` and one
-  ACL entry, idempotently. The administrator's login is a use-once password (a saved credential is refused for it), never stored
-  or logged. The generated password is made in the engine, saved to the Keychain by the helper, and only for a binding that
-  names this endpoint and `remotehub@pve`; the client is told what happened, never the secret. It is audited (`pve.onboard_plan`,
-  `pve.onboard_apply`, `pve.pin`) without secrets. There is no agent tool for it.
+  plan. It creates the role `RemoteHubConsole` (Sys.Audit, Sys.Console, VM.Audit, VM.Console), a user `name@pve` (default
+  `remotehub@pve`, chosen by the owner) and one ACL entry. The plan answer carries a SHA-256 digest of the server state it was
+  computed from (endpoint, ACL path, admin identity, presented certificate, the role and its privileges, the user and its marker,
+  the user's ACL entries); apply must present it, re-reads the state and refuses before the first write with `plan_changed` if
+  anything differs. A digest is accepted once, and an apply without one is refused (`plan_required`).
+- Ownership is proven, not assumed: a user is ours only if its comment carries "Managed by BB Remote Hub", otherwise `name_taken`
+  and nothing is written. An existing role is kept only if its privileges are exactly the four; otherwise `role_differs`, and
+  replacing it needs a separate confirmation (it also narrows the role for everyone who holds it). The plan lists the user's other
+  ACL entries, groups and API tokens; none is ever removed. Rotating the password of a managed user updates every saved
+  credential bound to that endpoint and user.
+- Partial failure is reported per step (role, user, acl: done, kept, failed, not_attempted, unknown). The new password is saved to
+  the Keychain as soon as the user step succeeds, before the ACL write, and the helper waits for that save before writing the ACL;
+  if a later step fails, the connection stays visible as "setup incomplete" and running the setup again completes it. A write that
+  was sent without an answer is `unknown`; losing the helper transport cancels the engine at once and no further write is sent.
+- The administrator's login is used for this setup only and never stored or logged: plan and apply each sign in, so it is typed
+  for the review and kept in the page's memory until apply, then cleared on success, cancel, unmount and after every failed attempt.
+  The generated password is made in the engine, saved to the Keychain by the helper, and only for a binding that names this
+  endpoint and user; the client is told what happened, never the secret. Server response bodies and headers are never passed on:
+  errors are fixed local messages plus the HTTP status. It is audited (`pve.onboard_plan`, `pve.onboard_apply`, `pve.pin`) with
+  host, port, admin user, new user and ACL path, never a secret. There is no agent tool for it.
+- A certificate pin is bound to (profile id, host, port, profile revision). Editing the connection discards the refusal, a late
+  discovery answer for an old revision is dropped, "forget" is not undone by an answer already on its way, and `profile_save`, the
+  pin RPC and both onboarding entry points store a pin only through the same "fingerprint presented in the last refusal for this
+  endpoint" rule.
 - `remote_pve_targets` is an observe-level read: it lists guests of connections the owner allowed, with outcomes. It cannot open
   a console, change a guest or call the API otherwise. Guest names come from the server: untrusted data.
 

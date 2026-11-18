@@ -199,7 +199,19 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
       return profiles.track(profileId, () => withHelper(() => service.rdpOpen(input.target, input.width, input.height, profileId, options)));
     },
     profile_list: () => imports.decorate(profiles.list()),
-    profile_save: (input) => withProfile(async () => imports.decorate([(await credentials.saveProfile(input)).profile])[0] as Profile),
+    profile_save: (input) =>
+      withProfile(async () => {
+        // A certificate pin is a decision about a certificate the owner was shown: only the guarded paths may store one.
+        if (pve !== undefined) {
+          try {
+            pve.checkProfileSave(input);
+          } catch (error) {
+            if (error instanceof PveRpcError) throw new experimental_PluginRpcRefusal({ code: error.code, message: error.message });
+            throw error;
+          }
+        }
+        return imports.decorate([(await credentials.saveProfile(input)).profile])[0] as Profile;
+      }),
     known_hosts_list: () => withImport(() => withHelper(() => imports.trustedHosts())),
     known_hosts_forget: (input) => withImport(() => withHelper(async () => ({ removed: await imports.forgetHost(input.host) }))),
     import_suggestions: () => imports.suggestions(),
@@ -232,16 +244,8 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
         p.linkGuest(input.profileId, input.vmid, input.linkProfileId);
         return { linked: input.linkProfileId !== null };
       }),
-    pve_onboard_plan: (input) =>
-      withPve(async (p) => {
-        const a = await p.onboardPlan(input);
-        return a.ok ? { ok: true as const, role: a.role as never, user: a.user as never, acl: a.acl as never } : a;
-      }),
-    pve_onboard_apply: (input) =>
-      withPve(async (p) => {
-        const a = await p.onboardApply(input);
-        return a.ok ? { ok: true as const, profileId: a.profileId, role: a.plan.role as never, user: a.plan.user as never, acl: a.plan.acl as never } : a;
-      }),
+    pve_onboard_plan: (input) => withPve((p) => p.onboardPlan(input)),
+    pve_onboard_apply: (input) => withPve((p) => p.onboardApply(input)),
     pve_onboard_connect: (input) => withPve((p) => p.onboardConnect(input)),
     credential_list: () => credentials.list(),
     credential_save: (input) => withProfile(() => credentials.save(input)),

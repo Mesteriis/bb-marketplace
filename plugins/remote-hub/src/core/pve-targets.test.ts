@@ -114,7 +114,7 @@ describe("PveDiscovery", () => {
   function make(fetch: (id: string) => Promise<PveAnswer>, clock: { t: Date } = { t: NOW }) {
     calls = [];
     return new PveDiscovery({
-      profiles: () => profiles,
+      profiles: () => profiles.map((p) => ({ ...p, endpoint: "h:8006", revision: "r1" })),
       fetch: (id) => {
         calls.push(id);
         return fetch(id);

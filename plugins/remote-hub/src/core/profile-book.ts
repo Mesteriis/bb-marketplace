@@ -151,6 +151,13 @@ export class ProfileBook {
   }
 
   /** Records a failure CODE (never the message: it could carry anything). */
+  /** Forgets the recorded open failures (a finished setup no longer shows "setup incomplete"). */
+  clearFailures(id: string): void {
+    const profile = this.deps.store.get(id);
+    if (profile === null || profile.recentErrors.length === 0) return;
+    this.deps.store.put({ ...profile, recentErrors: [] });
+  }
+
   recordFailure(id: string, code: string): void {
     const profile = this.deps.store.get(id);
     if (profile === null) return;

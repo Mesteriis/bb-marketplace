@@ -5,10 +5,10 @@
 //  2. Connect as is: the typed password or API token is saved for this connection, and nothing is created in Proxmox.
 // A certificate that is not trusted shows its fingerprint and waits for the owner to confirm it.
 import { useState } from "react";
-import { PVE_PROVISION } from "../core/pve-protocol.ts";
+import { PVE_PROVISION, type PvePlan, type PveSteps } from "../core/pve-protocol.ts";
 import type { PveProfileTrust } from "../core/pve-trust.ts";
 import { adviceFor, outcomeOfFailure } from "../core/pve-targets.ts";
-import type { PveAction, PveAdminInput, PveApi, PveFailure } from "./pve-api.ts";
+import type { PveAdminInput, PveApi, PveFailure } from "./pve-api.ts";
 
 export interface PveOnboardingProps {
   api: PveApi;
@@ -17,29 +17,35 @@ export interface PveOnboardingProps {
 }
 
 type Mode = "restricted" | "as_is";
-interface Plan {
-  role: PveAction;
-  user: PveAction;
-  acl: PveAction;
-}
 
-const ROLE_TEXT: Record<PveAction, string> = {
+const USER_ID = /^[A-Za-z0-9._-]{1,64}@pve$/;
+
+const ROLE_TEXT: Record<PvePlan["role"], string> = {
   create: "will be created",
-  keep: "already exists with these privileges; it stays as it is",
-  update: "exists with other privileges; it will be changed to these",
-  rotate_password: "",
+  keep: "already exists with exactly these privileges; it stays as it is",
+  differs: "exists with other privileges",
 };
-const USER_TEXT: Record<PveAction, string> = {
+const USER_TEXT: Record<PvePlan["user"], string> = {
   create: "will be created with a generated password",
-  rotate_password: "already exists; its password will be replaced by a new generated one",
-  keep: "",
-  update: "",
+  rotate_password: "was created by Remote Hub before; its password will be replaced by a new generated one",
+  name_taken: "already exists and was not created by Remote Hub; nothing will be written. Choose another name",
 };
-const ACL_TEXT: Record<PveAction, string> = {
+const ACL_TEXT: Record<PvePlan["acl"], string> = {
   create: "will be added",
   keep: "already exists; it stays as it is",
-  update: "",
-  rotate_password: "",
+};
+const STEP_TEXT: Record<PveSteps[keyof PveSteps], string> = {
+  done: "done",
+  kept: "already in place",
+  failed: "failed",
+  not_attempted: "not attempted",
+  unknown: "unknown (the request was sent and no answer came; check in Proxmox)",
+};
+const FAILURE_TEXT: Record<string, string> = {
+  plan_changed: "Proxmox changed after you reviewed the plan. Nothing was written. Enter the password again to review the current state.",
+  plan_required: "The plan was not confirmed. Review it first.",
+  name_taken: "That user already exists and was not created by Remote Hub. Choose another user name.",
+  role_differs: "The role exists with other privileges. Confirm replacing it in the review, or leave it.",
 };
 
 const portOf = (text: string): number | null => (/^\d{1,5}$/.test(text.trim()) && Number(text) >= 1 && Number(text) <= 65535 ? Number(text) : null);
@@ -53,15 +59,20 @@ export function PveOnboarding(props: PveOnboardingProps) {
   const [adminUser, setAdminUser] = useState("root@pam");
   const [adminPassword, setAdminPassword] = useState("");
   const [aclPath, setAclPath] = useState("/");
+  const [userId, setUserId] = useState<string>(PVE_PROVISION.user);
   const [authMode, setAuthMode] = useState<"ticket" | "token">("ticket");
   const [user, setUser] = useState("");
   const [secret, setSecret] = useState("");
   const [trust, setTrust] = useState<PveProfileTrust | null>(null);
-  const [plan, setPlan] = useState<Plan | null>(null);
-  const [failure, setFailure] = useState<{ code: string; message: string; fingerprint: string | null } | null>(null);
+  const [plan, setPlan] = useState<PvePlan | null>(null);
+  const [replaceRole, setReplaceRole] = useState(false);
+  const [failure, setFailure] = useState<PveFailure | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
+  // The administrator password lives in this component's state only while a review is open. It is cleared on success,
+  // on cancel, after any failed attempt (the owner types it again), and it goes with the component when it unmounts.
   const forget = () => {
     setAdminPassword("");
     setSecret("");
@@ -75,44 +86,52 @@ export function PveOnboarding(props: PveOnboardingProps) {
   };
 
   const fail = (f: PveFailure | { code: string; message: string }) => {
-    setFailure({ code: f.code, message: f.message, fingerprint: "fingerprint" in f ? f.fingerprint : null });
+    forget();
+    setFailure({ ok: false, code: f.code, message: f.message, fingerprint: "fingerprint" in f ? f.fingerprint : null, steps: "steps" in f ? f.steps : null, ...("profileId" in f && f.profileId !== undefined ? { profileId: f.profileId } : {}) });
   };
 
   const run = async (work: () => Promise<void>) => {
     setWorking(true);
     setProblem(null);
     setFailure(null);
+    setNotice(null);
     try {
       await work();
     } catch (e) {
+      forget();
       setProblem(e instanceof Error ? e.message : String(e));
     } finally {
       setWorking(false);
     }
   };
 
-  const adminInput = (ep: { host: string; port: number }, withTrust: PveProfileTrust | null): PveAdminInput => ({ ...ep, trust: withTrust, adminUser: adminUser.trim(), adminPassword, aclPath: aclPath.trim() });
+  const adminInput = (ep: { host: string; port: number }, withTrust: PveProfileTrust | null): PveAdminInput => ({ ...ep, trust: withTrust, adminUser: adminUser.trim(), adminPassword, aclPath: aclPath.trim(), userId: userId.trim() });
 
-  const review = (withTrust: PveProfileTrust | null) =>
+  const review = () =>
     run(async () => {
       const ep = endpoint();
       if (typeof ep === "string") return setProblem(ep);
       if (adminUser.trim() === "" || adminPassword === "") return setProblem("Enter the administrator's user and password.");
-      const answer = await api.onboardPlan(adminInput(ep, withTrust));
-      if (answer.ok) setPlan({ role: answer.role, user: answer.user, acl: answer.acl });
-      else fail(answer);
+      if (!USER_ID.test(userId.trim())) return setProblem("The new user is name@pve: letters, digits, dot, dash or underscore, then @pve.");
+      const answer = await api.onboardPlan(adminInput(ep, trust));
+      if (answer.ok) {
+        setReplaceRole(false);
+        setPlan({ role: answer.role, user: answer.user, acl: answer.acl, userId: answer.userId, rolePrivs: answer.rolePrivs, extras: answer.extras, digest: answer.digest });
+      } else fail(answer);
     });
 
-  const apply = () =>
+  const apply = (confirmed: PvePlan) =>
     run(async () => {
       const ep = endpoint();
       if (typeof ep === "string") return setProblem(ep);
-      const answer = await api.onboardApply({ ...adminInput(ep, trust), name: name.trim() === "" ? "Proxmox" : name.trim() });
+      if (adminPassword === "") return setProblem("Enter the administrator's password again: it is used for each step and never kept.");
+      const answer = await api.onboardApply({ ...adminInput(ep, trust), name: name.trim() === "" ? "Proxmox" : name.trim(), planDigest: confirmed.digest, replaceRole });
       if (answer.ok) {
         forget();
         props.onDone(answer.profileId);
       } else {
         setPlan(null);
+        setReplaceRole(false);
         fail(answer);
       }
     });
@@ -133,13 +152,14 @@ export function PveOnboarding(props: PveOnboardingProps) {
 
   const confirmCertificate = () => {
     if (failure?.fingerprint == null) return;
-    const next: PveProfileTrust = { mode: "pin", fingerprint: failure.fingerprint };
-    setTrust(next);
+    setTrust({ mode: "pin", fingerprint: failure.fingerprint });
     setFailure(null);
-    if (mode === "restricted") void review(next);
+    setNotice("Certificate trusted for this server. Enter the password again to continue.");
   };
 
   const certificateFailure = failure !== null && failure.fingerprint !== null && (failure.code === "tls_untrusted" || failure.code === "cert_changed");
+  const blocked = plan !== null && (plan.user === "name_taken" || (plan.role === "differs" && !replaceRole));
+  const locked = working || plan !== null;
 
   return (
     <form
@@ -148,12 +168,13 @@ export function PveOnboarding(props: PveOnboardingProps) {
       onSubmit={(event) => {
         event.preventDefault();
         if (working) return;
-        if (plan !== null) void apply();
-        else if (mode === "restricted") void review(trust);
+        if (plan !== null) {
+          if (!blocked) void apply(plan);
+        } else if (mode === "restricted") void review();
         else void connectAsIs();
       }}
     >
-      <fieldset aria-label="Proxmox server" disabled={working || plan !== null}>
+      <fieldset aria-label="Proxmox server" disabled={locked}>
         <legend>Proxmox server</legend>
         <label>
           Name
@@ -178,8 +199,8 @@ export function PveOnboarding(props: PveOnboardingProps) {
       </fieldset>
 
       {mode === "restricted" ? (
-        <fieldset aria-label="Administrator login" disabled={working || plan !== null}>
-          <legend>Administrator login (used once, never stored)</legend>
+        <fieldset aria-label="Administrator login" disabled={locked}>
+          <legend>Administrator login (used for this setup only, never stored)</legend>
           <label>
             Administrator user
             <input value={adminUser} onChange={(e) => setAdminUser(e.target.value)} />
@@ -192,7 +213,11 @@ export function PveOnboarding(props: PveOnboardingProps) {
             Permission path
             <input value={aclPath} onChange={(e) => setAclPath(e.target.value)} />
           </label>
-          <p className="rh-hint">Use / for the whole cluster, or /pool/&lt;name&gt; to limit the new user to one resource pool.</p>
+          <label>
+            New user for Remote Hub
+            <input value={userId} onChange={(e) => setUserId(e.target.value)} />
+          </label>
+          <p className="rh-hint">Use / for the whole cluster, or /pool/&lt;name&gt; to limit the new user to one resource pool. The user is always in the pve realm.</p>
         </fieldset>
       ) : (
         <fieldset aria-label="Login" disabled={working}>
@@ -221,21 +246,48 @@ export function PveOnboarding(props: PveOnboardingProps) {
           <h3>What Remote Hub will create in Proxmox</h3>
           <ul>
             <li>
-              Role <strong>{PVE_PROVISION.role}</strong> with only {PVE_PROVISION.privileges.join(", ")}: {ROLE_TEXT[plan.role]}.
+              Role <strong>{PVE_PROVISION.role}</strong> with only {PVE_PROVISION.privileges.join(", ")}: {ROLE_TEXT[plan.role]}
+              {plan.role === "differs" && plan.rolePrivs !== null ? ` (now: ${plan.rolePrivs === "" ? "no privileges" : plan.rolePrivs})` : ""}.
             </li>
             <li>
-              User <strong>{PVE_PROVISION.user}</strong> (realm pve): {USER_TEXT[plan.user]}.
+              User <strong>{plan.userId}</strong>: {USER_TEXT[plan.user]}.
             </li>
             <li>
               Permission on <strong>{aclPath.trim()}</strong> giving that user that role: {ACL_TEXT[plan.acl]}.
             </li>
           </ul>
+          {plan.role === "differs" && (
+            <label className="rh-check">
+              <input type="checkbox" checked={replaceRole} onChange={(e) => setReplaceRole(e.target.checked)} />
+              Replace the role&apos;s privileges with the four above. This also narrows the role for everyone who holds it.
+            </label>
+          )}
+          {plan.user === "rotate_password" && (plan.extras.acl.length > 0 || plan.extras.groups.length > 0 || plan.extras.tokens.length > 0) && (
+            <div data-testid="pve-plan-extras">
+              <p>This user already holds more than Remote Hub grants. None of it is removed:</p>
+              <ul>
+                {plan.extras.acl.map((g) => (
+                  <li key={`${g.path}|${g.role}`}>
+                    Permission {g.role} on {g.path}
+                  </li>
+                ))}
+                {plan.extras.groups.map((g) => (
+                  <li key={`g|${g}`}>Member of group {g}</li>
+                ))}
+                {plan.extras.tokens.map((t) => (
+                  <li key={`t|${t}`}>API token {t}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <p className="rh-hint">
-            The administrator login is used for this one step and is not stored. The new password goes only to the macOS Keychain. To remove everything later, delete the user and the role in Proxmox
-            (<code>pveum user delete {PVE_PROVISION.user}</code>, <code>pveum role delete {PVE_PROVISION.role}</code>) and delete this connection here.
+            The administrator login is used for each step of this setup and is not stored; you will not be asked again after you confirm. The new password goes only to the macOS Keychain. To remove everything later, delete the user and the
+            role in Proxmox (<code>pveum user delete {plan.userId}</code>, <code>pveum role delete {PVE_PROVISION.role}</code>) and delete this connection here.
           </p>
         </section>
       )}
+
+      {notice !== null && <p className="rh-hint">{notice}</p>}
 
       {certificateFailure && failure !== null && (
         <div className="rh-cert" data-testid="pve-onboard-cert">
@@ -249,9 +301,24 @@ export function PveOnboarding(props: PveOnboardingProps) {
         </div>
       )}
       {failure !== null && !certificateFailure && (
-        <p role="alert" className="rh-error" data-testid="pve-onboard-error">
-          {adviceFor(outcomeOfFailure(failure.code), failure.message) ?? failure.message}
-        </p>
+        <div role="alert" className="rh-error" data-testid="pve-onboard-error">
+          <p>{FAILURE_TEXT[failure.code] ?? adviceFor(outcomeOfFailure(failure.code), failure.message) ?? failure.message}</p>
+          {failure.steps != null && (
+            <ul data-testid="pve-onboard-steps">
+              <li>Role: {STEP_TEXT[failure.steps.role]}</li>
+              <li>User: {STEP_TEXT[failure.steps.user]}</li>
+              <li>Permission: {STEP_TEXT[failure.steps.acl]}</li>
+            </ul>
+          )}
+          {failure.profileId !== undefined && (
+            <p>
+              Setup is incomplete. The new login is already saved in a connection marked &quot;setup incomplete&quot;. Run the setup again to finish it.{" "}
+              <button type="button" onClick={() => props.onDone(failure.profileId as string)}>
+                Keep the connection and close
+              </button>
+            </p>
+          )}
+        </div>
       )}
       {problem !== null && (
         <p role="alert" className="rh-error">
@@ -260,11 +327,18 @@ export function PveOnboarding(props: PveOnboardingProps) {
       )}
 
       <div className="rh-editor-actions">
-        <button type="submit" disabled={working}>
+        <button type="submit" disabled={working || blocked}>
           {plan !== null ? "Create and save" : mode === "restricted" ? "Review what will be created" : "Save connection"}
         </button>
         {plan !== null && (
-          <button type="button" disabled={working} onClick={() => setPlan(null)}>
+          <button
+            type="button"
+            disabled={working}
+            onClick={() => {
+              setPlan(null);
+              setReplaceRole(false);
+            }}
+          >
             Back
           </button>
         )}

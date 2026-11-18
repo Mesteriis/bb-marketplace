@@ -5,7 +5,7 @@ import { credentialBindSchema } from "./credential.ts";
 import { profileInputSchema, profileSchema } from "./profile.ts";
 import { rdpOptionsSchema } from "./rdp-options.ts";
 import { PVE_OUTCOMES } from "./pve-targets.ts";
-import { pveGuestSchema, pveNodeSchema } from "./pve-protocol.ts";
+import { PVE_ACL_ACTIONS, PVE_ROLE_ACTIONS, PVE_USER_ACTIONS, pveNodeSchema, pvePlanExtrasSchema, pveStepsSchema } from "./pve-protocol.ts";
 import { pveProfileTrustSchema } from "./pve-trust.ts";
 
 const sourceKindSchema = z.enum(["ssh-config", "hosts", "keys-dir", "agent", "known-hosts"]);
@@ -201,13 +201,23 @@ const pveEndpointSchema = z.object({
   trust: pveProfileTrustSchema.nullable().default(null),
 });
 const pveAdminSchema = pveEndpointSchema.extend({
-  /** The administrator's own login, used for this call only and never stored. */
+  /** The administrator's own login: supplied for this setup (plan and apply each sign in) and never stored. */
   adminUser: z.string().min(1).max(256),
   adminPassword: z.string().min(1).max(1024),
   aclPath: z.string().min(1).max(80).default("/"),
+  /** The managed user, name@pve; the realm is fixed. */
+  userId: z.string().regex(/^[A-Za-z0-9._-]{1,32}@pve$/).default("remotehub@pve"),
 });
-const pveFailureSchema = z.object({ ok: z.literal(false), code: z.string(), message: z.string(), fingerprint: z.string().nullable() });
-const pvePlanActionSchema = z.enum(["create", "keep", "update", "rotate_password"]);
+const pveFailureSchema = z.object({
+  ok: z.literal(false),
+  code: z.string(),
+  message: z.string(),
+  fingerprint: z.string().nullable(),
+  /** What each step of an apply did, when it got that far. */
+  steps: pveStepsSchema.nullable(),
+  /** A connection kept after a partial failure (it is flagged "setup incomplete"). */
+  profileId: z.string().optional(),
+});
 
 export const rpcSchemas = {
   helper_status: {
@@ -264,15 +274,27 @@ export const rpcSchemas = {
     input: z.object({ profileId: z.string().uuid(), vmid: z.number().int().min(100).max(999_999_999), linkProfileId: z.string().uuid().nullable() }).strict(),
     output: z.object({ linked: z.boolean() }),
   },
-  /** Mode 1, step 1: what would be created in Proxmox. Reads only. */
+  /** Mode 1, step 1: what would be created, what the user already holds, and the digest of the state the plan was computed from. Reads only. */
   pve_onboard_plan: {
     input: pveAdminSchema.strict(),
-    output: z.union([z.object({ ok: z.literal(true), role: pvePlanActionSchema, user: pvePlanActionSchema, acl: pvePlanActionSchema }), pveFailureSchema]),
+    output: z.union([
+      z.object({
+        ok: z.literal(true),
+        role: z.enum(PVE_ROLE_ACTIONS),
+        user: z.enum(PVE_USER_ACTIONS),
+        acl: z.enum(PVE_ACL_ACTIONS),
+        userId: z.string(),
+        rolePrivs: z.string().nullable(),
+        extras: pvePlanExtrasSchema,
+        digest: z.string(),
+      }),
+      pveFailureSchema,
+    ]),
   },
-  /** Mode 1, step 2 (after the owner confirmed): create the restricted role, user and ACL entry; save the new password. */
+  /** Mode 1, step 2, for the plan the owner confirmed (its digest). Creates what is missing and saves the new password in the Keychain. */
   pve_onboard_apply: {
-    input: pveAdminSchema.extend({ name: z.string().trim().min(1).max(100) }).strict(),
-    output: z.union([z.object({ ok: z.literal(true), profileId: z.string(), role: pvePlanActionSchema, user: pvePlanActionSchema, acl: pvePlanActionSchema }), pveFailureSchema]),
+    input: pveAdminSchema.extend({ name: z.string().trim().min(1).max(100), planDigest: z.string().regex(/^[0-9a-f]{64}$/), replaceRole: z.boolean().default(false) }).strict(),
+    output: z.union([z.object({ ok: z.literal(true), profileId: z.string(), userId: z.string(), steps: pveStepsSchema }), pveFailureSchema]),
   },
   /** Mode 2: connect as is; the secret is saved for this connection only and nothing is created in Proxmox. */
   pve_onboard_connect: {

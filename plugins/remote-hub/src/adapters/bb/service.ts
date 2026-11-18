@@ -6,7 +6,7 @@ import type { ExecStateMessage } from "../../core/exec-protocol.ts";
 import { AttachTokens, ATTACH_TOKEN_TTL_MS, type Clock } from "../../core/attach.ts";
 import { createCreditState, type CreditState } from "../../core/credit.ts";
 import { CredentialError, type CredentialBind, type CredentialVault } from "../../core/credential.ts";
-import type { PveConnect } from "../../core/pve-protocol.ts";
+import type { PveConnect, PveSteps } from "../../core/pve-protocol.ts";
 import type { PveAnswer, PveProvisionAnswer } from "../../core/pve-targets.ts";
 import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
 import type { RdpOptions } from "../../core/rdp-options.ts";
@@ -116,7 +116,15 @@ export interface RemoteHubService {
   /** Proxmox VE: discovery and onboarding, through the helper. A refusal is an answer with a code, never a thrown secret. */
   pve: {
     targets(connect: PveConnect): Promise<PveAnswer>;
-    provision(args: { connect: PveConnect; dryRun: boolean; aclPath: string; save?: { ref: string; bind: CredentialBind } }): Promise<PveProvisionAnswer>;
+    provision(args: {
+      connect: PveConnect;
+      dryRun: boolean;
+      aclPath: string;
+      userId: string;
+      replaceRole?: boolean;
+      planDigest?: string;
+      save?: Array<{ ref: string; bind: CredentialBind }>;
+    }): Promise<PveProvisionAnswer>;
   };
   /** The Keychain, through the helper. A refusal is a CredentialError carrying the helper's code. */
   credentialVault: CredentialVault;
@@ -392,9 +400,9 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     }
   };
   /** A failed PVE request as an answer: the helper's closed code and the certificate it saw. Anything else is not ours to hide. */
-  const pveFailure = (error: unknown): { ok: false; code: string; message: string; fingerprint: string | null } => {
-    if (error instanceof PveRequestFailure) return { ok: false, code: error.code, message: error.message, fingerprint: error.fingerprint };
-    if (error instanceof HelperRequestError) return { ok: false, code: error.code, message: error.message, fingerprint: null };
+  const pveFailure = (error: unknown): { ok: false; code: string; message: string; fingerprint: string | null; steps: PveSteps | null } => {
+    if (error instanceof PveRequestFailure) return { ok: false, code: error.code, message: error.message, fingerprint: error.fingerprint, steps: error.steps };
+    if (error instanceof HelperRequestError) return { ok: false, code: error.code, message: error.message, fingerprint: null, steps: null };
     throw error;
   };
   const EVICT_CLOSED_AFTER_MS = 5 * 60 * 1000;
@@ -941,7 +949,8 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       async provision(args) {
         const hp = await start();
         try {
-          return { ok: true, ...(await hp.pveProvision(args)) };
+          const r = await hp.pveProvision(args);
+          return r.kind === "plan" ? { ok: true, kind: "plan", plan: r.plan } : { ok: true, kind: "applied", steps: r.steps };
         } catch (error) {
           return pveFailure(error);
         }

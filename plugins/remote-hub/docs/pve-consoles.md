@@ -26,9 +26,9 @@ Notes from source:
 
 - **The port is returned, never fixed.** The websocket `port` parameter has `minimum 5900, maximum 5999` [src Nodes.pm:1493]; we pass
   what the create call returned and never assume a number.
-- **`vncticket` is not the VNC password.** For QEMU `vncproxy` with `websocket=1` PVE generates a separate `password` and sets
-  `ticket = "<password>:<assembled ticket>"` [src Qemu.pm:3156-3160]. The RFB handshake uses `password`; the websocket query uses
-  `ticket`. Never assume the two are equal.
+- **`vncticket` is not the VNC password.** For QEMU `vncproxy` with `websocket=1` PVE generates a separate `password`; the value stored for the
+  proxy is `"<password>:<ticket>"` [src Qemu.pm:3156-3160], but the `ticket` field of the answer is the plain ticket (the engine's fake and tests use it
+  this way; confirm on the live run). The RFB handshake uses `password`; the websocket query uses `ticket`. Never assume the two are equal.
 - **Authentication of the websocket request itself**: the HTTPS `GET …/vncwebsocket` is an ordinary API request, so it needs the
   same authentication as REST (the `PVEAuthCookie` cookie from a ticket login, or on 9.0.13+ the `Authorization: PVEAPIToken=…` header), and the
   `vncticket` query parameter is checked on top of it (`verify_vnc_ticket(vncticket, user, authpath, port)`) [src Nodes.pm:1530]. The ticket is bound
@@ -86,7 +86,7 @@ Admin needs `Sys.Modify` on `/access` (create role), `User.Modify` (create user)
 | Step | Call | Idempotence |
 |---|---|---|
 | 1 role | `POST /access/roles` `roleid=RemoteHubConsole`, `privs=VM.Audit,VM.Console,Sys.Audit,Sys.Console` | `GET /access/roles/RemoteHubConsole` first; exists with these privs → skip; exists with other privs → `PUT /access/roles/RemoteHubConsole privs=… append=0` after the owner confirmed the diff |
-| 2 user | `POST /access/users` `userid=remotehub@pve`, `password=<generated>`, `comment=Remote Hub (managed)` | `GET /access/users/remotehub@pve` first; exists → rotate with `PUT /access/password` (`userid`, `password`; 8..64 characters; admin needs `Realm.AllocateUser` and `User.Modify` on a group of the user) [src AccessControl.pm:403-440]; the keychain keeps only the newest |
+| 2 user | `POST /access/users` `userid=remotehub@pve`, `password=<generated>`, `comment=Managed by BB Remote Hub` (the marker that proves ownership) | `GET /access/users/<user>` first; exists without the marker → `name_taken`, nothing written; exists with the marker → rotate with `PUT /access/password` (`userid`, `password`; 8..64 characters; admin needs `Realm.AllocateUser` and `User.Modify` on a group of the user) [src AccessControl.pm:403-440]; the keychain keeps only the newest |
 | 3 ACL | `PUT /access/acl` `path=/` (or `/pool/<id>`), `roles=RemoteHubConsole`, `users=remotehub@pve`, `propagate=1` | The ACL update is idempotent by itself |
 
 Privilege names exist in `PVE::AccessControl` for master: `VM.Console` (:1154), `VM.Audit` (:1162), `Sys.Console` (:1173), `Sys.Audit` (:1177) [src]; 8.x [live].
@@ -94,7 +94,7 @@ Privilege names exist in `PVE::AccessControl` for master: `VM.Console` (:1154), 
 The generated password is 32 random characters from a URL-safe alphabet, from the OS random source, held in a `Secret` and stored in the Keychain only.
 Removal by the owner: `pveum user delete remotehub@pve`, then `pveum role delete RemoteHubConsole` (the ACL entry disappears with the user); the profile in Remote Hub is deleted separately.
 Both are shown in the editor after creation.
-The result of step 2 may be a conflict (user exists with a password we do not hold): the safe, default outcome is to rotate the password and tell the owner.
+A user without the marker is never touched (`name_taken`; the owner picks another `name@pve`). A role with other privileges is `role_differs` and is replaced only after a separate confirmation. Plan and apply are bound by a single-use digest of the observed state (`plan_changed` if the server moved); the new password is saved to the Keychain before the ACL write; per-step outcomes are reported. See `docs/security.md`.
 
 ## 4. Dependencies for the PVE engine process
 

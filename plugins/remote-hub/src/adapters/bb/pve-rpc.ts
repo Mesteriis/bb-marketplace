@@ -1,15 +1,17 @@
 // The owner's Proxmox operations behind the RPC layer: discovery, pinning a certificate the owner confirmed, linking a
-// guest to an SSH/RDP profile, and the two onboarding modes. The checks live here (a pin only for the certificate
-// the server really presented, a new password saved only for the profile it creates, a rollback when a step fails),
-// so the handlers stay thin and tests drive this with fakes. Nothing here returns or logs a secret.
+// guest to an SSH/RDP profile, and the two onboarding modes. The checks live here (a pin only for a certificate the server
+// really presented to this endpoint, an apply only for a plan the owner confirmed, a new password saved only for the
+// credentials bound to this endpoint and user, what exists after a partial failure kept and reported), so the handlers stay
+// thin and tests drive this with fakes. Nothing here returns or logs a secret or a server's own words.
 import type { AgentAudit } from "../../core/agent-audit.ts";
 import { bindForProfile, type CredentialBook, CredentialError } from "../../core/credential.ts";
 import { DEFAULT_PVE_PORT } from "../../core/catalogue.ts";
-import { LOCAL_EXECUTION_HOST_ID, profileFieldsOf, type Profile, type ProfileFields } from "../../core/profile.ts";
+import { LOCAL_EXECUTION_HOST_ID, profileFieldsOf, type Profile, type ProfileFields, type ProfileInput } from "../../core/profile.ts";
 import type { ProfileBook } from "../../core/profile-book.ts";
+import type { PvePlan, PveSteps } from "../../core/pve-protocol.ts";
 import { PVE_PROVISION, type PveConnect } from "../../core/pve-protocol.ts";
 import { pveTrustToWire, type PveProfileTrust } from "../../core/pve-trust.ts";
-import { PveDiscovery, type PveAnswer, type PveConnectionView, type PveProvisionAnswer } from "../../core/pve-targets.ts";
+import { PveDiscovery, type PveAnswer, type PveConnectionView } from "../../core/pve-targets.ts";
 import type { PveGuestLinkStore } from "./pve-sqlite.ts";
 import type { RemoteHubService } from "./service.ts";
 
@@ -33,12 +35,22 @@ export interface PveRpcDeps {
 }
 
 export type OnboardEndpoint = { host: string; port: number; trust: PveProfileTrust | null };
-export type OnboardAdmin = OnboardEndpoint & { adminUser: string; adminPassword: string; aclPath: string };
+export type OnboardAdmin = OnboardEndpoint & { adminUser: string; adminPassword: string; aclPath: string; userId: string };
+
+/** What an apply or a plan answers: the plan, the steps taken, or the failure with what each step did and what exists now. */
+export type OnboardFailure = { ok: false; code: string; message: string; fingerprint: string | null; steps: PveSteps | null; profileId?: string };
+export type OnboardPlanAnswer = ({ ok: true } & PvePlan) | OnboardFailure;
+export type OnboardApplyAnswer = { ok: true; profileId: string; userId: string; steps: PveSteps } | OnboardFailure;
 
 const OWNER = "owner RPC";
 
+const endpointOf = (host: string, port: number): string => `${host.toLowerCase()}:${port}`;
+const profileEndpoint = (p: Profile): string => endpointOf(p.host, p.port ?? DEFAULT_PVE_PORT);
+
 export function createPveRpc(deps: PveRpcDeps) {
   const { service, profiles, credentials, links } = deps;
+  /** The certificate each endpoint last showed in a refusal during onboarding (no profile exists yet to hold it). */
+  const presentedByEndpoint = new Map<string, string>();
 
   const pveProfile = (id: string): Profile => {
     const p = profiles.get(id);
@@ -60,7 +72,11 @@ export function createPveRpc(deps: PveRpcDeps) {
   };
 
   const discovery = new PveDiscovery({
-    profiles: () => profiles.list().filter((p) => p.protocol === "pve").map((p) => ({ id: p.id, name: p.name, credentialRef: p.credentialRef })),
+    profiles: () =>
+      profiles
+        .list()
+        .filter((p) => p.protocol === "pve")
+        .map((p) => ({ id: p.id, name: p.name, credentialRef: p.credentialRef, endpoint: profileEndpoint(p), revision: p.updatedAt })),
     fetch: async (id): Promise<PveAnswer> => {
       const p = profiles.get(id);
       const connect = p === null ? null : connectOf(p);
@@ -92,9 +108,20 @@ export function createPveRpc(deps: PveRpcDeps) {
     trust: pveTrustToWire(a.trust),
   });
 
-  const remove = (id: string): void => {
-    profiles.remove(id);
+  const noteRefusal = (host: string, port: number, answer: { ok: false; fingerprint: string | null }): void => {
+    if (answer.fingerprint !== null) presentedByEndpoint.set(endpointOf(host, port), answer.fingerprint);
   };
+
+  /** A certificate pin may only come from what the server presented to this endpoint in a refusal (or be the one already stored). */
+  const checkOnboardTrust = (host: string, port: number, trust: PveProfileTrust | null): void => {
+    if (trust !== null && trust.mode === "pin" && presentedByEndpoint.get(endpointOf(host, port)) !== trust.fingerprint) {
+      throw new PveRpcError("forbidden", "that is not the certificate this server presented; run the review again and compare");
+    }
+  };
+
+  const failure = (code: string, message: string, extra: Partial<OnboardFailure> = {}): OnboardFailure => ({ ok: false, code, message, fingerprint: null, steps: null, ...extra });
+
+  const audit = (a: OnboardAdmin): string => `${a.host}:${a.port} as ${a.adminUser} user ${a.userId} acl ${a.aclPath}`;
 
   return {
     discovery,
@@ -108,7 +135,7 @@ export function createPveRpc(deps: PveRpcDeps) {
     /** Every Proxmox connection (or the named ones), each with its own outcome. */
     targets: (input: { profileIds?: string[] | undefined; refresh: boolean }): Promise<PveConnectionView[]> => discovery.targets({ ...(input.profileIds === undefined ? {} : { profileIds: input.profileIds }), refresh: input.refresh }),
 
-    /** The owner confirmed the certificate a refusal showed: trust exactly that one, for this connection only. */
+    /** The owner confirmed the certificate a refusal showed: trust exactly that one, for this connection as it is now. */
     pinTrust(profileId: string, fingerprint: string): void {
       const p = pveProfile(profileId);
       if (discovery.lastPresented(profileId) !== fingerprint) {
@@ -125,6 +152,22 @@ export function createPveRpc(deps: PveRpcDeps) {
       }
     },
 
+    /**
+     * The generic profile save may store a certificate pin only if it is the one already stored for the same endpoint, or the one
+     * the last refusal of this very connection showed. Anything else is refused: a pin is a decision about a certificate the
+     * owner was shown.
+     */
+    checkProfileSave(input: ProfileInput): void {
+      const fields = input.fields;
+      if (fields.protocol !== "pve" || fields.pveTrust === null || fields.pveTrust === undefined || fields.pveTrust.mode !== "pin") return;
+      const pin = fields.pveTrust;
+      const existing = input.id === undefined ? null : profiles.get(input.id);
+      const sameEndpoint = existing !== null && existing.protocol === "pve" && profileEndpoint(existing) === endpointOf(fields.host, fields.port ?? DEFAULT_PVE_PORT);
+      if (sameEndpoint && existing.pveTrust?.mode === "pin" && existing.pveTrust.fingerprint === pin.fingerprint) return;
+      if (sameEndpoint && input.id !== undefined && discovery.lastPresented(input.id) === pin.fingerprint) return;
+      throw new PveRpcError("forbidden", "a certificate is trusted only by confirming the one the server presented; use the guest list to confirm it");
+    },
+
     /** The owner's choice of the SSH/RDP profile that reaches a guest; never a guessed address. */
     linkGuest(profileId: string, vmid: number, linkProfileId: string | null): void {
       pveProfile(profileId);
@@ -137,55 +180,115 @@ export function createPveRpc(deps: PveRpcDeps) {
       links.set(profileId, vmid, linkProfileId);
     },
 
-    /** Mode 1, step 1: what would be created. Reads only; the admin's login is used for this call and dropped. */
-    async onboardPlan(input: OnboardAdmin): Promise<PveProvisionAnswer> {
-      return await audited("pve.onboard_plan", null, `${input.host}:${input.port} as ${input.adminUser}`, () => service.pve.provision({ connect: adminConnect(input), dryRun: true, aclPath: input.aclPath }), (r) => (r.ok ? "planned" : r.code));
+    /** Mode 1, step 1: what would be created, what the user already holds, and the digest of the state it was computed from. Reads only. */
+    async onboardPlan(input: OnboardAdmin): Promise<OnboardPlanAnswer> {
+      checkOnboardTrust(input.host, input.port, input.trust);
+      return await audited(
+        "pve.onboard_plan",
+        null,
+        audit(input),
+        async (): Promise<OnboardPlanAnswer> => {
+          const answer = await service.pve.provision({ connect: adminConnect(input), dryRun: true, aclPath: input.aclPath, userId: input.userId });
+          if (!answer.ok) {
+            noteRefusal(input.host, input.port, answer);
+            return failure(answer.code, answer.message, { fingerprint: answer.fingerprint, steps: answer.steps });
+          }
+          if (answer.kind !== "plan") return failure("protocol_error", "the helper did not answer with a plan");
+          return { ok: true, ...answer.plan };
+        },
+        (r) => (r.ok ? "planned" : r.code),
+      );
     },
 
     /**
-     * Mode 1, step 2, after the owner confirmed: create role, user and ACL entry, and save the new user's password in the
-     * Keychain (the helper does that; it never comes here). The result is a saved connection signing in as `remotehub@pve`.
+     * Mode 1, step 2, for the plan the owner confirmed (its digest). Creates what is missing, saves the user's new password in the
+     * Keychain for every credential bound to this endpoint and user (a connection saved earlier keeps working), and keeps a
+     * connection whose setup is incomplete, flagged, instead of throwing away what already exists on the server.
      */
-    async onboardApply(input: OnboardAdmin & { name: string }): Promise<{ ok: true; profileId: string; plan: { role: string; user: string; acl: string } } | { ok: false; code: string; message: string; fingerprint: string | null }> {
+    async onboardApply(input: OnboardAdmin & { name: string; planDigest: string; replaceRole: boolean }): Promise<OnboardApplyAnswer> {
+      checkOnboardTrust(input.host, input.port, input.trust);
       return await audited(
         "pve.onboard_apply",
         null,
-        `${input.host}:${input.port} as ${input.adminUser}`,
-        async () => {
-          const fields: ProfileFields = {
-            name: input.name,
-            protocol: "pve",
-            group: null,
-            tags: [],
-            favorite: false,
-            color: null,
-            host: input.host,
-            port: input.port === DEFAULT_PVE_PORT ? null : input.port,
-            username: PVE_PROVISION.user,
-            domain: null,
-            authType: "password",
-            identityFile: null,
-            credentialRef: null,
-            rdpWidth: null,
-            rdpHeight: null,
-            pveTrust: input.trust,
-          };
-          const profile = profiles.save({ fields });
-          const ref = `rh-cred:v1:${LOCAL_EXECUTION_HOST_ID}:${deps.newId()}`;
-          const answer = await service.pve.provision({ connect: adminConnect(input), dryRun: false, aclPath: input.aclPath, save: { ref, bind: bindForProfile(profile) } });
+        audit(input),
+        async (): Promise<OnboardApplyAnswer> => {
+          const endpoint = endpointOf(input.host, input.port);
+          // Connections already saved for this endpoint and user: a rotation must update their credentials.
+          const existing = profiles.list().filter((p) => p.protocol === "pve" && profileEndpoint(p) === endpoint && p.username === input.userId);
+          const saves: Array<{ ref: string; bind: ReturnType<typeof bindForProfile> }> = existing.flatMap((p) => (p.credentialRef === null ? [] : [{ ref: p.credentialRef, bind: bindForProfile(p) }]));
+          // The profile that will own the new credential: one that has none yet, or a new one.
+          let target: Profile | null = existing.find((p) => p.credentialRef === null) ?? null;
+          let created: Profile | null = null;
+          if (target === null && existing.length === 0) {
+            const fields: ProfileFields = {
+              name: input.name,
+              protocol: "pve",
+              group: null,
+              tags: [],
+              favorite: false,
+              color: null,
+              host: input.host,
+              port: input.port === DEFAULT_PVE_PORT ? null : input.port,
+              username: input.userId,
+              domain: null,
+              authType: "password",
+              identityFile: null,
+              credentialRef: null,
+              rdpWidth: null,
+              rdpHeight: null,
+              pveTrust: input.trust,
+            };
+            created = profiles.save({ fields });
+            target = created;
+          }
+          const newRef = `rh-cred:v1:${LOCAL_EXECUTION_HOST_ID}:${deps.newId()}`;
+          if (target !== null) saves.push({ ref: newRef, bind: bindForProfile(target) });
+          const answer = await service.pve.provision({
+            connect: adminConnect(input),
+            dryRun: false,
+            aclPath: input.aclPath,
+            userId: input.userId,
+            ...(input.replaceRole ? { replaceRole: true } : {}),
+            planDigest: input.planDigest,
+            save: saves,
+          });
           if (!answer.ok) {
-            remove(profile.id);
-            return answer;
+            noteRefusal(input.host, input.port, answer);
+            // The password is active on the server (and was saved before the next step) once the user step is done: keep the
+            // connection, flagged, so nothing that exists is lost; re-running the setup completes it.
+            const userDone = answer.steps?.user === "done";
+            if (created !== null && userDone && (await credentials.status(newRef)) === "present") {
+              try {
+                await credentials.adopt({ profileId: created.id, ref: newRef });
+                profiles.recordFailure(created.id, "setup_incomplete");
+                return failure(answer.code, answer.message, { fingerprint: answer.fingerprint, steps: answer.steps, profileId: created.id });
+              } catch {
+                // fall through: it could not be kept
+              }
+            }
+            if (created !== null) {
+              profiles.remove(created.id);
+              await service.credentialVault.delete(newRef).catch(() => undefined);
+            }
+            return failure(answer.code, answer.message, { fingerprint: answer.fingerprint, steps: answer.steps });
           }
-          try {
-            await credentials.adopt({ profileId: profile.id, ref });
-          } catch (error) {
-            remove(profile.id);
-            await service.credentialVault.delete(ref).catch(() => undefined);
-            if (error instanceof CredentialError) return { ok: false as const, code: error.code, message: error.message, fingerprint: null };
-            throw error;
+          if (answer.kind !== "applied") return failure("protocol_error", "the helper did not answer with the applied steps");
+          if (target !== null) {
+            try {
+              await credentials.adopt({ profileId: target.id, ref: newRef });
+            } catch (error) {
+              if (created !== null) {
+                profiles.remove(created.id);
+                await service.credentialVault.delete(newRef).catch(() => undefined);
+              }
+              if (error instanceof CredentialError) return failure(error.code, error.message, { steps: answer.steps });
+              throw error;
+            }
           }
-          return { ok: true as const, profileId: profile.id, plan: { role: answer.role, user: answer.user, acl: answer.acl } };
+          const owner = target ?? existing[0];
+          if (owner === undefined) return failure("protocol_error", "no connection owns the new credential", { steps: answer.steps });
+          profiles.clearFailures(owner.id);
+          return { ok: true, profileId: owner.id, userId: input.userId, steps: answer.steps };
         },
         (r) => (r.ok ? "applied" : r.code),
       );
@@ -193,6 +296,7 @@ export function createPveRpc(deps: PveRpcDeps) {
 
     /** Mode 2: connect as is. The secret is saved for exactly this connection; nothing is created in Proxmox. */
     async onboardConnect(input: OnboardEndpoint & { name: string; authMode: "ticket" | "token"; user: string; secret: string }): Promise<{ ok: true; profileId: string } | { ok: false; code: string; message: string }> {
+      checkOnboardTrust(input.host, input.port, input.trust);
       const fields: ProfileFields = {
         name: input.name,
         protocol: "pve",
@@ -215,7 +319,7 @@ export function createPveRpc(deps: PveRpcDeps) {
       try {
         await credentials.save({ profileId: profile.id, secret: input.secret });
       } catch (error) {
-        remove(profile.id);
+        profiles.remove(profile.id);
         if (error instanceof CredentialError) return { ok: false, code: error.code, message: error.message };
         throw error;
       }
@@ -226,3 +330,5 @@ export function createPveRpc(deps: PveRpcDeps) {
 }
 
 export type PveRpc = ReturnType<typeof createPveRpc>;
+
+export { PVE_PROVISION };

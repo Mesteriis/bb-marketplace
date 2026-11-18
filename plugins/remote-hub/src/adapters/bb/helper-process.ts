@@ -10,7 +10,7 @@
 import type { ExecFinishedMessage, ExecStateMessage } from "../../core/exec-protocol.ts";
 import type { CredentialBind } from "../../core/credential.ts";
 import type { RdpOptions } from "../../core/rdp-options.ts";
-import type { PveConnect, PveGuest, PveNode } from "../../core/pve-protocol.ts";
+import type { PveConnect, PveGuest, PveNode, PvePlan, PveSteps } from "../../core/pve-protocol.ts";
 import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
 import { checkHelperIntegrity, type IntegrityResult } from "./helper-integrity.ts";
 import { experimental_execHostFile, experimental_spawnHostProcess } from "@get-bb/plugin-sdk/process";
@@ -71,11 +71,13 @@ export class HelperRuntimeError extends Error {
 export class PveRequestFailure extends Error {
   readonly code: string;
   readonly fingerprint: string | null;
-  constructor(code: string, message: string, fingerprint: string | null) {
+  readonly steps: PveSteps | null;
+  constructor(code: string, message: string, fingerprint: string | null, steps: PveSteps | null = null) {
     super(message);
     this.name = "PveRequestFailure";
     this.code = code;
     this.fingerprint = fingerprint;
+    this.steps = steps;
   }
 }
 
@@ -894,24 +896,40 @@ export class HelperProcess {
   /** Discovery on one PVE connection. A failure is a PveRequestFailure (code, message, fingerprint). */
   async pveTargets(connect: PveConnect): Promise<{ version: string | null; nodes: PveNode[]; guests: PveGuest[] }> {
     const resp = await this.request({ type: "pve.targets", connect } as RequestMessage, PVE_REQUEST_TIMEOUT_MS);
-    if (resp.type === "pve.failed") throw new PveRequestFailure(resp.code, resp.message, resp.fingerprint ?? null);
+    if (resp.type === "pve.failed") throw new PveRequestFailure(resp.code, resp.message, resp.fingerprint ?? null, resp.steps ?? null);
     if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
     if (resp.type !== "pve.targets_result") throw new Error("unexpected helper response: " + resp.type);
     return { version: resp.version, nodes: resp.nodes, guests: resp.guests };
   }
 
-  /** Onboarding mode 1: what would be created (dry run) or the creation itself. The new password never comes back. */
+  /** Onboarding mode 1: the plan (dry run) or the applied steps. The new password never comes back. A failure is a PveRequestFailure with the steps. */
   async pveProvision(args: {
     connect: PveConnect;
     dryRun: boolean;
     aclPath: string;
-    save?: { ref: string; bind: CredentialBind };
-  }): Promise<{ applied: boolean; role: string; user: string; acl: string }> {
-    const resp = await this.request({ type: "pve.provision", connect: args.connect, dryRun: args.dryRun, aclPath: args.aclPath, ...(args.save === undefined ? {} : { save: args.save }) } as RequestMessage, PVE_REQUEST_TIMEOUT_MS);
-    if (resp.type === "pve.failed") throw new PveRequestFailure(resp.code, resp.message, resp.fingerprint ?? null);
+    userId: string;
+    replaceRole?: boolean;
+    planDigest?: string;
+    save?: Array<{ ref: string; bind: CredentialBind }>;
+  }): Promise<{ kind: "plan"; plan: PvePlan } | { kind: "applied"; steps: PveSteps }> {
+    const message = {
+      type: "pve.provision",
+      connect: args.connect,
+      dryRun: args.dryRun,
+      aclPath: args.aclPath,
+      userId: args.userId,
+      ...(args.replaceRole === true ? { replaceRole: true } : {}),
+      ...(args.planDigest === undefined ? {} : { planDigest: args.planDigest }),
+      ...(args.save === undefined ? {} : { save: args.save }),
+    } as RequestMessage;
+    const resp = await this.request(message, PVE_REQUEST_TIMEOUT_MS);
+    if (resp.type === "pve.failed") throw new PveRequestFailure(resp.code, resp.message, resp.fingerprint ?? null, resp.steps ?? null);
     if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
-    if (resp.type === "pve.plan") return { applied: false, role: resp.role, user: resp.user, acl: resp.acl };
-    if (resp.type === "pve.provisioned") return { applied: true, role: resp.role, user: resp.user, acl: resp.acl };
+    if (resp.type === "pve.plan") {
+      const { type: _t, id: _i, ...plan } = resp;
+      return { kind: "plan", plan };
+    }
+    if (resp.type === "pve.provisioned") return { kind: "applied", steps: resp.steps };
     throw new Error("unexpected helper response: " + resp.type);
   }
 

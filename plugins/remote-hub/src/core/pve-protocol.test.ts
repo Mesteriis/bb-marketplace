@@ -32,12 +32,23 @@ describe("PVE wire messages (mirror of helper/src/protocol.rs)", () => {
   it("accepts provisioning requests and answers, and refuses a save bound to the wrong kind", () => {
     const bind = { type: "endpoint", protocol: "pve", host: "pve.test", port: 8006, user: "remotehub@pve", domain: null };
     const admin = { host: "pve.test", port: 8006, authMode: "ticket", user: "root@pam", password: "x", trust: trustPin };
-    const req = { type: "pve.provision", id: 1, connect: admin, dryRun: false, aclPath: "/", save: { ref: "rh-cred:v1:local:abc", bind } };
+    const digest = "a".repeat(64);
+    const steps = { role: "done", user: "done", acl: "failed" };
+    const req = { type: "pve.provision", id: 1, connect: admin, dryRun: false, aclPath: "/", userId: "remotehub@pve", replaceRole: false, planDigest: digest, save: [{ ref: "rh-cred:v1:local:abc", bind }] };
     expect(controlMessageSchema.safeParse(req).success).toBe(true);
-    expect(controlMessageSchema.safeParse({ ...req, dryRun: true, save: undefined }).success).toBe(true);
-    expect(controlMessageSchema.safeParse({ type: "pve.plan", id: 1, role: "create", user: "rotate_password", acl: "keep" }).success).toBe(true);
-    expect(controlMessageSchema.safeParse({ type: "pve.plan", id: 1, role: "delete", user: "create", acl: "keep" }).success).toBe(false);
-    expect(controlMessageSchema.safeParse({ type: "pve.provisioned", id: 1, role: "keep", user: "create", acl: "keep" }).success).toBe(true);
+    expect(controlMessageSchema.safeParse({ ...req, dryRun: true, save: undefined, planDigest: undefined }).success).toBe(true);
+    // a save that is not a list, a digest that is not 64 hex characters, and more than eight saves are refused
+    expect(controlMessageSchema.safeParse({ ...req, save: { ref: "rh-cred:v1:local:abc", bind } }).success).toBe(false);
+    expect(controlMessageSchema.safeParse({ ...req, planDigest: "xyz" }).success).toBe(false);
+    expect(controlMessageSchema.safeParse({ ...req, save: Array.from({ length: 9 }, () => ({ ref: "rh-cred:v1:local:abc", bind })) }).success).toBe(false);
+    const plan = { type: "pve.plan", id: 1, role: "keep", user: "rotate_password", acl: "keep", userId: "remotehub@pve", rolePrivs: null, extras: { acl: [{ path: "/", role: "PVEAdmin" }], groups: ["g"], tokens: ["t"] }, digest };
+    expect(controlMessageSchema.safeParse(plan).success).toBe(true);
+    expect(controlMessageSchema.safeParse({ ...plan, role: "differs", user: "name_taken" }).success).toBe(true);
+    expect(controlMessageSchema.safeParse({ ...plan, role: "delete" }).success).toBe(false);
+    expect(controlMessageSchema.safeParse({ ...plan, digest: undefined }).success).toBe(false);
+    expect(controlMessageSchema.safeParse({ type: "pve.provisioned", id: 1, steps }).success).toBe(true);
+    expect(controlMessageSchema.safeParse({ type: "pve.provisioned", id: 1, steps: { ...steps, acl: "maybe" } }).success).toBe(false);
+    expect(controlMessageSchema.safeParse({ type: "pve.failed", id: 1, code: "api_error", message: "m", steps }).success).toBe(true);
   });
 
   it("parses the answers the helper sends", () => {
