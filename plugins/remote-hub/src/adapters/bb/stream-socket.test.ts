@@ -35,7 +35,9 @@ function makeHarness(overrides: Partial<RemoteHubService> = {}) {
     consumeAttachToken: vi.fn().mockReturnValue({ sessionId: 1, generation: "a".repeat(32) }),
     sessionCredit: vi.fn().mockResolvedValue(undefined),
     sessionResize: vi.fn().mockResolvedValue(undefined),
-    sessionTerminalInput: vi.fn().mockResolvedValue(undefined),
+    sessionTerminalInput: vi.fn().mockResolvedValue(true),
+    controlState: vi.fn().mockReturnValue({ owner: "human", expiresAt: null }),
+    subscribeControl: vi.fn().mockReturnValue(() => {}),
     sessionList: vi.fn().mockReturnValue([]),
     attachStream: vi.fn().mockReturnValue({
       snapshot: new Uint8Array(0),

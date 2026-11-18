@@ -10,6 +10,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { SessionHandle } from "../../core/rpc.ts";
 import { SLOW_VIEW_BYTES } from "../../core/credit.ts";
+import { attachControlView } from "./control-notice.ts";
 import { createRdpSocketHandlers } from "./rdp-socket.ts";
 import type { RemoteHubService } from "./service.ts";
 
@@ -71,6 +72,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
     let offExit: (() => void) | null = null;
     let offEnd: (() => void) | null = null;
     let offAskpass: (() => void) | null = null;
+    let control: ReturnType<typeof attachControlView> | null = null;
 
     const guardSend = (socket: { send: (data: string | Uint8Array) => void }, data: string | Uint8Array): void => {
       try {
@@ -152,6 +154,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         offAskpass = deps.service.subscribeSshAskpass(handle!, (event) => {
           if (attached) guardSend(socket, JSON.stringify(event));
         });
+        control = attachControlView(deps.service, handle!, (json) => guardSend(socket, json));
         offEnd = deps.service.subscribeSessionEnd(handle!, (info) => {
           if (!attached) return;
           if (liveSubscribed) sendEnd(info);
@@ -246,10 +249,16 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
               break;
           }
         } else {
-          deps.service.sessionTerminalInput(handle, data).catch(() => {
-            replyError(socket, "session_not_found");
-            closeStale(socket);
-          });
+          deps.service
+            .sessionTerminalInput(handle, data)
+            .then((sent) => {
+              // false (not just falsy): the human's keys were dropped because an agent holds the session
+              if (sent === false) control?.blocked();
+            })
+            .catch(() => {
+              replyError(socket, "session_not_found");
+              closeStale(socket);
+            });
         }
       },
       onClose() {
@@ -262,6 +271,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         if (offExit !== null) offExit();
         if (offEnd !== null) offEnd();
         if (offAskpass !== null) offAskpass();
+        if (control !== null) control.off();
       },
       onError() {
         attached = false;
@@ -273,6 +283,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
         if (offExit !== null) offExit();
         if (offEnd !== null) offEnd();
         if (offAskpass !== null) offAskpass();
+        if (control !== null) control.off();
       },
     };
   });

@@ -13,6 +13,7 @@
 // time to it.
 import type { SessionHandle } from "../../core/rpc.ts";
 import { rdpViewMessageSchema, toHelperEvent } from "../../core/rdp-view-messages.ts";
+import { attachControlView } from "./control-notice.ts";
 import { HelperRequestError } from "./helper-process.ts";
 import type { RdpAttachment, RemoteHubService } from "./service.ts";
 
@@ -42,6 +43,7 @@ export function createRdpSocketHandlers(
   let attachment: RdpAttachment | null = null;
   let offExit: (() => void) | null = null;
   let offEnd: (() => void) | null = null;
+  let control: ReturnType<typeof attachControlView> | null = null;
   let handle: SessionHandle | null = null;
 
   const guardSend = (socket: RdpSocketLike, data: string | Uint8Array): void => {
@@ -63,8 +65,10 @@ export function createRdpSocketHandlers(
     attachment = null;
     if (offExit !== null) offExit();
     if (offEnd !== null) offEnd();
+    if (control !== null) control.off();
     offExit = null;
     offEnd = null;
+    control = null;
   };
 
   return {
@@ -95,6 +99,7 @@ export function createRdpSocketHandlers(
         guardClose(socket, WS_SESSION_ENDED, "session ended");
       });
       guardSend(socket, JSON.stringify(attachment.initial));
+      control = attachControlView(service, handle, (json) => guardSend(socket, json));
     },
     onMessage(socket: RdpSocketLike, data: string | Uint8Array): void {
       if (attachment === null) return;
@@ -120,7 +125,9 @@ export function createRdpSocketHandlers(
           guardClose(socket, 1000, "detach");
           break;
         case "input":
-          attachment.input(msg.events.map(toHelperEvent)).catch((error: unknown) => {
+          attachment.input(msg.events.map(toHelperEvent)).then((sent) => {
+            if (sent === false) control?.blocked();
+          }).catch((error: unknown) => {
             if (error instanceof HelperRequestError) {
               guardSend(socket, JSON.stringify({ type: "error", code: error.code }));
             } else {

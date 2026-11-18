@@ -33,7 +33,24 @@ export interface SessionInfo {
   reason: string | null;
 }
 
+/** Who drives a session, as the view shows it. */
+export interface ControlView {
+  owner: "human" | "agent";
+  /** When an agent's lease runs out (epoch ms); null while the human drives. */
+  expiresAt: number | null;
+}
+
+/** Decides whether the human's input is forwarded (stage 4b-1): not while an agent holds the session's lease. */
+export interface ControlGate {
+  humanMayDrive(handle: SessionHandle): boolean;
+  state(handle: SessionHandle): ControlView;
+  /** Called after the owner of this session changes. */
+  subscribe(handle: SessionHandle, cb: (view: ControlView) => void): () => void;
+}
+
 export interface RemoteHubServiceDeps {
+  /** Who may drive; without it the human always may. */
+  control?: ControlGate;
   startHelper: () => Promise<HelperProcess>;
   env?: Record<string, string | undefined>;
   clock?: Clock;
@@ -53,7 +70,8 @@ export interface RdpAttachment {
   /** The state to show before any live event: sent first by the socket. */
   initial: Record<string, unknown>;
   ack(frameId: number): void;
-  input(events: RdpInputEvent[]): Promise<void>;
+  /** False when the events were dropped because an agent holds the session. */
+  input(events: RdpInputEvent[]): Promise<boolean>;
   refresh(): void;
   detach(): void;
 }
@@ -104,7 +122,16 @@ export interface RemoteHubService {
     handle: SessionHandle,
     cb: (info: { exitCode: number | null; signal: number | null; reason: string }) => void,
   ): () => void;
-  sessionTerminalInput(handle: SessionHandle, data: Uint8Array): Promise<void>;
+  /** The human's keys. False when they were dropped because an agent holds the session. */
+  sessionTerminalInput(handle: SessionHandle, data: Uint8Array): Promise<boolean>;
+  /** An agent holding the lease types (the control tools check the lease before calling this). */
+  agentTerminalInput(handle: SessionHandle, data: Uint8Array): Promise<void>;
+  /** An agent holding the lease sends desktop input. */
+  agentRdpInput(handle: SessionHandle, events: RdpInputEvent[]): Promise<void>;
+  controlState(handle: SessionHandle): ControlView;
+  subscribeControl(handle: SessionHandle, cb: (view: ControlView) => void): () => void;
+  /** The kinds of question the owner has to answer on this session: no text, no fingerprint. */
+  ownerQuestions(handle: SessionHandle): Array<"host_key" | "certificate" | "login_prompt">;
   sessionResize(handle: SessionHandle, cols: number, rows: number): Promise<void>;
   sessionCredit(handle: SessionHandle, bytes: number): Promise<void>;
   onHelperExit(cb: () => void): () => void;
@@ -629,8 +656,10 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         },
         async input(events) {
           if (info.rdp?.state !== "desktop_ready") throw new HelperRequestError("not_ready", "the desktop is not ready yet");
+          if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
           const hp = await start();
           await hp.rdpInput(handle, events);
+          return true;
         },
         refresh() {
           // Resynchronise this view only: it becomes needsFull and the next full update reaches it.
@@ -811,8 +840,39 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     },
     async sessionTerminalInput(handle, data) {
       requireGeneration(handle);
+      if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
       const process = await start();
       process.writeInput(handle.sessionId, data);
+      return true;
+    },
+    async agentTerminalInput(handle, data) {
+      requireGeneration(handle);
+      const process = await start();
+      process.writeInput(handle.sessionId, data);
+    },
+    async agentRdpInput(handle, events) {
+      requireGeneration(handle);
+      if (rdpRecord(keyOf(handle))?.rdp?.state !== "desktop_ready") throw new HelperRequestError("not_ready", "the desktop is not ready yet");
+      const hp = await start();
+      await hp.rdpInput(handle, events);
+    },
+    controlState(handle) {
+      return deps.control?.state(handle) ?? { owner: "human", expiresAt: null };
+    },
+    subscribeControl(handle, cb) {
+      return deps.control?.subscribe(handle, cb) ?? (() => undefined);
+    },
+    ownerQuestions(handle) {
+      const key = keyOf(handle);
+      const questions: Array<"host_key" | "certificate" | "login_prompt"> = [];
+      if (rdpRecord(key)?.rdp?.prompt != null) questions.push("certificate");
+      const prompts = askpassStates.get(key)?.prompts;
+      if (prompts !== undefined) {
+        const kinds = new Set([...prompts.values()].map((p) => p.kind));
+        if (kinds.has("confirm")) questions.push("host_key");
+        if (kinds.has("secret")) questions.push("login_prompt");
+      }
+      return questions;
     },
     async sessionResize(handle, cols, rows) {
       requireGeneration(handle);
