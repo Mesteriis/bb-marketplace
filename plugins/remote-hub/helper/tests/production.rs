@@ -73,6 +73,7 @@ fn production_rejects_freeform_open_ssh() {
             argv: argv.iter().map(|s| s.to_string()).collect(),
             env: HashMap::new(),
             cwd: None,
+            askpass: None,
         });
         match read_response(&mut stdout) {
             Response::Error { code, .. } => assert_eq!(code, "ssh_option_rejected"),

@@ -94,6 +94,8 @@ pub struct SessionManager {
     /// Test-only argv hook (never exposed over RPC): when set, open_echo execs
     /// this argv instead of /bin/cat.
     echo_argv: Option<Vec<CString>>,
+    /// Created at the first SSH session that uses a saved credential (stage 3b-2).
+    askpass: Option<crate::askpass::Broker>,
 }
 
 #[derive(Debug)]
@@ -296,6 +298,66 @@ impl SessionManager {
             sessions: HashMap::new(),
             ids,
             echo_argv: argv,
+            askpass: None,
+        }
+    }
+
+    /// Opens an SSH session whose secret prompts the helper answers from the Keychain
+    /// (`reference`) and whose other prompts go to the user. The askpass environment is added
+    /// here, after validation: a request cannot supply it.
+    pub fn open_ssh_with_askpass(
+        &mut self,
+        mut spec: SpawnSpec,
+        cols: u16,
+        rows: u16,
+        reference: &str,
+        helper_exe: &str,
+    ) -> Result<u32, SessionError> {
+        if self.askpass.is_none() {
+            self.askpass = Some(
+                crate::askpass::Broker::new(helper_exe)
+                    .map_err(|e| SessionError::Sys { step: "askpass", errno: e.raw_os_error().unwrap_or(0) })?,
+            );
+        }
+        let broker = self.askpass.as_mut().expect("just created");
+        let (nonce, env) = broker.prepare();
+        for (k, v) in env {
+            if let (Ok(k), Ok(v)) = (CString::new(k), CString::new(v)) {
+                spec.env.retain(|(ek, _)| *ek != k);
+                spec.env.push((k, v));
+            }
+        }
+        let id = self.open_session(spec, cols, rows, "ssh".to_string())?;
+        let pid = self.child_pid(id).unwrap_or(0);
+        if let Some(broker) = self.askpass.as_mut() {
+            broker.register(&nonce, id, pid, reference);
+        }
+        Ok(id)
+    }
+
+    /// Descriptors of the askpass socket and its open requests (read interest).
+    pub fn askpass_fds(&self) -> Vec<RawFd> {
+        self.askpass.as_ref().map(|b| b.fds()).unwrap_or_default()
+    }
+
+    /// Accepts and decides askpass requests; returns what the helper must tell its client.
+    pub fn askpass_service(&mut self) -> Vec<crate::askpass::BrokerEvent> {
+        match self.askpass.as_mut() {
+            Some(broker) => {
+                broker.service();
+                broker.take_events()
+            }
+            None => Vec::new(),
+        }
+    }
+
+    pub fn askpass_answer(&mut self, session_id: u32, prompt_id: u64, answer: Option<String>) -> bool {
+        self.askpass.as_mut().map(|b| b.answer(session_id, prompt_id, answer)).unwrap_or(false)
+    }
+
+    fn askpass_forget(&mut self, id: u32) {
+        if let Some(broker) = self.askpass.as_mut() {
+            broker.session_closed(id);
         }
     }
 
@@ -855,11 +917,13 @@ impl SessionManager {
             if let Some(session) = self.sessions.remove(id) {
                 unsafe { libc::close(session.master) };
             }
+            self.askpass_forget(*id);
         }
         ids
     }
 
     pub fn close(&mut self, id: u32) -> Option<(u32, Vec<Vec<u8>>, Option<i32>, Option<i32>, String)> {
+        self.askpass_forget(id);
         let mut session = self.sessions.remove(&id)?;
         let mut all = std::mem::take(&mut session.pending_out);
         loop {

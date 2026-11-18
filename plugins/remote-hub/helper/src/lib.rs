@@ -1,5 +1,6 @@
 //! Remote Hub helper library. The binary (src/main.rs) is a thin wrapper;
 //! integration tests import the framing and message types from here.
+pub mod askpass;
 pub mod ids;
 pub mod ipc;
 pub mod keychain;

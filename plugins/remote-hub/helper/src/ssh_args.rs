@@ -142,6 +142,11 @@ pub fn validate_ssh_spawn(
                     if !seen.insert("IdentitiesOnly=yes".to_string()) {
                         return Err(ssh_option_rejected());
                     }
+                } else if v == "PreferredAuthentications=password" || v == "PreferredAuthentications=publickey" {
+                    // Fixes the session's one secret prompt (stage 3b-2); at most once.
+                    if !seen.insert("PreferredAuthentications".to_string()) {
+                        return Err(ssh_option_rejected());
+                    }
                 } else {
                     return Err(ssh_option_rejected());
                 }

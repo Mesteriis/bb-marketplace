@@ -135,6 +135,7 @@ fn request_id(req: &Request) -> Option<u64> {
         Request::Ping { id }
         | Request::OpenEcho { id, .. }
         | Request::OpenSsh { id, .. }
+        | Request::SshPromptAnswer { id, .. }
         | Request::OpenRdp { id, .. }
         | Request::CredentialSave { id, .. }
         | Request::CredentialDelete { id, .. }
@@ -151,14 +152,7 @@ fn request_id(req: &Request) -> Option<u64> {
     }
 }
 
-/// The only account names the helper will touch in the Keychain: our own
-/// references (rh-cred:v1:<executionHostId>:<uuid>). A request cannot name any
-/// other Keychain item.
-fn valid_credential_ref(reference: &str) -> bool {
-    reference.starts_with("rh-cred:v1:")
-        && reference.len() <= 96
-        && reference.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b':' || b == b'-')
-}
+use crate::keychain::valid_credential_ref;
 
 enum CredentialRefusal {
     BadRef,
@@ -345,6 +339,7 @@ fn handle(
             argv,
             env,
             cwd,
+            askpass,
         } => {
             // Production only: the ssh kind may only run the strict OpenSSH
             // shape built by src/core/ssh-args.ts. Free-form programs remain
@@ -360,9 +355,21 @@ fn handle(
                     message: "session.open_ssh carries a disallowed program, option, cwd or env".to_string(),
                 }));
             }
+            if let Some(spec) = &askpass {
+                if !valid_credential_ref(&spec.credential_ref) {
+                    return Ok(protocol::encode_response(&Response::Error {
+                        id: Some(id),
+                        code: "invalid_credential_ref".to_string(),
+                        message: "not a Remote Hub credential reference".to_string(),
+                    }));
+                }
+            }
             let spec = build_spawn_spec(program, argv, env, cwd);
             match spec {
-                Ok(spec) => match manager.open_ssh(spec, cols, rows) {
+                Ok(spec) => match match &askpass {
+                    Some(a) => manager.open_ssh_with_askpass(spec, cols, rows, &a.credential_ref, current_exe),
+                    None => manager.open_ssh(spec, cols, rows),
+                } {
                     Ok(session_id) => {
                         let pid = manager.child_pid(session_id).unwrap_or(0);
                         Ok(protocol::encode_response(&Response::SessionOpened {
@@ -518,6 +525,17 @@ fn handle(
                 .and_then(keychain_ok)
                 .map_or_else(|r| r.into_response(id), |reply| Response::CredentialStatus { id, present: reply.present.unwrap_or(false) }),
         )),
+        Request::SshPromptAnswer { id, session_id, prompt_id, answer } => {
+            if manager.askpass_answer(session_id, prompt_id, answer) {
+                Ok(protocol::encode_response(&Response::SshPromptAck { id }))
+            } else {
+                Ok(protocol::encode_response(&Response::Error {
+                    id: Some(id),
+                    code: "no_pending_prompt".to_string(),
+                    message: "there is no such open prompt".to_string(),
+                }))
+            }
+        }
         Request::RdpCertDecision { id, session_id, fingerprint, accept } => {
             if let Err(refusal) = rdp.check_decision(session_id, &fingerprint) {
                 let (code, message) = match refusal {
@@ -953,6 +971,7 @@ enum PollRole {
     Stdout,
     Session(u32),
     Rdp(u32),
+    Askpass,
 }
 
 pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
@@ -1059,6 +1078,12 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
             fds.push(pollfd(rfd, events));
         }
 
+        // The askpass socket and its open requests (stage 3b-2).
+        for afd in guard.manager.askpass_fds() {
+            roles.push(PollRole::Askpass);
+            fds.push(pollfd(afd, libc::POLLIN));
+        }
+
         // Buffered engine frames are work that poll cannot signal.
         let poll_timeout = if rdp_buffered { 0 } else { 50 };
         let r = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, poll_timeout) };
@@ -1114,8 +1139,19 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                         relay_rdp_frames(&mut guard.rdp, &mut outbox, *rid, frames);
                     }
                 }
-                PollRole::Stdin => {}
+                PollRole::Stdin | PollRole::Askpass => {}
             }
+        }
+
+        // Askpass requests are decided every turn (the socket is also in the poll set, so
+        // a request wakes the loop at once); what the client must hear is queued.
+        for event in guard.manager.askpass_service() {
+            outbox.extend(protocol::encode_response(&match event {
+                crate::askpass::BrokerEvent::Prompt { session_id, prompt_id, text, kind } => {
+                    Response::SshPrompt { session_id, prompt_id, text, kind }
+                }
+                crate::askpass::BrokerEvent::CredentialRejected { session_id } => Response::SshCredentialRejected { session_id },
+            }));
         }
 
         // Reap children that exited on their own (never shuts down the helper).

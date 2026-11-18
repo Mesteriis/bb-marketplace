@@ -14,6 +14,15 @@
 //! or default keychain, which are not touched).
 use crate::secret::Secret;
 
+/// The only account names the helper will touch in the Keychain: our own
+/// references (rh-cred:v1:<executionHostId>:<uuid>). A request cannot name any
+/// other Keychain item.
+pub fn valid_credential_ref(reference: &str) -> bool {
+    reference.starts_with("rh-cred:v1:")
+        && reference.len() <= 96
+        && reference.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b':' || b == b'-')
+}
+
 /// The Keychain service every Remote Hub item is stored under.
 pub const SERVICE: &str = "remote-hub";
 

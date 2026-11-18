@@ -806,6 +806,7 @@ fn run_short_lived(helper: &mut Helper, program: &str, argv: &[&str]) -> (Vec<u8
         argv: argv.iter().map(|a| a.to_string()).collect(),
         env: HashMap::new(),
         cwd: None,
+        askpass: None,
     });
     let sid = match helper.read_response() {
         Response::SessionOpened { session_id, .. } => session_id,
@@ -1456,6 +1457,7 @@ fn b3_credit_isolates_sessions() {
         argv: vec!["yes".to_string()],
         env: HashMap::new(),
         cwd: None,
+        askpass: None,
     });
     let x_sid = match helper.read_response() {
         Response::SessionOpened { session_id, .. } => session_id,
@@ -1633,6 +1635,7 @@ fn c2_ctrl_c_interrupts_foreground_sleep_in_ssh_kind_session() {
         argv: vec!["sh".to_string()],
         env: HashMap::new(),
         cwd: None,
+        askpass: None,
     });
     let (sid, sh_pid) = match h.read_response() {
         Response::SessionOpened {
@@ -1696,6 +1699,7 @@ fn c2_ssh_exit_255_reports_ssh_error() {
         argv: vec!["sh".to_string(), "-c".to_string(), "exit 255".to_string()],
         env: HashMap::new(),
         cwd: None,
+        askpass: None,
     });
     let sid = match h.read_response() {
         Response::SessionOpened { session_id, .. } => session_id,
@@ -1728,6 +1732,7 @@ fn v1_env_values_reach_execve_intact() {
         argv: vec!["env".to_string()],
         env,
         cwd: None,
+        askpass: None,
     });
     let sid = match h.read_response() {
         Response::SessionOpened { session_id, .. } => session_id,
@@ -1921,6 +1926,7 @@ fn w4_hup_does_not_block_the_loop() {
                 ],
                 env: HashMap::new(),
                 cwd: None,
+                askpass: None,
             },
         );
         let sid = match read_until_id(&mut stdout, 10 + i, &mut closed, 0, &mut echo_buf) {

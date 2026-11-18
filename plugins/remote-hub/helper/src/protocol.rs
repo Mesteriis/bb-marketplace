@@ -16,6 +16,12 @@ pub const FRAME_KIND_STREAM: u8 = 0x02;
 pub const STREAM_HEADER_BYTES: usize = 8;
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct AskpassSpec {
+    #[serde(rename = "credentialRef")]
+    pub credential_ref: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Request {
     #[serde(rename = "hello")]
@@ -33,6 +39,19 @@ pub enum Request {
         argv: Vec<String>,
         env: HashMap<String, String>,
         cwd: Option<String>,
+        /// A saved credential whose secret prompt the helper answers from the Keychain.
+        #[serde(default)]
+        askpass: Option<AskpassSpec>,
+    },
+    /// The user's answer to an `ssh.prompt` (`answer` null = cancelled). Never stored.
+    #[serde(rename = "ssh.prompt_answer")]
+    SshPromptAnswer {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        #[serde(rename = "promptId")]
+        prompt_id: u64,
+        answer: Option<String>,
     },
     #[serde(rename = "session.input")]
     SessionInput {
@@ -202,6 +221,25 @@ pub enum Response {
     },
     #[serde(rename = "credential.ok")]
     CredentialOk { id: u64 },
+    /// OpenSSH asked something the helper must not answer itself (a host key confirmation, an
+    /// informational message): the user decides. `kind` is "confirm" or "none".
+    #[serde(rename = "ssh.prompt")]
+    SshPrompt {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        #[serde(rename = "promptId")]
+        prompt_id: u64,
+        text: String,
+        kind: String,
+    },
+    /// The saved credential was used once and the server asked again: it was refused.
+    #[serde(rename = "ssh.credential_rejected")]
+    SshCredentialRejected {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+    },
+    #[serde(rename = "ssh.prompt_ack")]
+    SshPromptAck { id: u64 },
     /// The answer to `credential.status` (a different name: `credential.status` is the request).
     #[serde(rename = "credential.state")]
     CredentialStatus { id: u64, present: bool },
