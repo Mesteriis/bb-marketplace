@@ -267,6 +267,7 @@ describe("RDP service: states and the desktop", () => {
 
 describe("RDP service: saved credentials", () => {
   const REF = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";
+const BIND = { type: "endpoint", protocol: "rdp", host: "h.test", port: 3389, user: "u", domain: null } as const;
 
   it("rdpOpen with a credentialRef sends the reference to the helper and no password", async () => {
     const { helper, service } = setup();
@@ -278,7 +279,7 @@ describe("RDP service: saved credentials", () => {
 
   it("the vault saves, reports and deletes through the helper", async () => {
     const { helper, service } = setup();
-    await service.credentialVault.save(REF, SECRET);
+    await service.credentialVault.save(REF, SECRET, BIND);
     expect(helper.vault.get(REF)).toBe(SECRET);
     await expect(service.credentialVault.status(REF)).resolves.toBe("present");
     await service.credentialVault.delete(REF);
@@ -288,7 +289,7 @@ describe("RDP service: saved credentials", () => {
   it("a helper refusal becomes a CredentialError with the helper's code, and the secret is in no error text", async () => {
     const { helper, service } = setup();
     helper.vaultError = new HelperRequestError("keychain_locked", "the Keychain is locked");
-    const error = await service.credentialVault.save(REF, SECRET).catch((e: Error) => e);
+    const error = await service.credentialVault.save(REF, SECRET, BIND).catch((e: Error) => e);
     expect(error).toMatchObject({ name: "CredentialError", code: "keychain_locked" });
     expect(JSON.stringify(error) + String((error as Error).stack) + (error as Error).message).not.toContain(SECRET);
     expect(JSON.stringify(service.sessionList())).not.toContain(SECRET);

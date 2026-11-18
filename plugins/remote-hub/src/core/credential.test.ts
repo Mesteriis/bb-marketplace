@@ -27,7 +27,9 @@ class FakeVault implements CredentialVault {
   items = new Map<string, string>();
   calls: string[] = [];
   failWith: string | null = null;
-  async save(ref: string, secret: string) {
+  binds = new Map<string, unknown>();
+  async save(ref: string, secret: string, bind?: unknown) {
+    this.binds.set(ref, bind);
     this.calls.push("save " + ref);
     if (this.failWith !== null) throw new CredentialError(this.failWith);
     this.items.set(ref, secret);
@@ -91,6 +93,19 @@ describe("CredentialBook.save", () => {
       updatedAt: "2026-11-18T10:00:00.000Z",
     });
     expect(profiles.list()[0]?.credentialRef).toBe(ref);
+  });
+
+  it("hands the vault what the secret is for, so the helper can enforce it: the endpoint, or the key file", async () => {
+    const { profiles, vault, book } = setup();
+    const p = profiles.save({ fields: RDP });
+    const { ref } = await book.save({ profileId: p.id, secret: SECRET });
+    expect(vault.binds.get(ref)).toEqual({ type: "endpoint", protocol: "rdp", host: "win.example.test", port: 3389, user: "admin", domain: "CORP" });
+    const ssh = profiles.save({ fields: { ...SSH_AGENT, name: "key", authType: "key", identityFile: "/k/id" } });
+    const saved = await book.save({ profileId: ssh.id, secret: SECRET });
+    expect(vault.binds.get(saved.ref)).toEqual({ type: "key", path: "/k/id" });
+    // An update keeps the stored binding.
+    await book.update(ref, "second");
+    expect(vault.binds.get(ref)).toEqual({ type: "endpoint", protocol: "rdp", host: "win.example.test", port: 3389, user: "admin", domain: "CORP" });
   });
 
   it("refuses an agent-auth profile, an unknown profile and a profile that already has one", async () => {

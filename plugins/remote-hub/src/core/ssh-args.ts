@@ -125,7 +125,12 @@ export function buildSshArgv(target: SshTarget): string[] {
     }
     argv.push("-p", String(target.port));
   }
-  if (target.configFile !== undefined) {
+  if (target.authMethod !== undefined) {
+    // A saved secret only ever goes to the destination named here: no user or system SSH configuration
+    // (no HostName redirect, ProxyCommand, ControlMaster or extra IdentityFile). A configFile given
+    // with it is ignored.
+    argv.push("-F", "none");
+  } else if (target.configFile !== undefined) {
     assertAbsolutePath(target.configFile, "configFile");
     argv.push("-F", target.configFile);
   }
@@ -148,6 +153,8 @@ export function buildSshArgv(target: SshTarget): string[] {
   if (target.authMethod !== undefined) {
     if (target.authMethod !== "password" && target.authMethod !== "publickey") invalid("invalid_authMethod", "authMethod must be password or publickey");
     argv.push("-o", "PreferredAuthentications=" + target.authMethod);
+    // The passphrase of a key is for that key only: no agent identities.
+    if (target.authMethod === "publickey") argv.push("-o", "IdentityAgent=none");
     // A saved secret is tried once. A second prompt is how the helper learns it was refused (it never answers it); the default of 3 would add another prompt.
     argv.push("-o", "NumberOfPasswordPrompts=2");
   }

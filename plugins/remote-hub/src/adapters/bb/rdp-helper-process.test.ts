@@ -82,14 +82,15 @@ async function openRdp(fake: Fake, hp: HelperProcess, sessionId = 7) {
 const lastRequest = (fake: Fake, type: string) => [...sent(fake)].reverse().find((m) => m.type === type) as unknown as { id: number } & Record<string, unknown>;
 
 const REF = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";
+const BIND = { type: "endpoint", protocol: "rdp", host: "h.test", port: 3389, user: "u", domain: null } as const;
 
 describe("HelperProcess credentials (stage 3b)", () => {
   it("credential.save carries the secret down once; the answer carries none", async () => {
     const { fake, hp } = await start();
-    const pending = hp.credentialSave(REF, SECRET);
+    const pending = hp.credentialSave(REF, SECRET, BIND);
     await tick();
     const request = lastRequest(fake, "credential.save");
-    expect(request).toMatchObject({ type: "credential.save", ref: REF, secret: SECRET });
+    expect(request).toMatchObject({ type: "credential.save", ref: REF, secret: SECRET, bind: BIND });
     reply(fake, { type: "credential.ok", id: request.id });
     await expect(pending).resolves.toBeUndefined();
     fake.child.emit("exit", 0);
@@ -105,7 +106,7 @@ describe("HelperProcess credentials (stage 3b)", () => {
     await tick();
     reply(fake, { type: "error", id: lastRequest(fake, "credential.delete").id, code: "keychain_locked", message: "the Keychain is locked" });
     await expect(del).rejects.toMatchObject({ name: "HelperRequestError", code: "keychain_locked" });
-    const save = hp.credentialSave(REF, SECRET);
+    const save = hp.credentialSave(REF, SECRET, BIND);
     await tick();
     reply(fake, { type: "error", id: lastRequest(fake, "credential.save").id, code: "keychain_denied", message: "refused" });
     const error = await save.catch((e: Error) => e);

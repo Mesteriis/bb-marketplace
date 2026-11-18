@@ -194,6 +194,14 @@ describe("ssh_open and a saved credential", () => {
     expect(service.sshOpen).not.toHaveBeenCalled();
   });
 
+  it("a saved password is refused for a target with no user name (ssh would use the local one)", async () => {
+    const { profiles, credentials, handlers, service } = setup();
+    const p = profiles.save({ fields: { ...SSH, username: null } });
+    const { ref } = await credentials.save({ profileId: p.id, secret: SECRET });
+    await expect(handlers.ssh_open(sshInput({ user: undefined }, { credentialRef: ref }))).rejects.toMatchObject({ message: expect.stringContaining("credential_target_mismatch") });
+    expect(service.sshOpen).not.toHaveBeenCalled();
+  });
+
   it("without a reference the open is unchanged: no authMethod, no askpass", async () => {
     const { handlers, service } = setup();
     await handlers.ssh_open(sshInput({}));

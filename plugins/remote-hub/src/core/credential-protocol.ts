@@ -6,11 +6,25 @@ import { z } from "zod";
 const idSchema = z.number().int().min(0);
 const refSchema = z.string().regex(/^rh-cred:v1:[a-z0-9][a-z0-9-]{0,31}:[0-9a-f-]{36}$/);
 
+/** What a saved secret is for; stored with it in the Keychain and enforced by the helper. */
+export const credentialBindSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("endpoint"),
+    protocol: z.enum(["ssh", "rdp"]),
+    host: z.string(),
+    port: z.number().int(),
+    user: z.string().nullable(),
+    domain: z.string().nullable(),
+  }),
+  z.object({ type: z.literal("key"), path: z.string() }),
+]);
+
 export const credentialSaveRequestSchema = z.object({
   type: z.literal("credential.save"),
   id: idSchema,
   ref: refSchema,
   secret: z.string().min(1).max(4096),
+  bind: credentialBindSchema,
 });
 export const credentialDeleteRequestSchema = z.object({
   type: z.literal("credential.delete"),

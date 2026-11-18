@@ -161,6 +161,18 @@ describe("authMethod (set by the server when a saved secret is used)", () => {
     expect(buildSshArgv({ ...base, authMethod: "publickey" })).toContain("NumberOfPasswordPrompts=2");
     expect(buildSshArgv(base).some((a) => a.startsWith("NumberOfPasswordPrompts"))).toBe(false);
   });
+  it("a saved-secret session reads no SSH configuration: -F none replaces any configFile, and a key has no agent", () => {
+    const withCfg = buildSshArgv({ ...base, configFile: "/Users/x/.ssh/config", authMethod: "password", user: "root" });
+    expect(withCfg).toContain("none");
+    expect(withCfg[withCfg.indexOf("-F") + 1]).toBe("none");
+    expect(withCfg).not.toContain("/Users/x/.ssh/config");
+    const key = buildSshArgv({ ...base, authMethod: "publickey", identityFile: "/k/id" });
+    expect(key).toContain("IdentityAgent=none");
+    expect(key).toContain("IdentitiesOnly=yes");
+    expect(buildSshArgv({ ...base, authMethod: "password", user: "root" })).not.toContain("IdentityAgent=none");
+    // Without a saved secret the configFile still works.
+    expect(buildSshArgv({ ...base, configFile: "/tmp/c" })).toContain("/tmp/c");
+  });
   it("refuses another value", () => {
     expect(() => buildSshArgv({ ...base, authMethod: "none" as never })).toThrow(/authMethod/);
   });

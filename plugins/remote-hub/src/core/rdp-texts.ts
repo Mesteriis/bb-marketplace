@@ -61,6 +61,8 @@ const ERROR_CODES: Record<string, string> = {
   keychain_denied: "The Keychain refused access to the saved password.",
   keychain_unavailable: "The Keychain is not available on this Mac.",
   credential_missing: "The saved password is no longer in the Keychain. Edit the profile to save it again.",
+  credential_unbound: "This saved password was stored by an older version and has no host binding. Edit the profile and save it again.",
+  invalid_bind: "The saved password could not be tied to its host.",
   credential_unknown: "That saved password does not exist any more.",
   credential_target_mismatch: "That saved password belongs to a different host or user, so it was not used.",
   credential_exists: "This profile already has a saved password; replace it instead.",

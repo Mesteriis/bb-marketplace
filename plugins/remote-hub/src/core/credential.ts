@@ -4,6 +4,7 @@
 // secret is only ever passed DOWN (save/update); nothing here returns one.
 import { z } from "zod";
 import { DEFAULT_RDP_PORT } from "./catalogue.ts";
+import { credentialBindSchema } from "./credential-protocol.ts";
 import type { ProfileBook } from "./profile-book.ts";
 import { LOCAL_EXECUTION_HOST_ID, type Profile, type ProfileInput } from "./profile.ts";
 
@@ -15,18 +16,6 @@ export class CredentialError extends Error {
     this.code = code;
   }
 }
-
-export const credentialBindSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("endpoint"),
-    protocol: z.enum(["ssh", "rdp"]),
-    host: z.string(),
-    port: z.number().int(),
-    user: z.string().nullable(),
-    domain: z.string().nullable(),
-  }),
-  z.object({ type: z.literal("key"), path: z.string() }),
-]);
 
 export const credentialMetaSchema = z
   .object({
@@ -40,6 +29,7 @@ export const credentialMetaSchema = z
   })
   .strict();
 
+export { credentialBindSchema };
 export type CredentialBind = z.infer<typeof credentialBindSchema>;
 export type CredentialMeta = z.infer<typeof credentialMetaSchema>;
 export type CredentialState = "present" | "missing" | "locked" | "denied" | "unavailable";
@@ -53,7 +43,7 @@ export interface CredentialMetaStore {
 
 /** Where secrets live. Throws CredentialError with the helper's code (keychain_locked, ...). */
 export interface CredentialVault {
-  save(ref: string, secret: string): Promise<void>;
+  save(ref: string, secret: string, bind: CredentialBind): Promise<void>;
   delete(ref: string): Promise<void>;
   status(ref: string): Promise<"present" | "missing">;
 }
@@ -169,7 +159,7 @@ export class CredentialBook {
     if (profile.credentialRef !== null) throw new CredentialError("credential_exists", "this profile already has a saved credential; update it");
     const ref = `rh-cred:v1:${LOCAL_EXECUTION_HOST_ID}:${this.deps.newId()}`;
     try {
-      await this.deps.vault.save(ref, input.secret);
+      await this.deps.vault.save(ref, input.secret, bindOf(profile));
     } catch (error) {
       // The write may have landed even though the call failed: ask for the item to be removed.
       throw CredentialBook.withNote(error, await this.cleanup(ref));
@@ -234,7 +224,7 @@ export class CredentialBook {
     if (secret.length === 0) throw new CredentialError("empty_secret", "the secret is empty");
     const meta = this.deps.store.get(ref);
     if (meta === null) throw new CredentialError("credential_unknown", "no such credential");
-    await this.deps.vault.save(ref, secret);
+    await this.deps.vault.save(ref, secret, meta.bind);
     this.deps.store.put({ ...meta, updatedAt: this.deps.now().toISOString() });
   }
 
@@ -289,6 +279,8 @@ export class CredentialBook {
     const meta = this.deps.store.get(ref);
     if (meta === null) throw new CredentialError("credential_unknown", "no such credential");
     if (meta.kind === "password") {
+      // The user comes from -l: with none, ssh would use the local name and the prompt would not be the one expected.
+      if (endpoint.user === null) throw new CredentialError("credential_target_mismatch", "a saved password needs a user name");
       this.authorizeEndpoint(ref, endpoint);
       return "password";
     }

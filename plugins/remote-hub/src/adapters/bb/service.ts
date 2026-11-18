@@ -643,7 +643,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       }
     },
     credentialVault: {
-      save: async (ref, secret) => viaVault(async (hp) => hp.credentialSave(ref, secret)),
+      save: async (ref, secret, bind) => viaVault(async (hp) => hp.credentialSave(ref, secret, bind)),
       delete: async (ref) => viaVault(async (hp) => hp.credentialDelete(ref)),
       status: async (ref) => ((await viaVault(async (hp) => hp.credentialStatus(ref))) ? "present" : "missing"),
     },

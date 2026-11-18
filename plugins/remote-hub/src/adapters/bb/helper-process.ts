@@ -7,6 +7,7 @@
 // experimental_execHostFile from "@get-bb/plugin-sdk/process"
 // (bundled-types/bb-plugin-sdk-process.d.ts:46-54); both wrap Node's
 // child_process, which is what the BB server itself runs on.
+import type { CredentialBind } from "../../core/credential.ts";
 import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
 import { experimental_execHostFile, experimental_spawnHostProcess } from "@get-bb/plugin-sdk/process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -779,8 +780,8 @@ export class HelperProcess {
   }
 
   /** Stores a secret in the Keychain under `ref`. The secret goes down once; nothing comes back. */
-  async credentialSave(ref: string, secret: string): Promise<void> {
-    const resp = await this.request({ type: "credential.save", ref, secret } as RequestMessage);
+  async credentialSave(ref: string, secret: string, bind: CredentialBind): Promise<void> {
+    const resp = await this.request({ type: "credential.save", ref, secret, bind } as RequestMessage);
     if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
     if (resp.type !== "credential.ok") throw new Error("unexpected helper response: " + resp.type);
   }

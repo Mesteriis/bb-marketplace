@@ -127,7 +127,6 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
   let lockedKey = "";
   let knownHosts = "";
   let emptyKnownHosts = "";
-  let cfg = "";
   let service: RemoteHubService;
   let stderr = "";
   let helperPid = 0;
@@ -158,7 +157,8 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
     rdpHeight: null,
     ...over,
   });
-  const target = (over: Record<string, unknown> = {}) => ({ host: "127.0.0.1", port, user: "root", configFile: cfg, knownHostsFile: knownHosts, extraOptions: [] as string[], ...over });
+  // No configFile: a session with a saved secret reads no SSH configuration at all.
+  const target = (over: Record<string, unknown> = {}) => ({ host: "127.0.0.1", port, user: "root", knownHostsFile: knownHosts, extraOptions: [] as string[], ...over });
   const failedPasswords = (): number => ((spawnSync("docker", ["logs", cid], { encoding: "utf8" }).stderr ?? "").match(/Failed password/g) ?? []).length;
   const closedOf = (handle: { generation: string; sessionId: number }) =>
     service.sessionList().find((s) => s.generation === handle.generation && s.sessionId === handle.sessionId && s.state === "closed");
@@ -205,7 +205,15 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
     plainKey = join(tmp, "id_plain");
     lockedKey = join(tmp, "id_locked");
     execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-f", plainKey, "-q"]);
-    execFileSync("ssh-keygen", ["-t", "ed25519", "-N", PASSPHRASE, "-f", lockedKey, "-q"]);
+    // The passphrase is never on a command line: ssh-keygen asks for it through a throwaway askpass
+    // script that reads it from its own (short-lived) environment.
+    execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-f", lockedKey, "-q"]);
+    const fixtureAskpass = join(tmp, "fixture-askpass.sh");
+    writeFileSync(fixtureAskpass, '#!/bin/sh\nprintf "%s\\n" "$RH_FIXTURE_PASSPHRASE"\n', { mode: 0o700 });
+    execFileSync("ssh-keygen", ["-p", "-f", lockedKey, "-q"], {
+      env: { ...process.env, SSH_ASKPASS: fixtureAskpass, SSH_ASKPASS_REQUIRE: "force", RH_FIXTURE_PASSPHRASE: PASSPHRASE },
+      stdio: ["ignore", "ignore", "inherit"],
+    });
     port = await freePort();
     cid = execFileSync("docker", ["run", "-d", "-p", `127.0.0.1:${port}:22`, IMAGE], { encoding: "utf8" }).trim();
     execFileSync("docker", ["exec", "-i", cid, "chpasswd"], { input: `root:${PASSWORD}\n` });
@@ -218,8 +226,6 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
     knownHosts = join(tmp, "known_hosts");
     writeFileSync(knownHosts, `[127.0.0.1]:${port} ${hostKey}\n`);
     emptyKnownHosts = join(tmp, "empty_known_hosts");
-    cfg = join(tmp, "config");
-    writeFileSync(cfg, "Host rh\n");
 
     const env = { ...process.env, REMOTE_HUB_KEYCHAIN_PATH: join(tmp, "kc.keychain-db"), REMOTE_HUB_KEYCHAIN_CREATE_PASSWORD: "throwaway-kc-password" };
     service = createRemoteHubService({
@@ -319,6 +325,40 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
       message: expect.stringContaining("credential_target_mismatch"),
     });
   }, 30_000);
+
+  it("a server that offers only keyboard-interactive, with look-alike password and passphrase prompts, is never asked and never answered", async () => {
+    execFileSync("docker", ["build", "-q", "-t", "remote-hub-kbd-test", "-f", join(here, "kbd-Dockerfile"), here], { stdio: "ignore" });
+    const kbdPort = await freePort();
+    const kbd = execFileSync("docker", ["run", "-d", "-p", `127.0.0.1:${kbdPort}:2222`, "remote-hub-kbd-test"], { encoding: "utf8" }).trim();
+    try {
+      const logs = () => (spawnSync("docker", ["logs", kbd], { encoding: "utf8" }).stdout ?? "");
+      await poll(() => logs().includes("READY"), 30_000, "the keyboard-interactive server");
+      const hostKey = /HOSTKEY (\S+ \S+)/.exec(logs())![1];
+      const kh = join(tmp, "kbd_known_hosts");
+      writeFileSync(kh, `[127.0.0.1]:${kbdPort} ${hostKey}\n`);
+      const mine: SshAskpassEvent[] = [];
+      // A saved password for this server, and a saved passphrase for the encrypted key.
+      const pw = profiles.save({ fields: sshFields({ name: "kbd-pw", port: kbdPort }) });
+      const pwRef = (await book.save({ profileId: pw.id, secret: PASSWORD })).ref;
+      const key = profiles.save({ fields: sshFields({ name: "kbd-key", port: kbdPort, authType: "key", identityFile: lockedKey }) });
+      const keyRef = (await book.save({ profileId: key.id, secret: PASSPHRASE })).ref;
+      for (const [profile, ref, extra] of [[pw, pwRef, {}], [key, keyRef, { identityFile: lockedKey }]] as const) {
+        const handle = await rpc.ssh_open({ target: target({ port: kbdPort, knownHostsFile: kh, ...extra }), cols: 80, rows: 24, profileId: profile.id, credentialRef: ref } as never);
+        service.subscribeSshAskpass(handle, (e) => mine.push(e));
+        await poll(() => closedOf(handle), 40_000, "the session ends: the server offers nothing the client may use");
+      }
+      const log = logs();
+      // The client used neither password, key nor keyboard-interactive: the fixed method is not on offer, so ssh stopped.
+      expect(log).not.toContain("ATTEMPT keyboard-interactive");
+      expect(log).not.toContain("ATTEMPT password");
+      expect(log).not.toContain("ATTEMPT publickey");
+      expect(log).not.toContain("RESPONSES");
+      expect(mine, "no prompt, notice or answer may reach askpass").toEqual([]);
+      events.push(...mine);
+    } finally {
+      spawnSync("docker", ["rm", "-f", kbd], { stdio: "ignore" });
+    }
+  }, 150_000);
 
   it("no secret appears in any channel", () => {
     const processes = ourProcesses(helperPid);
