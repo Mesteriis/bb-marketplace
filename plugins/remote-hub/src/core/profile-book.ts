@@ -25,6 +25,15 @@ export interface ProfileBookDeps {
   onHistoryError?: ((code: string) => void) | undefined;
 }
 
+/** What an open actually connects to, for attributing it to a profile. */
+export interface OpenEndpoint {
+  protocol: "ssh" | "rdp";
+  host: string;
+  port: number;
+  user: string | null;
+  domain: string | null;
+}
+
 export class ProfileError extends Error {
   readonly code: "not_found";
   constructor(code: "not_found", message: string) {
@@ -91,6 +100,23 @@ export class ProfileBook {
     const kept = HISTORY_CODE.test(code) ? code : "unknown";
     const recentErrors = [...profile.recentErrors, { at: this.deps.now().toISOString(), code: kept }].slice(-RECENT_ERRORS_MAX);
     this.deps.store.put({ ...profile, recentErrors });
+  }
+
+  /**
+   * The profile id an open may be attributed to: the id only when the stored
+   * profile exists and the endpoint of the open is the profile's own (protocol,
+   * host, port, user and, for RDP, domain). Otherwise undefined: the open still
+   * runs, unattributed, and no profile's history is touched.
+   */
+  attribute(profileId: string | undefined, endpoint: OpenEndpoint): string | undefined {
+    if (profileId === undefined) return undefined;
+    const p = this.deps.store.get(profileId);
+    if (p === null || p.protocol !== endpoint.protocol || p.host !== endpoint.host) return undefined;
+    const defaultPort = p.protocol === "rdp" ? 3389 : 22;
+    if ((p.port ?? defaultPort) !== endpoint.port) return undefined;
+    if ((p.username ?? null) !== endpoint.user) return undefined;
+    if (p.protocol === "rdp" && (p.domain ?? null) !== endpoint.domain) return undefined;
+    return p.id;
   }
 
   /** Runs an open on behalf of a profile and records its outcome. Without a profile id it just runs. */

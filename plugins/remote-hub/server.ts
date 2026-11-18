@@ -75,10 +75,28 @@ export default function plugin(bb: BbPluginApi): void {
       ),
     echo_close: (input) =>
       withHelper(() => service.echoClose({ generation: input.generation, sessionId: input.sessionId })),
-    ssh_open: (input) =>
-      profiles.track(input.profileId, () => withHelper(() => service.sshOpen(input.target, input.cols, input.rows, input.profileId))),
-    rdp_open: (input) =>
-      profiles.track(input.profileId, () => withHelper(() => service.rdpOpen(input.target, input.width, input.height, input.profileId))),
+    // profileId is a claim, not a fact: it is kept only when the target is the
+    // profile's own endpoint; otherwise the open runs unattributed.
+    ssh_open: (input) => {
+      const profileId = profiles.attribute(input.profileId, {
+        protocol: "ssh",
+        host: input.target.host,
+        port: input.target.port ?? 22,
+        user: input.target.user ?? null,
+        domain: null,
+      });
+      return profiles.track(profileId, () => withHelper(() => service.sshOpen(input.target, input.cols, input.rows, profileId)));
+    },
+    rdp_open: (input) => {
+      const profileId = profiles.attribute(input.profileId, {
+        protocol: "rdp",
+        host: input.target.host,
+        port: input.target.port,
+        user: input.target.username,
+        domain: input.target.domain ?? null,
+      });
+      return profiles.track(profileId, () => withHelper(() => service.rdpOpen(input.target, input.width, input.height, profileId)));
+    },
     profile_list: () => profiles.list(),
     profile_save: (input) => withProfile(() => profiles.save(input)),
     profile_delete: (input) => ({ deleted: profiles.remove(input.id) }),

@@ -198,3 +198,43 @@ describe("ProfileBook history codes and update (P6, P7)", () => {
     expect(instance.save({ id: saved.id, fields: { ...FIELDS, name: "again" } }).executionHostId).toBe("other-mac");
   });
 });
+
+describe("ProfileBook.attribute: the server does not trust the caller's profileId (P4)", () => {
+  const sshEndpoint = { protocol: "ssh" as const, host: "build.example.test", port: 22, user: "ci", domain: null };
+
+  it("keeps the id only when protocol, host, port, user and domain all match the stored profile", () => {
+    const { instance } = book();
+    const saved = instance.save({ fields: FIELDS });
+    expect(instance.attribute(saved.id, sshEndpoint)).toBe(saved.id);
+    for (const change of [{ protocol: "rdp" as const }, { host: "other.example.test" }, { port: 2222 }, { user: "root" }, { user: null }]) {
+      expect(instance.attribute(saved.id, { ...sshEndpoint, ...change }), JSON.stringify(change)).toBeUndefined();
+    }
+  });
+
+  it("applies the protocol default port: a profile without a port means 22 for SSH and 3389 for RDP", () => {
+    const { instance } = book();
+    const ssh = instance.save({ fields: FIELDS });
+    const rdp = instance.save({ fields: { ...FIELDS, protocol: "rdp", authType: "password", username: "admin", domain: "CORP", rdpWidth: null, rdpHeight: null } });
+    expect(instance.attribute(ssh.id, sshEndpoint)).toBe(ssh.id);
+    expect(instance.attribute(rdp.id, { protocol: "rdp", host: "build.example.test", port: 3389, user: "admin", domain: "CORP" })).toBe(rdp.id);
+    expect(instance.attribute(rdp.id, { protocol: "rdp", host: "build.example.test", port: 22, user: "admin", domain: "CORP" })).toBeUndefined();
+    expect(instance.attribute(rdp.id, { protocol: "rdp", host: "build.example.test", port: 3389, user: "admin", domain: "OTHER" })).toBeUndefined();
+    expect(instance.attribute(rdp.id, { protocol: "rdp", host: "build.example.test", port: 3389, user: "admin", domain: null })).toBeUndefined();
+  });
+
+  it("an unknown or deleted profile and a missing id give no attribution", () => {
+    const { instance } = book();
+    const saved = instance.save({ fields: FIELDS });
+    instance.remove(saved.id);
+    expect(instance.attribute(saved.id, sshEndpoint)).toBeUndefined();
+    expect(instance.attribute(undefined, sshEndpoint)).toBeUndefined();
+  });
+
+  it("a mismatching open runs without touching any profile's history", async () => {
+    const { instance } = book();
+    const saved = instance.save({ fields: FIELDS });
+    const id = instance.attribute(saved.id, { ...sshEndpoint, host: "elsewhere.example.test" });
+    await instance.track(id, async () => "ok");
+    expect(instance.list()[0]?.lastOpenedAt).toBeNull();
+  });
+});
