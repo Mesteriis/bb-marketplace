@@ -448,3 +448,28 @@ and `useProfiles` around the existing session pages; Quick connect stays.
   with no question and no password. Proven against a real Docker sshd (`tests/integration/ssh-askpass.test.ts`).
 - **Resolved destinations.** Unchanged from 3c-1: a resolved alias becomes an explicit profile that can hold a secret;
   an unresolved one (proxy, Match, tokens, incomplete read) keeps using the user's ssh config and cannot save a secret.
+
+## Stage 3c-2 repairs (W1-W8): what changed and the limits that remain
+
+- **Overlay, one writer.** ssh never touches the overlay. A saved-secret session gets a private copy
+  (`<overlay dir>/sessions/s<pid>-<n>`, 0600) named as ONE double-quoted `UserKnownHostsFile` (the production path
+  has a space; unquoted, ssh read it as two files), with `GlobalKnownHostsFile=none`, `StrictHostKeyChecking=ask`,
+  `UpdateHostKeys=no`, `CheckHostIP=no`, `HashKnownHosts=no`, `VerifyHostKeyDNS=no`. When the session ends the helper
+  merges the complete, valid, plain lines ssh added (not a half line) into the overlay under a lock file, replacing the
+  overlay atomically and checking the size before publishing. Forget and Add use the same lock and replace. A crash loses
+  at most the last confirmation (asked again next time). Wildcard and negated host patterns are refused on import.
+  Hashed entries cannot be matched by name, so Forget says it cannot remove them.
+- **First-use RDP pin, atomic.** A saved password with no pin ignores any caller-supplied expected fingerprint. After TLS
+  and before CredSSP the engine sends `PinRequest` and waits for `PinAnswer`; the helper runs ONE keychain-child `pin`
+  call (write if empty, compare if set). Two first sessions are serialised by the single-threaded helper: the first
+  writes, the second compares and is refused (`cert_changed`). A write error or silence is a refusal (`cert_rejected`,
+  `timeout`). Limit: this is trust on first sight, and a certificate that validates against the system roots is accepted
+  at that first use without a prompt; two helper processes sharing one keychain item are not coordinated.
+- **ssh_config reader.** Words are split like OpenSSH (single and double quotes removed before pattern matching). A
+  relative Include is anchored to `~/.ssh`; a config elsewhere with a relative Include is reported incomplete. A failed
+  lookup (permission) is incomplete, not absent. Under an incomplete scan, ssh -G is refused and a truncated hosts file
+  offers nothing as resolved.
+- **needs_config.** An appended migration backfills it from unresolved import links; it is cleared only by a NEW host
+  together with a port and a user.
+- **Service-side rules.** The service refuses "always trust" for a changed certificate; known_hosts apply is bound to
+  the reviewed scan and an explicit selection.

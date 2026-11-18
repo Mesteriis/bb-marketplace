@@ -374,6 +374,40 @@ describe("RDP service: certificate decisions and trust", () => {
     expect(two.service.rdpInfo(fourth)?.prompt).toMatchObject({ fingerprint: FP_A, reason: "untrusted_root" });
   });
 
+  it("'always trust' on a CHANGED certificate is refused by the service, nothing is stored and the helper is not told (W6a)", async () => {
+    const rows: TrustedRdpCert[] = [];
+    const disk: PersistentRdpTrust = { all: () => [...rows], add: (c) => void rows.push(c), remove: () => false };
+    const { helper, service } = setup(disk);
+    const first = await service.rdpOpen({ ...TARGET }, 8, 4);
+    helper.prompt(first.sessionId, FP_A);
+    await service.rdpCertDecision(first, FP_A, "always_trust");
+    expect(rows).toHaveLength(1);
+    const second = await service.rdpOpen({ ...TARGET }, 8, 4);
+    helper.prompt(second.sessionId, FP_B);
+    expect(service.rdpInfo(second)?.prompt).toMatchObject({ reason: "cert_changed" });
+    helper.decisions.length = 0;
+    await expect(service.rdpCertDecision(second, FP_B, "always_trust")).rejects.toMatchObject({ code: "always_trust_refused" });
+    expect(rows).toHaveLength(1); // only the first certificate
+    expect(helper.decisions).toEqual([]);
+    // The prompt is still pending: the user can still accept it once, or reject it.
+    expect(service.rdpInfo(second)?.prompt).toMatchObject({ fingerprint: FP_B });
+    await service.rdpCertDecision(second, FP_B, "once");
+    expect(rows).toHaveLength(1);
+  });
+
+  it("'once', 'this BB run' and 'reject' persist nothing (W6a)", async () => {
+    for (const answer of ["once", "session_trust", "reject"] as const) {
+      const rows: TrustedRdpCert[] = [];
+      const disk: PersistentRdpTrust = { all: () => [...rows], add: (c) => void rows.push(c), remove: () => false };
+      const { helper, service } = setup(disk);
+      const handle = await service.rdpOpen({ ...TARGET }, 8, 4);
+      helper.prompt(handle.sessionId, FP_A);
+      await service.rdpCertDecision(handle, FP_A, answer);
+      expect(rows, answer).toEqual([]);
+      expect(service.rdpTrustedList(), answer).toEqual([]);
+    }
+  });
+
   it("'once' and 'reject' do not create trust", async () => {
     const { helper, service } = setup();
     const first = await service.rdpOpen({ ...TARGET }, 8, 4);

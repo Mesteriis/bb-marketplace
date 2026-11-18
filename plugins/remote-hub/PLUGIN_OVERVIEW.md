@@ -16,8 +16,8 @@ both through a Rust helper, plus the echo console from stage 1.
   validated strictly; when it is not trusted you see its fingerprint, subject,
   issuer and validity and choose to accept it once, trust it for this BB run, or
   reject it, or trust it for good (listed, and forgotten, in Import). A different
-  certificate on a host you trusted is shown as changed and is never accepted
-  automatically. Sign-in uses NLA/CredSSP when the server
+  certificate that your Mac does not trust by itself is shown as changed and is
+  not accepted automatically. Sign-in uses NLA/CredSSP when the server
   offers it.
 - Saved profiles: a catalogue beside Quick connect (nothing saved) with search,
   an SSH/RDP filter, groups, tags, favourites and live status; an editor for name,
@@ -45,7 +45,8 @@ both through a Rust helper, plus the echo console from stage 1.
 Passwords saved before bindings existed must be saved again. The helper is unsigned: same-user code
 injected into it is not stopped. A saved RDP password is bound to
 host, port, user and domain and, after its first accepted use, to that server
-certificate: the helper sends it to no other (save it again to start over).
+certificate (trust on first sight): the helper sends it to no other (save it
+again to start over).
 One-time-code logins are always typed by you. There are no agent tools or CLI yet. macOS may ask you to
 approve the helper's Keychain access; until then a saved password reports "locked or needs approval". "Last opened" means the open succeeded, not that the server accepted a login.
 No clipboard, no remote resize, no Kerberos. NLA against a real Windows host and strict TLS were checked by hand;

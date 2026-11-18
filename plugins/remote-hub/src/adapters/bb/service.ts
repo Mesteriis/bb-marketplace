@@ -587,6 +587,10 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       if (!fingerprintEqual(prompt.fingerprint, fingerprint)) {
         throw new HelperRequestError("fingerprint_mismatch", "the decision names a different certificate than the one presented");
       }
+      // A changed certificate is never trusted for good, whatever the page offered: the old one has to be forgotten first.
+      if (accept === "always_trust" && prompt.reason === "cert_changed") {
+        throw new HelperRequestError("always_trust_refused", "a changed certificate cannot be trusted for good; forget the old one first");
+      }
       const hp = await start();
       // The helper knows two ways to accept (this handshake only, or on); "for good" is the plugin's own record.
       await hp.rdpCertDecision(handle, prompt.fingerprint, accept === "always_trust" ? "session_trust" : accept);

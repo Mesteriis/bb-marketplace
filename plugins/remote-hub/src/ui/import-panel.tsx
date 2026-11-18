@@ -365,7 +365,7 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
 
       <div aria-label="Trusted RDP certificates">
         <h3>RDP certificates you trust</h3>
-        <p className="rh-hint">Chosen with "Always trust this certificate". A different certificate on the same server is shown as changed and is never accepted automatically; a saved RDP password is sent only to the certificate it was first used with.</p>
+        <p className="rh-hint">Chosen with "Always trust this certificate". A different certificate on the same server that this Mac does not trust by itself is shown as changed and is never accepted automatically; one that this Mac trusts through its own root certificates is not asked about. A saved RDP password is sent only to the certificate it was first used with, and that first use is trust on first sight.</p>
         {rdpCerts !== null && rdpCerts.length === 0 && <p className="rh-hint">None yet.</p>}
         <ul>
           {(rdpCerts ?? []).map((c) => (
