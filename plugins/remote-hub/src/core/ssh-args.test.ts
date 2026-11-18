@@ -173,6 +173,13 @@ describe("authMethod (set by the server when a saved secret is used)", () => {
     // Without a saved secret the configFile still works.
     expect(buildSshArgv({ ...base, configFile: "/tmp/c" })).toContain("/tmp/c");
   });
+  it("a saved-secret session names the destination in lower case (the form it is bound to and prompted in)", () => {
+    for (const host of ["BOX.Example.TEST", "10.0.0.7", "FE80::ABCD"]) {
+      const argv = buildSshArgv({ host, extraOptions: [], authMethod: "password", user: "u" });
+      expect(argv[argv.length - 1]).toBe(host.toLowerCase());
+    }
+    expect(buildSshArgv({ host: "BOX.Example.TEST", extraOptions: [] }).slice(-1)[0]).toBe("BOX.Example.TEST");
+  });
   it("refuses another value", () => {
     expect(() => buildSshArgv({ ...base, authMethod: "none" as never })).toThrow(/authMethod/);
   });

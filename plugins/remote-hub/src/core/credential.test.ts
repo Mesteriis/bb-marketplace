@@ -100,6 +100,10 @@ describe("CredentialBook.save", () => {
     const p = profiles.save({ fields: RDP });
     const { ref } = await book.save({ profileId: p.id, secret: SECRET });
     expect(vault.binds.get(ref)).toEqual({ type: "endpoint", protocol: "rdp", host: "win.example.test", port: 3389, user: "admin", domain: "CORP" });
+    // A mixed-case host is bound in lower case.
+    const mixed = profiles.save({ fields: { ...RDP, name: "mixed", host: "WIN2.Example.TEST", username: "other" } });
+    const m = await book.save({ profileId: mixed.id, secret: SECRET });
+    expect(vault.binds.get(m.ref)).toMatchObject({ host: "win2.example.test" });
     const ssh = profiles.save({ fields: { ...SSH_AGENT, name: "key", authType: "key", identityFile: "/k/id" } });
     const saved = await book.save({ profileId: ssh.id, secret: SECRET });
     expect(vault.binds.get(saved.ref)).toEqual({ type: "key", path: "/k/id" });

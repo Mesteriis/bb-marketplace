@@ -228,10 +228,11 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
     await sleep(2000);
     const hostKey = execFileSync("docker", ["exec", cid, "cat", "/etc/ssh/ssh_host_ed25519_key.pub"], { encoding: "utf8" }).trim();
     knownHosts = join(tmp, "known_hosts");
-    writeFileSync(knownHosts, `[127.0.0.1]:${port} ${hostKey}\n`);
+    // A real session reads OpenSSH's default known_hosts (never touched here); this test-hooks helper allows a file.
+    writeFileSync(knownHosts, `[127.0.0.1]:${port} ${hostKey}\n[localhost]:${port} ${hostKey}\n`);
     emptyKnownHosts = join(tmp, "empty_known_hosts");
 
-    const env = { ...process.env, REMOTE_HUB_KEYCHAIN_PATH: join(tmp, "kc.keychain-db"), REMOTE_HUB_KEYCHAIN_CREATE_PASSWORD: "throwaway-kc-password" };
+    const env = { ...process.env, REMOTE_HUB_KEYCHAIN_PATH: join(tmp, "kc.keychain-db"), REMOTE_HUB_KEYCHAIN_CREATE_PASSWORD: "throwaway-kc-password", REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS: "1" };
     service = createRemoteHubService({
       startHelper: () =>
         HelperProcess.spawn(HELPER, (bin, args) => {
@@ -272,6 +273,16 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
     watch(handle);
     await expectShell(handle, 7, 8);
     expect(events.filter((e) => e.type !== "prompt")).toEqual([]);
+  }, 90_000);
+
+  it("a mixed-case host name gets the saved password: OpenSSH prints it in lower case and so does the binding", async () => {
+    const mixed = profiles.save({ fields: sshFields({ name: "mixed", host: "LocalHost" }) });
+    const { ref } = await book.save({ profileId: mixed.id, secret: PASSWORD });
+    const handle = await rpc.ssh_open({ target: target({ host: "LOCALHOST" }), cols: 80, rows: 24, profileId: mixed.id, credentialRef: ref } as never);
+    const mine: SshAskpassEvent[] = [];
+    service.subscribeSshAskpass(handle, (e) => mine.push(e));
+    await expectShell(handle, 4, 9);
+    expect(mine, "the saved password was not given to a manual prompt").toEqual([]);
   }, 90_000);
 
   it("a wrong saved password is tried ONCE, the server's own log counts it, and the failure is reported", async () => {

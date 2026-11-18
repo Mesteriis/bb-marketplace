@@ -533,3 +533,22 @@
   overflow-wrap: anywhere;
   margin: 8px 0 12px;
 }
+
+.rh-rdp-cert input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 6px 0 10px;
+  padding: 4px 8px;
+  background: var(--canvas, #0d1117);
+  color: var(--ink, #c9d1d9);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  font: inherit;
+}
+
+.rh-ssh-prompt-type {
+  display: block;
+  color: var(--muted-foreground, #8b949e);
+  margin-bottom: 8px;
+}

@@ -163,7 +163,8 @@ export function buildSshArgv(target: SshTarget): string[] {
     argv.push(option);
   }
   assertToken(target.host, "host");
-  argv.push("--", target.host);
+  // With a saved secret the destination is the lower-case form the secret is bound to and OpenSSH prints.
+  argv.push("--", target.authMethod !== undefined ? target.host.toLowerCase() : target.host);
   return argv;
 }
 

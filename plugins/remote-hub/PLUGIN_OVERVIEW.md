@@ -44,14 +44,13 @@ both through a Rust helper, plus the echo console from stage 1.
 
 ## Honest limits
 
-Passwords saved before bindings existed must be saved again. The Keychain is not
-isolation from another program of the same user that can drive the helper (it still
-cannot redirect a secret). One-time-code logins are always typed by you. Certificate trust lasts for the BB run, and there is no
-import of SSH config, no agent tools and no CLI yet. The helper is not code-signed,
-so macOS may ask you to approve its Keychain access; until you do, a saved password
-reports "locked or needs approval" instead of a dialog. "Last opened" means the open call succeeded, not that
-the server accepted a login. No clipboard, no remote resize, no
-Kerberos. NLA against a real Windows host and strict TLS were checked by hand;
+Passwords saved before bindings existed must be saved again. The helper is unsigned: same-user code
+injected into it is not stopped. A saved RDP password is bound to
+host, port, user and domain; you still decide on the server certificate each time.
+One-time-code logins are always typed by you. Certificate trust lasts for the BB run, and there is no
+import of SSH config, no agent tools and no CLI yet. macOS may ask you to
+approve the helper's Keychain access; until then a saved password reports "locked or needs approval". "Last opened" means the open succeeded, not that the server accepted a login.
+No clipboard, no remote resize, no Kerberos. NLA against a real Windows host and strict TLS were checked by hand;
 the plugin has not otherwise been exercised inside a live BB server. The helper
 binary is not committed under bin/; build it with npm run build:helper (Rust
 toolchain for aarch64-apple-darwin).

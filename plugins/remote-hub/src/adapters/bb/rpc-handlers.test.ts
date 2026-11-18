@@ -179,6 +179,14 @@ describe("ssh_open and a saved credential", () => {
     expect(service.sshOpen).toHaveBeenCalledTimes(1);
   });
 
+  it("a mixed-case host name is the same host: it authorizes against the lower-case binding", async () => {
+    const { profiles, credentials, handlers, service } = setup();
+    const p = profiles.save({ fields: { ...SSH, host: "Box.Example.TEST" } });
+    const { ref } = await credentials.save({ profileId: p.id, secret: SECRET });
+    await handlers.ssh_open(sshInput({ host: "BOX.example.test" }, { credentialRef: ref }));
+    expect(service.sshOpen).toHaveBeenCalledTimes(1);
+  });
+
   it("a password saved for another host, port or user is refused and nothing reaches the helper", async () => {
     const { profiles, credentials, handlers, service } = setup();
     const p = profiles.save({ fields: SSH });

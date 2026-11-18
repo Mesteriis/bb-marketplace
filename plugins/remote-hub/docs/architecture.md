@@ -374,3 +374,29 @@ and `useProfiles` around the existing session pages; Quick connect stays.
   a host-key "yes" needs a pointer click or the word typed, an unanswered question closes with a notice
   (`ssh.prompt_expired`), and the broker's directory is removed when its constructor fails (S9); the
   fixture key's passphrase never appears in argv (S10).
+
+### Stage 3b second repair round (T1-T7)
+
+- **T1 canonical host:** the host is lower-case in the binding (TypeScript at save, the helper again at
+  save), in the argv of a saved-secret session and in the expected prompt, because OpenSSH lowercases
+  the name it prints. A mixed-case name no longer falls back to a manual prompt (real-sshd test with
+  `LocalHost`).
+- **T2 bytes:** the askpass client reads the helper's reply as bytes (UTF-8 JSON), so non-ASCII secrets arrive
+  intact; tested byte for byte (digest of a synthetic password and passphrase through the client, and an
+  RDP password through save and open). The new test fails against the old byte-as-char reader (checked in a copy).
+- **T3 server identity (SSH):** a saved-secret session takes no `UserKnownHostsFile` (OpenSSH's own default
+  known_hosts and strict checking apply, so an unknown host asks the user through the confirm prompt), no
+  `ssh://` or path destination, and no `-i` for a password session. Test-hooks helpers can allow a known_hosts file
+  by an environment variable so the Docker tests never touch a real `~/.ssh`; the production binary does not
+  contain it. A 3c overlay will be a helper-owned path.
+- **T4 server identity (RDP), deferred to 3c:** a saved RDP password is bound to host, port, user and
+  domain; the certificate decision is still the user's, per session. 3c's persistent certificate trust will
+  add the certificate fingerprint to the binding (set at the first accepted use), and the helper will refuse to
+  send the password to a different certificate.
+- **T5 envelope marker:** the Keychain item carries a fixed `magic` string; a legacy raw secret that merely
+  parses as JSON is never taken for an envelope.
+- **T6** the imposter-socket test no longer unwraps a refused `SO_RCVTIMEO` (EINVAL once the client has left).
+- **T7 same-user limit, concretely:** the helper is unsigned and has no hardened runtime, so code injected into a
+  helper process by the same user passes the Keychain ACL and the parent-process check; signing with the
+  hardened runtime would close that. A key passphrase is bound to its key file only because it never leaves
+  the askpass relay (the helper compares the key path before releasing it).

@@ -75,7 +75,7 @@ export function createRpcHandlers({ service, profiles, credentials }: RpcHandler
     ssh_open: async (input) => {
       const endpoint = {
         protocol: "ssh" as const,
-        host: input.target.host,
+        host: input.target.host.toLowerCase(),
         port: input.target.port ?? 22,
         user: input.target.user ?? null,
         domain: null,

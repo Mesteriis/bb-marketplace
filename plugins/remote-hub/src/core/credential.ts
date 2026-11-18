@@ -87,7 +87,8 @@ const STATE_OF_CODE: Record<string, CredentialState> = {
 export function endpointOf(p: Profile): Endpoint {
   return {
     protocol: p.protocol,
-    host: p.host,
+    // Lower case, as OpenSSH prints it in its prompts and as the helper stores and compares it.
+    host: p.host.toLowerCase(),
     port: p.port ?? (p.protocol === "rdp" ? DEFAULT_RDP_PORT : 22),
     user: p.username,
     domain: p.protocol === "rdp" ? p.domain : null,
