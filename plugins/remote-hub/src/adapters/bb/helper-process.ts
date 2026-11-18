@@ -367,6 +367,10 @@ export class HelperProcess {
   }
 
   private handleControl(resp: ResponseMessage): void {
+    // Classify the session SYNCHRONOUSLY, before anything awaits: the helper may
+    // write session.opened and the first update chunk into one stdout read, and
+    // the chunk is handled in this same loop, before openRdp's continuation runs.
+    if (resp.type === "session.opened" && resp.kind === "rdp") this.rdpSessions.add(resp.sessionId);
     const oneShotIndex = this.oneShots.findIndex((w) => w.predicate(resp));
     if (oneShotIndex >= 0) {
       const [waiter] = this.oneShots.splice(oneShotIndex, 1);

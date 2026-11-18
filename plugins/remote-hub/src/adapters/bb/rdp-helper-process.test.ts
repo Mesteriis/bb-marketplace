@@ -218,3 +218,40 @@ describe("HelperProcess RDP", () => {
     await Promise.all(inputs);
   });
 });
+
+describe("HelperProcess RDP: the first update right behind session.opened", () => {
+  it("is an RDP update, never scrollback, when both arrive in ONE stdout read", async () => {
+    const { fake, hp } = await start();
+    const updates: number[] = [];
+    const outputs: number[] = [];
+    hp.onRdpUpdate((sid) => updates.push(sid));
+    hp.onSessionOutput((sid) => outputs.push(sid));
+    const pending = hp.openRdp({
+      host: "10.1.2.3",
+      port: 3389,
+      username: "alice",
+      password: SECRET,
+      domain: null,
+      width: 8,
+      height: 4,
+      expectedFingerprint: null,
+    });
+    await tick();
+    const request = lastRequest(fake, "session.open_rdp");
+    const opened = encodeControlFrame({ type: "session.opened", id: request.id, sessionId: 7, cols: 0, rows: 0, pid: 5, kind: "rdp" } as unknown as ControlMessage);
+    const update = new Uint8Array(32 + 8 * 4 * 4);
+    const view = new DataView(update.buffer);
+    view.setBigUint64(0, 1n, true);
+    view.setUint32(8, 8, true);
+    view.setUint32(12, 4, true);
+    view.setUint32(24, 8, true);
+    view.setUint32(28, 4, true);
+    fake.child.stdout.push(Buffer.concat([Buffer.from(opened), Buffer.from(encodeStreamFrame({ sessionId: 7, seq: 0 }, update))]));
+    await pending;
+    expect(updates).toEqual([7]);
+    expect(outputs).toEqual([]);
+    expect(hp.scrollbackSnapshot(7).byteLength).toBe(0);
+    fake.child.emit("exit", 0);
+  });
+});
+
