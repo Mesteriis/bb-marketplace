@@ -2,12 +2,13 @@
 // after a crash without replaying any input, and exposes the operations the
 // RPC surface wraps. Host-free of the BB SDK (only the adapter), so it is
 // unit-testable with an injected startHelper factory.
+import type { ExecStateMessage } from "../../core/exec-protocol.ts";
 import { AttachTokens, ATTACH_TOKEN_TTL_MS, type Clock } from "../../core/attach.ts";
 import { createCreditState, type CreditState } from "../../core/credit.ts";
 import { CredentialError, type CredentialVault } from "../../core/credential.ts";
 import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
 import type { KnownHostsOverlay } from "../../core/import-book.ts";
-import { buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
+import { buildSshExecSpawn, buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
 import { HelperProcess, type HelperStatus, HelperRuntimeError, HelperRequestError, type RdpHelperEvent } from "./helper-process.ts";
 import type { RdpInfo, RdpTarget, SessionHandle } from "../../core/rpc.ts";
 import { parseUpdateChunk, RDP_STATES, type RdpInputEvent } from "../../core/rdp-protocol.ts";
@@ -88,6 +89,13 @@ export interface RemoteHubService {
   echoInput(handle: SessionHandle, data: string): Promise<{ output: string; truncated: boolean }>;
   echoClose(handle: SessionHandle): Promise<{ closed: boolean }>;
   sshOpen(target: SshTarget, cols: number, rows: number, profileId?: string, askpass?: { credentialRef: string }): Promise<SessionHandle>;
+  /** Runs ONE remote command (ssh without a pty) with a saved credential. Returns the run's helper id. */
+  execRun(target: SshTarget, command: string, credentialRef: string, timeoutMs: number, maxBytes: number): Promise<ExecHandle>;
+  execRead(handle: ExecHandle, stdoutFrom: number, stderrFrom: number, max: number): Promise<ExecSnapshot>;
+  execCancel(handle: ExecHandle): Promise<ExecSnapshot>;
+  execForget(handle: ExecHandle): Promise<void>;
+  /** A run ended (the helper says so unasked). */
+  onExecFinished(cb: (event: { handle: ExecHandle; exitCode: number | null; signal: number | null; reason: string; refused: string | null }) => void): () => void;
   /** Askpass events of an SSH session: open prompts and what happened to a saved credential. Replays what is open. */
   subscribeSshAskpass(handle: SessionHandle, cb: (event: SshAskpassEvent) => void): () => void;
   /** The user's answer to a prompt (null = cancelled). Passed to the helper once and never kept here. */
@@ -146,6 +154,31 @@ export interface RemoteHubService {
   sessionCredit(handle: SessionHandle, bytes: number): Promise<void>;
   onHelperExit(cb: () => void): () => void;
   stop(): void;
+}
+
+/** A remote command run: the helper generation and the run's id (the same id space as sessions). */
+export interface ExecHandle {
+  generation: string;
+  execId: number;
+}
+
+export interface ExecStream {
+  start: number;
+  end: number;
+  data: Uint8Array;
+  total: number;
+  truncated: boolean;
+}
+
+export interface ExecSnapshot {
+  running: boolean;
+  exitCode: number | null;
+  signal: number | null;
+  reason: string | null;
+  refused: string | null;
+  elapsedMs: number;
+  stdout: ExecStream;
+  stderr: ExecStream;
 }
 
 function keyOf(handle: SessionHandle): string {
@@ -284,6 +317,16 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       earlyUpdateBytes.clear();
       earlyClosed.clear();
     }
+  };
+  const execFinishedListeners = new Set<(event: { handle: ExecHandle; exitCode: number | null; signal: number | null; reason: string; refused: string | null }) => void>();
+  const execHelper = async (handle: ExecHandle): Promise<HelperProcess> => {
+    const hp = await start();
+    if (handle.generation !== hp.currentGeneration) throw new HelperRuntimeError("session_not_found", "this command belongs to a different helper generation");
+    return hp;
+  };
+  const toSnapshot = (m: ExecStateMessage): ExecSnapshot => {
+    const stream = (c: ExecStateMessage["stdout"]): ExecStream => ({ start: c.start, end: c.end, data: Uint8Array.from(Buffer.from(c.data, "base64")), total: c.total, truncated: c.truncated });
+    return { running: m.running, exitCode: m.exitCode, signal: m.signal, reason: m.reason, refused: m.refused, elapsedMs: m.elapsedMs, stdout: stream(m.stdout), stderr: stream(m.stderr) };
   };
   const tracked =
     <A extends unknown[], R>(open: (...args: A) => Promise<R>) =>
@@ -555,6 +598,15 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
           });
           started.onRdpEvent((sessionId, event) => handleRdpEvent(generation, sessionId, event));
           started.onSshAskpass((sessionId, event) => handleSshAskpass(generation, sessionId, event));
+          started.onExecFinished((e) => {
+            for (const cb of [...execFinishedListeners]) {
+              try {
+                cb({ handle: { generation, execId: e.execId }, exitCode: e.exitCode, signal: e.signal, reason: e.reason, refused: e.refused });
+              } catch {
+                // one listener's throw must not skip the others
+              }
+            }
+          });
           started.onRdpUpdate((sessionId, seq, payload) => handleRdpUpdate(generation, sessionId, seq, payload));
           started.onSessionOutput((sessionId, data) => {
             const back = credits.get(generation + ":" + sessionId)?.onConsumed(data.byteLength) ?? 0;
@@ -640,6 +692,28 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       applyEarlyClosed(keyOf(handle));
       return handle;
     }),
+    async execRun(target, command, credentialRef, timeoutMs, maxBytes) {
+      const hp = await start();
+      const spec = buildSshExecSpawn({ ...target }, command, deps.env ?? process.env);
+      const execId = await hp.execRun(spec, { credentialRef }, timeoutMs, maxBytes);
+      return { generation: hp.currentGeneration, execId };
+    },
+    async execRead(handle, stdoutFrom, stderrFrom, max) {
+      const hp = await execHelper(handle);
+      return toSnapshot(await hp.execRead(handle.execId, stdoutFrom, stderrFrom, max));
+    },
+    async execCancel(handle) {
+      const hp = await execHelper(handle);
+      return toSnapshot(await hp.execCancel(handle.execId));
+    },
+    async execForget(handle) {
+      const hp = await execHelper(handle);
+      await hp.execForget(handle.execId);
+    },
+    onExecFinished(cb) {
+      execFinishedListeners.add(cb);
+      return () => void execFinishedListeners.delete(cb);
+    },
     sshOpen: tracked(async (target, cols, rows, profileId, askpass) => {
       const hp = await start();
       const spec = buildSshSpawn(target, deps.env ?? process.env);
