@@ -13,6 +13,8 @@ import { HELPER_BIN_NAME, HelperProcess, HelperRequestError, HelperRuntimeError,
 import { PROFILE_MIGRATIONS, createSqliteProfileStore } from "./src/adapters/bb/profile-sqlite.ts";
 import { createRemoteHubService } from "./src/adapters/bb/service.ts";
 import { registerStreamSocket } from "./src/adapters/bb/stream-socket.ts";
+import { CREDENTIAL_MIGRATIONS, createSqliteCredentialStore } from "./src/adapters/bb/credential-sqlite.ts";
+import { CredentialBook, CredentialError } from "./src/core/credential.ts";
 import { ProfileBook, ProfileError } from "./src/core/profile-book.ts";
 import { rpcSchemas } from "./src/core/rpc.ts";
 
@@ -31,24 +33,47 @@ function pluginRootDir(): string {
   return here;
 }
 
+/** A credential failure as an RPC refusal; the stable code travels in front of the text. */
+function credentialRefusal(error: CredentialError): experimental_PluginRpcRefusal {
+  const codeOf: Record<string, "not_found" | "forbidden" | "conflict" | "invalid"> = {
+    keychain_locked: "forbidden",
+    keychain_denied: "forbidden",
+    credential_target_mismatch: "forbidden",
+    keychain_unavailable: "not_found",
+    credential_unknown: "not_found",
+    credential_missing: "not_found",
+    profile_not_found: "not_found",
+    credential_exists: "conflict",
+  };
+  return new experimental_PluginRpcRefusal({ code: codeOf[error.code] ?? "invalid", message: error.code + ": " + error.message });
+}
+
 export default function plugin(bb: BbPluginApi): void {
   const service = createRemoteHubService({
     startHelper: () => HelperProcess.start(pluginRootDir()),
   });
 
   const db = bb.storage.database();
-  bb.storage.migrate(db, PROFILE_MIGRATIONS);
+  bb.storage.migrate(db, [...PROFILE_MIGRATIONS, ...CREDENTIAL_MIGRATIONS]);
   const profiles = new ProfileBook({
     store: createSqliteProfileStore(db),
     now: () => new Date(),
     newId: () => randomUUID(),
     onHistoryError: (code) => bb.log.warn(`profile history not written (${code})`),
   });
-  const withProfile = <T>(run: () => T): T => {
+  const credentials = new CredentialBook({
+    store: createSqliteCredentialStore(db),
+    vault: service.credentialVault,
+    profiles,
+    now: () => new Date(),
+    newId: () => randomUUID(),
+  });
+  const withProfile = async <T>(run: () => T | Promise<T>): Promise<T> => {
     try {
-      return run();
+      return await run();
     } catch (error) {
       if (error instanceof ProfileError) throw new experimental_PluginRpcRefusal({ code: "not_found", message: error.message });
+      if (error instanceof CredentialError) throw credentialRefusal(error);
       throw error;
     }
   };
@@ -88,18 +113,37 @@ export default function plugin(bb: BbPluginApi): void {
       return profiles.track(profileId, () => withHelper(() => service.sshOpen(input.target, input.cols, input.rows, profileId)));
     },
     rdp_open: (input) => {
-      const profileId = profiles.attribute(input.profileId, {
-        protocol: "rdp",
+      const endpoint = {
+        protocol: "rdp" as const,
         host: input.target.host,
         port: input.target.port,
         user: input.target.username,
         domain: input.target.domain ?? null,
-      });
+      };
+      // A saved credential only works against the endpoint it was saved for.
+      if (input.target.credentialRef !== undefined) {
+        try {
+          credentials.authorizeEndpoint(input.target.credentialRef, endpoint);
+        } catch (error) {
+          if (error instanceof CredentialError) throw credentialRefusal(error);
+          throw error;
+        }
+      }
+      const profileId = profiles.attribute(input.profileId, endpoint);
       return profiles.track(profileId, () => withHelper(() => service.rdpOpen(input.target, input.width, input.height, profileId)));
     },
     profile_list: () => profiles.list(),
-    profile_save: (input) => withProfile(() => profiles.save(input)),
-    profile_delete: (input) => ({ deleted: profiles.remove(input.id) }),
+    profile_save: (input) => withProfile(async () => (await credentials.saveProfile(input)).profile),
+    profile_delete: (input) => withProfile(() => credentials.deleteProfile(input.id, input.deleteCredential ?? false)),
+    credential_list: () => credentials.list(),
+    credential_save: (input) => withProfile(() => credentials.save(input)),
+    credential_update: (input) =>
+      withProfile(async () => {
+        await credentials.update(input.ref, input.secret);
+        return { updated: true as const };
+      }),
+    credential_delete: (input) => withProfile(() => credentials.delete(input.ref)),
+    credential_status: (input) => withProfile(async () => ({ state: await credentials.status(input.ref) })),
     profile_duplicate: (input) => withProfile(() => profiles.duplicate(input.id)),
     rdp_cert_decision: (input) =>
       withHelper(async () => {

@@ -55,6 +55,24 @@ export class ProfileBook {
     return this.deps.store.all();
   }
 
+  get(id: string): Profile | null {
+    return this.deps.store.get(id);
+  }
+
+  /** The profiles that point at a credential. */
+  usersOf(ref: string): Profile[] {
+    return this.deps.store.all().filter((p) => p.credentialRef === ref);
+  }
+
+  /** Sets or clears a profile's credential reference (only the credential book calls this). */
+  link(id: string, ref: string | null): Profile {
+    const profile = this.deps.store.get(id);
+    if (profile === null) throw new ProfileError("not_found", "no such profile");
+    const next = profileSchema.parse({ ...profile, credentialRef: ref, updatedAt: this.deps.now().toISOString() });
+    this.deps.store.put(next);
+    return next;
+  }
+
   save(raw: ProfileInput): Profile {
     const input = profileInputSchema.parse(raw);
     const stamp = this.deps.now().toISOString();

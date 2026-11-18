@@ -9,6 +9,7 @@
 //
 // The Rust mirror lives in helper/src/protocol.rs and must stay in sync with
 // these constants and message names.
+import { credentialRequestSchemas, credentialResponseSchemas } from "./credential-protocol.ts";
 import { z } from "zod";
 import {
   openRdpRequestSchema,
@@ -175,6 +176,7 @@ export const errorEnvelopeSchema = z.object({
 });
 
 export const requestSchema = z.discriminatedUnion("type", [
+  ...credentialRequestSchemas,
   helloRequestSchema,
   pingRequestSchema,
   openEchoRequestSchema,
@@ -187,6 +189,7 @@ export const requestSchema = z.discriminatedUnion("type", [
 ]);
 
 export const responseSchema = z.discriminatedUnion("type", [
+  ...credentialResponseSchemas,
   helloAckSchema,
   pongSchema,
   sessionOpenedSchema,
@@ -218,6 +221,8 @@ export const controlMessageSchema = z.union([
     sessionCreditAckSchema,
     sessionClosedSchema,
     errorEnvelopeSchema,
+    ...credentialRequestSchemas,
+    ...credentialResponseSchemas,
     openRdpRequestSchema,
     rdpCertDecisionRequestSchema,
     rdpInputRequestSchema,

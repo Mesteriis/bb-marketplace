@@ -202,7 +202,8 @@ pub enum Response {
     },
     #[serde(rename = "credential.ok")]
     CredentialOk { id: u64 },
-    #[serde(rename = "credential.status")]
+    /// The answer to `credential.status` (a different name: `credential.status` is the request).
+    #[serde(rename = "credential.state")]
     CredentialStatus { id: u64, present: bool },
     #[serde(rename = "rdp.ack")]
     RdpAck {

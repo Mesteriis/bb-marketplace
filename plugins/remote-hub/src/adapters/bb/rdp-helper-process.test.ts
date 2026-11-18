@@ -81,6 +81,52 @@ async function openRdp(fake: Fake, hp: HelperProcess, sessionId = 7) {
 
 const lastRequest = (fake: Fake, type: string) => [...sent(fake)].reverse().find((m) => m.type === type) as unknown as { id: number } & Record<string, unknown>;
 
+const REF = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";
+
+describe("HelperProcess credentials (stage 3b)", () => {
+  it("credential.save carries the secret down once; the answer carries none", async () => {
+    const { fake, hp } = await start();
+    const pending = hp.credentialSave(REF, SECRET);
+    await tick();
+    const request = lastRequest(fake, "credential.save");
+    expect(request).toMatchObject({ type: "credential.save", ref: REF, secret: SECRET });
+    reply(fake, { type: "credential.ok", id: request.id });
+    await expect(pending).resolves.toBeUndefined();
+    fake.child.emit("exit", 0);
+  });
+
+  it("status reads the helper's credential.state; delete and save map error codes to HelperRequestError", async () => {
+    const { fake, hp } = await start();
+    const status = hp.credentialStatus(REF);
+    await tick();
+    reply(fake, { type: "credential.state", id: lastRequest(fake, "credential.status").id, present: true });
+    await expect(status).resolves.toBe(true);
+    const del = hp.credentialDelete(REF);
+    await tick();
+    reply(fake, { type: "error", id: lastRequest(fake, "credential.delete").id, code: "keychain_locked", message: "the Keychain is locked" });
+    await expect(del).rejects.toMatchObject({ name: "HelperRequestError", code: "keychain_locked" });
+    const save = hp.credentialSave(REF, SECRET);
+    await tick();
+    reply(fake, { type: "error", id: lastRequest(fake, "credential.save").id, code: "keychain_denied", message: "refused" });
+    const error = await save.catch((e: Error) => e);
+    expect(error).toBeInstanceOf(HelperRequestError);
+    expect(String((error as Error).message)).not.toContain(SECRET);
+    fake.child.emit("exit", 0);
+  });
+
+  it("session.open_rdp with a credentialRef has no password key at all, so the secret never crosses this side", async () => {
+    const { fake, hp } = await start();
+    const pending = hp.openRdp({ host: "h", port: 3389, username: "alice", credentialRef: REF, domain: null, width: 800, height: 600, expectedFingerprint: null });
+    await tick();
+    const open = sent(fake).find((m) => m.type === "session.open_rdp") as unknown as Record<string, unknown> & { id: number };
+    expect(open.credentialRef).toBe(REF);
+    expect("password" in open).toBe(false);
+    reply(fake, { type: "session.opened", id: open.id, sessionId: 7, cols: 0, rows: 0, pid: 5, kind: "rdp" });
+    await pending;
+    fake.child.emit("exit", 0);
+  });
+});
+
 describe("HelperProcess RDP", () => {
   it("writes session.open_rdp with the helper's field names; the password is only in that frame", async () => {
     const { fake, hp } = await start();

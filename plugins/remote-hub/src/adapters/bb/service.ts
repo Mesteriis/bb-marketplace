@@ -4,6 +4,7 @@
 // unit-testable with an injected startHelper factory.
 import { AttachTokens, ATTACH_TOKEN_TTL_MS, type Clock } from "../../core/attach.ts";
 import { createCreditState, type CreditState } from "../../core/credit.ts";
+import { CredentialError, type CredentialVault } from "../../core/credential.ts";
 import { buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
 import { HelperProcess, type HelperStatus, HelperRuntimeError, HelperRequestError, type RdpHelperEvent } from "./helper-process.ts";
 import type { RdpInfo, RdpTarget, SessionHandle } from "../../core/rpc.ts";
@@ -66,6 +67,8 @@ export interface RemoteHubService {
   rdpAttach(handle: SessionHandle, viewId: string, sink: RdpViewSink): RdpAttachment;
   /** Test/inspection: the runtime view of one RDP session (never holds a password). */
   rdpInfo(handle: SessionHandle): RdpInfo | undefined;
+  /** The Keychain, through the helper. A refusal is a CredentialError carrying the helper's code. */
+  credentialVault: CredentialVault;
   sessionList(): SessionInfo[];
   sessionClose(handle: SessionHandle): Promise<{ exitCode: number | null; signal: number | null; reason: string }>;
   sessionAttach(handle: SessionHandle): string;
@@ -156,6 +159,16 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         endOpen();
       }
     };
+  /** Runs a Keychain request on the helper; the helper's error code becomes a CredentialError. */
+  const viaVault = async <T>(run: (hp: HelperProcess) => Promise<T>): Promise<T> => {
+    const hp = await start();
+    try {
+      return await run(hp);
+    } catch (error) {
+      if (error instanceof HelperRequestError) throw new CredentialError(error.code, error.code);
+      throw error;
+    }
+  };
   const EVICT_CLOSED_AFTER_MS = 5 * 60 * 1000;
 
   const maybeEvictClosed = (key: string): void => {
@@ -485,7 +498,8 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         host: target.host,
         port: target.port,
         username: target.username,
-        password: target.password,
+        ...(target.password !== undefined ? { password: target.password } : {}),
+        ...(target.credentialRef !== undefined ? { credentialRef: target.credentialRef } : {}),
         domain: target.domain ?? null,
         width,
         height,
@@ -571,6 +585,11 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
           applyEffects(runtime, runtime.mux.detach(viewId));
         },
       };
+    },
+    credentialVault: {
+      save: async (ref, secret) => viaVault(async (hp) => hp.credentialSave(ref, secret)),
+      delete: async (ref) => viaVault(async (hp) => hp.credentialDelete(ref)),
+      status: async (ref) => ((await viaVault(async (hp) => hp.credentialStatus(ref))) ? "present" : "missing"),
     },
     sessionList() {
       return Array.from(sessions.values());

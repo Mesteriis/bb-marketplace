@@ -1,6 +1,7 @@
 // The BB RPC contract for the Remote Hub page, as plain zod schemas.
 // server.ts wraps these with the SDK's defineRpcContract.
 import { z } from "zod";
+import { credentialBindSchema } from "./credential.ts";
 import { profileInputSchema, profileSchema } from "./profile.ts";
 import { sessionInputDataSchema } from "./protocol.ts";
 import { MAX_DESKTOP_HEIGHT, MAX_DESKTOP_WIDTH, RDP_CLOSED_REASONS } from "./rdp-protocol.ts";
@@ -49,11 +50,16 @@ const rdpTargetSchema = z.object({
   host: rdpHostSchema,
   port: z.number().int().min(1).max(65535).default(3389),
   username: z.string().min(1).max(256),
-  // Exists only in this payload, the helper frame and engine memory; never
-  // echoed, logged, listed or kept in a session record.
-  password: z.string().max(1024),
+  // Exactly one of the two. A password exists only in this payload, the helper
+  // frame and engine memory; never echoed, logged, listed or kept in a session
+  // record. A credentialRef names a saved credential: it is checked against the
+  // endpoint it was saved for, and the helper resolves it from the Keychain.
+  password: z.string().max(1024).optional(),
+  credentialRef: z.string().max(96).optional(),
   domain: z.string().min(1).max(256).optional(),
   expectedFingerprint: z.string().min(1).max(95).optional(),
+}).refine((target) => (target.password === undefined) !== (target.credentialRef === undefined), {
+  message: "give exactly one of password and credentialRef",
 });
 
 export const rdpCertPromptInfoSchema = z.object({
@@ -89,6 +95,16 @@ export const sessionInfoSchema = z.object({
   rdp: rdpInfoSchema.optional(),
   /** The saved profile the session was opened from, when it was. */
   profileId: z.string().uuid().optional(),
+});
+
+export const credentialViewSchema = z.object({
+  ref: z.string(),
+  kind: z.enum(["password", "passphrase"]),
+  label: z.string(),
+  bind: credentialBindSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  usedBy: z.array(z.object({ id: z.string(), name: z.string() })),
 });
 
 export const rpcSchemas = {
@@ -154,8 +170,28 @@ export const rpcSchemas = {
     output: profileSchema,
   },
   profile_delete: {
-    input: z.object({ id: z.string().uuid() }),
-    output: z.object({ deleted: z.boolean() }),
+    input: z.object({ id: z.string().uuid(), deleteCredential: z.boolean().optional() }),
+    output: z.object({ deleted: z.boolean(), credentialDeleted: z.boolean().optional(), credentialError: z.string().optional() }),
+  },
+  credential_list: {
+    input: z.null(),
+    output: z.array(credentialViewSchema),
+  },
+  credential_save: {
+    input: z.object({ profileId: z.string().uuid(), secret: z.string().min(1).max(4096) }).strict(),
+    output: z.object({ ref: z.string() }),
+  },
+  credential_update: {
+    input: z.object({ ref: z.string().max(96), secret: z.string().min(1).max(4096) }).strict(),
+    output: z.object({ updated: z.literal(true) }),
+  },
+  credential_delete: {
+    input: z.object({ ref: z.string().max(96) }).strict(),
+    output: z.object({ unlinked: z.number().int() }),
+  },
+  credential_status: {
+    input: z.object({ ref: z.string().max(96) }).strict(),
+    output: z.object({ state: z.enum(["present", "missing", "locked", "denied", "unavailable"]) }),
   },
   profile_duplicate: {
     input: z.object({ id: z.string().uuid() }),

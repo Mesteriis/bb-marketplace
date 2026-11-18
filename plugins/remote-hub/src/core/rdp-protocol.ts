@@ -75,11 +75,15 @@ export const openRdpRequestSchema = z.object({
   host: z.string().min(1),
   port: z.number().int().min(1).max(65535),
   username: z.string().min(1),
-  password: z.string(),
+  // Exactly one: a password typed for this open, or a saved credential the helper resolves itself.
+  password: z.string().optional(),
+  credentialRef: z.string().optional(),
   domain: z.string().nullable(),
   width: z.number().int().min(1).max(MAX_DESKTOP_WIDTH),
   height: z.number().int().min(1).max(MAX_DESKTOP_HEIGHT),
   expectedFingerprint: z.string().nullable(),
+}).refine((message) => (message.password === undefined) !== (message.credentialRef === undefined), {
+  message: "give exactly one of password and credentialRef",
 });
 export const rdpCertDecisionRequestSchema = z.object({
   type: z.literal("rdp.cert_decision"),

@@ -33,6 +33,20 @@ class FakeRdpHelper {
     this.opens.push(params);
     return { generation: GEN, sessionId: this.nextSessionId++ };
   }
+  vault = new Map<string, string>();
+  vaultError: HelperRequestError | null = null;
+  async credentialSave(ref: string, secret: string): Promise<void> {
+    if (this.vaultError !== null) throw this.vaultError;
+    this.vault.set(ref, secret);
+  }
+  async credentialDelete(ref: string): Promise<void> {
+    if (this.vaultError !== null) throw this.vaultError;
+    this.vault.delete(ref);
+  }
+  async credentialStatus(ref: string): Promise<boolean> {
+    if (this.vaultError !== null) throw this.vaultError;
+    return this.vault.has(ref);
+  }
   async openSsh(): Promise<SessionHandle> {
     return { generation: GEN, sessionId: this.nextSessionId++ };
   }
@@ -247,6 +261,36 @@ describe("RDP service: states and the desktop", () => {
     const listed = service.sessionList().find((s) => s.sessionId === handle.sessionId)!;
     expect(listed.kind).toBe("rdp");
     expect(listed.rdp?.target).toEqual({ host: "rdp.test", port: 3389, username: "alice", domain: "CORP" });
+  });
+});
+
+describe("RDP service: saved credentials", () => {
+  const REF = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";
+
+  it("rdpOpen with a credentialRef sends the reference to the helper and no password", async () => {
+    const { helper, service } = setup();
+    await service.rdpOpen({ host: "rdp.test", port: 3389, username: "alice", credentialRef: REF }, 800, 600);
+    expect(helper.opens).toHaveLength(1);
+    expect(helper.opens[0]).toMatchObject({ credentialRef: REF });
+    expect("password" in (helper.opens[0] as object)).toBe(false);
+  });
+
+  it("the vault saves, reports and deletes through the helper", async () => {
+    const { helper, service } = setup();
+    await service.credentialVault.save(REF, SECRET);
+    expect(helper.vault.get(REF)).toBe(SECRET);
+    await expect(service.credentialVault.status(REF)).resolves.toBe("present");
+    await service.credentialVault.delete(REF);
+    await expect(service.credentialVault.status(REF)).resolves.toBe("missing");
+  });
+
+  it("a helper refusal becomes a CredentialError with the helper's code, and the secret is in no error text", async () => {
+    const { helper, service } = setup();
+    helper.vaultError = new HelperRequestError("keychain_locked", "the Keychain is locked");
+    const error = await service.credentialVault.save(REF, SECRET).catch((e: Error) => e);
+    expect(error).toMatchObject({ name: "CredentialError", code: "keychain_locked" });
+    expect(JSON.stringify(error) + String((error as Error).stack) + (error as Error).message).not.toContain(SECRET);
+    expect(JSON.stringify(service.sessionList())).not.toContain(SECRET);
   });
 });
 

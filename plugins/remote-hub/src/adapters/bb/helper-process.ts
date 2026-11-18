@@ -740,11 +740,34 @@ export class HelperProcess {
     if (resp.type !== "rdp.ack") throw new Error("unexpected helper response: " + resp.type);
   }
 
+  /** Stores a secret in the Keychain under `ref`. The secret goes down once; nothing comes back. */
+  async credentialSave(ref: string, secret: string): Promise<void> {
+    const resp = await this.request({ type: "credential.save", ref, secret } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "credential.ok") throw new Error("unexpected helper response: " + resp.type);
+  }
+
+  async credentialDelete(ref: string): Promise<void> {
+    const resp = await this.request({ type: "credential.delete", ref } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "credential.ok") throw new Error("unexpected helper response: " + resp.type);
+  }
+
+  /** Whether the credential exists and the Keychain would hand it over (the value is never returned). */
+  async credentialStatus(ref: string): Promise<boolean> {
+    const resp = await this.request({ type: "credential.status", ref } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "credential.state") throw new Error("unexpected helper response: " + resp.type);
+    return resp.present;
+  }
+
   async openRdp(params: {
     host: string;
     port: number;
     username: string;
-    password: string;
+    /** Exactly one of password (use once) and credentialRef (saved; the helper resolves it). */
+    password?: string;
+    credentialRef?: string;
     domain: string | null;
     width: number;
     height: number;

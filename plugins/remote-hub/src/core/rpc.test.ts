@@ -34,3 +34,29 @@ describe("profile RPC input", () => {
     expect(rpcSchemas.ssh_open.input.safeParse({ target: { host: "h.test" }, profileId: "11111111-2222-4333-8444-555555555555" }).success).toBe(true);
   });
 });
+
+describe("saved credentials in the RPC contract (stage 3b)", () => {
+  const target = { host: "h.test", username: "u" };
+  const REF = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";
+
+  it("rdp_open takes exactly one of password and credentialRef", () => {
+    const ok = (extra: object) => rpcSchemas.rdp_open.input.safeParse({ target: { ...target, ...extra } }).success;
+    expect(ok({ password: "p" })).toBe(true);
+    expect(ok({ credentialRef: REF })).toBe(true);
+    expect(ok({})).toBe(false);
+    expect(ok({ password: "p", credentialRef: REF })).toBe(false);
+  });
+
+  it("credential_save takes a profile id and a secret and nothing else; the result carries no secret field", () => {
+    const input = rpcSchemas.credential_save.input;
+    expect(input.safeParse({ profileId: "11111111-2222-4333-8444-555555555555", secret: "x" }).success).toBe(true);
+    expect(input.safeParse({ profileId: "11111111-2222-4333-8444-555555555555", secret: "" }).success).toBe(false);
+    expect(input.safeParse({ profileId: "11111111-2222-4333-8444-555555555555", secret: "x", host: "evil" }).success).toBe(false);
+    expect(Object.keys(rpcSchemas.credential_save.output.shape)).toEqual(["ref"]);
+    expect(Object.keys(rpcSchemas.credential_list.output.element.shape)).not.toContain("secret");
+  });
+
+  it("there is no RPC that returns a secret", () => {
+    expect(Object.keys(rpcSchemas).filter((name) => /secret|reveal|password/.test(name))).toEqual([]);
+  });
+});
