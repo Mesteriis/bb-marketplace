@@ -96,6 +96,8 @@ pub struct SessionManager {
     echo_argv: Option<Vec<CString>>,
     /// Created at the first SSH session that uses a saved credential (stage 3b-2).
     askpass: Option<crate::askpass::Broker>,
+    /// The private known_hosts copy of each saved-secret ssh session; merged into the overlay when it ends.
+    host_key_copies: HashMap<u32, crate::known_hosts::SessionCopy>,
 }
 
 #[derive(Debug)]
@@ -299,7 +301,12 @@ impl SessionManager {
             ids,
             echo_argv: argv,
             askpass: None,
+            host_key_copies: HashMap::new(),
         }
+    }
+
+    pub fn set_host_key_copy(&mut self, id: u32, copy: crate::known_hosts::SessionCopy) {
+        self.host_key_copies.insert(id, copy);
     }
 
     /// Opens an SSH session whose secret prompts the helper answers from the Keychain
@@ -366,6 +373,9 @@ impl SessionManager {
     }
 
     fn askpass_forget(&mut self, id: u32) {
+        if let Some(copy) = self.host_key_copies.remove(&id) {
+            crate::known_hosts::merge_session(&copy);
+        }
         if let Some(broker) = self.askpass.as_mut() {
             broker.session_closed(id);
         }
@@ -986,6 +996,9 @@ impl SessionManager {
                 } else {
                     kill_and_reap(session.child, session.master);
                 }
+            }
+            if let Some(copy) = self.host_key_copies.remove(&id) {
+                crate::known_hosts::merge_session(&copy);
             }
         }
     }

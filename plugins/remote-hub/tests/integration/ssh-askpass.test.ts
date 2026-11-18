@@ -16,7 +16,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -235,7 +235,7 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
     writeFileSync(knownHosts, `[127.0.0.1]:${port} ${hostKey}\n[localhost]:${port} ${hostKey}\n`);
     emptyKnownHosts = join(tmp, "empty_known_hosts");
 
-    const env = { ...process.env, REMOTE_HUB_KEYCHAIN_PATH: join(tmp, "kc.keychain-db"), REMOTE_HUB_KEYCHAIN_CREATE_PASSWORD: "throwaway-kc-password", REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS: "1", REMOTE_HUB_KNOWN_HOSTS_PATH: join(tmp, "overlay", "known_hosts") };
+    const env = { ...process.env, REMOTE_HUB_KEYCHAIN_PATH: join(tmp, "kc.keychain-db"), REMOTE_HUB_KEYCHAIN_CREATE_PASSWORD: "throwaway-kc-password", REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS: "1", REMOTE_HUB_KNOWN_HOSTS_PATH: join(tmp, "Application Support", "Remote Hub", "known_hosts") };
     service = createRemoteHubService({
       startHelper: () =>
         HelperProcess.spawn(HELPER, (bin, args) => {
@@ -379,7 +379,8 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
   }, 150_000);
 
   it("the helper-owned overlay: an unknown key raises the question once, a yes keeps it, the next session is not asked, a changed key blocks", async () => {
-    const overlay = join(tmp, "overlay", "known_hosts");
+    // A path with a space in it, like the production one (~/Library/Application Support/Remote Hub/known_hosts).
+    const overlay = join(tmp, "Application Support", "Remote Hub", "known_hosts");
     const p = profiles.list().find((x) => x.name === "pw")!;
     const open = async () => {
       // No knownHostsFile: a saved-secret session reads only the overlay the helper chose.
@@ -397,7 +398,9 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
     await service.sshPromptAnswer(first.handle, prompt.promptId, "yes");
     await expectShell(first.handle, 3, 11);
     expect(first.mine.filter((e) => e.type === "prompt")).toHaveLength(1);
-    expect(readFileSync(overlay, "utf8")).toContain(keyBlob);
+    // ssh wrote the key to its PRIVATE copy; the helper, the only writer of the overlay, merges it when the session ends.
+    await service.sessionClose(first.handle);
+    await poll(() => (existsSync(overlay) && readFileSync(overlay, "utf8").includes(keyBlob) ? true : null), 20_000, "the confirmed key in the overlay");
     events.push(...first.mine);
 
     // 2. Trusted now: no question, straight to the shell.

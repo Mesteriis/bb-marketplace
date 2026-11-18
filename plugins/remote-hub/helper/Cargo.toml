@@ -100,3 +100,7 @@ ironrdp-svc = "=0.10.0"
 name = "known_hosts_process"
 path = "tests/known_hosts_process.rs"
 required-features = ["test-hooks"]
+
+[[test]]
+name = "known_hosts_session"
+required-features = ["test-hooks"]

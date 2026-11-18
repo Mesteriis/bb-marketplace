@@ -543,6 +543,7 @@ fn handle(
             // A session that may use a saved secret: its argv must say where the secret goes and how
             // (S4), and the secret must be bound to exactly that (S2). Both are the helper's own checks.
             let mut askpass_plan: Option<(crate::binding::Bind, String)> = None;
+            let mut host_key_copy: Option<crate::known_hosts::SessionCopy> = None;
             if let Some(spec) = &askpass {
                 if !valid_credential_ref(&spec.credential_ref) {
                     return Ok(protocol::encode_response(&Response::Error {
@@ -567,13 +568,30 @@ fn handle(
                     return Ok(protocol::encode_response(&CredentialRefusal::Mismatch.into_response(id)));
                 }
                 askpass_plan = Some((required, facts.expected_prompt()));
-                // The host-key file is the helper's own overlay, chosen here and never by the request: an unknown
-                // server raises the confirm prompt, and what the user accepts is kept there.
+                // Host keys come from the helper's overlay and nowhere else: ssh gets a PRIVATE COPY of it (so it
+                // is never a second writer; the helper merges what the user confirmed when the session ends),
+                // named as ONE quoted file, with every trust option stated: no global known_hosts, the question
+                // asked for an unknown key, a refusal for a changed one, no host-key updates or DNS trust.
                 if program == "/usr/bin/ssh" && !argv.iter().any(|a| a.starts_with("UserKnownHostsFile=")) {
-                    match crate::known_hosts::ensure() {
-                        Ok(path) => {
+                    let opened = crate::known_hosts::session_copy().and_then(|copy| crate::known_hosts::ssh_known_hosts_option(&copy.path).map(|option| (copy, option)));
+                    match opened {
+                        Ok((copy, option)) => {
                             let at = argv.len().saturating_sub(2); // before the "--" that precedes the destination
-                            argv.splice(at..at, ["-o".to_string(), format!("UserKnownHostsFile={}", path.display())]);
+                            let mut options = Vec::new();
+                            for o in [
+                                option.as_str(),
+                                "GlobalKnownHostsFile=none",
+                                "StrictHostKeyChecking=ask",
+                                "UpdateHostKeys=no",
+                                "CheckHostIP=no",
+                                "HashKnownHosts=no",
+                                "VerifyHostKeyDNS=no",
+                            ] {
+                                options.push("-o".to_string());
+                                options.push(o.to_string());
+                            }
+                            argv.splice(at..at, options);
+                            host_key_copy = Some(copy);
                         }
                         Err(e) => return Ok(protocol::encode_response(&known_hosts_error(id, e))),
                     }
@@ -589,6 +607,9 @@ fn handle(
                     None => manager.open_ssh(spec, cols, rows),
                 } {
                     Ok(session_id) => {
+                        if let Some(copy) = host_key_copy.take() {
+                            manager.set_host_key_copy(session_id, copy);
+                        }
                         let pid = manager.child_pid(session_id).unwrap_or(0);
                         Ok(protocol::encode_response(&Response::SessionOpened {
                             id,
@@ -599,17 +620,27 @@ fn handle(
                             kind: "ssh".to_string(),
                         }))
                     }
-                    Err(e) => Ok(protocol::encode_response(&Response::Error {
+                    Err(e) => {
+                        if let Some(copy) = host_key_copy.take() {
+                            let _ = std::fs::remove_file(&copy.path);
+                        }
+                        Ok(protocol::encode_response(&Response::Error {
                         id: Some(id),
                         code: "session_open_failed".to_string(),
                         message: e.to_string(),
-                    })),
+                    }))
+                    }
                 },
-                Err(msg) => Ok(protocol::encode_response(&Response::Error {
+                Err(msg) => {
+                    if let Some(copy) = host_key_copy.take() {
+                        let _ = std::fs::remove_file(&copy.path);
+                    }
+                    Ok(protocol::encode_response(&Response::Error {
                     id: Some(id),
                     code: "spawn_spec_invalid".to_string(),
                     message: msg,
-                })),
+                }))
+                }
             }
         }
         Request::SessionInput {
@@ -1251,6 +1282,8 @@ enum PollRole {
 
 pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+    // Session copies of the known_hosts overlay left by a helper that died.
+    crate::known_hosts::cleanup_stale_copies();
     set_nonblocking(0);
     set_nonblocking(1);
 

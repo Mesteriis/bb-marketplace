@@ -9,7 +9,7 @@
 //! validated, so nothing but plain host-key lines (no `@cert-authority`, no `@revoked`) can enter.
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -102,21 +102,55 @@ pub fn valid_line(line: &str) -> bool {
     let host_ok = if hosts.starts_with("|1|") {
         hosts.len() < 200 && hosts[3..].split('|').count() == 2 && hosts[3..].bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'|'))
     } else {
-        !hosts.is_empty() && hosts.split(',').all(|h| !h.is_empty() && h.len() <= 255 && h.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b':' | b'-' | b'_' | b'[' | b']' | b'*' | b'?' | b'!')))
+        !hosts.is_empty() && hosts.split(',').all(|h| !h.is_empty() && h.len() <= 255 && h.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b':' | b'-' | b'_' | b'[' | b']')))
     };
+    // No wildcard or negated pattern (`*`, `?`, `!`): such a line would trust one key for many hosts.
     host_ok && blob.len() >= 16 && blob.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
 }
 
-fn lock(file: &File) {
-    unsafe {
-        libc::flock(std::os::fd::AsRawFd::as_raw_fd(file), libc::LOCK_EX);
+/// The one lock every writer of the overlay takes: a separate, stable file (the overlay itself is replaced by
+/// rename, so a lock on its inode would mean nothing after the first replacement).
+struct OverlayLock {
+    _file: File,
+}
+
+fn take_lock(dir: &Path) -> Result<OverlayLock, KnownHostsError> {
+    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(dir.join("known_hosts.lock")).map_err(|_| KnownHostsError::Io)?;
+    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&file), libc::LOCK_EX) } != 0 {
+        return Err(KnownHostsError::Io);
     }
+    Ok(OverlayLock { _file: file })
 }
 
 fn read_all(path: &Path) -> Result<String, KnownHostsError> {
     let mut text = String::new();
     File::open(path).and_then(|f| f.take(MAX_FILE).read_to_string(&mut text)).map_err(|_| KnownHostsError::Io)?;
     Ok(text)
+}
+
+/// Replaces the overlay with `content`: size checked BEFORE anything is published, written to a private
+/// temporary file, synced, renamed over the overlay, and the directory synced. A reader (ssh, through its own
+/// session copy, or this helper) sees the old file or the new one, never half of either.
+fn publish(path: &Path, content: &str) -> Result<(), KnownHostsError> {
+    if content.len() as u64 > MAX_FILE {
+        return Err(KnownHostsError::Unsafe);
+    }
+    let dir = path.parent().ok_or(KnownHostsError::Io)?;
+    let tmp = dir.join(format!("known_hosts.new{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    {
+        let mut out = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).map_err(|_| KnownHostsError::Io)?;
+        out.write_all(content.as_bytes()).map_err(|_| KnownHostsError::Io)?;
+        out.sync_all().map_err(|_| KnownHostsError::Io)?;
+    }
+    if std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(KnownHostsError::Io);
+    }
+    if let Ok(d) = File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
 }
 
 /// The lines of the overlay (as ssh wrote them), valid or not skipped silently.
@@ -131,29 +165,41 @@ pub fn add_lines(lines: &[String]) -> Result<usize, KnownHostsError> {
         return Err(KnownHostsError::Unsafe);
     }
     let path = ensure()?;
-    let mut file = OpenOptions::new().read(true).append(true).open(&path).map_err(|_| KnownHostsError::Io)?;
-    lock(&file);
-    let existing: std::collections::HashSet<String> = read_all(&path)?.lines().map(|l| l.trim_end().to_string()).collect();
+    let _lock = take_lock(path.parent().ok_or(KnownHostsError::Io)?)?;
+    append_missing(&path, lines)
+}
+
+/// With the lock held: adds what is missing and publishes once.
+fn append_missing(path: &Path, lines: &[String]) -> Result<usize, KnownHostsError> {
+    let mut text = read_all(path)?;
+    let existing: std::collections::HashSet<String> = text.lines().map(|l| l.trim_end().to_string()).collect();
     let mut added = 0;
+    let mut seen = existing;
     for line in lines {
-        if existing.contains(line.trim_end()) {
+        if !seen.insert(line.trim_end().to_string()) {
             continue;
         }
-        writeln!(file, "{line}").map_err(|_| KnownHostsError::Io)?;
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(line.trim_end());
+        text.push('\n');
         added += 1;
     }
-    file.sync_all().map_err(|_| KnownHostsError::Io)?;
+    if added > 0 {
+        publish(path, &text)?;
+    }
     Ok(added)
 }
 
-/// Removes every line whose host list names exactly `host` (hashed lines cannot be matched by name and stay).
+/// Removes every line whose host list names exactly `host`. A hashed line cannot be matched by name: it stays,
+/// and the page says so.
 pub fn remove_host(host: &str) -> Result<usize, KnownHostsError> {
     if host.is_empty() || host.len() > 255 || host.chars().any(|c| c.is_control() || c == ' ' || c == ',') {
         return Err(KnownHostsError::Unsafe);
     }
     let path = ensure()?;
-    let lock_file = OpenOptions::new().read(true).open(&path).map_err(|_| KnownHostsError::Io)?;
-    lock(&lock_file);
+    let _lock = take_lock(path.parent().ok_or(KnownHostsError::Io)?)?;
     let text = read_all(&path)?;
     let mut kept = String::new();
     let mut removed = 0;
@@ -166,18 +212,97 @@ pub fn remove_host(host: &str) -> Result<usize, KnownHostsError> {
             kept.push('\n');
         }
     }
-    if removed == 0 {
-        return Ok(0);
+    if removed > 0 {
+        publish(&path, &kept)?;
     }
-    let tmp = path.with_extension("tmp");
-    {
-        let mut out = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).map_err(|_| KnownHostsError::Io)?;
-        out.write_all(kept.as_bytes()).map_err(|_| KnownHostsError::Io)?;
-        out.sync_all().map_err(|_| KnownHostsError::Io)?;
-    }
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(|_| KnownHostsError::Io)?;
-    std::fs::rename(&tmp, &path).map_err(|_| KnownHostsError::Io)?;
     Ok(removed)
+}
+
+/// What a saved-secret SSH session reads and writes instead of the overlay itself: ssh never touches the
+/// overlay, so the helper is its only writer (one owner, one lock, atomic replace). What the user confirmed
+/// during the session is merged into the overlay when the session ends (`merge_session`); a crash loses at
+/// most that confirmation, and the question is asked again next time.
+#[derive(Debug, Clone)]
+pub struct SessionCopy {
+    pub path: PathBuf,
+    /// The overlay's lines when the copy was made; only lines beyond these are merged back.
+    pub snapshot: Vec<String>,
+}
+
+fn sessions_dir(overlay: &Path) -> Result<PathBuf, KnownHostsError> {
+    let dir = overlay.parent().ok_or(KnownHostsError::Io)?.join("sessions");
+    if !dir.exists() {
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).map_err(|_| KnownHostsError::Io)?;
+    }
+    let meta = std::fs::symlink_metadata(&dir).map_err(|_| KnownHostsError::Io)?;
+    if !meta.file_type().is_dir() || meta.uid() != euid() || meta.mode() & 0o077 != 0 {
+        return Err(KnownHostsError::Unsafe);
+    }
+    Ok(dir)
+}
+
+pub fn session_copy() -> Result<SessionCopy, KnownHostsError> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let overlay = ensure()?;
+    let dir = sessions_dir(&overlay)?;
+    let snapshot: Vec<String> = {
+        let _lock = take_lock(overlay.parent().ok_or(KnownHostsError::Io)?)?;
+        read_all(&overlay)?.lines().filter(|l| valid_line(l)).map(str::to_string).collect()
+    };
+    let path = dir.join(format!("s{}-{}", std::process::id(), COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+    let mut text = snapshot.join("\n");
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    let mut out = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|_| KnownHostsError::Io)?;
+    out.write_all(text.as_bytes()).map_err(|_| KnownHostsError::Io)?;
+    Ok(SessionCopy { path, snapshot })
+}
+
+/// The `-o` value that names the copy as ONE file. OpenSSH parses the value as a list split at spaces, so the
+/// path is double-quoted; a path it would expand or misread (`%`, `~`, quotes, backslashes, control
+/// characters) is refused.
+pub fn ssh_known_hosts_option(path: &Path) -> Result<String, KnownHostsError> {
+    let text = path.to_str().ok_or(KnownHostsError::Unsafe)?;
+    if !text.starts_with('/') || text.chars().any(|c| c.is_control() || matches!(c, '"' | '\\' | '%' | '$')) || text.contains("/~") {
+        return Err(KnownHostsError::Unsafe);
+    }
+    Ok(format!("UserKnownHostsFile=\"{text}\""))
+}
+
+/// Merges the keys ssh recorded in a session copy (complete, valid, plain lines that were not in the snapshot)
+/// into the overlay, under the lock, and removes the copy. Never fails the caller: a problem leaves the
+/// overlay as it was.
+pub fn merge_session(copy: &SessionCopy) {
+    let _ = merge_inner(copy);
+    let _ = std::fs::remove_file(&copy.path);
+}
+
+fn merge_inner(copy: &SessionCopy) -> Result<(), KnownHostsError> {
+    let text = read_all(&copy.path)?;
+    // A last line without its newline may be half written (ssh killed mid-append): it is not taken.
+    let complete = match text.rfind('\n') {
+        Some(i) => &text[..i],
+        None => return Ok(()),
+    };
+    let known: std::collections::HashSet<&str> = copy.snapshot.iter().map(String::as_str).collect();
+    let fresh: Vec<String> = complete.lines().filter(|l| valid_line(l) && !known.contains(l.trim_end())).map(str::to_string).collect();
+    if fresh.is_empty() {
+        return Ok(());
+    }
+    let overlay = ensure()?;
+    let _lock = take_lock(overlay.parent().ok_or(KnownHostsError::Io)?)?;
+    append_missing(&overlay, &fresh).map(|_| ())
+}
+
+/// At helper start: copies left by a helper that died are removed.
+pub fn cleanup_stale_copies() {
+    let Ok(overlay) = overlay_path() else { return };
+    let Some(parent) = overlay.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(parent.join("sessions")) else { return };
+    for entry in entries.flatten() {
+        let _ = std::fs::remove_file(entry.path());
+    }
 }
 
 #[cfg(test)]
