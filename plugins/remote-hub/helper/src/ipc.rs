@@ -574,7 +574,8 @@ fn handle(
                 // named as ONE quoted file, with every trust option stated: no global known_hosts, the question
                 // asked for an unknown key, a refusal for a changed one, no host-key updates or DNS trust.
                 // First use of a host:port (no key in the overlay yet): one session at a time decides it.
-                if program == "/usr/bin/ssh" || crate::known_hosts::test_overlay_configured() {
+                // (A caller that names its own UserKnownHostsFile decides keys itself; there is nothing to serialise.)
+                if (program == "/usr/bin/ssh" || crate::known_hosts::test_overlay_configured()) && !argv.iter().any(|a| a.starts_with("UserKnownHostsFile=")) {
                     let lines = crate::known_hosts::read_lines().unwrap_or_default();
                     if !crate::known_hosts::knows_endpoint(&lines, &facts.host, facts.port) {
                         let endpoint = format!("{}:{}", facts.host.to_ascii_lowercase(), facts.port);
