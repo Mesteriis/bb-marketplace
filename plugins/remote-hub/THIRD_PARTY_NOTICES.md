@@ -97,6 +97,10 @@ rustls-native-certs: Apache-2.0 OR ISC OR MIT. security-framework: MIT OR
 Apache-2.0. Load the macOS system roots for strict TLS validation of the RDP
 server certificate. https://github.com/rustls/rustls-native-certs
 
+security-framework (3.7.0, the version already in the dependency tree) is also a direct
+dependency since stage 3b: the helper stores and reads generic passwords in the
+macOS Keychain with it. https://github.com/kornelski/rust-security-framework
+
 ## rustls-webpki, untrusted
 
 ISC. Certificate path validation and the byte parser it uses.

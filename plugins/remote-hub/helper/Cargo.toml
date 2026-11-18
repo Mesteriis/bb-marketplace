@@ -54,6 +54,11 @@ x509-cert = { version = "=0.3.0", default-features = false, features = ["std"] }
 sha2 = "=0.11.1"
 png = "=0.18.1"
 
+# macOS Keychain access (stage 3b). Already in the tree through the TLS verifier;
+# MIT OR Apache-2.0. Generic passwords only, in the keychain the caller names.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "=3.7.0"
+
 [dev-dependencies]
 # Test-only: a fake RDP server that presents the fixture certificates, and a
 # client that trusts the fixture CA (the validated-certificate path).

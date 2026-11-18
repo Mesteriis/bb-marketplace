@@ -1976,6 +1976,7 @@ dependencies = [
  "libc",
  "png",
  "rustls",
+ "security-framework",
  "serde",
  "serde_json",
  "sha2",
