@@ -93,8 +93,8 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
       },
     },
     rdp: {
-      onRdpOpen: (target: RdpConnectTarget, size, profileId) =>
-        send<SessionHandle>("rdp_open", { target, width: size.width, height: size.height, profileId }),
+      onRdpOpen: (target: RdpConnectTarget, size, profileId, options) =>
+        send<SessionHandle>("rdp_open", { target, width: size.width, height: size.height, profileId, options }),
       onAttach,
       onClose: close,
       onDecision: async (handle: SessionHandle, fingerprint: string, accept: RdpDecision) => {

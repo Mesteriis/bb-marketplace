@@ -115,6 +115,9 @@ describe("RdpPage: a saved password (stage 3b-1)", () => {
     expect("password" in target).toBe(false);
     expect(nonJsonPath(target)).toBeNull();
     expect(p.calls.onRdpOpen.mock.calls[0]?.[2]).toBe(PID);
+    // A saved connection uses its own stored quality: the page sends none and the control is disabled.
+    expect(p.calls.onRdpOpen.mock.calls[0]?.[3]).toBeUndefined();
+    expect((screen.getByLabelText("connection quality") as HTMLSelectElement).disabled).toBe(true);
   });
 
   it("Use another password switches to a typed password and forgets the reference for this connect", async () => {
@@ -214,7 +217,7 @@ describe("RdpPage: prefilled from a saved profile", () => {
     fireEvent.click(screen.getByText("Connect"));
     await flush();
     expect(p.calls.onRdpOpen.mock.calls).toEqual([
-      [{ host: "win.example.test", port: 3390, username: "admin", password: SECRET, domain: "CORP" }, { width: 1920, height: 1080 }, PID],
+      [{ host: "win.example.test", port: 3390, username: "admin", password: SECRET, domain: "CORP" }, { width: 1920, height: 1080 }, PID, undefined],
     ]);
   });
 
@@ -264,8 +267,25 @@ describe("RdpPage: the form", () => {
   it("opens with the default port 3389, no domain, and the 1280x800 desktop", async () => {
     const p = props();
     await connect(p);
-    expect(p.calls.onRdpOpen.mock.calls).toEqual([[{ host: "rdp.test", port: 3389, username: "alice", password: SECRET }, { width: 1280, height: 800 }, undefined]]);
+    const balanced = { compression: true, colorDepth: 32, wallpaper: false, fullWindowDrag: false, menuAnimations: false, fontSmoothing: true, desktopComposition: false, themes: true };
+    expect(p.calls.onRdpOpen.mock.calls).toEqual([[{ host: "rdp.test", port: 3389, username: "alice", password: SECRET }, { width: 1280, height: 800 }, undefined, balanced]]);
     expect(p.calls.onAttach.mock.calls).toEqual([[HANDLE]]);
+  });
+
+  it("P2: Quick connect offers the three presets (Balanced preselected) and sends the chosen one; no advanced switches here", async () => {
+    const p = props();
+    render(<RdpPage {...p} />);
+    const select = screen.getByLabelText("connection quality") as HTMLSelectElement;
+    expect(select.value).toBe("balanced");
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["Slow link", "Balanced (default)", "Best quality"]);
+    expect(screen.queryByLabelText("Colour depth")).toBeNull();
+    type("host", "rdp.test");
+    type("user", "alice");
+    type("password", SECRET);
+    fireEvent.change(select, { target: { value: "slow" } });
+    fireEvent.click(screen.getByText("Connect"));
+    await flush();
+    expect(p.calls.onRdpOpen.mock.calls[0]?.[3]).toEqual({ compression: true, colorDepth: 16, wallpaper: false, fullWindowDrag: false, menuAnimations: false, fontSmoothing: true, desktopComposition: false, themes: false });
   });
 
   it("passes a port and a domain through", async () => {

@@ -16,7 +16,7 @@ both through a Rust helper, plus the echo console from stage 1.
   issuer and validity and choose to accept it once, trust it for this BB run,
   reject it, or trust it for good. A changed
   certificate is never accepted automatically. Sign-in uses NLA/CredSSP when offered.
-  Per profile, Connection quality: Slow link, Balanced (default), Best quality; compression, colour depth and effects under Advanced.
+  Connection quality per profile (presets also in Quick connect): Slow link, Balanced (default), Best quality; compression, colour depth and effects under Advanced.
 - Saved profiles: a catalogue beside Quick connect (nothing saved) with search,
   an SSH/RDP filter, groups, tags, favourites and live status; an editor for name,
   host, port, user, domain, authentication, key-file path and RDP size. A profile

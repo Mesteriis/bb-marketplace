@@ -178,8 +178,9 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
         }
       }
       const profileId = profiles.attribute(input.profileId, endpoint);
-      // The transport options come from the stored profile (never from the page); quick connect has none: the default applies.
-      const options = profileId === undefined ? undefined : (profiles.get(profileId)?.rdpOptions ?? undefined);
+      // A saved profile's own options win (read here, never taken from the page); Quick connect sends a preset; with neither
+      // the default (Balanced) applies in the helper.
+      const options = profileId === undefined ? input.options : (profiles.get(profileId)?.rdpOptions ?? undefined);
       return profiles.track(profileId, () => withHelper(() => service.rdpOpen(input.target, input.width, input.height, profileId, options)));
     },
     profile_list: () => imports.decorate(profiles.list()),

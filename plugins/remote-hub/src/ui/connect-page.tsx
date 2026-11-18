@@ -124,9 +124,9 @@ export function ConnectPage(props: ConnectPageProps) {
   const rdp: RdpPageProps = {
     ...props.rdp,
     ...(rdpPrefill !== undefined ? { prefill: rdpPrefill } : {}),
-    onRdpOpen: async (target, size, profileId) => {
+    onRdpOpen: async (target, size, profileId, options) => {
       try {
-        return await props.rdp.onRdpOpen(target, size, profileId);
+        return await props.rdp.onRdpOpen(target, size, profileId, options);
       } finally {
         void reload();
       }

@@ -398,6 +398,9 @@ refuse a value outside the closed set (`rdp_invalid_options`). What each does wi
 | colorDepth 24 / 16 | GCC core data (`highColorDepth`) and the Bitmap capability ask for that depth; 32 is IronRDP's default (no override) | yes: the session decodes 16/24/32 bpp, raw and RLE |
 | the six switches | Client Info performance flags (off = a `DISABLE_*` flag; font smoothing and composition = `ENABLE_*`) | sent as hints; a server may ignore them |
 
+Quick connect shows the three presets only (Balanced preselected); `rdp_open` takes the preset's values in `options` under the same
+closed validation, and a saved profile's own options always win over anything the page sends.
+
 Defaults: **Balanced** (compression on, 32 bpp, wallpaper, window drag, menu animations and composition off, font smoothing
 and themes on), chosen for a VPN/WAN link; **Slow link** is the same at 16 bpp with themes off; **Best quality** turns
 compression off and every effect on. Profiles saved before this get Balanced through the migration. The connection-type

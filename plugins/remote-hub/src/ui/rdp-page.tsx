@@ -3,6 +3,7 @@
 // closed) plus detached / error for the page's socket. The password lives in
 // the form field only until Connect is pressed: it is cleared from component
 // state at once and never shown again.
+import { PRESET_LABELS, RDP_PRESETS, type RdpOptions, type RdpPreset } from "../core/rdp-options.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FitMode } from "../core/rdp-geometry.ts";
 import { closeReasonText, errorCodeText, errorTextFromMessage, stateText } from "../core/rdp-texts.ts";
@@ -51,7 +52,8 @@ export interface RdpPrefill {
 }
 
 export interface RdpPageProps {
-  onRdpOpen: (target: RdpConnectTarget, size: { width: number; height: number }, profileId?: string) => Promise<SessionHandle>;
+  /** `options` are those of Quick connect (a preset); a saved profile's own options are applied by the service. */
+  onRdpOpen: (target: RdpConnectTarget, size: { width: number; height: number }, profileId?: string, options?: RdpOptions) => Promise<SessionHandle>;
   prefill?: RdpPrefill;
   onAttach: (handle: SessionHandle) => Promise<RdpAttach>;
   /** The service's close result; its reason is what the page shows. */
@@ -99,6 +101,8 @@ export function RdpPage(props: RdpPageProps) {
   const [username, setUsername] = useState("");
   const [domain, setDomain] = useState("");
   const [password, setPassword] = useState("");
+  // Quick connect's connection quality (a preset; the individual switches are in the profile editor).
+  const [preset, setPreset] = useState<RdpPreset>("balanced");
   // The session on screen. A connection in progress to another endpoint does NOT
   // replace it until that session is open: until then the old view keeps its own
   // endpoint, handle and input socket.
@@ -212,7 +216,7 @@ export function RdpPage(props: RdpPageProps) {
         ...(domain !== "" ? { domain } : {}),
       };
       const link = linked.current;
-      handle = await onRdpOpen(target, link?.size ?? DESKTOP_SIZE, link?.profileId);
+      handle = await onRdpOpen(target, link?.size ?? DESKTOP_SIZE, link?.profileId, link === null ? RDP_PRESETS[preset] : undefined);
     } catch (e) {
       opening.current = false;
       setConnecting(null);
@@ -231,7 +235,7 @@ export function RdpPage(props: RdpPageProps) {
       patch({ detached: true });
       setError(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
     }
-  }, [host, port, username, domain, password, savedRef, onRdpOpen, onAttach, patch]);
+  }, [host, port, username, domain, password, preset, savedRef, onRdpOpen, onAttach, patch]);
 
   const disconnect = useCallback(async () => {
     if (view === null) return;
@@ -327,6 +331,19 @@ export function RdpPage(props: RdpPageProps) {
             />
           )}
           <input aria-label="domain" placeholder="domain (optional)" value={domain} onChange={(e) => edit(setDomain)(e.target.value)} />
+          <select
+            aria-label="connection quality"
+            value={preset}
+            disabled={linked.current !== null}
+            title={linked.current !== null ? "This saved connection uses its own quality setting" : undefined}
+            onChange={(e) => setPreset(e.target.value as RdpPreset)}
+          >
+            {(["slow", "balanced", "quality"] as const).map((name) => (
+              <option key={name} value={name}>
+                {PRESET_LABELS[name]}
+              </option>
+            ))}
+          </select>
           <button type="submit" disabled={host === "" || username === "" || connecting !== null}>
             Connect
           </button>

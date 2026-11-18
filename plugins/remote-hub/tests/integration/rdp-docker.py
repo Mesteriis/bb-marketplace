@@ -410,7 +410,9 @@ def cases(tmp, cid, port, user, password):
         sid8, pid8 = h8.open_rdp("127.0.0.1", port, user, password, options=opts)
         assert h8.read_until(lambda m: m.get("type") == "rdp.cert_prompt", timeout=30) is not None, name
         h8.cert_decision(sid8, fp, "once")
+        t_decided = time.time()
         assert h8.read_until(lambda m: m.get("type") == "rdp.desktop", timeout=30) is not None, ("desktop with options " + name, h8.states())
+        t_desktop = time.time() - t_decided
         def stats_kv(line):
             return dict(p.split("=") for p in line.split()[1:])
         def with_bytes():
@@ -423,10 +425,13 @@ def cases(tmp, cid, port, user, password):
             h8.read_until(lambda m: m.get("type") == "rdp.state" and m["state"].startswith("stats "), timeout=max(0.1, deadline - time.time()))
             kv = with_bytes()
         assert kv is not None, ("a stats line with received bytes for " + name, h8.stats_lines(), [(m.get("type"), m.get("state")) for m in h8.trace][-12:])
-        seen_bytes[name] = int(kv["bytes"])
+        # Let the picture settle (the engine flushes its counters every 1.5 s), then read the final numbers.
+        h8.read_until(lambda m: False, timeout=4)
+        final = [stats_kv(l) for l in h8.stats_lines()][-1]
+        seen_bytes[name] = {"desktop_s": round(t_desktop, 2), "updates": int(final["updates"]), "pixels": int(final["pixels"]), "bytes": int(final["bytes"]), "avg": int(final["avg"]), "last_update_ms": int(final["last_ms"])}
         no_password_in(h8, password, "session 8 " + name)
         h8.terminate()
-    print("case P1 bytes at first stats:", seen_bytes, flush=True)
+    print("case P1 per preset (xrdp 800x600, after a 4 s settle):", seen_bytes, flush=True)
     # A depth outside the closed set never starts an engine.
     h8b = Helper()
     h8b.send({"type": "session.open_rdp", "id": 101, "host": "127.0.0.1", "port": port, "username": user, "password": password, "domain": None,

@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { credentialBindSchema } from "./credential.ts";
 import { profileInputSchema, profileSchema } from "./profile.ts";
+import { rdpOptionsSchema } from "./rdp-options.ts";
 
 const sourceKindSchema = z.enum(["ssh-config", "hosts", "keys-dir", "agent", "known-hosts"]);
 export const importSourceSchema = z.object({
@@ -198,6 +199,8 @@ export const rpcSchemas = {
       width: z.number().int().min(1).max(MAX_DESKTOP_WIDTH).default(1280),
       height: z.number().int().min(1).max(MAX_DESKTOP_HEIGHT).default(800),
       profileId: z.string().uuid().optional(),
+      /** Quick connect's quality preset (a closed set). A saved profile's own options win. */
+      options: rdpOptionsSchema.optional(),
     }),
     output: sessionHandleSchema,
   },

@@ -125,6 +125,19 @@ describe("rdp_open and a saved credential (R5a: the REAL handler)", () => {
     expect((service.rdpOpen.mock.calls[1] as unknown as unknown[])[4]).toBeUndefined();
   });
 
+  it("P2: Quick connect's preset reaches the service; a profile's own options win over what the page sends; a depth outside the set is refused by the schema", async () => {
+    const { profiles, handlers, service } = setup();
+    const SLOW = { compression: true, colorDepth: 16, wallpaper: false, fullWindowDrag: false, menuAnimations: false, fontSmoothing: true, desktopComposition: false, themes: false } as const;
+    const QUALITY = { compression: false, colorDepth: 32, wallpaper: true, fullWindowDrag: true, menuAnimations: true, fontSmoothing: true, desktopComposition: true, themes: true } as const;
+    await handlers.rdp_open(rdpInput({ password: SECRET }, { options: SLOW }));
+    expect((service.rdpOpen.mock.calls[0] as unknown as unknown[])[4]).toEqual(SLOW);
+    const p = profiles.save({ fields: { ...RDP, rdpOptions: QUALITY } });
+    await handlers.rdp_open(rdpInput({ password: SECRET }, { profileId: p.id, options: SLOW }));
+    expect((service.rdpOpen.mock.calls[1] as unknown as unknown[])[4]).toEqual(QUALITY);
+    const { rpcSchemas } = await import("../../core/rpc.ts");
+    expect(rpcSchemas.rdp_open.input.safeParse({ target: { host: "h", port: 3389, username: "u", password: "x" }, options: { ...SLOW, colorDepth: 8 } }).success).toBe(false);
+  });
+
   it("a typed password skips the credential check and a mismatching profile id runs unattributed (P4 at the handler)", async () => {
     const { profiles, handlers, service } = setup();
     const p = profiles.save({ fields: RDP });
