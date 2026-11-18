@@ -1244,6 +1244,38 @@ fn a1_unparseable_control_body_is_non_fatal() {
     }
 }
 
+// The helper writes the marker with `eprintln!` on unbuffered stderr, so one
+// logical line can arrive in several `write(2)` calls ("...bytes=" first, the
+// digits and newline later). Only a complete, newline-terminated line counts;
+// reading a prefix as the value made a3 see "0 bytes" under load.
+fn parse_stdin_blocked_marker(text: &str) -> Option<u64> {
+    for line in text.split_inclusive('\n') {
+        if let Some(rest) = line.strip_prefix("helper-stdin-blocked bytes=") {
+            if let Some(digits) = rest.strip_suffix('\n') {
+                return Some(digits.parse().unwrap_or_else(|_| {
+                    panic!("malformed helper-stdin-blocked line: {line:?}")
+                }));
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn a3_marker_parser_ignores_partial_lines() {
+    assert_eq!(parse_stdin_blocked_marker(""), None);
+    assert_eq!(parse_stdin_blocked_marker("helper-stdin-blocked bytes="), None);
+    assert_eq!(parse_stdin_blocked_marker("helper-stdin-blocked bytes=3670"), None);
+    assert_eq!(
+        parse_stdin_blocked_marker("noise\nhelper-stdin-blocked bytes=3670042\n"),
+        Some(3_670_042)
+    );
+    assert_eq!(
+        parse_stdin_blocked_marker("helper-stdin-blocked bytes=7\nhelper-stdin-blocked bytes=9"),
+        Some(7)
+    );
+}
+
 // A3: while the outbox is full, stdin must leave the poll interest set so the
 // helper cannot spin on a half-close. The ingress-full mark_eof branch is
 // defensive and not reachable on darwin (see ipc.rs); this test does NOT cover
@@ -1327,14 +1359,8 @@ fn a3_stdin_leaves_poll_interest_set_while_outbox_full() {
     let mut blocked_bytes = 0u64;
     while Instant::now() < deadline {
         let text = seen.lock().unwrap().clone();
-        if let Some(line) = text
-            .lines()
-            .find(|l| l.starts_with("helper-stdin-blocked bytes="))
-        {
-            blocked_bytes = line
-                .trim_start_matches("helper-stdin-blocked bytes=")
-                .parse()
-                .unwrap_or(0);
+        if let Some(n) = parse_stdin_blocked_marker(&text) {
+            blocked_bytes = n;
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
