@@ -103,7 +103,7 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
                     {p.credentialRef !== null && <span className="rh-status">saved password</span>}
                     {p.provenance == null && p.needsConfig === true && (
                       <span className="rh-status" data-testid="profile-needs-config">
-                        uses your ssh config, no saved password until you set its host
+                        uses your ssh config, no saved password until you set a new host, port and user
                       </span>
                     )}
                     {p.provenance != null && (

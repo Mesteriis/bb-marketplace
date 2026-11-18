@@ -211,6 +211,6 @@ describe("ProfileCatalogue provenance", () => {
       authType: "agent", identityFile: null, credentialRef: null, rdpWidth: null, rdpHeight: null, needsConfig: true,
     } as never;
     render(<ProfileCatalogue profiles={[orphan]} error={null} sessions={[]} onConnect={() => {}} onEdit={() => {}} onNew={() => {}} onDuplicate={() => {}} onDelete={() => {}} onRetry={() => {}} />);
-    expect(screen.getByTestId("profile-needs-config").textContent).toBe("uses your ssh config, no saved password until you set its host");
+    expect(screen.getByTestId("profile-needs-config").textContent).toBe("uses your ssh config, no saved password until you set a new host, port and user");
   });
 });

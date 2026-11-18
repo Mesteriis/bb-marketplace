@@ -48,6 +48,11 @@ const RECENT_ERRORS_MAX = 5;
 /** The shape of a failure code worth keeping; anything else is stored as "unknown". */
 const HISTORY_CODE = /^[a-z0-9_]{1,64}$/;
 
+/** The user replaced the destination an imported alias stood for with a full one: a different host, a port and a user. */
+function destinationMadeExplicit(existing: Profile, next: ProfileInput["fields"]): boolean {
+  return next.host !== existing.host && next.port !== null && next.username !== null;
+}
+
 export class ProfileBook {
   constructor(private readonly deps: ProfileBookDeps) {}
 
@@ -87,8 +92,9 @@ export class ProfileBook {
       updatedAt: stamp,
       lastOpenedAt: existing?.lastOpenedAt ?? null,
       recentErrors: existing?.recentErrors ?? [],
-      // The restriction stays until the destination (the host) is changed on purpose; a copy keeps it.
-      ...(options.needsConfig === true || (existing?.needsConfig === true && existing.host === input.fields.host) ? { needsConfig: true } : {}),
+      // The restriction stays until the destination is made explicit and complete on purpose: a NEW host together
+      // with a port and a user. Any other edit keeps it, and so does a copy.
+      ...(options.needsConfig === true || (existing?.needsConfig === true && !destinationMadeExplicit(existing, input.fields)) ? { needsConfig: true } : {}),
     });
     this.deps.store.put(profile);
     return profile;

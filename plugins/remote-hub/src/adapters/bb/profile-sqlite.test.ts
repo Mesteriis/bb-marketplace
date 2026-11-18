@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ProfileBook } from "../../core/profile-book.ts";
 import type { ProfileFields } from "../../core/profile.ts";
 import { ALL_MIGRATIONS } from "./migrations.ts";
+import { PROFILE_LATER_MIGRATIONS, PROFILE_MIGRATIONS } from "./profile-sqlite.ts";
 import { createSqliteProfileStore } from "./profile-sqlite.ts";
 
 const dirs: string[] = [];
@@ -117,5 +118,41 @@ describe("sqlite profile store", () => {
     db.prepare("UPDATE profiles SET host = ? WHERE id = ?").run("-bad host", keep.id);
     const other = b.save({ fields: { ...FIELDS, name: "other" } });
     expect(book(db).list().map((p) => p.id)).toEqual([other.id]);
+  });
+});
+
+describe("upgrading a database made by the schema before the needs_config backfill (W4)", () => {
+  it("an unresolved import link makes its profile restricted; resolved links and manual profiles are left alone; the earlier statements keep their positions", async () => {
+    const { CREDENTIAL_MIGRATIONS } = await import("./credential-sqlite.ts");
+    const { IMPORT_MIGRATIONS } = await import("./import-sqlite.ts");
+    const { RDP_TRUST_MIGRATIONS } = await import("./rdp-trust-sqlite.ts");
+    const { ALL_MIGRATIONS, NEEDS_CONFIG_BACKFILL } = await import("./migrations.ts");
+    // The list as the previous release ran it (bb.storage.migrate numbers statements by position).
+    const previous = [...PROFILE_MIGRATIONS, ...CREDENTIAL_MIGRATIONS, ...IMPORT_MIGRATIONS, ...PROFILE_LATER_MIGRATIONS, ...RDP_TRUST_MIGRATIONS];
+    expect(ALL_MIGRATIONS.slice(0, previous.length)).toEqual(previous);
+    expect(ALL_MIGRATIONS.slice(previous.length)).toEqual(NEEDS_CONFIG_BACKFILL);
+    const db = new Database(":memory:");
+    for (const statement of previous) db.exec(statement);
+    const profile = (id: string, name: string) =>
+      db
+        .prepare(
+          `INSERT INTO profiles (id, name, protocol, grp, tags, favorite, color, host, port, username, domain, auth_type, identity_file, credential_ref, rdp_width, rdp_height, execution_host_id, origin, created_at, updated_at, last_opened_at, recent_errors)
+           VALUES (?, ?, 'ssh', NULL, '[]', 0, NULL, 'h', NULL, NULL, NULL, 'agent', NULL, NULL, NULL, NULL, 'local', 'imported', 'x', 'x', NULL, '[]')`,
+        )
+        .run(id, name);
+    profile("p-unresolved", "jump");
+    profile("p-resolved", "build");
+    profile("p-manual", "manual");
+    const link = (profile_id: string, key: string, resolved: number) =>
+      db.prepare("INSERT INTO import_links (source_id, entry_key, profile_id, imported_json, resolved, flags_json, stale) VALUES ('s', ?, ?, '{}', ?, '[]', 0)").run(key, profile_id, resolved);
+    link("p-unresolved", "jump", 0);
+    link("p-resolved", "build", 1);
+    for (const statement of NEEDS_CONFIG_BACKFILL) db.exec(statement);
+    expect(db.prepare("SELECT id, needs_config FROM profiles ORDER BY id").all()).toEqual([
+      { id: "p-manual", needs_config: 0 },
+      { id: "p-resolved", needs_config: 0 },
+      { id: "p-unresolved", needs_config: 1 },
+    ]);
+    db.close();
   });
 });

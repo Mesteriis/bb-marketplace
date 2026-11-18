@@ -413,15 +413,24 @@ describe("the restriction lives with the profile (U2)", () => {
     await expect(credentials.save({ profileId: copyPassword.id, secret: "pw" })).rejects.toMatchObject({ code: "profile_needs_config" });
   });
 
-  it("it is cleared only when the user gives the profile an explicit destination (changes its host); other edits keep it", async () => {
+  it("it is cleared only when the destination is made explicit and complete: a NEW host together with a port and a user (W4); any other edit keeps it", async () => {
     const { book, profiles, credentials } = setup();
     const source = enabledConfig(book);
     await applyFresh(book, source.id);
     const jump = profiles.list().find((p) => p.name === "jump")!;
     const renamed = profiles.save({ id: jump.id, fields: { ...profileFieldsOf(jump), name: "renamed", authType: "password", username: "u" } });
     expect(renamed.needsConfig).toBe(true);
-    const explicit = profiles.save({ id: jump.id, fields: { ...profileFieldsOf(renamed), host: "real.example.test" } });
-    expect(explicit.needsConfig).toBeUndefined();
+    // A new host alone, or a host with a port but no user (or the reverse), is not a verified destination.
+    const hostOnly = profiles.save({ id: jump.id, fields: { ...profileFieldsOf(renamed), host: "real.example.test", username: null } });
+    expect(hostOnly.needsConfig).toBe(true);
+    const noPort = profiles.save({ id: jump.id, fields: { ...profileFieldsOf(hostOnly), username: "u" } });
+    expect(noPort.needsConfig).toBe(true);
+    // The same host with port and user filled in: the destination did not change, so nothing was verified.
+    const sameHost = profiles.save({ id: jump.id, fields: { ...profileFieldsOf(noPort), host: "real.example.test", port: 22 } });
+    expect(sameHost.needsConfig).toBe(true);
+    const other = profiles.save({ id: jump.id, fields: { ...profileFieldsOf(sameHost), host: "other.example.test" } });
+    expect(other.needsConfig).toBeUndefined();
+    const explicit = other;
     await expect(credentials.save({ profileId: explicit.id, secret: "pw" })).resolves.toMatchObject({ ref: expect.any(String) });
   });
 
