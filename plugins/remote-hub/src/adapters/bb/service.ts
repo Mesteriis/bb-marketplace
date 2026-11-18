@@ -11,7 +11,8 @@ import { buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
 import { HelperProcess, type HelperStatus, HelperRuntimeError, HelperRequestError, type RdpHelperEvent } from "./helper-process.ts";
 import type { RdpInfo, RdpTarget, SessionHandle } from "../../core/rpc.ts";
 import { parseUpdateChunk, RDP_STATES, type RdpInputEvent } from "../../core/rdp-protocol.ts";
-import { createRdpTrustStore, fingerprintEqual, type RdpTrustStore } from "../../core/rdp-trust.ts";
+import type { RdpDecision } from "../../core/rpc.ts";
+import { createRdpTrustStore, fingerprintEqual, type RdpTrustStore, type TrustedRdpCert } from "../../core/rdp-trust.ts";
 import { RdpViewMux, type ViewEffects } from "../../core/rdp-views.ts";
 import type { ScreenshotResult } from "../../core/rdp-screenshot.ts";
 
@@ -68,7 +69,10 @@ export interface RemoteHubService {
   sshPromptAnswer(handle: SessionHandle, promptId: number, answer: string | null): Promise<void>;
   sshOpenTest(cols: number, rows: number): Promise<SessionHandle>;
   rdpOpen(target: RdpTarget, width: number, height: number, profileId?: string): Promise<SessionHandle>;
-  rdpCertDecision(handle: SessionHandle, fingerprint: string, accept: "once" | "session_trust" | "reject"): Promise<void>;
+  rdpCertDecision(handle: SessionHandle, fingerprint: string, accept: RdpDecision): Promise<void>;
+  /** Certificates trusted for good (stage 3c-2). */
+  rdpTrustedList(): TrustedRdpCert[];
+  rdpTrustedForget(host: string, port: number, fingerprint: string): boolean;
   rdpScreenshot(handle: SessionHandle): Promise<ScreenshotResult>;
   rdpAttach(handle: SessionHandle, viewId: string, sink: RdpViewSink): RdpAttachment;
   /** Test/inspection: the runtime view of one RDP session (never holds a password). */
@@ -584,10 +588,14 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         throw new HelperRequestError("fingerprint_mismatch", "the decision names a different certificate than the one presented");
       }
       const hp = await start();
-      await hp.rdpCertDecision(handle, prompt.fingerprint, accept);
+      // The helper knows two ways to accept (this handshake only, or on); "for good" is the plugin's own record.
+      await hp.rdpCertDecision(handle, prompt.fingerprint, accept === "always_trust" ? "session_trust" : accept);
       if (accept === "session_trust") trust.trust(prompt.host, prompt.port, prompt.fingerprint);
+      if (accept === "always_trust") trust.trustAlways(prompt.host, prompt.port, prompt.fingerprint, new Date());
       if (info?.rdp !== undefined) info.rdp.prompt = null;
     },
+    rdpTrustedList: () => trust.listAlways(),
+    rdpTrustedForget: (host, port, fingerprint) => trust.forget(host, port, fingerprint),
     async rdpScreenshot(handle) {
       requireGeneration(handle);
       const hp = await start();

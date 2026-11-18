@@ -28,6 +28,8 @@ function fakeApi(over: Partial<ImportApi> = {}) {
     apply: vi.fn(async (): Promise<ImportOutcome> => ({ created: 1, updated: 0, unchanged: 0, conflicts: [], deletedLocally: [], skipped: [], markedStale: 0 })),
     trusted: vi.fn(async () => [] as Array<{ key: string; hosts: string[]; hashed: boolean; keyType: string; fingerprint: string }>),
     forget: vi.fn(async () => ({ removed: 1 })),
+    rdpCerts: vi.fn(async () => [] as Array<{ host: string; port: number; fingerprint: string; addedAt: string }>),
+    forgetRdpCert: vi.fn(async () => ({ removed: true })),
     ...over,
   };
   return api as unknown as ImportApi & typeof api;
@@ -144,7 +146,7 @@ describe("ImportPanel and host keys", () => {
     expect(area.textContent).toContain("SHA256:abc");
     fireEvent.click(screen.getByRole("button", { name: "Forget [box.example.test]:2222" }));
     await waitFor(() => expect(api.forget).toHaveBeenCalledWith("[box.example.test]:2222"));
-    await waitFor(() => expect(screen.getByText("None yet.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText("Trusted host keys").textContent).toContain("None yet."));
   });
 
   it("a known_hosts scan trusts only the ticked keys, none by default, and says what it does", async () => {
@@ -176,5 +178,18 @@ describe("ImportPanel and host keys", () => {
     fireEvent.click(trust);
     await waitFor(() => expect(api.apply).toHaveBeenCalledWith("s1", ["a"]));
     expect((await screen.findByRole("status")).textContent).toBe("1 host key(s) trusted, 0 already trusted.");
+  });
+
+  it("lists the RDP certificates trusted for good and forgets exactly the chosen one", async () => {
+    const FP = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+    let list = [{ host: "win.example.test", port: 3389, fingerprint: FP, addedAt: "2026-11-18T10:00:00.000Z" }];
+    const api = fakeApi({ rdpCerts: vi.fn(async () => list), forgetRdpCert: vi.fn(async () => { list = []; return { removed: true }; }) });
+    await mount(api);
+    const block = await screen.findByLabelText("Trusted RDP certificates");
+    expect(block.textContent).toContain("win.example.test:3389");
+    expect(block.textContent).toContain(FP);
+    fireEvent.click(screen.getByLabelText("Forget certificate of win.example.test:3389"));
+    await waitFor(() => expect(api.forgetRdpCert).toHaveBeenCalledWith("win.example.test", 3389, FP));
+    await waitFor(() => expect(screen.getByLabelText("Trusted RDP certificates").textContent).toContain("None yet."));
   });
 });

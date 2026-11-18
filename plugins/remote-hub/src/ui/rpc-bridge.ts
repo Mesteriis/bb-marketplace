@@ -59,6 +59,8 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
       resolve: (id, scanId, keys) => send("import_resolve", { id, scanId, keys }),
       trusted: () => send("known_hosts_list"),
       forget: (host) => send("known_hosts_forget", { host }),
+      rdpCerts: () => send("rdp_trusted_list", {}),
+      forgetRdpCert: (host, port, fingerprint) => send("rdp_trusted_forget", { host, port, fingerprint }),
     },
     ssh: {
       onSshOpen: (target: SshTarget, profileId?: string, credentialRef?: string) => send<SessionHandle>("ssh_open", { target, profileId, credentialRef }),

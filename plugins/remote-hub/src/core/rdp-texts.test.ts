@@ -54,7 +54,9 @@ describe("rdp texts", () => {
   });
 
   it("explains every prompt reason, cert_changed in capitals for the difference", () => {
-    expect(promptReasonText("cert_changed")).toBe("this is a DIFFERENT certificate than the one you trusted for this host and port");
+    expect(promptReasonText("cert_changed")).toBe(
+      "this is a DIFFERENT certificate than the one you trusted for this host and port. A saved password is not sent to it. If the server really got a new certificate, accept it once, or forget the old one (Import screen, RDP certificates you trust) and trust the new one.",
+    );
     expect(promptReasonText("untrusted_root")).toBe("the certificate is not signed by a root this Mac trusts");
     expect(promptReasonText("hostname_mismatch")).toBe("the certificate was issued for a different host name");
     expect(promptReasonText("expired")).toBe("the certificate is expired or not yet valid");

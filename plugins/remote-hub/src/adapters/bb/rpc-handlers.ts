@@ -167,6 +167,8 @@ export function createRpcHandlers({ service, profiles, credentials, imports }: R
         await service.rdpCertDecision({ generation: input.generation, sessionId: input.sessionId }, input.fingerprint, input.accept);
         return { decided: true as const };
       }),
+    rdp_trusted_list: () => withHelper(async () => service.rdpTrustedList()),
+    rdp_trusted_forget: (input) => withHelper(async () => ({ removed: service.rdpTrustedForget(input.host, input.port, input.fingerprint) })),
     rdp_screenshot: (input) =>
       withHelper(() => service.rdpScreenshot({ generation: input.generation, sessionId: input.sessionId })),
     session_list: () => withHelper(() => service.sessionList()),

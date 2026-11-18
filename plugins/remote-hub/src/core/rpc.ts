@@ -199,9 +199,17 @@ export const rpcSchemas = {
   rdp_cert_decision: {
     input: sessionHandleSchema.extend({
       fingerprint: z.string().min(1).max(95),
-      accept: z.enum(["once", "session_trust", "reject"]),
+      accept: z.enum(["once", "session_trust", "always_trust", "reject"]),
     }),
     output: z.object({ decided: z.literal(true) }),
+  },
+  rdp_trusted_list: {
+    input: z.object({}).strict(),
+    output: z.array(z.object({ host: z.string(), port: z.number().int(), fingerprint: z.string(), addedAt: z.string() })),
+  },
+  rdp_trusted_forget: {
+    input: z.object({ host: z.string().min(1).max(255), port: z.number().int().min(1).max(65535), fingerprint: z.string().min(1).max(95) }).strict(),
+    output: z.object({ removed: z.boolean() }),
   },
   rdp_screenshot: {
     input: sessionHandleSchema,
@@ -299,6 +307,6 @@ export type SessionInfo = z.infer<typeof sessionInfoSchema>;
 export type RdpTarget = z.infer<typeof rdpTargetSchema>;
 export type RdpInfo = z.infer<typeof rdpInfoSchema>;
 export type RdpCertPromptInfo = z.infer<typeof rdpCertPromptInfoSchema>;
-export type RdpDecision = "once" | "session_trust" | "reject";
+export type RdpDecision = "once" | "session_trust" | "always_trust" | "reject";
 export { RDP_CLOSED_REASONS };
 export type RpcSchemas = typeof rpcSchemas;

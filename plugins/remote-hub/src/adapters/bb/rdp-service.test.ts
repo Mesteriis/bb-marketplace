@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { HelperRequestError, type HelperProcess, type RdpHelperEvent } from "./helper-process.ts";
 import { createRemoteHubService, type RemoteHubService } from "./service.ts";
 import { registerStreamSocket } from "./stream-socket.ts";
-import { createRdpTrustStore } from "../../core/rdp-trust.ts";
+import { createRdpTrustStore, type PersistentRdpTrust, type TrustedRdpCert } from "../../core/rdp-trust.ts";
 import { UPDATE_HEADER_BYTES } from "../../core/rdp-protocol.ts";
 import type { SessionHandle } from "../../core/rpc.ts";
 
@@ -164,12 +164,12 @@ type Handlers = {
   onError(): void;
 };
 
-function setup() {
+function setup(persistent?: PersistentRdpTrust) {
   const helper = new FakeRdpHelper();
   const service = createRemoteHubService({
     startHelper: async () => helper as unknown as HelperProcess,
     env: {},
-    trust: createRdpTrustStore(),
+    trust: createRdpTrustStore(persistent),
   });
   let captured: ((ctx: { url: URL }) => Handlers) | null = null;
   registerStreamSocket(
@@ -337,6 +337,41 @@ describe("RDP service: certificate decisions and trust", () => {
     helper.prompt(second.sessionId, FP_B);
     expect(service.rdpInfo(second)?.prompt).toMatchObject({ fingerprint: FP_B, reason: "cert_changed" });
     expect(helper.decisions.filter((d) => d.sessionId === second.sessionId)).toEqual([]);
+  });
+
+  it("'always trust' is accepted by the helper, kept, listed, survives a new service, is forgotten on request, and a changed certificate is still cert_changed", async () => {
+    const rows: TrustedRdpCert[] = [];
+    const disk: PersistentRdpTrust = {
+      all: () => [...rows],
+      add: (c) => void rows.push(c),
+      remove: (h, p, f) => {
+        const i = rows.findIndex((r) => r.host === h && r.port === p && r.fingerprint === f);
+        if (i >= 0) rows.splice(i, 1);
+        return i >= 0;
+      },
+    };
+    const one = setup(disk);
+    const first = await one.service.rdpOpen({ ...TARGET }, 8, 4);
+    one.helper.prompt(first.sessionId, FP_A);
+    await one.service.rdpCertDecision(first, FP_A, "always_trust");
+    // The helper only ever hears "accept": "for good" is the plugin's own record.
+    expect(one.helper.decisions).toEqual([{ sessionId: first.sessionId, fingerprint: FP_A, accept: "session_trust" }]);
+    expect(one.service.rdpTrustedList()).toMatchObject([{ host: "rdp.test", port: 3389, fingerprint: FP_A }]);
+    // A new service (a restart of BB) over the same storage: no prompt for the same certificate.
+    const two = setup(disk);
+    const second = await two.service.rdpOpen({ ...TARGET }, 8, 4);
+    two.helper.prompt(second.sessionId, FP_A);
+    expect(two.service.rdpInfo(second)?.prompt).toBeNull();
+    // Another certificate for the same server is a change and is shown as one.
+    const third = await two.service.rdpOpen({ ...TARGET }, 8, 4);
+    two.helper.prompt(third.sessionId, FP_B);
+    expect(two.service.rdpInfo(third)?.prompt).toMatchObject({ fingerprint: FP_B, reason: "cert_changed" });
+    // Forgotten: the original is a question again.
+    expect(two.service.rdpTrustedForget("rdp.test", 3389, FP_A)).toBe(true);
+    expect(two.service.rdpTrustedList()).toEqual([]);
+    const fourth = await two.service.rdpOpen({ ...TARGET }, 8, 4);
+    two.helper.prompt(fourth.sessionId, FP_A);
+    expect(two.service.rdpInfo(fourth)?.prompt).toMatchObject({ fingerprint: FP_A, reason: "untrusted_root" });
   });
 
   it("'once' and 'reject' do not create trust", async () => {

@@ -37,8 +37,11 @@ describe("RdpCertDialog", () => {
 
   it("states cert_changed prominently", () => {
     render(<RdpCertDialog prompt={{ ...PROMPT, reason: "cert_changed" }} onDecide={() => {}} />);
-    const reason = screen.getByText("this is a DIFFERENT certificate than the one you trusted for this host and port");
+    const reason = screen.getByText(/^this is a DIFFERENT certificate than the one you trusted for this host and port\. A saved password is not sent to it\./);
     expect(reason.className).toContain("rh-error");
+    // A changed certificate is never offered "for good": the old one has to be forgotten first.
+    expect(screen.queryByText("Always trust this certificate")).toBeNull();
+    expect(screen.getByText(/forget the old one \(Import screen, RDP certificates you trust\)/)).toBeTruthy();
   });
 
   it("every decision carries the PRESENTED fingerprint", () => {
@@ -46,10 +49,12 @@ describe("RdpCertDialog", () => {
     render(<RdpCertDialog prompt={PROMPT} onDecide={onDecide} />);
     fireEvent.click(screen.getByText("Accept once"));
     fireEvent.click(screen.getByText("Trust for this BB run"));
+    fireEvent.click(screen.getByText("Always trust this certificate"));
     fireEvent.click(screen.getByText("Reject"));
     expect(onDecide.mock.calls).toEqual([
       [FP, "once"],
       [FP, "session_trust"],
+      [FP, "always_trust"],
       [FP, "reject"],
     ]);
   });
@@ -73,12 +78,14 @@ describe("RdpCertDialog", () => {
   it("keeps Tab and Shift+Tab inside the dialog", () => {
     render(<RdpCertDialog prompt={PROMPT} onDecide={() => {}} />);
     const dialog = screen.getByRole("alertdialog");
-    const [accept, trust, reject] = ["Accept once", "Trust for this BB run", "Reject"].map((t) => screen.getByText(t));
+    const [accept, trust, always, reject] = ["Accept once", "Trust for this BB run", "Always trust this certificate", "Reject"].map((t) => screen.getByText(t));
     fireEvent.keyDown(dialog, { key: "Tab" }); // from the dialog itself: the first button
     expect(document.activeElement).toBe(accept);
     fireEvent.keyDown(accept, { key: "Tab" });
     expect(document.activeElement).toBe(trust);
     fireEvent.keyDown(trust, { key: "Tab" });
+    expect(document.activeElement).toBe(always);
+    fireEvent.keyDown(always, { key: "Tab" });
     expect(document.activeElement).toBe(reject);
     fireEvent.keyDown(reject, { key: "Tab" }); // wraps
     expect(document.activeElement).toBe(accept);

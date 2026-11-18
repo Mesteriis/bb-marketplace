@@ -18,6 +18,9 @@ export interface ImportApi {
   /** What saved-secret SSH sessions trust now (the helper's own known hosts). */
   trusted: () => Promise<Array<Omit<TrustItem, "trusted">>>;
   forget: (host: string) => Promise<{ removed: number }>;
+  /** RDP server certificates trusted for good (the "Always trust" answer), and forgetting one. */
+  rdpCerts: () => Promise<Array<{ host: string; port: number; fingerprint: string; addedAt: string }>>;
+  forgetRdpCert: (host: string, port: number, fingerprint: string) => Promise<{ removed: boolean }>;
 }
 
 const FLAG_TEXT: Record<string, string> = {
@@ -67,6 +70,7 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
   const [sources, setSources] = useState<ImportSource[] | null>(null);
   const [suggestions, setSuggestions] = useState<Array<{ kind: ImportSource["kind"]; path: string | null; label: string }>>([]);
   const [trusted, setTrusted] = useState<Array<Omit<TrustItem, "trusted">> | null>(null);
+  const [rdpCerts, setRdpCerts] = useState<Array<{ host: string; port: number; fingerprint: string; addedAt: string }> | null>(null);
   const [scan, setScan] = useState<{ sourceId: string; result: ScanResult } | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState<string | null>(null);
@@ -97,13 +101,22 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
     }
   }, [api]);
 
+  const reloadRdpCerts = useCallback(async () => {
+    try {
+      setRdpCerts(await api.rdpCerts());
+    } catch {
+      setRdpCerts([]);
+    }
+  }, [api]);
+
   useEffect(() => {
+    void reloadRdpCerts();
     void run(async () => {
       await reload();
       setSuggestions(await api.suggestions());
     });
     void reloadTrusted();
-  }, [api, reload, reloadTrusted, run]);
+  }, [api, reload, reloadTrusted, reloadRdpCerts, run]);
 
   const doScan = (source: ImportSource, keepMessage = false) =>
     run(async () => {
@@ -342,6 +355,27 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
                     Forget
                   </button>
                 )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div aria-label="Trusted RDP certificates">
+        <h3>RDP certificates you trust</h3>
+        <p className="rh-hint">Chosen with "Always trust this certificate". A different certificate on the same server is shown as changed and is never accepted automatically; a saved RDP password is sent only to the certificate it was first used with.</p>
+        {rdpCerts !== null && rdpCerts.length === 0 && <p className="rh-hint">None yet.</p>}
+        <ul>
+          {(rdpCerts ?? []).map((c) => (
+            <li key={c.host + ":" + c.port + ":" + c.fingerprint} className="rh-profile">
+              <div className="rh-profile-main">
+                <strong>{c.host}:{c.port}</strong>
+                <span className="rh-profile-endpoint">{c.fingerprint}</span>
+              </div>
+              <div className="rh-profile-actions">
+                <button type="button" disabled={busy} aria-label={"Forget certificate of " + c.host + ":" + c.port} onClick={() => void run(async () => { await api.forgetRdpCert(c.host, c.port, c.fingerprint); await reloadRdpCerts(); })}>
+                  Forget
+                </button>
               </div>
             </li>
           ))}

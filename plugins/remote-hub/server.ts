@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { HELPER_BIN_NAME, HelperProcess } from "./src/adapters/bb/helper-process.ts";
 import { ALL_MIGRATIONS } from "./src/adapters/bb/migrations.ts";
+import { createRdpTrustStore } from "./src/core/rdp-trust.ts";
+import { createSqliteRdpTrust } from "./src/adapters/bb/rdp-trust-sqlite.ts";
 import { createSqliteProfileStore } from "./src/adapters/bb/profile-sqlite.ts";
 import { createRemoteHubService } from "./src/adapters/bb/service.ts";
 import { registerStreamSocket } from "./src/adapters/bb/stream-socket.ts";
@@ -39,12 +41,12 @@ function pluginRootDir(): string {
 }
 
 export default function plugin(bb: BbPluginApi): void {
-  const service = createRemoteHubService({
-    startHelper: () => HelperProcess.start(pluginRootDir()),
-  });
-
   const db = bb.storage.database();
   bb.storage.migrate(db, ALL_MIGRATIONS);
+  const service = createRemoteHubService({
+    startHelper: () => HelperProcess.start(pluginRootDir()),
+    trust: createRdpTrustStore(createSqliteRdpTrust(db)),
+  });
   const profiles = new ProfileBook({
     store: createSqliteProfileStore(db),
     now: () => new Date(),

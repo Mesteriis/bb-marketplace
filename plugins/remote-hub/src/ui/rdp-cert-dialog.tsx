@@ -84,6 +84,11 @@ export function RdpCertDialog(props: RdpCertDialogProps) {
         <button type="button" onClick={() => decide("session_trust")} disabled={disabled}>
           Trust for this BB run
         </button>
+        {prompt.reason !== "cert_changed" && (
+          <button type="button" onClick={() => decide("always_trust")} disabled={disabled}>
+            Always trust this certificate
+          </button>
+        )}
         <button type="button" onClick={() => decide("reject")} disabled={disabled}>
           Reject
         </button>
