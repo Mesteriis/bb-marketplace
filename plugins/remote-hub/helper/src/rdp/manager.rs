@@ -637,7 +637,11 @@ impl RdpManager {
             return None;
         }
         s.reported_closed = true;
-        let pending_screenshots = s.screenshot_ids.drain(..).collect();
+        // A chunked answer cut off by the end of the session still has its request
+        // id (taken at the header): it is owed a `session_closed` like the others,
+        // oldest first.
+        let mut pending_screenshots: Vec<u64> = s.shot.take().and_then(|(id, _, _)| id).into_iter().collect();
+        pending_screenshots.extend(s.screenshot_ids.drain(..));
         Some(ClosedReport { session_id: id, pending_screenshots, reason, exit: s.exit.unwrap_or_default() })
     }
 
@@ -1338,6 +1342,22 @@ mod tests {
         }
         assert_eq!(mgr.sessions[&id].close_reason, None);
         assert_eq!(mgr.pop_screenshot(id), Some(42), "the second request is still waiting");
+        unsafe { libc::close(b) };
+    }
+
+    #[test]
+    fn a_session_that_ends_mid_chunked_screenshot_still_owes_that_request_a_closed() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        mgr.push_screenshot(id, 41);
+        mgr.push_screenshot(id, 42);
+        // The header and the first chunk arrive; the engine then ends.
+        let _ = feed(&mut mgr, id, &[shot_start(3), shot_chunk(0, 8)]);
+        mgr.sessions.get_mut(&id).unwrap().close_reason = Some("engine_exited".to_string());
+        mgr.sessions.get_mut(&id).unwrap().engine_pid = None;
+        let report = mgr.take_closed(id).expect("closed report");
+        assert_eq!(report.pending_screenshots, vec![41, 42]);
         unsafe { libc::close(b) };
     }
 
