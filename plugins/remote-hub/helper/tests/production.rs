@@ -93,7 +93,7 @@ fn production_rejects_freeform_open_ssh() {
 #[test]
 fn production_binary_has_no_keychain_test_hook() {
     let bytes = std::fs::read(env!("CARGO_BIN_EXE_remote-hub-helper")).expect("read the helper binary");
-    for needle in ["REMOTE_HUB_KEYCHAIN_PATH", "REMOTE_HUB_KEYCHAIN_CREATE_PASSWORD", "REMOTE_HUB_RDP_FAKE_ENGINE"] {
+    for needle in ["REMOTE_HUB_KEYCHAIN_PATH", "REMOTE_HUB_KEYCHAIN_CREATE_PASSWORD", "REMOTE_HUB_RDP_FAKE_ENGINE", "REMOTE_HUB_TEST_ANY_PARENT", "REMOTE_HUB_ASKPASS_UI_TIMEOUT_MS", "save_raw", "testFacts"] {
         assert!(!bytes.windows(needle.len()).any(|w| w == needle.as_bytes()), "{needle} is in the production binary");
     }
 }

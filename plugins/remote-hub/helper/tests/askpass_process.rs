@@ -10,7 +10,9 @@ mod common;
 use common::*;
 use remote_hub_helper::keychain::create_at;
 use remote_hub_helper::protocol::{decode_response, Request, Response, FRAME_KIND_CONTROL, FRAME_KIND_STREAM};
+use remote_hub_helper::binding::Bind;
 use remote_hub_helper::protocol::AskpassSpec;
+use remote_hub_helper::ssh_args::{AuthMethod, SshFacts};
 use remote_hub_helper::secret::Secret;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -40,6 +42,14 @@ const SECRET: &str = "S3cr3t-ASK-1";
 /// First 16 hex of SHA-256("S3cr3t-ASK-1"), computed outside this test.
 /// The prompt the fake ssh scripts write for the saved secret.
 const EXPECTED: &str = "user@host's password: ";
+
+/// What the fake "ssh" is going to do, and what the saved secret is bound to (S2).
+fn facts() -> SshFacts {
+    SshFacts { host: "host".into(), port: 22, user: Some("user".into()), identity: None, method: AuthMethod::Password }
+}
+fn password_bind() -> Bind {
+    Bind::Endpoint { protocol: "ssh".into(), host: "host".into(), port: 22, user: Some("user".into()), domain: None }
+}
 const SECRET_DIGEST: &str = "8e7c875e48e8e54c";
 const REF: &str = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";
 
@@ -70,7 +80,7 @@ impl Fixture {
         let mut env: Vec<(&str, &str)> = vec![("REMOTE_HUB_KEYCHAIN_PATH", path.to_str().unwrap())];
         env.extend_from_slice(extra_env);
         let mut h = start(&env);
-        h.send(&Request::CredentialSave { id: 1, reference: REF.into(), secret: Secret::new(SECRET) });
+        h.send(&Request::CredentialSave { id: 1, reference: REF.into(), secret: Secret::new(SECRET), bind: password_bind() });
         assert!(matches!(h.read_reply(1), Response::CredentialOk { .. }));
         Fixture { dir, path, h: Some(h) }
     }
@@ -92,7 +102,7 @@ impl Fixture {
             argv: vec!["perl".into(), "-e".into(), format!("{PERL_PRELUDE}\n{script}")],
             env,
             cwd: None,
-            askpass: askpass.then(|| AskpassSpec { credential_ref: REF.into(), expected_prompt: EXPECTED.into() }),
+            askpass: askpass.then(|| AskpassSpec { credential_ref: REF.into(), test_facts: Some(facts()) }),
         });
         let sid = match self.h().read_reply(id) {
             Response::SessionOpened { session_id, .. } => session_id,
@@ -265,15 +275,41 @@ fn a_session_without_a_saved_credential_has_no_askpass_at_all() {
 }
 
 #[test]
-fn a_locked_keychain_is_reported_as_the_keychain_not_as_a_refused_password() {
+fn a_keychain_that_locks_after_the_open_stops_ssh_before_any_empty_password_and_is_reported_as_the_keychain() {
     let mut f = Fixture::new("locked", &[]);
+    // The session asks only after a pause, so the Keychain can be locked between the open and the prompt.
+    let script = r#"
+sleep 2;
+my ($p, $r) = ask("user\@host's password: ");
+print "R1=$r DONE1\n";
+sleep 5;
+"#;
+    let sid = f.open(script, true);
     let status = std::process::Command::new("/usr/bin/security").arg("lock-keychain").arg(&f.path).status().unwrap();
     assert!(status.success());
-    let sid = f.open(TWO_SECRET_PROMPTS, true);
-    let (text, events) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE"));
-    assert_eq!(field(&text, "R1"), "1", "{text}");
+    let (text, events) = f.drive(sid, Duration::from_secs(20), |_, e| e.iter().any(|r| matches!(r, Response::SessionClosed { .. })));
     assert!(events.iter().any(|r| matches!(r, Response::SshCredentialFailed { code, .. } if code == "keychain_locked")), "{events:?}");
     assert!(!events.iter().any(|r| matches!(r, Response::SshCredentialRejected { .. })), "a locked Keychain must not be reported as a rejected password");
+    // ssh was stopped BEFORE askpass answered: it never got to go on (OpenSSH would send an empty password).
+    assert!(!text.contains("DONE1"), "ssh went on after a failed askpass: {text}");
+}
+
+#[test]
+fn a_locked_keychain_refuses_the_open_itself_with_its_code() {
+    let mut f = Fixture::new("lockedopen", &[]);
+    let status = std::process::Command::new("/usr/bin/security").arg("lock-keychain").arg(&f.path).status().unwrap();
+    assert!(status.success());
+    f.h().send(&Request::OpenSsh {
+        id: 60,
+        cols: 80,
+        rows: 24,
+        program: "/usr/bin/perl".into(),
+        argv: vec!["perl".into(), "-e".into(), "1".into()],
+        env: HashMap::new(),
+        cwd: None,
+        askpass: Some(AskpassSpec { credential_ref: REF.into(), test_facts: Some(facts()) }),
+    });
+    assert!(matches!(f.h().read_reply(60), Response::Error { code, .. } if code == "keychain_locked"));
 }
 
 #[test]
@@ -287,7 +323,7 @@ fn a_reference_that_is_not_ours_is_refused_at_open() {
         argv: vec!["perl".into(), "-e".into(), "1".into()],
         env: HashMap::new(),
         cwd: None,
-        askpass: Some(AskpassSpec { credential_ref: "login".into(), expected_prompt: EXPECTED.into() }),
+        askpass: Some(AskpassSpec { credential_ref: "login".into(), test_facts: Some(facts()) }),
     });
     assert!(matches!(f.h().read_reply(40), Response::Error { code, .. } if code == "invalid_credential_ref"));
 }
@@ -349,15 +385,150 @@ print "H=" . digest($c) . " R=$r3 DONE3\n";
 sleep 1;
 "#;
     let sid = f.open(script, true);
+    let mut seen = String::new();
     for (n, answer) in [(51u64, "typed-one"), (52, "typed-two")] {
-        let (_, events) = f.drive(sid, Duration::from_secs(20), |_, ev| ev.iter().filter(|r| matches!(r, Response::SshPrompt { .. })).count() >= (n as usize - 50));
+        let (part, events) = f.drive(sid, Duration::from_secs(20), |_, ev| ev.iter().any(|r| matches!(r, Response::SshPrompt { .. })));
         let Some(Response::SshPrompt { prompt_id, kind, .. }) = events.into_iter().filter(|r| matches!(r, Response::SshPrompt { .. })).last() else { unreachable!() };
+        seen.push_str(&part);
         assert_eq!(kind, "secret", "a look-alike must be asked of the user");
         f.h().send(&Request::SshPromptAnswer { id: n, session_id: sid, prompt_id, answer: Some(answer.into()) });
     }
-    let (text, _) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE3"));
+    let (rest, _) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE3"));
+    let text = format!("{seen}{rest}");
     assert_eq!(field(&text, "A"), "[typed-one]");
     assert_eq!(field(&text, "B"), "[typed-two]");
     // The nonce was not spent on the strangers: the REAL expected prompt still gets the saved secret.
     assert_eq!(field(&text, "H"), SECRET_DIGEST, "{text}");
+}
+
+/// Opens a REAL-shaped ssh session (program /usr/bin/ssh); every case here is refused before anything is spawned.
+fn open_real_shaped(f: &mut Fixture, id: u64, argv: &[&str]) -> Response {
+    f.h().send(&Request::OpenSsh {
+        id,
+        cols: 80,
+        rows: 24,
+        program: "/usr/bin/ssh".into(),
+        argv: argv.iter().map(|s| s.to_string()).collect(),
+        env: HashMap::new(),
+        cwd: None,
+        askpass: Some(AskpassSpec { credential_ref: REF.into(), test_facts: None }),
+    });
+    f.h().read_reply(id)
+}
+
+fn error_code(r: Response) -> String {
+    match r {
+        Response::Error { code, .. } => code,
+        other => panic!("expected an error, got {other:?}"),
+    }
+}
+
+/// S4: a session with a saved secret is refused unless its argv carries everything that decides where the secret goes.
+#[test]
+fn an_askpass_session_without_the_fixed_method_user_or_key_and_no_config_is_refused() {
+    let mut f = Fixture::new("s4", &[]);
+    let ok = ["ssh", "-tt", "-l", "user", "-F", "none", "-o", "PreferredAuthentications=password", "-o", "NumberOfPasswordPrompts=2", "--", "host"];
+    let drop_pair = |pair: [&str; 2]| -> Vec<&str> {
+        let mut v = ok.to_vec();
+        let pos = v.windows(2).position(|w| w == pair).unwrap();
+        v.drain(pos..pos + 2);
+        v
+    };
+    let mut id = 100;
+    for pair in [["-l", "user"], ["-F", "none"], ["-o", "PreferredAuthentications=password"], ["-o", "NumberOfPasswordPrompts=2"]] {
+        id += 1;
+        assert_eq!(error_code(open_real_shaped(&mut f, id, &drop_pair(pair))), "ssh_option_rejected", "without {pair:?}");
+    }
+    // An option that would let keyboard-interactive back in is refused by the validator itself.
+    id += 1;
+    let mut v = ok.to_vec();
+    v.splice(10..10, ["-o", "PreferredAuthentications=keyboard-interactive"]);
+    assert_eq!(error_code(open_real_shaped(&mut f, id, &v)), "ssh_option_rejected");
+    // A key session needs -i + IdentitiesOnly + IdentityAgent=none.
+    let key = ["ssh", "-tt", "-F", "none", "-o", "PreferredAuthentications=publickey", "-o", "NumberOfPasswordPrompts=2", "--", "host"];
+    id += 1;
+    assert_eq!(error_code(open_real_shaped(&mut f, id, &key)), "ssh_option_rejected");
+}
+
+/// S2: the binding stored with the secret must equal what the session's own argv says it will do.
+#[test]
+fn a_saved_password_is_refused_for_a_session_that_goes_elsewhere() {
+    let mut f = Fixture::new("s2", &[]); // saved for ssh user@host:22
+    let base = |user: &str, port: &str, host: &str| -> Vec<String> {
+        ["ssh", "-tt", "-l", user, "-p", port, "-F", "none", "-o", "PreferredAuthentications=password", "-o", "NumberOfPasswordPrompts=2", "--", host].iter().map(|s| s.to_string()).collect()
+    };
+    let mut id = 200;
+    for (what, argv) in [
+        ("user", base("other", "22", "host")),
+        ("port", base("user", "2222", "host")),
+        ("host", base("user", "22", "elsewhere.example.test")),
+        (
+            "kind: a key session for a password item",
+            ["ssh", "-tt", "-F", "none", "-i", "/k/id", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "PreferredAuthentications=publickey", "-o", "NumberOfPasswordPrompts=2", "--", "host"].iter().map(|s| s.to_string()).collect(),
+        ),
+    ] {
+        id += 1;
+        let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        assert_eq!(error_code(open_real_shaped(&mut f, id, &refs)), "credential_target_mismatch", "{what}");
+    }
+}
+
+/// S2 (key): a passphrase item is for one key file; another path, or a password session, is refused.
+#[test]
+fn a_saved_passphrase_is_refused_for_another_key_file_or_a_password_session() {
+    let mut f = Fixture::new("s2key", &[]);
+    f.h().send(&Request::CredentialSave { id: 300, reference: REF.into(), secret: Secret::new(SECRET), bind: Bind::Key { path: "/k/id".into() } });
+    assert!(matches!(f.h().read_reply(300), Response::CredentialOk { .. }));
+    let key = |path: &str| -> Vec<String> {
+        ["ssh", "-tt", "-F", "none", "-i", path, "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "PreferredAuthentications=publickey", "-o", "NumberOfPasswordPrompts=2", "--", "host"].iter().map(|s| s.to_string()).collect()
+    };
+    assert_eq!(error_code(open_real_shaped(&mut f, 301, &key("/k/other").iter().map(String::as_str).collect::<Vec<_>>())), "credential_target_mismatch");
+    let pw: Vec<String> = ["ssh", "-tt", "-l", "user", "-F", "none", "-o", "PreferredAuthentications=password", "-o", "NumberOfPasswordPrompts=2", "--", "host"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(error_code(open_real_shaped(&mut f, 302, &pw.iter().map(String::as_str).collect::<Vec<_>>())), "credential_target_mismatch");
+}
+
+/// S3: the askpass client believes only the helper that started its ssh.
+#[test]
+fn the_askpass_client_refuses_a_socket_that_is_not_the_helpers() {
+    use std::io::Read;
+    use std::os::unix::fs::{symlink, DirBuilderExt, PermissionsExt};
+    use std::os::unix::net::UnixListener;
+    let dir = std::env::temp_dir().join(format!("rh-ask-{}-imposter", std::process::id()));
+    std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+    let link = dir.join("remote-hub-askpass");
+    symlink(env!("CARGO_BIN_EXE_remote-hub-helper"), &link).unwrap();
+    let run = |socket: &std::path::Path| {
+        std::process::Command::new(&link)
+            .arg("password: ")
+            .env("REMOTE_HUB_ASKPASS_SOCKET", socket)
+            .env("REMOTE_HUB_ASKPASS_NONCE", "n")
+            .stdout(std::process::Stdio::piped())
+            .output()
+            .unwrap()
+    };
+    // 1. A private socket of ours that is NOT the helper: the client connects, sees the peer is not its
+    //    grandparent, and sends nothing.
+    let socket = dir.join("s");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    listener.set_nonblocking(false).unwrap();
+    let accept = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut got = Vec::new();
+        let _ = stream.read_to_end(&mut got);
+        got
+    });
+    let out = run(&socket);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    assert!(accept.join().unwrap().is_empty(), "the imposter must receive nothing, not even the nonce");
+    // 2. A socket open to everyone is not trusted at all: the client does not even connect.
+    let open = dir.join("open");
+    let l2 = UnixListener::bind(&open).unwrap();
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o666)).unwrap();
+    l2.set_nonblocking(true).unwrap();
+    assert_eq!(run(&open).status.code(), Some(1));
+    assert!(l2.accept().is_err(), "the client must not connect to a world-writable socket");
+    let _ = std::fs::remove_dir_all(&dir);
 }

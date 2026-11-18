@@ -1,4 +1,4 @@
-//! SSH askpass for saved credentials (stage 3b-2).
+//! SSH askpass for saved credentials (stage 3b-2, hardened by repair S1-S6).
 //!
 //! OpenSSH, started with `SSH_ASKPASS_REQUIRE=force`, runs `$SSH_ASKPASS <prompt>`
 //! for every secret prompt (password, key passphrase) and every confirmation
@@ -8,21 +8,28 @@
 //! other program is involved.
 //!
 //! The helper (one thread, see threads.rs) owns a Unix socket in that directory
-//! (mode 0600) and the decisions; the askpass CLIENT (its own short-lived process)
-//! reads the Keychain itself when told to, so a saved secret never enters the
-//! helper's main process. A request is answered only if ALL hold:
+//! (mode 0600) and ALL decisions. The askpass CLIENT is a dumb relay: it checks that
+//! the socket and the peer it connected to really are this helper's, forwards the
+//! prompt, and prints whatever the helper answers. It never touches the Keychain.
+//! The helper reads the Keychain through its bounded `--keychain-op` child.
+//! A request is answered only if ALL hold:
 //!   * the connecting process has our uid (getpeereid),
 //!   * its PARENT is the ssh process of the session the nonce belongs to,
-//!   * the nonce is the session's (in the environment ssh passes on),
-//!   * for the stored secret: it is the FIRST secret prompt of that session
-//!     (the nonce is burned by it: one attempt, never a retry loop).
-//! Anything else is either refused or sent to the user as a prompt; an answer the
-//! user types is returned to that one request and never stored.
-//! No prompt text is matched: what a prompt is comes from SSH_ASKPASS_PROMPT (set
-//! by OpenSSH itself) and from the order of prompts in the session, and the
-//! session's authentication method is fixed by the options we pass
-//! (PreferredAuthentications), so its only secret prompt is the expected one.
-use crate::keychain::{valid_credential_ref, Keychain};
+//!   * the nonce is the session's (in the environment ssh passes on).
+//! The stored secret is released only for the ONE prompt this session expects:
+//! the exact line OpenSSH writes for the user@host or key file the session was opened with
+//! (computed from the session's own argv, never from a field of the request), and only
+//! once. The item's binding must equal the one the session was opened with. A second such
+//! prompt means the secret was refused; a Keychain that will not give it up is a failure:
+//! in both cases ssh is stopped BEFORE the reply, because a failed askpass would otherwise be
+//! turned by OpenSSH into an EMPTY password sent to the server.
+//! Every other prompt (a yes/no question, a keyboard-interactive text, anything that merely
+//! looks like a password prompt) goes to the user; his answer is returned to that one request
+//! and never stored. The prompt kind the client reports is believed only for `confirm` and
+//! `none`; anything else is classified here.
+use crate::binding::Bind;
+use crate::keychain::Item;
+use crate::peer::{exe_is_this_binary, parent_pid, peer_pid, peer_uid};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -73,7 +80,7 @@ fn classify_prompt(prompt: &str, expected: &str) -> &'static str {
 struct Request {
     nonce: String,
     prompt: String,
-    /// SSH_ASKPASS_PROMPT: "" for a secret prompt, "confirm" or "none" otherwise.
+    /// SSH_ASKPASS_PROMPT as the client saw it. Only "confirm" and "none" are believed.
     #[serde(default)]
     kind: String,
 }
@@ -81,10 +88,7 @@ struct Request {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "action")]
 enum Reply {
-    /// Read this credential from the Keychain yourself and print it.
-    #[serde(rename = "stored")]
-    Stored { reference: String },
-    /// Print this (what the user typed for this one prompt).
+    /// Print this: the saved secret, or what the user typed for this one prompt.
     #[serde(rename = "answer")]
     Answer { text: String },
     #[serde(rename = "deny")]
@@ -102,16 +106,10 @@ pub enum BrokerEvent {
     CredentialFailed { session_id: u32, code: String },
 }
 
-/// What the askpass client reports after it tried to use a stored credential.
-#[derive(Serialize, Deserialize)]
-struct Outcome {
-    #[serde(default)]
-    error: Option<String>,
-}
-
 struct Session {
     child_pid: i32,
     reference: String,
+    bind: Bind,
     expected: String,
     burned: bool,
     rejected_sent: bool,
@@ -119,8 +117,6 @@ struct Session {
 
 enum State {
     Reading,
-    /// The stored credential was sent for the client to read from the Keychain; its outcome is awaited.
-    Report { since: Instant, session_id: u32 },
     /// The question is with the user.
     Ui { prompt_id: u64, since: Instant, session_id: u32 },
 }
@@ -155,27 +151,6 @@ fn random_hex(bytes: usize) -> String {
         }
     }
     buf.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// The pid of the process on the other end of a connected Unix socket.
-fn peer_pid(fd: RawFd) -> Option<i32> {
-    let mut pid: libc::pid_t = 0;
-    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
-    let r = unsafe { libc::getsockopt(fd, libc::SOL_LOCAL, libc::LOCAL_PEERPID, &mut pid as *mut _ as *mut libc::c_void, &mut len) };
-    (r == 0 && pid > 0).then_some(pid)
-}
-
-fn peer_uid(fd: RawFd) -> Option<u32> {
-    let (mut uid, mut gid): (libc::uid_t, libc::gid_t) = (0, 0);
-    (unsafe { libc::getpeereid(fd, &mut uid, &mut gid) } == 0).then_some(uid)
-}
-
-/// The parent pid of a process.
-fn parent_pid(pid: i32) -> Option<i32> {
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-    let r = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, &mut info as *mut _ as *mut libc::c_void, size) };
-    (r == size).then_some(info.pbi_ppid as i32)
 }
 
 impl Broker {
@@ -226,10 +201,10 @@ impl Broker {
     }
 
     /// Binds a prepared nonce to the session that was spawned with it.
-    pub fn register(&mut self, nonce: &str, session_id: u32, child_pid: i32, reference: &str, expected: &str) {
+    pub fn register(&mut self, nonce: &str, session_id: u32, child_pid: i32, reference: &str, bind: Bind, expected: &str) {
         if self.pending.remove(nonce).is_some() {
             self.by_nonce.insert(nonce.to_string(), session_id);
-            self.sessions.insert(session_id, Session { child_pid, reference: reference.to_string(), expected: expected.to_string(), burned: false, rejected_sent: false });
+            self.sessions.insert(session_id, Session { child_pid, reference: reference.to_string(), bind, expected: expected.to_string(), burned: false, rejected_sent: false });
         }
     }
 
@@ -240,7 +215,7 @@ impl Broker {
         let mut keep = Vec::new();
         for mut conn in self.conns.drain(..) {
             if matches!(&conn.state, State::Ui { session_id: sid, .. } if *sid == session_id) {
-                let _ = write_reply(&mut conn.stream, &Reply::Deny);
+                let _ = write_reply(&mut conn.stream, Reply::Deny);
             } else {
                 keep.push(conn);
             }
@@ -260,7 +235,7 @@ impl Broker {
     }
 
     /// Accepts, reads and decides. Never blocks.
-    pub fn service(&mut self) {
+    pub fn service(&mut self, fetch: &mut dyn FnMut(&str) -> Result<Item, String>) {
         while let Ok((stream, _)) = self.listener.accept() {
             if stream.set_nonblocking(true).is_ok() {
                 self.conns.push(Conn { stream, buf: Vec::new(), since: Instant::now(), state: State::Reading });
@@ -268,7 +243,7 @@ impl Broker {
         }
         let mut i = 0;
         while i < self.conns.len() {
-            let done = self.service_conn(i);
+            let done = self.service_conn(i, fetch);
             if done {
                 self.conns.swap_remove(i);
             } else {
@@ -278,25 +253,18 @@ impl Broker {
     }
 
     /// True when the connection is finished and can be dropped.
-    fn service_conn(&mut self, index: usize) -> bool {
+    fn service_conn(&mut self, index: usize, fetch: &mut dyn FnMut(&str) -> Result<Item, String>) -> bool {
         let now = Instant::now();
         match &self.conns[index].state {
             State::Ui { since, .. } => {
                 if now.duration_since(*since) > ui_timeout() {
                     let conn = &mut self.conns[index];
-                    let _ = write_reply(&mut conn.stream, &Reply::Deny);
+                    let _ = write_reply(&mut conn.stream, Reply::Deny);
                     return true;
                 }
                 // The client going away cancels the question.
                 let mut probe = [0u8; 1];
                 return matches!(self.conns[index].stream.read(&mut probe), Ok(0));
-            }
-            State::Report { since, session_id } => {
-                let session_id = *session_id;
-                if now.duration_since(*since) > REQUEST_TIMEOUT {
-                    return true;
-                }
-                return self.read_outcome(index, session_id);
             }
             State::Reading => {}
         }
@@ -321,72 +289,29 @@ impl Broker {
         let line = self.conns[index].buf[..end].to_vec();
         let request = serde_json::from_slice::<Request>(&line).ok();
         let reply = match request {
-            Some(request) => self.decide(index, request),
+            Some(request) => self.decide(index, request, fetch),
             None => Some(Reply::Deny),
         };
         match reply {
             Some(reply) => {
-                let stored_for = match (&reply, self.by_nonce.get(&nonce_of(&line))) {
-                    (Reply::Stored { .. }, Some(&sid)) => Some(sid),
-                    _ => None,
-                };
-                let _ = write_reply(&mut self.conns[index].stream, &reply);
-                match stored_for {
-                    // Keep the connection: the client says whether the Keychain gave the secret up.
-                    Some(session_id) => {
-                        self.conns[index].state = State::Report { since: Instant::now(), session_id };
-                        false
-                    }
-                    None => true,
-                }
+                let _ = write_reply(&mut self.conns[index].stream, reply);
+                true
             }
             None => false, // handed to the user
         }
     }
 
-    /// Reads the client's report about a stored credential. True when the connection is finished.
-    fn read_outcome(&mut self, index: usize, session_id: u32) -> bool {
-        let mut chunk = [0u8; 512];
-        let mut eof = false;
-        loop {
-            match self.conns[index].stream.read(&mut chunk) {
-                Ok(0) => {
-                    eof = true;
-                    break;
-                }
-                Ok(n) => {
-                    self.conns[index].buf.extend_from_slice(&chunk[..n]);
-                    if self.conns[index].buf.len() > MAX_REQUEST {
-                        return true;
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(_) => {
-                    eof = true;
-                    break;
-                }
-            }
+    /// Stops the ssh process that is waiting on this very askpass call (see the module comment).
+    fn stop_ssh(child_pid: i32) {
+        // SAFETY: child_pid is the ssh child of this session; the caller has just checked that the
+        // asking process's parent is exactly that pid.
+        unsafe {
+            libc::kill(child_pid, libc::SIGTERM);
         }
-        // buf still holds the request line; the report is the line after it. It may arrive together
-        // with the end of the stream, so it is parsed before the EOF is acted on.
-        let text = String::from_utf8_lossy(&self.conns[index].buf).to_string();
-        if let Some(report) = text.lines().nth(1) {
-            if let Ok(outcome) = serde_json::from_str::<Outcome>(report) {
-                if let Some(code) = outcome.error {
-                    if let Some(session) = self.sessions.get_mut(&session_id) {
-                        // A refused Keychain is not "the server refused the password": no second message.
-                        session.rejected_sent = true;
-                    }
-                    self.events.push(BrokerEvent::CredentialFailed { session_id, code: code.chars().take(64).collect() });
-                }
-                return true;
-            }
-        }
-        eof
     }
 
     /// Some(reply) answers now; None means the question is with the user.
-    fn decide(&mut self, index: usize, request: Request) -> Option<Reply> {
+    fn decide(&mut self, index: usize, request: Request, fetch: &mut dyn FnMut(&str) -> Result<Item, String>) -> Option<Reply> {
         let fd = self.conns[index].stream.as_raw_fd();
         let Some(&session_id) = self.by_nonce.get(&request.nonce) else { return Some(Reply::Deny) };
         // 1. Our user.
@@ -401,32 +326,45 @@ impl Broker {
             _ => return Some(Reply::Deny),
         }
         let text: String = request.prompt.chars().take(MAX_PROMPT).collect();
-        // OpenSSH leaves SSH_ASKPASS_PROMPT empty not only for secrets but also for the host-key
-        // question, so the stored secret is given ONLY to the prompt the session is configured to
-        // expect (decided from its text, which the client generates, never the server). Anything
-        // else that is not marked confirm/none goes to the user and is never stored.
-        let kind = if request.kind.is_empty() { classify_prompt(&request.prompt, &session.expected) } else { request.kind.as_str() };
+        // The client's own idea of the kind is believed only for the two harmless ones.
+        let kind = match request.kind.as_str() {
+            "confirm" => "confirm",
+            "none" => "none",
+            _ => classify_prompt(&request.prompt, &session.expected),
+        };
         if kind == "stored" {
-            if !session.burned && valid_credential_ref(&session.reference) {
-                // The stored secret answers the FIRST secret prompt of the session and burns the nonce.
-                session.burned = true;
-                return Some(Reply::Stored { reference: session.reference.clone() });
-            }
-            // Asked again after the stored secret was used: the server (or the key) refused it. One
-            // attempt only. A failed askpass is not "no answer" to OpenSSH: it sends an EMPTY password
-            // as a second attempt. So the ssh process that is waiting on this very call is stopped
-            // BEFORE the reply is sent, and the user is told the saved secret was refused.
-            if session.burned && !session.rejected_sent {
+            if session.burned {
+                // Asked again after the stored secret was used: the server (or the key) refused it.
+                let first = !session.rejected_sent;
                 session.rejected_sent = true;
-                self.events.push(BrokerEvent::CredentialRejected { session_id });
+                if first {
+                    self.events.push(BrokerEvent::CredentialRejected { session_id });
+                }
+                Self::stop_ssh(child_pid);
+                return Some(Reply::Deny);
             }
-            // SAFETY: child_pid is the ssh child of this session; the peer's parent pid was just checked to equal it.
-            unsafe {
-                libc::kill(child_pid, libc::SIGTERM);
+            // The first (and only) use: the nonce is spent whatever happens next.
+            session.burned = true;
+            let reference = session.reference.clone();
+            let wanted = session.bind.clone();
+            match fetch(&reference) {
+                Ok(item) if item.bind == wanted => return Some(Reply::Answer { text: item.secret.expose().to_string() }),
+                outcome => {
+                    let code = match outcome {
+                        Ok(_) => "credential_target_mismatch".to_string(),
+                        Err(code) => code,
+                    };
+                    if let Some(session) = self.sessions.get_mut(&session_id) {
+                        // A refused Keychain is not "the server refused the password": no second message.
+                        session.rejected_sent = true;
+                    }
+                    self.events.push(BrokerEvent::CredentialFailed { session_id, code: code.chars().take(64).collect() });
+                    Self::stop_ssh(child_pid);
+                    return Some(Reply::Deny);
+                }
             }
-            return Some(Reply::Deny);
         }
-        // A confirmation (host key) or an informational message: the user decides; nothing is stored.
+        // A confirmation (host key), an informational message or anything else: the user decides; nothing is stored.
         let prompt_id = self.next_prompt;
         self.next_prompt += 1;
         self.conns[index].state = State::Ui { prompt_id, since: Instant::now(), session_id };
@@ -444,7 +382,7 @@ impl Broker {
             Some(text) => Reply::Answer { text },
             None => Reply::Deny,
         };
-        let _ = write_reply(&mut conn.stream, &reply);
+        let _ = write_reply(&mut conn.stream, reply);
         true
     }
 }
@@ -455,25 +393,64 @@ impl Drop for Broker {
     }
 }
 
-fn nonce_of(line: &[u8]) -> String {
-    serde_json::from_slice::<Request>(line).map(|r| r.nonce).unwrap_or_default()
+/// Writes one reply line and wipes the copies of an answer this function made.
+fn write_reply(stream: &mut UnixStream, reply: Reply) -> std::io::Result<()> {
+    let mut reply = reply;
+    let mut text = serde_json::to_string(&reply).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    text.push('\n');
+    let written = stream.write_all(text.as_bytes());
+    wipe(&mut text);
+    if let Reply::Answer { text } = &mut reply {
+        wipe(text);
+    }
+    written
 }
 
-fn write_reply(stream: &mut UnixStream, reply: &Reply) -> std::io::Result<()> {
-    let mut text = serde_json::to_string(reply).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    text.push('\n');
-    stream.write_all(text.as_bytes())
+/// Overwrites a string's bytes (best effort: the allocator may have copies from growth).
+fn wipe(text: &mut String) {
+    // SAFETY: only zero bytes are written, which keep the string valid UTF-8.
+    for byte in unsafe { text.as_mut_vec() }.iter_mut() {
+        unsafe { std::ptr::write_volatile(byte, 0) };
+    }
 }
 
 // ---- the askpass client (its own process) -------------------------------------
 
+/// A path the client may trust as the helper's socket: a socket, ours, closed to everyone else,
+/// in a directory that is a real directory, ours, closed to everyone else. (Whoever put the
+/// environment variable there, a socket that is not the helper's own is not connected to.)
+fn socket_path_is_private(socket: &str) -> bool {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let euid = unsafe { libc::geteuid() };
+    let path = Path::new(socket);
+    let Some(dir) = path.parent() else { return false };
+    let (Ok(dir_meta), Ok(sock_meta)) = (std::fs::symlink_metadata(dir), std::fs::symlink_metadata(path)) else { return false };
+    dir_meta.file_type().is_dir()
+        && dir_meta.uid() == euid
+        && dir_meta.mode() & 0o077 == 0
+        && sock_meta.file_type().is_socket()
+        && sock_meta.uid() == euid
+        && sock_meta.mode() & 0o077 == 0
+}
+
 /// What `remote-hub-askpass <prompt>` does: ask the helper, print the answer, or fail.
 /// Exit 0 with the answer on stdout; any other exit tells OpenSSH the prompt was cancelled.
+/// The client holds no secret and reads no Keychain: it prints what the helper sends, so it first
+/// makes sure it IS talking to the helper that started its ssh.
 pub fn run_client(args: &[String]) -> i32 {
     let prompt = args.get(1).cloned().unwrap_or_default();
     let kind = std::env::var("SSH_ASKPASS_PROMPT").unwrap_or_default();
     let (Ok(socket), Ok(nonce)) = (std::env::var(ENV_SOCKET), std::env::var(ENV_NONCE)) else { return 1 };
+    if !socket_path_is_private(&socket) {
+        return 1;
+    }
     let Ok(mut stream) = UnixStream::connect(&socket) else { return 1 };
+    // The peer must be this very binary and the process that started our parent (ssh): the helper.
+    let ppid = unsafe { libc::getppid() };
+    match (peer_pid(stream.as_raw_fd()), parent_pid(ppid)) {
+        (Some(peer), Some(grandparent)) if peer == grandparent && exe_is_this_binary(peer) => {}
+        _ => return 1,
+    }
     // A cancelled/hung helper must not hold ssh for ever: bounded by the UI timeout plus slack.
     let _ = stream.set_read_timeout(Some(UI_TIMEOUT + Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
@@ -489,32 +466,23 @@ pub fn run_client(args: &[String]) -> i32 {
         match stream.read(&mut byte) {
             Ok(1) if byte[0] == b'\n' => break,
             Ok(1) => reply.push(byte[0] as char),
-            _ => return 1,
-        }
-    }
-    let Ok(reply) = serde_json::from_str::<Reply>(&reply) else { return 1 };
-    let answer = match reply {
-        Reply::Deny => return 1,
-        Reply::Answer { text } => text,
-        Reply::Stored { reference } => {
-            if !valid_credential_ref(&reference) {
+            _ => {
+                wipe(&mut reply);
                 return 1;
             }
-            match Keychain::from_env().get(&reference) {
-                Ok(secret) => {
-                    let _ = stream.write_all(b"{}\n");
-                    secret.expose().to_string()
-                }
-                Err(e) => {
-                    // Tell the helper why, so the user hears "the Keychain is locked", not a bare "denied".
-                    let _ = stream.write_all(format!("{{\"error\":\"{}\"}}\n", e.code()).as_bytes());
-                    return 1;
-                }
-            }
         }
+    }
+    let parsed = serde_json::from_str::<Reply>(&reply);
+    wipe(&mut reply);
+    let answer = match parsed {
+        Ok(Reply::Answer { text }) => text,
+        _ => return 1,
     };
     let mut out = std::io::stdout();
-    if out.write_all(answer.as_bytes()).and_then(|()| out.write_all(b"\n")).and_then(|()| out.flush()).is_err() {
+    let written = out.write_all(answer.as_bytes()).and_then(|()| out.write_all(b"\n")).and_then(|()| out.flush());
+    let mut answer = answer;
+    wipe(&mut answer);
+    if written.is_err() {
         return 1;
     }
     0
@@ -580,9 +548,9 @@ mod tests {
         assert_eq!(a.len(), 48);
         assert!(env_a.iter().any(|(k, v)| k == "SSH_ASKPASS_REQUIRE" && v == "force"));
         assert!(env_a.iter().any(|(k, v)| k == ENV_NONCE && *v == a));
-        broker.register(&a, 7, 100, "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a", "p: ");
+        broker.register(&a, 7, 100, "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a", Bind::Key { path: "/k".into() }, "p: ");
         // Registering the same nonce again changes nothing: it is no longer pending.
-        broker.register(&a, 8, 200, "x", "p: ");
+        broker.register(&a, 8, 200, "x", Bind::Key { path: "/k".into() }, "p: ");
         assert_eq!(broker.by_nonce.get(&a), Some(&7));
     }
 }

@@ -19,11 +19,10 @@ pub const STREAM_HEADER_BYTES: usize = 8;
 pub struct AskpassSpec {
     #[serde(rename = "credentialRef")]
     pub credential_ref: String,
-    /// The exact one-line prompt OpenSSH will write for this session's password or key passphrase.
-    /// Only a prompt equal to it is answered from the Keychain; anything else (a server-controlled
-    /// keyboard-interactive text imitating it, say) goes to the user.
-    #[serde(rename = "expectedPrompt")]
-    pub expected_prompt: String,
+    /// Test-hooks only: what a free-form "ssh" (a fake) is going to do, since its argv is not ssh's.
+    #[cfg(feature = "test-hooks")]
+    #[serde(default, rename = "testFacts")]
+    pub test_facts: Option<crate::ssh_args::SshFacts>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -111,6 +110,8 @@ pub enum Request {
         #[serde(rename = "ref")]
         reference: String,
         secret: crate::secret::Secret,
+        /// What the secret is for; stored with it and enforced by the helper.
+        bind: crate::binding::Bind,
     },
     #[serde(rename = "credential.delete")]
     CredentialDelete {

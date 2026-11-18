@@ -311,6 +311,7 @@ impl SessionManager {
         cols: u16,
         rows: u16,
         reference: &str,
+        bind: crate::binding::Bind,
         expected_prompt: &str,
         helper_exe: &str,
     ) -> Result<u32, SessionError> {
@@ -339,7 +340,7 @@ impl SessionManager {
         let id = self.open_session(spec, cols, rows, "ssh".to_string())?;
         let pid = self.child_pid(id).unwrap_or(0);
         if let Some(broker) = self.askpass.as_mut() {
-            broker.register(&nonce, id, pid, reference, expected_prompt);
+            broker.register(&nonce, id, pid, reference, bind, expected_prompt);
         }
         Ok(id)
     }
@@ -350,10 +351,10 @@ impl SessionManager {
     }
 
     /// Accepts and decides askpass requests; returns what the helper must tell its client.
-    pub fn askpass_service(&mut self) -> Vec<crate::askpass::BrokerEvent> {
+    pub fn askpass_service(&mut self, fetch: &mut dyn FnMut(&str) -> Result<crate::keychain::Item, String>) -> Vec<crate::askpass::BrokerEvent> {
         match self.askpass.as_mut() {
             Some(broker) => {
-                broker.service();
+                broker.service(fetch);
                 broker.take_events()
             }
             None => Vec::new(),

@@ -95,3 +95,25 @@ fn a_sigchld_during_the_wait_is_not_a_timeout() {
     assert!(matches!(reply, Response::CredentialStatus { present: true, .. }), "an interrupted wait was treated as a failure: {reply:?}");
     h.shutdown();
 }
+
+/// S3: the standalone read-back is closed. Started by anything but the helper itself (here: this
+/// test process), `--keychain-op` refuses before it reads a request or touches a keychain.
+#[test]
+fn keychain_op_refuses_a_parent_that_is_not_the_helper() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    watchdog();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_remote-hub-helper"))
+        .arg("--keychain-op")
+        .env_remove("REMOTE_HUB_TEST_ANY_PARENT")
+        .env("REMOTE_HUB_KEYCHAIN_PATH", "/nonexistent/never-opened.keychain-db")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _ = child.stdin.take().unwrap().write_all(format!("{{\"op\":\"get\",\"ref\":\"{REF}\"}}").as_bytes());
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(3), "must be refused by its parent check");
+    assert!(out.stdout.is_empty(), "nothing may be answered");
+}

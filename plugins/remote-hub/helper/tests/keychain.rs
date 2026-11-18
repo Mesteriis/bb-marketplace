@@ -147,7 +147,7 @@ fn the_keychain_child_executes_requests_and_answers_with_codes() {
     use remote_hub_helper::keychain::{execute, OpRequest};
     let t = Temp::new("op");
     let kc = t.keychain();
-    let req = |op: &str, secret: Option<&str>| OpRequest { op: op.into(), reference: "acct".into(), secret: secret.map(Secret::new) };
+    let req = |op: &str, secret: Option<&str>| OpRequest { op: op.into(), reference: "acct".into(), secret: secret.map(Secret::new), bind: Some(remote_hub_helper::binding::Bind::Key { path: "/k".into() }) };
     assert_eq!(execute(&kc, &req("status", None)).present, Some(false));
     assert!(execute(&kc, &req("save", Some(SENTINEL))).error.is_none());
     assert_eq!(execute(&kc, &req("status", None)).present, Some(true));

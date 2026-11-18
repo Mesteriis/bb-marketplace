@@ -63,10 +63,12 @@ fn install_handler(sig: libc::c_int, handler: extern "C" fn(libc::c_int)) {
     }
 }
 
-fn set_nonblocking(fd: RawFd) {
+/// Makes `fd` non-blocking. False when the flags could not be read or set: a caller that
+/// relies on never blocking must not go on.
+fn set_nonblocking(fd: RawFd) -> bool {
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFL);
-        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        flags >= 0 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) >= 0
     }
 }
 
@@ -156,24 +158,34 @@ use crate::keychain::valid_credential_ref;
 
 enum CredentialRefusal {
     BadRef,
+    /// The saved credential is for somewhere else than where this request would send it.
+    Mismatch,
     Keychain(String),
 }
 
 impl CredentialRefusal {
+    fn code(&self) -> String {
+        match self {
+            CredentialRefusal::BadRef => "invalid_credential_ref".to_string(),
+            CredentialRefusal::Mismatch => "credential_target_mismatch".to_string(),
+            CredentialRefusal::Keychain(code) => code.clone(),
+        }
+    }
+
     fn into_response(self, id: u64) -> Response {
-        let (code, message) = match self {
-            CredentialRefusal::BadRef => ("invalid_credential_ref".to_string(), "not a Remote Hub credential reference".to_string()),
-            CredentialRefusal::Keychain(code) => {
-                let message = match code.as_str() {
-                    "keychain_locked" => crate::keychain::KeychainError::Locked.message(),
-                    "keychain_denied" => crate::keychain::KeychainError::Denied.message(),
-                    "credential_missing" => crate::keychain::KeychainError::Missing.message(),
-                    _ => crate::keychain::KeychainError::Unavailable.message(),
-                };
-                (code, message.to_string())
-            }
+        let code = self.code();
+        let message = match &self {
+            CredentialRefusal::BadRef => "not a Remote Hub credential reference",
+            CredentialRefusal::Mismatch => "this saved credential was saved for a different host, port, user or key",
+            CredentialRefusal::Keychain(code) => match code.as_str() {
+                "keychain_locked" => crate::keychain::KeychainError::Locked.message(),
+                "keychain_denied" => crate::keychain::KeychainError::Denied.message(),
+                "credential_missing" => crate::keychain::KeychainError::Missing.message(),
+                "credential_unbound" => crate::keychain::KeychainError::Unbound.message(),
+                _ => crate::keychain::KeychainError::Unavailable.message(),
+            },
         };
-        Response::Error { id: Some(id), code, message }
+        Response::Error { id: Some(id), code, message: message.to_string() }
     }
 }
 
@@ -193,13 +205,22 @@ fn keychain_child_timeout() -> std::time::Duration {
 /// other child of this helper) interrupts poll: that is not a timeout, so the wait resumes with
 /// the time that is left.
 fn wait_readable(fd: RawFd, deadline: std::time::Instant) -> bool {
+    wait_fd(fd, libc::POLLIN | libc::POLLHUP, deadline)
+}
+
+/// Waits until `fd` can take a write (or is hung up) or the deadline passes.
+fn wait_writable(fd: RawFd, deadline: std::time::Instant) -> bool {
+    wait_fd(fd, libc::POLLOUT | libc::POLLHUP, deadline)
+}
+
+fn wait_fd(fd: RawFd, events: libc::c_short, deadline: std::time::Instant) -> bool {
     loop {
         let now = std::time::Instant::now();
         if now >= deadline {
             return false;
         }
         let remaining_ms = (deadline - now).as_millis().min(i32::MAX as u128) as libc::c_int;
-        let mut pfd = libc::pollfd { fd, events: libc::POLLIN | libc::POLLHUP, revents: 0 };
+        let mut pfd = libc::pollfd { fd, events, revents: 0 };
         let r = unsafe { libc::poll(&mut pfd, 1, remaining_ms.max(1)) };
         if r > 0 {
             return true;
@@ -230,6 +251,7 @@ fn keychain_child(
     op: &str,
     reference: &str,
     secret: Option<&crate::secret::Secret>,
+    bind: Option<&crate::binding::Bind>,
 ) -> Result<crate::keychain::OpReply, CredentialRefusal> {
     use std::io::{Read, Write};
     use std::os::fd::AsRawFd;
@@ -242,7 +264,7 @@ fn keychain_child(
     if !std::path::Path::new(current_exe).is_absolute() {
         return Err(unavailable());
     }
-    let request = crate::keychain::OpRequest { op: op.to_string(), reference: reference.to_string(), secret: secret.cloned() };
+    let request = crate::keychain::OpRequest { op: op.to_string(), reference: reference.to_string(), secret: secret.cloned(), bind: bind.cloned() };
     let text = serde_json::to_string(&request).map_err(|_| unavailable())?;
     let deadline = std::time::Instant::now() + keychain_child_timeout();
     let mut child = Command::new(current_exe)
@@ -257,11 +279,33 @@ fn keychain_child(
         return Err(unavailable());
     };
     // Neither pipe may block the helper: both are non-blocking and waited on with the deadline.
-    set_nonblocking(stdin.as_raw_fd());
-    set_nonblocking(stdout.as_raw_fd());
-    if stdin.write_all(text.as_bytes()).is_err() {
+    if !set_nonblocking(stdin.as_raw_fd()) || !set_nonblocking(stdout.as_raw_fd()) {
         end_keychain_child(child);
         return Err(unavailable());
+    }
+    // The request goes in under the same deadline: a partial write continues where it stopped, a full
+    // pipe waits for room, and a child that never reads is killed when the time is up.
+    let bytes = text.as_bytes();
+    let mut written = 0;
+    while written < bytes.len() {
+        match stdin.write(&bytes[written..]) {
+            Ok(0) => {
+                end_keychain_child(child);
+                return Err(unavailable());
+            }
+            Ok(n) => written += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if !wait_writable(stdin.as_raw_fd(), deadline) {
+                    end_keychain_child(child);
+                    return Err(unavailable());
+                }
+            }
+            Err(_) => {
+                end_keychain_child(child);
+                return Err(unavailable());
+            }
+        }
     }
     drop(stdin); // EOF: the child reads one request
     let mut body: Vec<u8> = Vec::new();
@@ -313,10 +357,60 @@ fn keychain_ok(reply: crate::keychain::OpReply) -> Result<crate::keychain::OpRep
     }
 }
 
-/// The saved secret for a reference, for the one request that consumes it.
-fn resolve_credential(current_exe: &str, reference: &str) -> Result<crate::secret::Secret, CredentialRefusal> {
-    let reply = keychain_ok(keychain_child(current_exe, "get", reference, None)?)?;
-    reply.secret.ok_or_else(|| CredentialRefusal::Keychain("keychain_unavailable".to_string()))
+/// The saved secret and what it is for.
+fn resolve_item(current_exe: &str, reference: &str) -> Result<crate::keychain::Item, CredentialRefusal> {
+    let reply = keychain_ok(keychain_child(current_exe, "get", reference, None, None)?)?;
+    match (reply.secret, reply.bind) {
+        (Some(secret), Some(bind)) => Ok(crate::keychain::Item { bind, secret }),
+        _ => Err(CredentialRefusal::Keychain("keychain_unavailable".to_string())),
+    }
+}
+
+/// The saved password for an RDP endpoint: handed over only when it was saved for exactly this
+/// host, port, user and domain. The check is the helper's own; the page's is an extra.
+fn resolve_rdp_credential(
+    current_exe: &str,
+    reference: &str,
+    host: &str,
+    port: u16,
+    user: &str,
+    domain: Option<&str>,
+) -> Result<crate::secret::Secret, CredentialRefusal> {
+    let item = resolve_item(current_exe, reference)?;
+    if item.bind.is_rdp_endpoint(host, port, user, domain) {
+        Ok(item.secret)
+    } else {
+        Err(CredentialRefusal::Mismatch)
+    }
+}
+
+/// What an askpass session is going to do, from its own argv; with test-hooks a free-form program
+/// (a fake ssh) may state it instead.
+fn askpass_session_facts(program: &str, argv: &[String], spec: &protocol::AskpassSpec) -> Result<crate::ssh_args::SshFacts, String> {
+    if program == "/usr/bin/ssh" {
+        return crate::ssh_args::askpass_facts(argv);
+    }
+    #[cfg(feature = "test-hooks")]
+    if let Some(facts) = &spec.test_facts {
+        return Ok(facts.clone());
+    }
+    let _ = spec;
+    Err(crate::ssh_args::ssh_option_rejected())
+}
+
+/// The binding a saved secret must carry to be used by a session that does `facts`.
+fn required_bind(facts: &crate::ssh_args::SshFacts) -> crate::binding::Bind {
+    use crate::ssh_args::AuthMethod;
+    match facts.method {
+        AuthMethod::Password => crate::binding::Bind::Endpoint {
+            protocol: "ssh".to_string(),
+            host: facts.host.clone(),
+            port: facts.port,
+            user: facts.user.clone(),
+            domain: None,
+        },
+        AuthMethod::PublicKey => crate::binding::Bind::Key { path: facts.identity.clone().unwrap_or_default() },
+    }
 }
 
 /// Validate and build a SpawnSpec from a client-provided session.open_ssh.
@@ -433,14 +527,10 @@ fn handle(
                     message: "session.open_ssh carries a disallowed program, option, cwd or env".to_string(),
                 }));
             }
+            // A session that may use a saved secret: its argv must say where the secret goes and how
+            // (S4), and the secret must be bound to exactly that (S2). Both are the helper's own checks.
+            let mut askpass_plan: Option<(crate::binding::Bind, String)> = None;
             if let Some(spec) = &askpass {
-                if spec.expected_prompt.is_empty() || spec.expected_prompt.len() > 512 || spec.expected_prompt.contains('\n') {
-                    return Ok(protocol::encode_response(&Response::Error {
-                        id: Some(id),
-                        code: "invalid_expected_prompt".to_string(),
-                        message: "askpass needs one non-empty line as the expected prompt".to_string(),
-                    }));
-                }
                 if !valid_credential_ref(&spec.credential_ref) {
                     return Ok(protocol::encode_response(&Response::Error {
                         id: Some(id),
@@ -448,11 +538,30 @@ fn handle(
                         message: "not a Remote Hub credential reference".to_string(),
                     }));
                 }
+                let Ok(facts) = askpass_session_facts(&program, &argv, spec) else {
+                    return Ok(protocol::encode_response(&Response::Error {
+                        id: Some(id),
+                        code: "ssh_option_rejected".to_string(),
+                        message: "a session with a saved secret needs -F none, one fixed method and its user or key".to_string(),
+                    }));
+                };
+                let bound = match keychain_child(current_exe, "bind", &spec.credential_ref, None, None).and_then(keychain_ok) {
+                    Ok(reply) => reply.bind,
+                    Err(refusal) => return Ok(protocol::encode_response(&refusal.into_response(id))),
+                };
+                let required = required_bind(&facts);
+                if bound.as_ref() != Some(&required) {
+                    return Ok(protocol::encode_response(&CredentialRefusal::Mismatch.into_response(id)));
+                }
+                askpass_plan = Some((required, facts.expected_prompt()));
             }
             let spec = build_spawn_spec(program, argv, env, cwd);
             match spec {
                 Ok(spec) => match match &askpass {
-                    Some(a) => manager.open_ssh_with_askpass(spec, cols, rows, &a.credential_ref, &a.expected_prompt, current_exe),
+                    Some(a) => {
+                        let (bind, expected) = askpass_plan.take().expect("planned above");
+                        manager.open_ssh_with_askpass(spec, cols, rows, &a.credential_ref, bind, &expected, current_exe)
+                    }
                     None => manager.open_ssh(spec, cols, rows),
                 } {
                     Ok(session_id) => {
@@ -567,7 +676,7 @@ fn handle(
             // The secret comes from exactly one place: the request (use once) or the Keychain.
             let password = match (password, credential_ref) {
                 (Some(password), None) => password,
-                (None, Some(reference)) => match resolve_credential(current_exe, &reference) {
+                (None, Some(reference)) => match resolve_rdp_credential(current_exe, &reference, &host, port, &username, domain.as_deref()) {
                     Ok(password) => password,
                     Err(refusal) => return Ok(protocol::encode_response(&refusal.into_response(id))),
                 },
@@ -595,18 +704,18 @@ fn handle(
             })),
         }
         }
-        Request::CredentialSave { id, reference, secret } => Ok(protocol::encode_response(
-            &keychain_child(current_exe, "save", &reference, Some(&secret))
+        Request::CredentialSave { id, reference, secret, bind } => Ok(protocol::encode_response(
+            &keychain_child(current_exe, "save", &reference, Some(&secret), Some(&bind))
                 .and_then(keychain_ok)
                 .map_or_else(|r| r.into_response(id), |_| Response::CredentialOk { id }),
         )),
         Request::CredentialDelete { id, reference } => Ok(protocol::encode_response(
-            &keychain_child(current_exe, "delete", &reference, None)
+            &keychain_child(current_exe, "delete", &reference, None, None)
                 .and_then(keychain_ok)
                 .map_or_else(|r| r.into_response(id), |_| Response::CredentialOk { id }),
         )),
         Request::CredentialStatus { id, reference } => Ok(protocol::encode_response(
-            &keychain_child(current_exe, "status", &reference, None)
+            &keychain_child(current_exe, "status", &reference, None, None)
                 .and_then(keychain_ok)
                 .map_or_else(|r| r.into_response(id), |reply| Response::CredentialStatus { id, present: reply.present.unwrap_or(false) }),
         )),
@@ -1230,7 +1339,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
 
         // Askpass requests are decided every turn (the socket is also in the poll set, so
         // a request wakes the loop at once); what the client must hear is queued.
-        for event in guard.manager.askpass_service() {
+        for event in guard.manager.askpass_service(&mut |reference| resolve_item(&current_exe, reference).map_err(|r| r.code())) {
             outbox.extend(protocol::encode_response(&match event {
                 crate::askpass::BrokerEvent::Prompt { session_id, prompt_id, text, kind } => {
                     Response::SshPrompt { session_id, prompt_id, text, kind }
@@ -1391,7 +1500,7 @@ mod tests {
     fn a_keychain_child_needs_an_absolute_executable_path() {
         let reference = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";
         for exe in ["remote-hub-helper", "", "./remote-hub-helper", "bin/remote-hub-helper"] {
-            match keychain_child(exe, "status", reference, None) {
+            match keychain_child(exe, "status", reference, None, None) {
                 Err(CredentialRefusal::Keychain(code)) => assert_eq!(code, "keychain_unavailable", "{exe:?}"),
                 _ => panic!("{exe:?} must be refused"),
             }

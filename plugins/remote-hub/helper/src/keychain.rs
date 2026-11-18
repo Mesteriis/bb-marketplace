@@ -12,7 +12,9 @@
 //! build can be pointed at a temporary keychain FILE by path with
 //! `REMOTE_HUB_KEYCHAIN_PATH` (never through the user's keychain search list
 //! or default keychain, which are not touched).
+use crate::binding::Bind;
 use crate::secret::Secret;
+use serde::{Deserialize, Serialize};
 
 /// The only account names the helper will touch in the Keychain: our own
 /// references (rh-cred:v1:<executionHostId>:<uuid>). A request cannot name any
@@ -36,6 +38,8 @@ pub enum KeychainError {
     Missing,
     /// No keychain, or any other failure.
     Unavailable,
+    /// The item exists but carries no binding (saved before bindings existed): it is never used.
+    Unbound,
 }
 
 impl KeychainError {
@@ -46,6 +50,7 @@ impl KeychainError {
             KeychainError::Denied => "keychain_denied",
             KeychainError::Missing => "credential_missing",
             KeychainError::Unavailable => "keychain_unavailable",
+            KeychainError::Unbound => "credential_unbound",
         }
     }
 
@@ -55,6 +60,7 @@ impl KeychainError {
             KeychainError::Denied => "the Keychain refused access to the saved credential",
             KeychainError::Missing => "the saved credential no longer exists in the Keychain",
             KeychainError::Unavailable => "the Keychain is not available",
+            KeychainError::Unbound => "this saved credential has no binding; save it again",
         }
     }
 }
@@ -69,6 +75,19 @@ pub fn classify(status: i32) -> KeychainError {
         -25300 => KeychainError::Missing, // errSecItemNotFound
         _ => KeychainError::Unavailable,  // NoDefaultKeychain, NoSuchKeychain, ...
     }
+}
+
+/// What the Keychain item holds: the secret and its binding, as one JSON value.
+#[derive(Serialize, Deserialize)]
+struct StoredItem {
+    v: u8,
+    bind: Bind,
+    secret: Secret,
+}
+
+pub struct Item {
+    pub bind: Bind,
+    pub secret: Secret,
 }
 
 #[derive(Clone, Debug)]
@@ -122,6 +141,22 @@ impl Keychain {
     pub fn get(&self, account: &str) -> Result<Secret, KeychainError> {
         let bytes = imp::get(&self.target, account)?;
         String::from_utf8(bytes).map(Secret::new).map_err(|_| KeychainError::Unavailable)
+    }
+
+    /// Saves the secret TOGETHER with what it is for, as one Keychain item.
+    pub fn set_item(&self, account: &str, bind: &Bind, secret: &Secret) -> Result<(), KeychainError> {
+        let stored = StoredItem { v: 1, bind: bind.clone(), secret: secret.clone() };
+        let text = serde_json::to_string(&stored).map_err(|_| KeychainError::Unavailable)?;
+        self.set(account, &Secret::new(text))
+    }
+
+    /// The secret and its binding. An item without a binding is `Unbound`, never a bare secret.
+    pub fn get_item(&self, account: &str) -> Result<Item, KeychainError> {
+        let raw = self.get(account)?;
+        match serde_json::from_str::<StoredItem>(raw.expose()) {
+            Ok(stored) if stored.v == 1 && stored.bind.is_valid() => Ok(Item { bind: stored.bind, secret: stored.secret }),
+            _ => Err(KeychainError::Unbound),
+        }
     }
 
     /// Deleting something that is not there is Missing, so a caller can tell.
@@ -372,8 +407,6 @@ mod tests {
 // travels over those pipes only (never argv or the environment) and the child's
 // process is gone right after.
 
-use serde::{Deserialize, Serialize};
-
 #[derive(Serialize, Deserialize)]
 pub struct OpRequest {
     pub op: String,
@@ -381,6 +414,9 @@ pub struct OpRequest {
     pub reference: String,
     #[serde(default)]
     pub secret: Option<Secret>,
+    /// What the secret is for; required by `save`.
+    #[serde(default)]
+    pub bind: Option<Bind>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -391,13 +427,24 @@ pub struct OpReply {
     pub present: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<Secret>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<Bind>,
 }
 
 /// Executes one request against `keychain`. Pure of I/O, so it is tested directly.
 pub fn execute(keychain: &Keychain, request: &OpRequest) -> OpReply {
     let fail = |e: KeychainError| OpReply { error: Some(e.code().to_string()), ..OpReply::default() };
     match (request.op.as_str(), &request.secret) {
-        ("save", Some(secret)) => match keychain.set(&request.reference, secret) {
+        ("save", Some(secret)) => match &request.bind {
+            Some(bind) if bind.is_valid() => match keychain.set_item(&request.reference, bind, secret) {
+                Ok(()) => OpReply::default(),
+                Err(e) => fail(e),
+            },
+            _ => OpReply { error: Some("invalid_bind".to_string()), ..OpReply::default() },
+        },
+        // Test-hooks only: a bare secret with no binding, as a pre-binding helper would have stored.
+        #[cfg(feature = "test-hooks")]
+        ("save_raw", Some(secret)) => match keychain.set(&request.reference, secret) {
             Ok(()) => OpReply::default(),
             Err(e) => fail(e),
         },
@@ -409,8 +456,13 @@ pub fn execute(keychain: &Keychain, request: &OpRequest) -> OpReply {
             Ok(present) => OpReply { present: Some(present), ..OpReply::default() },
             Err(e) => fail(e),
         },
-        ("get", _) => match keychain.get(&request.reference) {
-            Ok(secret) => OpReply { secret: Some(secret), ..OpReply::default() },
+        ("get", _) => match keychain.get_item(&request.reference) {
+            Ok(item) => OpReply { secret: Some(item.secret), bind: Some(item.bind), ..OpReply::default() },
+            Err(e) => fail(e),
+        },
+        // The binding alone: for checking an open BEFORE anything is started; no secret leaves the child.
+        ("bind", _) => match keychain.get_item(&request.reference) {
+            Ok(item) => OpReply { bind: Some(item.bind), ..OpReply::default() },
             Err(e) => fail(e),
         },
         _ => OpReply { error: Some("keychain_unavailable".to_string()), ..OpReply::default() },
@@ -420,6 +472,16 @@ pub fn execute(keychain: &Keychain, request: &OpRequest) -> OpReply {
 /// The `--keychain-op` entry point: one request in, one reply out.
 pub fn run_op() -> i32 {
     use std::io::{Read, Write};
+    // Only the helper itself may ask: this mode hands a saved secret to its caller. (A same-user
+    // process that can already drive the helper is a limit the docs state; this closes the
+    // standalone read-back.) A test-hooks build lets a test start it directly.
+    #[cfg(feature = "test-hooks")]
+    let allowed = std::env::var_os("REMOTE_HUB_TEST_ANY_PARENT").is_some() || crate::peer::parent_is_this_binary();
+    #[cfg(not(feature = "test-hooks"))]
+    let allowed = crate::peer::parent_is_this_binary();
+    if !allowed {
+        return 3;
+    }
     let mut input = String::new();
     if std::io::stdin().take(64 * 1024).read_to_string(&mut input).is_err() {
         return 2;
