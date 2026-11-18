@@ -1,0 +1,119 @@
+[package]
+name = "remote-hub-helper"
+version = "0.1.0"
+edition = "2021"
+description = "Remote Hub supervision helper: owns PTY sessions and speaks the versioned stdio protocol."
+license = "MIT"
+publish = false
+
+[features]
+# Off by default: enables the --echo-command argv hook used only by the
+# integration tests. The release binary (npm run build:helper) has it off.
+test-hooks = []
+
+[lib]
+name = "remote_hub_helper"
+path = "src/lib.rs"
+
+[[bin]]
+name = "remote-hub-helper"
+path = "src/main.rs"
+
+[[test]]
+name = "echo"
+path = "tests/echo.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "production"
+path = "tests/production.rs"
+
+[[test]]
+name = "askpass_process"
+path = "tests/askpass_process.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "exec_process"
+path = "tests/exec_process.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "owner_process"
+path = "tests/owner_process.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "keychain_child"
+path = "tests/keychain_child.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "credential_process"
+path = "tests/credential_process.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "keychain_spike"
+path = "tests/keychain_spike.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "keychain"
+path = "tests/keychain.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "rdp_process"
+path = "tests/rdp_process.rs"
+required-features = ["test-hooks"]
+
+[dependencies]
+libc = "=0.2.191"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+
+# IronRDP, pinned per docs/rdp-engine.md. Each crate moves at its own pace, so
+# the exact versions below are the coherent set verified against crates.io.
+ironrdp-connector = "=0.12.0"
+ironrdp-tokio = "=0.12.0"
+ironrdp-tls = { version = "=0.3.0", features = ["rustls-ring"] }
+ironrdp-session = "=0.13.0"
+ironrdp-pdu = "=0.11.0"
+ironrdp-graphics = "=0.11.0"
+ironrdp-input = "=0.9.0"
+ironrdp-core = "=0.3.1"
+# Counts the warnings IronRDP logs when it discards an update (already in the tree through ironrdp; MIT).
+tracing-core = "=0.1.36"
+
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+x509-cert = { version = "=0.3.0", default-features = false, features = ["std"] }
+sha2 = "=0.11.1"
+png = "=0.18.1"
+
+# macOS Keychain access (stage 3b). Already in the tree through the TLS verifier;
+# MIT OR Apache-2.0. Generic passwords only, in the keychain the caller names.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "=3.7.0"
+# Only for the TCFType trait (raw references for two Security calls the crate does not expose);
+# already in the tree through security-framework. MIT OR Apache-2.0.
+core-foundation = "=0.10.1"
+
+[dev-dependencies]
+# Test-only: a fake RDP server that presents the fixture certificates, and a
+# client that trusts the fixture CA (the validated-certificate path).
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring"] }
+# Test-only: builds an ActiveStage over quiet streams (already in the tree as a
+# transitive dependency of ironrdp-session).
+ironrdp-svc = "=0.10.0"
+tracing = "=0.1.44"
+
+[[test]]
+name = "known_hosts_process"
+path = "tests/known_hosts_process.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "known_hosts_session"
+required-features = ["test-hooks"]

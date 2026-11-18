@@ -1,0 +1,90 @@
+# Remote Hub [Experimental]
+
+Менеджер SSH/RDP-подключений для BB. Сейчас реализованы один настоящий
+SSH-сеанс во встроенном терминале (xterm.js) и один настоящий RDP-сеанс на
+canvas, Rust-помощник с настоящими PTY и отдельным процессом RDP на сеанс,
+проверенный IPC. Профили, сохранённые учётные данные, agent tools и CLI —
+следующие этапы.
+
+## Что работает
+
+- Rust-помощник remote-hub-helper (aarch64-apple-darwin) с жизненным циклом и
+  версионированным протоколом stdio: length-prefixed JSON-кадры для управления
+  и бинарные stream-кадры с session id и sequence number для терминальных
+  байтов.
+- Echo-консоль: RPC helper_status / echo_open / echo_input / echo_close.
+- SSH-сеанс: форма подключения (host, user, port), запуск системного
+  /usr/bin/ssh на собственном PTY помощника, xterm.js, resize, бинарный поток
+  через WebSocket (attach/detach, повторное подключение со snapshot scrollback),
+  статусы connecting/running/detached/closed и код завершения (exit code,
+  signal, reason).
+
+- RDP-сеанс: форма (host, port, user, password, domain), рабочий стол на
+  canvas, мышь, колесо и клавиатура, кнопка Ctrl+Alt+Del, режимы Fit и 1:1,
+  скриншот PNG, отключение и повторное подключение. Сертификат сервера
+  проверяется строго; если ему не доверяют, показываются отпечаток, subject,
+  издатель и срок, и можно принять один раз, довериться на время работы BB или
+  отклонить. Другой сертификат на доверенном хосте показывается как изменённый
+  и никогда не принимается автоматически. Вход — через NLA/CredSSP, если сервер
+  его предлагает. Отключение не завершает сеанс пользователя на сервере.
+
+## Интеграционный тест (Docker)
+
+npm run test:integration поднимает одноразовые sshd- и xrdp-контейнеры на случайных
+портах (изолированный временный каталог, свой ключ ed25519 и known_hosts,
+никакого реального ~/.ssh), прогоняет 8 сценариев через настоящий бинарник
+помощника, затем Node-тест service.ts + helper-process.ts. Если Docker
+недоступен, Python-скрипт выходит с кодом 3 и печатает not run.
+
+## Чего пока нет
+
+Сохранение профилей, учётных данных и доверенных сертификатов (доверие живёт
+до перезапуска BB), agent tools, CLI, буфер обмена, изменение размера рабочего
+стола, Kerberos. NLA и строгий TLS проверены вручную на настоящем Windows;
+внутри живого BB плагин в остальном не проверялся.
+
+## Бинарник помощника и dist/ в репозитории
+
+В релизных коммитах лежат собранные bin/remote-hub-helper (aarch64-apple-darwin, ad-hoc подпись, пути сборщика вырезаны
+через --remap-path-prefix), bin/SHA256SUMS и dist/ (без карт источников). Сервер сверяет сумму перед запуском помощника
+(`helper_checksum_failed`, если файла сумм нет, он повреждён, это символическая ссылка или сумма не совпала; обхода нет). Заново собрать: `npm run build:helper && npm run helper:sums && npm run build`
+(нужен Rust toolchain и цель aarch64-apple-darwin); проверить: `npm run check:release`, `npm run verify:helper`,
+`npm run build:clean-clone`. Проверка суммы находит повреждённую или наполовину обновлённую установку; она не защищает от того, кто может писать в каталог плагина (он заменит и SHA256SUMS, и код плагина), и не закрывает гонку «проверили — запустили» для процесса того же пользователя.
+
+## Сборка и проверка
+
+```
+cd plugins/remote-hub
+npm install
+npm run build:helper   # cargo build + копия бинарника в bin/
+npm run check          # typecheck + vitest
+npm run build          # bb plugin build
+```
+
+Rust-тесты помощника: `cd helper && cargo test --locked --features test-hooks`.
+
+## Проверки релиза (этап 5)
+
+- `npm run check:dist` — состав dist/ (файлы bb plugin build, версия и id, нет домашнего каталога сборщика; карта
+  источников с таким путём даёт предупреждение — не поставлять).
+- `npm run helper:sums` — пишет bin/SHA256SUMS; `npm run check:release` — бинарник arm64 Mach-O, сумма совпадает,
+  `--version` равен версии пакета. Сервер сверяет сумму перед запуском помощника (`helper_checksum_failed`); `npm run build:helper` кладёт
+  SHA256SUMS рядом с собранным бинарником, так что режима «без проверки» нет.
+- `npm run verify:helper` — пересобирает помощника во временном каталоге и сравнивает хэши (сборки Rust не обязаны быть
+  побайтно одинаковыми: различие сообщается, решает человек).
+- `npm run check:notices` — таблица всех связанных crate в THIRD_PARTY_NOTICES.md актуальна (`node scripts/gen-notices.mjs`
+  перезаписывает её) и покрывает prod-зависимости npm.
+- `npm run build:clean-clone [ref]` — чистый клон зафиксированного коммита: npm ci, check, build, release-помощник и все
+  проверки выше. Ничего не публикует и не устанавливает.
+
+## Структура
+
+- src/core — zod-схемы протокола, кодек кадров, построитель ssh argv, credit (без host-кода).
+- src/adapters/bb — запуск и управление помощником, service, WebSocket (Node/host-код).
+- src/ui — компоненты без host-кода.
+- helper/ — Rust-помощник (PTY, сессии, stdio-протокол, валидация ssh argv).
+- docs/architecture.md — архитектура и проверка SDK-деклараций.
+
+## Лицензия
+
+MIT, см. LICENSE.

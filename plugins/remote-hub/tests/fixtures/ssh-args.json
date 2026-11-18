@@ -1,0 +1,172 @@
+{
+  "cases": [
+    {
+      "name": "minimal",
+      "target": { "host": "example.com", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "--", "example.com"],
+      "error": null
+    },
+    {
+      "name": "user-and-port",
+      "target": { "host": "example.com", "user": "alice", "port": 22, "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-l", "alice", "-p", "22", "--", "example.com"],
+      "error": null
+    },
+    {
+      "name": "full",
+      "target": {
+        "host": "example.com",
+        "user": "alice",
+        "port": 22,
+        "configFile": "/tmp/cfg",
+        "knownHostsFile": "/tmp/kh",
+        "identityFile": "/tmp/id",
+        "extraOptions": []
+      },
+      "argv": ["ssh", "-tt", "-l", "alice", "-p", "22", "-F", "/tmp/cfg", "-o", "UserKnownHostsFile=/tmp/kh", "-i", "/tmp/id", "-o", "IdentitiesOnly=yes", "--", "example.com"],
+      "error": null
+    },
+    {
+      "name": "path-with-space",
+      "target": {
+        "host": "example.com",
+        "configFile": "/tmp/my config",
+        "extraOptions": []
+      },
+      "argv": ["ssh", "-tt", "-F", "/tmp/my config", "--", "example.com"],
+      "error": null
+    },
+    {
+      "name": "no-user-port",
+      "target": {
+        "host": "example.com",
+        "configFile": "/tmp/cfg",
+        "knownHostsFile": "/tmp/kh",
+        "identityFile": "/tmp/id",
+        "extraOptions": []
+      },
+      "argv": ["ssh", "-tt", "-F", "/tmp/cfg", "-o", "UserKnownHostsFile=/tmp/kh", "-i", "/tmp/id", "-o", "IdentitiesOnly=yes", "--", "example.com"],
+      "error": null
+    },
+    {
+      "name": "reject-A",
+      "target": { "host": "example.com", "extraOptions": ["-A"] },
+      "argv": ["ssh", "-tt", "-A", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-L",
+      "target": { "host": "example.com", "extraOptions": ["-L", "8080:localhost:80"] },
+      "argv": ["ssh", "-tt", "-L", "8080:localhost:80", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-R",
+      "target": { "host": "example.com", "extraOptions": ["-R", "8080:localhost:80"] },
+      "argv": ["ssh", "-tt", "-R", "8080:localhost:80", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-D",
+      "target": { "host": "example.com", "extraOptions": ["-D", "1080"] },
+      "argv": ["ssh", "-tt", "-D", "1080", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-X",
+      "target": { "host": "example.com", "extraOptions": ["-X"] },
+      "argv": ["ssh", "-tt", "-X", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-Y",
+      "target": { "host": "example.com", "extraOptions": ["-Y"] },
+      "argv": ["ssh", "-tt", "-Y", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-proxycommand",
+      "target": { "host": "example.com", "extraOptions": ["-oProxyCommand=evil"] },
+      "argv": ["ssh", "-tt", "-oProxyCommand=evil", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-stricthostkey-no",
+      "target": { "host": "example.com", "extraOptions": ["-o", "StrictHostKeyChecking=no"] },
+      "argv": ["ssh", "-tt", "-o", "StrictHostKeyChecking=no", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "reject-knownhosts-devnull",
+      "target": { "host": "example.com", "extraOptions": ["-o", "UserKnownHostsFile=/dev/null"] },
+      "argv": ["ssh", "-tt", "-o", "UserKnownHostsFile=/dev/null", "--", "example.com"],
+      "error": "ssh_option_rejected"
+    },
+    {
+      "name": "knownhosts-devnull-direct",
+      "target": { "host": "example.com", "knownHostsFile": "/dev/null", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-o", "UserKnownHostsFile=/dev/null", "--", "example.com"],
+      "error": "invalid_knownHostsFile"
+    },
+    {
+      "name": "knownhosts-with-space",
+      "target": { "host": "example.com", "knownHostsFile": "/tmp/my kh", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-o", "UserKnownHostsFile=/tmp/my kh", "--", "example.com"],
+      "error": "invalid_knownHostsFile"
+    },
+    {
+      "name": "config-dot-segment",
+      "target": { "host": "example.com", "configFile": "/tmp/./cfg", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-F", "/tmp/./cfg", "--", "example.com"],
+      "error": "invalid_configFile"
+    },
+    {
+      "name": "knownhosts-dot-segment",
+      "target": { "host": "example.com", "knownHostsFile": "/dev/./null", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-o", "UserKnownHostsFile=/dev/./null", "--", "example.com"],
+      "error": "invalid_knownHostsFile"
+    },
+    {
+      "name": "config-dotdot",
+      "target": { "host": "example.com", "configFile": "/tmp/../cfg", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-F", "/tmp/../cfg", "--", "example.com"],
+      "error": "invalid_configFile"
+    },
+    {
+      "name": "identity-dot",
+      "target": { "host": "example.com", "identityFile": "/tmp/./id", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-i", "/tmp/./id", "-o", "IdentitiesOnly=yes", "--", "example.com"],
+      "error": "invalid_identityFile"
+    },
+    {
+      "name": "host-c1-control",
+      "target": { "host": "exa\u0085mple", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "--", "exa\u0085mple"],
+      "error": "invalid_host"
+    },
+    {
+      "name": "host-del-control",
+      "target": { "host": "exa\u007fmple", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "--", "exa\u007fmple"],
+      "error": "invalid_host"
+    },
+    {
+      "name": "non-ascii-host",
+      "target": { "host": "münich.example", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "--", "münich.example"],
+      "error": null
+    },
+    {
+      "name": "config-with-space",
+      "target": { "host": "example.com", "configFile": "/tmp/my cfg", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-F", "/tmp/my cfg", "--", "example.com"],
+      "error": null
+    },
+    {
+      "name": "identity-with-space",
+      "target": { "host": "example.com", "identityFile": "/tmp/my id", "extraOptions": [] },
+      "argv": ["ssh", "-tt", "-i", "/tmp/my id", "-o", "IdentitiesOnly=yes", "--", "example.com"],
+      "error": null
+    }
+  ]
+}

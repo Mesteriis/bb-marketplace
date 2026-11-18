@@ -1,0 +1,7 @@
+node_modules/
+# dist/ is committed (as in other plugins of this repository) but never the source maps: they carry the builder's paths.
+!dist/
+dist/*.map
+helper/target/
+__pycache__/
+*.pyc

@@ -806,6 +806,26 @@
       }
     },
     {
+      "id": "makosh-remote-hub",
+      "displayName": "Remote Hub [Experimental]",
+      "description": "Experimental SSH/RDP manager: SSH in xterm and RDP on a canvas (strict TLS, NLA, input, screenshots) through a Rust helper.",
+      "icon": {
+        "url": "./plugins/remote-hub/assets/icon.svg"
+      },
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/remote-hub",
+          "ref": "main"
+        }
+      }
+    },
+    {
       "id": "makosh-ai",
       "displayName": "Makosh AI [Experimental]",
       "description": "Streams Claude Messages and Codex Responses to BB plugins through the existing Account Pooler.",

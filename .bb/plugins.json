@@ -224,6 +224,10 @@
       "source": "./plugins/read-aloud-local"
     },
     {
+      "name": "remote-hub",
+      "source": "./plugins/remote-hub"
+    },
+    {
       "name": "ru",
       "source": "./plugins/ru"
     },

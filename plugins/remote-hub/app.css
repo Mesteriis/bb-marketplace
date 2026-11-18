@@ -1,0 +1,944 @@
+/* Remote Hub SSH view. Scoped under the plugin surface; colors use bb theme
+   tokens with a dark fallback so the view is legible even outside a themed bb. */
+.rh-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 8px;
+  padding: 12px;
+  box-sizing: border-box;
+  color: var(--ink, #c9d1d9);
+  background: var(--canvas, #0d1117);
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+
+.rh-form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rh-form input {
+  background: var(--surface-recessed-solid, #161b22);
+  color: var(--ink, #c9d1d9);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font: inherit;
+}
+
+.rh-form input.rh-port {
+  width: 80px;
+}
+
+.rh-form button {
+  background: var(--foreground, #c9d1d9);
+  color: var(--canvas, #0d1117);
+  border: 0;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.rh-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.rh-header {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-header strong {
+  color: var(--ink, #c9d1d9);
+}
+
+.rh-error {
+  color: var(--destructive, #e06c75);
+  margin: 0;
+}
+
+.rh-terminal-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.rh-terminal {
+  height: 100%;
+  width: 100%;
+}
+
+/* Connect page: the profile catalogue beside Quick connect / the editor. */
+/* The container the layout reacts to: the panel's width, not the window's. */
+.rh-root {
+  container-type: inline-size;
+  height: 100%;
+}
+
+/* One page font size for everything in the shell, so no button or field is larger than its neighbours. */
+.rh-shell {
+  display: flex;
+  height: 100%;
+  font-size: 13px;
+  background: var(--canvas, #0d1117);
+  color: var(--ink, #c9d1d9);
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+
+.rh-connect {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  background: var(--canvas, #0d1117);
+  color: var(--ink, #c9d1d9);
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+
+.rh-kind {
+  display: flex;
+  gap: 4px;
+  padding: 12px 12px 0;
+}
+
+.rh-kind button {
+  background: transparent;
+  color: var(--ink, #c9d1d9);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 2px 12px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.rh-kind button[aria-pressed="true"] {
+  background: var(--foreground, #c9d1d9);
+  color: var(--canvas, #0d1117);
+}
+
+.rh-kind-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.rh-kind-pane[hidden] {
+  display: none;
+}
+
+/* RDP view. */
+.rh-header button {
+  background: var(--foreground, #c9d1d9);
+  color: var(--canvas, #0d1117);
+  border: 0;
+  border-radius: 4px;
+  padding: 2px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.rh-header button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.rh-notice,
+.rh-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-rdp-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  overflow: auto;
+  background: var(--surface-recessed-solid, #161b22);
+}
+
+.rh-rdp-stage {
+  position: relative;
+  display: block;
+  width: max-content;
+}
+
+.rh-rdp-stage-fit {
+  width: 100%;
+  height: 100%;
+}
+
+.rh-rdp-canvas {
+  display: block;
+}
+
+/* Where an agent's pointer is on the desktop: a ring with a label, never in the way of the owner's own pointer. */
+.rh-agent-pointer {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border: 2px solid var(--accent, #d29922);
+  border-radius: 50%;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45);
+  transition: left 120ms linear, top 120ms linear;
+}
+
+.rh-agent-pointer-click {
+  background: color-mix(in srgb, var(--accent, #d29922) 45%, transparent);
+}
+
+.rh-agent-pointer-label {
+  position: absolute;
+  left: 20px;
+  top: -4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 16px;
+  background: var(--accent, #d29922);
+  color: #0d1117;
+  white-space: nowrap;
+}
+
+.rh-rdp-canvas:focus-visible {
+  outline: 2px solid var(--foreground, #c9d1d9);
+  outline-offset: -2px;
+}
+
+.rh-rdp-fit {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.rh-rdp-cert {
+  position: fixed;
+  top: 15%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  width: min(560px, calc(100% - 32px));
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--surface-recessed-solid, #161b22);
+  color: var(--ink, #c9d1d9);
+}
+
+.rh-rdp-cert:focus {
+  outline: 2px solid var(--foreground, #c9d1d9);
+}
+
+.rh-rdp-cert h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.rh-rdp-cert-fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+
+.rh-rdp-cert-fields dt {
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-rdp-cert-fields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rh-rdp-fingerprint {
+  font-family: var(--font-terminal, monospace);
+}
+
+.rh-rdp-cert-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rh-rdp-cert-actions button {
+  background: var(--surface-recessed-solid, #161b22);
+  color: var(--ink, #c9d1d9);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.rh-rdp-cert-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.rh-rdp-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 8px;
+}
+
+.rh-connect-sessions {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.rh-connect-sessions[hidden] {
+  display: none;
+}
+
+.rh-quick {
+  align-self: center;
+  margin-right: 8px;
+  font-size: 12px;
+  color: var(--muted-foreground, #8b949e);
+}
+
+/* Profile catalogue. */
+.rh-catalogue {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border, #30363d);
+  box-sizing: border-box;
+}
+
+.rh-catalogue input,
+.rh-editor input,
+.rh-editor select {
+  background: var(--surface-recessed-solid, #161b22);
+  color: var(--ink, #c9d1d9);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font: inherit;
+}
+
+.rh-catalogue button,
+.rh-editor button {
+  background: transparent;
+  color: var(--ink, #c9d1d9);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.rh-catalogue button[aria-pressed="true"],
+.rh-catalogue .rh-new,
+.rh-editor button[type="submit"] {
+  background: var(--foreground, #c9d1d9);
+  color: var(--canvas, #0d1117);
+}
+
+.rh-catalogue-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rh-catalogue-tools .rh-kind {
+  padding: 0;
+  flex-wrap: wrap;
+}
+
+.rh-group h3 {
+  margin: 8px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rh-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #30363d);
+  border-left-width: 3px;
+  border-radius: 4px;
+}
+
+.rh-profile-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rh-profile-endpoint,
+.rh-status,
+.rh-hint {
+  color: var(--muted-foreground, #8b949e);
+  font-size: 12px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rh-badge {
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 3px;
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-badge-agent {
+  border-color: var(--accent, #d29922);
+  color: var(--accent, #d29922);
+}
+
+.rh-control-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.rh-control-notice p {
+  margin: 0;
+}
+
+.rh-profile-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/* Profile editor. */
+.rh-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  overflow-y: auto;
+  width: 100%;
+  max-width: 520px;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.rh-editor input:not([type="checkbox"]),
+.rh-editor select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.rh-editor fieldset {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 8px 12px 12px;
+}
+
+.rh-editor legend {
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-editor label.rh-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.rh-editor-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Narrow panel: the catalogue stacks above the work area instead of squeezing it. */
+@container (max-width: 760px) {
+  .rh-shell {
+    flex-direction: column;
+  }
+
+  .rh-catalogue {
+    flex: 0 0 auto;
+    max-height: 40%;
+    border-right: 0;
+    border-bottom: 1px solid var(--border, #30363d);
+  }
+
+  .rh-connect {
+    min-height: 0;
+  }
+}
+
+/* Saved password (stage 3b). */
+.rh-saved {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-saved button,
+.rh-import button,
+.rh-credentials button {
+  background: transparent;
+  color: var(--ink, #c9d1d9);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.rh-credentials {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  overflow-y: auto;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.rh-credentials input {
+  background: var(--surface-recessed-solid, #161b22);
+  color: var(--ink, #c9d1d9);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font: inherit;
+  min-width: 0;
+}
+
+.rh-credentials label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-credentials-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rh-credentials-head h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.rh-credential-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rh-ssh-prompt-text {
+  font-family: var(--font-terminal, monospace);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 8px 0 12px;
+}
+
+.rh-rdp-cert input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 6px 0 10px;
+  padding: 4px 8px;
+  background: var(--canvas, #0d1117);
+  color: var(--ink, #c9d1d9);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  font: inherit;
+}
+
+.rh-ssh-prompt-type {
+  display: block;
+  color: var(--muted-foreground, #8b949e);
+  margin-bottom: 8px;
+}
+
+.rh-import {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  max-width: 760px;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.rh-import button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.rh-import-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.rh-import h2,
+.rh-import h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.rh-import ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rh-import .rh-check.rh-profile-main {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.rh-import-note {
+  display: block;
+}
+
+.rh-import .rh-badge {
+  align-self: flex-start;
+}
+
+/* The standing notice that an agent is active: fixed, readable wherever the owner is in BB. */
+.rh-agent-banner {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(440px, calc(100vw - 32px));
+}
+
+.rh-agent-banner-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent, #d29922);
+  border-radius: 6px;
+  background: var(--surface-recessed-solid, #161b22);
+  color: var(--ink, #c9d1d9);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.rh-agent-banner-row > span {
+  flex: 1 1 200px;
+}
+
+/* An agent drives the session: a light layer of dots over the widget (a picture only: translucent, no blur, no dimming, no
+   pointer events, transform/opacity animation) and a small card with the label and the Take control button. */
+.rh-agent-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.rh-agent-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  border-radius: 4px;
+  box-shadow: inset 0 0 22px color-mix(in srgb, var(--accent, #d29922) 28%, transparent);
+}
+
+.rh-agent-dots {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Two dot lattices drifting in different directions: the waves come from their beating, not from any blur. */
+.rh-agent-dots::before,
+.rh-agent-dots::after {
+  content: "";
+  position: absolute;
+  inset: -48px;
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--accent, #d29922) 70%, transparent) 1.4px, transparent 1.9px);
+  background-size: 24px 24px;
+  opacity: 0.22;
+  will-change: transform, opacity;
+}
+
+.rh-agent-dots::before {
+  animation: rh-agent-drift-a 14s linear infinite, rh-agent-breathe 5s ease-in-out infinite;
+}
+
+.rh-agent-dots::after {
+  background-size: 31px 31px;
+  animation: rh-agent-drift-b 19s linear infinite, rh-agent-breathe 7s ease-in-out infinite reverse;
+}
+
+@keyframes rh-agent-drift-a {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(48px, 24px, 0);
+  }
+}
+
+@keyframes rh-agent-drift-b {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-62px, 31px, 0);
+  }
+}
+
+@keyframes rh-agent-breathe {
+  0%,
+  100% {
+    opacity: 0.1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* tsParticles draws the wave; its canvas is a picture only. While it runs the static CSS dots step aside. */
+.rh-agent-dots canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.rh-agent-overlay.rh-dots-live .rh-agent-dots::before,
+.rh-agent-overlay.rh-dots-live .rh-agent-dots::after {
+  display: none;
+}
+
+/* Reduced motion: the dots stay, static. */
+.rh-agent-overlay.rh-reduced-motion .rh-agent-dots::before,
+.rh-agent-overlay.rh-reduced-motion .rh-agent-dots::after {
+  animation: none;
+  opacity: 0.18;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rh-agent-dots::before,
+  .rh-agent-dots::after {
+    animation: none;
+    opacity: 0.18;
+  }
+}
+
+.rh-agent-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* A slim bar above the widget, in its own row: nothing of the terminal or desktop is under it. */
+.rh-agent-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-bottom: 4px;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent, #d29922) 60%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent, #d29922) 12%, var(--surface-recessed-solid, #161b22));
+  color: var(--ink, #c9d1d9);
+}
+
+.rh-agent-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rh-agent-blocked {
+  flex: 1 1 100%;
+  color: var(--destructive, #e06c75);
+}
+
+.rh-agent-take {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+/* The directive in a message: a card with two buttons, never a live view. */
+.rh-session-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--surface-recessed-solid, #161b22);
+  color: var(--ink, #c9d1d9);
+}
+
+.rh-session-card p {
+  margin: 0;
+}
+
+.rh-session-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.rh-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent, #58a6ff);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* One live session, inline in a message, in a side tab or above the page. */
+.rh-live {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 320px;
+}
+
+.rh-live-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rh-live .rh-terminal,
+.rh-live .rh-rdp-wrap {
+  min-height: 280px;
+}
+
+/* The owner's watching rule, stated at the top of Agent activity: loud when it is OFF. */
+.rh-rule {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+}
+
+.rh-rule-on {
+  border-color: var(--border, #30363d);
+}
+
+.rh-rule-off {
+  border-color: var(--accent, #d29922);
+  background: color-mix(in srgb, var(--accent, #d29922) 12%, transparent);
+}
+
+.rh-rule-confirm {
+  margin-top: 8px;
+}
+
+/* The commands an agent ran on a session, live in its view. */
+.rh-commands {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rh-commands h4 {
+  margin: 0;
+}
+
+.rh-command {
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.rh-command pre {
+  margin: 0;
+  font-family: var(--font-terminal, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.rh-command-line {
+  color: var(--accent, #d29922);
+}
+
+.rh-command-err {
+  color: #f85149;
+}
