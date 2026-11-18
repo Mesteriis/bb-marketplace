@@ -878,8 +878,8 @@ fn handle(
         Request::PveVncInput { id, session_id, data } if pve.is_vnc(session_id) => Ok(crate::pve::glue::vnc_input(pve, id, session_id, &data)),
         Request::PveVncInput { id, session_id, .. } => Ok(crate::pve::glue::enqueue_error(id, session_id, crate::pve::manager::EnqueueError::UnknownSession)),
         Request::PveTargets { id, connect } => Ok(crate::pve::glue::open_targets(pve, current_exe, id, &connect)),
-        Request::PveProvision { id, connect, dry_run, acl_path, save } => {
-            Ok(crate::pve::glue::open_provision(pve, current_exe, id, &connect, dry_run, acl_path, save))
+        Request::PveProvision { id, connect, dry_run, acl_path, user_id, replace_role, plan_digest, save } => {
+            Ok(crate::pve::glue::open_provision(pve, current_exe, id, &connect, crate::pve::glue::ProvisionRequest { dry_run, acl_path, user_id, replace_role, plan_digest, save }))
         }
         Request::OpenRdp { id, width, height, .. } if !rdp_geometry_ok(width, height) => Ok(rdp_error(
             id,

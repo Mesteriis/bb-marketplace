@@ -12,7 +12,7 @@ use tokio_tungstenite::tungstenite::Message;
 use super::api::{self, ApiError, Client, ConsoleKind, Session};
 use super::provision;
 use crate::secret::Secret;
-use super::protocol::{self, ConsoleTarget, PveAuth, PveCommand, PveEvent, PveOp, Trust};
+use super::protocol::{self, ConsoleTarget, ProvisionSteps, PveAuth, PveCommand, PveEvent, PveOp, Trust, ACTION_CREATE, ACTION_DIFFERS, ACTION_NAME_TAKEN, STEP_NOT_ATTEMPTED};
 use super::term::{self, Gate, OkGate};
 
 /// How long to wait for the server's `OK` after the ticket line (termproxy itself waits 10 s for the ticket).
@@ -22,12 +22,50 @@ const DEFAULT_KEEPALIVE: u64 = 30;
 const TARGETS_DEADLINE: Duration = Duration::from_secs(45);
 const PROVISION_DEADLINE: Duration = Duration::from_secs(60);
 
-async fn bounded(limit: Duration, out: &Out, work: impl std::future::Future<Output = i32>) -> i32 {
-    match tokio::time::timeout(limit, work).await {
-        Ok(code) => code,
-        Err(_) => {
-            out.error(&ApiError::Timeout).await;
-            1
+/// Runs `work` until it ends, the deadline passes, or the helper cancels (Close, or its transport is gone): then nothing
+/// more is sent to the server.
+async fn run_cancellable(limit: Duration, out: &Out, cmds: &mut mpsc::Receiver<Cmd>, work: impl std::future::Future<Output = i32>) -> i32 {
+    tokio::select! {
+        r = tokio::time::timeout(limit, work) => match r {
+            Ok(code) => code,
+            Err(_) => {
+                out.error(&ApiError::Timeout).await;
+                1
+            }
+        },
+        _ = wait_cancel(cmds) => 3,
+    }
+}
+
+async fn wait_cancel(cmds: &mut mpsc::Receiver<Cmd>) {
+    while let Some(c) = cmds.recv().await {
+        if matches!(c, Cmd::Close) {
+            return;
+        }
+    }
+}
+
+/// As `run_cancellable`, for provisioning: a write that was in flight when the job was cut off, or timed out, is reported
+/// as `unknown` (it may or may not have happened) and nothing further is written.
+async fn run_provision_cancellable(
+    out: &Out,
+    cmds: &mut mpsc::Receiver<Cmd>,
+    work: impl std::future::Future<Output = i32>,
+    progress: std::sync::Arc<std::sync::Mutex<provision::Progress>>,
+) -> i32 {
+    tokio::select! {
+        r = tokio::time::timeout(PROVISION_DEADLINE, work) => match r {
+            Ok(code) => code,
+            Err(_) => {
+                let steps = progress.lock().unwrap().cut_off();
+                out.error_steps("timeout", &ApiError::Timeout.message(), steps).await;
+                1
+            }
+        },
+        _ = wait_cancel(cmds) => {
+            let steps = progress.lock().unwrap().cut_off();
+            out.error_steps("cancelled", "the setup was cancelled", steps).await;
+            3
         }
     }
 }
@@ -77,7 +115,10 @@ impl Out {
         true
     }
     async fn error(&self, e: &ApiError) {
-        self.event(&PveEvent::Error { code: e.code().to_string(), message: e.message(), fingerprint: e.fingerprint() }).await;
+        self.event(&PveEvent::Error { code: e.code().to_string(), message: e.message(), fingerprint: e.fingerprint(), steps: None }).await;
+    }
+    async fn error_steps(&self, code: &str, message: &str, steps: ProvisionSteps) {
+        self.event(&PveEvent::Error { code: code.to_string(), message: message.to_string(), fingerprint: None, steps: Some(steps) }).await;
     }
 }
 
@@ -111,6 +152,8 @@ pub async fn serve(stream: tokio::net::UnixStream) -> i32 {
 
     // Commands after Open arrive on a channel so every phase can be interrupted by Close or the helper going away.
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<Cmd>(64);
+    // The helper's answer to "I saved the new password" travels apart from the commands that can cancel the job.
+    let (ack_tx, mut ack_rx) = mpsc::channel::<bool>(4);
     tokio::spawn(async move {
         loop {
             let body = match protocol::read_frame(&mut rd).await {
@@ -125,6 +168,10 @@ pub async fn serve(stream: tokio::net::UnixStream) -> i32 {
                 Some(&protocol::FRAME_CONTROL) => match serde_json::from_slice::<PveCommand>(&body[1..]) {
                     Ok(PveCommand::Resize { cols, rows }) => Cmd::Resize(cols, rows),
                     Ok(PveCommand::Close) => Cmd::Close,
+                    Ok(PveCommand::SaveAck { ok }) => {
+                        let _ = ack_tx.send(ok).await;
+                        continue;
+                    }
                     _ => continue,
                 },
                 _ => continue,
@@ -141,8 +188,13 @@ pub async fn serve(stream: tokio::net::UnixStream) -> i32 {
             1
         }
         Ok(client) => match op {
-            PveOp::Targets => bounded(TARGETS_DEADLINE, &out, run_targets(&client, &auth, &out)).await,
-            PveOp::Provision { dry_run, acl_path } => bounded(PROVISION_DEADLINE, &out, run_provision(&client, &auth, dry_run, &acl_path, &out)).await,
+            PveOp::Targets => run_cancellable(TARGETS_DEADLINE, &out, &mut cmd_rx, run_targets(&client, &auth, &out)).await,
+            PveOp::Provision { dry_run, acl_path, user_id, replace_role, plan_digest } => {
+                let ctx = ProvisionCtx { endpoint: format!("{}:{}", endpoint.host, endpoint.port), admin: admin_name(&auth), dry_run, acl_path, user_id, replace_role, plan_digest };
+                let progress = std::sync::Arc::new(std::sync::Mutex::new(provision::Progress::new()));
+                let work = run_provision(&client, &auth, &ctx, &out, &mut ack_rx, progress.clone());
+                run_provision_cancellable(&out, &mut cmd_rx, work, progress).await
+            }
             PveOp::Terminal { target, cols, rows } => {
                 let keepalive = Duration::from_secs(keepalive_secs.unwrap_or(DEFAULT_KEEPALIVE).clamp(1, 120));
                 match &target {
@@ -182,37 +234,116 @@ async fn run_targets(client: &Client, auth: &PveAuth, out: &Out) -> i32 {
     }
 }
 
-async fn run_provision(client: &Client, auth: &PveAuth, dry_run: bool, acl_path: &str, out: &Out) -> i32 {
-    if !api::valid_acl_path(acl_path) {
+struct ProvisionCtx {
+    endpoint: String,
+    admin: String,
+    dry_run: bool,
+    acl_path: String,
+    user_id: String,
+    replace_role: bool,
+    plan_digest: Option<String>,
+}
+
+fn admin_name(auth: &PveAuth) -> String {
+    match auth {
+        PveAuth::Ticket { username, .. } => username.clone(),
+        PveAuth::Token { token_id, .. } => token_id.clone(),
+    }
+}
+
+async fn run_provision(
+    client: &Client,
+    auth: &PveAuth,
+    ctx: &ProvisionCtx,
+    out: &Out,
+    acks: &mut mpsc::Receiver<bool>,
+    progress: std::sync::Arc<std::sync::Mutex<provision::Progress>>,
+) -> i32 {
+    if !api::valid_acl_path(&ctx.acl_path) {
         out.error(&ApiError::Invalid("the ACL path must be / or /pool/<id>")).await;
         return 1;
     }
-    out.state("authenticating").await;
-    let result = async {
-        let session = client.authenticate(auth).await?;
-        let plan = provision::read_plan(client, &session, acl_path).await?;
-        if dry_run {
-            return Ok((plan, None));
-        }
-        out.state("provisioning").await;
-        let password = provision::apply(client, &session, &plan, acl_path).await?;
-        Ok((plan, Some(password)))
+    if !provision::valid_user_id(&ctx.user_id) {
+        out.error(&ApiError::Invalid("the user must be name@pve")).await;
+        return 1;
     }
-    .await;
-    match result {
-        Ok((plan, None)) => {
-            out.event(&PveEvent::Plan { role: plan.role.to_string(), user: plan.user.to_string(), acl: plan.acl.to_string() }).await;
-            0
-        }
-        Ok((plan, Some(password))) => {
-            out.event(&PveEvent::Provisioned { role: plan.role.to_string(), user: plan.user.to_string(), acl: plan.acl.to_string(), password: Some(password) }).await;
-            0
-        }
+    out.state("authenticating").await;
+    let session = match client.authenticate(auth).await {
+        Ok(s) => s,
         Err(e) => {
             out.error(&e).await;
+            return 1;
+        }
+    };
+    let state = match provision::read_state(client, &session).await {
+        Ok(s) => s,
+        Err(e) => {
+            out.error(&e).await;
+            return 1;
+        }
+    };
+    // The digest binds the plan to this endpoint, this admin and the certificate the server presented.
+    let context = format!("{}|{}|{}", ctx.endpoint, ctx.admin, client.presented_fingerprint().unwrap_or_default());
+    let plan = provision::plan_from(&state, &ctx.user_id, &ctx.acl_path, &context);
+    if ctx.dry_run {
+        out.event(&PveEvent::Plan {
+            role: plan.role.to_string(),
+            user: plan.user.to_string(),
+            acl: plan.acl.to_string(),
+            user_id: plan.user_id.clone(),
+            role_privs: plan.role_privs.clone(),
+            extras: plan.extras.clone(),
+            digest: plan.digest.clone(),
+        })
+        .await;
+        return 0;
+    }
+    // Nothing is written before these checks pass, and a refusal here says nothing was changed.
+    let refuse = |code: &'static str, message: &'static str| async move {
+        out.error_steps(code, message, ProvisionSteps::untouched()).await;
+        1
+    };
+    match ctx.plan_digest.as_deref() {
+        None => return refuse("plan_required", "an apply needs the plan the owner confirmed").await,
+        Some(d) if d != plan.digest => return refuse("plan_changed", "the server changed since the plan was shown; review it again").await,
+        Some(_) => {}
+    }
+    if plan.user == ACTION_NAME_TAKEN {
+        return refuse("name_taken", "a user with this name exists and was not created by Remote Hub; nothing was changed").await;
+    }
+    if plan.role == ACTION_DIFFERS && !ctx.replace_role {
+        return refuse("role_differs", "the role exists with other privileges; replacing it needs its own confirmation").await;
+    }
+    out.state("provisioning").await;
+    let fail = |code: &str, error: &ApiError| {
+        let steps = progress.lock().unwrap().steps.clone();
+        let (code, message, fingerprint) = (code.to_string(), error.message(), error.fingerprint());
+        async move {
+            out.event(&PveEvent::Error { code, message, fingerprint, steps: Some(steps) }).await;
             1
         }
+    };
+    if let Err(e) = provision::step_role(client, &session, &plan, ctx.replace_role, &progress).await {
+        return fail(e.code(), &e).await;
     }
+    let password = match provision::step_user(client, &session, &plan, &progress).await {
+        Ok(pw) => pw,
+        Err(e) => return fail(e.code(), &e).await,
+    };
+    // The password is active on the server now: the helper saves it before anything else is written.
+    out.event(&PveEvent::NewPassword { password }).await;
+    let saved = matches!(tokio::time::timeout(Duration::from_secs(30), acks.recv()).await, Ok(Some(true)));
+    if !saved {
+        let steps = progress.lock().unwrap().steps.clone();
+        out.error_steps("credential_save_failed", "the new password could not be saved in the Keychain; run the setup again to replace it", steps).await;
+        return 1;
+    }
+    if let Err(e) = provision::step_acl(client, &session, &plan, &ctx.acl_path, &progress).await {
+        return fail(e.code(), &e).await;
+    }
+    let steps = progress.lock().unwrap().steps.clone();
+    out.event(&PveEvent::Provisioned { steps }).await;
+    0
 }
 
 /// Everything up to the first console byte. `Err(None)` means the helper asked to stop.

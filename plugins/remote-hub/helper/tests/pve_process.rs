@@ -239,46 +239,84 @@ fn admin_connect(port: u16) -> PveConnect {
 }
 
 const NEW_REF: &str = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b77";
+const SECOND_REF: &str = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b78";
 
 fn pve_bind(port: u16, user: &str) -> Bind {
     Bind::Endpoint { protocol: "pve".into(), host: "127.0.0.1".into(), port, user: Some(user.into()), domain: None, cert: None }
 }
 
-#[test]
-fn provisioning_saves_the_new_password_in_the_keychain_and_never_returns_it() {
-    let w = world(provision_state());
-    let dir = std::env::temp_dir().join(format!("rh-pve-prov-{}", std::process::id()));
+fn save(reference: &str, port: u16, user: &str) -> PveSave {
+    PveSave { reference: reference.into(), bind: pve_bind(port, user) }
+}
+
+fn provision(id: u64, port: u16, dry_run: bool, digest: Option<&str>, saves: Vec<PveSave>) -> Request {
+    Request::PveProvision {
+        id,
+        connect: admin_connect(port),
+        dry_run,
+        acl_path: "/".into(),
+        user_id: USER.into(),
+        replace_role: false,
+        plan_digest: digest.map(str::to_string),
+        save: saves,
+    }
+}
+
+fn digest_of(reply: Response) -> String {
+    match reply {
+        Response::PvePlan { digest, .. } => digest,
+        other => panic!("not a plan: {other:?}"),
+    }
+}
+
+fn keychain(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("rh-pve-{tag}-{}", std::process::id()));
     std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir).unwrap();
     let path = dir.join("kc.keychain-db");
     create_at(&path, "throwaway-kc-password").expect("temporary keychain");
+    (dir, path)
+}
+
+#[test]
+fn provisioning_saves_the_new_password_in_the_keychain_and_never_returns_it() {
+    let w = world(provision_state());
+    let (dir, path) = keychain("prov");
     let mut h = start(&[("REMOTE_HUB_KEYCHAIN_PATH", path.to_str().unwrap())]);
     let port = w.fake.port;
 
-    h.send(&Request::PveProvision { id: 1, connect: admin_connect(port), dry_run: true, acl_path: "/".into(), save: None });
-    match h.read_reply(1) {
-        Response::PvePlan { role, user, acl, .. } => assert_eq!((role.as_str(), user.as_str(), acl.as_str()), ("create", "create", "create")),
+    h.send(&provision(1, port, true, None, vec![]));
+    let reply = h.read_reply(1);
+    match &reply {
+        Response::PvePlan { role, user, acl, user_id, .. } => assert_eq!((role.as_str(), user.as_str(), acl.as_str(), user_id.as_str()), ("create", "create", "create", USER)),
         other => panic!("{other:?}"),
     }
+    let digest = digest_of(reply);
     assert!(w.fake.state.lock().unwrap().access_writes.is_empty());
 
-    // The new password may only be saved for this endpoint and remotehub@pve.
-    let wrong = PveSave { reference: NEW_REF.into(), bind: pve_bind(port, "root@pam") };
-    h.send(&Request::PveProvision { id: 2, connect: admin_connect(port), dry_run: false, acl_path: "/".into(), save: Some(wrong) });
-    assert!(matches!(h.read_reply(2), Response::Error { ref code, .. } if code == "invalid_request"));
-    h.send(&Request::PveProvision { id: 3, connect: admin_connect(port), dry_run: false, acl_path: "/".into(), save: None });
+    // Refused in the helper, before any call to the server: no digest, nowhere to save, the wrong user, a foreign endpoint.
+    h.send(&provision(2, port, false, None, vec![save(NEW_REF, port, USER)]));
+    assert!(matches!(h.read_reply(2), Response::Error { ref code, .. } if code == "plan_required"));
+    h.send(&provision(3, port, false, Some(&digest), vec![]));
     assert!(matches!(h.read_reply(3), Response::Error { ref code, .. } if code == "invalid_request"));
+    h.send(&provision(4, port, false, Some(&digest), vec![save(NEW_REF, port, "root@pam")]));
+    assert!(matches!(h.read_reply(4), Response::Error { ref code, .. } if code == "invalid_request"));
+    h.send(&provision(5, port, false, Some(&digest), vec![save(NEW_REF, port + 1, USER)]));
+    assert!(matches!(h.read_reply(5), Response::Error { ref code, .. } if code == "invalid_request"));
     assert!(w.fake.state.lock().unwrap().access_writes.is_empty(), "a refused request must not reach the server");
 
-    let save = PveSave { reference: NEW_REF.into(), bind: pve_bind(port, USER) };
-    h.send(&Request::PveProvision { id: 4, connect: admin_connect(port), dry_run: false, acl_path: "/".into(), save: Some(save) });
-    let reply = h.read_reply(4);
-    assert!(matches!(reply, Response::PveProvisioned { .. }), "{reply:?}");
+    h.send(&provision(6, port, false, Some(&digest), vec![save(NEW_REF, port, USER)]));
+    let reply = h.read_reply(6);
+    assert!(matches!(reply, Response::PveProvisioned { ref steps, .. } if steps.role == "done" && steps.user == "done" && steps.acl == "done"), "{reply:?}");
     let new_password = w.fake.state.lock().unwrap().users.get(USER).cloned().unwrap();
     assert!(!format!("{reply:?}").contains(&new_password), "the new password came back to the client");
 
-    // The saved credential signs in as the created user, and only for the endpoint it was saved for.
-    h.send(&Request::PveTargets { id: 5, connect: connect(port, None, Some(NEW_REF), ca()) });
-    assert!(matches!(h.read_reply(5), Response::PveTargetsResult { ref guests, .. } if guests.len() == 3));
+    // The digest is single use.
+    h.send(&provision(7, port, false, Some(&digest), vec![save(NEW_REF, port, USER)]));
+    assert!(matches!(h.read_reply(7), Response::Error { ref code, .. } if code == "plan_changed"));
+
+    // The saved credential signs in as the created user.
+    h.send(&Request::PveTargets { id: 8, connect: connect(port, None, Some(NEW_REF), ca()) });
+    assert!(matches!(h.read_reply(8), Response::PveTargetsResult { ref guests, .. } if guests.len() == 3));
     assert!(!h.stderr_text().contains(&new_password));
     assert!(!h.stderr_text().contains(ADMIN_PASSWORD));
     h.shutdown();
@@ -287,12 +325,87 @@ fn provisioning_saves_the_new_password_in_the_keychain_and_never_returns_it() {
 }
 
 #[test]
-fn provisioning_needs_a_one_time_password_not_a_saved_credential() {
+fn a_rotation_updates_every_credential_bound_to_that_user_so_an_older_profile_keeps_working() {
+    let w = world(provision_state());
+    let (dir, path) = keychain("rot");
+    let mut h = start(&[("REMOTE_HUB_KEYCHAIN_PATH", path.to_str().unwrap())]);
+    let port = w.fake.port;
+    h.send(&provision(1, port, true, None, vec![]));
+    let d1 = digest_of(h.read_reply(1));
+    h.send(&provision(2, port, false, Some(&d1), vec![save(NEW_REF, port, USER)]));
+    assert!(matches!(h.read_reply(2), Response::PveProvisioned { .. }));
+    let first_password = w.fake.state.lock().unwrap().users.get(USER).cloned().unwrap();
+
+    // A second run on the same server: the user is ours, so its password is replaced, and BOTH credentials get the new one.
+    h.send(&provision(3, port, true, None, vec![]));
+    let plan = h.read_reply(3);
+    assert!(matches!(&plan, Response::PvePlan { user, .. } if user == "rotate_password"), "{plan:?}");
+    let d2 = digest_of(plan);
+    h.send(&provision(4, port, false, Some(&d2), vec![save(NEW_REF, port, USER), save(SECOND_REF, port, USER)]));
+    assert!(matches!(h.read_reply(4), Response::PveProvisioned { .. }));
+    let second_password = w.fake.state.lock().unwrap().users.get(USER).cloned().unwrap();
+    assert_ne!(first_password, second_password);
+    for (n, reference) in [(5u64, NEW_REF), (6, SECOND_REF)] {
+        h.send(&Request::PveTargets { id: n, connect: connect(port, None, Some(reference), ca()) });
+        assert!(matches!(h.read_reply(n), Response::PveTargetsResult { .. }), "the credential {reference} must hold the new password");
+    }
+    h.shutdown();
+    drop(w.rt);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_failure_after_the_user_step_still_leaves_a_working_saved_password_and_the_steps_say_so() {
+    let mut st = provision_state();
+    st.fail_acl_put = true;
+    let w = world(st);
+    let (dir, path) = keychain("partial");
+    let mut h = start(&[("REMOTE_HUB_KEYCHAIN_PATH", path.to_str().unwrap())]);
+    let port = w.fake.port;
+    h.send(&provision(1, port, true, None, vec![]));
+    let digest = digest_of(h.read_reply(1));
+    h.send(&provision(2, port, false, Some(&digest), vec![save(NEW_REF, port, USER)]));
+    match h.read_reply(2) {
+        Response::PveFailed { code, steps: Some(steps), .. } => {
+            assert_eq!(code, "api_error");
+            assert_eq!((steps.role.as_str(), steps.user.as_str(), steps.acl.as_str()), ("done", "done", "failed"));
+        }
+        other => panic!("{other:?}"),
+    }
+    // The password that is active on the server is in the Keychain: the login works (the fake does not model ACLs for reads).
+    h.send(&Request::PveTargets { id: 3, connect: connect(port, None, Some(NEW_REF), ca()) });
+    assert!(matches!(h.read_reply(3), Response::PveTargetsResult { .. }), "the saved password must be the one active on the server");
+    h.shutdown();
+    drop(w.rt);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn provisioning_needs_a_password_for_this_setup_not_a_saved_credential() {
     let mut h = start(&[]);
     let mut c = admin_connect(1);
     c.password = None;
     c.credential_ref = Some(NEW_REF.into());
-    h.send(&Request::PveProvision { id: 1, connect: c, dry_run: true, acl_path: "/".into(), save: None });
+    h.send(&Request::PveProvision { id: 1, connect: c, dry_run: true, acl_path: "/".into(), user_id: USER.into(), replace_role: false, plan_digest: None, save: vec![] });
     assert!(matches!(h.read_reply(1), Response::Error { ref code, .. } if code == "invalid_credential_source"));
     h.shutdown();
+}
+
+#[test]
+fn what_the_server_says_in_an_error_never_reaches_the_client() {
+    let mut st = default_state();
+    st.echo_after_login = true;
+    let w = world(st);
+    let mut h = start(&[]);
+    h.send(&Request::PveTargets { id: 1, connect: connect(w.fake.port, Some(PASSWORD), None, ca()) });
+    match h.read_reply(1) {
+        Response::PveFailed { code, message, .. } => {
+            assert_eq!(code, "api_error");
+            assert_eq!(message, "PVE answered 500");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!h.stderr_text().contains(PASSWORD));
+    h.shutdown();
+    drop(w.rt);
 }

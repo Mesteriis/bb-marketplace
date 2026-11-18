@@ -7,7 +7,7 @@ use std::ffi::CString;
 use std::os::fd::RawFd;
 use std::time::{Duration, Instant};
 
-use super::protocol::{self as proto, GuestInfo, NodeInfo, PveCommand, PveEvent, Take};
+use super::protocol::{self as proto, GuestInfo, NodeInfo, ProvisionSteps, PveCommand, PveEvent, Take, UserExtras};
 use crate::ids::SessionIds;
 use crate::rdp::manager::{lift_fd, parse_status, set_cloexec, set_nonblocking, wait_pid, EngineExit};
 
@@ -36,11 +36,13 @@ pub enum PveFrame {
     State(String),
     Data { seq: u32, bytes: Vec<u8> },
     Targets { version: Option<String>, nodes: Vec<NodeInfo>, guests: Vec<GuestInfo> },
-    Error { code: String, message: String, fingerprint: Option<String> },
+    Error { code: String, message: String, fingerprint: Option<String>, steps: Option<ProvisionSteps> },
     /// The VNC password of a graphical console (only a vnc session may send it).
     VncPassword(crate::secret::Secret),
-    Plan { role: String, user: String, acl: String },
-    Provisioned { role: String, user: String, acl: String, password: Option<crate::secret::Secret> },
+    Plan { role: String, user: String, acl: String, user_id: String, role_privs: Option<String>, extras: UserExtras, digest: String },
+    /// The new password of the managed user, to be saved before the engine writes anything more.
+    NewPassword(crate::secret::Secret),
+    Provisioned { steps: ProvisionSteps },
 }
 
 #[derive(Debug)]
@@ -77,7 +79,7 @@ struct Session {
     job_request: Option<u64>,
     close_request: Option<u64>,
     /// Where the password a provision creates goes: the Keychain reference and what it is bound to.
-    job_save: Option<(String, crate::binding::Bind)>,
+    job_save: Vec<(String, crate::binding::Bind)>,
     /// A graphical (RFB) console: its bytes are an opaque stream and it may announce a VNC password.
     vnc: bool,
 }
@@ -85,6 +87,8 @@ struct Session {
 pub struct PveManager {
     sessions: HashMap<u32, Session>,
     ids: SessionIds,
+    /// Plan digests an apply has already used: each is accepted once.
+    used_digests: std::collections::HashSet<String>,
 }
 
 impl Default for PveManager {
@@ -103,7 +107,7 @@ impl PveManager {
     }
 
     pub fn with_ids(ids: SessionIds) -> Self {
-        PveManager { sessions: HashMap::new(), ids }
+        PveManager { sessions: HashMap::new(), ids, used_digests: std::collections::HashSet::new() }
     }
 
     pub fn contains(&self, id: u32) -> bool {
@@ -242,7 +246,7 @@ impl PveManager {
                 reported_closed: false,
                 job_request,
                 close_request: None,
-                job_save: None,
+                job_save: Vec::new(),
                 vnc: false,
             },
         );
@@ -265,7 +269,22 @@ impl PveManager {
         self.spawn(current_exe, Kind::Targets, open, Some(request_id))
     }
 
-    pub fn open_provision(&mut self, current_exe: &str, open: &PveCommand, request_id: u64, save: Option<(String, crate::binding::Bind)>) -> Result<(u32, libc::pid_t), String> {
+    /// True the first time a digest is presented, false for every later time.
+    pub fn consume_digest(&mut self, digest: &str) -> bool {
+        self.used_digests.insert(digest.to_string())
+    }
+
+    /// Queue one command for a session's engine.
+    pub fn send_command(&mut self, id: u32, cmd: &PveCommand) -> Result<(), EnqueueError> {
+        let s = self.sessions.get_mut(&id).ok_or(EnqueueError::UnknownSession)?;
+        if s.fd < 0 {
+            return Err(EnqueueError::Dead);
+        }
+        s.write_buf.extend(proto::encode_control(cmd));
+        Ok(())
+    }
+
+    pub fn open_provision(&mut self, current_exe: &str, open: &PveCommand, request_id: u64, save: Vec<(String, crate::binding::Bind)>) -> Result<(u32, libc::pid_t), String> {
         let (id, pid) = self.spawn(current_exe, Kind::Provision, open, Some(request_id))?;
         if let Some(s) = self.sessions.get_mut(&id) {
             s.job_save = save;
@@ -273,9 +292,9 @@ impl PveManager {
         Ok((id, pid))
     }
 
-    /// The Keychain target of a provision job, taken once.
-    pub fn take_job_save(&mut self, id: u32) -> Option<(String, crate::binding::Bind)> {
-        self.sessions.get_mut(&id).and_then(|s| s.job_save.take())
+    /// Where the new password of a provision job is saved (every credential bound to that endpoint and user).
+    pub fn job_save(&self, id: u32) -> Vec<(String, crate::binding::Bind)> {
+        self.sessions.get(&id).map(|s| s.job_save.clone()).unwrap_or_default()
     }
 
     pub fn enqueue_input(&mut self, id: u32, bytes: &[u8]) -> Result<(), EnqueueError> {
@@ -414,22 +433,29 @@ impl PveManager {
                             }
                             out.push(PveFrame::VncPassword(password));
                         }
-                        Ok(PveEvent::Plan { role, user, acl }) => {
+                        Ok(PveEvent::Plan { role, user, acl, user_id, role_privs, extras, digest }) => {
                             if s.kind != Kind::Provision || s.job_request.is_none() {
                                 Self::fail_protocol(s);
                                 break;
                             }
-                            out.push(PveFrame::Plan { role, user, acl });
+                            out.push(PveFrame::Plan { role, user, acl, user_id, role_privs, extras, digest });
                         }
-                        Ok(PveEvent::Provisioned { role, user, acl, password }) => {
+                        Ok(PveEvent::NewPassword { password }) => {
                             if s.kind != Kind::Provision || s.job_request.is_none() {
                                 Self::fail_protocol(s);
                                 break;
                             }
-                            out.push(PveFrame::Provisioned { role, user, acl, password });
+                            out.push(PveFrame::NewPassword(password));
                         }
-                        Ok(PveEvent::Error { code, message, fingerprint }) => {
-                            out.push(PveFrame::Error { code, message, fingerprint });
+                        Ok(PveEvent::Provisioned { steps }) => {
+                            if s.kind != Kind::Provision || s.job_request.is_none() {
+                                Self::fail_protocol(s);
+                                break;
+                            }
+                            out.push(PveFrame::Provisioned { steps });
+                        }
+                        Ok(PveEvent::Error { code, message, fingerprint, steps }) => {
+                            out.push(PveFrame::Error { code, message, fingerprint, steps });
                         }
                         Err(_) => {
                             Self::fail_protocol(s);

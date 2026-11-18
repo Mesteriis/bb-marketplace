@@ -62,6 +62,20 @@ pub struct State {
     pub refuse_ws_ticket: bool,
     /// The RFB server hangs up right after its first framebuffer update.
     pub vnc_drop_after_update: bool,
+    /// userid -> (comment, groups, token ids)
+    pub user_meta: HashMap<String, (String, Vec<String>, Vec<String>)>,
+    /// Creating a user is refused (after the role step, in a provisioning run).
+    pub fail_user_create: bool,
+    /// Writing the ACL entry is refused (after the user step).
+    pub fail_acl_put: bool,
+    /// Every answer after the login is a 500 that echoes everything the request carried (form values and headers), as a
+    /// misbehaving server or proxy might; the login itself too.
+    pub echo_secrets: bool,
+    /// The server answers a write only after this many milliseconds (the request has been received and may still be applied).
+    pub stall_acl_ms: u64,
+    pub stall_user_ms: u64,
+    /// After a good login every answer is a 500 echoing the request's form values and headers.
+    pub echo_after_login: bool,
     /// Calls that wrote to /access, in order.
     pub access_writes: Vec<String>,
     pub vnc_tickets: HashMap<String, String>,
@@ -188,7 +202,19 @@ async fn handle(req: Request<Incoming>, state: Arc<Mutex<State>>) -> Result<Resp
         .filter_map(|p| p.split_once('=').map(|(k, v)| (unescape(k), unescape(v))))
         .collect();
     let req = Request::from_parts(parts, ());
-    let _ = &req;
+    let stall = {
+        let st = state.lock().unwrap();
+        if method == Method::PUT && path == "/api2/json/access/acl" {
+            st.stall_acl_ms
+        } else if method == Method::POST && path == "/api2/json/access/users" {
+            st.stall_user_ms
+        } else {
+            0
+        }
+    };
+    if stall > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(stall)).await;
+    }
     Ok(route(&method, &path, &form, &req, state))
 }
 
@@ -199,6 +225,9 @@ fn route(method: &Method, path: &str, form: &HashMap<String, String>, req: &Requ
     let h = |n: &str| req.headers().get(n).and_then(|v| v.to_str().ok()).map(str::to_string);
     if method == Method::POST && path == "/api2/json/access/ticket" {
         st.logins += 1;
+        if st.echo_secrets {
+            return json_resp(500, json!({"data": null, "message": format!("echo form={form:?}")}));
+        }
         let who = form.get("username").cloned().unwrap_or_default();
         if st.users.get(&who).is_some_and(|pw| form.get("password") == Some(pw)) {
             st.counter += 1;
@@ -233,6 +262,10 @@ fn route(method: &Method, path: &str, form: &HashMap<String, String>, req: &Requ
             return json_resp(401, json!({"data": null, "message": "No ticket"}));
         }
     };
+    if st.echo_secrets || st.echo_after_login {
+        let headers: Vec<String> = req.headers().iter().map(|(k, v)| format!("{k}: {}", v.to_str().unwrap_or(""))).collect();
+        return json_resp(500, json!({"data": null, "message": format!("echo form={form:?} headers={headers:?}")}));
+    }
     match (method.as_str(), path) {
         ("GET", "/api2/json/version") => json_resp(200, json!({"data": {"version": "9.0.3", "release": "9.0", "repoid": "fake"}})),
         ("GET", "/api2/json/nodes") => json_resp(200, json!({"data": st.nodes.iter().map(|(n, s)| json!({"node": n, "status": s})).collect::<Vec<_>>()})),
@@ -259,9 +292,13 @@ fn route(method: &Method, path: &str, form: &HashMap<String, String>, req: &Requ
         ("GET", "/api2/json/access/roles") => {
             json_resp(200, json!({"data": st.roles.iter().map(|(r, p)| json!({"roleid": r, "privs": p})).collect::<Vec<_>>()}))
         }
-        ("GET", "/api2/json/access/users") => {
-            json_resp(200, json!({"data": st.users.keys().map(|u| json!({"userid": u, "enable": 1})).collect::<Vec<_>>()}))
-        }
+        ("GET", "/api2/json/access/users") => json_resp(
+            200,
+            json!({"data": st.users.keys().map(|u| {
+                let (comment, groups, tokens) = st.user_meta.get(u).cloned().unwrap_or_default();
+                json!({"userid": u, "enable": 1, "comment": comment, "groups": groups.join(","), "tokens": tokens.iter().map(|t| json!({"tokenid": t})).collect::<Vec<_>>()})
+            }).collect::<Vec<_>>()}),
+        ),
         ("GET", "/api2/json/access/acl") => json_resp(
             200,
             json!({"data": st.acl.iter().map(|(p, r, u)| json!({"path": p, "type": "user", "ugid": u, "roleid": r, "propagate": 1})).collect::<Vec<_>>()}),
@@ -298,9 +335,13 @@ fn route(method: &Method, path: &str, form: &HashMap<String, String>, req: &Requ
                     if st.users.contains_key(&get("userid")) {
                         return json_resp(500, json!({"data": null, "message": "user already exists"}));
                     }
+                    if st.fail_user_create {
+                        return json_resp(500, json!({"data": null, "message": "cannot create user (realm disabled)"}));
+                    }
                     if get("password").len() < 8 {
                         return json_resp(400, json!({"data": null, "message": "password: value must be at least 8 characters long"}));
                     }
+                    st.user_meta.insert(get("userid"), (get("comment"), vec![], vec![]));
                     st.users.insert(get("userid"), get("password"));
                     json_resp(200, json!({"data": null}))
                 }
@@ -312,6 +353,9 @@ fn route(method: &Method, path: &str, form: &HashMap<String, String>, req: &Requ
                     json_resp(200, json!({"data": null}))
                 }
                 ("PUT", "/api2/json/access/acl") => {
+                    if st.fail_acl_put {
+                        return json_resp(500, json!({"data": null, "message": "cannot write the ACL"}));
+                    }
                     st.acl.push((get("path"), get("roles"), get("users")));
                     json_resp(200, json!({"data": null}))
                 }

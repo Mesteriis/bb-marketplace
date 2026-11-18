@@ -115,7 +115,18 @@ pub enum PveOp {
     Terminal { target: ConsoleTarget, cols: u16, rows: u16 },
     /// Onboarding mode 1: create (or reconcile) the restricted role, user and ACL entry. `dry_run` only reads and
     /// reports what would be done.
-    Provision { dry_run: bool, acl_path: String },
+    Provision {
+        dry_run: bool,
+        acl_path: String,
+        /// The user to create or reuse: `name@pve`, validated by the helper.
+        user_id: String,
+        /// Replace the privileges of an existing, differing `RemoteHubConsole` role (an explicit, separate confirmation).
+        #[serde(default)]
+        replace_role: bool,
+        /// What the owner confirmed: the digest of the server state a plan was computed from. An apply needs one.
+        #[serde(default)]
+        plan_digest: Option<String>,
+    },
 }
 
 /// The role, user and privileges Remote Hub creates. Fixed: the owner is shown exactly these.
@@ -123,12 +134,51 @@ pub const PROVISION_ROLE: &str = "RemoteHubConsole";
 pub const PROVISION_USER: &str = "remotehub@pve";
 /// As `GET /access/roles` returns them: sorted, comma-joined.
 pub const PROVISION_PRIVS: &str = "Sys.Audit,Sys.Console,VM.Audit,VM.Console";
+/// The comment a created user carries: the only proof that Remote Hub made it (a name alone proves nothing).
+pub const PROVISION_COMMENT: &str = "Managed by BB Remote Hub";
 
-/// What provisioning does (or did) with one object.
+/// What provisioning would do with one object. A role that exists with other privileges is `differs` (refused unless the
+/// owner separately confirms replacing it); a user that exists without our marker is `name_taken` (nothing is written).
 pub const ACTION_CREATE: &str = "create";
 pub const ACTION_KEEP: &str = "keep";
-pub const ACTION_UPDATE: &str = "update";
+pub const ACTION_DIFFERS: &str = "differs";
 pub const ACTION_ROTATE: &str = "rotate_password";
+pub const ACTION_NAME_TAKEN: &str = "name_taken";
+
+/// The outcome of one step of an apply.
+pub const STEP_DONE: &str = "done";
+pub const STEP_KEPT: &str = "kept";
+pub const STEP_FAILED: &str = "failed";
+pub const STEP_NOT_ATTEMPTED: &str = "not_attempted";
+/// A write was sent and no answer came: it may or may not have happened.
+pub const STEP_UNKNOWN: &str = "unknown";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProvisionSteps {
+    pub role: String,
+    pub user: String,
+    pub acl: String,
+}
+
+impl ProvisionSteps {
+    pub fn untouched() -> Self {
+        ProvisionSteps { role: STEP_NOT_ATTEMPTED.into(), user: STEP_NOT_ATTEMPTED.into(), acl: STEP_NOT_ATTEMPTED.into() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AclGrant {
+    pub path: String,
+    pub role: String,
+}
+
+/// What an existing user holds beyond what Remote Hub would give it: shown in the plan, never removed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserExtras {
+    pub acl: Vec<AclGrant>,
+    pub groups: Vec<String>,
+    pub tokens: Vec<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -144,6 +194,8 @@ pub enum PveCommand {
         keepalive_secs: Option<u64>,
     },
     Resize { cols: u16, rows: u16 },
+    /// Whether the helper saved the new password (the engine writes nothing more until it knows).
+    SaveAck { ok: bool },
     Close,
 }
 
@@ -177,14 +229,28 @@ pub enum PveEvent {
         message: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fingerprint: Option<String>,
+        /// For a provisioning failure: what happened to each step.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steps: Option<ProvisionSteps>,
     },
     /// The short-lived VNC password of a graphical console. It goes to the one page that views that session, nowhere else.
     VncPassword { password: Secret },
-    /// The answer to a dry-run provision: what would happen to each object (`create`, `keep`, `update`, `rotate_password`).
-    Plan { role: String, user: String, acl: String },
-    /// A provision that was applied. `password` is the new password of the created user, for the helper to put in
-    /// the Keychain; it is never forwarded to the client.
-    Provisioned { role: String, user: String, acl: String, password: Option<Secret> },
+    /// The answer to a dry-run provision: what would happen to each object, what an existing user already holds, and the
+    /// digest of the server state this was computed from (an apply must present it).
+    Plan {
+        role: String,
+        user: String,
+        acl: String,
+        user_id: String,
+        role_privs: Option<String>,
+        extras: UserExtras,
+        digest: String,
+    },
+    /// The new password of the created or rotated user, sent the moment that step succeeded so the helper can put it in the
+    /// Keychain before anything else is written (and answers `SaveAck`). It is never forwarded to the client.
+    NewPassword { password: Secret },
+    /// A provision that was applied, step by step.
+    Provisioned { steps: ProvisionSteps },
     Closed { reason: String },
 }
 

@@ -310,7 +310,8 @@ async fn an_unknown_node_or_guest_is_an_api_error_with_the_servers_words() {
         match &events[0] {
             PveEvent::Error { code, message, .. } => {
                 assert_eq!(code, "api_error");
-                assert!(message.contains(needle), "{message}");
+                // Only the status: what the server said is never passed on.
+                assert_eq!(message, "PVE answered 500", "{needle}");
             }
             other => panic!("{other:?}"),
         }
@@ -405,103 +406,379 @@ async fn the_password_never_appears_in_any_event() {
 
 // ---- onboarding mode 1: provisioning ----
 
+const OUR_USER: &str = "remotehub@pve";
+
 fn admin_auth() -> PveAuth {
     PveAuth::Ticket { username: ADMIN.into(), password: Secret::new(ADMIN_PASSWORD) }
 }
 
-async fn provision(fake: &Fake, auth: PveAuth, dry_run: bool, acl_path: &str) -> Vec<PveEvent> {
-    let op = PveOp::Provision { dry_run, acl_path: acl_path.to_string() };
+#[derive(Clone)]
+struct Prov {
+    dry_run: bool,
+    acl_path: String,
+    user_id: String,
+    replace_role: bool,
+    digest: Option<String>,
+    save_ok: bool,
+}
+
+fn dry() -> Prov {
+    Prov { dry_run: true, acl_path: "/".into(), user_id: OUR_USER.into(), replace_role: false, digest: None, save_ok: true }
+}
+
+fn apply(digest: &str) -> Prov {
+    Prov { dry_run: false, digest: Some(digest.to_string()), ..dry() }
+}
+
+struct Run {
+    events: Vec<PveEvent>,
+    password: Option<String>,
+    acl_written_when_password_arrived: Option<bool>,
+}
+
+/// Plays the helper: runs one provisioning job and answers the engine's "save the new password" request.
+async fn run_job(fake: &Fake, auth: PveAuth, p: Prov) -> Run {
+    let op = PveOp::Provision { dry_run: p.dry_run, acl_path: p.acl_path.clone(), user_id: p.user_id.clone(), replace_role: p.replace_role, plan_digest: p.digest.clone() };
     let mut d = start_engine(&open(fake.port, auth, ca_trust(), op)).await;
-    let (events, _) = d.all().await;
-    d.engine.await.unwrap();
-    events
-}
-
-fn plan(role: &str, user: &str, acl: &str) -> PveEvent {
-    PveEvent::Plan { role: role.into(), user: user.into(), acl: acl.into() }
-}
-
-#[tokio::test]
-async fn a_dry_run_reports_the_plan_and_writes_nothing() {
-    let fake = start_fake(provision_state()).await;
-    let events = provision(&fake, admin_auth(), true, "/").await;
-    assert_eq!(events, vec![plan("create", "create", "create")]);
-    let st = fake.state.lock().unwrap();
-    assert!(st.access_writes.is_empty(), "{:?}", st.access_writes);
-    assert!(!st.users.contains_key(USER));
-}
-
-#[tokio::test]
-async fn applying_creates_the_role_the_user_and_the_acl_entry_and_the_new_password_logs_in() {
-    let fake = start_fake(provision_state()).await;
-    let events = provision(&fake, admin_auth(), false, "/").await;
-    let [PveEvent::Provisioned { role, user, acl, password: Some(password) }] = &events[..] else { panic!("{events:?}") };
-    assert_eq!((role.as_str(), user.as_str(), acl.as_str()), ("create", "create", "create"));
-    assert_eq!(password.expose().len(), 32);
-    {
-        let st = fake.state.lock().unwrap();
-        assert_eq!(st.access_writes, vec!["POST /api2/json/access/roles", "POST /api2/json/access/users", "PUT /api2/json/access/acl"]);
-        assert!(st.roles.contains(&("RemoteHubConsole".to_string(), "Sys.Audit,Sys.Console,VM.Audit,VM.Console".to_string())));
-        assert_eq!(st.acl, vec![("/".to_string(), "RemoteHubConsole".to_string(), "remotehub@pve".to_string())]);
-        assert_eq!(st.users.get(USER), Some(&password.expose().to_string()));
+    let mut run = Run { events: vec![], password: None, acl_written_when_password_arrived: None };
+    loop {
+        match d.next().await {
+            Got::Eof => break,
+            Got::Event(PveEvent::State { .. }) | Got::Data(_) => {}
+            Got::Event(PveEvent::NewPassword { password }) => {
+                run.acl_written_when_password_arrived = Some(fake.state.lock().unwrap().access_writes.iter().any(|w| w.contains("/acl")));
+                run.password = Some(password.expose().to_string());
+                d.send(&PveCommand::SaveAck { ok: p.save_ok }).await;
+            }
+            Got::Event(e) => run.events.push(e),
+        }
     }
-    // The created user can sign in and discover.
-    let auth = PveAuth::Ticket { username: USER.into(), password: Secret::new(password.expose()) };
+    d.engine.await.unwrap();
+    run
+}
+
+fn digest_of(run: &Run) -> String {
+    match &run.events[..] {
+        [PveEvent::Plan { digest, .. }] => digest.clone(),
+        other => panic!("not a plan: {other:?}"),
+    }
+}
+
+fn steps(role: &str, user: &str, acl: &str) -> ProvisionSteps {
+    ProvisionSteps { role: role.into(), user: user.into(), acl: acl.into() }
+}
+
+fn error_code(run: &Run) -> (String, Option<ProvisionSteps>) {
+    match &run.events[..] {
+        [PveEvent::Error { code, steps, .. }] => (code.clone(), steps.clone()),
+        other => panic!("expected one error, got {other:?}"),
+    }
+}
+
+fn writes(fake: &Fake) -> Vec<String> {
+    fake.state.lock().unwrap().access_writes.clone()
+}
+
+#[tokio::test]
+async fn a_dry_run_reports_the_plan_with_its_digest_and_writes_nothing() {
+    let fake = start_fake(provision_state()).await;
+    let run = run_job(&fake, admin_auth(), dry()).await;
+    let [PveEvent::Plan { role, user, acl, user_id, role_privs, extras, digest }] = &run.events[..] else { panic!("{:?}", run.events) };
+    assert_eq!((role.as_str(), user.as_str(), acl.as_str(), user_id.as_str()), ("create", "create", "create", OUR_USER));
+    assert_eq!(role_privs, &None);
+    assert_eq!(extras, &UserExtras::default());
+    assert_eq!(digest.len(), 64);
+    assert!(writes(&fake).is_empty());
+    // The same state and the same context give the same digest.
+    assert_eq!(&digest_of(&run_job(&fake, admin_auth(), dry()).await), digest);
+}
+
+#[tokio::test]
+async fn an_apply_without_the_confirmed_plan_is_refused_before_any_write() {
+    let fake = start_fake(provision_state()).await;
+    let run = run_job(&fake, admin_auth(), Prov { dry_run: false, ..dry() }).await;
+    assert_eq!(error_code(&run), ("plan_required".to_string(), Some(steps("not_attempted", "not_attempted", "not_attempted"))));
+    assert!(writes(&fake).is_empty());
+}
+
+#[tokio::test]
+async fn applying_the_confirmed_plan_creates_a_marked_user_and_the_password_is_saved_before_the_acl_write() {
+    let fake = start_fake(provision_state()).await;
+    let digest = digest_of(&run_job(&fake, admin_auth(), dry()).await);
+    let run = run_job(&fake, admin_auth(), apply(&digest)).await;
+    assert_eq!(run.events, vec![PveEvent::Provisioned { steps: steps("done", "done", "done") }]);
+    let password = run.password.clone().expect("a new password was announced");
+    assert_eq!(password.len(), 32);
+    assert_eq!(run.acl_written_when_password_arrived, Some(false), "the password must reach the helper before the ACL write");
+    let st = fake.state.lock().unwrap();
+    assert_eq!(st.access_writes, vec!["POST /api2/json/access/roles", "POST /api2/json/access/users", "PUT /api2/json/access/acl"]);
+    assert_eq!(st.user_meta.get(OUR_USER).map(|m| m.0.as_str()), Some("Managed by BB Remote Hub"));
+    assert!(st.roles.contains(&("RemoteHubConsole".to_string(), "Sys.Audit,Sys.Console,VM.Audit,VM.Console".to_string())));
+    assert_eq!(st.acl, vec![("/".to_string(), "RemoteHubConsole".to_string(), OUR_USER.to_string())]);
+    assert_eq!(st.users.get(OUR_USER), Some(&password));
+}
+
+#[tokio::test]
+async fn the_created_user_can_sign_in_and_discover() {
+    let fake = start_fake(provision_state()).await;
+    let digest = digest_of(&run_job(&fake, admin_auth(), dry()).await);
+    let run = run_job(&fake, admin_auth(), apply(&digest)).await;
+    let auth = PveAuth::Ticket { username: OUR_USER.into(), password: Secret::new(run.password.unwrap()) };
     let found = targets(&fake, auth, ca_trust()).await;
     assert!(matches!(&found[..], [PveEvent::Targets { guests, .. }] if guests.len() == 3), "{found:?}");
 }
 
 #[tokio::test]
-async fn applying_twice_duplicates_nothing_and_only_rotates_the_password() {
+async fn a_server_that_changed_after_the_plan_was_shown_is_refused_before_the_first_write() {
+    // A user appears (another machine ran the setup) between the review and the apply.
     let fake = start_fake(provision_state()).await;
-    let first = provision(&fake, admin_auth(), false, "/").await;
-    let second_plan = provision(&fake, admin_auth(), true, "/").await;
-    assert_eq!(second_plan, vec![plan("keep", "rotate_password", "keep")]);
-    fake.state.lock().unwrap().access_writes.clear();
-    let second = provision(&fake, admin_auth(), false, "/").await;
-    let (PveEvent::Provisioned { password: Some(p1), .. }, PveEvent::Provisioned { password: Some(p2), .. }) = (&first[0], &second[0]) else { panic!() };
-    assert_ne!(p1.expose(), p2.expose());
-    let st = fake.state.lock().unwrap();
-    assert_eq!(st.access_writes, vec!["PUT /api2/json/access/password"]);
-    assert_eq!(st.roles.iter().filter(|(r, _)| r == "RemoteHubConsole").count(), 1);
-    assert_eq!(st.acl.len(), 1);
-    assert_eq!(st.users.get(USER), Some(&p2.expose().to_string()));
+    let digest = digest_of(&run_job(&fake, admin_auth(), dry()).await);
+    {
+        let mut st = fake.state.lock().unwrap();
+        st.users.insert(OUR_USER.into(), "Someone-Else-1".into());
+        st.user_meta.insert(OUR_USER.into(), ("Managed by BB Remote Hub".into(), vec![], vec![]));
+    }
+    let run = run_job(&fake, admin_auth(), apply(&digest)).await;
+    assert_eq!(error_code(&run), ("plan_changed".to_string(), Some(steps("not_attempted", "not_attempted", "not_attempted"))));
+    assert!(writes(&fake).is_empty());
+    assert_eq!(fake.state.lock().unwrap().users.get(OUR_USER), Some(&"Someone-Else-1".to_string()), "the other machine's password must survive");
+
+    // A role that appeared in the meantime is drift too.
+    let fake = start_fake(provision_state()).await;
+    let digest = digest_of(&run_job(&fake, admin_auth(), dry()).await);
+    fake.state.lock().unwrap().roles.push(("RemoteHubConsole".into(), "VM.Audit".into()));
+    assert_eq!(error_code(&run_job(&fake, admin_auth(), apply(&digest)).await).0, "plan_changed");
+    assert!(writes(&fake).is_empty());
 }
 
 #[tokio::test]
-async fn a_role_with_other_privileges_is_updated_to_the_fixed_set() {
+async fn an_acl_entry_added_after_the_plan_is_drift_too() {
+    let fake = start_fake(provision_state()).await;
+    let digest = digest_of(&run_job(&fake, admin_auth(), dry()).await);
+    fake.state.lock().unwrap().acl.push(("/".into(), "PVEAuditor".into(), "someone@pve".into()));
+    assert_eq!(error_code(&run_job(&fake, admin_auth(), apply(&digest)).await).0, "plan_changed");
+}
+
+#[tokio::test]
+async fn a_user_that_is_not_ours_is_name_taken_and_nothing_is_written() {
+    // default_state has remotehub@pve without the marker: an unrelated account with our name.
+    let fake = start_fake(default_state()).await;
+    let run = run_job(&fake, admin_auth(), dry()).await;
+    let [PveEvent::Plan { user, digest, .. }] = &run.events[..] else { panic!("{:?}", run.events) };
+    assert_eq!(user, "name_taken");
+    let digest = digest.clone();
+    let applied = run_job(&fake, admin_auth(), apply(&digest)).await;
+    assert_eq!(error_code(&applied).0, "name_taken");
+    assert!(writes(&fake).is_empty());
+    assert_eq!(fake.state.lock().unwrap().users.get(OUR_USER), Some(&PASSWORD.to_string()), "the unrelated account keeps its password");
+}
+
+#[tokio::test]
+async fn another_user_name_can_be_chosen_and_must_be_in_the_pve_realm() {
+    let fake = start_fake(default_state()).await;
+    let mut p = dry();
+    p.user_id = "rh-lab@pve".into();
+    let digest = digest_of(&run_job(&fake, admin_auth(), p.clone()).await);
+    let mut a = apply(&digest);
+    a.user_id = "rh-lab@pve".into();
+    let run = run_job(&fake, admin_auth(), a).await;
+    assert_eq!(run.events, vec![PveEvent::Provisioned { steps: steps("done", "done", "done") }]);
+    assert!(fake.state.lock().unwrap().users.contains_key("rh-lab@pve"));
+    for bad in ["root@pam", "x", "a b@pve", "@pve"] {
+        let mut p = dry();
+        p.user_id = bad.into();
+        assert_eq!(error_code(&run_job(&fake, admin_auth(), p).await).0, "invalid_request", "{bad}");
+    }
+}
+
+#[tokio::test]
+async fn a_differing_role_is_refused_until_replacing_it_is_confirmed_separately() {
     let mut st = provision_state();
     st.roles.push(("RemoteHubConsole".into(), "VM.Audit".into()));
     let fake = start_fake(st).await;
-    assert_eq!(provision(&fake, admin_auth(), true, "/").await, vec![plan("update", "create", "create")]);
-    provision(&fake, admin_auth(), false, "/").await;
-    let st = fake.state.lock().unwrap();
-    assert_eq!(st.access_writes[0], "PUT /api2/json/access/roles/RemoteHubConsole");
-    assert!(st.roles.contains(&("RemoteHubConsole".to_string(), "Sys.Audit,Sys.Console,VM.Audit,VM.Console".to_string())));
+    let run = run_job(&fake, admin_auth(), dry()).await;
+    let [PveEvent::Plan { role, role_privs, digest, .. }] = &run.events[..] else { panic!() };
+    assert_eq!((role.as_str(), role_privs.as_deref()), ("differs", Some("VM.Audit")));
+    let digest = digest.clone();
+    assert_eq!(error_code(&run_job(&fake, admin_auth(), apply(&digest)).await).0, "role_differs");
+    assert!(writes(&fake).is_empty());
+    let mut a = apply(&digest);
+    a.replace_role = true;
+    let run = run_job(&fake, admin_auth(), a).await;
+    assert_eq!(run.events, vec![PveEvent::Provisioned { steps: steps("done", "done", "done") }]);
+    assert_eq!(writes(&fake)[0], "PUT /api2/json/access/roles/RemoteHubConsole");
 }
 
 #[tokio::test]
-async fn a_pool_acl_path_is_used_when_given() {
+async fn a_managed_user_is_rotated_and_what_it_already_holds_is_shown_and_kept() {
     let fake = start_fake(provision_state()).await;
-    provision(&fake, admin_auth(), false, "/pool/lab").await;
-    assert_eq!(fake.state.lock().unwrap().acl[0].0, "/pool/lab");
+    let first = run_job(&fake, admin_auth(), apply(&digest_of(&run_job(&fake, admin_auth(), dry()).await))).await;
+    {
+        let mut st = fake.state.lock().unwrap();
+        st.acl.push(("/".into(), "PVEAdmin".into(), OUR_USER.into()));
+        st.acl.push(("/vms/100".into(), "PVEVMUser".into(), OUR_USER.into()));
+        st.user_meta.insert(OUR_USER.into(), ("Managed by BB Remote Hub".into(), vec!["admins".into()], vec!["ci".into()]));
+        st.access_writes.clear();
+    }
+    let plan = run_job(&fake, admin_auth(), dry()).await;
+    let [PveEvent::Plan { role, user, acl, extras, digest, .. }] = &plan.events[..] else { panic!() };
+    assert_eq!((role.as_str(), user.as_str(), acl.as_str()), ("keep", "rotate_password", "keep"));
+    assert_eq!(extras.groups, vec!["admins"]);
+    assert_eq!(extras.tokens, vec!["ci"]);
+    assert_eq!(extras.acl, vec![AclGrant { path: "/".into(), role: "PVEAdmin".into() }, AclGrant { path: "/vms/100".into(), role: "PVEVMUser".into() }]);
+    let digest = digest.clone();
+    let second = run_job(&fake, admin_auth(), apply(&digest)).await;
+    assert_eq!(second.events, vec![PveEvent::Provisioned { steps: steps("kept", "done", "kept") }]);
+    assert_ne!(first.password, second.password);
+    let st = fake.state.lock().unwrap();
+    assert_eq!(st.access_writes, vec!["PUT /api2/json/access/password"]);
+    assert_eq!(st.acl.len(), 3, "the user's other grants are never removed");
+    assert_eq!(st.users.get(OUR_USER), second.password.as_ref());
+}
+
+#[tokio::test]
+async fn a_digest_is_bound_to_the_admin_and_to_the_endpoint_context() {
+    let fake = start_fake(provision_state()).await;
+    let as_admin = digest_of(&run_job(&fake, admin_auth(), dry()).await);
+    fake.state.lock().unwrap().users.insert("other-admin@pam".into(), "Other-PW-1234".into());
+    let other = PveAuth::Ticket { username: "other-admin@pam".into(), password: Secret::new("Other-PW-1234") };
+    let other_digest = digest_of(&run_job(&fake, other, dry()).await);
+    assert_ne!(as_admin, other_digest);
+}
+
+#[tokio::test]
+async fn when_user_creation_fails_after_the_role_step_the_steps_say_what_exists() {
+    let mut st = provision_state();
+    st.fail_user_create = true;
+    let fake = start_fake(st).await;
+    let digest = digest_of(&run_job(&fake, admin_auth(), dry()).await);
+    let run = run_job(&fake, admin_auth(), apply(&digest)).await;
+    assert_eq!(error_code(&run), ("api_error".to_string(), Some(steps("done", "failed", "not_attempted"))));
+    assert!(run.password.is_none(), "no password exists when the user was not created");
+    let st = fake.state.lock().unwrap();
+    assert!(st.roles.iter().any(|(r, _)| r == "RemoteHubConsole"), "the role was created and stays");
+    assert!(!st.users.contains_key(OUR_USER));
+}
+
+#[tokio::test]
+async fn when_the_acl_fails_after_the_user_step_the_password_was_already_handed_over() {
+    let mut st = provision_state();
+    st.fail_acl_put = true;
+    let fake = start_fake(st).await;
+    let digest = digest_of(&run_job(&fake, admin_auth(), dry()).await);
+    let run = run_job(&fake, admin_auth(), apply(&digest)).await;
+    assert_eq!(error_code(&run), ("api_error".to_string(), Some(steps("done", "done", "failed"))));
+    let password = run.password.clone().expect("the password was announced before the ACL write");
+    assert_eq!(fake.state.lock().unwrap().users.get(OUR_USER), Some(&password), "the password announced is the one active on the server");
+}
+
+#[tokio::test]
+async fn a_failed_keychain_save_stops_before_the_acl_write() {
+    let fake = start_fake(provision_state()).await;
+    let digest = digest_of(&run_job(&fake, admin_auth(), dry()).await);
+    let mut p = apply(&digest);
+    p.save_ok = false;
+    let run = run_job(&fake, admin_auth(), p).await;
+    assert_eq!(error_code(&run), ("credential_save_failed".to_string(), Some(steps("done", "done", "not_attempted"))));
+    assert!(!writes(&fake).iter().any(|w| w.contains("/acl")));
 }
 
 #[tokio::test]
 async fn an_account_without_admin_rights_changes_nothing() {
-    let fake = start_fake(default_state()).await;
-    let events = provision(&fake, ticket_auth(), false, "/").await;
-    assert_eq!(error_of(&events).0, "no_permission");
-    assert!(fake.state.lock().unwrap().access_writes.is_empty());
+    let mut st = provision_state();
+    st.users.insert("plain@pve".into(), "Plain-PW-1234".into());
+    let fake = start_fake(st).await;
+    let plain = PveAuth::Ticket { username: "plain@pve".into(), password: Secret::new("Plain-PW-1234") };
+    let digest = digest_of(&run_job(&fake, plain.clone(), dry()).await);
+    let run = run_job(&fake, plain, apply(&digest)).await;
+    assert_eq!(error_code(&run), ("no_permission".to_string(), Some(steps("failed", "not_attempted", "not_attempted"))));
+    assert!(writes(&fake).is_empty());
 }
 
 #[tokio::test]
-async fn a_wrong_admin_password_or_a_bad_acl_path_never_writes() {
+async fn a_wrong_admin_password_or_a_bad_acl_path_or_user_never_writes() {
     let fake = start_fake(provision_state()).await;
     let bad = PveAuth::Ticket { username: ADMIN.into(), password: Secret::new("nope-nope-1") };
-    assert_eq!(error_of(&provision(&fake, bad, false, "/").await).0, "login_failed");
-    assert_eq!(error_of(&provision(&fake, admin_auth(), false, "/vms/100").await).0, "invalid_request");
-    let st = fake.state.lock().unwrap();
-    assert!(st.access_writes.is_empty());
-    assert_eq!(st.logins, 1, "an invalid path must be refused before any login");
+    assert_eq!(error_code(&run_job(&fake, bad, dry()).await).0, "login_failed");
+    let mut p = dry();
+    p.acl_path = "/vms/100".into();
+    assert_eq!(error_code(&run_job(&fake, admin_auth(), p).await).0, "invalid_request");
+    assert!(writes(&fake).is_empty());
+    assert_eq!(fake.state.lock().unwrap().logins, 1, "an invalid path must be refused before any login");
+}
+
+#[tokio::test]
+async fn cutting_a_provision_off_while_a_write_is_in_flight_reports_it_unknown_and_writes_nothing_more() {
+    let mut st = provision_state();
+    st.stall_acl_ms = 1500;
+    let fake = start_fake(st).await;
+    let digest = digest_of(&run_job(&fake, admin_auth(), dry()).await);
+    let op = PveOp::Provision { dry_run: false, acl_path: "/".into(), user_id: OUR_USER.into(), replace_role: false, plan_digest: Some(digest) };
+    let mut d = start_engine(&open(fake.port, admin_auth(), ca_trust(), op)).await;
+    let mut seen = vec![];
+    loop {
+        match d.next().await {
+            Got::Event(PveEvent::NewPassword { .. }) => {
+                d.send(&PveCommand::SaveAck { ok: true }).await;
+                tokio::time::sleep(Duration::from_millis(300)).await; // the ACL write is now in flight, stalled by the server
+                d.send(&PveCommand::Close).await;
+            }
+            Got::Event(PveEvent::State { .. }) | Got::Data(_) => {}
+            Got::Event(e) => seen.push(e),
+            Got::Eof => break,
+        }
+    }
+    assert!(matches!(&seen[..], [PveEvent::Error { code, steps: Some(s), .. }] if code == "cancelled" && s == &steps("done", "done", "unknown")), "{seen:?}");
+}
+
+#[tokio::test]
+async fn losing_the_helper_cancels_the_job_at_once_and_no_later_step_is_written() {
+    let mut st = provision_state();
+    st.stall_user_ms = 1500;
+    let fake = start_fake(st).await;
+    let digest = digest_of(&run_job(&fake, admin_auth(), dry()).await);
+    let op = PveOp::Provision { dry_run: false, acl_path: "/".into(), user_id: OUR_USER.into(), replace_role: false, plan_digest: Some(digest) };
+    let Drive { wr, rd, engine } = start_engine(&open(fake.port, admin_auth(), ca_trust(), op)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await; // the user write is in flight, stalled by the server
+    drop(wr);
+    drop(rd);
+    let started = std::time::Instant::now();
+    let code = tokio::time::timeout(Duration::from_secs(5), engine).await.expect("the engine outlived the helper").unwrap();
+    assert_eq!(code, 3);
+    assert!(started.elapsed() < Duration::from_secs(1), "cancellation must not wait for the 60 s deadline");
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    assert!(!writes(&fake).iter().any(|w| w.contains("/acl")), "no step after the cut may be written: {:?}", writes(&fake));
+}
+
+#[tokio::test]
+async fn an_endpoint_that_echoes_what_it_was_sent_never_gets_it_back_to_the_client() {
+    // Sentinels: the admin and user passwords, an API token secret, and what a ticket session carries.
+    let mut st = default_state();
+    st.echo_secrets = true;
+    let fake = start_fake(st).await;
+    let mut all = String::new();
+    // Discovery by ticket (the login itself answers 500 with an echo), and by token (the echo carries the header).
+    all.push_str(&format!("{:?}", targets(&fake, ticket_auth(), ca_trust()).await));
+    let token = PveAuth::Token { token_id: TOKEN_ID.into(), secret: Secret::new(TOKEN_SECRET) };
+    all.push_str(&format!("{:?}", targets(&fake, token, ca_trust()).await));
+    all.push_str(&format!("{:?}", run_job(&fake, admin_auth(), dry()).await.events));
+    for sentinel in [PASSWORD, ADMIN_PASSWORD, TOKEN_SECRET, "CSRF-FAKE", "PVEAuthCookie", "PVEAPIToken"] {
+        assert!(!all.contains(sentinel), "{sentinel} came back in {all}");
+    }
+    assert!(all.contains("PVE answered 500"), "{all}");
+}
+
+#[tokio::test]
+async fn an_echoing_answer_after_a_good_login_carries_no_ticket_or_csrf_token() {
+    let mut st = default_state();
+    st.echo_after_login = true;
+    let fake = start_fake(st).await;
+    let events = targets(&fake, ticket_auth(), ca_trust()).await;
+    let text = format!("{events:?}");
+    for sentinel in ["CSRF-FAKE", "PVEAuthCookie", "PVE%3A", "fake+sig", PASSWORD] {
+        assert!(!text.contains(sentinel), "{sentinel} in {text}");
+    }
+    assert_eq!(error_of(&events).0, "api_error");
+    assert!(text.contains("PVE answered 500"));
+    drop(fake);
 }

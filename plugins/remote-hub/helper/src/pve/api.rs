@@ -37,7 +37,7 @@ pub enum ApiError {
     /// 403.
     NoPermission(String),
     /// Any other status, with the server's message.
-    Http { status: u16, message: String },
+    Http { status: u16 },
     /// An answer that is not what the API documents.
     Protocol(String),
     /// The request itself is not acceptable (a bad node name, a bad host).
@@ -68,7 +68,8 @@ impl ApiError {
             ApiError::LoginFailed => "the PVE login was refused".to_string(),
             ApiError::TfaRequired => "this account needs a second factor, which Remote Hub does not support".to_string(),
             ApiError::NoPermission(m) => format!("the account lacks a privilege: {m}"),
-            ApiError::Http { status, message } => format!("PVE answered {status}: {message}"),
+            // Never the server's own words: an endpoint (or a proxy) in between may echo what it was sent.
+            ApiError::Http { status } => format!("PVE answered {status}"),
             ApiError::Protocol(m) => format!("unexpected PVE answer: {m}"),
             ApiError::Invalid(m) => (*m).to_string(),
         }
@@ -210,7 +211,7 @@ impl Client {
         let tls = self.connect_tls(self.endpoint.port).await?;
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
             .await
-            .map_err(|e| ApiError::Unreachable(format!("http: {e}")))?;
+            .map_err(|_| ApiError::Unreachable("the HTTP exchange failed".to_string()))?;
         let conn_task = tokio::spawn(conn);
         let mut builder = hyper::Request::builder()
             .method(method)
@@ -230,7 +231,7 @@ impl Client {
             None => Full::new(Bytes::new()),
         };
         let req = builder.body(body).map_err(|_| ApiError::Invalid("the request is not valid"))?;
-        let resp = sender.send_request(req).await.map_err(|e| ApiError::Unreachable(format!("http: {e}")))?;
+        let resp = sender.send_request(req).await.map_err(|_| ApiError::Unreachable("the HTTP exchange failed".to_string()))?;
         let status = resp.status().as_u16();
         let bytes = Limited::new(resp.into_body(), MAX_RESPONSE)
             .collect()
@@ -239,22 +240,14 @@ impl Client {
             .to_bytes();
         conn_task.abort();
         let json: Option<Value> = serde_json::from_slice(&bytes).ok();
-        let server_message = || {
-            let m = json
-                .as_ref()
-                .and_then(|j| j.get("message").and_then(Value::as_str))
-                .map(str::to_string)
-                .unwrap_or_else(|| String::from_utf8_lossy(&bytes[..bytes.len().min(200)]).to_string());
-            m.chars().filter(|c| !c.is_control()).take(200).collect::<String>()
-        };
         match status {
             200 => {
                 let json = json.ok_or_else(|| ApiError::Protocol("the answer is not JSON".to_string()))?;
                 json.get("data").cloned().ok_or_else(|| ApiError::Protocol("the answer has no data member".to_string()))
             }
             401 => Err(ApiError::LoginFailed),
-            403 => Err(ApiError::NoPermission(server_message())),
-            _ => Err(ApiError::Http { status, message: server_message() }),
+            403 => Err(ApiError::NoPermission("the account lacks a privilege for this request".to_string())),
+            _ => Err(ApiError::Http { status }),
         }
     }
 
@@ -308,10 +301,16 @@ impl Client {
             .collect())
     }
 
-    pub async fn users(&self, session: &Session) -> Result<Vec<String>, ApiError> {
-        let data = self.get(session, "/api2/json/access/users").await?;
+    /// Every user with its comment, groups and API tokens (`full=1`).
+    pub async fn users(&self, session: &Session) -> Result<Vec<UserInfo>, ApiError> {
+        let data = self.get(session, "/api2/json/access/users?full=1").await?;
         let list = data.as_array().ok_or_else(|| ApiError::Protocol("users is not a list".to_string()))?;
-        Ok(list.iter().filter_map(|u| u.get("userid")?.as_str().map(str::to_string)).collect())
+        Ok(list.iter().filter_map(parse_user).collect())
+    }
+
+    /// The SHA-256 fingerprint of the certificate the server presented in the latest handshake.
+    pub fn presented_fingerprint(&self) -> Option<String> {
+        self.seen.get()
     }
 
     /// `(path, type, ugid, roleid)` of every ACL entry the account may see.
@@ -397,11 +396,38 @@ impl Client {
             Ok(Err(tokio_tungstenite::tungstenite::Error::Http(resp))) => Err(match resp.status().as_u16() {
                 401 => ApiError::LoginFailed,
                 403 => ApiError::NoPermission("the websocket was refused".to_string()),
-                status => ApiError::Http { status, message: "the console websocket was refused".to_string() },
+                status => ApiError::Http { status },
             }),
-            Ok(Err(e)) => Err(ApiError::Unreachable(format!("websocket: {}", e.to_string().chars().take(120).collect::<String>()))),
+            Ok(Err(_)) => Err(ApiError::Unreachable("the console websocket could not be opened".to_string())),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserInfo {
+    pub userid: String,
+    pub comment: String,
+    pub groups: Vec<String>,
+    pub tokens: Vec<String>,
+}
+
+fn parse_user(u: &Value) -> Option<UserInfo> {
+    let groups = match u.get("groups") {
+        Some(Value::String(s)) => s.split(',').filter(|g| !g.is_empty()).map(str::to_string).collect(),
+        Some(Value::Array(a)) => a.iter().filter_map(|g| g.as_str().map(str::to_string)).collect(),
+        _ => Vec::new(),
+    };
+    let tokens = u
+        .get("tokens")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|t| t.get("tokenid").and_then(Value::as_str).map(str::to_string)).collect())
+        .unwrap_or_default();
+    Some(UserInfo {
+        userid: u.get("userid")?.as_str()?.to_string(),
+        comment: u.get("comment").and_then(Value::as_str).unwrap_or("").to_string(),
+        groups,
+        tokens,
+    })
 }
 
 pub struct VncProxy {

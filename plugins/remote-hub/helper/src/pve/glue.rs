@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 
 use super::manager::{ClosedReport, EnqueueError, Kind, PveFrame, PveManager};
-use super::protocol::{ConsoleTarget, Endpoint, PveAuth, PveCommand, PveOp, PROVISION_USER};
+use super::protocol::{ConsoleTarget, Endpoint, PveAuth, PveCommand, PveOp};
 use crate::ipc::{keychain_child, keychain_ok, resolve_item, CredentialRefusal};
 use crate::protocol::{self, PveConnect, PveSave, Response};
 use crate::secret::Secret;
@@ -79,32 +79,54 @@ pub fn open_targets(pve: &mut PveManager, current_exe: &str, id: u64, c: &PveCon
     }
 }
 
-/// Onboarding mode 1. The admin's login is a use-once password (never a saved credential); an apply must say where the
-/// created user's password is saved, and that place must be a `pve` binding for this very endpoint and the created user,
-/// so the new password cannot be directed anywhere else.
-pub fn open_provision(pve: &mut PveManager, current_exe: &str, id: u64, c: &PveConnect, dry_run: bool, acl_path: String, save: Option<PveSave>) -> Vec<u8> {
+/// What an onboarding request asks for.
+pub struct ProvisionRequest {
+    pub dry_run: bool,
+    pub acl_path: String,
+    pub user_id: String,
+    pub replace_role: bool,
+    pub plan_digest: Option<String>,
+    pub save: Vec<PveSave>,
+}
+
+/// Onboarding mode 1. The admin's login is a password supplied for this request (never a saved credential). An apply must
+/// carry the digest of the plan the owner confirmed (accepted once) and say where the new password is saved: only `pve`
+/// bindings for this very endpoint and the named user, so it cannot be directed anywhere else.
+pub fn open_provision(pve: &mut PveManager, current_exe: &str, id: u64, c: &PveConnect, r: ProvisionRequest) -> Vec<u8> {
     if c.credential_ref.is_some() || c.password.is_none() {
-        return error(id, "invalid_credential_source", "provisioning signs in with a password that is used once");
+        return error(id, "invalid_credential_source", "provisioning signs in with a password supplied for this setup");
     }
-    if !super::api::valid_acl_path(&acl_path) {
+    if !super::api::valid_acl_path(&r.acl_path) {
         return error(id, "invalid_request", "the ACL path must be / or /pool/<id>");
     }
-    let target = match (dry_run, save) {
-        (true, _) => None,
-        (false, None) => return error(id, "invalid_request", "an apply needs a place to save the new password"),
-        (false, Some(save)) => {
-            let bind = save.bind.canonical();
-            if !crate::keychain::valid_credential_ref(&save.reference) || !bind.is_valid() || !bind.is_pve_endpoint(&c.host, c.port, PROVISION_USER) {
-                return error(id, "invalid_request", "the password may only be saved for this endpoint and the user remotehub@pve");
-            }
-            Some((save.reference, bind))
+    if !super::provision::valid_user_id(&r.user_id) {
+        return error(id, "invalid_request", "the user must be name@pve");
+    }
+    let mut targets: Vec<(String, crate::binding::Bind)> = Vec::new();
+    if !r.dry_run {
+        let Some(digest) = r.plan_digest.as_deref() else {
+            return error(id, "plan_required", "an apply needs the plan the owner confirmed");
+        };
+        if r.save.is_empty() || r.save.len() > 8 {
+            return error(id, "invalid_request", "an apply needs one to eight places to save the new password");
         }
-    };
-    let open = match build_open(current_exe, id, c, PveOp::Provision { dry_run, acl_path }, None) {
+        for save in r.save {
+            let bind = save.bind.canonical();
+            if !crate::keychain::valid_credential_ref(&save.reference) || !bind.is_valid() || !bind.is_pve_endpoint(&c.host, c.port, &r.user_id) || targets.iter().any(|(rf, _)| *rf == save.reference) {
+                return error(id, "invalid_request", "the password may only be saved for this endpoint and the managed user");
+            }
+            targets.push((save.reference, bind));
+        }
+        if !pve.consume_digest(digest) {
+            return error(id, "plan_changed", "this plan was already used; review the setup again");
+        }
+    }
+    let op = PveOp::Provision { dry_run: r.dry_run, acl_path: r.acl_path, user_id: r.user_id, replace_role: r.replace_role, plan_digest: r.plan_digest };
+    let open = match build_open(current_exe, id, c, op, None) {
         Ok(o) => o,
         Err(frames) => return frames,
     };
-    match pve.open_provision(current_exe, &open, id, target) {
+    match pve.open_provision(current_exe, &open, id, targets) {
         Ok(_) => Vec::new(),
         Err(message) => error(id, "pve_open_failed", message),
     }
@@ -151,35 +173,31 @@ pub fn relay_frames(pve: &mut PveManager, outbox: &mut VecDeque<u8>, current_exe
                     pve.mark_job_answered(session_id);
                 }
             }
-            PveFrame::Plan { role, user, acl } => {
+            PveFrame::Plan { role, user, acl, user_id, role_privs, extras, digest } => {
                 if let Some(id) = pve.job_request(session_id) {
-                    outbox.extend(protocol::encode_response(&Response::PvePlan { id, role, user, acl }));
+                    outbox.extend(protocol::encode_response(&Response::PvePlan { id, role, user, acl, user_id, role_privs, extras, digest }));
                     pve.mark_job_answered(session_id);
                 }
             }
-            PveFrame::Provisioned { role, user, acl, password } => {
+            PveFrame::NewPassword(secret) => {
+                // The password is active on the server: it goes to every bound credential in the Keychain now, before the engine
+                // writes anything more. The client is never told it.
+                let mut ok = true;
+                for (reference, bind) in pve.job_save(session_id) {
+                    if keychain_child(current_exe, "save", &reference, Some(&secret), Some(&bind)).and_then(keychain_ok).is_err() {
+                        ok = false;
+                    }
+                }
+                let _ = pve.send_command(session_id, &super::protocol::PveCommand::SaveAck { ok });
+            }
+            PveFrame::Provisioned { steps } => {
                 let Some(id) = pve.job_request(session_id) else { continue };
                 pve.mark_job_answered(session_id);
-                // The new password goes to the Keychain here and nowhere else; the client is told what happened, never the secret.
-                let saved = match (password, pve.take_job_save(session_id)) {
-                    (Some(secret), Some((reference, bind))) => {
-                        keychain_child(current_exe, "save", &reference, Some(&secret), Some(&bind)).and_then(keychain_ok).map(|_| ()).map_err(|r| r.code())
-                    }
-                    _ => Err("credential_unavailable".to_string()),
-                };
-                outbox.extend(protocol::encode_response(&match saved {
-                    Ok(()) => Response::PveProvisioned { id, role, user, acl },
-                    Err(code) => Response::PveFailed {
-                        id,
-                        code,
-                        message: "the user was set up on the server but its new password could not be saved; run the setup again to replace it".to_string(),
-                        fingerprint: None,
-                    },
-                }));
+                outbox.extend(protocol::encode_response(&Response::PveProvisioned { id, steps }));
             }
-            PveFrame::Error { code, message, fingerprint } => match pve.job_request(session_id) {
+            PveFrame::Error { code, message, fingerprint, steps } => match pve.job_request(session_id) {
                 Some(id) => {
-                    outbox.extend(protocol::encode_response(&Response::PveFailed { id, code, message, fingerprint }));
+                    outbox.extend(protocol::encode_response(&Response::PveFailed { id, code, message, fingerprint, steps }));
                     pve.mark_job_answered(session_id);
                 }
                 None => outbox.extend(protocol::encode_response(&Response::PveError { session_id, code, message, fingerprint })),
@@ -198,6 +216,7 @@ pub fn closed_frames(report: &ClosedReport) -> Vec<u8> {
                 code: "engine_exited".to_string(),
                 message: "the PVE engine ended without an answer".to_string(),
                 fingerprint: None,
+                steps: None,
             }),
             None => Vec::new(),
         },

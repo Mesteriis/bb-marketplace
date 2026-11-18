@@ -188,8 +188,18 @@ pub enum Request {
         dry_run: bool,
         #[serde(rename = "aclPath")]
         acl_path: String,
+        /// The managed user (`name@pve`).
+        #[serde(rename = "userId")]
+        user_id: String,
+        /// Replace the privileges of a differing `RemoteHubConsole` role: its own, separate confirmation.
+        #[serde(default, rename = "replaceRole")]
+        replace_role: bool,
+        /// An apply carries the digest of the plan the owner confirmed; each digest is accepted once.
+        #[serde(default, rename = "planDigest")]
+        plan_digest: Option<String>,
+        /// Where the user's new password is saved: every credential bound to this endpoint and user.
         #[serde(default)]
-        save: Option<PveSave>,
+        save: Vec<PveSave>,
     },
     #[serde(rename = "session.open_rdp")]
     OpenRdp {
@@ -505,9 +515,20 @@ pub enum Response {
         guests: Vec<crate::pve::protocol::GuestInfo>,
     },
     #[serde(rename = "pve.plan")]
-    PvePlan { id: u64, role: String, user: String, acl: String },
+    PvePlan {
+        id: u64,
+        role: String,
+        user: String,
+        acl: String,
+        #[serde(rename = "userId")]
+        user_id: String,
+        #[serde(rename = "rolePrivs")]
+        role_privs: Option<String>,
+        extras: crate::pve::protocol::UserExtras,
+        digest: String,
+    },
     #[serde(rename = "pve.provisioned")]
-    PveProvisioned { id: u64, role: String, user: String, acl: String },
+    PveProvisioned { id: u64, steps: crate::pve::protocol::ProvisionSteps },
     #[serde(rename = "pve.failed")]
     PveFailed {
         id: u64,
@@ -515,6 +536,9 @@ pub enum Response {
         message: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fingerprint: Option<String>,
+        /// For a provisioning failure: what happened to each step.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steps: Option<crate::pve::protocol::ProvisionSteps>,
     },
     #[serde(rename = "rdp.state")]
     RdpState {
