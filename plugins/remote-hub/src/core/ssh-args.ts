@@ -113,7 +113,7 @@ export function sshEnvAllowlist(env: Record<string, string | undefined>): Record
   return out;
 }
 
-export function buildSshArgv(target: SshTarget): string[] {
+export function buildSshArgv(target: SshTarget, options: { allowKnownHostsFileWithSecret?: boolean } = {}): string[] {
   const argv = ["ssh", "-tt"];
   if (target.user !== undefined) {
     assertToken(target.user, "user");
@@ -135,6 +135,11 @@ export function buildSshArgv(target: SshTarget): string[] {
     argv.push("-F", target.configFile);
   }
   if (target.knownHostsFile !== undefined) {
+    // A session with a saved secret reads the helper's own host-key file; the helper refuses another one. Say so
+    // here, early and clearly, instead of letting the session fail later.
+    if (target.authMethod !== undefined && options.allowKnownHostsFileWithSecret !== true) {
+      invalid("invalid_knownHostsFile", "a session with a saved secret uses Remote Hub's own host-key file; knownHostsFile is not accepted");
+    }
     assertAbsolutePath(target.knownHostsFile, "knownHostsFile");
     // ssh splits UserKnownHostsFile on whitespace into several files, and
     // /dev/null would accept any host; both must be refused for this field.
@@ -171,7 +176,8 @@ export function buildSshArgv(target: SshTarget): string[] {
 export function buildSshSpawn(target: SshTarget, env: Record<string, string | undefined>): SshSpawnSpec {
   return {
     program: "/usr/bin/ssh",
-    argv: buildSshArgv(target),
+    // Only a test-hooks helper takes a caller-chosen host-key file with a saved secret; the flag is the same one.
+    argv: buildSshArgv(target, { allowKnownHostsFileWithSecret: env.REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS !== undefined }),
     env: sshEnvAllowlist(env),
   };
 }

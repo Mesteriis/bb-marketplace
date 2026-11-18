@@ -184,3 +184,22 @@ describe("authMethod (set by the server when a saved secret is used)", () => {
     expect(() => buildSshArgv({ ...base, authMethod: "none" as never })).toThrow(/authMethod/);
   });
 });
+
+describe("a host-key file with a saved secret (W8)", () => {
+  const withSecret: SshTarget = { host: "box.example.test", user: "u", port: 22, authMethod: "password", knownHostsFile: "/tmp/kh", extraOptions: [] };
+
+  it("is refused early and clearly: the helper's own file is the only one a saved-secret session reads", () => {
+    expect(() => buildSshArgv(withSecret)).toThrowError(/knownHostsFile is not accepted/);
+    expect(() => buildSshSpawn(withSecret, {})).toThrowError(SshArgError);
+  });
+
+  it("a session without a saved secret still takes it", () => {
+    const { authMethod: _a, ...plain } = withSecret;
+    void _a;
+    expect(buildSshArgv(plain)).toContain("UserKnownHostsFile=/tmp/kh");
+  });
+
+  it("only a test-hooks setup lets the same field through", () => {
+    expect(buildSshSpawn(withSecret, { REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS: "1" }).argv).toContain("UserKnownHostsFile=/tmp/kh");
+  });
+});

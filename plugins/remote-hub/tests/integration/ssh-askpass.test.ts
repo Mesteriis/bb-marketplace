@@ -244,7 +244,7 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
           child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")));
           return child;
         }),
-      env: process.env as Record<string, string | undefined>,
+      env: { ...process.env, REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS: "1" } as Record<string, string | undefined>,
     });
     book = new CredentialBook({ store: meta, vault: service.credentialVault, profiles, now: () => new Date(), newId: () => randomUUID() });
     rpc = createRpcHandlers({ service, profiles, credentials: book, imports: memoryImportBook(profiles, book) });

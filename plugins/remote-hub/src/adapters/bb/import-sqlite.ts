@@ -40,7 +40,7 @@ const importedSchema = z
   })
   .strict();
 
-const kindSchema = z.enum(["ssh-config", "hosts", "keys-dir", "agent"]);
+const kindSchema = z.enum(["ssh-config", "hosts", "keys-dir", "agent", "known-hosts"]);
 
 interface SourceRow {
   id: string;

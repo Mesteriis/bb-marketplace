@@ -50,3 +50,39 @@ describe("sqlite import store", () => {
     expect(store.links()).toEqual([]);
   });
 });
+
+describe("a known-hosts source through the real SQLite store (W7)", () => {
+  it("add -> enable -> scan -> apply works; the source is read back with its kind", async () => {
+    const { ImportBook } = await import("../../core/import-book.ts");
+    const { ProfileBook } = await import("../../core/profile-book.ts");
+    const { CredentialBook } = await import("../../core/credential.ts");
+    const { emptyReader } = await import("./import-test-support.ts");
+    const KH = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const db = openDb();
+    let n = 0;
+    const ids = () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`;
+    const { createSqliteProfileStore } = await import("./profile-sqlite.ts");
+    const profiles = new ProfileBook({ store: createSqliteProfileStore(db), now: () => new Date(), newId: ids });
+    const credentials = new CredentialBook({ store: { all: () => [], get: () => null, put() {}, remove: () => false }, vault: { save: async () => {}, delete: async () => {}, status: async () => "missing" as const }, profiles, now: () => new Date(), newId: ids });
+    const overlay: string[] = [];
+    const book = new ImportBook({
+      store: createSqliteImportStore(db),
+      reader: { ...emptyReader, readText: (p: string) => (p === "/fixture/known_hosts" ? { text: `a.example.test ${KH}\n`, truncated: false } : null) },
+      profiles,
+      credentials,
+      newId: () => "src-" + ++n,
+      knownHosts: { list: async () => [...overlay], add: async (lines: string[]) => (overlay.push(...lines), lines.length), remove: async () => 0 },
+    });
+    const added = book.addSource({ kind: "known-hosts", path: "/fixture/known_hosts", label: "kh" });
+    // A fresh store (a restart) still finds it, with its kind.
+    const reread = new ImportBook({ store: createSqliteImportStore(db), reader: emptyReader, profiles, credentials, newId: ids });
+    expect(reread.sources().map((s) => [s.id, s.kind])).toEqual([[added.id, "known-hosts"]]);
+    book.setEnabled(added.id, true);
+    const scan = await book.scan(added.id);
+    if (scan.kind !== "known-hosts") throw new Error("kind");
+    expect(scan.items.map((i) => i.hosts)).toEqual([["a.example.test"]]);
+    expect(await book.apply(added.id, [scan.items[0]!.key], scan.scanId)).toMatchObject({ created: 1 });
+    expect(overlay).toEqual([`a.example.test ${KH}`]);
+    db.close();
+  });
+});
