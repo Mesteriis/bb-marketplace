@@ -115,6 +115,16 @@ describe("CredentialsPanel", () => {
     await waitFor(() => expect(h.onDelete).toHaveBeenCalledWith(WIN.ref));
   });
 
+  it("an unfinished save is listed as such with only Delete (which retries the cleanup)", () => {
+    const orphan: CredentialItem = { ...WIN, ref: "rh-cred:v1:local:22222222-2222-4222-8222-222222222222", label: "Unfinished save (cleanup pending)", orphaned: true, usedBy: [] };
+    mount({ items: [orphan] });
+    const row = screen.getByRole("listitem", { name: "Unfinished save (cleanup pending)" });
+    expect(within(row).getByText(/did not finish/)).toBeTruthy();
+    expect(within(row).queryByRole("button", { name: "Check" })).toBeNull();
+    expect(within(row).queryByRole("button", { name: "Change password" })).toBeNull();
+    expect(within(row).getByRole("button", { name: "Delete" })).toBeTruthy();
+  });
+
   it("has loading, error with Retry, empty and Close", () => {
     cleanup();
     mount({ items: null });

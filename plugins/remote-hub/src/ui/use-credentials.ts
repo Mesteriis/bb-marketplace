@@ -4,6 +4,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface CredentialItem {
+  /** A secret whose save did not finish and whose cleanup failed; Delete retries the cleanup. */
+  orphaned?: boolean;
   ref: string;
   kind: "password" | "passphrase";
   label: string;

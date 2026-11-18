@@ -98,6 +98,7 @@ export const sessionInfoSchema = z.object({
 });
 
 export const credentialViewSchema = z.object({
+  orphaned: z.boolean(),
   ref: z.string(),
   kind: z.enum(["password", "passphrase"]),
   label: z.string(),

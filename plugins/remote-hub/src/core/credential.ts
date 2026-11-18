@@ -67,6 +67,8 @@ export interface CredentialBookDeps {
 }
 
 export interface CredentialView {
+  /** True for a secret whose save did not finish and whose cleanup failed: delete retries the cleanup. */
+  orphaned: boolean;
   ref: string;
   kind: CredentialMeta["kind"];
   label: string;
@@ -110,10 +112,40 @@ function bindOf(p: Profile): CredentialBind {
 const sameBind = (a: CredentialBind, b: CredentialBind): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 export class CredentialBook {
+  /** Per-key promise chains: operations on one profile (or one credential) run one at a time. */
+  private readonly chains = new Map<string, Promise<unknown>>();
+  /** References whose secret may still be in the vault although no record points at it (kept in memory; a restart forgets them). */
+  private readonly orphans = new Set<string>();
+
   constructor(private readonly deps: CredentialBookDeps) {}
 
+  private locked<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const previous = this.chains.get(key) ?? Promise.resolve();
+    const next = previous.then(run, run);
+    const tail = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.chains.set(key, tail);
+    void tail.then(() => {
+      if (this.chains.get(key) === tail) this.chains.delete(key);
+    });
+    return next;
+  }
+
   list(): CredentialView[] {
-    return this.deps.store.all().map((meta) => ({
+    const orphaned: CredentialView[] = [...this.orphans].map((ref) => ({
+      orphaned: true,
+      ref,
+      kind: "password",
+      label: "Unfinished save (cleanup pending)",
+      bind: { type: "key", path: "" },
+      createdAt: "",
+      updatedAt: "",
+      usedBy: [],
+    }));
+    return [...this.deps.store.all().map((meta) => ({
+      orphaned: false,
       ref: meta.ref,
       kind: meta.kind,
       label: meta.label,
@@ -121,18 +153,34 @@ export class CredentialBook {
       createdAt: meta.createdAt,
       updatedAt: meta.updatedAt,
       usedBy: this.deps.profiles.usersOf(meta.ref).map((p) => ({ id: p.id, name: p.name })),
-    }));
+    })), ...orphaned];
   }
 
   /** Saves a secret for a profile (password for password auth, key passphrase for key auth) and links it. */
-  async save(input: { profileId: string; secret: string }): Promise<{ ref: string }> {
+  save(input: { profileId: string; secret: string }): Promise<{ ref: string }> {
+    return this.locked("profile:" + input.profileId, () => this.saveLocked(input));
+  }
+
+  private async saveLocked(input: { profileId: string; secret: string }): Promise<{ ref: string }> {
     if (input.secret.length === 0) throw new CredentialError("empty_secret", "the secret is empty");
     const profile = this.deps.profiles.get(input.profileId);
     if (profile === null) throw new CredentialError("profile_not_found", "no such profile");
     if (profile.authType === "agent") throw new CredentialError("credential_not_applicable", "this profile does not use a stored secret");
     if (profile.credentialRef !== null) throw new CredentialError("credential_exists", "this profile already has a saved credential; update it");
     const ref = `rh-cred:v1:${LOCAL_EXECUTION_HOST_ID}:${this.deps.newId()}`;
-    await this.deps.vault.save(ref, input.secret);
+    try {
+      await this.deps.vault.save(ref, input.secret);
+    } catch (error) {
+      // The write may have landed even though the call failed: ask for the item to be removed.
+      throw CredentialBook.withNote(error, await this.cleanup(ref));
+    }
+    // The profile may have changed while the vault was working: the secret is only valid for the
+    // profile exactly as it was when the save began.
+    const now = this.deps.profiles.get(profile.id);
+    if (now === null || now.credentialRef !== null || !sameBind(bindOf(now), bindOf(profile)) || now.authType !== profile.authType) {
+      const left = await this.cleanup(ref);
+      throw CredentialBook.withNote(new CredentialError("profile_changed", "the profile changed while its password was being saved; try again"), left);
+    }
     const stamp = this.deps.now().toISOString();
     try {
       this.deps.store.put({
@@ -148,13 +196,41 @@ export class CredentialBook {
     } catch (error) {
       // The secret must not outlive a record that points at it.
       this.deps.store.remove(ref);
-      await this.deps.vault.delete(ref).catch(() => undefined);
+      const left = await this.cleanup(ref);
+      if (left !== null) {
+        throw new CredentialError("credential_cleanup_failed", `the password could not be saved and its Keychain item could not be removed (${left}); it is listed as unfinished`);
+      }
       throw error;
     }
     return { ref };
   }
 
-  async update(ref: string, secret: string): Promise<void> {
+  /**
+   * Removes a secret that no record owns. Returns null when it is gone, or the failure code. A
+   * failure is NOT swallowed: the reference is remembered (listed as unfinished, retried by
+   * `delete`) and the caller puts the code in the error it throws.
+   */
+  private async cleanup(ref: string): Promise<string | null> {
+    try {
+      await this.deps.vault.delete(ref);
+      return null;
+    } catch (error) {
+      if (error instanceof CredentialError && error.code === "credential_missing") return null; // nothing was written
+      this.orphans.add(ref);
+      return error instanceof CredentialError ? error.code : "keychain_unavailable";
+    }
+  }
+
+  private static withNote(error: unknown, cleanupCode: string | null): unknown {
+    if (cleanupCode === null || !(error instanceof CredentialError)) return error;
+    return new CredentialError(error.code, `${error.message} (and the Keychain item could not be removed: ${cleanupCode}; it is listed as unfinished)`);
+  }
+
+  update(ref: string, secret: string): Promise<void> {
+    return this.locked("ref:" + ref, () => this.updateLocked(ref, secret));
+  }
+
+  private async updateLocked(ref: string, secret: string): Promise<void> {
     if (secret.length === 0) throw new CredentialError("empty_secret", "the secret is empty");
     const meta = this.deps.store.get(ref);
     if (meta === null) throw new CredentialError("credential_unknown", "no such credential");
@@ -173,12 +249,17 @@ export class CredentialBook {
   }
 
   /** Removes the secret, the metadata and every profile's link to it. A locked Keychain keeps all three. */
-  async delete(ref: string): Promise<{ unlinked: number }> {
+  delete(ref: string): Promise<{ unlinked: number }> {
+    return this.locked("ref:" + ref, () => this.deleteLocked(ref));
+  }
+
+  private async deleteLocked(ref: string): Promise<{ unlinked: number }> {
     try {
       await this.deps.vault.delete(ref);
     } catch (error) {
       if (!(error instanceof CredentialError && error.code === "credential_missing")) throw error;
     }
+    this.orphans.delete(ref);
     this.deps.store.remove(ref);
     const users = this.deps.profiles.usersOf(ref);
     for (const p of users) this.deps.profiles.link(p.id, null);
@@ -210,7 +291,11 @@ export class CredentialBook {
    * edit that moves the endpoint drops the credential: a saved secret must not follow a
    * changed host to a place the user never saved it for.
    */
-  async saveProfile(input: ProfileInput): Promise<{ profile: Profile; credentialDropped: boolean; credentialError?: string }> {
+  saveProfile(input: ProfileInput): Promise<{ profile: Profile; credentialDropped: boolean; credentialError?: string }> {
+    return this.locked("profile:" + (input.id ?? "new"), () => this.saveProfileLocked(input));
+  }
+
+  private async saveProfileLocked(input: ProfileInput): Promise<{ profile: Profile; credentialDropped: boolean; credentialError?: string }> {
     const previous = input.id === undefined ? null : this.deps.profiles.get(input.id);
     const keptRef = previous?.credentialRef ?? null;
     const saved = this.deps.profiles.save({ ...input, fields: { ...input.fields, credentialRef: keptRef } });
@@ -229,7 +314,11 @@ export class CredentialBook {
   }
 
   /** Deletes a profile; with `deleteCredential` also its credential, but only when no other profile uses it. */
-  async deleteProfile(id: string, deleteCredential: boolean): Promise<{ deleted: boolean; credentialDeleted: boolean; credentialError?: string }> {
+  deleteProfile(id: string, deleteCredential: boolean): Promise<{ deleted: boolean; credentialDeleted: boolean; credentialError?: string }> {
+    return this.locked("profile:" + id, () => this.deleteProfileLocked(id, deleteCredential));
+  }
+
+  private async deleteProfileLocked(id: string, deleteCredential: boolean): Promise<{ deleted: boolean; credentialDeleted: boolean; credentialError?: string }> {
     const profile = this.deps.profiles.get(id);
     const deleted = this.deps.profiles.remove(id);
     const ref = profile?.credentialRef ?? null;

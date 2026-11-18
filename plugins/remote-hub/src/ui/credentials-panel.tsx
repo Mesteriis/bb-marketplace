@@ -26,6 +26,7 @@ const STATE_TEXT: Record<CredentialStateName, string> = {
 };
 
 function bindText(item: CredentialItem): string {
+  if (item.orphaned === true) return "A save did not finish and its Keychain item could not be removed. Delete it to retry the cleanup.";
   if (item.bind.type === "key") return item.bind.path;
   const b = item.bind;
   return (b.domain !== null ? b.domain + "\\" : "") + (b.user !== null ? b.user + "@" : "") + b.host + ":" + b.port;
@@ -69,18 +70,20 @@ function Row(props: { item: CredentialItem; onCheck: CredentialsPanelProps["onCh
         {problem !== null && <span className="rh-error">{problem}</span>}
       </div>
       <div className="rh-profile-actions">
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() =>
-            void run(async () => {
-              setState(STATE_TEXT[(await props.onCheck(item.ref)).state]);
-            })
-          }
-        >
-          Check
-        </button>
-        {!changing && (
+        {item.orphaned !== true && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              void run(async () => {
+                setState(STATE_TEXT[(await props.onCheck(item.ref)).state]);
+              })
+            }
+          >
+            Check
+          </button>
+        )}
+        {!changing && item.orphaned !== true && (
           <button type="button" onClick={() => setChanging(true)}>
             Change password
           </button>

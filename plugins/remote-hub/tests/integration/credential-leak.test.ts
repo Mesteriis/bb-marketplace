@@ -4,6 +4,12 @@
 // channel may contain either secret: helper stderr, the service's session list, the
 // credential list, the profile rows, error texts, and the argv and environment of
 // the helper and its engine. (The sentinels are only ever compared, never printed.)
+//
+// WHAT THIS DOES NOT PROVE: xrdp does not authenticate at the RDP protocol level (a wrong password
+// reaches desktop_ready and fails later inside xrdp's own login), so reaching desktop_ready with
+// the saved credential does NOT show that the saved password arrived at the server. That the
+// helper resolves a reference to the exact stored secret and hands it to the engine is proved by
+// the Rust process test (a fake engine reports a digest of what it was given).
 // Needs docker and REMOTE_HUB_INTEGRATION=1; a 120 s watchdog aborts a hung run.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -83,19 +89,27 @@ class MemoryMeta implements CredentialMetaStore {
   remove = (ref: string) => this.rows.delete(ref);
 }
 
-/** Every helper or engine process on this machine: [pid, argv text]. (Matched by name: the engine is exec'd by its resolved path.) */
-function ourProcesses(): Array<[number, string]> {
-  const out = spawnSync("ps", ["-ax", "-ww", "-o", "pid=,command="], { encoding: "utf8" }).stdout ?? "";
-  return out
+/**
+ * The exact processes of THIS run: the helper we spawned and its direct children (engines).
+ * A `ps` that fails or returns nothing is a test FAILURE: an empty search proves nothing.
+ */
+function ourProcesses(helperPid: number): Array<[number, string]> {
+  const r = spawnSync("ps", ["-ax", "-ww", "-o", "pid=,ppid=,command="], { encoding: "utf8" });
+  if (r.status !== 0 || (r.stdout ?? "").trim() === "") throw new Error("ps failed or returned nothing: the search would prove nothing");
+  const rows = r.stdout
     .split("\n")
-    .map((line) => /^\s*(\d+)\s+(.*)$/.exec(line))
-    .filter((m): m is RegExpExecArray => m !== null && m[2].includes("remote-hub-helper"))
-    .map((m) => [Number(m[1]), m[2]]);
+    .map((line) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line))
+    .filter((m): m is RegExpExecArray => m !== null);
+  const mine = rows.filter((m) => Number(m[1]) === helperPid || Number(m[2]) === helperPid);
+  if (!mine.some((m) => Number(m[1]) === helperPid)) throw new Error("the helper process is not in the process table");
+  return mine.map((m) => [Number(m[1]), m[3]]);
 }
 
 /** The environment of a process as text, for a boolean "does it contain X" check only. */
 function environmentText(pid: number): string {
-  return spawnSync("ps", ["eww", "-p", String(pid), "-o", "command="], { encoding: "utf8" }).stdout ?? "";
+  const r = spawnSync("ps", ["eww", "-p", String(pid), "-o", "command="], { encoding: "utf8" });
+  if (r.status !== 0 || (r.stdout ?? "").trim() === "") throw new Error(`cannot read the environment of pid ${pid}: the search would prove nothing`);
+  return r.stdout;
 }
 
 describe.skipIf(!dockerOk)("a saved credential and a typed password leak into no channel", () => {
@@ -104,6 +118,7 @@ describe.skipIf(!dockerOk)("a saved credential and a typed password leak into no
   let dir = "";
   let service: RemoteHubService;
   let stderr = "";
+  let helperPid = 0;
   const watchdog = setTimeout(() => process.abort(), 120_000);
 
   beforeAll(async () => {
@@ -123,6 +138,7 @@ describe.skipIf(!dockerOk)("a saved credential and a typed password leak into no
       startHelper: () =>
         HelperProcess.spawn(HELPER, (bin, args) => {
           const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"], env }) as unknown as ChildProcessWithoutNullStreams;
+          helperPid = child.pid ?? 0;
           child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")));
           return child;
         }),
@@ -185,8 +201,8 @@ describe.skipIf(!dockerOk)("a saved credential and a typed password leak into no
     expect(refusal).toContain("different host");
 
     // Search every channel.
-    const processes = ourProcesses();
-    expect(processes.length).toBeGreaterThanOrEqual(2); // the helper and at least one engine
+    const processes = ourProcesses(helperPid);
+    expect(processes.length).toBeGreaterThanOrEqual(3); // the helper and its two engines
     const channels: Record<string, string> = {
       "helper stderr": stderr,
       "session list": JSON.stringify(service.sessionList()),

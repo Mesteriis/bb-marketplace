@@ -267,3 +267,80 @@ describe("deleting a profile", () => {
     expect(profiles.list()).toEqual([]);
   });
 });
+
+describe("R4: consistency of a save", () => {
+  it("a vault failure on save still asks the vault to delete the reference (the item may have been written)", async () => {
+    const { profiles, vault, book } = setup();
+    const p = profiles.save({ fields: RDP });
+    vault.failWith = "keychain_locked";
+    await expect(book.save({ profileId: p.id, secret: SECRET })).rejects.toMatchObject({ code: "keychain_locked" });
+    expect(vault.calls.filter((c) => c.startsWith("delete "))).toHaveLength(1);
+    expect(vault.calls[0]?.startsWith("save ")).toBe(true);
+  });
+
+  it("two saves for one profile at the same time: one succeeds, the other is refused, one secret exists", async () => {
+    const { profiles, vault, book } = setup();
+    const p = profiles.save({ fields: RDP });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const original = vault.save.bind(vault);
+    vault.save = async (ref, secret) => {
+      await gate;
+      return original(ref, secret);
+    };
+    const first = book.save({ profileId: p.id, secret: "one" });
+    const second = book.save({ profileId: p.id, secret: "two" });
+    release();
+    const results = await Promise.allSettled([first, second]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(rejected.reason).toMatchObject({ code: "credential_exists" });
+    expect(vault.items.size).toBe(1);
+    expect(profiles.list()[0]?.credentialRef).not.toBeNull();
+  });
+
+  it("an endpoint edit that lands while a save waits for the vault wins: the save is undone and refused", async () => {
+    const { profiles, vault, book } = setup();
+    const p = profiles.save({ fields: RDP });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const original = vault.save.bind(vault);
+    vault.save = async (ref, secret) => {
+      await gate;
+      return original(ref, secret);
+    };
+    const saving = book.save({ profileId: p.id, secret: SECRET });
+    const editing = book.saveProfile({ id: p.id, fields: { ...RDP, host: "elsewhere.example.test" } });
+    release();
+    const [saveResult, editResult] = await Promise.allSettled([saving, editing]);
+    expect(editResult.status).toBe("fulfilled");
+    // Whatever the order, no secret may be left bound to a host it was not saved for.
+    const profile = profiles.list()[0] as Profile;
+    if (profile.credentialRef !== null) {
+      expect(book.matches(profile.credentialRef, { protocol: "rdp", host: profile.host, port: 3389, user: "admin", domain: "CORP" })).toBe(true);
+    } else {
+      expect(vault.items.size).toBe(0);
+    }
+    if (saveResult.status === "rejected") expect(saveResult.reason).toMatchObject({ code: "profile_changed" });
+  });
+
+  it("a cleanup that fails is not swallowed: the error names it, the entry is listed as unfinished and delete retries it", async () => {
+    const { profiles, meta, vault, book } = setup();
+    const p = profiles.save({ fields: RDP });
+    meta.failPut = true;
+    const original = vault.delete.bind(vault);
+    vault.delete = async () => {
+      throw new CredentialError("keychain_locked");
+    };
+    const error = await book.save({ profileId: p.id, secret: SECRET }).catch((e: Error) => e);
+    expect(error).toMatchObject({ code: "credential_cleanup_failed" });
+    const orphan = book.list().find((v) => v.orphaned);
+    expect(orphan).toBeDefined();
+    expect(vault.items.size).toBe(1); // the secret is still in the vault, and we know it
+    vault.delete = original;
+    meta.failPut = false;
+    await book.delete((orphan as { ref: string }).ref);
+    expect(vault.items.size).toBe(0);
+    expect(book.list().some((v) => v.orphaned)).toBe(false);
+  });
+});
