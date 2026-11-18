@@ -123,7 +123,37 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   // A session that ended before its open call continued (any kind): applied when
   // the record is created, so an ended session is never shown as live.
   const earlyClosed = new Map<string, { exitCode: number | null; signal: number | null; reason: string }>();
-  const EARLY_CLOSED_MAX = 64;
+  // Opens in flight. Everything that arrives for a session id with no record is
+  // kept ONLY while an open is waiting (it can belong to it), never evicted while
+  // that open is pending, and dropped when no open is pending any more. The number
+  // of opens in flight is bounded at issuance instead of dropping an awaited close.
+  const MAX_PENDING_OPENS = 64;
+  let pendingOpens = 0;
+  const beginOpen = (): void => {
+    if (pendingOpens >= MAX_PENDING_OPENS) {
+      throw new Error("too many sessions are being opened at once (" + MAX_PENDING_OPENS + "); try again in a moment");
+    }
+    pendingOpens += 1;
+  };
+  const endOpen = (): void => {
+    pendingOpens -= 1;
+    if (pendingOpens === 0) {
+      earlyRdpEvents.clear();
+      earlyRdpUpdates.clear();
+      earlyUpdateBytes.clear();
+      earlyClosed.clear();
+    }
+  };
+  const tracked =
+    <A extends unknown[], R>(open: (...args: A) => Promise<R>) =>
+    async (...args: A): Promise<R> => {
+      beginOpen();
+      try {
+        return await open(...args);
+      } finally {
+        endOpen();
+      }
+    };
   const EVICT_CLOSED_AFTER_MS = 5 * 60 * 1000;
 
   const maybeEvictClosed = (key: string): void => {
@@ -192,7 +222,9 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     const runtime = rdpRuntimes.get(key);
     if (info !== undefined && info.state === "closed") return; // nothing follows the end
     if (info === undefined || info.rdp === undefined || runtime === undefined) {
-      // rdpOpen has not registered the session yet: keep the event for it.
+      // rdpOpen has not registered the session yet: keep the event for it (only
+      // while some open is waiting; otherwise nobody can claim it).
+      if (pendingOpens === 0) return;
       const queued = earlyRdpEvents.get(key) ?? [];
       queued.push(event);
       earlyRdpEvents.set(key, queued);
@@ -257,7 +289,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     if (runtime === undefined) {
       // Not registered yet (rdpOpen has not continued): keep the chunk, bounded,
       // so the helper is acked once the multiplexer sees it.
-      if (sessions.has(key)) return; // known and ended
+      if (sessions.has(key) || pendingOpens === 0) return; // known and ended, or nobody is opening
       const used = earlyUpdateBytes.get(key) ?? 0;
       if (used + payload.byteLength > EARLY_UPDATE_BYTES_MAX) return;
       earlyUpdateBytes.set(key, used + payload.byteLength);
@@ -338,8 +370,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
               if (existing.rdp !== undefined) existing.rdp.state = "closed";
             } else {
               // Closed before the open call that will create the record continued.
-              earlyClosed.set(key, info);
-              if (earlyClosed.size > EARLY_CLOSED_MAX) earlyClosed.delete(earlyClosed.keys().next().value as string);
+              if (pendingOpens > 0) earlyClosed.set(key, info);
             }
             const ends = sessionEndListeners.get(key);
             if (ends !== undefined) {
@@ -387,7 +418,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       const alive = await process.pingAlive();
       return { ...process.status!, alive };
     },
-    async echoOpen(cols, rows) {
+    echoOpen: tracked(async (cols, rows) => {
       const process = await start();
       const handle = await process.openEcho(cols, rows);
       sessions.set(keyOf(handle), {
@@ -401,7 +432,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       });
       applyEarlyClosed(keyOf(handle));
       return handle;
-    },
+    }),
     async echoInput(handle, data) {
       const process = await start();
       return process.input(handle, data);
@@ -412,7 +443,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       sessions.delete(keyOf(handle));
       return { closed: true };
     },
-    async sshOpenTest(cols, rows) {
+    sshOpenTest: tracked(async (cols, rows) => {
       if (deps.openSshRaw === undefined) throw new Error("sshOpenTest requires a test opener");
       const hp = await start();
       const handle = await deps.openSshRaw(hp, cols, rows);
@@ -427,8 +458,8 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       });
       applyEarlyClosed(keyOf(handle));
       return handle;
-    },
-    async sshOpen(target, cols, rows) {
+    }),
+    sshOpen: tracked(async (target, cols, rows) => {
       const hp = await start();
       const spec = buildSshSpawn(target, deps.env ?? process.env);
       const handle = await hp.openSsh(spec, cols, rows);
@@ -444,8 +475,8 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       });
       applyEarlyClosed(keyOf(handle));
       return handle;
-    },
-    async rdpOpen(target, width, height) {
+    }),
+    rdpOpen: tracked(async (target, width, height) => {
       const hp = await start();
       const handle = await hp.openRdp({
         host: target.host,
@@ -485,7 +516,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       for (const u of earlyUpdates ?? []) handleRdpUpdate(handle.generation, handle.sessionId, u.seq, u.payload);
       applyEarlyClosed(key);
       return handle;
-    },
+    }),
     async rdpCertDecision(handle, fingerprint, accept) {
       requireGeneration(handle);
       const info = rdpRecord(keyOf(handle));

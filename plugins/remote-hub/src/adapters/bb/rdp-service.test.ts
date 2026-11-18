@@ -545,6 +545,56 @@ describe("RDP service: what the helper sends before the open call continues", ()
     expect(service.sessionList().find((r) => r.sessionId === handle.sessionId)).toMatchObject({ state: "closed", reason: "exited", exitCode: 7 });
   });
 
+  it("65 concurrent opens whose helper closes each before its open continues: 64 end closed/auth_failed, the 65th is refused at issuance (nothing awaited is evicted)", async () => {
+    const helper = new FakeRdpHelper();
+    emitDuringOpen(helper, (sid) => {
+      helper.state(sid, "connecting");
+      helper.closed(sid, "auth_failed", 3);
+    });
+    const service = makeService(helper);
+    const results = await Promise.allSettled(Array.from({ length: 65 }, () => service.rdpOpen({ ...TARGET }, 8, 4)));
+    const fulfilled = results.filter((r): r is PromiseFulfilledResult<SessionHandle> => r.status === "fulfilled");
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(fulfilled.length).toBe(64);
+    expect(rejected.length).toBe(1);
+    expect(String(rejected[0].reason)).toContain("too many sessions are being opened at once (64)");
+    for (const { value } of fulfilled) {
+      const record = service.sessionList().find((r) => r.sessionId === value.sessionId)!;
+      expect(record, "session " + value.sessionId).toMatchObject({ state: "closed", reason: "auth_failed", exitCode: 3 });
+      expect(record.rdp?.state).toBe("closed");
+    }
+    // The slot is free again once the opens have finished.
+    await expect(service.rdpOpen({ ...TARGET }, 8, 4)).resolves.toBeTruthy();
+  });
+
+  it("a close for a session nobody is opening is ignored, so it cannot be applied to a later session that reuses the id", async () => {
+    const helper = new FakeRdpHelper();
+    const service = makeService(helper);
+    await service.helperStatus(); // the service is now listening to the helper
+    helper.closed(1, "auth_failed", 3); // no record, no open in flight
+    const handle = await service.rdpOpen({ ...TARGET }, 8, 4); // gets session id 1
+    expect(handle.sessionId).toBe(1);
+    expect(service.sessionList().find((r) => r.sessionId === 1)).toMatchObject({ state: "connecting", reason: null });
+  });
+
+  it("what was kept for an open that never claimed it is dropped when no open is pending any more", async () => {
+    const helper = new FakeRdpHelper();
+    let first = true;
+    // During the first open the helper also closes a session (999) that no open owns.
+    emitDuringOpen(helper, () => {
+      if (first) {
+        first = false;
+        helper.closed(999, "auth_failed", 3);
+      }
+    });
+    const service = makeService(helper);
+    await service.rdpOpen({ ...TARGET }, 8, 4); // session id 1; its slot is released afterwards
+    helper.nextSessionId = 999;
+    const later = await service.rdpOpen({ ...TARGET }, 8, 4);
+    expect(later.sessionId).toBe(999);
+    expect(service.sessionList().find((r) => r.sessionId === 999)).toMatchObject({ state: "connecting", reason: null });
+  });
+
   it("an update chunk that arrives before the session is registered is not dropped: the helper is released", async () => {
     const helper = new FakeRdpHelper();
     emitDuringOpen(helper, (sid) => {
