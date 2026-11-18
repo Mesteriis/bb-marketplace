@@ -35,15 +35,22 @@ function mount(initial: ProfileFields | null = null) {
 }
 
 describe("ProfileEditor", () => {
-  it("has the Connection, Authentication and Source sections and no password or secret input", () => {
+  it("has the Connection, Authentication and Source sections; no secret input for the agent", () => {
     const { container } = render(<ProfileEditor initial={null} onSave={async () => {}} onCancel={() => {}} />);
     expect(screen.getByRole("group", { name: "Connection" })).toBeTruthy();
     expect(screen.getByRole("group", { name: "Authentication" })).toBeTruthy();
     expect(screen.getByRole("group", { name: "Source" })).toBeTruthy();
     expect(container.querySelector('input[type="password"]')).toBeNull();
+  });
+
+  it("SSH password auth offers a password to keep in the Keychain; a key offers a passphrase only once a key file is named", () => {
+    const { container } = render(<ProfileEditor initial={null} onSave={async () => {}} onCancel={() => {}} />);
     fireEvent.change(screen.getByLabelText("Authentication type"), { target: { value: "password" } });
-    expect(screen.getByText(/not stored/i)).toBeTruthy();
+    expect(screen.getByLabelText("Password to save in the Keychain")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Authentication type"), { target: { value: "key" } });
     expect(container.querySelector('input[type="password"]')).toBeNull();
+    type("Key file", "/Users/me/.ssh/id_test");
+    expect(screen.getByLabelText("Passphrase to save in the Keychain")).toBeTruthy();
   });
 
   it("saves a new SSH key profile with exactly the typed values", async () => {

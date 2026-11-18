@@ -102,7 +102,7 @@ describe("SshPage opened from a saved profile", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(onSshOpen.mock.calls).toEqual([[launch(1).target, PID]]);
+    expect(onSshOpen.mock.calls).toEqual([[launch(1).target, PID, undefined]]);
     expect((screen.getByPlaceholderText("host") as HTMLInputElement).value).toBe("build.example.test");
     expect((screen.getByPlaceholderText("user") as HTMLInputElement).value).toBe("ci");
     expect((screen.getByPlaceholderText("port") as HTMLInputElement).value).toBe("2222");
@@ -120,7 +120,7 @@ describe("SshPage opened from a saved profile", () => {
 
   it("the quick-connect form opens without a profile id", async () => {
     const { onSshOpen } = await connectAndRun();
-    expect(onSshOpen.mock.calls).toEqual([[{ host: "example.com", extraOptions: [] }, undefined]]);
+    expect(onSshOpen.mock.calls).toEqual([[{ host: "example.com", extraOptions: [] }, undefined, undefined]]);
     // No undefined-valued key: BB's RPC refuses it before the handler.
     expect(nonJsonPath(onSshOpen.mock.calls[0]?.[0])).toBeNull();
   });
@@ -304,5 +304,82 @@ describe("SshPage state transitions", () => {
     await connectAndRun();
     expect(xtermArgs[0]?.theme).toEqual({ background: "#111111", foreground: "#eeeeee" });
     expect(xtermArgs[0]?.fontFamily).toBe("mono");
+  });
+});
+
+describe("SshPage and OpenSSH's questions / a saved secret", () => {
+  const PID = "11111111-2222-4333-8444-555555555555";
+  const REF = "rh-cred:v1:local:00000000-0000-4000-8000-000000000001";
+  const HANDLE: SessionHandle = { generation: "a".repeat(32), sessionId: 1 };
+  const settle = () =>
+    act(async () => {
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+  async function launched() {
+    const onSshOpen = vi.fn(async () => HANDLE);
+    const onAttach = vi.fn(async () => ({ token: "b".repeat(32), wsUrl: "ws://x" }));
+    const onClose = vi.fn(async () => {});
+    render(
+      <SshPage
+        onSshOpen={onSshOpen}
+        onAttach={onAttach}
+        onClose={onClose}
+        launch={{ nonce: 1, profileId: PID, target: { host: "box.test", user: "root", port: 2222, extraOptions: [] }, credentialRef: REF }}
+      />,
+    );
+    await settle();
+    return { onSshOpen, socket: FakeWebSocket.instances[0] };
+  }
+
+  it("passes the saved credential reference to the open, and nothing secret", async () => {
+    const { onSshOpen } = await launched();
+    expect(onSshOpen.mock.calls[0]).toEqual([{ host: "box.test", user: "root", port: 2222, extraOptions: [] }, PID, REF]);
+  });
+
+  it("shows a host-key question, answers it once over the socket, and clears it", async () => {
+    const { socket } = await launched();
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ type: "prompt", promptId: 7, text: "Are you sure you want to continue connecting (yes/no)?", kind: "confirm" }) });
+    });
+    expect(screen.getByTestId("ssh-prompt-text").textContent).toContain("continue connecting");
+    fireEvent.click(screen.getByText("Yes"));
+    expect(socket.sent.filter((d) => typeof d === "string" && d.includes("prompt_answer"))).toEqual([
+      JSON.stringify({ type: "prompt_answer", promptId: 7, answer: "yes" }),
+    ]);
+    expect(screen.queryByTestId("ssh-prompt-text")).toBeNull();
+  });
+
+  it("Escape cancels (answer null) and nothing is preselected: Enter on the dialog answers nothing", async () => {
+    const { socket } = await launched();
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ type: "prompt", promptId: 8, text: "continue?", kind: "confirm" }) });
+    });
+    const dialog = screen.getByRole("alertdialog");
+    fireEvent.keyDown(dialog, { key: "Enter" });
+    expect(socket.sent.some((d) => typeof d === "string" && d.includes("prompt_answer"))).toBe(false);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(socket.sent.filter((d) => typeof d === "string" && d.includes("prompt_answer"))).toEqual([
+      JSON.stringify({ type: "prompt_answer", promptId: 8, answer: null }),
+    ]);
+  });
+
+  it("says plainly that the server refused the saved secret, and what the Keychain said when it could not be read", async () => {
+    const { socket } = await launched();
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ type: "credential_rejected" }) });
+    });
+    expect(screen.getByTestId("ssh-credential-notice").textContent).toContain("refused the saved password");
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ type: "credential_failed", code: "keychain_locked" }) });
+    });
+    expect(screen.getByTestId("ssh-credential-notice").textContent).toContain("Keychain is locked");
+  });
+
+  it("a stale answer (prompt_gone) does not turn the session into an error", async () => {
+    const { socket } = await launched();
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ type: "error", code: "prompt_gone" }) });
+    });
+    expect(screen.getByTestId("ssh-state").textContent).not.toContain("error");
   });
 });

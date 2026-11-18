@@ -68,9 +68,11 @@ describe("the UI -> RPC bridge sends strict JSON only (L1)", () => {
     const { ssh } = createConnectBridge(call, "ws://x");
     await ssh.onSshOpen({ host: "h.test", user: undefined, port: undefined, identityFile: undefined, extraOptions: [] });
     await ssh.onSshOpen({ host: "h.test", extraOptions: [] }, PID);
+    await ssh.onSshOpen({ host: "h.test", extraOptions: [] }, PID, "rh-cred:v1:local:00000000-0000-4000-8000-000000000001");
     expect(calls).toEqual([
       { method: "ssh_open", input: { target: { host: "h.test", extraOptions: [] } } },
       { method: "ssh_open", input: { target: { host: "h.test", extraOptions: [] }, profileId: PID } },
+      { method: "ssh_open", input: { target: { host: "h.test", extraOptions: [] }, profileId: PID, credentialRef: "rh-cred:v1:local:00000000-0000-4000-8000-000000000001" } },
     ]);
   });
 

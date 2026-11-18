@@ -2,6 +2,9 @@
 // running, detached, closed (with exit status), error.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionHandle, SshTarget } from "../core/rpc.ts";
+import { errorCodeText } from "../core/rdp-texts.ts";
+import type { SshAskpassEvent } from "../core/ssh-askpass-protocol.ts";
+import { SshPromptDialog, type SshPromptInfo } from "./ssh-prompt.tsx";
 import { SshTerminal, type SshExitInfo, type SshTerminalState } from "./ssh-terminal.tsx";
 
 export interface SshAttach {
@@ -14,10 +17,12 @@ export interface SshLaunch {
   nonce: number;
   profileId: string;
   target: SshTarget;
+  /** The saved password or passphrase of the profile, if it has one. */
+  credentialRef?: string;
 }
 
 export interface SshPageProps {
-  onSshOpen: (target: SshTarget, profileId?: string) => Promise<SessionHandle>;
+  onSshOpen: (target: SshTarget, profileId?: string, credentialRef?: string) => Promise<SessionHandle>;
   launch?: SshLaunch;
   onAttach: (handle: SessionHandle) => Promise<SshAttach>;
   onClose: (handle: SessionHandle) => Promise<void>;
@@ -43,6 +48,10 @@ export function SshPage(props: SshPageProps) {
   const [state, setState] = useState<PageState>("idle");
   const [exit, setExit] = useState<SshExitInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Questions OpenSSH asked (host key...) and what happened to a saved secret; per session.
+  const [prompts, setPrompts] = useState<SshPromptInfo[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
+  const control = useRef<((msg: unknown) => void) | null>(null);
   // One guard for every way to open (Quick connect and the catalogue): the
   // latest request wins. An open that finishes after a newer one started is
   // closed at once, and a session replaced by a newer one is closed too, so
@@ -62,16 +71,33 @@ export function SshPage(props: SshPageProps) {
     if (info !== undefined) setExit(info);
   }, []);
 
+  const onAskpass = useCallback((event: SshAskpassEvent) => {
+    if (event.type === "prompt") {
+      setPrompts((cur) => (cur.some((p) => p.promptId === event.promptId) ? cur : [...cur, { promptId: event.promptId, text: event.text, kind: event.kind }]));
+    } else if (event.type === "credential_rejected") {
+      setNotice(errorCodeText("ssh_credential_rejected"));
+    } else {
+      setNotice(errorCodeText(event.code));
+    }
+  }, []);
+
+  const answerPrompt = useCallback((promptId: number, answer: string | null) => {
+    setPrompts((cur) => cur.filter((p) => p.promptId !== promptId));
+    control.current?.({ type: "prompt_answer", promptId, answer });
+  }, []);
+
   const open = useCallback(
-    async (t: SshTarget, profileId?: string) => {
+    async (t: SshTarget, profileId?: string, credentialRef?: string) => {
       const mine = ++latest.current;
       setState("connecting");
       setError(null);
+      setNotice(null);
+      setPrompts([]);
       setExit(null);
       setPending(t);
       let handle: SessionHandle;
       try {
-        handle = await onSshOpen(t, profileId);
+        handle = await onSshOpen(t, profileId, credentialRef);
       } catch (e) {
         if (mine !== latest.current) return;
         setPending(null);
@@ -111,11 +137,11 @@ export function SshPage(props: SshPageProps) {
   useEffect(() => {
     if (props.launch === undefined || lastLaunch.current === props.launch.nonce) return;
     lastLaunch.current = props.launch.nonce;
-    const { target: t, profileId } = props.launch;
+    const { target: t, profileId, credentialRef } = props.launch;
     setHost(t.host);
     setUser(t.user ?? "");
     setPort(t.port === undefined ? "" : String(t.port));
-    void open(t, profileId);
+    void open(t, profileId, credentialRef);
   }, [props.launch, open]);
 
   const disconnect = useCallback(async () => {
@@ -187,9 +213,15 @@ export function SshPage(props: SshPageProps) {
         )}
       </div>
       {error !== null && <p className="rh-error">{error}</p>}
+      {notice !== null && (
+        <p role="alert" className="rh-error" data-testid="ssh-credential-notice">
+          {notice}
+        </p>
+      )}
+      {prompts.length > 0 && state !== "closed" && <SshPromptDialog prompt={prompts[0]} onAnswer={answerPrompt} />}
       {attach !== null && (
         <div className="rh-terminal-wrap">
-          <SshTerminal wsUrl={attach.wsUrl} token={attach.token} onStateChange={onTerminalState} />
+          <SshTerminal wsUrl={attach.wsUrl} token={attach.token} onStateChange={onTerminalState} onAskpass={onAskpass} controlRef={control} />
         </div>
       )}
     </div>

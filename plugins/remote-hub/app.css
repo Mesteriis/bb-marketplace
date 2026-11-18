@@ -525,3 +525,11 @@
   flex-direction: column;
   gap: 6px;
 }
+
+.rh-ssh-prompt-text {
+  font-family: var(--font-terminal, monospace);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 8px 0 12px;
+}

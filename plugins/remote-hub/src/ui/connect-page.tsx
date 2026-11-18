@@ -46,7 +46,7 @@ export function ConnectPage(props: ConnectPageProps) {
     nonce.current += 1;
     if (p.protocol === "ssh") {
       setKind("ssh");
-      setSshLaunch({ nonce: nonce.current, profileId: p.id, target: profileToSshTarget(p) });
+      setSshLaunch({ nonce: nonce.current, profileId: p.id, target: profileToSshTarget(p), ...(p.credentialRef !== null ? { credentialRef: p.credentialRef } : {}) });
     } else {
       setKind("rdp");
       setRdpPrefill({ nonce: nonce.current, profileId: p.id, ...profileToRdpForm(p) });
@@ -101,9 +101,9 @@ export function ConnectPage(props: ConnectPageProps) {
   const ssh: SshPageProps = {
     ...props.ssh,
     ...(sshLaunch !== undefined ? { launch: sshLaunch } : {}),
-    onSshOpen: async (target, profileId) => {
+    onSshOpen: async (target, profileId, credentialRef) => {
       try {
-        return await props.ssh.onSshOpen(target, profileId);
+        return await props.ssh.onSshOpen(target, profileId, credentialRef);
       } finally {
         void reload();
       }

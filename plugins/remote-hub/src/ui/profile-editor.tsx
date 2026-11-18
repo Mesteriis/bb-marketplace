@@ -85,8 +85,13 @@ export function ProfileEditor(props: ProfileEditorProps) {
     (host.trim() !== props.initial.host ||
       (numberOrNull(port) ?? null) !== props.initial.port ||
       (orNull(username) ?? null) !== props.initial.username ||
-      (orNull(domain) ?? null) !== props.initial.domain);
+      (orNull(domain) ?? null) !== props.initial.domain ||
+      (!rdp && authType === "key" && (orNull(identityFile) ?? null) !== props.initial.identityFile));
   const effectiveAuth = rdp ? "password" : authType;
+  // What a saved secret is for: a password, or the passphrase of the key file named above.
+  const secretKind: "password" | "passphrase" | null =
+    effectiveAuth === "password" ? "password" : effectiveAuth === "key" && orNull(identityFile) !== null ? "passphrase" : null;
+  const noun = secretKind === "passphrase" ? "passphrase" : "password";
 
   const choose = (next: ProfileFields["protocol"]) => {
     setProtocol(next);
@@ -213,38 +218,36 @@ export function ProfileEditor(props: ProfileEditorProps) {
             <input value={identityFile} onChange={(e) => setIdentityFile(e.target.value)} placeholder="/Users/you/.ssh/id_ed25519" />
           </label>
         )}
-        {rdp && (
+        {secretKind !== null && (
           <>
             {hasSaved ? (
               <>
-                <p className="rh-hint">A password is saved in the Keychain for this profile.</p>
+                <p className="rh-hint">A {noun} is saved in the Keychain for this profile.</p>
                 <label>
-                  Replace the saved password
+                  Replace the saved {noun}
                   <input type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} disabled={removeSaved} />
                 </label>
                 <label className="rh-check">
                   <input type="checkbox" checked={removeSaved} onChange={(e) => setRemoveSaved(e.target.checked)} />
-                  Remove the saved password
+                  Remove the saved {noun}
                 </label>
-                {endpointMoved && <p className="rh-error">Changing the host, port, user or domain: the saved password will be forgotten.</p>}
+                {endpointMoved && <p className="rh-error">Changing the host, port, user, domain or key file: the saved {noun} will be forgotten.</p>}
               </>
             ) : (
               <label>
-                Password to save in the Keychain
+                {secretKind === "passphrase" ? "Passphrase" : "Password"} to save in the Keychain
                 <input type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} />
               </label>
             )}
           </>
         )}
         <p className="rh-hint">
-          {effectiveAuth === "password"
-            ? rdp
-              ? hasSaved
-                ? "Connect uses the saved password; nothing is typed."
-                : "Leave empty to type it each time you connect, or enter one to keep it in the Keychain."
-              : "The password is not stored: ssh asks for it in the terminal."
+          {secretKind !== null
+            ? hasSaved
+              ? `Connect uses the saved ${noun}; nothing is typed.`
+              : `Leave empty to type it each time you connect, or enter one to keep it in the Keychain.`
             : effectiveAuth === "key"
-              ? "Only the path is saved; OpenSSH reads the key and asks for its passphrase itself."
+              ? "Enter the key file path to keep its passphrase in the Keychain; OpenSSH asks for it in the terminal otherwise."
               : "OpenSSH uses its agent and default keys."}
         </p>
       </fieldset>

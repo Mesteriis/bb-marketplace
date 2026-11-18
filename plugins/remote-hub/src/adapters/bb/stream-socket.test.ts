@@ -158,15 +158,15 @@ describe("stream-socket askpass events and answers", () => {
     await handlers.onOpen(socket);
     socket.sent.length = 0;
     push({ type: "prompt", promptId: 3, text: "Continue connecting (yes/no)?", kind: "confirm" });
-    push({ type: "credential", state: "rejected" });
+    push({ type: "credential_rejected" });
     expect(socket.sent.map((s) => JSON.parse(String(s)))).toEqual([
       { type: "prompt", promptId: 3, text: "Continue connecting (yes/no)?", kind: "confirm" },
-      { type: "credential", state: "rejected" },
+      { type: "credential_rejected" },
     ]);
     handlers.onClose();
     expect(off).toHaveBeenCalledTimes(1);
     socket.sent.length = 0;
-    push({ type: "credential", state: "failed", code: "keychain_locked" });
+    push({ type: "credential_failed", code: "keychain_locked" });
     expect(socket.sent).toEqual([]);
   });
 

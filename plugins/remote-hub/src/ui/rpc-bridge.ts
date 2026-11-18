@@ -47,7 +47,7 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
       status: (ref) => send<{ state: CredentialStateName }>("credential_status", { ref }),
     },
     ssh: {
-      onSshOpen: (target: SshTarget, profileId?: string) => send<SessionHandle>("ssh_open", { target, profileId }),
+      onSshOpen: (target: SshTarget, profileId?: string, credentialRef?: string) => send<SessionHandle>("ssh_open", { target, profileId, credentialRef }),
       onAttach,
       onClose: async (handle) => {
         await close(handle);

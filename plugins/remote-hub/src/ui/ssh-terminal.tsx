@@ -4,7 +4,8 @@
 import "@xterm/xterm/css/xterm.css";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
+import type { SshAskpassEvent } from "../core/ssh-askpass-protocol.ts";
 
 export type SshTerminalState = "connecting" | "running" | "detached" | "closed" | "error";
 
@@ -18,6 +19,10 @@ export interface SshTerminalProps {
   wsUrl: string;
   token: string;
   onStateChange?: (state: SshTerminalState, exit?: SshExitInfo) => void;
+  /** Prompts of OpenSSH's askpass and what happened to a saved secret. */
+  onAskpass?: (event: SshAskpassEvent) => void;
+  /** Filled with a function that sends a control message on the open socket. */
+  controlRef?: MutableRefObject<((msg: unknown) => void) | null>;
 }
 
 export function SshTerminal(props: SshTerminalProps) {
@@ -58,6 +63,7 @@ export function SshTerminal(props: SshTerminalProps) {
       sendControl({ type: "resize", cols: terminal.cols, rows: terminal.rows });
     };
 
+    if (props.controlRef !== undefined) props.controlRef.current = sendControl;
     props.onStateChange?.("connecting");
 
     socket.onopen = () => {
@@ -76,7 +82,7 @@ export function SshTerminal(props: SshTerminalProps) {
     socket.onmessage = (event) => {
       if (disposed) return;
       if (typeof event.data === "string") {
-        let msg: { type?: string; exitCode?: number | null; signal?: number | null; reason?: string };
+        let msg: { type?: string; exitCode?: number | null; signal?: number | null; reason?: string; promptId?: number; text?: string; kind?: string; code?: string };
         try {
           msg = JSON.parse(event.data);
         } catch {
@@ -92,8 +98,15 @@ export function SshTerminal(props: SshTerminalProps) {
             signal: msg.signal ?? null,
             reason: msg.reason ?? "exited",
           });
+        } else if (msg.type === "prompt" && typeof msg.promptId === "number" && typeof msg.text === "string") {
+          props.onAskpass?.({ type: "prompt", promptId: msg.promptId, text: msg.text, kind: msg.kind ?? "none" });
+        } else if (msg.type === "credential_rejected") {
+          props.onAskpass?.({ type: "credential_rejected" });
+        } else if (msg.type === "credential_failed") {
+          props.onAskpass?.({ type: "credential_failed", code: msg.code ?? "unknown" });
         } else if (msg.type === "error") {
-          props.onStateChange?.("error");
+          // An answer to a prompt that is already gone is not a broken session.
+          if (msg.code !== "prompt_gone") props.onStateChange?.("error");
         }
         return;
       }
@@ -138,6 +151,7 @@ export function SshTerminal(props: SshTerminalProps) {
     return () => {
       disposed = true;
       observer.disconnect();
+      if (props.controlRef !== undefined && props.controlRef.current === sendControl) props.controlRef.current = null;
       if (socket.readyState === WebSocket.OPEN) sendControl({ type: "detach" });
       socket.close();
       terminal.dispose();
