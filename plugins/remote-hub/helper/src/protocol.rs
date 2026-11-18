@@ -238,6 +238,13 @@ pub enum Response {
         #[serde(rename = "sessionId")]
         session_id: u32,
     },
+    /// The Keychain would not hand over the saved credential (`code`: keychain_locked, ...).
+    #[serde(rename = "ssh.credential_failed")]
+    SshCredentialFailed {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        code: String,
+    },
     #[serde(rename = "ssh.prompt_ack")]
     SshPromptAck { id: u64 },
     /// The answer to `credential.status` (a different name: `credential.status` is the request).

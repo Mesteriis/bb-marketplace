@@ -195,6 +195,24 @@ mod tests {
     }
 
     #[test]
+    fn preferred_authentications_is_allowed_for_password_and_publickey_once_and_nothing_else() {
+        let ok = |auth: &str| {
+            let a: Vec<String> = ["ssh", "-tt", "-l", "u", "-o", auth, "--", "example.com"].iter().map(|s| s.to_string()).collect();
+            validate_ssh_spawn("/usr/bin/ssh", &a, &env(&[("TERM", "xterm-256color")])).is_ok()
+        };
+        assert!(ok("PreferredAuthentications=password"));
+        assert!(ok("PreferredAuthentications=publickey"));
+        assert!(!ok("PreferredAuthentications=keyboard-interactive"));
+        assert!(!ok("PreferredAuthentications=password,publickey"));
+        assert!(!ok("PubkeyAuthentication=no"));
+        let twice: Vec<String> = ["ssh", "-tt", "-o", "PreferredAuthentications=password", "-o", "PreferredAuthentications=publickey", "--", "h"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(validate_ssh_spawn("/usr/bin/ssh", &twice, &HashMap::new()).is_err());
+    }
+
+    #[test]
     fn rejects_forbidden_programs_and_options() {
         assert!(validate_ssh_spawn("/bin/sh", &vec![], &HashMap::new()).is_err());
 

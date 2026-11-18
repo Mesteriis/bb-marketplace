@@ -83,6 +83,15 @@ pub enum BrokerEvent {
     Prompt { session_id: u32, prompt_id: u64, text: String, kind: String },
     /// The saved credential was used once and the server asked again: it was refused.
     CredentialRejected { session_id: u32 },
+    /// The Keychain would not hand the saved credential over (keychain_locked, credential_missing, ...).
+    CredentialFailed { session_id: u32, code: String },
+}
+
+/// What the askpass client reports after it tried to use a stored credential.
+#[derive(Serialize, Deserialize)]
+struct Outcome {
+    #[serde(default)]
+    error: Option<String>,
 }
 
 struct Session {
@@ -94,6 +103,8 @@ struct Session {
 
 enum State {
     Reading,
+    /// The stored credential was sent for the client to read from the Keychain; its outcome is awaited.
+    Report { since: Instant, session_id: u32 },
     /// The question is with the user.
     Ui { prompt_id: u64, since: Instant, session_id: u32 },
 }
@@ -264,6 +275,13 @@ impl Broker {
                 let mut probe = [0u8; 1];
                 return matches!(self.conns[index].stream.read(&mut probe), Ok(0));
             }
+            State::Report { since, session_id } => {
+                let session_id = *session_id;
+                if now.duration_since(*since) > REQUEST_TIMEOUT {
+                    return true;
+                }
+                return self.read_outcome(index, session_id);
+            }
             State::Reading => {}
         }
         let mut chunk = [0u8; 2048];
@@ -292,11 +310,63 @@ impl Broker {
         };
         match reply {
             Some(reply) => {
+                let stored_for = match (&reply, self.by_nonce.get(&nonce_of(&line))) {
+                    (Reply::Stored { .. }, Some(&sid)) => Some(sid),
+                    _ => None,
+                };
                 let _ = write_reply(&mut self.conns[index].stream, &reply);
-                true
+                match stored_for {
+                    // Keep the connection: the client says whether the Keychain gave the secret up.
+                    Some(session_id) => {
+                        self.conns[index].state = State::Report { since: Instant::now(), session_id };
+                        false
+                    }
+                    None => true,
+                }
             }
             None => false, // handed to the user
         }
+    }
+
+    /// Reads the client's report about a stored credential. True when the connection is finished.
+    fn read_outcome(&mut self, index: usize, session_id: u32) -> bool {
+        let mut chunk = [0u8; 512];
+        let mut eof = false;
+        loop {
+            match self.conns[index].stream.read(&mut chunk) {
+                Ok(0) => {
+                    eof = true;
+                    break;
+                }
+                Ok(n) => {
+                    self.conns[index].buf.extend_from_slice(&chunk[..n]);
+                    if self.conns[index].buf.len() > MAX_REQUEST {
+                        return true;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => {
+                    eof = true;
+                    break;
+                }
+            }
+        }
+        // buf still holds the request line; the report is the line after it. It may arrive together
+        // with the end of the stream, so it is parsed before the EOF is acted on.
+        let text = String::from_utf8_lossy(&self.conns[index].buf).to_string();
+        if let Some(report) = text.lines().nth(1) {
+            if let Ok(outcome) = serde_json::from_str::<Outcome>(report) {
+                if let Some(code) = outcome.error {
+                    if let Some(session) = self.sessions.get_mut(&session_id) {
+                        // A refused Keychain is not "the server refused the password": no second message.
+                        session.rejected_sent = true;
+                    }
+                    self.events.push(BrokerEvent::CredentialFailed { session_id, code: code.chars().take(64).collect() });
+                }
+                return true;
+            }
+        }
+        eof
     }
 
     /// Some(reply) answers now; None means the question is with the user.
@@ -358,6 +428,10 @@ impl Drop for Broker {
     }
 }
 
+fn nonce_of(line: &[u8]) -> String {
+    serde_json::from_slice::<Request>(line).map(|r| r.nonce).unwrap_or_default()
+}
+
 fn write_reply(stream: &mut UnixStream, reply: &Reply) -> std::io::Result<()> {
     let mut text = serde_json::to_string(reply).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     text.push('\n');
@@ -400,8 +474,15 @@ pub fn run_client(args: &[String]) -> i32 {
                 return 1;
             }
             match Keychain::from_env().get(&reference) {
-                Ok(secret) => secret.expose().to_string(),
-                Err(_) => return 1,
+                Ok(secret) => {
+                    let _ = stream.write_all(b"{}\n");
+                    secret.expose().to_string()
+                }
+                Err(e) => {
+                    // Tell the helper why, so the user hears "the Keychain is locked", not a bare "denied".
+                    let _ = stream.write_all(format!("{{\"error\":\"{}\"}}\n", e.code()).as_bytes());
+                    return 1;
+                }
             }
         }
     };

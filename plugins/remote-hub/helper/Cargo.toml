@@ -29,6 +29,11 @@ name = "production"
 path = "tests/production.rs"
 
 [[test]]
+name = "askpass_process"
+path = "tests/askpass_process.rs"
+required-features = ["test-hooks"]
+
+[[test]]
 name = "keychain_child"
 path = "tests/keychain_child.rs"
 required-features = ["test-hooks"]

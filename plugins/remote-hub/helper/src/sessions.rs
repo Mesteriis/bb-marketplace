@@ -320,7 +320,15 @@ impl SessionManager {
             );
         }
         let broker = self.askpass.as_mut().expect("just created");
-        let (nonce, env) = broker.prepare();
+        let (nonce, mut env) = broker.prepare();
+        // Test-hooks only: the askpass client (a child of ssh, with the session's small environment)
+        // must open the same temporary keychain the helper was given.
+        #[cfg(feature = "test-hooks")]
+        for key in ["REMOTE_HUB_KEYCHAIN_PATH", "REMOTE_HUB_ASKPASS_UI_TIMEOUT_MS"] {
+            if let Ok(value) = std::env::var(key) {
+                env.push((key.to_string(), value));
+            }
+        }
         for (k, v) in env {
             if let (Ok(k), Ok(v)) = (CString::new(k), CString::new(v)) {
                 spec.env.retain(|(ek, _)| *ek != k);
