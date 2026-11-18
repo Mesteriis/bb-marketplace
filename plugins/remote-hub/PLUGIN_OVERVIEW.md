@@ -25,21 +25,26 @@ both through a Rust helper, plus the echo console from stage 1.
   (SSH at once; RDP fills the form and waits for the password). A profile holds
   no password or key material, and it records only when it was last opened and
   the codes of recent failed opens.
-- Saved passwords for RDP profiles, kept in the macOS Keychain (never in the profile,
+- Saved passwords for RDP and SSH profiles and saved key passphrases, kept in the macOS Keychain (never in the profile,
   the database, the page or any log). A profile can save a password, replace it or
   remove it; Connect then uses it without typing. A saved password only works for
   the host, port, user and domain it was saved for, and editing those forgets it.
   A Credentials screen lists what is saved, which profiles use each entry, and can
   check, change or delete it. A locked or refusing Keychain is shown as such; there
   is no fallback to storing the password anywhere else.
+- SSH uses a saved password or passphrase through OpenSSH's askpass hook, served by
+  the helper itself: it answers only the one password or passphrase prompt the session
+  was set up for, once. A refused secret is not retried (the server's own log shows
+  one attempt) and is reported plainly. A host-key question or any other prompt is
+  shown to you and answered by you, once, and never saved.
 - The helper owns every session; detaching a view never ends it, and
   disconnecting never logs the remote user off. Session end is reported with its
   reason.
 
 ## Honest limits
 
-SSH passwords and key passphrases are still typed each time (saving them needs the
-askpass work of stage 3b-2), certificate trust lasts for the BB run, and there is no
+A saved SSH secret answers only password or passphrase prompts; keyboard-interactive
+logins (one-time codes) are always typed by you. Certificate trust lasts for the BB run, and there is no
 import of SSH config, no agent tools and no CLI yet. The helper is not code-signed,
 so macOS may ask you to approve its Keychain access; until you do, a saved password
 reports "locked or needs approval" instead of a dialog. "Last opened" means the open call succeeded, not that

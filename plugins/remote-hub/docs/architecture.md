@@ -308,3 +308,38 @@ and `useProfiles` around the existing session pages; Quick connect stays.
   throwaway password; the user's keychain search list and default keychain are not
   changed). With no path a test-hooks helper has no keychain at all, a path that is not a
   file is an error, and the production binary does not contain these strings.
+
+## Stage 3b-2 — saved SSH secrets (askpass)
+
+- **Mechanism:** a session opened with a saved secret runs OpenSSH with
+  `SSH_ASKPASS=<private 0700 dir>/remote-hub-askpass` (a symlink, absolute target, to the
+  helper), `SSH_ASKPASS_REQUIRE=force`, a one-shot nonce and the path of a per-session
+  0600 Unix socket the helper owns. `main` recognises the askpass name and runs the client:
+  it asks the helper what to do, reads the Keychain itself when told to (the secret never
+  enters the helper's main process or the TypeScript side) and prints it to ssh.
+- **Who may ask:** the nonce must match, the peer's uid must be ours, and the peer's PARENT
+  must be the session's ssh child (so another process with the nonce is refused).
+- **What gets the secret:** OpenSSH leaves `SSH_ASKPASS_PROMPT` empty for the host-key
+  question too (verified on OpenSSH 10.3), so the prompt TEXT decides: only the one-line
+  `...'s password:` or `Enter passphrase for ...:` prompt, written by the client for the
+  method the session was fixed to (`-o PreferredAuthentications=password|publickey`, set by
+  the server, never the client), is answered from the Keychain, once. Yes/no questions and
+  everything else go to the user as `ssh.prompt`; the answer comes back once as
+  `ssh.prompt_answer`, is never stored, and a prompt left open for 120 s is refused.
+- **One attempt:** `-o NumberOfPasswordPrompts=2`. A second password/passphrase prompt means
+  the first was refused; OpenSSH would send an EMPTY password if askpass merely failed, so
+  the helper stops that ssh process before replying and raises `ssh.credential_rejected`.
+  Integration evidence: sshd's own log shows exactly one "Failed password" line (before the
+  change it showed three).
+- **Authorisation:** `ssh_open` with `credentialRef` requires a password saved for exactly this
+  host, port and user, or a passphrase saved for exactly this identity file
+  (`CredentialBook.authorizeSsh`); the server picks the auth method.
+- **Page:** `prompt` and `credential_rejected`/`credential_failed` events travel on the session's
+  attach socket; the page shows a dialog (nothing preselected, Escape cancels) or a notice.
+- **Tests:** helper process tests under a real pty (peer checks, nonce burn, UI prompts, timeout,
+  locked keychain, host-key with empty prompt kind); `tests/integration/ssh-askpass.test.ts`
+  against a throwaway sshd with a temporary keychain: saved password, encrypted-key
+  passphrase, wrong password (one attempt), host-key question answered and cancelled, refusal
+  for another endpoint, and a sentinel search over helper stderr, session and credential lists,
+  profile and metadata rows, askpass events, terminal output, and the arguments and
+  environments of the helper and its descendants.

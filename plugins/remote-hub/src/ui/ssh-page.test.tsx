@@ -383,3 +383,26 @@ describe("SshPage and OpenSSH's questions / a saved secret", () => {
     expect(screen.getByTestId("ssh-state").textContent).not.toContain("error");
   });
 });
+
+describe("SshPage and a typed answer to an ambiguous prompt", () => {
+  it("masks the answer, sends it once with Enter, and clears the field", async () => {
+    const onSshOpen = vi.fn(async () => ({ generation: "a".repeat(32), sessionId: 1 }));
+    const onAttach = vi.fn(async () => ({ token: "b".repeat(32), wsUrl: "ws://x" }));
+    render(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={async () => {}} launch={{ nonce: 1, profileId: "11111111-2222-4333-8444-555555555555", target: { host: "box.test", extraOptions: [] } }} />);
+    await act(async () => {
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ type: "prompt", promptId: 2, text: "Verification code: ", kind: "secret" }) });
+    });
+    const input = screen.getByLabelText("Answer") as HTMLInputElement;
+    expect(input.type).toBe("password");
+    fireEvent.change(input, { target: { value: "654321" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(socket.sent.filter((d) => typeof d === "string" && d.includes("prompt_answer"))).toEqual([
+      JSON.stringify({ type: "prompt_answer", promptId: 2, answer: "654321" }),
+    ]);
+    expect(screen.queryByLabelText("Answer")).toBeNull();
+  });
+});

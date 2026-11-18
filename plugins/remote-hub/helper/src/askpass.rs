@@ -54,6 +54,21 @@ fn ui_timeout() -> Duration {
 const MAX_REQUEST: usize = 8 * 1024;
 const MAX_PROMPT: usize = 1024;
 
+/// What a prompt with an empty SSH_ASKPASS_PROMPT is. "stored": the one-line password or key
+/// passphrase prompt OpenSSH itself writes for the method this session was fixed to.
+/// "confirm": a yes/no question (the host key). Anything else is "secret": the user types it.
+fn classify_prompt(prompt: &str) -> &'static str {
+    let single_line = !prompt.contains('\n');
+    let trimmed = prompt.trim_end();
+    if single_line && (trimmed.ends_with("'s password:") || (trimmed.starts_with("Enter passphrase for ") && trimmed.ends_with(':'))) {
+        return "stored";
+    }
+    if prompt.contains("(yes/no") {
+        return "confirm";
+    }
+    "secret"
+}
+
 #[derive(Serialize, Deserialize)]
 struct Request {
     nonce: String,
@@ -79,7 +94,7 @@ enum Reply {
 /// Something the helper must tell its client (the TypeScript layer).
 #[derive(Debug, PartialEq, Eq)]
 pub enum BrokerEvent {
-    /// A prompt for the user. `kind` is "secret", "confirm" or "none".
+    /// A prompt for the user. `kind` is "secret" (a typed, masked answer), "confirm" or "none".
     Prompt { session_id: u32, prompt_id: u64, text: String, kind: String },
     /// The saved credential was used once and the server asked again: it was refused.
     CredentialRejected { session_id: u32 },
@@ -385,17 +400,28 @@ impl Broker {
             _ => return Some(Reply::Deny),
         }
         let text: String = request.prompt.chars().take(MAX_PROMPT).collect();
-        let secret_prompt = request.kind.is_empty();
-        if secret_prompt {
+        // OpenSSH leaves SSH_ASKPASS_PROMPT empty not only for secrets but also for the host-key
+        // question, so the stored secret is given ONLY to the prompt the session is configured to
+        // expect (decided from its text, which the client generates, never the server). Anything
+        // else that is not marked confirm/none goes to the user and is never stored.
+        let kind = if request.kind.is_empty() { classify_prompt(&request.prompt) } else { request.kind.as_str() };
+        if kind == "stored" {
             if !session.burned && valid_credential_ref(&session.reference) {
                 // The stored secret answers the FIRST secret prompt of the session and burns the nonce.
                 session.burned = true;
                 return Some(Reply::Stored { reference: session.reference.clone() });
             }
-            // Asked again after the stored secret was used: the server refused it. One attempt only.
+            // Asked again after the stored secret was used: the server (or the key) refused it. One
+            // attempt only. A failed askpass is not "no answer" to OpenSSH: it sends an EMPTY password
+            // as a second attempt. So the ssh process that is waiting on this very call is stopped
+            // BEFORE the reply is sent, and the user is told the saved secret was refused.
             if session.burned && !session.rejected_sent {
                 session.rejected_sent = true;
                 self.events.push(BrokerEvent::CredentialRejected { session_id });
+            }
+            // SAFETY: child_pid is the ssh child of this session; the peer's parent pid was just checked to equal it.
+            unsafe {
+                libc::kill(child_pid, libc::SIGTERM);
             }
             return Some(Reply::Deny);
         }
@@ -403,7 +429,7 @@ impl Broker {
         let prompt_id = self.next_prompt;
         self.next_prompt += 1;
         self.conns[index].state = State::Ui { prompt_id, since: Instant::now(), session_id };
-        self.events.push(BrokerEvent::Prompt { session_id, prompt_id, text, kind: request.kind });
+        self.events.push(BrokerEvent::Prompt { session_id, prompt_id, text, kind: kind.to_string() });
         None
     }
 
@@ -501,6 +527,18 @@ pub fn invoked_as_askpass(argv0: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_one_line_password_and_passphrase_prompts_are_eligible_for_the_stored_secret() {
+        assert_eq!(classify_prompt("root@127.0.0.1's password: "), "stored");
+        assert_eq!(classify_prompt("Enter passphrase for key '/Users/x/.ssh/id_ed25519': "), "stored");
+        assert_eq!(classify_prompt("The authenticity of host 'h' can't be established.\nAre you sure you want to continue connecting (yes/no/[fingerprint])? "), "confirm");
+        assert_eq!(classify_prompt("Are you sure you want to continue connecting (yes/no)? "), "confirm");
+        assert_eq!(classify_prompt("Verification code: "), "secret");
+        assert_eq!(classify_prompt("Password: "), "secret");
+        // Multi-line text that merely ends like a password prompt is not eligible.
+        assert_eq!(classify_prompt("anything\nu@h's password: "), "secret");
+    }
 
     #[test]
     fn the_askpass_name_is_recognised_by_its_last_path_component_only() {

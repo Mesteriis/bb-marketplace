@@ -138,19 +138,23 @@ fn field(text: &str, key: &str) -> String {
 
 const TWO_SECRET_PROMPTS: &str = r#"
 my ($p1, $r1) = ask("user\@host's password: ");
+print "R1=$r1 H1=" . digest($p1) . " DONE1\n";
 my ($p2, $r2) = ask("user\@host's password: ");
-print "R1=$r1 H1=" . digest($p1) . " R2=$r2 DONE\n";
-sleep 1;
+print "R2=$r2 DONE2\n";
+sleep 5;
 "#;
 
 #[test]
-fn the_first_secret_prompt_gets_the_saved_credential_and_a_second_is_refused_with_a_rejection_event() {
+fn the_first_secret_prompt_gets_the_saved_credential_and_a_second_stops_ssh_before_it_can_send_an_empty_password() {
     let mut f = Fixture::new("two", &[]);
     let sid = f.open(TWO_SECRET_PROMPTS, true);
-    let (text, events) = f.drive(sid, Duration::from_secs(20), |t, e| t.contains("DONE") && e.iter().any(|r| matches!(r, Response::SshCredentialRejected { .. })));
+    let (text, events) = f.drive(sid, Duration::from_secs(20), |t, e| {
+        t.contains("DONE1") && e.iter().any(|r| matches!(r, Response::SshCredentialRejected { .. })) && e.iter().any(|r| matches!(r, Response::SessionClosed { .. }))
+    });
     assert_eq!(field(&text, "R1"), "0", "{text}");
     assert_eq!(field(&text, "H1"), SECRET_DIGEST, "the askpass answer is not the saved secret");
-    assert_eq!(field(&text, "R2"), "1", "a second attempt must be refused: {text}");
+    // The second prompt is never answered, not even with a failure that OpenSSH would turn into an empty password.
+    assert!(!text.contains("DONE2"), "ssh must be stopped before it continues past the second prompt: {text}");
     assert_eq!(events.iter().filter(|r| matches!(r, Response::SshCredentialRejected { session_id } if *session_id == sid)).count(), 1);
     assert!(!text.contains(SECRET), "the secret appeared on the terminal");
     assert!(!f.h().stderr_text().contains(SECRET));
@@ -224,7 +228,7 @@ sleep 6;
     // This test process holds the right nonce and the right uid, but is not the ssh child.
     let mut stream = UnixStream::connect(&socket).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    stream.write_all(format!("{{\"nonce\":\"{nonce}\",\"prompt\":\"pw\",\"kind\":\"\"}}\n").as_bytes()).unwrap();
+    stream.write_all(format!("{{\"nonce\":\"{nonce}\",\"prompt\":\"u@h's password: \",\"kind\":\"\"}}\n").as_bytes()).unwrap();
     let mut reply = String::new();
     let _ = stream.read_to_string(&mut reply);
     assert!(reply.contains("deny"), "an outsider with the nonce must be denied, got {reply:?}");
@@ -236,7 +240,7 @@ fn the_nonce_is_burned_by_the_first_secret_so_an_outsider_replay_after_it_also_f
     let mut f = Fixture::new("replay", &[]);
     let script = r#"
 print "SOCK=$ENV{REMOTE_HUB_ASKPASS_SOCKET} NONCE=$ENV{REMOTE_HUB_ASKPASS_NONCE}\n";
-my ($p, $r) = ask("pw: "); print "FIRST=$r DONE1\n";
+my ($p, $r) = ask("u\@h's password: "); print "FIRST=$r DONE1\n";
 sleep 6;
 "#;
     let sid = f.open(script, true);
@@ -244,7 +248,7 @@ sleep 6;
     assert_eq!(field(&text, "FIRST"), "0");
     let mut stream = UnixStream::connect(field(&text, "SOCK")).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    stream.write_all(format!("{{\"nonce\":\"{}\",\"prompt\":\"pw\",\"kind\":\"\"}}\n", field(&text, "NONCE")).as_bytes()).unwrap();
+    stream.write_all(format!("{{\"nonce\":\"{}\",\"prompt\":\"u@h's password: \",\"kind\":\"\"}}\n", field(&text, "NONCE")).as_bytes()).unwrap();
     let mut reply = String::new();
     let _ = stream.read_to_string(&mut reply);
     assert!(!reply.contains("stored"), "a burned nonce must not release the credential again: {reply:?}");
@@ -284,4 +288,46 @@ fn a_reference_that_is_not_ours_is_refused_at_open() {
         askpass: Some(AskpassSpec { credential_ref: "login".into() }),
     });
     assert!(matches!(f.h().read_reply(40), Response::Error { code, .. } if code == "invalid_credential_ref"));
+}
+
+#[test]
+fn a_host_key_question_with_an_empty_prompt_kind_goes_to_the_user_and_the_saved_secret_is_not_spent() {
+    // OpenSSH 10 leaves SSH_ASKPASS_PROMPT empty for the host-key question; it is NOT a password prompt.
+    let mut f = Fixture::new("hostkey", &[]);
+    let script = r#"
+my ($a, $r) = ask("The authenticity of host 'h' can't be established.\nED25519 key fingerprint is: SHA256:x\nAre you sure you want to continue connecting (yes/no/[fingerprint])? ");
+print "A=[" . ($a // "") . "] R=$r DONE1\n";
+my ($p, $r2) = ask("u\@h's password: ");
+print "H=" . digest($p) . " R=$r2 DONE2\n";
+sleep 1;
+"#;
+    let sid = f.open(script, true);
+    let (_, events) = f.drive(sid, Duration::from_secs(20), |_, ev| ev.iter().any(|r| matches!(r, Response::SshPrompt { .. })));
+    let Some(Response::SshPrompt { prompt_id, kind, text, .. }) = events.into_iter().find(|r| matches!(r, Response::SshPrompt { .. })) else { unreachable!() };
+    assert_eq!(kind, "confirm");
+    assert!(text.contains("continue connecting"));
+    f.h().send(&Request::SshPromptAnswer { id: 40, session_id: sid, prompt_id, answer: Some("yes".into()) });
+    let (text, _) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE2"));
+    assert_eq!(field(&text, "A"), "[yes]");
+    assert_eq!(field(&text, "R"), "0");
+    // The password prompt after it still gets the saved secret: the question did not burn the nonce.
+    assert_eq!(field(&text, "H"), SECRET_DIGEST, "{text}");
+}
+
+#[test]
+fn an_ambiguous_secret_prompt_is_asked_of_the_user_and_never_answered_from_the_keychain() {
+    let mut f = Fixture::new("ambiguous", &[]);
+    let script = r#"
+my ($a, $r) = ask("Verification code: ");
+print "A=[" . ($a // "") . "] R=$r DONE\n";
+sleep 1;
+"#;
+    let sid = f.open(script, true);
+    let (_, events) = f.drive(sid, Duration::from_secs(20), |_, ev| ev.iter().any(|r| matches!(r, Response::SshPrompt { .. })));
+    let Some(Response::SshPrompt { prompt_id, kind, .. }) = events.into_iter().find(|r| matches!(r, Response::SshPrompt { .. })) else { unreachable!() };
+    assert_eq!(kind, "secret");
+    f.h().send(&Request::SshPromptAnswer { id: 41, session_id: sid, prompt_id, answer: Some("123456".into()) });
+    let (text, _) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE"));
+    assert_eq!(field(&text, "A"), "[123456]");
+    assert!(!text.contains(SECRET_DIGEST));
 }

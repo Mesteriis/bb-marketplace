@@ -147,6 +147,11 @@ pub fn validate_ssh_spawn(
                     if !seen.insert("PreferredAuthentications".to_string()) {
                         return Err(ssh_option_rejected());
                     }
+                } else if v == "NumberOfPasswordPrompts=2" {
+                    // Two prompts for a saved secret: the second one is how a refusal is noticed, and it is never answered (stage 3b-2); at most once.
+                    if !seen.insert("NumberOfPasswordPrompts".to_string()) {
+                        return Err(ssh_option_rejected());
+                    }
                 } else {
                     return Err(ssh_option_rejected());
                 }
@@ -210,6 +215,24 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert!(validate_ssh_spawn("/usr/bin/ssh", &twice, &HashMap::new()).is_err());
+    }
+
+    #[test]
+    fn number_of_password_prompts_is_allowed_only_as_two_and_only_once() {
+        let check = |opts: &[&str]| {
+            let mut a: Vec<String> = vec!["ssh".into(), "-tt".into()];
+            for o in opts {
+                a.push("-o".into());
+                a.push((*o).into());
+            }
+            a.push("--".into());
+            a.push("h".into());
+            validate_ssh_spawn("/usr/bin/ssh", &a, &HashMap::new()).is_ok()
+        };
+        assert!(check(&["NumberOfPasswordPrompts=2"]));
+        assert!(!check(&["NumberOfPasswordPrompts=3"]));
+        assert!(!check(&["NumberOfPasswordPrompts=1"]));
+        assert!(!check(&["NumberOfPasswordPrompts=2", "NumberOfPasswordPrompts=2"]));
     }
 
     #[test]

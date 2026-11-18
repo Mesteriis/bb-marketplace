@@ -2,12 +2,12 @@
 // confirmation ("yes"/"no") or an informational message. The user's answer is
 // handed back once and never stored. Nothing is preselected, Enter on the dialog
 // does nothing, and Escape cancels (which OpenSSH treats as a refusal).
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export interface SshPromptInfo {
   promptId: number;
   text: string;
-  /** "confirm" (yes/no) or "none" (informational). */
+  /** "confirm" (yes/no), "secret" (a typed, masked answer, never saved) or "none" (informational). */
   kind: string;
 }
 
@@ -24,7 +24,13 @@ export function SshPromptDialog(props: SshPromptDialogProps) {
     ref.current?.focus();
   }, [prompt.promptId]);
   const confirm = prompt.kind === "confirm";
-  const answer = (value: string | null): void => onAnswer(prompt.promptId, value);
+  const secret = prompt.kind === "secret";
+  // Typed here only until it is sent; cleared at once and never stored.
+  const [typed, setTyped] = useState("");
+  const answer = (value: string | null): void => {
+    setTyped("");
+    onAnswer(prompt.promptId, value);
+  };
 
   return (
     <div
@@ -44,12 +50,32 @@ export function SshPromptDialog(props: SshPromptDialogProps) {
         }
       }}
     >
-      <h3 id="rh-ssh-prompt-title">{confirm ? "SSH asks for a decision" : "SSH message"}</h3>
+      <h3 id="rh-ssh-prompt-title">{confirm ? "SSH asks for a decision" : secret ? "SSH asks for an answer" : "SSH message"}</h3>
       <p id="rh-ssh-prompt-text" className="rh-ssh-prompt-text" data-testid="ssh-prompt-text">
         {prompt.text}
       </p>
+      {secret && (
+        <input
+          type="password"
+          autoComplete="off"
+          aria-label="Answer"
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              answer(typed);
+            }
+          }}
+        />
+      )}
       <div className="rh-rdp-cert-actions">
-        {confirm ? (
+        {secret ? (
+          <button type="button" onClick={() => answer(typed)}>
+            Send
+          </button>
+        ) : confirm ? (
           <>
             <button type="button" onClick={() => answer("yes")}>
               Yes

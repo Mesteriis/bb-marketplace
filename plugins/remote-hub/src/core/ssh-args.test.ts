@@ -156,6 +156,11 @@ describe("authMethod (set by the server when a saved secret is used)", () => {
     expect(buildSshArgv({ ...base, authMethod: "publickey" })).toContain("PreferredAuthentications=publickey");
     expect(buildSshArgv(base).some((a) => a.startsWith("PreferredAuthentications"))).toBe(false);
   });
+  it("a saved secret: NumberOfPasswordPrompts=2 goes with it (the second prompt is how a refusal is noticed), and never without", () => {
+    expect(buildSshArgv({ ...base, authMethod: "password" })).toContain("NumberOfPasswordPrompts=2");
+    expect(buildSshArgv({ ...base, authMethod: "publickey" })).toContain("NumberOfPasswordPrompts=2");
+    expect(buildSshArgv(base).some((a) => a.startsWith("NumberOfPasswordPrompts"))).toBe(false);
+  });
   it("refuses another value", () => {
     expect(() => buildSshArgv({ ...base, authMethod: "none" as never })).toThrow(/authMethod/);
   });

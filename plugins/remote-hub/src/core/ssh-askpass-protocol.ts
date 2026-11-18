@@ -21,7 +21,7 @@ export const sshPromptSchema = z.object({
   sessionId: sessionIdSchema,
   promptId: z.number().int().min(0),
   text: z.string().max(1024),
-  /** "confirm" (yes/no, e.g. a host key) or "none" (informational). */
+  /** "confirm" (yes/no, e.g. a host key), "secret" (typed by the user, never saved) or "none" (informational). */
   kind: z.string().min(1).max(16),
 });
 export const sshCredentialRejectedSchema = z.object({ type: z.literal("ssh.credential_rejected"), sessionId: sessionIdSchema });

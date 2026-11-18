@@ -148,6 +148,8 @@ export function buildSshArgv(target: SshTarget): string[] {
   if (target.authMethod !== undefined) {
     if (target.authMethod !== "password" && target.authMethod !== "publickey") invalid("invalid_authMethod", "authMethod must be password or publickey");
     argv.push("-o", "PreferredAuthentications=" + target.authMethod);
+    // A saved secret is tried once. A second prompt is how the helper learns it was refused (it never answers it); the default of 3 would add another prompt.
+    argv.push("-o", "NumberOfPasswordPrompts=2");
   }
   for (const option of target.extraOptions) {
     assertSshOptionAllowed(option);
