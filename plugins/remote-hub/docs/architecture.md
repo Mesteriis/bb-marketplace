@@ -473,3 +473,22 @@ and `useProfiles` around the existing session pages; Quick connect stays.
   together with a port and a user.
 - **Service-side rules.** The service refuses "always trust" for a changed certificate; known_hosts apply is bound to
   the reviewed scan and an explicit selection.
+
+## Stage 4a — agent access, read-only tools, audit
+
+- **Grants.** `core/agent-access.ts`: a level per profile (none < observe < input < exec; "connect" is allowed from
+  input up), set only through the owner's RPCs (`agent_access_set`, `agent_access_revoke_all`) from the page, never by
+  a tool or by a form in an agent's thread. A grant applies to agents in ANY thread of this BB. Every tool call asks the
+  book again: there is no cached capability. "No such profile" and "not granted" give the same answer.
+- **Tools** (`core/agent-tools.ts`, registered in `adapters/bb/agent-tools.ts` with `bb.agents.registerTool`):
+  `remote_connections_list`, `remote_connection_get`, `remote_sessions_list`, `remote_session_status`,
+  `remote_terminal_read`, `remote_rdp_screenshot`. Schemas are strict (a host, password, credential or approval flag is
+  refused). The thread and project come from the host's call context (`ctx.threadId`, `ctx.projectId`); the SDK offers
+  nothing else to attribute a call to, so the identity is the THREAD, not an agent or a model. A session opened without a
+  saved connection is never visible to an agent. Tool results never contain a credential reference, a key path or a
+  secret; terminal text is stripped of escape sequences, framed as untrusted data and size-capped; a screenshot is
+  shrunk to a dimension and byte cap and the result states the scale and coordinate space.
+- **One gate, in order:** per-thread budget (calls and output bytes per window) -> audit row written BEFORE the action
+  -> access check -> action -> outcome filled in. A refused call is audited too; a flood of over-budget calls is one
+  counted row. The audit keeps the newest 5000 rows and holds no terminal text, keystrokes, pixels or secrets.
+- **Not in 4a:** connecting, typing, mouse/keyboard, exec, the control lease, the agent skill text (stages 4b, 4c).

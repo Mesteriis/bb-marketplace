@@ -37,6 +37,11 @@ both through a Rust helper, plus the echo console from stage 1.
   in a helper-owned file used by saved-password SSH). Profiles keep their source; re-importing changes
   nothing. Private keys are never opened. An alias behind a proxy or Match rule
   keeps using your ssh config and cannot save a password.
+- Agent access (read-only for now): per connection, default none, set by you in
+  the editor (levels none < observe < input < exec; any thread of this BB). Agents
+  get six tools to list allowed connections and sessions, read terminal output and
+  take a desktop screenshot: no secret, no typing, no connecting. Every call is
+  audited (thread, tool, outcome; no text or pixels) and revocable in Agent activity.
 - The helper owns every session; detaching a view never ends it, and
   disconnecting never logs the remote user off.
 
@@ -47,12 +52,9 @@ injected into it is not stopped. A saved RDP password is bound to
 host, port, user and domain and, after its first accepted use, to that server
 certificate (trust on first sight): the helper sends it to no other (save it
 again to start over).
-One-time-code logins are always typed by you. There are no agent tools or CLI yet. macOS may ask you to
+One-time-code logins are always typed by you. Agents cannot type, connect or run commands yet (stage 4b); no CLI. macOS may ask you to
 approve the helper's Keychain access; until then a saved password reports "locked or needs approval". "Last opened" means the open succeeded, not that the server accepted a login.
-No clipboard, no remote resize, no Kerberos. NLA against a real Windows host and strict TLS were checked by hand;
-the plugin has not otherwise been exercised inside a live BB server. The helper
-binary is not committed under bin/; build it with npm run build:helper (Rust
-toolchain for aarch64-apple-darwin).
+No clipboard, no remote resize, no Kerberos. NLA against a real Windows host and strict TLS were checked by hand; the plugin was not run in a live BB server. The helper binary is not in bin/: npm run build:helper (Rust, aarch64-apple-darwin).
 
 ## Source
 
