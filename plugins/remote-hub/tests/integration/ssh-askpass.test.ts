@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { assertTestHooksHelper } from "./support.ts";
 import { HelperProcess } from "../../src/adapters/bb/helper-process.ts";
 import { memoryImportBook } from "../../src/adapters/bb/import-test-support.ts";
 import { createRpcHandlers } from "../../src/adapters/bb/rpc-handlers.ts";
@@ -203,9 +204,7 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
   const watch = (handle: { generation: string; sessionId: number }) => service.subscribeSshAskpass(handle, (e) => events.push(e));
 
   beforeAll(async () => {
-    if (!readFileSync(HELPER).includes("REMOTE_HUB_KEYCHAIN_PATH")) {
-      throw new Error("REMOTE_HUB_HELPER is not a test-hooks build: build it with cargo build --features test-hooks");
-    }
+    assertTestHooksHelper(HELPER);
     execFileSync("docker", ["build", "-q", "-t", IMAGE, here], { stdio: "ignore" });
     tmp = mkdtempSync(join(tmpdir(), "rh-askpass-"));
     plainKey = join(tmp, "id_plain");

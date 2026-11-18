@@ -9,12 +9,12 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { assertTestHooksHelper, makeTemp, removeTemps, throwawayEnv } from "./support.ts";
 import { agentControlPorts, createControlGate } from "../../src/adapters/bb/agent-control.ts";
 import { createAgentControlRpc } from "../../src/adapters/bb/agent-control-rpc.ts";
 import { agentPorts } from "../../src/adapters/bb/agent-tools.ts";
@@ -164,14 +164,14 @@ describe.skipIf(!dockerOk)("agent control over SSH: connect, owner decides the h
   const key = (r: ToolResult) => JSON.parse(c.text(r)) as Record<string, any>;
 
   beforeAll(async () => {
-    if (!readFileSync(HELPER).includes("REMOTE_HUB_KEYCHAIN_PATH")) throw new Error("REMOTE_HUB_HELPER is not a test-hooks build");
+    assertTestHooksHelper(HELPER);
     execFileSync("docker", ["build", "-q", "-t", "remote-hub-sshd-test", here], { stdio: "ignore" });
-    tmp = mkdtempSync(join(tmpdir(), "rh-agentctl-"));
+    tmp = makeTemp("rh-agentctl-");
     const port = await freePort();
     cid = execFileSync("docker", ["run", "-d", "-p", `127.0.0.1:${port}:22`, "remote-hub-sshd-test"], { encoding: "utf8" }).trim();
     execFileSync("docker", ["exec", "-i", cid, "chpasswd"], { input: `root:${PASSWORD}\n` });
     await sleep(2000);
-    c = await compose({ REMOTE_HUB_KEYCHAIN_PATH: join(tmp, "kc.keychain-db"), REMOTE_HUB_KEYCHAIN_CREATE_PASSWORD: "throwaway-kc-password", REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS: "1", REMOTE_HUB_KNOWN_HOSTS_PATH: join(tmp, "Application Support", "Remote Hub", "known_hosts") });
+    c = await compose(throwawayEnv(tmp));
     const p = c.profiles.save({ fields: fields({ port }) });
     profileId = p.id;
     await c.book.save({ profileId: p.id, secret: PASSWORD });
@@ -181,7 +181,7 @@ describe.skipIf(!dockerOk)("agent control over SSH: connect, owner decides the h
     clearTimeout(watchdog);
     c?.service.stop();
     if (cid !== "") spawnSync("docker", ["rm", "-f", cid], { stdio: "ignore" });
-    if (tmp !== "") rmSync(tmp, { recursive: true, force: true });
+    removeTemps();
   });
 
   it("an agent cannot connect before the owner allows input, nor a connection without a saved password", async () => {
@@ -290,13 +290,13 @@ describe.skipIf(!dockerOk)("agent control over RDP: typed input on a real deskto
   };
 
   beforeAll(async () => {
+    assertTestHooksHelper(HELPER); // before the helper starts and before any credential is saved
     execFileSync("docker", ["build", "-q", "-t", "remote-hub-rdp-test", "-f", join(here, "rdp-Dockerfile"), here], { stdio: "ignore" });
     const port = await freePort();
     cid = execFileSync("docker", ["run", "-d", "-e", "RDP_USER=" + user, "-e", "RDP_PASSWORD=" + password, "-p", `127.0.0.1:${port}:3389`, "remote-hub-rdp-test"], { encoding: "utf8" }).trim();
     await waitTcp(port, 60_000);
     await sleep(2000);
-    const tmp = mkdtempSync(join(tmpdir(), "rh-agentctl-rdp-"));
-    c = await compose({ REMOTE_HUB_KEYCHAIN_PATH: join(tmp, "kc.keychain-db"), REMOTE_HUB_KEYCHAIN_CREATE_PASSWORD: "throwaway-kc-password" });
+    c = await compose(throwawayEnv(makeTemp("rh-agentctl-rdp-")));
     const p = c.profiles.save({ fields: fields({ name: "win", protocol: "rdp", port, username: user, rdpWidth: 800, rdpHeight: 600 }) });
     profileId = p.id;
     await c.book.save({ profileId: p.id, secret: password });
@@ -306,6 +306,7 @@ describe.skipIf(!dockerOk)("agent control over RDP: typed input on a real deskto
     clearTimeout(watchdog);
     c?.service.stop();
     if (cid !== "") spawnSync("docker", ["rm", "-f", cid], { stdio: "ignore" });
+    removeTemps();
   });
 
   it("connect waits for the owner's certificate decision; then typed pointer input moves the real pointer; a stale geometry moves nothing", async () => {

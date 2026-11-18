@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { assertTestHooksHelper } from "./support.ts";
 import { HelperProcess } from "../../src/adapters/bb/helper-process.ts";
 import { createRemoteHubService, type RemoteHubService } from "../../src/adapters/bb/service.ts";
 import { CredentialBook, CredentialError, type CredentialMeta, type CredentialMetaStore } from "../../src/core/credential.ts";
@@ -124,9 +125,7 @@ describe.skipIf(!dockerOk)("a saved credential and a typed password leak into no
   beforeAll(async () => {
     // The helper must be a test-hooks build: without the hook it would use the REAL login
     // keychain, which no test may touch. Refuse before anything is saved.
-    if (!readFileSync(HELPER).includes("REMOTE_HUB_KEYCHAIN_PATH")) {
-      throw new Error("REMOTE_HUB_HELPER is not a test-hooks build: build it with cargo build --features test-hooks");
-    }
+    assertTestHooksHelper(HELPER);
     execFileSync("docker", ["build", "-q", "-t", IMAGE, "-f", join(here, "rdp-Dockerfile"), here], { stdio: "ignore" });
     port = await freePort();
     cid = execFileSync("docker", ["run", "-d", "-e", "RDP_USER=rdptest", "-e", "RDP_PASSWORD=" + TYPED, "-p", `127.0.0.1:${port}:3389`, IMAGE], { encoding: "utf8" }).trim();
