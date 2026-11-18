@@ -12,7 +12,7 @@ use crate::protocol::{
     self, Request, Response, FRAME_KIND_CONTROL, FRAME_KIND_STREAM, MAX_FRAME_BODY_BYTES,
     PROTOCOL_VERSION, STREAM_HEADER_BYTES,
 };
-use crate::rdp::manager::{DecisionRefusal, EnqueueError, RdpFrame, RdpManager};
+use crate::rdp::manager::{DecisionRefusal, EnqueueError, PinTarget, RdpFrame, RdpManager};
 use crate::rdp::protocol::{EngineCommand, EngineEvent, UpdateHeader};
 use crate::sessions::{SessionError, SessionManager, SpawnSpec, READ_CHUNK};
 use std::collections::HashMap;
@@ -378,10 +378,11 @@ fn resolve_rdp_credential(
     port: u16,
     user: &str,
     domain: Option<&str>,
-) -> Result<crate::secret::Secret, CredentialRefusal> {
+) -> Result<(crate::secret::Secret, Option<String>), CredentialRefusal> {
     let item = resolve_item(current_exe, reference)?;
     if item.bind.is_rdp_endpoint(host, port, user, domain) {
-        Ok(item.secret)
+        let pin = item.bind.pin().map(str::to_string);
+        Ok((item.secret, pin))
     } else {
         Err(CredentialRefusal::Mismatch)
     }
@@ -411,6 +412,7 @@ fn required_bind(facts: &crate::ssh_args::SshFacts) -> crate::binding::Bind {
             port: facts.port,
             user: facts.user.clone(),
             domain: None,
+            cert: None,
         },
         AuthMethod::PublicKey => crate::binding::Bind::Key { path: facts.identity.clone().unwrap_or_default() },
     }
@@ -696,10 +698,23 @@ fn handle(
             expected_fingerprint,
         } => {
             // The secret comes from exactly one place: the request (use once) or the Keychain.
+            // A saved password also brings the certificate it is pinned to (stage 3c-2, T4): the
+            // engine compares the presented certificate with it before CredSSP sends anything, so
+            // a different certificate never receives the saved password. Without a pin yet, the
+            // first certificate that gets accepted is pinned (see `relay_rdp_frames`).
+            let mut pin_target: Option<PinTarget> = None;
+            let mut expected_fingerprint = expected_fingerprint;
             let password = match (password, credential_ref) {
                 (Some(password), None) => password,
                 (None, Some(reference)) => match resolve_rdp_credential(current_exe, &reference, &host, port, &username, domain.as_deref()) {
-                    Ok(password) => password,
+                    Ok((password, Some(pin))) => {
+                        expected_fingerprint = Some(pin);
+                        password
+                    }
+                    Ok((password, None)) => {
+                        pin_target = Some(PinTarget { reference, host: host.clone(), port, user: username.clone(), domain: domain.clone() });
+                        password
+                    }
                     Err(refusal) => return Ok(protocol::encode_response(&refusal.into_response(id))),
                 },
                 _ => {
@@ -711,14 +726,14 @@ fn handle(
                 }
             };
             match rdp.open(current_exe, host, port, username, password, domain, width, height, expected_fingerprint) {
-            Ok((session_id, pid)) => Ok(protocol::encode_response(&Response::SessionOpened {
+            Ok((session_id, pid)) => { if let Some(target) = pin_target { rdp.set_pin_target(session_id, target); } Ok(protocol::encode_response(&Response::SessionOpened {
                 id,
                 session_id,
                 cols: 0,
                 rows: 0,
                 pid: pid as u32,
                 kind: "rdp".to_string(),
-            })),
+            })) },
             Err(message) => Ok(protocol::encode_response(&Response::Error {
                 id: Some(id),
                 code: "rdp_open_failed".to_string(),
@@ -906,7 +921,7 @@ fn handle_pty_close(manager: &mut SessionManager, id: u64, session_id: u32) -> R
     }
 }
 
-fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, rid: u32, frames: Vec<RdpFrame>) {
+fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, current_exe: &str, rid: u32, frames: Vec<RdpFrame>) {
     for frame in frames {
         match frame {
             RdpFrame::Event(EngineEvent::State { state }) => {
@@ -927,6 +942,19 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, rid: u32, f
                 }));
             }
             RdpFrame::Event(EngineEvent::Certificate { fingerprint, validated }) => {
+                // The first accepted certificate of a saved password is the one it is pinned to from
+                // now on. A failure to write the pin does not end the session; the next open tries again.
+                if let Some(target) = rdp.take_pin_target(rid) {
+                    let bind = crate::binding::Bind::Endpoint {
+                        protocol: "rdp".to_string(),
+                        host: target.host,
+                        port: target.port,
+                        user: Some(target.user),
+                        domain: target.domain,
+                        cert: Some(fingerprint.clone()),
+                    };
+                    let _ = keychain_child(current_exe, "pin", &target.reference, None, Some(&bind));
+                }
                 outbox.extend(protocol::encode_response(&Response::RdpCertificate {
                     session_id: rid,
                     fingerprint,
@@ -1364,7 +1392,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                     if readable && outbox.len() + RDP_RESERVE <= OUTBOX_CAP {
                         let budget = OUTBOX_CAP.saturating_sub(outbox.len());
                         let frames = guard.rdp.process_readable(*rid, budget);
-                        relay_rdp_frames(&mut guard.rdp, &mut outbox, *rid, frames);
+                        relay_rdp_frames(&mut guard.rdp, &mut outbox, &current_exe, *rid, frames);
                     }
                 }
                 PollRole::Stdin | PollRole::Askpass => {}
@@ -1595,7 +1623,7 @@ mod tests {
         rdp.push_screenshot(sid, 41);
         rdp.push_screenshot(sid, 42);
         let mut outbox = VecDeque::new();
-        relay_rdp_frames(&mut rdp, &mut outbox, sid, vec![shot(), shot()]);
+        relay_rdp_frames(&mut rdp, &mut outbox, "/nonexistent/helper", sid, vec![shot(), shot()]);
         assert_eq!(answers(&outbox), vec![(Some(41), "png".to_string()), (Some(42), "png".to_string())]);
         unsafe { libc::close(b) };
     }
@@ -1610,7 +1638,7 @@ mod tests {
         };
         let sid = rdp.adopt(None, a);
         let mut outbox = VecDeque::new();
-        relay_rdp_frames(&mut rdp, &mut outbox, sid, vec![shot()]);
+        relay_rdp_frames(&mut rdp, &mut outbox, "/nonexistent/helper", sid, vec![shot()]);
         assert!(outbox.is_empty(), "a response with no request id 0 was sent: {:?}", answers(&outbox));
         unsafe { libc::close(b) };
     }
@@ -1702,7 +1730,7 @@ mod tests {
         assert_eq!(answers(&refused), vec![(Some(5), "screenshot_busy".to_string())]);
         // The engine answers the oldest request; a new one fits again.
         let mut outbox = VecDeque::new();
-        relay_rdp_frames(&mut rdp, &mut outbox, sid, vec![shot()]);
+        relay_rdp_frames(&mut rdp, &mut outbox, "/nonexistent/helper", sid, vec![shot()]);
         assert_eq!(answers(&outbox), vec![(Some(1), "png".to_string())]);
         assert!(ask(&mut rdp, 6).is_empty());
     }

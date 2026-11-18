@@ -33,7 +33,7 @@ fn watchdog() {
 
 /// The binding of the saved password for the RDP endpoint the tests open (127.0.0.1:<port> as "tester").
 fn rdp_bind(port: u16) -> Bind {
-    Bind::Endpoint { protocol: "rdp".into(), host: "127.0.0.1".into(), port, user: Some("tester".into()), domain: None }
+    Bind::Endpoint { protocol: "rdp".into(), host: "127.0.0.1".into(), port, user: Some("tester".into()), domain: None, cert: None }
 }
 
 struct Fixture {
@@ -46,13 +46,21 @@ struct Fixture {
 
 impl Fixture {
     fn new(tag: &str) -> Fixture {
+        Fixture::with_mode(tag, "credential")
+    }
+    fn with_mode(tag: &str, mode: &str) -> Fixture {
         watchdog();
         let dir = std::env::temp_dir().join(format!("rh-cred-{}-{tag}", std::process::id()));
         std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir).unwrap();
         let path = dir.join("kc.keychain-db");
         create_at(&path, "throwaway-kc-password").expect("temporary keychain");
-        let helper = start(&[(FAKE, "credential"), ("REMOTE_HUB_KEYCHAIN_PATH", path.to_str().unwrap())]);
+        let helper = start(&[(FAKE, mode), ("REMOTE_HUB_KEYCHAIN_PATH", path.to_str().unwrap())]);
         Fixture { dir, path, helper: Some(helper), bind_port: 3389 }
+    }
+    /// A new helper process on the SAME temporary keychain, whose engine presents another certificate.
+    fn restart(&mut self, mode: &str) {
+        self.helper.take().unwrap().shutdown();
+        self.helper = Some(start(&[(FAKE, mode), ("REMOTE_HUB_KEYCHAIN_PATH", self.path.to_str().unwrap())]));
     }
     fn h(&mut self) -> &mut Helper {
         self.helper.as_mut().unwrap()
@@ -204,11 +212,11 @@ fn the_helper_refuses_a_saved_password_for_any_other_endpoint_kind_or_key() {
     let server = silent_server();
     let ok_port = server.port;
     let mismatches: Vec<(&str, Bind)> = vec![
-        ("host", Bind::Endpoint { protocol: "rdp".into(), host: "localhost".into(), port: ok_port, user: Some("tester".into()), domain: None }),
+        ("host", Bind::Endpoint { protocol: "rdp".into(), host: "localhost".into(), port: ok_port, user: Some("tester".into()), domain: None, cert: None }),
         ("port", rdp_bind(ok_port.wrapping_add(1).max(1))),
-        ("user", Bind::Endpoint { protocol: "rdp".into(), host: "127.0.0.1".into(), port: ok_port, user: Some("other".into()), domain: None }),
-        ("domain", Bind::Endpoint { protocol: "rdp".into(), host: "127.0.0.1".into(), port: ok_port, user: Some("tester".into()), domain: Some("CORP".into()) }),
-        ("protocol (an ssh password)", Bind::Endpoint { protocol: "ssh".into(), host: "127.0.0.1".into(), port: ok_port, user: Some("tester".into()), domain: None }),
+        ("user", Bind::Endpoint { protocol: "rdp".into(), host: "127.0.0.1".into(), port: ok_port, user: Some("other".into()), domain: None, cert: None }),
+        ("domain", Bind::Endpoint { protocol: "rdp".into(), host: "127.0.0.1".into(), port: ok_port, user: Some("tester".into()), domain: Some("CORP".into()), cert: None }),
+        ("protocol (an ssh password)", Bind::Endpoint { protocol: "ssh".into(), host: "127.0.0.1".into(), port: ok_port, user: Some("tester".into()), domain: None, cert: None }),
         ("kind (a key passphrase)", Bind::Key { path: "/keys/id".into() }),
     ];
     for (n, (what, bind)) in mismatches.into_iter().enumerate() {
@@ -284,4 +292,87 @@ fn a_legacy_secret_shaped_like_an_envelope_is_still_unbound() {
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success() && !String::from_utf8_lossy(&out.stdout).contains("error"), "raw save failed");
     assert_eq!(code(&f.open_with(1, None, Some(REF), server.port)), "credential_unbound");
+}
+
+const CERT_A: &str = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+const CERT_B: &str = "99:88:77:66:55:44:33:22:11:00:FF:EE:DD:CC:BB:AA:99:88:77:66:55:44:33:22:11:00:FF:EE:DD:CC:BB:AA";
+
+fn opened_session(f: &mut Fixture, id: u64, port: u16) -> u32 {
+    let opened = f.open_with(id, None, Some(REF), port);
+    let Response::SessionOpened { session_id, .. } = opened else { panic!("expected session.opened, got {opened:?}") };
+    session_id
+}
+
+/// T4: the first certificate that is accepted for a saved password is pinned to it, by the helper;
+/// a later open that meets another certificate is closed as cert_changed before the password is used.
+#[test]
+fn a_saved_rdp_password_is_pinned_to_the_first_certificate_and_a_changed_one_never_gets_it() {
+    let server = silent_server();
+    let mut f = Fixture::with_mode("pin", &format!("cert:{CERT_A}"));
+    f.bind_port = server.port;
+    assert!(matches!(f.save(1, REF, SECRET), Response::CredentialOk { .. }));
+    // First use: accepted and pinned (the engine reports the password digest only after the certificate).
+    let sid = opened_session(&mut f, 2, server.port);
+    f.h().wait_state(sid, &format!("pw_sha256={SECRET_DIGEST}"));
+    // The same certificate again: fine.
+    f.restart(&format!("cert:{CERT_A}"));
+    let sid = opened_session(&mut f, 3, server.port);
+    f.h().wait_state(sid, &format!("pw_sha256={SECRET_DIGEST}"));
+    // Another certificate: closed as cert_changed, and the password digest is never reported.
+    f.restart(&format!("cert:{CERT_B}"));
+    let sid = opened_session(&mut f, 4, server.port);
+    let (_, _, reason) = f.h().read_closed(sid);
+    assert_eq!(reason, "cert_changed");
+}
+
+/// Saving the password again starts over: the new first certificate is pinned.
+#[test]
+fn saving_the_password_again_forgets_the_pin() {
+    let server = silent_server();
+    let mut f = Fixture::with_mode("repin", &format!("cert:{CERT_A}"));
+    f.bind_port = server.port;
+    assert!(matches!(f.save(1, REF, SECRET), Response::CredentialOk { .. }));
+    let sid = opened_session(&mut f, 2, server.port);
+    f.h().wait_state(sid, &format!("pw_sha256={SECRET_DIGEST}"));
+    f.restart(&format!("cert:{CERT_B}"));
+    assert!(matches!(f.save(3, REF, SECRET), Response::CredentialOk { .. }));
+    let sid = opened_session(&mut f, 4, server.port);
+    f.h().wait_state(sid, &format!("pw_sha256={SECRET_DIGEST}"));
+    f.restart(&format!("cert:{CERT_A}"));
+    let sid = opened_session(&mut f, 5, server.port);
+    assert_eq!(f.h().read_closed(sid).2, "cert_changed");
+}
+
+/// A pin in the binding itself (as a caller can save one) is enforced from the very first open, and a
+/// caller-supplied expected fingerprint cannot replace it.
+#[test]
+fn a_pin_given_at_save_time_is_enforced_even_against_the_callers_expected_fingerprint() {
+    let server = silent_server();
+    let mut f = Fixture::with_mode("given", &format!("cert:{CERT_B}"));
+    let bind = Bind::Endpoint { protocol: "rdp".into(), host: "127.0.0.1".into(), port: server.port, user: Some("tester".into()), domain: None, cert: Some(CERT_A.into()) };
+    assert!(matches!(f.save_bound(1, REF, SECRET, bind), Response::CredentialOk { .. }));
+    f.h().send(&Request::OpenRdp {
+        id: 2,
+        host: "127.0.0.1".into(),
+        port: server.port,
+        username: "tester".into(),
+        password: None,
+        credential_ref: Some(REF.into()),
+        domain: None,
+        width: 800,
+        height: 600,
+        expected_fingerprint: Some(CERT_B.into()),
+    });
+    let Response::SessionOpened { session_id, .. } = f.h().read_reply(2) else { panic!("expected session.opened") };
+    assert_eq!(f.h().read_closed(session_id).2, "cert_changed");
+}
+
+/// A password typed for one use has no pin to keep: the certificate decision stays the user's.
+#[test]
+fn a_typed_password_is_not_pinned() {
+    let server = silent_server();
+    let mut f = Fixture::with_mode("typed", &format!("cert:{CERT_A}"));
+    let opened = f.open_with(1, Some(SECRET), None, server.port);
+    let Response::SessionOpened { session_id, .. } = opened else { panic!("expected session.opened, got {opened:?}") };
+    f.h().wait_state(session_id, &format!("pw_sha256={SECRET_DIGEST}"));
 }

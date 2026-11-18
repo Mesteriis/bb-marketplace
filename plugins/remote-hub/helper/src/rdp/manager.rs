@@ -159,8 +159,19 @@ pub struct ClosedReport {
     pub exit: EngineExit,
 }
 
+/// Where a saved RDP password lives and what it is for, kept while its session has not yet shown a
+/// certificate: the first accepted certificate is then pinned into the saved item.
+pub struct PinTarget {
+    pub reference: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub domain: Option<String>,
+}
+
 pub struct RdpManager {
     sessions: HashMap<u32, RdpSession>,
+    pin_targets: HashMap<u32, PinTarget>,
     ids: SessionIds,
     /// A synthetic engine mode (`test-hooks` builds only).
     fake_engine: Option<String>,
@@ -267,7 +278,15 @@ impl RdpManager {
         let fake_engine = std::env::var("REMOTE_HUB_RDP_FAKE_ENGINE").ok();
         #[cfg(not(feature = "test-hooks"))]
         let fake_engine: Option<String> = None;
-        RdpManager { sessions: HashMap::new(), ids, fake_engine }
+        RdpManager { sessions: HashMap::new(), pin_targets: HashMap::new(), ids, fake_engine }
+    }
+
+    pub fn set_pin_target(&mut self, id: u32, target: PinTarget) {
+        self.pin_targets.insert(id, target);
+    }
+
+    pub fn take_pin_target(&mut self, id: u32) -> Option<PinTarget> {
+        self.pin_targets.remove(&id)
     }
 
     pub fn count(&self) -> usize {
@@ -858,6 +877,7 @@ impl RdpManager {
     /// event the engine wrote (read first), then `engine_exited` (it ended by
     /// itself), then `killed_by_close` (this close had to kill it).
     pub fn close(&mut self, id: u32) -> Option<String> {
+        self.pin_targets.remove(&id);
         let mut s = self.sessions.remove(&id)?;
         let killed = Self::stop_engine(&mut s);
         if !killed {
@@ -869,6 +889,7 @@ impl RdpManager {
     }
 
     pub fn terminate_all(&mut self) {
+        self.pin_targets.clear();
         let ids: Vec<u32> = self.sessions.keys().copied().collect();
         for id in ids {
             if let Some(mut s) = self.sessions.remove(&id) {

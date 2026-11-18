@@ -480,6 +480,27 @@ pub fn execute(keychain: &Keychain, request: &OpRequest) -> OpReply {
             Ok(item) => OpReply { secret: Some(item.secret), bind: Some(item.bind), ..OpReply::default() },
             Err(e) => fail(e),
         },
+        // Pin the server certificate of a saved RDP password: only when the item is bound to exactly
+        // this endpoint and has no pin yet. A pin that exists is never replaced (saving the password
+        // again is the way to start over).
+        ("pin", _) => match &request.bind {
+            Some(wanted) if wanted.is_valid() && wanted.pin().is_some() => match keychain.get_item(&request.reference) {
+                Ok(item) => {
+                    let wanted = wanted.clone().canonical();
+                    let same_endpoint = item.bind.pin().is_none() && item.bind.with_pin(wanted.pin().unwrap_or_default()) == wanted;
+                    if !same_endpoint {
+                        OpReply::default()
+                    } else {
+                        match keychain.set_item(&request.reference, &wanted, &item.secret) {
+                            Ok(()) => OpReply::default(),
+                            Err(e) => fail(e),
+                        }
+                    }
+                }
+                Err(e) => fail(e),
+            },
+            _ => OpReply { error: Some("invalid_bind".to_string()), ..OpReply::default() },
+        },
         // The binding alone: for checking an open BEFORE anything is started; no secret leaves the child.
         ("bind", _) => match keychain.get_item(&request.reference) {
             Ok(item) => OpReply { bind: Some(item.bind), ..OpReply::default() },

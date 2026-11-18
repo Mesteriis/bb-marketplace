@@ -17,7 +17,7 @@ pub fn fingerprint_sha256(der: &[u8]) -> String {
     out
 }
 
-fn normalize_fingerprint(input: &str) -> Option<[u8; 32]> {
+pub fn normalize_fingerprint(input: &str) -> Option<[u8; 32]> {
     let hex: String = input.chars().filter(|c| *c != ':').collect();
     if hex.len() != 64 {
         return None;

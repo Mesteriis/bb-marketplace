@@ -48,7 +48,7 @@ fn facts() -> SshFacts {
     SshFacts { host: "host".into(), port: 22, user: Some("user".into()), identity: None, method: AuthMethod::Password }
 }
 fn password_bind() -> Bind {
-    Bind::Endpoint { protocol: "ssh".into(), host: "host".into(), port: 22, user: Some("user".into()), domain: None }
+    Bind::Endpoint { protocol: "ssh".into(), host: "host".into(), port: 22, user: Some("user".into()), domain: None, cert: None }
 }
 const SECRET_DIGEST: &str = "8e7c875e48e8e54c";
 const REF: &str = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";
@@ -601,7 +601,7 @@ fn a_saved_secret_session_refuses_a_caller_chosen_known_hosts_file_a_uri_destina
 fn a_mixed_case_host_is_bound_and_prompted_in_lower_case() {
     let mixed = SshFacts { host: "box.example.test".into(), port: 22, user: Some("User".into()), identity: None, method: AuthMethod::Password };
     // The binding was saved from "Box.Example.TEST" (the helper stores the lower-case form).
-    let bind = Bind::Endpoint { protocol: "ssh".into(), host: "Box.Example.TEST".into(), port: 22, user: Some("User".into()), domain: None };
+    let bind = Bind::Endpoint { protocol: "ssh".into(), host: "Box.Example.TEST".into(), port: 22, user: Some("User".into()), domain: None, cert: None };
     let mut f = Fixture::with("t1", &[], SECRET, bind, mixed);
     let sid = f.open(r#"my ($p, $r) = ask("User\@box.example.test's password: "); print "H=" . digest($p) . " R=$r DONE\n"; sleep 1;"#, true);
     let (text, _) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE"));
