@@ -400,3 +400,32 @@ and `useProfiles` around the existing session pages; Quick connect stays.
   helper process by the same user passes the Keychain ACL and the parent-process check; signing with the
   hardened runtime would close that. A key passphrase is bound to its key file only because it never leaves
   the askpass relay (the helper compares the key path before releasing it).
+
+## Stage 3c-1 — import (ssh config, hosts, key metadata, agent)
+
+- **Per-source opt-in.** `ImportBook` holds sources (a path the user registered, or the agent). A new source is
+  OFF; scan and apply refuse a disabled source with `source_disabled`, and nothing is read before that.
+  `import_suggestions` returns default paths (`~/.ssh/config`, `~/.ssh`, `/etc/hosts`, the agent) as strings only.
+  `ssh -G` is a second switch on an enabled ssh-config source (it evaluates the whole config, including
+  `Match exec`) and is off by default; switching a source off switches it off.
+- **Passive reader** (`core/ssh-config.ts`): for every plainly named `Host` alias it applies ssh_config's first-value-wins
+  rule over the blocks that select it (wildcard blocks included), follows `Include` only through a callback that the
+  adapter confines to the config's own directory (no absolute paths elsewhere, `..`, links out, or globs in the
+  directory part), and FLAGS what text alone cannot decide (ProxyJump/ProxyCommand, Match, `%`-tokens other than
+  `%h`, canonicalization, HostKeyAlias) instead of guessing.
+- **Resolved or not.** A resolved entry becomes a profile with an explicit host (lower case), port, user and key
+  file, so a saved secret can be bound to that destination and used with `-F none`. An unresolved entry keeps its
+  alias as the host with no port, user or key, so OpenSSH and the user's own config decide where it goes; such a
+  profile cannot save a secret (`profile_needs_config`) and the catalogue says so.
+- **Provenance and idempotence.** `import_links` records, per (source, entry key), the imported values and whether the
+  entry was resolved. Re-import: unchanged source -> nothing is written; changed source and not edited here ->
+  update (through the credential book, so a secret bound to the old destination is forgotten); changed in both ->
+  conflict, left alone; profile deleted here -> not brought back; entry gone from the source -> marked stale once.
+  Only the imported fields are owned by the import; name, group, tags, favourite, colour and credential are the user's.
+- **Keys and agent: metadata only.** A keys directory is read for `*.pub` files (type, comment, SHA-256 fingerprint);
+  a private file sitting beside one is named by its file name and **never opened**, not even for its header (an
+  earlier draft read the first bytes to tell whether a passphrase protects the key; it was dropped: the user says
+  so when saving a passphrase). The agent is listed with `ssh-add -l` (fingerprints and comments).
+- **Hosts file.** Names become candidates; loopback, link-local, broadcast and duplicates are skipped.
+- **Tests** use fixture directories only (real files and SQLite in a temp directory, a real `/usr/bin/ssh -G` against a
+  fixture config); none touches `~/.ssh`, `/etc/ssh` or the login keychain.
