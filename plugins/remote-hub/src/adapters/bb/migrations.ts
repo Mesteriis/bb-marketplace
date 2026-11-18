@@ -5,7 +5,8 @@ import { CREDENTIAL_MIGRATIONS } from "./credential-sqlite.ts";
 import { IMPORT_MIGRATIONS } from "./import-sqlite.ts";
 import { RDP_TRUST_MIGRATIONS } from "./rdp-trust-sqlite.ts";
 import { AGENT_MIGRATIONS } from "./agent-sqlite.ts";
-import { PROFILE_LATER_MIGRATIONS, PROFILE_MIGRATIONS, PROFILE_RDP_OPTIONS_MIGRATIONS } from "./profile-sqlite.ts";
+import { PROFILE_LATER_MIGRATIONS, PROFILE_MIGRATIONS, PROFILE_PVE_MIGRATIONS, PROFILE_RDP_OPTIONS_MIGRATIONS } from "./profile-sqlite.ts";
+import { PVE_MIGRATIONS } from "./pve-sqlite.ts";
 
 /**
  * An alias imported before `needs_config` existed has the column at 0 although its import link says it was never
@@ -13,4 +14,4 @@ import { PROFILE_LATER_MIGRATIONS, PROFILE_MIGRATIONS, PROFILE_RDP_OPTIONS_MIGRA
  */
 export const NEEDS_CONFIG_BACKFILL: string[] = [`UPDATE profiles SET needs_config = 1 WHERE id IN (SELECT profile_id FROM import_links WHERE resolved = 0);`];
 
-export const ALL_MIGRATIONS: string[] = [...PROFILE_MIGRATIONS, ...CREDENTIAL_MIGRATIONS, ...IMPORT_MIGRATIONS, ...PROFILE_LATER_MIGRATIONS, ...RDP_TRUST_MIGRATIONS, ...NEEDS_CONFIG_BACKFILL, ...AGENT_MIGRATIONS, ...PROFILE_RDP_OPTIONS_MIGRATIONS];
+export const ALL_MIGRATIONS: string[] = [...PROFILE_MIGRATIONS, ...CREDENTIAL_MIGRATIONS, ...IMPORT_MIGRATIONS, ...PROFILE_LATER_MIGRATIONS, ...RDP_TRUST_MIGRATIONS, ...NEEDS_CONFIG_BACKFILL, ...AGENT_MIGRATIONS, ...PROFILE_RDP_OPTIONS_MIGRATIONS, ...PROFILE_PVE_MIGRATIONS, ...PVE_MIGRATIONS];

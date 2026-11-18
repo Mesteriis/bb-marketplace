@@ -1,6 +1,7 @@
 // The profile book (stage 3a): create, update, duplicate, delete and the
 // open history of saved profiles, over a ProfileStore port. Host-free; the
 // store, the clock and the id source are injected.
+import { defaultPortOf } from "./catalogue.ts";
 import {
   LOCAL_EXECUTION_HOST_ID,
   profileInputSchema,
@@ -27,7 +28,7 @@ export interface ProfileBookDeps {
 
 /** What an open actually connects to, for attributing it to a profile. */
 export interface OpenEndpoint {
-  protocol: "ssh" | "rdp";
+  protocol: "ssh" | "rdp" | "pve";
   host: string;
   port: number;
   user: string | null;
@@ -168,7 +169,7 @@ export class ProfileBook {
     if (profileId === undefined) return undefined;
     const p = this.deps.store.get(profileId);
     if (p === null || p.protocol !== endpoint.protocol || p.host !== endpoint.host) return undefined;
-    const defaultPort = p.protocol === "rdp" ? 3389 : 22;
+    const defaultPort = defaultPortOf(p.protocol);
     if ((p.port ?? defaultPort) !== endpoint.port) return undefined;
     if ((p.username ?? null) !== endpoint.user) return undefined;
     if (p.protocol === "rdp" && (p.domain ?? null) !== endpoint.domain) return undefined;

@@ -51,6 +51,9 @@ export const PROFILE_RDP_OPTIONS_MIGRATIONS: string[] = [
   `UPDATE profiles SET rdp_options = '{"compression":true,"colorDepth":32,"wallpaper":false,"fullWindowDrag":false,"menuAnimations":false,"fontSmoothing":true,"desktopComposition":false,"themes":true}' WHERE protocol = 'rdp' AND rdp_options IS NULL;`,
 ];
 
+/** The API certificate trust of a PVE profile (JSON; null = the system roots). Runs at the END of the ordered list. */
+export const PROFILE_PVE_MIGRATIONS: string[] = [`ALTER TABLE profiles ADD COLUMN pve_trust TEXT;`];
+
 interface Row {
   id: string;
   name: string;
@@ -76,6 +79,7 @@ interface Row {
   recent_errors: string;
   needs_config: number;
   rdp_options: string | null;
+  pve_trust: string | null;
 }
 
 function parseJson(text: string): unknown {
@@ -105,6 +109,7 @@ function fromRow(row: Row): Profile | null {
     rdpWidth: row.rdp_width,
     rdpHeight: row.rdp_height,
     ...(row.rdp_options === null ? {} : { rdpOptions: parseJson(row.rdp_options) }),
+    ...(row.pve_trust === null ? {} : { pveTrust: parseJson(row.pve_trust) }),
     executionHostId: row.execution_host_id,
     origin: row.origin,
     createdAt: row.created_at,
@@ -123,11 +128,11 @@ export function createSqliteProfileStore(db: Database.Database): ProfileStore {
     INSERT OR REPLACE INTO profiles (
       id, name, protocol, grp, tags, favorite, color, host, port, username, domain, auth_type,
       identity_file, credential_ref, rdp_width, rdp_height, execution_host_id, origin,
-      created_at, updated_at, last_opened_at, recent_errors, needs_config, rdp_options
+      created_at, updated_at, last_opened_at, recent_errors, needs_config, rdp_options, pve_trust
     ) VALUES (
       @id, @name, @protocol, @grp, @tags, @favorite, @color, @host, @port, @username, @domain, @auth_type,
       @identity_file, @credential_ref, @rdp_width, @rdp_height, @execution_host_id, @origin,
-      @created_at, @updated_at, @last_opened_at, @recent_errors, @needs_config, @rdp_options
+      @created_at, @updated_at, @last_opened_at, @recent_errors, @needs_config, @rdp_options, @pve_trust
     )
   `);
   const del = db.prepare("DELETE FROM profiles WHERE id = ?");
@@ -165,6 +170,7 @@ export function createSqliteProfileStore(db: Database.Database): ProfileStore {
         recent_errors: JSON.stringify(p.recentErrors),
         needs_config: p.needsConfig === true ? 1 : 0,
         rdp_options: p.rdpOptions === null || p.rdpOptions === undefined ? null : JSON.stringify(p.rdpOptions),
+        pve_trust: p.pveTrust === null || p.pveTrust === undefined ? null : JSON.stringify(p.pveTrust),
       });
     },
     remove: (id) => del.run(id).changes > 0,

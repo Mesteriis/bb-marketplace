@@ -363,3 +363,50 @@ describe("R4: consistency of a save", () => {
     expect(book.list().some((v) => v.orphaned)).toBe(false);
   });
 });
+
+describe("CredentialBook.adopt (a secret the helper saved itself)", () => {
+  const PVE: ProfileFields = { ...RDP, name: "lab pve", protocol: "pve" as never, host: "pve.test", port: null, username: "remotehub@pve", domain: null, authType: "password" } as ProfileFields;
+  const REF = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b99";
+
+  function setup() {
+    const profiles = new MemoryProfiles();
+    const meta = new MemoryMeta();
+    const vault = new FakeVault();
+    let n = 0;
+    const book = new ProfileBook({ store: profiles, now: () => new Date("2026-11-18T10:00:00Z"), newId: () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}` });
+    const creds = new CredentialBook({ store: meta, vault, profiles: book, now: () => new Date("2026-11-18T10:00:00Z"), newId: () => "x" });
+    return { book, meta, vault, creds };
+  }
+
+  it("records metadata bound to the pve endpoint and links the profile, passing nothing down", async () => {
+    const { book, meta, vault, creds } = setup();
+    const p = book.save({ fields: PVE });
+    vault.items.set(REF, "secret-from-helper");
+    vault.calls.length = 0;
+    await creds.adopt({ profileId: p.id, ref: REF });
+    expect(vault.calls).toEqual([]);
+    expect(meta.get(REF)?.bind).toEqual({ type: "endpoint", protocol: "pve", host: "pve.test", port: 8006, user: "remotehub@pve", domain: null });
+    expect(book.get(p.id)?.credentialRef).toBe(REF);
+  });
+
+  it("refuses a missing Keychain item, a foreign reference and a profile that already has a credential", async () => {
+    const { book, vault, creds } = setup();
+    const p = book.save({ fields: PVE });
+    await expect(creds.adopt({ profileId: p.id, ref: REF })).rejects.toMatchObject({ code: "credential_missing" });
+    vault.items.set(REF, "s");
+    await expect(creds.adopt({ profileId: p.id, ref: "rh-cred:v1:other:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b99" })).rejects.toMatchObject({ code: "invalid_credential_ref" });
+    await creds.adopt({ profileId: p.id, ref: REF });
+    await expect(creds.adopt({ profileId: p.id, ref: REF })).rejects.toMatchObject({ code: "credential_exists" });
+    await expect(creds.adopt({ profileId: "00000000-0000-4000-8000-0000000000ff", ref: REF })).rejects.toMatchObject({ code: "profile_not_found" });
+  });
+
+  it("when recording fails the Keychain item is removed again", async () => {
+    const { book, meta, vault, creds } = setup();
+    const p = book.save({ fields: PVE });
+    vault.items.set(REF, "s");
+    meta.failPut = true;
+    await expect(creds.adopt({ profileId: p.id, ref: REF })).rejects.toThrow("disk full");
+    expect(vault.items.has(REF)).toBe(false);
+    expect(book.get(p.id)?.credentialRef).toBeNull();
+  });
+});

@@ -6,6 +6,7 @@
 // the execution host it is valid on (stage 3b resolves it).
 import { z } from "zod";
 import { rdpOptionsSchema } from "./rdp-options.ts";
+import { pveProfileTrustSchema } from "./pve-trust.ts";
 import { assertHostToken, assertIdentityPath, assertSshUser } from "./ssh-args.ts";
 
 /** The only execution host there is until a remote one exists. */
@@ -70,7 +71,7 @@ const absolutePathSchema = z
 export const profileFieldsSchema = z
   .object({
     name: nameSchema,
-    protocol: z.enum(["ssh", "rdp"]),
+    protocol: z.enum(["ssh", "rdp", "pve"]),
     group: groupSchema.nullable(),
     tags: tagsSchema,
     favorite: z.boolean(),
@@ -84,7 +85,8 @@ export const profileFieldsSchema = z
     username: z.string().trim().min(1).max(256).nullable(),
     /** RDP only. */
     domain: z.string().trim().min(1).max(256).nullable(),
-    authType: z.enum(["agent", "key", "password"]),
+    /** `password` is a PVE ticket login (user + password) for a pve profile; `token` is a PVE API token. */
+    authType: z.enum(["agent", "key", "password", "token"]),
     /** SSH key file path (a path, not key material); key auth only. */
     identityFile: absolutePathSchema.nullable(),
     credentialRef: credentialRefSchema.nullable(),
@@ -93,11 +95,26 @@ export const profileFieldsSchema = z
     rdpHeight: z.number().int().min(1).max(2160).nullable(),
     /** RDP only: compression, colour depth and experience switches. null or absent = the default (Balanced). */
     rdpOptions: rdpOptionsSchema.nullable().optional(),
+    /** PVE only: how the API certificate is trusted. null or absent = the system roots. */
+    pveTrust: pveProfileTrustSchema.nullable().optional(),
   })
   .strict()
   .superRefine((p, ctx) => {
     const issue = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
-    if (p.protocol === "rdp") {
+    if (p.protocol !== "pve" && p.authType === "token") issue("authType", "only a PVE profile signs in with an API token");
+    if (p.protocol !== "pve" && p.pveTrust !== null && p.pveTrust !== undefined) issue("pveTrust", "only a PVE profile has an API certificate trust");
+    if (p.protocol === "pve") {
+      // host + port are the API endpoint; the username is `name@realm` (ticket) or `name@realm!token` (token).
+      if (p.username === null) issue("username", "a PVE profile needs a user (name@realm) or an API token id (name@realm!token)");
+      else if (p.authType === "token" ? !/^[^@!\s]+@[^@!\s]+![^@!\s]+$/.test(p.username) : !/^[^@!\s]+@[^@!\s]+$/.test(p.username)) {
+        issue("username", p.authType === "token" ? "an API token id looks like user@realm!tokenname" : "a PVE user looks like user@realm");
+      }
+      if (p.authType !== "password" && p.authType !== "token") issue("authType", "a PVE profile signs in with a password (ticket) or an API token");
+      if (p.domain !== null) issue("domain", "only an RDP profile has a domain");
+      if (p.identityFile !== null) issue("identityFile", "a PVE profile has no key file");
+      if (p.rdpWidth !== null || p.rdpHeight !== null) issue("rdpWidth", "only an RDP profile has a desktop size");
+      if (p.rdpOptions !== null && p.rdpOptions !== undefined) issue("rdpOptions", "only an RDP profile has connection options");
+    } else if (p.protocol === "rdp") {
       if (p.username === null) issue("username", "an RDP profile needs a username");
       if (p.authType !== "password") issue("authType", "an RDP profile signs in with a password");
       if (p.identityFile !== null) issue("identityFile", "an RDP profile has no key file");
@@ -197,5 +214,6 @@ export function profileFieldsOf(p: Profile): ProfileFields {
     rdpWidth: p.rdpWidth,
     rdpHeight: p.rdpHeight,
     rdpOptions: p.rdpOptions ?? null,
+    pveTrust: p.pveTrust ?? null,
   };
 }

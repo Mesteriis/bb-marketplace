@@ -3,10 +3,10 @@
 // the endpoint (or key file) it was saved for and is refused anywhere else. The
 // secret is only ever passed DOWN (save/update); nothing here returns one.
 import { z } from "zod";
-import { DEFAULT_RDP_PORT } from "./catalogue.ts";
+import { defaultPortOf } from "./catalogue.ts";
 import { credentialBindSchema } from "./credential-protocol.ts";
 import type { ProfileBook } from "./profile-book.ts";
-import { LOCAL_EXECUTION_HOST_ID, type Profile, type ProfileInput } from "./profile.ts";
+import { LOCAL_EXECUTION_HOST_ID, parseCredentialRef, type Profile, type ProfileInput } from "./profile.ts";
 
 export class CredentialError extends Error {
   readonly code: string;
@@ -70,7 +70,7 @@ export interface CredentialView {
 
 /** What an open connects to, for checking a credential against. */
 export interface Endpoint {
-  protocol: "ssh" | "rdp";
+  protocol: "ssh" | "rdp" | "pve";
   host: string;
   port: number;
   user: string | null;
@@ -89,7 +89,7 @@ export function endpointOf(p: Profile): Endpoint {
     protocol: p.protocol,
     // Lower case, as OpenSSH prints it in its prompts and as the helper stores and compares it.
     host: p.host.toLowerCase(),
-    port: p.port ?? (p.protocol === "rdp" ? DEFAULT_RDP_PORT : 22),
+    port: p.port ?? defaultPortOf(p.protocol),
     user: p.username,
     domain: p.protocol === "rdp" ? p.domain : null,
   };
@@ -198,6 +198,42 @@ export class CredentialBook {
       throw error;
     }
     return { ref };
+  }
+
+  /**
+   * Records a secret the helper has already put in the Keychain itself (Proxmox onboarding creates the user's password and
+   * saves it where it made it): checks that it is there, keeps its metadata and links the profile. Nothing is passed down.
+   */
+  adopt(input: { profileId: string; ref: string }): Promise<void> {
+    return this.locked("profile:" + input.profileId, () => this.adoptLocked(input));
+  }
+
+  private async adoptLocked(input: { profileId: string; ref: string }): Promise<void> {
+    const profile = this.deps.profiles.get(input.profileId);
+    if (profile === null) throw new CredentialError("profile_not_found", "no such profile");
+    if (profile.authType === "agent") throw new CredentialError("credential_not_applicable", "this profile does not use a stored secret");
+    if (profile.credentialRef !== null) throw new CredentialError("credential_exists", "this profile already has a saved credential; update it");
+    const parsed = parseCredentialRef(input.ref);
+    if (parsed === null || parsed.executionHostId !== LOCAL_EXECUTION_HOST_ID) throw new CredentialError("invalid_credential_ref", "not a Remote Hub credential reference");
+    if ((await this.status(input.ref)) !== "present") throw new CredentialError("credential_missing", "the Keychain has no such item");
+    const stamp = this.deps.now().toISOString();
+    try {
+      this.deps.store.put({
+        ref: input.ref,
+        kind: "password",
+        label: profile.name.slice(0, 100),
+        bind: bindOf(profile),
+        executionHostId: LOCAL_EXECUTION_HOST_ID,
+        createdAt: stamp,
+        updatedAt: stamp,
+      });
+      this.deps.profiles.link(profile.id, input.ref);
+    } catch (error) {
+      this.deps.store.remove(input.ref);
+      const left = await this.cleanup(input.ref);
+      if (left !== null) throw new CredentialError("credential_cleanup_failed", `the credential could not be recorded and its Keychain item could not be removed (${left}); it is listed as unfinished`);
+      throw error;
+    }
   }
 
   /**

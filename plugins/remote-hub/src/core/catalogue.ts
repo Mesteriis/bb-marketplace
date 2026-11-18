@@ -58,6 +58,13 @@ export function profileStatus(profileId: string, sessions: Array<SessionInfo & {
 }
 
 export const DEFAULT_RDP_PORT = 3389;
+/** The PVE API port. */
+export const DEFAULT_PVE_PORT = 8006;
+
+/** The port a profile means when it names none. */
+export function defaultPortOf(protocol: "ssh" | "rdp" | "pve"): number {
+  return protocol === "rdp" ? DEFAULT_RDP_PORT : protocol === "pve" ? DEFAULT_PVE_PORT : 22;
+}
 
 /** The fields of an SSH open for a profile. Authentication stays with OpenSSH. */
 export function profileToSshTarget(p: Profile): SshTarget {

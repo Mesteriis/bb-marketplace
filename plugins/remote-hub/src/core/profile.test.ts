@@ -163,3 +163,60 @@ describe("the save envelope is strict (P6)", () => {
     expect(profileInputSchema.safeParse({ fields: SSH_FIELDS }).success).toBe(true);
   });
 });
+
+const PVE_FIELDS = {
+  name: "lab pve",
+  protocol: "pve",
+  group: null,
+  tags: [],
+  favorite: false,
+  color: null,
+  host: "pve.example.test",
+  port: null,
+  username: "remotehub@pve",
+  domain: null,
+  authType: "password",
+  identityFile: null,
+  credentialRef: null,
+  rdpWidth: null,
+  rdpHeight: null,
+  pveTrust: null,
+} as const;
+
+describe("a Proxmox profile", () => {
+  it("accepts a ticket login, an API token id and each trust mode", () => {
+    expect(profileFieldsSchema.safeParse(PVE_FIELDS).success).toBe(true);
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, authType: "token", username: "remotehub@pve!rh" }).success).toBe(true);
+    const fp = "B6:88:41:D8:62:DD:80:8C:E2:A8:39:E1:26:D1:66:00:9D:51:54:09:DD:16:E2:A7:CB:DF:0D:3B:E1:1D:43:2E";
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, pveTrust: { mode: "pin", fingerprint: fp } }).success).toBe(true);
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, pveTrust: { mode: "system" } }).success).toBe(true);
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, pveTrust: { mode: "ca", derHex: "3082" } }).success).toBe(true);
+  });
+
+  it("refuses a user without a realm, a token id that is not user@realm!name, and the wrong auth types", () => {
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, username: "remotehub" }).success).toBe(false);
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, username: null }).success).toBe(false);
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, authType: "token", username: "remotehub@pve" }).success).toBe(false);
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, username: "remotehub@pve!rh" }).success).toBe(false);
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, authType: "agent" }).success).toBe(false);
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, authType: "key", identityFile: "/k" }).success).toBe(false);
+  });
+
+  it("has no trust mode that skips verification, and no key, domain or desktop fields", () => {
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, pveTrust: { mode: "insecure" } }).success).toBe(false);
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, pveTrust: { mode: "pin", fingerprint: "x" } }).success).toBe(false);
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, domain: "CORP" }).success).toBe(false);
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, rdpWidth: 800, rdpHeight: 600 }).success).toBe(false);
+  });
+
+  it("only a PVE profile may have a token or a certificate trust", () => {
+    expect(profileFieldsSchema.safeParse({ ...SSH_FIELDS, authType: "token" }).success).toBe(false);
+    expect(profileFieldsSchema.safeParse({ ...SSH_FIELDS, pveTrust: { mode: "system" } }).success).toBe(false);
+    expect(profileFieldsSchema.safeParse({ ...RDP_FIELDS, authType: "token" }).success).toBe(false);
+  });
+
+  it("a secret-shaped field is still refused", () => {
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, password: "x" }).success).toBe(false);
+    expect(profileFieldsSchema.safeParse({ ...PVE_FIELDS, token: "x" }).success).toBe(false);
+  });
+});

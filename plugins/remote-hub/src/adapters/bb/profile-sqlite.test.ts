@@ -89,6 +89,7 @@ describe("sqlite profile store", () => {
         "origin",
         "port",
         "protocol",
+        "pve_trust",
         "rdp_height",
         "rdp_options",
         "rdp_width",
@@ -132,8 +133,9 @@ describe("upgrading a database made by the schema before the needs_config backfi
     const previous = [...PROFILE_MIGRATIONS, ...CREDENTIAL_MIGRATIONS, ...IMPORT_MIGRATIONS, ...PROFILE_LATER_MIGRATIONS, ...RDP_TRUST_MIGRATIONS];
     expect(ALL_MIGRATIONS.slice(0, previous.length)).toEqual(previous);
     const { AGENT_MIGRATIONS } = await import("./agent-sqlite.ts");
-    const { PROFILE_RDP_OPTIONS_MIGRATIONS } = await import("./profile-sqlite.ts");
-    expect(ALL_MIGRATIONS.slice(previous.length)).toEqual([...NEEDS_CONFIG_BACKFILL, ...AGENT_MIGRATIONS, ...PROFILE_RDP_OPTIONS_MIGRATIONS]);
+    const { PROFILE_RDP_OPTIONS_MIGRATIONS, PROFILE_PVE_MIGRATIONS } = await import("./profile-sqlite.ts");
+    const { PVE_MIGRATIONS } = await import("./pve-sqlite.ts");
+    expect(ALL_MIGRATIONS.slice(previous.length)).toEqual([...NEEDS_CONFIG_BACKFILL, ...AGENT_MIGRATIONS, ...PROFILE_RDP_OPTIONS_MIGRATIONS, ...PROFILE_PVE_MIGRATIONS, ...PVE_MIGRATIONS]);
     const db = new Database(":memory:");
     for (const statement of previous) db.exec(statement);
     const profile = (id: string, name: string) =>
@@ -176,8 +178,10 @@ describe("RDP connection options in the profile store (P1)", () => {
 
   it("a database from before the option column: RDP profiles get the VPN/WAN default (Balanced), SSH profiles stay without", async () => {
     const { ALL_MIGRATIONS } = await import("./migrations.ts");
-    const { PROFILE_RDP_OPTIONS_MIGRATIONS } = await import("./profile-sqlite.ts");
-    const previous = ALL_MIGRATIONS.slice(0, ALL_MIGRATIONS.length - PROFILE_RDP_OPTIONS_MIGRATIONS.length);
+    const { PROFILE_RDP_OPTIONS_MIGRATIONS, PROFILE_PVE_MIGRATIONS } = await import("./profile-sqlite.ts");
+    const { PVE_MIGRATIONS } = await import("./pve-sqlite.ts");
+    const later = [...PROFILE_PVE_MIGRATIONS, ...PVE_MIGRATIONS];
+    const previous = ALL_MIGRATIONS.slice(0, ALL_MIGRATIONS.length - PROFILE_RDP_OPTIONS_MIGRATIONS.length - later.length);
     const db = new Database(":memory:");
     for (const statement of previous) db.exec(statement);
     const insert = (id: string, protocol: string) =>
@@ -189,7 +193,7 @@ describe("RDP connection options in the profile store (P1)", () => {
         .run(id, id, protocol, protocol === "rdp" ? "admin" : null, protocol === "rdp" ? "password" : "agent");
     insert("00000000-0000-4000-8000-000000000001", "rdp");
     insert("00000000-0000-4000-8000-000000000002", "ssh");
-    for (const statement of PROFILE_RDP_OPTIONS_MIGRATIONS) db.exec(statement);
+    for (const statement of [...PROFILE_RDP_OPTIONS_MIGRATIONS, ...later]) db.exec(statement);
     const store = createSqliteProfileStore(db);
     expect(store.get("00000000-0000-4000-8000-000000000001")?.rdpOptions).toEqual({ compression: true, colorDepth: 32, wallpaper: false, fullWindowDrag: false, menuAnimations: false, fontSmoothing: true, desktopComposition: false, themes: true });
     expect(store.get("00000000-0000-4000-8000-000000000002")?.rdpOptions ?? null).toBeNull();
@@ -201,6 +205,42 @@ describe("RDP connection options in the profile store (P1)", () => {
     const rdp = book(db).save({ fields: { ...RDP_FIELDS, rdpOptions: SLOW } });
     db.prepare("UPDATE profiles SET rdp_options = ? WHERE id = ?").run(JSON.stringify({ ...SLOW, colorDepth: 8 }), rdp.id);
     expect(createSqliteProfileStore(db).get(rdp.id)).toBeNull();
+    db.close();
+  });
+});
+
+
+describe("a Proxmox profile in the store", () => {
+  it("round-trips its trust, and a profile without one comes back with none", () => {
+    const db = openDb();
+    const b = book(db);
+    const store = createSqliteProfileStore(db);
+    const base: ProfileFields = { ...FIELDS, name: "lab", protocol: "pve", host: "pve.test", port: null, username: "remotehub@pve", authType: "password", identityFile: null, credentialRef: null, group: null, pveTrust: null };
+    const fp = "B6:88:41:D8:62:DD:80:8C:E2:A8:39:E1:26:D1:66:00:9D:51:54:09:DD:16:E2:A7:CB:DF:0D:3B:E1:1D:43:2E";
+    const pinned = b.save({ fields: { ...base, pveTrust: { mode: "pin", fingerprint: fp } } });
+    expect(store.get(pinned.id)?.pveTrust).toEqual({ mode: "pin", fingerprint: fp });
+    const plain = b.save({ fields: base });
+    expect(store.get(plain.id)?.pveTrust ?? null).toBeNull();
+    expect(store.get(plain.id)?.protocol).toBe("pve");
+  });
+});
+
+describe("the Proxmox migrations", () => {
+  it("a database from before them gains the trust column and the guest-link table, and keeps its profiles", async () => {
+    const { ALL_MIGRATIONS } = await import("./migrations.ts");
+    const { PROFILE_PVE_MIGRATIONS } = await import("./profile-sqlite.ts");
+    const { PVE_MIGRATIONS } = await import("./pve-sqlite.ts");
+    const previous = ALL_MIGRATIONS.slice(0, ALL_MIGRATIONS.length - PROFILE_PVE_MIGRATIONS.length - PVE_MIGRATIONS.length);
+    const db = new Database(":memory:");
+    for (const statement of previous) db.exec(statement);
+    db.prepare(
+      `INSERT INTO profiles (id, name, protocol, grp, tags, favorite, color, host, port, username, domain, auth_type, identity_file, credential_ref, rdp_width, rdp_height, execution_host_id, origin, created_at, updated_at, last_opened_at, recent_errors, needs_config)
+       VALUES ('00000000-0000-4000-8000-000000000009', 'old', 'ssh', NULL, '[]', 0, NULL, 'h.example.test', NULL, NULL, NULL, 'agent', NULL, NULL, NULL, NULL, 'local', 'manual', 'x', 'x', NULL, '[]', 0)`,
+    ).run();
+    for (const statement of [...PROFILE_PVE_MIGRATIONS, ...PVE_MIGRATIONS]) db.exec(statement);
+    const store = createSqliteProfileStore(db);
+    expect(store.get("00000000-0000-4000-8000-000000000009")?.name).toBe("old");
+    expect(store.get("00000000-0000-4000-8000-000000000009")?.pveTrust ?? null).toBeNull();
     db.close();
   });
 });
