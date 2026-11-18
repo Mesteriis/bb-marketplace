@@ -168,7 +168,7 @@ const CLOSE_CONFIRM_MS = 5000;
 export const liveViewLine = (sessionKey: string): string => `::remote-session{id="${sessionKey}"}`;
 export const LIVE_VIEW_INSTRUCTION =
   "Put the liveView line on its own line in your reply so the owner sees this session live. Nothing you type or run is accepted while nobody has the live view open and visible.";
-const NOT_WATCHING = new ToolError(
+export const NOT_WATCHING = new ToolError(
   "owner_not_watching",
   "Nobody has this session's live view open and visible, so nothing was sent. Put the liveView line in your reply (the owner sees the session there, or on the Remote Hub page) and try again once the owner is watching."
 );
