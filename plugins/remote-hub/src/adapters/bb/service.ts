@@ -15,6 +15,7 @@ import type { RdpDecision } from "../../core/rpc.ts";
 import { createRdpTrustStore, fingerprintEqual, type RdpTrustStore, type TrustedRdpCert } from "../../core/rdp-trust.ts";
 import { RdpViewMux, type ViewEffects } from "../../core/rdp-views.ts";
 import type { ScreenshotResult } from "../../core/rdp-screenshot.ts";
+import type { ScrollbackRead } from "../../core/scrollback.ts";
 
 export type SessionState = "connecting" | "running" | "closed";
 
@@ -86,6 +87,8 @@ export interface RemoteHubService {
   sessionAttach(handle: SessionHandle): string;
   consumeAttachToken(token: string): { sessionId: number; generation: string } | null;
   sessionScrollback(handle: SessionHandle): Promise<Uint8Array>;
+  /** Terminal output of a session from a read position (null = the newest bytes). Null when the helper is not running. */
+  sessionRead(handle: SessionHandle, from: number | null, max: number): ScrollbackRead | null;
   attachStream(handle: SessionHandle): {
     snapshot: Uint8Array;
     subscribe: (cb: (data: Uint8Array) => void) => () => void;
@@ -706,6 +709,10 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     },
     consumeAttachToken(token) {
       return attachTokens.consume(token);
+    },
+    sessionRead(handle, from, max) {
+      requireGeneration(handle);
+      return helper?.scrollbackRead(handle.sessionId, from, max) ?? null;
     },
     async sessionScrollback(handle) {
       requireGeneration(handle);

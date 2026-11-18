@@ -25,7 +25,7 @@ import {
 import type { SessionHandle } from "../../core/rpc.ts";
 import { parseUpdateChunk, type RdpInputEvent } from "../../core/rdp-protocol.ts";
 import { ScreenshotAssembler, type ScreenshotResult } from "../../core/rdp-screenshot.ts";
-import { Scrollback, SCROLLBACK_MAX_BYTES } from "../../core/scrollback.ts";
+import { Scrollback, SCROLLBACK_MAX_BYTES, type ScrollbackRead } from "../../core/scrollback.ts";
 import type { SshSpawnSpec } from "../../core/ssh-args.ts";
 
 export const HELPER_BIN_NAME = "remote-hub-helper";
@@ -742,6 +742,12 @@ export class HelperProcess {
     const seq = this.inputSeq.get(sessionId) ?? 0;
     this.inputSeq.set(sessionId, seq + 1);
     this.child.stdin.write(encodeStreamFrame({ sessionId, seq }, data));
+  }
+
+  /** Bytes of a session's terminal output from a read position (or the newest ones when `from` is null); never a copy of the whole buffer. */
+  scrollbackRead(sessionId: number, from: number | null, max: number): ScrollbackRead {
+    const scrollback = this.scrollbacks.get(sessionId) ?? new Scrollback(1);
+    return from === null ? scrollback.tail(max) : scrollback.read(from, max);
   }
 
   scrollbackSnapshot(sessionId: number): Uint8Array {

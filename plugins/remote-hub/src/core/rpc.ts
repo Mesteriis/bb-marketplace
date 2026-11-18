@@ -204,6 +204,33 @@ export const rpcSchemas = {
     }),
     output: z.object({ decided: z.literal(true) }),
   },
+  agent_access_list: {
+    input: z.object({}).strict(),
+    output: z.array(z.object({ profileId: z.string(), level: z.enum(["observe", "input", "exec"]), recordCommands: z.boolean(), updatedAt: z.string() })),
+  },
+  agent_access_set: {
+    input: z.object({ profileId: z.string().uuid(), level: z.enum(["none", "observe", "input", "exec"]), recordCommands: z.boolean() }).strict(),
+    output: z.object({ profileId: z.string(), level: z.enum(["none", "observe", "input", "exec"]), recordCommands: z.boolean() }),
+  },
+  agent_access_revoke_all: { input: z.object({}).strict(), output: z.object({ revoked: z.number().int() }) },
+  agent_audit_list: {
+    input: z.object({ limit: z.number().int().min(1).max(500).default(100) }).strict(),
+    output: z.array(
+      z.object({
+        id: z.number().int(),
+        at: z.string(),
+        threadId: z.string(),
+        projectId: z.string(),
+        tool: z.string(),
+        profileId: z.string().nullable(),
+        sessionKey: z.string().nullable(),
+        detailMode: z.enum(["none", "hash", "text"]),
+        detail: z.string().nullable(),
+        outcome: z.string().nullable(),
+        count: z.number().int(),
+      }),
+    ),
+  },
   rdp_trusted_list: {
     input: z.object({}).strict(),
     output: z.array(z.object({ host: z.string(), port: z.number().int(), fingerprint: z.string(), addedAt: z.string() })),

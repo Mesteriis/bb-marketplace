@@ -2,6 +2,8 @@
 // fakes (the security checks live here: credential-to-endpoint binding, attribution of an open to
 // a profile, error mapping). server.ts only composes and registers them.
 import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
+import { AgentAccessError, type AgentAccessBook } from "../../core/agent-access.ts";
+import type { AgentAudit } from "../../core/agent-audit.ts";
 import { CredentialError, type CredentialBook } from "../../core/credential.ts";
 import { ImportError, type ImportBook, type ImportSource } from "../../core/import-book.ts";
 import type { Profile } from "../../core/profile.ts";
@@ -39,9 +41,21 @@ export interface RpcHandlerDeps {
   profiles: ProfileBook;
   credentials: CredentialBook;
   imports: ImportBook;
+  /** Agent grants and the audit (stage 4a); the owner's page is the only caller of these RPCs. */
+  agents?: { access: AgentAccessBook; audit: AgentAudit };
 }
 
-export function createRpcHandlers({ service, profiles, credentials, imports }: RpcHandlerDeps): RpcHandlers {
+export function createRpcHandlers({ service, profiles, credentials, imports, agents }: RpcHandlerDeps): RpcHandlers {
+  const withAgents = <T>(run: (a: { access: AgentAccessBook; audit: AgentAudit }) => T): T => {
+    if (agents === undefined) throw new experimental_PluginRpcRefusal({ code: "not_found", message: "agent access is not available" });
+    try {
+      return run(agents);
+    } catch (error) {
+      if (error instanceof AgentAccessError) throw new experimental_PluginRpcRefusal({ code: error.code === "profile_not_found" ? "not_found" : "invalid", message: error.message });
+      throw error;
+    }
+  };
+
   const withProfile = async <T>(run: () => T | Promise<T>): Promise<T> => {
     try {
       return await run();
@@ -167,6 +181,14 @@ export function createRpcHandlers({ service, profiles, credentials, imports }: R
         await service.rdpCertDecision({ generation: input.generation, sessionId: input.sessionId }, input.fingerprint, input.accept);
         return { decided: true as const };
       }),
+    agent_access_list: async () => withAgents(({ access }) => access.list().map(({ profileId, level, recordCommands, updatedAt }) => ({ profileId, level: level as "observe" | "input" | "exec", recordCommands, updatedAt }))),
+    agent_access_set: async (input) =>
+      withAgents(({ access }) => {
+        const grant = access.set(input.profileId, input.level, input.recordCommands);
+        return { profileId: grant.profileId, level: grant.level, recordCommands: grant.recordCommands };
+      }),
+    agent_access_revoke_all: async () => withAgents(({ access }) => ({ revoked: access.revokeAll() })),
+    agent_audit_list: async (input) => withAgents(({ audit }) => audit.list(input.limit)),
     rdp_trusted_list: () => withHelper(async () => service.rdpTrustedList()),
     rdp_trusted_forget: (input) => withHelper(async () => ({ removed: service.rdpTrustedForget(input.host, input.port, input.fingerprint) })),
     rdp_screenshot: (input) =>

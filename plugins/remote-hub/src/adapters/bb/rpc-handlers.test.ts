@@ -261,3 +261,48 @@ describe("import RPCs (real handlers, an in-memory book over a fixture reader)",
     expect(await handlers.import_source_list(null as never)).toEqual([]);
   });
 });
+
+describe("agent access RPCs (stage 4a): the owner's page is the only way to change a grant", () => {
+  async function withAgents() {
+    const { AgentAccessBook } = await import("../../core/agent-access.ts");
+    const { AgentAudit } = await import("../../core/agent-audit.ts");
+    const { createSqliteAgentAuditStore, createSqliteAgentGrantStore } = await import("./agent-sqlite.ts");
+    const { default: Database } = await import("better-sqlite3");
+    const { ALL_MIGRATIONS } = await import("./migrations.ts");
+    const db = new Database(":memory:");
+    for (const statement of ALL_MIGRATIONS) db.exec(statement);
+    const s = setup();
+    const access = new AgentAccessBook({ store: createSqliteAgentGrantStore(db), profiles: { has: (id) => s.profiles.get(id) !== null }, now: () => new Date("2026-11-18T10:00:00.000Z") });
+    const audit = new AgentAudit({ store: createSqliteAgentAuditStore(db), now: () => new Date("2026-11-18T10:00:00.000Z") });
+    const handlers = createRpcHandlers({ service: s.service as unknown as RemoteHubService, profiles: s.profiles, credentials: s.credentials, imports: memoryImportBook(s.profiles, s.credentials), agents: { access, audit } });
+    return { ...s, handlers, access, audit };
+  }
+
+  it("set, list, lower and revoke all; recording commands only sticks at exec", async () => {
+    const { handlers, profiles } = await withAgents();
+    const p = profiles.save({ fields: RDP });
+    expect(await handlers.agent_access_list({})).toEqual([]);
+    expect(await handlers.agent_access_set({ profileId: p.id, level: "exec", recordCommands: true })).toEqual({ profileId: p.id, level: "exec", recordCommands: true });
+    expect(await handlers.agent_access_list({})).toEqual([{ profileId: p.id, level: "exec", recordCommands: true, updatedAt: "2026-11-18T10:00:00.000Z" }]);
+    expect(await handlers.agent_access_set({ profileId: p.id, level: "observe", recordCommands: true })).toEqual({ profileId: p.id, level: "observe", recordCommands: false });
+    expect(await handlers.agent_access_revoke_all({})).toEqual({ revoked: 1 });
+    expect(await handlers.agent_access_list({})).toEqual([]);
+  });
+
+  it("a profile that does not exist cannot be granted", async () => {
+    const { handlers } = await withAgents();
+    await expect(handlers.agent_access_set({ profileId: "99999999-2222-4333-8444-555555555559", level: "observe", recordCommands: false })).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("the audit list is newest first and bounded by the limit", async () => {
+    const { handlers, audit } = await withAgents();
+    for (const tool of ["a", "b", "c"]) audit.begin({ threadId: "thr", projectId: "prj", tool }).finish("ok");
+    const rows = await handlers.agent_audit_list({ limit: 2 });
+    expect(rows.map((r) => [r.tool, r.outcome, r.threadId])).toEqual([["c", "ok", "thr"], ["b", "ok", "thr"]]);
+  });
+
+  it("without the agent deps the RPCs are not available instead of silently allowing", async () => {
+    const { handlers } = setup();
+    await expect(handlers.agent_access_list({})).rejects.toMatchObject({ code: "not_found" });
+  });
+});

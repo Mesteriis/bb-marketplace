@@ -11,6 +11,12 @@ import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { HELPER_BIN_NAME, HelperProcess } from "./src/adapters/bb/helper-process.ts";
 import { ALL_MIGRATIONS } from "./src/adapters/bb/migrations.ts";
+import { AgentAccessBook } from "./src/core/agent-access.ts";
+import { AgentAudit } from "./src/core/agent-audit.ts";
+import { ToolBudget } from "./src/core/agent-budget.ts";
+import { createAgentTools } from "./src/core/agent-tools.ts";
+import { agentPorts, registerAgentTools } from "./src/adapters/bb/agent-tools.ts";
+import { createSqliteAgentAuditStore, createSqliteAgentGrantStore } from "./src/adapters/bb/agent-sqlite.ts";
 import { createRdpTrustStore } from "./src/core/rdp-trust.ts";
 import { createSqliteRdpTrust } from "./src/adapters/bb/rdp-trust-sqlite.ts";
 import { createSqliteProfileStore } from "./src/adapters/bb/profile-sqlite.ts";
@@ -62,7 +68,11 @@ export default function plugin(bb: BbPluginApi): void {
     newId: () => randomUUID(),
   });
   const imports = new ImportBook({ store: importStore, reader: createFsSourceReader(), profiles, credentials, newId: () => randomUUID(), knownHosts: service.knownHosts });
-  bb.rpc.register(rpcContract, createRpcHandlers({ service, profiles, credentials, imports }));
+  // Agent access (stage 4a): grants the owner sets on the page, an audit of every tool call, and the read-only tools.
+  const agentAccess = new AgentAccessBook({ store: createSqliteAgentGrantStore(db), profiles: { has: (id) => profiles.get(id) !== null }, now: () => new Date() });
+  const agentAudit = new AgentAudit({ store: createSqliteAgentAuditStore(db), now: () => new Date() });
+  registerAgentTools(bb, createAgentTools({ access: agentAccess, audit: agentAudit, budget: new ToolBudget({ now: () => Date.now() }), ports: agentPorts(service, profiles) }));
+  bb.rpc.register(rpcContract, createRpcHandlers({ service, profiles, credentials, imports, agents: { access: agentAccess, audit: agentAudit } }));
 
   registerStreamSocket(bb, { service });
 
