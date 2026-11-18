@@ -144,6 +144,9 @@ impl Desk {
         if !self.desktop_sent {
             return Ok(());
         }
+        // The pixels are unchanged, but the resent frame needs its own id: ids on
+        // the wire are strictly increasing.
+        self.fb.new_frame();
         let full = Rect { x: 0, y: 0, w: self.fb.width(), h: self.fb.height() };
         self.dirty(out, full)
     }
@@ -591,6 +594,37 @@ mod tests {
         let mut buf = vec![0u8; reader.output_buffer_size().unwrap()];
         let info = reader.next_frame(&mut buf).unwrap();
         assert_eq!(&buf[..info.buffer_size()], desk.fb.pixels());
+    }
+
+    /// R1: a refresh resends the WHOLE framebuffer under a frame id that no
+    /// earlier update used (the pixels did not change, so the id would otherwise
+    /// repeat and a consumer would have to treat it as a stream error).
+    #[test]
+    fn a_refresh_sends_the_whole_frame_under_a_new_frame_id() {
+        use std::io::Read as _;
+        let mut fb = Framebuffer::new(8, 4).unwrap();
+        fb.apply(0, 0, 8, 4, &vec![7u8; 8 * 4 * 4], 1).unwrap();
+        let mut desk = Desk::new(fb);
+        let (engine_end, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let out = Out::new(engine_end);
+        desk.dirty(&out, Rect { x: 0, y: 0, w: 8, h: 4 }).unwrap(); // desktop + update, frame 1 in flight
+        desk.refresh(&out).unwrap(); // coalesced behind the in-flight update
+        desk.ack(&out, 1).unwrap(); // releases the refreshed full frame
+        drop(out);
+        let mut all = Vec::new();
+        peer.read_to_end(&mut all).unwrap();
+        let mut updates = Vec::new(); // (frame_id, x, y, w, h)
+        let mut at = 0;
+        while at < all.len() {
+            let len = u32::from_le_bytes(all[at..at + 4].try_into().unwrap()) as usize;
+            let body = &all[at + 4..at + 4 + len];
+            if body[0] == protocol::FRAME_BINARY {
+                let (header, _) = protocol::decode_update_body(&body[1..]).unwrap();
+                updates.push((header.frame_id, header.x, header.y, header.w, header.h));
+            }
+            at += 4 + len;
+        }
+        assert_eq!(updates, vec![(1, 0, 0, 8, 4), (2, 0, 0, 8, 4)]);
     }
 
     /// H3: a screenshot that fits is one frame under the limit and its PNG

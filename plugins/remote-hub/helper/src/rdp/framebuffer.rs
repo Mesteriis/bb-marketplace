@@ -67,6 +67,13 @@ impl Framebuffer {
         self.frame_id
     }
 
+    /// Start a new frame without changing a pixel: a refresh resends the whole
+    /// framebuffer, and every update on the wire must carry a frame id no earlier
+    /// update had (consumers treat an id that does not grow as a stream error).
+    pub fn new_frame(&mut self) {
+        self.frame_id = self.frame_id.wrapping_add(1);
+    }
+
     pub fn last_update_ms(&self) -> u64 {
         self.last_update_ms
     }
@@ -346,5 +353,22 @@ mod tests {
         fill_rect(&mut fb, 1, 1, 2, 2, [1, 2, 3, 4], 43);
         assert_eq!(fb.frame_id(), 2);
         assert_eq!(fb.last_update_ms(), 43);
+    }
+}
+
+#[cfg(test)]
+mod new_frame_tests {
+    use super::*;
+
+    #[test]
+    fn new_frame_advances_the_id_without_touching_pixels() {
+        let mut fb = Framebuffer::new(4, 4).unwrap();
+        fb.apply(0, 0, 1, 1, &[1, 2, 3, 4], 5).unwrap();
+        assert_eq!(fb.frame_id(), 1);
+        let before = fb.pixels().to_vec();
+        fb.new_frame();
+        assert_eq!(fb.frame_id(), 2);
+        assert_eq!(fb.pixels(), before.as_slice());
+        assert_eq!(fb.last_update_ms(), 5);
     }
 }
