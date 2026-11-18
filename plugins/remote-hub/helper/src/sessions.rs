@@ -145,6 +145,25 @@ fn is_transient_errno(errno: i32) -> bool {
     e == libc::EAGAIN || e == libc::EINTR || e == libc::ENXIO
 }
 
+/// A pipe whose two ends are close-on-exec (the helper is single-threaded at the
+/// fork sites, so nothing can fork between `pipe` and `fcntl`).
+fn make_start_gate() -> Result<(RawFd, RawFd), SessionError> {
+    let mut fds = [0i32; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(SessionError::Sys { step: "pipe", errno: last_errno() });
+    }
+    for fd in fds {
+        if let Err(e) = set_cloexec(fd) {
+            unsafe {
+                libc::close(fds[0]);
+                libc::close(fds[1]);
+            }
+            return Err(e);
+        }
+    }
+    Ok((fds[0], fds[1]))
+}
+
 fn set_cloexec(fd: RawFd) -> Result<(), SessionError> {
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFD);
@@ -515,6 +534,9 @@ impl SessionManager {
         }
         let inherited = open_fds_above_two()?;
         let allow_fds = spec.allow_fds.clone();
+        // Created AFTER the descriptor list above, so the child's close loop does not
+        // close the read end before it has waited on it. Both ends are close-on-exec.
+        let (gate_r, gate_w) = make_start_gate()?;
 
         // fork-without-exec work is only sound in a single-threaded process.
         crate::threads::assert_single_threaded("pty session fork");
@@ -537,11 +559,30 @@ impl SessionManager {
         }
         if pid < 0 {
             restore_signal_mask(&old_mask);
+            unsafe {
+                libc::close(gate_r);
+                libc::close(gate_w);
+            }
             return Err(SessionError::Sys { step: "fork", errno: fork_errno });
         }
         if pid == 0 {
             reset_signals_and_unblock();
             unsafe {
+                // Wait until the parent has dropped ITS copy of the slave: if the
+                // child could write and exit while the parent still holds the slave,
+                // the parent's later drop would be the last close, and on macOS the
+                // last close of a pty slave discards the output nobody has read
+                // yet. read() returns at once when the parent closes the write end
+                // (or dies: the kernel closes it), so this cannot wait for ever.
+                libc::close(gate_w);
+                let mut byte = 0u8;
+                loop {
+                    let n = libc::read(gate_r, &mut byte as *mut u8 as *mut libc::c_void, 1);
+                    if n >= 0 || last_errno() != libc::EINTR {
+                        break;
+                    }
+                }
+                libc::close(gate_r);
                 libc::setsid();
                 libc::ioctl(slave, libc::TIOCSCTTY as libc::c_ulong, 0);
                 libc::dup2(slave, 0);
@@ -564,7 +605,15 @@ impl SessionManager {
         }
 
         restore_signal_mask(&old_mask);
+        unsafe { libc::close(gate_r) };
+        #[cfg(feature = "test-hooks")]
+        if let Some(ms) = std::env::var("REMOTE_HUB_TEST_DELAY_AFTER_FORK_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+            // A helper descheduled between fork and the slave drop (test only).
+            std::thread::sleep(Duration::from_millis(ms));
+        }
         drop(slave_owned);
+        // Only now may the child run on: our slave copy is gone.
+        unsafe { libc::close(gate_w) };
         let master_raw = master_owned.into_raw_fd();
         self.sessions.insert(
             id,

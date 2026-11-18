@@ -125,6 +125,19 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   code 4409 ("view too slow"); it may reattach and gets a fresh snapshot. The
   owner is never detached for slowness, and detaching a non-owner grants no
   credit, so the owner and the helper's credit window are unaffected.
+- **Start gate for pty children (stage 2b-1 repair 5, K5).** On macOS the last close
+  of a pty slave discards the output nobody has read yet (a session leader's exit
+  waits a short while for it to be read, then discards it; the helper's own copy of
+  the slave counts as a holder). The helper drops its copy of the slave right after
+  forking; if it was descheduled in between, a short-lived child could write and
+  exit first and the helper's later drop became the last close: the output was
+  lost (a `v1_env_values_reach_execve_intact` failure, about 1 in 100-250 runs of
+  the 3-parallel echo loop under load; with a 300 ms delay it failed 30 of 30).
+  The child now blocks on a close-on-exec pipe before `setsid`/`exec`, and the
+  parent closes the write end only after dropping the slave. If the parent dies
+  the kernel closes the write end and the child proceeds (it then loses its
+  terminal to the closed master, as before); both ends are closed on every error
+  path and neither survives `exec`. The window is inside `open_session`.
 - Reap grace constants (helper/src/sessions.rs): LINGER_GRACE is how long the
   helper waits for a descendant to release the PTY after the direct child exits
   (2 s) before reaping the process group. REAP_GRACE is how long an EOF/HUP with

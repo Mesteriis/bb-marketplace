@@ -27,7 +27,14 @@ fn start() -> Helper {
 }
 
 fn start_with_args(args: &[&str]) -> Helper {
+    start_with_env(args, &[])
+}
+
+fn start_with_env(args: &[&str], env: &[(&str, &str)]) -> Helper {
     let mut command = Command::new(env!("CARGO_BIN_EXE_remote-hub-helper"));
+    for (k, v) in env {
+        command.env(k, v);
+    }
     if !args.is_empty() {
         command.args(args);
     }
@@ -736,6 +743,84 @@ fn s4a_live_child_with_closed_tty_is_reaped() {
     let (sid, pid) = helper.open();
     helper.read_until_closed(sid);
     assert!(!pid_alive(pid), "child {pid} still alive");
+}
+
+/// Open `program argv` as an ssh-kind session, grant credit at once (as a real
+/// client does) and collect its output until `session.closed`.
+fn run_short_lived(helper: &mut Helper, program: &str, argv: &[&str]) -> (Vec<u8>, Option<i32>) {
+    helper.send(&Request::OpenSsh {
+        id: 1,
+        cols: 80,
+        rows: 24,
+        program: program.to_string(),
+        argv: argv.iter().map(|a| a.to_string()).collect(),
+        env: HashMap::new(),
+        cwd: None,
+    });
+    let sid = match helper.read_response() {
+        Response::SessionOpened { session_id, .. } => session_id,
+        other => panic!("expected session.opened, got {other:?}"),
+    };
+    helper.send(&Request::SessionCredit { id: 2, session_id: sid, bytes: 1 << 20 });
+    let mut got = Vec::new();
+    for _ in 0..4000 {
+        let (kind, payload) = helper.read_frame();
+        if kind == FRAME_KIND_CONTROL {
+            if let Response::SessionClosed { session_id, exit_code, .. } = decode_response(&payload).unwrap() {
+                if session_id == sid {
+                    return (got, exit_code);
+                }
+            }
+        } else if u32::from_le_bytes(payload[0..4].try_into().unwrap()) == sid {
+            got.extend_from_slice(&payload[8..]);
+        }
+    }
+    panic!("session.closed never arrived");
+}
+
+/// The helper is held up for this long between fork and dropping its copy of the
+/// pty slave (a test-hooks-only knob; production builds do not read it). A fast
+/// child must still not be able to write and exit before the drop: otherwise the
+/// drop is the last close of the slave and macOS discards the unread output.
+const SLOW_PARENT: &[(&str, &str)] = &[("REMOTE_HUB_TEST_DELAY_AFTER_FORK_MS", "300")];
+
+// K5: the v1 case (a short-lived child that prints and exits) with a slow parent.
+#[test]
+fn k5_env_output_survives_a_helper_that_is_slow_to_drop_the_slave() {
+    let mut h = start_with_env(&[], SLOW_PARENT);
+    h.hello();
+    let (got, code) = run_short_lived(&mut h, "/usr/bin/env", &["env", "-i", "A=alpha", "B=beta"]);
+    let mut lines: Vec<String> = String::from_utf8_lossy(&got).lines().map(|l| l.trim_end_matches('\r').to_string()).collect();
+    lines.sort();
+    assert_eq!(lines, vec!["A=alpha", "B=beta"]);
+    assert_eq!(code, Some(0));
+}
+
+// K5: the same with output close to the pty buffer (1024 bytes on macOS).
+#[test]
+fn k5_output_near_the_pty_buffer_survives_a_helper_that_is_slow_to_drop_the_slave() {
+    let mut h = start_with_env(&[], SLOW_PARENT);
+    h.hello();
+    let (got, code) = run_short_lived(&mut h, "/usr/bin/printf", &["printf", &"y".repeat(1000)]);
+    assert_eq!(got, vec![b'y'; 1000]);
+    assert_eq!(code, Some(0));
+}
+
+// K5: the start gate leaks nothing: no descriptor of it survives exec in the child
+// (s9 above lists a child's fds) and none stays open in the helper per session.
+#[test]
+fn k5_the_start_gate_leaves_no_descriptor_in_the_helper() {
+    let mut h = start();
+    h.hello();
+    let helper_pid = h.child.id();
+    let before = child_fds(helper_pid).len();
+    for _ in 0..20 {
+        let (sid, _pid) = h.open();
+        h.send(&Request::SessionClose { id: 99, session_id: sid });
+        h.read_until_closed(sid);
+    }
+    let after = child_fds(helper_pid).len();
+    assert_eq!(after, before, "the helper's descriptor count changed over 20 opens/closes");
 }
 
 // S9: a sibling session's child does not inherit the other session's master or
