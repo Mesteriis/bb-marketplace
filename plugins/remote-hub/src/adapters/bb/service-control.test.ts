@@ -114,13 +114,20 @@ function setup() {
     const o = leases.owner(KEY(h));
     return o.kind === "human" ? { owner: "human", expiresAt: null } : { owner: "agent", expiresAt: o.expiresAt };
   };
+  // A lease nobody watches is suspended: its tag changes, as the production gate does.
+  const suspended = new Set<string>();
+  const changeCallbacks: Array<(h: SessionHandle) => void> = [];
   const control: ControlGate = {
     humanMayDrive: (h) => leases.owner(KEY(h)).kind === "human",
     ownerTag: (h) => {
       const o = leases.owner(KEY(h));
-      return o.kind === "human" ? "human" : `agent:${o.leaseId}`;
+      if (o.kind === "human") return "human";
+      return suspended.has(KEY(h)) ? `suspended:${o.leaseId}` : `agent:${o.leaseId}`;
     },
-    onChange: (cb) => leases.onChange((key) => cb({ generation: key.split(".")[0] as string, sessionId: Number(key.split(".")[1]) })),
+    onChange: (cb) => {
+      changeCallbacks.push(cb);
+      leases.onChange((key) => cb({ generation: key.split(".")[0] as string, sessionId: Number(key.split(".")[1]) }));
+    },
     state: view,
     subscribe: (h, cb) => {
       const listener = (key: string) => key === KEY(h) && cb(view(h));
@@ -137,7 +144,12 @@ function setup() {
     await handlers.onOpen(socket);
     return { socket, handlers };
   };
-  return { helper, service, leases, attach, advance: (ms: number) => void (now += ms) };
+  const setSuspended = (h: SessionHandle, value: boolean): void => {
+    if (value) suspended.add(KEY(h));
+    else suspended.delete(KEY(h));
+    for (const cb of changeCallbacks) cb(h);
+  };
+  return { helper, service, leases, attach, setSuspended, advance: (ms: number) => void (now += ms) };
 }
 
 describe("a terminal session while an agent holds the lease", () => {
@@ -341,6 +353,23 @@ describe("Z2: a change of driver is a barrier the helper acknowledges, and stale
     leases.takeover(KEY(h));
     await settle();
     expect(helper.owners).toEqual(["agent:lease-1", "human"]);
+  });
+
+  it("B3: a watcher that leaves and comes back before the helper answers still gets BOTH transitions, in order (suspend flushes, resume follows)", async () => {
+    const { helper, service, leases, setSuspended } = setup();
+    const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24);
+    leases.acquire(KEY(h), "thr_a", 60);
+    await settle();
+    expect(helper.owners).toEqual(["agent:lease-1"]);
+    helper.holdOwner = [];
+    setSuspended(h, true); // the last watcher leaves ...
+    setSuspended(h, false); // ... and one returns before the helper has answered the first change
+    await settle();
+    for (const release of helper.holdOwner) release();
+    helper.holdOwner = null;
+    await flush();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(helper.owners).toEqual(["agent:lease-1", "suspended:lease-1", "agent:lease-1"]);
   });
 
   it("the human's keys wait for the handoff to be acknowledged, then are dropped if an agent is the driver", async () => {

@@ -212,12 +212,12 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   const handoffs = new Map<string, Promise<unknown>>();
   /** The driver tag the helper has acknowledged; a write whose gate tag differs re-sends it first (A4). */
   const appliedOwner = new Map<string, string>();
-  const syncOwner = async (handle: SessionHandle): Promise<void> => {
+  /** The last driver tag SCHEDULED for the helper: a change is queued with the tag it had when it happened. */
+  const queuedOwner = new Map<string, string>();
+  const syncOwner = async (handle: SessionHandle, want: string): Promise<void> => {
     const key = keyOf(handle);
-    const gate = deps.control;
-    if (gate === undefined) return;
+    if (deps.control === undefined) return;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const want = gate.ownerTag(handle);
       if ((appliedOwner.get(key) ?? "human") === want) return;
       try {
         await (await start()).sessionSetOwner(handle, want);
@@ -229,9 +229,20 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       }
     }
   };
-  const queueSync = (handle: SessionHandle): void => {
+  /**
+   * Schedules a change of driver for the helper. Changes are sent in the order they happened, each with the tag it had THEN
+   * (never "whatever the tag is by the time the helper is free"): a watcher that leaves and returns before the helper has
+   * answered must still make the helper see the suspension (which flushes what was queued and releases held keys) and then
+   * the resume. `force` re-sends after a failure.
+   */
+  const queueSync = (handle: SessionHandle, force = false): void => {
     const key = keyOf(handle);
-    const next = (handoffs.get(key) ?? Promise.resolve()).then(() => syncOwner(handle));
+    const gate = deps.control;
+    if (gate === undefined) return;
+    const want = gate.ownerTag(handle);
+    if (!force && (queuedOwner.get(key) ?? appliedOwner.get(key) ?? "human") === want) return;
+    queuedOwner.set(key, want);
+    const next = (handoffs.get(key) ?? Promise.resolve()).then(() => syncOwner(handle, want));
     handoffs.set(key, next);
     void next.finally(() => {
       if (handoffs.get(key) === next) handoffs.delete(key);
@@ -240,7 +251,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   const handoff = async (handle: SessionHandle): Promise<void> => {
     await handoffs.get(keyOf(handle));
     if (deps.control !== undefined && (appliedOwner.get(keyOf(handle)) ?? "human") !== deps.control.ownerTag(handle)) {
-      queueSync(handle);
+      queueSync(handle, true);
       await handoffs.get(keyOf(handle));
     }
   };
@@ -366,6 +377,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       credits.delete(key);
       appliedOwner.delete(key);
       handoffs.delete(key);
+      queuedOwner.delete(key);
     }, EVICT_CLOSED_AFTER_MS);
   };
 
