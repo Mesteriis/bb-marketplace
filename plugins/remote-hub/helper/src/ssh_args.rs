@@ -457,4 +457,26 @@ mod tests {
             assert!(validate_ssh_spawn("/usr/bin/ssh", &a, &env(&[("TERM", "xterm-256color")])).is_err(), "{option}");
         }
     }
+
+    #[test]
+    fn an_exec_argv_is_ssh_dash_capital_t_the_session_options_and_exactly_one_command_word() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        let (plain, command) = split_exec_argv(&a(&["ssh", "-T", "-l", "u", "--", "h", "ls -la /tmp; echo $HOME"])).unwrap();
+        assert_eq!(plain, a(&["ssh", "-tt", "-l", "u", "--", "h"]));
+        assert_eq!(command, "ls -la /tmp; echo $HOME", "the command is one word, untouched: the remote shell parses it");
+        for bad in [
+            &["ssh", "-tt", "--", "h", "id"][..],
+            &["ssh", "-T", "--", "h"][..],
+            &["ssh", "-T", "h", "id"][..],
+            &["ssh", "-T", "--", "h", ""][..],
+            &["ssh", "-T", "--", "h", "a\0b"][..],
+            &["sh", "-T", "--", "h", "id"][..],
+        ] {
+            assert!(split_exec_argv(&a(bad)).is_err(), "{bad:?}");
+        }
+        let long = "x".repeat(EXEC_COMMAND_MAX + 1);
+        assert!(split_exec_argv(&["ssh".to_string(), "-T".to_string(), "--".to_string(), "h".to_string(), long]).is_err());
+        let exact = "x".repeat(EXEC_COMMAND_MAX);
+        assert!(split_exec_argv(&["ssh".to_string(), "-T".to_string(), "--".to_string(), "h".to_string(), exact]).is_ok());
+    }
 }

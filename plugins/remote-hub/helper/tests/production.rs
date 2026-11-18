@@ -86,6 +86,40 @@ fn production_rejects_freeform_open_ssh() {
     let _ = child.wait();
 }
 
+#[test]
+fn production_rejects_freeform_and_misshapen_exec_runs_and_needs_a_saved_credential() {
+    let (mut child, mut stdin, mut stdout) = start();
+    send_req(&mut stdin, &Request::Hello { protocol: PROTOCOL_VERSION });
+    match read_response(&mut stdout) {
+        Response::HelloAck { .. } => {}
+        other => panic!("expected hello_ack, got {other:?}"),
+    }
+    let long = "x".repeat(9000);
+    let cases: Vec<(&str, Vec<String>, &str)> = vec![
+        // not ssh at all
+        ("/bin/sh", ["sh", "-T", "--", "h", "id"].map(String::from).to_vec(), "ssh_option_rejected"),
+        // a pty shape, an option ssh must not get, a missing or empty command, an over-long one, two command words
+        ("/usr/bin/ssh", ["ssh", "-tt", "--", "h", "id"].map(String::from).to_vec(), "ssh_option_rejected"),
+        ("/usr/bin/ssh", ["ssh", "-T", "-oProxyCommand=evil", "--", "h", "id"].map(String::from).to_vec(), "ssh_option_rejected"),
+        ("/usr/bin/ssh", ["ssh", "-T", "--", "h"].map(String::from).to_vec(), "ssh_option_rejected"),
+        ("/usr/bin/ssh", ["ssh", "-T", "--", "h", ""].map(String::from).to_vec(), "ssh_option_rejected"),
+        ("/usr/bin/ssh", vec!["ssh".to_string(), "-T".to_string(), "--".to_string(), "h".to_string(), long], "ssh_option_rejected"),
+        ("/usr/bin/ssh", ["ssh", "-T", "--", "h", "ls", "-la"].map(String::from).to_vec(), "ssh_option_rejected"),
+        // a well-formed run still needs a saved credential: no question can be answered
+        ("/usr/bin/ssh", ["ssh", "-T", "-F", "none", "-l", "u", "-p", "22", "-o", "PreferredAuthentications=password", "-o", "NumberOfPasswordPrompts=2", "--", "example.com", "id"].map(String::from).to_vec(), "needs_saved_credential"),
+    ];
+    for (i, (program, argv, code)) in cases.into_iter().enumerate() {
+        send_req(&mut stdin, &Request::ExecRun { id: 1 + i as u64, program: program.to_string(), argv, env: HashMap::new(), askpass: None, timeout_ms: 5_000, max_bytes: 4096 });
+        match read_response(&mut stdout) {
+            Response::Error { code: got, .. } => assert_eq!(got, code, "case {i}"),
+            other => panic!("case {i}: expected {code}, got {other:?}"),
+        }
+    }
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// The keychain test hooks (a keychain chosen by path, created on demand) exist
 /// only in test-hooks builds: the production binary has no such string, so no
 /// environment variable can point it at another keychain. (Not exercised by

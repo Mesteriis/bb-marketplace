@@ -717,3 +717,110 @@ fn local_command_with_no_saved_secret_used_never_says_connected() {
     let (_, more) = f.drive(sid, Duration::from_secs(2), |_, _| true);
     assert!(!events.iter().chain(more.iter()).any(|r| matches!(r, Response::SshConnected { .. })));
 }
+
+/// Starts an exec run (no pty) whose fake ssh runs `script`; the saved secret may be used for its one expected prompt.
+fn exec_run(f: &mut Fixture, id: u64, script: &str) -> u32 {
+    let facts = f.facts.clone();
+    let mut env = HashMap::new();
+    env.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
+    f.h().send(&Request::ExecRun {
+        id,
+        program: "/usr/bin/perl".into(),
+        argv: vec!["perl".into(), "-e".into(), format!("{PERL_PRELUDE}\n{script}")],
+        env,
+        askpass: Some(AskpassSpec { credential_ref: REF.into(), test_facts: Some(facts) }),
+        timeout_ms: 20_000,
+        max_bytes: 1 << 16,
+    });
+    match f.h().read_reply(id) {
+        Response::ExecStarted { exec_id, .. } => exec_id,
+        other => panic!("expected exec.started, got {other:?}"),
+    }
+}
+
+/// Reads the run until it ends; returns (state, every control event seen meanwhile).
+fn exec_final(f: &mut Fixture, exec_id: u32) -> (Response, Vec<Response>) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut events = Vec::new();
+    loop {
+        let (kind, payload) = f.h().read_frame();
+        if kind == FRAME_KIND_CONTROL {
+            if let Ok(r) = decode_response(&payload) {
+                let done = matches!(&r, Response::ExecFinished { exec_id: e, .. } if *e == exec_id);
+                events.push(r);
+                if done {
+                    break;
+                }
+            }
+        }
+        assert!(Instant::now() < deadline, "no exec.finished: {events:?}");
+    }
+    f.h().send(&Request::ExecRead { id: 900, exec_id, stdout_from: 0, stderr_from: 0, max: 1 << 16 });
+    (f.h().read_reply(900), events)
+}
+
+fn exec_stdout(state: &Response) -> String {
+    match state {
+        Response::ExecState { stdout, .. } => {
+            let mut text = String::new();
+            let mut buf = 0u32;
+            let mut bits = 0u32;
+            for c in stdout.data.bytes().filter(|c| *c != b'=') {
+                let v = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".iter().position(|t| *t == c).unwrap() as u32;
+                buf = (buf << 6) | v;
+                bits += 6;
+                if bits >= 8 {
+                    bits -= 8;
+                    text.push(((buf >> bits) as u8) as char);
+                    buf &= (1 << bits) - 1;
+                }
+            }
+            text
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn an_exec_run_gets_the_saved_secret_for_its_one_prompt_and_nothing_is_ever_shown_to_anyone() {
+    let mut f = Fixture::new("exec-ok", &[]);
+    let id = exec_run(&mut f, 20, r#"my ($p, $r) = ask("user\@host's password: "); print "R=$r H=" . digest($p) . "\n"; exit 0;"#);
+    let (state, events) = exec_final(&mut f, id);
+    let text = exec_stdout(&state);
+    assert_eq!(field(&text, "R"), "0", "{text}");
+    assert_eq!(field(&text, "H"), SECRET_DIGEST, "the askpass answer is not the saved secret");
+    assert!(!events.iter().any(|r| matches!(r, Response::SshPrompt { .. } | Response::SshCredentialUsed { .. } | Response::SshConnected { .. })), "an exec run produces no session events: {events:?}");
+    assert!(!text.contains(SECRET));
+}
+
+#[test]
+fn an_exec_run_refuses_a_host_key_question_and_a_stranger_prompt_and_stops_without_asking_anyone() {
+    let mut f = Fixture::new("exec-ask", &[]);
+    let id = exec_run(&mut f, 21, r#"my ($p, $r) = ask("The authenticity of host 'h' can't be established.\nAre you sure you want to continue connecting (yes/no)? ", "confirm"); print "R=$r\n"; sleep 10;"#);
+    let (state, events) = exec_final(&mut f, id);
+    match &state {
+        Response::ExecState { refused, running, .. } => assert_eq!((refused.as_deref(), *running), (Some("host_key"), false)),
+        other => panic!("{other:?}"),
+    }
+    assert!(!events.iter().any(|r| matches!(r, Response::SshPrompt { .. })), "a question reached the page: {events:?}");
+
+    let id2 = exec_run(&mut f, 22, r#"my ($p, $r) = ask("Verification code: "); print "R=$r\n"; sleep 10;"#);
+    let (state2, events2) = exec_final(&mut f, id2);
+    match &state2 {
+        Response::ExecState { refused, .. } => assert_eq!(refused.as_deref(), Some("login_prompt")),
+        other => panic!("{other:?}"),
+    }
+    assert!(!events2.iter().any(|r| matches!(r, Response::SshPrompt { .. })));
+}
+
+#[test]
+fn an_exec_run_whose_saved_secret_is_refused_by_the_server_is_stopped_and_says_so() {
+    let mut f = Fixture::new("exec-rej", &[]);
+    let id = exec_run(&mut f, 23, r#"my ($p1, $r1) = ask("user\@host's password: "); my ($p2, $r2) = ask("user\@host's password: "); print "SECOND=$r2\n"; sleep 10;"#);
+    let (state, _) = exec_final(&mut f, id);
+    match &state {
+        Response::ExecState { refused, .. } => assert_eq!(refused.as_deref(), Some("credential_rejected")),
+        other => panic!("{other:?}"),
+    }
+    assert!(!exec_stdout(&state).contains("SECOND"), "the second prompt must never be answered, not even with a failure");
+}
