@@ -7,6 +7,7 @@ import { createExecTools, type AgentExecPorts, type ExecSnapshotView } from "./a
 import { AgentFeed } from "./agent-feed.ts";
 import type { AgentSessionView, AgentToolDef, ToolResult } from "./agent-tools.ts";
 import { ControlLeases } from "./control-lease.ts";
+import { WATCH_TTL_MS, WatcherBook } from "./watchers.ts";
 import type { Profile } from "./profile.ts";
 
 const GEN = "a".repeat(32);
@@ -25,7 +26,7 @@ const profile = (id: string, over: Partial<Profile> = {}): Profile =>
 const stream = (text: string, over: Partial<ExecSnapshotView["stdout"]> = {}) => ({ start: 0, end: enc(text).length, data: enc(text), total: enc(text).length, truncated: false, ...over });
 const snap = (over: Partial<ExecSnapshotView> = {}): ExecSnapshotView => ({ running: false, exitCode: 0, signal: null, reason: "exited", refused: null, elapsedMs: 5, stdout: stream("hello\n"), stderr: stream(""), ...over });
 
-function setup(opts: { sessions?: AgentSessionView[] } = {}) {
+function setup(opts: { sessions?: AgentSessionView[]; book?: WatcherBook } = {}) {
   const profiles = [profile(P), profile(P_RDP, { protocol: "rdp" })];
   const grants = new Map<string, AgentGrant>();
   const access = new AgentAccessBook({
@@ -75,7 +76,7 @@ function setup(opts: { sessions?: AgentSessionView[] } = {}) {
     access, audit, budget: new ToolBudget({ now: () => 1_000_000, callsPerWindow: 1000, bytesPerWindow: 50 * 1024 * 1024, globalCallsPerWindow: 10000, globalBytesPerWindow: 500 * 1024 * 1024 }),
     leases: new ControlLeases({ now: () => 1_000_000, newId: () => "l" }), registry, feed, exec, newCommandId: () => `cmd_${++idn}`,
     ports: { profiles: { list: () => profiles, get: (id) => profiles.find((p) => p.id === id) ?? null }, sessions: { list: () => sessions, read: () => null, screenshot: async () => { throw new Error("n/a"); } }, fitScreenshot: () => { throw new Error("n/a"); } },
-    control: { terminalWrite: async () => undefined, rdpWrite: async () => undefined, connect: async () => ({ sessionKey: SSH }), disconnect: async () => undefined, waitingForOwner: () => [], watching: () => watched, watchingRequired: () => required, onWatchChange: (cb) => (watchListeners.push(cb), () => undefined), onRuleChange: (cb) => (ruleListeners.push(cb), () => undefined) },
+    control: { terminalWrite: async () => undefined, rdpWrite: async () => undefined, connect: async () => ({ sessionKey: SSH }), disconnect: async () => undefined, waitingForOwner: () => [], watching: (k) => (opts.book !== undefined ? opts.book.watching(k) : watched), watchingRequired: () => required, onWatchChange: (cb) => (opts.book !== undefined ? opts.book.onChange(cb) : (watchListeners.push(cb), () => undefined)), onRuleChange: (cb) => (ruleListeners.push(cb), () => undefined) },
   });
   const call = (name: string, input: unknown, ctx: { threadId: string; projectId: string; signal?: AbortSignal } = CTX): Promise<ToolResult> => {
     const t = tools.find((x) => x.name === name) as AgentToolDef;
@@ -492,6 +493,28 @@ describe("B2: a command does not outlive the authorization it was started under"
     expect(text).toContain("owner_not_watching");
     expect(text).not.toContain("commandId");
     expect(t.cancelled).toEqual(["run-1"]);
+  });
+
+  it("D3: a watcher that expired and was renewed before any sweep still ends a start that began under the old report", async () => {
+    let now = 1_000_000;
+    const book = new WatcherBook({ now: () => now });
+    book.beat(SSH, "view", true);
+    now += 5_900; // the last report is 5.9 s old: still fresh when the command starts
+    const t = setup({ book });
+    t.access.set(P, "exec", false);
+    expect(book.watching(SSH)).toBe(true);
+    const release = gated(t);
+    const pending = t.call("remote_ssh_exec", { sessionId: SSH, command: "id" });
+    await Promise.resolve();
+    now += 200; // it expires (6.1 s) while the start is in flight ...
+    book.beat(SSH, "view", true); // ... and a new report arrives before the sweep ever noticed
+    expect(book.watching(SSH)).toBe(true);
+    release();
+    const text = t.textOf(await pending);
+    expect(text).toContain("owner_not_watching");
+    expect(text).not.toContain("commandId");
+    expect(t.cancelled).toEqual(["run-1"]);
+    expect(WATCH_TTL_MS).toBe(6000);
   });
 
   it("C1: a session that vanished, or is no longer this thread's, during the start ends it (a missing session is not an open one)", async () => {

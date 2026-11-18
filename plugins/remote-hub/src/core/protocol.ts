@@ -33,7 +33,9 @@ import {
   rdpUpdateAckRequestSchema,
 } from "./rdp-protocol.ts";
 
-export const PROTOCOL_VERSION = 1;
+// 2: session.open_rdp carries `options` (compression, colour depth, experience switches). An older peer would ignore them
+// and apply other settings, so the two sides refuse each other at the handshake instead.
+export const PROTOCOL_VERSION = 2;
 /** Largest body (everything after the 4-byte length prefix) the codec accepts. */
 export const MAX_FRAME_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB
 export const FRAME_KIND_CONTROL = 0x01;

@@ -331,19 +331,19 @@ export function RdpPage(props: RdpPageProps) {
             />
           )}
           <input aria-label="domain" placeholder="domain (optional)" value={domain} onChange={(e) => edit(setDomain)(e.target.value)} />
-          <select
-            aria-label="connection quality"
-            value={preset}
-            disabled={linked.current !== null}
-            title={linked.current !== null ? "This saved connection uses its own quality setting" : undefined}
-            onChange={(e) => setPreset(e.target.value as RdpPreset)}
-          >
-            {(["slow", "balanced", "quality"] as const).map((name) => (
-              <option key={name} value={name}>
-                {PRESET_LABELS[name]}
-              </option>
-            ))}
-          </select>
+          {linked.current !== null ? (
+            // A saved connection uses the quality stored with it (set in its editor); showing Quick connect's last choice
+            // here would be wrong, so the selector is not shown.
+            <span className="rh-hint">Quality: from the saved connection</span>
+          ) : (
+            <select aria-label="connection quality" value={preset} onChange={(e) => setPreset(e.target.value as RdpPreset)}>
+              {(["slow", "balanced", "quality"] as const).map((name) => (
+                <option key={name} value={name}>
+                  {PRESET_LABELS[name]}
+                </option>
+              ))}
+            </select>
+          )}
           <button type="submit" disabled={host === "" || username === "" || connecting !== null}>
             Connect
           </button>

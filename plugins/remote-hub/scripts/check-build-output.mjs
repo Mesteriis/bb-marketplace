@@ -5,10 +5,10 @@
 // reported as a warning, with the advice not to ship it).
 // With --release: bin/remote-hub-helper and bin/SHA256SUMS must exist and agree, and the binary must be an arm64 Mach-O.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { checkHelperIntegrity } from "../src/adapters/bb/helper-integrity.ts";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -35,22 +35,23 @@ if (problems.length === 0) {
 
 if (release) {
   const bin = join(root, "bin", "remote-hub-helper");
-  const sums = join(root, "bin", "SHA256SUMS");
   if (!existsSync(bin)) problems.push("bin/remote-hub-helper is missing");
   else {
-    const out = execFileSync("file", [bin], { encoding: "utf8" });
-    if (!/Mach-O 64-bit executable arm64/.test(out)) problems.push(`bin/remote-hub-helper is not an arm64 Mach-O: ${out.trim()}`);
-    if (!existsSync(sums)) problems.push("bin/SHA256SUMS is missing: run npm run helper:sums");
+    // The same strict check the plugin runs before it starts the helper: the one shared module. A helper that fails it is
+    // never executed here (not even with --version).
+    const integrity = checkHelperIntegrity(bin);
+    if (!integrity.ok) problems.push(`bin/remote-hub-helper failed the checksum check (${integrity.reason}); run npm run helper:sums`);
     else {
-      const actual = createHash("sha256").update(readFileSync(bin)).digest("hex");
-      const line = readFileSync(sums, "utf8").split("\n").find((l) => l.endsWith(" remote-hub-helper") || l.endsWith("*remote-hub-helper"));
-      if (line === undefined || !line.startsWith(actual)) problems.push("bin/SHA256SUMS does not match bin/remote-hub-helper");
-    }
-    try {
-      const version = execFileSync(bin, ["--version"], { encoding: "utf8" }).trim();
-      if (version !== `remote-hub-helper ${pkg.version}`) problems.push(`helper reports "${version}", package.json is ${pkg.version}`);
-    } catch (e) {
-      problems.push(`the helper cannot run: ${e.message}`);
+      const out = execFileSync("file", [bin], { encoding: "utf8" });
+      if (!/Mach-O 64-bit executable arm64/.test(out)) problems.push(`bin/remote-hub-helper is not an arm64 Mach-O: ${out.trim()}`);
+      // The binary must not carry the builder's home directory (cargo and rustc paths end up in panic messages).
+      if (readFileSync(bin).includes(Buffer.from(homedir()))) problems.push("bin/remote-hub-helper contains this machine's home directory: build it with npm run build:helper (it remaps paths)");
+      try {
+        const version = execFileSync(bin, ["--version"], { encoding: "utf8" }).trim();
+        if (version !== `remote-hub-helper ${pkg.version}`) problems.push(`helper reports "${version}", package.json is ${pkg.version}`);
+      } catch (e) {
+        problems.push(`the helper cannot run: ${e.message}`);
+      }
     }
   }
 }

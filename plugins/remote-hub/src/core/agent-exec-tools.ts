@@ -107,7 +107,7 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
     running: boolean;
     order: number;
     /** Set when the command was cancelled because authorization ended; reads then report this and no output. */
-    cancelledFor: "owner_not_watching" | "agent_access_denied" | null;
+    cancelledFor: "owner_not_watching" | "agent_access_denied" | "session_closed" | null;
   }
   const commands = new Map<string, Command>();
   let order = 0;
@@ -142,7 +142,7 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
   const mayAct = (key: string): boolean => !control.watchingRequired() || control.watching(key);
 
   /** Cancels a running command because authorization ended; what it prints afterwards is not returned to the agent. */
-  const stopFor = (c: Command, reason: "owner_not_watching" | "agent_access_denied"): void => {
+  const stopFor = (c: Command, reason: "owner_not_watching" | "agent_access_denied" | "session_closed"): void => {
     c.cancelledFor = reason;
     void exec.cancel(c.runKey).catch(() => undefined);
   };
@@ -266,7 +266,6 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
           // The session must still exist, be open and still be this thread's (the checks made before the start).
           const now = sessionOf(session.key);
           const stillOurs = now !== undefined && now.state !== "closed" && now.control !== "never" && registry.threadOf(session.key) === ctx.threadId;
-          const stillOpen = stillOurs;
           if (pending.invalidated !== null) {
             // A revoke or a lost watcher happened while the start was in flight: the mark stays even if access is back.
             stopFor(command, pending.invalidated);
@@ -276,8 +275,8 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
             stopFor(command, "agent_access_denied");
             throw new ToolError("agent_access_denied", "the owner has not allowed agents to run commands on this connection");
           }
-          if (!stillOpen) {
-            stopFor(command, "owner_not_watching");
+          if (!stillOurs) {
+            stopFor(command, "session_closed");
             throw new ToolError("session_closed", "this session has ended");
           }
           if (!mayAct(session.key)) {

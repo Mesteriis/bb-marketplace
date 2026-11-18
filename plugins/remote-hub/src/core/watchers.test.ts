@@ -37,6 +37,22 @@ describe("watchers: who is looking at a session's live view", () => {
     expect(book.watching("g.1")).toBe(false);
   });
 
+  it("D3: a report arriving after the previous one had expired first records the loss, then the gain, before any sweep", () => {
+    let now = 1000;
+    const book = new WatcherBook({ now: () => now });
+    const heard: boolean[] = [];
+    book.beat("s", "v", true);
+    book.onChange((_k, w) => heard.push(w));
+    now += WATCH_TTL_MS + 1; // expired, and no sweep has run
+    book.beat("s", "v", true);
+    expect(heard).toEqual([false, true]);
+    expect(book.watching("s")).toBe(true);
+    // A report that is still fresh when the next arrives is no change at all.
+    now += 1000;
+    book.beat("s", "v", true);
+    expect(heard).toEqual([false, true]);
+  });
+
   it("several views: the session is watched while any one of them is visible and fresh", () => {
     const { book, advance } = setup();
     book.beat("g.1", "a", true);

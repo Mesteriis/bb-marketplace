@@ -488,6 +488,8 @@ describe.skipIf(!dockerOk)("remote commands over a real sshd (stage 4b-2)", () =
   it("the owner sees the command and its output live, and the audit never holds the text while record-commands is off", async () => {
     const seen: any[] = [];
     const handle = { generation: sessionId.split(".")[0] as string, sessionId: Number(sessionId.split(".")[1]) };
+    // Let the earlier tests' commands finish announcing before listening: this fixture is a SINGLE command.
+    await new Promise((resolve) => setTimeout(resolve, 2000));
     const off = c.feed.subscribe(sessionId, (e) => seen.push(e));
     const started = await run("echo LIVE-MARKER-1; sleep 1; echo LIVE-MARKER-2");
     const r = await read(started.commandId);
@@ -502,10 +504,8 @@ describe.skipIf(!dockerOk)("remote commands over a real sshd (stage 4b-2)", () =
     const outputs = mine.filter((e) => e.phase === "output");
     expect(outputs.length).toBeGreaterThan(0);
     expect(outputs.map((e) => e.text).join("")).toContain("LIVE-MARKER-2");
-    // No event of this run is named by anything else (a run key would not look like a command id).
-    const stray = seen.filter((e) => e.kind === "exec" && e.commandId !== started.commandId && /LIVE-MARKER/.test(e.text ?? ""));
-    expect(stray).toEqual([]);
-    expect(seen.every((e) => e.kind !== "exec" || /^cmd_[0-9a-f]+$/.test(e.commandId))).toBe(true);
+    // Every exec event observed carries that one id (a chunk with another id, a run key included, fails here).
+    expect(seen.filter((e) => e.kind === "exec").every((e) => e.commandId === started.commandId)).toBe(true);
     expect(JSON.stringify(c.rows)).not.toContain("LIVE-MARKER");
     expect(c.rows.filter((x) => x.tool === "remote_ssh_exec").every((x) => x.detailMode === "length" && /^len \d+$/.test(x.detail ?? ""))).toBe(true);
     void handle;

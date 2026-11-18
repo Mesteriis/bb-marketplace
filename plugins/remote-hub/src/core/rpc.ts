@@ -73,6 +73,7 @@ export const helperStatusSchema = z.object({
   platform: z.string().min(1),
   sessionCount: z.number().int().min(0),
   alive: z.boolean(),
+  checksum: z.enum(["verified", "not_checked"]),
 });
 
 const sshTargetSchema = z.object({

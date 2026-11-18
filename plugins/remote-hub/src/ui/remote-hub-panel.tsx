@@ -87,7 +87,7 @@ export function RemoteHubPanel(props: RemoteHubPanelProps) {
       <h2>Remote Hub helper</h2>
       <p>
         version {state.status.version} · pid {state.status.pid} · {state.status.platform} ·{" "}
-        {state.status.sessionCount} session(s)
+        {state.status.sessionCount} session(s) · {state.status.checksum === "verified" ? "checksum verified" : "checksum not checked"}
       </p>
 
       <div

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,19 +15,41 @@ function bin(content: string, sums?: string) {
   if (sums !== undefined) writeFileSync(join(d, "SHA256SUMS"), sums);
   return join(d, "remote-hub-helper");
 }
+const fail = (reason: string) => ({ ok: false, code: "helper_checksum_failed", reason });
 
-describe("helper integrity", () => {
-  it("a matching sums file verifies; the format of shasum -a 256 and a binary marker both parse", () => {
-    expect(checkHelperIntegrity(bin("abc", `${sha("abc")}  remote-hub-helper\n`))).toEqual({ ok: true, verified: true });
-    expect(checkHelperIntegrity(bin("abc", `${sha("abc").toUpperCase()} *remote-hub-helper\n`))).toEqual({ ok: true, verified: true });
-    expect(parseSums("bad line\n" + `${"a".repeat(64)}  x\n`).get("x")).toBe("a".repeat(64));
+describe("helper integrity (fail closed)", () => {
+  it("a matching sums file verifies; the shasum -a 256 format with either marker parses", () => {
+    expect(checkHelperIntegrity(bin("abc", `${sha("abc")}  remote-hub-helper\n`))).toEqual({ ok: true });
+    expect(checkHelperIntegrity(bin("abc", `${sha("abc").toUpperCase()} *remote-hub-helper\n`))).toEqual({ ok: true });
   });
-  it("no sums file means an unverified (checkout) helper, not a failure", () => {
-    expect(checkHelperIntegrity(bin("abc"))).toEqual({ ok: true, verified: false });
+  it("a MISSING sums file refuses: there is no unverified mode", () => {
+    expect(checkHelperIntegrity(bin("abc"))).toEqual(fail("no_sums"));
   });
-  it("a changed binary, a file that does not list it, or a garbage sums file is refused", () => {
-    expect(checkHelperIntegrity(bin("abc", `${sha("other")}  remote-hub-helper\n`))).toEqual({ ok: false, code: "helper_tampered", reason: "mismatch" });
-    expect(checkHelperIntegrity(bin("abc", `${sha("abc")}  something-else\n`))).toEqual({ ok: false, code: "helper_tampered", reason: "not_listed" });
-    expect(checkHelperIntegrity(bin("abc", "not a sums file"))).toEqual({ ok: false, code: "helper_tampered", reason: "not_listed" });
+  it("a changed binary, an entry for another file, or a duplicate entry is refused", () => {
+    expect(checkHelperIntegrity(bin("abc", `${sha("other")}  remote-hub-helper\n`))).toEqual(fail("mismatch"));
+    expect(checkHelperIntegrity(bin("abc", `${sha("abc")}  something-else\n`))).toEqual(fail("not_listed"));
+    expect(checkHelperIntegrity(bin("abc", `${sha("abc")}  remote-hub-helper\n${sha("abc")}  remote-hub-helper\n`))).toEqual(fail("duplicate"));
+  });
+  it("any malformed line is an error, not skipped", () => {
+    for (const text of ["not a sums file", `${sha("abc")}  remote-hub-helper\ngarbage\n`, `${sha("abc").slice(1)}  remote-hub-helper\n`, `${sha("abc")} remote-hub-helper\n`, `${sha("abc")}  ../remote-hub-helper\n`]) {
+      expect(checkHelperIntegrity(bin("abc", text)), text).toEqual(fail("malformed_sums"));
+    }
+  });
+  it("a binary or a sums file that is a symlink is refused", () => {
+    const real = bin("abc", `${sha("abc")}  remote-hub-helper\n`);
+    const dir = mkdtempSync(join(tmpdir(), "rh-int-"));
+    dirs.push(dir);
+    symlinkSync(real, join(dir, "remote-hub-helper"));
+    writeFileSync(join(dir, "SHA256SUMS"), `${sha("abc")}  remote-hub-helper\n`);
+    expect(checkHelperIntegrity(join(dir, "remote-hub-helper"))).toEqual(fail("symlink"));
+    const dir2 = mkdtempSync(join(tmpdir(), "rh-int-"));
+    dirs.push(dir2);
+    writeFileSync(join(dir2, "remote-hub-helper"), "abc");
+    symlinkSync(join(real, "..", "SHA256SUMS"), join(dir2, "SHA256SUMS"));
+    expect(checkHelperIntegrity(join(dir2, "remote-hub-helper"))).toEqual(fail("symlink"));
+  });
+  it("parseSums wants exactly one entry for the named file", () => {
+    expect(parseSums(`${"a".repeat(64)}  x\n\n`, "x")).toEqual({ ok: true, sha256: "a".repeat(64) });
+    expect(parseSums("", "x")).toEqual({ ok: false, reason: "not_listed" });
   });
 });

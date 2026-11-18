@@ -5,7 +5,7 @@ import { RemoteHubPage, STATUS_POLL_MS } from "./remote-hub-page.tsx";
 import type { HelperStatus } from "../core/rpc.ts";
 
 function makeStatus(alive: boolean): HelperStatus {
-  return { version: "0.1.0", pid: 1, platform: "test", sessionCount: 0, alive };
+  return { version: "0.1.0", pid: 1, platform: "test", sessionCount: 0, alive, checksum: "verified" };
 }
 
 describe("RemoteHubPage", () => {

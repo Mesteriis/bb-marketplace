@@ -4,7 +4,7 @@
 // @get-bb/plugin-sdk/app are provided by the BB app at load time, so this
 // file must be loaded by BB, not imported directly.
 import "./app.css";
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { definePluginApp, experimental_useAppPanel, useBbContext, useBbNavigate, useRealtime, useRpc, useSidebarSplitLayout } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
 import type { SessionHandle } from "./src/core/rpc.ts";
@@ -15,7 +15,8 @@ import { AgentBanner, type AgentBannerApi } from "./src/ui/agent-banner.tsx";
 import { LiveSession, parseSessionKey, type LiveSessionApi } from "./src/ui/live-session.tsx";
 import { SessionCard, type SessionCardApi } from "./src/ui/session-card.tsx";
 import type { AgentSessionView } from "./src/ui/agent-panel.tsx";
-import { SESSION_PAGE, autoSplitOnSignal, focusedThread, openWatchInSplit, splitShows } from "./src/ui/split-watch.ts";
+import { markSessionPage, sessionPageShowing } from "./src/ui/active-surface.ts";
+import { SESSION_PAGE, autoSplitOnSignal, focusedThread, openWatchInSplit, splitShows, stillWhereWePutThem } from "./src/ui/split-watch.ts";
 import { LIVE_TAB_ID, revealSession } from "./src/ui/reveal.ts";
 
 /** The plugin's realtime channel: "an agent did something" (identifiers only). Same string as AGENT_SIGNAL_CHANNEL on the server. */
@@ -55,12 +56,10 @@ function useSplitActions() {
           sessionKey,
           agentThread,
           isSplit: (t) => splitShows(layoutRef.current, t),
-          // Still where we put them: the agent's thread is in focus, or the surface is not a thread (the plugin page).
-          // Another thread in focus means the owner went elsewhere, and nobody is dragged back.
-          stillHere: () => {
-            const focused = focusedThread(layoutRef.current, contextRef.current.threadId);
-            return focused === null || focused === agentThread;
-          },
+          // Positively where we put them (the agent's thread in focus, or this session's page on screen); anything
+          // unidentified (Settings, another plugin's panel, no focused thread) means nobody is dragged back.
+          stillHere: () =>
+            stillWhereWePutThem({ focused: focusedThread(layoutRef.current, contextRef.current.threadId), agentThread, sessionPageShowing: sessionPageShowing(sessionKey) }),
         }),
       open: (sessionKey: string) => navigate.toPluginPanel(SESSION_PAGE, { subPath: sessionKey }),
       openThread: (threadId: string) => navigate.toThread(threadId),
@@ -181,6 +180,9 @@ function ConnectTab({ subPath }: { subPath: string }) {
       return null;
     }
   })();
+  // This page is on screen for that session while it is mounted (the split fallback relies on it).
+  const watchedKey = watched === null ? null : `${watched.generation}.${watched.sessionId}`;
+  useEffect(() => (watchedKey === null ? undefined : markSessionPage(watchedKey)), [watchedKey]);
   const wsUrl = (typeof window !== "undefined" ? (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host : "") + "/api/v1/plugins/makosh-remote-hub/http/attach";
   // The bridge strips undefined-valued keys (BB's RPC carries JSON values only).
   const bridge = useMemo(

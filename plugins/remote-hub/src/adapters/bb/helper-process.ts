@@ -144,7 +144,7 @@ export function parseHelperVersion(stdout: string): string {
 }
 
 export type HelperProbe =
-  | { ok: true; version: string; path: string; verified: boolean }
+  | { ok: true; version: string; path: string }
   | { ok: false; error: HelperStartFailure };
 
 /** Locate, platform-check and version-check the helper binary. */
@@ -152,19 +152,23 @@ export async function probeHelper(binPath: string): Promise<HelperProbe> {
   const unsupported = platformError();
   if (unsupported !== null) return { ok: false, error: unsupported };
   if (!existsSync(binPath)) return { ok: false, error: helperMissingError(binPath) };
-  // Before anything is executed: a release's checksum file must match the binary.
+  // Before anything is executed, and with no way around it: bin/SHA256SUMS must exist and match the binary. This detects a
+  // corrupted or half-updated install; it does not defend against someone who can write to the plugin directory (they could
+  // replace the checksum file or the plugin's code as well).
   let integrity: IntegrityResult;
   try {
     integrity = checkHelperIntegrity(binPath);
   } catch {
-    integrity = { ok: false, code: "helper_tampered", reason: "unreadable_sums" };
+    integrity = { ok: false, code: "helper_checksum_failed", reason: "unreadable_sums" };
   }
   if (!integrity.ok) {
     return {
       ok: false,
       error: {
-        code: "helper_tampered",
-        message: "Remote Hub helper at " + binPath + " does not match its checksum file (" + integrity.reason + "); it was not started. Reinstall the plugin.",
+        code: integrity.code,
+        message:
+          "Remote Hub helper at " + binPath + " failed its checksum check (" + integrity.reason + ") and was not started. The check detects a corrupted or partly updated install, not someone who can write to the plugin directory. Reinstall the plugin" +
+          (integrity.reason === "no_sums" ? ", or run 'npm run build:helper' in a development checkout" : "") + ".",
         path: binPath,
       },
     };
@@ -175,7 +179,7 @@ export async function probeHelper(binPath: string): Promise<HelperProbe> {
     if (version !== HELPER_VERSION) {
       return { ok: false, error: helperMismatchError(binPath, HELPER_VERSION, version || "unknown") };
     }
-    return { ok: true, version, path: binPath, verified: integrity.verified };
+    return { ok: true, version, path: binPath };
   } catch (error) {
     return {
       ok: false,
@@ -198,6 +202,8 @@ export interface HelperStatus {
   platform: string;
   sessionCount: number;
   alive: boolean;
+  /** `verified`: the binary matched bin/SHA256SUMS before it was started (the only way the plugin starts it). */
+  checksum: "verified" | "not_checked";
 }
 
 export type HelperSpawn = (binPath: string, args: string[]) => ChildProcessWithoutNullStreams;
@@ -259,7 +265,9 @@ export class HelperProcess {
   private readonly onSessionOutputCallbacks: Array<(sessionId: number, data: Uint8Array) => void> = [];
   private readonly onExitCallbacks: Array<() => void> = [];
   private buffer: Uint8Array = new Uint8Array(0);
-  private _status: Omit<HelperStatus, "alive"> | null = null;
+  private _status: Omit<HelperStatus, "alive" | "checksum"> | null = null;
+  /** Set by `start` once the binary matched its checksum file; a bare `spawn` (tests) never checked. */
+  checksumVerified = false;
   private generation = "";
   private dead = false;
   private deadError: Error | null = null;
@@ -271,7 +279,7 @@ export class HelperProcess {
 
   get status(): HelperStatus | null {
     if (this._status === null) return null;
-    return { ...this._status, alive: !this.dead };
+    return { ...this._status, alive: !this.dead, checksum: this.checksumVerified ? "verified" : "not_checked" };
   }
 
   get currentGeneration(): string {
@@ -282,7 +290,9 @@ export class HelperProcess {
     const binPath = helperBinaryPath(pluginDir);
     const probe = await probeHelper(binPath);
     if (!probe.ok) throw new HelperStartError(probe.error);
-    return HelperProcess.spawn(binPath, spawnFn);
+    const started = await HelperProcess.spawn(binPath, spawnFn);
+    started.checksumVerified = true;
+    return started;
   }
 
   /** Spawn and handshake without probing the binary (used by tests). */
@@ -339,6 +349,9 @@ export class HelperProcess {
           if (resp.type === "error") {
             // Pass the helper's own code through (version_mismatch, …).
             reject(new HelperStartError({ code: resp.code, message: resp.message }));
+          } else if ((resp as Extract<ResponseMessage, { type: "hello_ack" }>).protocol !== PROTOCOL_VERSION) {
+            // A helper that answers for another protocol is refused even if it did not refuse the hello itself.
+            reject(new HelperStartError({ code: "version_mismatch", message: "helper speaks protocol " + (resp as Extract<ResponseMessage, { type: "hello_ack" }>).protocol + ", this plugin speaks " + PROTOCOL_VERSION }));
           } else {
             resolve(resp as Extract<ResponseMessage, { type: "hello_ack" }>);
           }

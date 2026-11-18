@@ -338,6 +338,19 @@ fn version_mismatch_answers_error_and_exits() {
     assert!(status.is_some(), "helper did not exit after version mismatch");
 }
 
+/// D4: a peer on the previous protocol (before RDP options) is refused at the handshake, in both directions.
+#[test]
+fn an_older_protocol_is_refused_at_the_handshake() {
+    assert_eq!(PROTOCOL_VERSION, 2);
+    let mut helper = start();
+    helper.send(&Request::Hello { protocol: PROTOCOL_VERSION - 1 });
+    match helper.read_response() {
+        Response::Error { code, .. } => assert_eq!(code, "version_mismatch"),
+        other => panic!("expected version_mismatch error, got {other:?}"),
+    }
+    assert!(wait_timeout(&mut helper.child, Duration::from_secs(2)).is_some(), "helper did not exit after version mismatch");
+}
+
 #[test]
 fn echo_round_trip_resize_and_close() {
     let mut helper = start();

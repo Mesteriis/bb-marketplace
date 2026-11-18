@@ -9,7 +9,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+// 2: `session.open_rdp` carries `options`; an older peer would silently apply other settings, so both sides refuse each other.
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_FRAME_BODY_BYTES: usize = 4 * 1024 * 1024;
 pub const FRAME_KIND_CONTROL: u8 = 0x01;
 pub const FRAME_KIND_STREAM: u8 = 0x02;

@@ -130,6 +130,11 @@ Limits, plainly:
 14. A remote command is a child `ssh` process of the helper. If the helper dies hard (killed, crashed) the ssh process is not
     ended by the system (macOS has no parent-death signal), so a running command can outlive it until its own timeout or the
     server closes it. A clean stop, a revoke, closing the session and the timeout all kill it.
+16. The helper's checksum (`bin/SHA256SUMS`) is verified before the helper starts and a missing, malformed or non-matching file
+    (or a symlink in its place) refuses the start, with no override. It detects a corrupted or partly updated install. It
+    does NOT defend against someone who can write to the plugin directory (they can replace SHA256SUMS or `dist/server.js`
+    too), and it does not close the window between hashing the file and executing it by path (a process of the same user can
+    swap it in between); that is the same-user limit of item 1. The helper status shows "checksum verified".
 15. The "Watch in split" arrangement (live view in the main pane, the agent's thread in a split) depends on BB's
     `toThread(…, { split: true })` and `useSidebarSplitLayout`; where BB does not split, the live view stays and a link to the
     thread is shown. Whether the owner is "looking at the agent's thread" is read from the focused split pane or the

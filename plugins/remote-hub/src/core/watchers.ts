@@ -40,6 +40,9 @@ export class WatcherBook {
       for (const [id, v] of views) if (oldest === null || v.at < views.get(oldest)!.at) oldest = id;
       if (oldest !== null) views.delete(oldest);
     }
+    // A report that arrives after the previous one had already expired must first record the loss (listeners hear
+    // "not watching"), and only then count as a new watcher: nobody can have been watching in between.
+    this.settle(sessionKey);
     views.set(viewId, { visible, at: this.now() });
     this.settle(sessionKey);
   }

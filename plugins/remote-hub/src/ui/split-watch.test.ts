@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSessionView } from "./agent-panel.tsx";
-import { agentThreadOf, autoSplitOnSignal, focusedThread, mayAutoSplit, openWatchInSplit, splitShows, type SplitNav } from "./split-watch.ts";
+import { markSessionPage, sessionPageShowing } from "./active-surface.ts";
+import { agentThreadOf, autoSplitOnSignal, stillWhereWePutThem, focusedThread, mayAutoSplit, openWatchInSplit, splitShows, type SplitNav } from "./split-watch.ts";
 
 function nav() {
   const calls: string[] = [];
@@ -75,6 +76,30 @@ describe("mayAutoSplit: never navigate when the owner is somewhere else", () => 
     expect(mayAutoSplit({ focused: "thr_a", agentThread: null, key: KEY, done })).toBe(false);
     done.add(KEY);
     expect(mayAutoSplit({ focused: "thr_a", agentThread: "thr_a", key: KEY, done })).toBe(false);
+  });
+});
+
+describe("D5: the fallback navigates only from a surface it can identify", () => {
+  it("the production predicate: agent's thread in focus or the session page showing is 'still here'; everything else is not", () => {
+    expect(stillWhereWePutThem({ focused: "thr_a", agentThread: "thr_a", sessionPageShowing: false })).toBe(true);
+    expect(stillWhereWePutThem({ focused: null, agentThread: "thr_a", sessionPageShowing: true })).toBe(true);
+    // Settings / another plugin panel / no focused thread (focused null, page not showing), or another thread: not here.
+    expect(stillWhereWePutThem({ focused: null, agentThread: "thr_a", sessionPageShowing: false })).toBe(false);
+    expect(stillWhereWePutThem({ focused: "thr_other", agentThread: "thr_a", sessionPageShowing: false })).toBe(false);
+    expect(stillWhereWePutThem({ focused: null, agentThread: null, sessionPageShowing: false })).toBe(false);
+  });
+  it("the flow with that predicate: no navigation from an unidentified surface, a way back from the identified ones", async () => {
+    const off = markSessionPage(KEY);
+    expect(sessionPageShowing(KEY)).toBe(true);
+    off();
+    expect(sessionPageShowing(KEY)).toBe(false);
+    const run = async (focused: string | null, pageShowing: boolean) => {
+      const { n, calls } = nav();
+      await openWatchInSplit({ nav: n, sessionKey: KEY, agentThread: "thr_a", isSplit: () => false, stillHere: () => stillWhereWePutThem({ focused, agentThread: "thr_a", sessionPageShowing: pageShowing }), wait: now });
+      return calls;
+    };
+    expect((await run(null, false)).at(-1)).toBe("thread:thr_a:split");
+    expect((await run("thr_a", false)).at(-1)).toBe(`panel:ssh:${KEY}`);
   });
 });
 

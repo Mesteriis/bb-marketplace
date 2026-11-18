@@ -15,7 +15,17 @@ git clone --quiet --no-checkout "$here" "$work/repo"
 git -C "$work/repo" checkout --quiet "$sha"
 echo "== clean clone of $sha (uncommitted files in the working tree are NOT included)"
 cd "$work/repo/plugins/remote-hub"
-test ! -e bin && test ! -e dist || { echo "clone is not clean: bin/ or dist/ exist"; exit 1; }
+# A release commit carries bin/ and dist/: they are checked as committed, then rebuilt and compared.
+committed=0
+if [ -e bin/remote-hub-helper ] || [ -e dist/app.js ]; then
+  committed=1
+  echo "== release commit: gates on the COMMITTED bin/ and dist/"
+  npm ci --no-audit --no-fund >/dev/null
+  npm run check:dist
+  npm run check:release
+  mkdir "$work/committed" && cp -R bin dist "$work/committed/"
+  rm -rf bin dist
+fi
 echo "== npm ci";            npm ci --no-audit --no-fund >/dev/null
 echo "== npm run check";     npm run check 2>&1 | grep -E "error|Test Files|Tests " || true
 npm run check >/dev/null
@@ -29,6 +39,13 @@ npm run check:dist
 npm run check:release
 npm run check:notices
 (cd ../.. && node scripts/check-manifests.mjs)
+if [ "$committed" = 1 ]; then
+  echo "== committed vs rebuilt"
+  for f in bin/remote-hub-helper dist/app.js dist/app.css dist/server.js dist/app.meta.json dist/server.meta.json; do
+    a="$(shasum -a 256 "$work/committed/$f" | cut -d' ' -f1)"; b="$(shasum -a 256 "$f" | cut -d' ' -f1)"
+    [ "$a" = "$b" ] && echo "identical  $f" || echo "DIFFERENT  $f  committed=$a rebuilt=$b"
+  done
+fi
 echo "== artefacts"
 shasum -a 256 bin/remote-hub-helper dist/app.js dist/app.css dist/server.js
 echo "== helper --version: $(bin/remote-hub-helper --version)"

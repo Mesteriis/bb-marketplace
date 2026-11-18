@@ -6,6 +6,7 @@ import {
   decodeFrame,
   encodeControlFrame,
   encodeStreamFrame,
+  PROTOCOL_VERSION,
   sessionInputDataSchema,
   type ControlMessage,
 } from "../../core/protocol.ts";
@@ -64,7 +65,7 @@ function helloAck(generation: string): Buffer {
   return Buffer.from(
     encodeControlFrame({
       type: "hello_ack",
-      protocol: 1,
+      protocol: PROTOCOL_VERSION,
       helperVersion: "0.1.0",
       platform: "test",
       pid: 99999,
@@ -122,7 +123,14 @@ describe("helper-process (pure parts)", () => {
       const probe = await probeHelper(bin);
       expect(probe.ok).toBe(false);
       if (probe.ok) return;
-      expect(probe.error.code).toBe("helper_tampered");
+      expect(probe.error.code).toBe("helper_checksum_failed");
+      expect(probe.error.message).toContain("not someone who can write to the plugin directory");
+      expect((await import("node:fs")).existsSync(join(dir, "RAN"))).toBe(false);
+      // No checksum file at all is a refusal too (there is no unverified mode), and the script is not run.
+      rmSync(join(dir, "SHA256SUMS"));
+      const noSums = await probeHelper(bin);
+      expect(noSums.ok).toBe(false);
+      if (!noSums.ok) expect(noSums.error.message).toContain("no_sums");
       expect((await import("node:fs")).existsSync(join(dir, "RAN"))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -471,6 +479,22 @@ describe("helper-process (lifecycle)", () => {
       name: "HelperStartError",
       error: { code: "version_mismatch" },
     });
+  });
+
+  // D4: a helper that acknowledges another protocol (an older build) is refused, not used.
+  it("refuses a hello_ack for another protocol version", async () => {
+    const spawn: HelperSpawn = () => {
+      const fake = makeFakeChild();
+      setImmediate(() => {
+        fake.child.stdout.push(encodeControlFrame({ type: "hello_ack", protocol: PROTOCOL_VERSION - 1, helperVersion: "0.1.0", platform: "test", pid: 1, generation: "a".repeat(32) }));
+      });
+      return fake.child as unknown as ChildProcessWithoutNullStreams;
+    };
+    await expect(HelperProcess.spawn("bin", spawn)).rejects.toMatchObject({ name: "HelperStartError", error: { code: "version_mismatch" } });
+  });
+
+  it("this build speaks protocol 2 (the version that carries RDP options)", () => {
+    expect(PROTOCOL_VERSION).toBe(2);
   });
 
   // S8: a non-version_mismatch handshake error keeps its own code.

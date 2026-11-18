@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { decodeFrame, encodeControlFrame, encodeStreamFrame, type ControlMessage } from "../../core/protocol.ts";
+import { PROTOCOL_VERSION, decodeFrame, encodeControlFrame, encodeStreamFrame, type ControlMessage } from "../../core/protocol.ts";
 import { HelperProcess, HelperRequestError, type HelperSpawn, type RdpHelperEvent } from "./helper-process.ts";
 
 const GEN = "a".repeat(32);
@@ -55,7 +55,7 @@ async function start(): Promise<{ fake: Fake; hp: HelperProcess }> {
   const fake = makeFake();
   const spawn: HelperSpawn = () => {
     setImmediate(() =>
-      reply(fake, { type: "hello_ack", protocol: 1, helperVersion: "0.1.0", platform: "test", pid: 99999, generation: GEN }),
+      reply(fake, { type: "hello_ack", protocol: PROTOCOL_VERSION, helperVersion: "0.1.0", platform: "test", pid: 99999, generation: GEN }),
     );
     return fake.child as unknown as ChildProcessWithoutNullStreams;
   };

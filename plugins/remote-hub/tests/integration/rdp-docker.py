@@ -80,7 +80,7 @@ class Helper:
         self.trace = []  # every control message read, in order
         self.p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         _HELPERS.append(self)
-        self.send({"type": "hello", "protocol": 1})
+        self.send({"type": "hello", "protocol": 2})
         ack = self.read_control()
         assert ack["type"] == "hello_ack", ack
 

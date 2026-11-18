@@ -62,6 +62,16 @@ export async function autoSplitOnSignal(args: {
   return "opened";
 }
 
+/**
+ * Whether the owner is still where the split flow put them: the agent's thread is the focused surface, or this session's
+ * page is on screen. Anything else (Settings, another plugin's panel, a surface with no focused thread, unknown) is NOT
+ * "still here": nobody is dragged back from a place we cannot identify.
+ */
+export function stillWhereWePutThem(args: { focused: string | null; agentThread: string | null; sessionPageShowing: boolean }): boolean {
+  if (args.sessionPageShowing) return true;
+  return args.agentThread !== null && args.focused === args.agentThread;
+}
+
 export interface SplitOutcome {
   result: "split" | "no_thread" | "fallback";
 }

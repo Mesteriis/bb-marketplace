@@ -117,7 +117,8 @@ describe("RdpPage: a saved password (stage 3b-1)", () => {
     expect(p.calls.onRdpOpen.mock.calls[0]?.[2]).toBe(PID);
     // A saved connection uses its own stored quality: the page sends none and the control is disabled.
     expect(p.calls.onRdpOpen.mock.calls[0]?.[3]).toBeUndefined();
-    expect((screen.getByLabelText("connection quality") as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.queryByLabelText("connection quality")).toBeNull();
+    expect(screen.getByText("Quality: from the saved connection")).toBeTruthy();
   });
 
   it("Use another password switches to a typed password and forgets the reference for this connect", async () => {
