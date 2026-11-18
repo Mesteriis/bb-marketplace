@@ -33,6 +33,9 @@ class FakeRdpHelper {
     this.opens.push(params);
     return { generation: GEN, sessionId: this.nextSessionId++ };
   }
+  async openSsh(): Promise<SessionHandle> {
+    return { generation: GEN, sessionId: this.nextSessionId++ };
+  }
   async rdpCertDecision(handle: SessionHandle, fingerprint: string, accept: string): Promise<void> {
     this.decisions.push({ sessionId: handle.sessionId, fingerprint, accept });
   }
@@ -447,6 +450,108 @@ describe("RDP service: ending", () => {
   it("a screenshot is passed through", async () => {
     const { service, handle } = await readySession();
     await expect(service.rdpScreenshot(handle)).resolves.toEqual({ frameId: 4, width: 800, height: 600, timestamp: 1, png: "QUJD" });
+  });
+});
+
+describe("RDP service: what the helper sends before the open call continues", () => {
+  /** Make the fake helper emit `during` right after it allocated the session id,
+   *  the way a real helper's stdout read can (opened + more in one chunk). */
+  function emitDuringOpen(helper: FakeRdpHelper, during: (sid: number) => void): void {
+    const original = helper.openRdp.bind(helper);
+    helper.openRdp = async (params) => {
+      const handle = await original(params);
+      during(handle.sessionId);
+      return handle;
+    };
+  }
+  const makeService = (helper: FakeRdpHelper) => createRemoteHubService({ startHelper: async () => helper as unknown as HelperProcess, env: {} });
+
+  it("a session that closed before rdpOpen continued is closed with its reason, never resurrected as connecting", async () => {
+    const helper = new FakeRdpHelper();
+    emitDuringOpen(helper, (sid) => {
+      helper.state(sid, "connecting");
+      helper.state(sid, "tls");
+      helper.closed(sid, "auth_failed", 3);
+    });
+    const service = makeService(helper);
+    const handle = await service.rdpOpen({ ...TARGET }, 8, 4);
+    const record = service.sessionList().find((r) => r.sessionId === handle.sessionId)!;
+    expect(record).toMatchObject({ state: "closed", reason: "auth_failed", exitCode: 3 });
+    expect(record.rdp).toMatchObject({ state: "closed", trace: ["connecting", "tls"] });
+  });
+
+  it("every early event is applied in order, then the close: desktop_ready then server_disconnected", async () => {
+    const helper = new FakeRdpHelper();
+    emitDuringOpen(helper, (sid) => {
+      helper.state(sid, "connecting");
+      helper.state(sid, "authenticating");
+      helper.desktop(sid, 1, 8, 4);
+      helper.closed(sid, "server_disconnected");
+    });
+    const service = makeService(helper);
+    const handle = await service.rdpOpen({ ...TARGET }, 8, 4);
+    const record = service.sessionList().find((r) => r.sessionId === handle.sessionId)!;
+    expect(record).toMatchObject({ state: "closed", reason: "server_disconnected" });
+    expect(record.rdp).toMatchObject({ state: "closed", trace: ["connecting", "authenticating", "desktop_ready"], desktop: { frameId: 1, width: 8, height: 4 } });
+  });
+
+  it("an early certificate prompt is kept for the page", async () => {
+    const helper = new FakeRdpHelper();
+    emitDuringOpen(helper, (sid) => helper.prompt(sid, FP_A));
+    const service = makeService(helper);
+    const handle = await service.rdpOpen({ ...TARGET }, 8, 4);
+    expect(service.rdpInfo(handle)?.prompt).toMatchObject({ fingerprint: FP_A, reason: "untrusted_root" });
+  });
+
+  it("events that arrive after the end change nothing", async () => {
+    const { helper, service, handle, sid } = await readySession();
+    helper.closed(sid, "network_error");
+    helper.state(sid, "tls");
+    helper.prompt(sid, FP_A);
+    helper.desktop(sid, 9, 8, 4);
+    expect(service.rdpInfo(handle)).toMatchObject({
+      state: "closed",
+      prompt: null,
+      trace: ["connecting", "tls", "authenticating", "desktop_ready"],
+      desktop: { frameId: 1 },
+    });
+  });
+
+  it("an SSH session that ended before sshOpen continued is closed, not running", async () => {
+    const helper = new FakeRdpHelper();
+    const original = helper.openSsh.bind(helper);
+    helper.openSsh = async () => {
+      const handle = await original();
+      helper.closed(handle.sessionId, "exited", 7);
+      return handle;
+    };
+    const service = makeService(helper);
+    const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
+    expect(service.sessionList().find((r) => r.sessionId === handle.sessionId)).toMatchObject({ state: "closed", reason: "exited", exitCode: 7 });
+  });
+
+  it("an update chunk that arrives before the session is registered is not dropped: the helper is released", async () => {
+    const helper = new FakeRdpHelper();
+    emitDuringOpen(helper, (sid) => {
+      helper.state(sid, "connecting");
+      helper.desktop(sid, 1, 8, 4);
+      helper.update(sid, 1, 0, true); // no view yet: the multiplexer acks the helper at once
+    });
+    const service = makeService(helper);
+    await service.rdpOpen({ ...TARGET }, 8, 4);
+    expect(helper.acks).toEqual([1]);
+  });
+
+  it("early updates beyond one 3840x2160 frame (48 MiB) are not kept", async () => {
+    const helper = new FakeRdpHelper();
+    emitDuringOpen(helper, (sid) => {
+      for (const cb of (helper as unknown as { updateCb: Array<(s: number, q: number, p: Uint8Array) => void> }).updateCb) {
+        cb(sid, 0, new Uint8Array(48 * 1024 * 1024 + 1));
+      }
+    });
+    const service = makeService(helper);
+    await service.rdpOpen({ ...TARGET }, 8, 4);
+    expect(helper.acks).toEqual([]);
   });
 });
 

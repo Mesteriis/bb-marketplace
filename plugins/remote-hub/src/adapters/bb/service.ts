@@ -114,6 +114,16 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   // Events the helper sends right after `session.opened`, before rdpOpen has
   // registered the session (both are processed in one stdout chunk).
   const earlyRdpEvents = new Map<string, RdpHelperEvent[]>();
+  // The first update chunks of a session the service has not registered yet. The
+  // helper keeps ONE update in flight, so this is at most one frame (up to
+  // 3840x2160 RGBA, about 33 MiB); the bound below allows that and no more.
+  const earlyRdpUpdates = new Map<string, Array<{ seq: number; payload: Uint8Array }>>();
+  const EARLY_UPDATE_BYTES_MAX = 48 * 1024 * 1024;
+  const earlyUpdateBytes = new Map<string, number>();
+  // A session that ended before its open call continued (any kind): applied when
+  // the record is created, so an ended session is never shown as live.
+  const earlyClosed = new Map<string, { exitCode: number | null; signal: number | null; reason: string }>();
+  const EARLY_CLOSED_MAX = 64;
   const EVICT_CLOSED_AFTER_MS = 5 * 60 * 1000;
 
   const maybeEvictClosed = (key: string): void => {
@@ -131,6 +141,20 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       listeners.delete(key);
       credits.delete(key);
     }, EVICT_CLOSED_AFTER_MS);
+  };
+
+  /** Apply a close that was announced before the record existed. */
+  const applyEarlyClosed = (key: string): void => {
+    const info = earlyClosed.get(key);
+    const record = sessions.get(key);
+    if (info === undefined || record === undefined) return;
+    earlyClosed.delete(key);
+    record.state = "closed";
+    record.exitCode = info.exitCode;
+    record.signal = info.signal;
+    record.reason = info.reason;
+    if (record.rdp !== undefined) record.rdp.state = "closed";
+    maybeEvictClosed(key);
   };
 
   const rdpRecord = (key: string): SessionInfo | undefined => {
@@ -166,6 +190,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     const key = generation + ":" + sessionId;
     const info = rdpRecord(key);
     const runtime = rdpRuntimes.get(key);
+    if (info !== undefined && info.state === "closed") return; // nothing follows the end
     if (info === undefined || info.rdp === undefined || runtime === undefined) {
       // rdpOpen has not registered the session yet: keep the event for it.
       const queued = earlyRdpEvents.get(key) ?? [];
@@ -229,7 +254,18 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   const handleRdpUpdate = (generation: string, sessionId: number, seq: number, payload: Uint8Array): void => {
     const key = generation + ":" + sessionId;
     const runtime = rdpRuntimes.get(key);
-    if (runtime === undefined) return;
+    if (runtime === undefined) {
+      // Not registered yet (rdpOpen has not continued): keep the chunk, bounded,
+      // so the helper is acked once the multiplexer sees it.
+      if (sessions.has(key)) return; // known and ended
+      const used = earlyUpdateBytes.get(key) ?? 0;
+      if (used + payload.byteLength > EARLY_UPDATE_BYTES_MAX) return;
+      earlyUpdateBytes.set(key, used + payload.byteLength);
+      const queued = earlyRdpUpdates.get(key) ?? [];
+      queued.push({ seq, payload });
+      earlyRdpUpdates.set(key, queued);
+      return;
+    }
     const chunk = parseUpdateChunk(payload);
     if (chunk === null) return; // the helper validates every frame already
     const outcome = runtime.mux.onChunk(seq, chunk);
@@ -300,6 +336,10 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
               existing.signal = info.signal;
               existing.reason = info.reason;
               if (existing.rdp !== undefined) existing.rdp.state = "closed";
+            } else {
+              // Closed before the open call that will create the record continued.
+              earlyClosed.set(key, info);
+              if (earlyClosed.size > EARLY_CLOSED_MAX) earlyClosed.delete(earlyClosed.keys().next().value as string);
             }
             const ends = sessionEndListeners.get(key);
             if (ends !== undefined) {
@@ -359,6 +399,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         signal: null,
         reason: null,
       });
+      applyEarlyClosed(keyOf(handle));
       return handle;
     },
     async echoInput(handle, data) {
@@ -384,6 +425,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         signal: null,
         reason: null,
       });
+      applyEarlyClosed(keyOf(handle));
       return handle;
     },
     async sshOpen(target, cols, rows) {
@@ -400,6 +442,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         signal: null,
         reason: null,
       });
+      applyEarlyClosed(keyOf(handle));
       return handle;
     },
     async rdpOpen(target, width, height) {
@@ -436,6 +479,11 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       const early = earlyRdpEvents.get(key);
       earlyRdpEvents.delete(key);
       for (const event of early ?? []) handleRdpEvent(handle.generation, handle.sessionId, event);
+      const earlyUpdates = earlyRdpUpdates.get(key);
+      earlyRdpUpdates.delete(key);
+      earlyUpdateBytes.delete(key);
+      for (const u of earlyUpdates ?? []) handleRdpUpdate(handle.generation, handle.sessionId, u.seq, u.payload);
+      applyEarlyClosed(key);
       return handle;
     },
     async rdpCertDecision(handle, fingerprint, accept) {
