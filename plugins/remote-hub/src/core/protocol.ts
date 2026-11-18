@@ -10,6 +10,7 @@
 // The Rust mirror lives in helper/src/protocol.rs and must stay in sync with
 // these constants and message names.
 import { credentialRequestSchemas, credentialResponseSchemas } from "./credential-protocol.ts";
+import { knownHostsRequestSchemas, knownHostsResponseSchemas } from "./known-hosts-protocol.ts";
 import { sshAskpassRequestSchemas, sshAskpassResponseSchemas } from "./ssh-askpass-protocol.ts";
 import { z } from "zod";
 import {
@@ -180,6 +181,7 @@ export const errorEnvelopeSchema = z.object({
 
 export const requestSchema = z.discriminatedUnion("type", [
   ...credentialRequestSchemas,
+  ...knownHostsRequestSchemas,
   ...sshAskpassRequestSchemas,
   helloRequestSchema,
   pingRequestSchema,
@@ -194,6 +196,7 @@ export const requestSchema = z.discriminatedUnion("type", [
 
 export const responseSchema = z.discriminatedUnion("type", [
   ...credentialResponseSchemas,
+  ...knownHostsResponseSchemas,
   ...sshAskpassResponseSchemas,
   helloAckSchema,
   pongSchema,
@@ -228,6 +231,8 @@ export const controlMessageSchema = z.union([
     errorEnvelopeSchema,
     ...credentialRequestSchemas,
     ...credentialResponseSchemas,
+    ...knownHostsRequestSchemas,
+    ...knownHostsResponseSchemas,
     ...sshAskpassRequestSchemas,
     ...sshAskpassResponseSchemas,
     openRdpRequestSchema,

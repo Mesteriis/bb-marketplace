@@ -61,7 +61,7 @@ export default function plugin(bb: BbPluginApi): void {
     newId: () => randomUUID(),
     needsConfig: (profileId) => imports?.needsConfig(profileId) ?? false,
   });
-  imports = new ImportBook({ store: importStore, reader: createFsSourceReader(), profiles, credentials, newId: () => randomUUID() });
+  imports = new ImportBook({ store: importStore, reader: createFsSourceReader(), profiles, credentials, newId: () => randomUUID(), knownHosts: service.knownHosts });
   bb.rpc.register(rpcContract, createRpcHandlers({ service, profiles, credentials, imports }));
 
   registerStreamSocket(bb, { service });

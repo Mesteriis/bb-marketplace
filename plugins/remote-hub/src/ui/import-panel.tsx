@@ -2,7 +2,7 @@
 // ssh until the user switches that source on, and ssh -G has its own switch. A scan shows what an
 // import would do; only ticked entries are imported, and importing the same source again changes nothing.
 import { useCallback, useEffect, useState } from "react";
-import type { ImportOutcome, ImportSource, ScanResult } from "../core/import-book.ts";
+import type { ImportOutcome, ImportSource, ScanResult, TrustItem } from "../core/import-book.ts";
 import { errorTextFromMessage } from "../core/rdp-texts.ts";
 
 export interface ImportApi {
@@ -13,6 +13,9 @@ export interface ImportApi {
   remove: (id: string) => Promise<{ removed: boolean }>;
   scan: (id: string) => Promise<ScanResult>;
   apply: (id: string, keys?: string[]) => Promise<ImportOutcome>;
+  /** What saved-secret SSH sessions trust now (the helper's own known hosts). */
+  trusted: () => Promise<Array<Omit<TrustItem, "trusted">>>;
+  forget: (host: string) => Promise<{ removed: number }>;
 }
 
 const FLAG_TEXT: Record<string, string> = {
@@ -38,6 +41,7 @@ const KIND_TEXT: Record<ImportSource["kind"], string> = {
   hosts: "Hosts file",
   "keys-dir": "Key files",
   agent: "SSH agent",
+  "known-hosts": "Known hosts",
 };
 
 function outcomeText(o: ImportOutcome): string {
@@ -59,6 +63,7 @@ export interface ImportPanelProps {
 export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
   const [sources, setSources] = useState<ImportSource[] | null>(null);
   const [suggestions, setSuggestions] = useState<Array<{ kind: ImportSource["kind"]; path: string | null; label: string }>>([]);
+  const [trusted, setTrusted] = useState<Array<Omit<TrustItem, "trusted">> | null>(null);
   const [scan, setScan] = useState<{ sourceId: string; result: ScanResult } | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState<string | null>(null);
@@ -81,12 +86,21 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
     setSources(await api.list());
   }, [api]);
 
+  const reloadTrusted = useCallback(async () => {
+    try {
+      setTrusted(await api.trusted());
+    } catch {
+      setTrusted([]); // the helper may not be running yet: nothing is trusted that we can show
+    }
+  }, [api]);
+
   useEffect(() => {
     void run(async () => {
       await reload();
       setSuggestions(await api.suggestions());
     });
-  }, [api, reload, run]);
+    void reloadTrusted();
+  }, [api, reload, reloadTrusted, run]);
 
   const doScan = (source: ImportSource, keepMessage = false) =>
     run(async () => {
@@ -95,6 +109,8 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
       setScan({ sourceId: source.id, result });
       if (result.kind === "ssh-config" || result.kind === "hosts") {
         setPicked(new Set(result.items.filter((i) => i.action === "create" || i.action === "update").map((i) => i.key)));
+      } else if (result.kind === "known-hosts") {
+        setPicked(new Set());
       }
     });
 
@@ -216,6 +232,51 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
         </div>
       )}
 
+      {scan !== null && scan.result.kind === "known-hosts" && (
+        <div aria-label="Scan result">
+          <h3>Host keys in this file</h3>
+          <p className="rh-hint">Ticked keys are added to the host keys Remote Hub trusts for saved-password SSH sessions. Nothing is trusted unless you tick it.</p>
+          {scan.result.items.length === 0 && <p className="rh-hint">No plain host keys in this file.</p>}
+          <ul>
+            {scan.result.items.map((i) => (
+              <li key={i.key} aria-label={i.hosts.join(", ") || "hashed host " + i.key} className="rh-profile">
+                <label className="rh-check rh-profile-main">
+                  <input
+                    type="checkbox"
+                    checked={picked.has(i.key)}
+                    disabled={i.trusted}
+                    onChange={(e) => setPicked((cur) => { const next = new Set(cur); if (e.target.checked) next.add(i.key); else next.delete(i.key); return next; })}
+                  />
+                  <span>
+                    <strong>{i.hashed ? "(hashed host name)" : i.hosts.join(", ")}</strong> <span className="rh-badge">{i.keyType}</span>
+                    {i.trusted && <span className="rh-badge">already trusted</span>}
+                    <span className="rh-profile-endpoint rh-import-note">{i.fingerprint}</span>
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          {scan.result.issues.map((t) => (
+            <p key={t} className="rh-hint">{t}</p>
+          ))}
+          <button
+            type="button"
+            disabled={busy || picked.size === 0}
+            onClick={() =>
+              void run(async () => {
+                const result = await api.apply(scan.sourceId, [...picked]);
+                setMessage(`${result.created} host key(s) trusted, ${result.unchanged} already trusted.`);
+                await reloadTrusted();
+                const source = (sources ?? []).find((s) => s.id === scan.sourceId);
+                if (source !== undefined) await doScan(source, true);
+              })
+            }
+          >
+            Trust selected host keys
+          </button>
+        </div>
+      )}
+
       {scan !== null && scan.result.kind === "keys-dir" && (
         <div aria-label="Scan result">
           <h3>Public keys found</h3>
@@ -235,6 +296,29 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
           </ul>
         </div>
       )}
+
+      <div aria-label="Trusted host keys">
+        <h3>Host keys trusted for saved-password sessions</h3>
+        <p className="rh-hint">A saved-password SSH session asks about an unknown server the first time, and remembers your answer here. It does not read your own known_hosts file unless you add it above.</p>
+        {trusted !== null && trusted.length === 0 && <p className="rh-hint">None yet.</p>}
+        <ul>
+          {(trusted ?? []).map((t) => (
+            <li key={t.key} className="rh-profile">
+              <div className="rh-profile-main">
+                <strong>{t.hashed ? "(hashed host name)" : t.hosts.join(", ")}</strong> <span className="rh-badge">{t.keyType}</span>
+                <span className="rh-profile-endpoint">{t.fingerprint}</span>
+              </div>
+              <div className="rh-profile-actions">
+                {!t.hashed && t.hosts[0] !== undefined && (
+                  <button type="button" disabled={busy} aria-label={"Forget " + t.hosts[0]} onClick={() => void run(async () => { await api.forget(t.hosts[0] as string); await reloadTrusted(); })}>
+                    Forget
+                  </button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
 
       {scan !== null && scan.result.kind === "agent" && (
         <div aria-label="Scan result">

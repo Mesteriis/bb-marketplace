@@ -255,7 +255,7 @@ describe("import RPCs (real handlers, an in-memory book over a fixture reader)",
   it("suggestions are strings only: nothing is registered or read until the user adds a source", async () => {
     const { handlers } = withImports();
     const list = await handlers.import_suggestions(null as never);
-    expect(list.map((s) => s.kind)).toEqual(["ssh-config", "keys-dir", "hosts", "agent"]);
+    expect(list.map((s) => s.kind)).toEqual(["ssh-config", "keys-dir", "hosts", "known-hosts", "agent"]);
     expect(await handlers.import_source_list(null as never)).toEqual([]);
   });
 });

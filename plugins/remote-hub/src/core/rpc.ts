@@ -4,7 +4,7 @@ import { z } from "zod";
 import { credentialBindSchema } from "./credential.ts";
 import { profileInputSchema, profileSchema } from "./profile.ts";
 
-const sourceKindSchema = z.enum(["ssh-config", "hosts", "keys-dir", "agent"]);
+const sourceKindSchema = z.enum(["ssh-config", "hosts", "keys-dir", "agent", "known-hosts"]);
 export const importSourceSchema = z.object({
   id: z.string(),
   kind: sourceKindSchema,
@@ -28,6 +28,11 @@ const scanItemSchema = z.object({
 export const scanResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("ssh-config"), items: z.array(scanItemSchema), stale: z.array(z.string()), issues: z.array(z.string()) }),
   z.object({ kind: z.literal("hosts"), items: z.array(scanItemSchema), stale: z.array(z.string()), issues: z.array(z.string()) }),
+  z.object({
+    kind: z.literal("known-hosts"),
+    items: z.array(z.object({ key: z.string(), hosts: z.array(z.string()), hashed: z.boolean(), keyType: z.string(), fingerprint: z.string(), trusted: z.boolean() })),
+    issues: z.array(z.string()),
+  }),
   z.object({
     kind: z.literal("keys-dir"),
     keys: z.array(z.object({ publicPath: z.string(), privatePath: z.string().nullable(), type: z.string(), comment: z.string(), fingerprint: z.string() })),
@@ -260,6 +265,11 @@ export const rpcSchemas = {
     input: z.object({ id: z.string().max(64), keys: z.array(z.string().max(256)).max(500).optional() }).strict(),
     output: importOutcomeSchema,
   },
+  known_hosts_list: {
+    input: z.null(),
+    output: z.array(z.object({ key: z.string(), hosts: z.array(z.string()), hashed: z.boolean(), keyType: z.string(), fingerprint: z.string() })),
+  },
+  known_hosts_forget: { input: z.object({ host: z.string().min(1).max(255) }).strict(), output: z.object({ removed: z.number().int() }) },
   profile_duplicate: {
     input: z.object({ id: z.string().uuid() }),
     output: profileSchema,

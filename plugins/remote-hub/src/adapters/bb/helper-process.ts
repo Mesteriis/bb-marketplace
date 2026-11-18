@@ -796,6 +796,30 @@ export class HelperProcess {
   }
 
   /** Whether the credential exists and the Keychain would hand it over (the value is never returned). */
+  /** The helper-owned known_hosts overlay: its lines. */
+  async knownHostsList(): Promise<string[]> {
+    const resp = await this.request({ type: "known_hosts.list" } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "known_hosts.lines") throw new Error("unexpected helper response: " + resp.type);
+    return resp.lines;
+  }
+
+  /** Adds plain host-key lines; resolves to how many were new. An invalid line refuses the whole call. */
+  async knownHostsAdd(lines: string[]): Promise<number> {
+    const resp = await this.request({ type: "known_hosts.add", lines } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "known_hosts.done") throw new Error("unexpected helper response: " + resp.type);
+    return resp.count;
+  }
+
+  /** Forgets every line that names this host; resolves to how many went. */
+  async knownHostsRemove(host: string): Promise<number> {
+    const resp = await this.request({ type: "known_hosts.remove", host } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "known_hosts.done") throw new Error("unexpected helper response: " + resp.type);
+    return resp.count;
+  }
+
   async credentialStatus(ref: string): Promise<boolean> {
     const resp = await this.request({ type: "credential.status", ref } as RequestMessage);
     if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);

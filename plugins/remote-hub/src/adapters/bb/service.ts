@@ -6,6 +6,7 @@ import { AttachTokens, ATTACH_TOKEN_TTL_MS, type Clock } from "../../core/attach
 import { createCreditState, type CreditState } from "../../core/credit.ts";
 import { CredentialError, type CredentialVault } from "../../core/credential.ts";
 import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
+import type { KnownHostsOverlay } from "../../core/import-book.ts";
 import { buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
 import { HelperProcess, type HelperStatus, HelperRuntimeError, HelperRequestError, type RdpHelperEvent } from "./helper-process.ts";
 import type { RdpInfo, RdpTarget, SessionHandle } from "../../core/rpc.ts";
@@ -74,6 +75,8 @@ export interface RemoteHubService {
   rdpInfo(handle: SessionHandle): RdpInfo | undefined;
   /** The Keychain, through the helper. A refusal is a CredentialError carrying the helper's code. */
   credentialVault: CredentialVault;
+  /** The helper-owned known_hosts overlay (saved-secret SSH sessions trust what is in it). */
+  knownHosts: KnownHostsOverlay;
   sessionList(): SessionInfo[];
   sessionClose(handle: SessionHandle): Promise<{ exitCode: number | null; signal: number | null; reason: string }>;
   sessionAttach(handle: SessionHandle): string;
@@ -642,6 +645,11 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         // Answered or refused as already gone: either way the prompt is no longer open.
         askpassStates.get(keyOf(handle))?.prompts.delete(promptId);
       }
+    },
+    knownHosts: {
+      list: async () => (await start()).knownHostsList(),
+      add: async (lines) => (await start()).knownHostsAdd(lines),
+      remove: async (host) => (await start()).knownHostsRemove(host),
     },
     credentialVault: {
       save: async (ref, secret, bind) => viaVault(async (hp) => hp.credentialSave(ref, secret, bind)),

@@ -42,6 +42,22 @@ const reader: SourceReader = {
   sshG,
 };
 
+const KH = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const overlayLines: string[] = [];
+const overlay = {
+  list: vi.fn(async () => [...overlayLines]),
+  add: vi.fn(async (lines: string[]) => {
+    let n = 0;
+    for (const l of lines) if (!overlayLines.includes(l)) (overlayLines.push(l), n++);
+    return n;
+  }),
+  remove: vi.fn(async (host: string) => {
+    const before = overlayLines.length;
+    for (let i = overlayLines.length - 1; i >= 0; i--) if ((overlayLines[i] as string).split(" ")[0]?.split(",").includes(host)) overlayLines.splice(i, 1);
+    return before - overlayLines.length;
+  }),
+};
+
 function setup() {
   let n = 0;
   const ids = () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`;
@@ -51,7 +67,7 @@ function setup() {
   const vault: CredentialVault = { save: async () => {}, delete: async () => {}, status: async () => "present" };
   let book!: ImportBook;
   const credentials = new CredentialBook({ store: new MemMeta(), vault, profiles, now: () => new Date(), newId: ids, needsConfig: (id) => book.needsConfig(id) });
-  book = new ImportBook({ store, reader, profiles, credentials, newId: ids });
+  book = new ImportBook({ store, reader, profiles, credentials, newId: ids, knownHosts: overlay });
   return { book, store, profiles, credentials };
 }
 
@@ -271,5 +287,40 @@ describe("a hosts file offers candidates", () => {
     expect(await book.apply(source.id)).toMatchObject({ created: 1 });
     expect(await book.apply(source.id)).toMatchObject({ created: 0, unchanged: 1 });
     expect(profiles.list()[0]).toMatchObject({ name: "build.example.test", host: "build.example.test", authType: "agent", origin: "imported" });
+  });
+});
+
+describe("a known_hosts source adds host keys to the helper's overlay, only the chosen ones", () => {
+  it("scan lists plain host keys (none chosen), apply trusts the chosen ones once, and the overlay is what 'trusted' shows", async () => {
+    const { book } = setup();
+    overlayLines.length = 0;
+    FILES["/fixture/known_hosts"] = `a.example.test ${KH} one\n@cert-authority *.corp ${KH}\nb.example.test,10.0.0.9 ${KH}\n`;
+    const source = book.addSource({ kind: "known-hosts", path: "/fixture/known_hosts", label: "kh" });
+    await expect(book.scan(source.id)).rejects.toMatchObject({ code: "source_disabled" });
+    book.setEnabled(source.id, true);
+    const scan = await book.scan(source.id);
+    if (scan.kind !== "known-hosts") throw new Error("kind");
+    expect(scan.items.map((i) => [i.hosts, i.trusted])).toEqual([[["a.example.test"], false], [["b.example.test", "10.0.0.9"], false]]);
+    expect(overlay.add).not.toHaveBeenCalled(); // scanning trusts nothing
+    const chosen = scan.items[1]!.key;
+    expect(await book.apply(source.id, [chosen])).toMatchObject({ created: 1, unchanged: 0 });
+    expect(await book.apply(source.id, [chosen])).toMatchObject({ created: 0, unchanged: 1 });
+    expect(overlayLines).toEqual([`b.example.test,10.0.0.9 ${KH}`]);
+    expect((await book.trustedHosts()).map((t) => t.hosts)).toEqual([["b.example.test", "10.0.0.9"]]);
+    expect(await book.forgetHost("10.0.0.9")).toBe(1);
+    expect(overlayLines).toEqual([]);
+    const again = await book.scan(source.id);
+    if (again.kind !== "known-hosts") throw new Error("kind");
+    expect(again.items.every((i) => !i.trusted)).toBe(true);
+  });
+
+  it("applying with no keys list is trust-all only when the caller says so explicitly; an empty choice trusts nothing", async () => {
+    const { book } = setup();
+    overlayLines.length = 0;
+    FILES["/fixture/known_hosts"] = `a.example.test ${KH}\n`;
+    const source = book.addSource({ kind: "known-hosts", path: "/fixture/known_hosts", label: "kh" });
+    book.setEnabled(source.id, true);
+    expect(await book.apply(source.id, [])).toMatchObject({ created: 0 });
+    expect(overlayLines).toEqual([]);
   });
 });

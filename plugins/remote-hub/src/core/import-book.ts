@@ -14,13 +14,21 @@ import {
   type ImportedFields,
 } from "./import-plan.ts";
 import { parseHostsFile } from "./hosts-file.ts";
+import { lineKey, parseKnownHosts, type KnownHostEntry } from "./known-hosts.ts";
 import type { CredentialBook } from "./credential.ts";
 import { profileFieldsOf, type Profile, type Provenance } from "./profile.ts";
 import type { ProfileBook } from "./profile-book.ts";
 import { parseAgentList, publicKeyInfo, type AgentKey } from "./ssh-keys.ts";
 import { parseSshConfig, type IncludedFile } from "./ssh-config.ts";
 
-export type SourceKind = "ssh-config" | "hosts" | "keys-dir" | "agent";
+export type SourceKind = "ssh-config" | "hosts" | "keys-dir" | "agent" | "known-hosts";
+
+/** The helper-owned known_hosts overlay: what saved-secret SSH sessions trust. */
+export interface KnownHostsOverlay {
+  list(): Promise<string[]>;
+  add(lines: string[]): Promise<number>;
+  remove(host: string): Promise<number>;
+}
 
 export interface ImportSource {
   id: string;
@@ -94,8 +102,19 @@ export interface KeyInfo {
   fingerprint: string;
 }
 
+export interface TrustItem {
+  key: string;
+  hosts: string[];
+  hashed: boolean;
+  keyType: string;
+  fingerprint: string;
+  /** Already in the overlay. */
+  trusted: boolean;
+}
+
 export type ScanResult =
   | { kind: "ssh-config" | "hosts"; items: ScanItem[]; stale: string[]; issues: string[] }
+  | { kind: "known-hosts"; items: TrustItem[]; issues: string[] }
   | { kind: "keys-dir"; keys: KeyInfo[]; issues: string[] }
   | { kind: "agent"; keys: AgentKey[]; issues: string[] };
 
@@ -115,6 +134,8 @@ export interface ImportBookDeps {
   profiles: ProfileBook;
   credentials: CredentialBook;
   newId: () => string;
+  /** Without it a known_hosts source can be listed but not trusted. */
+  knownHosts?: KnownHostsOverlay | undefined;
 }
 
 const MAX_CONFIG_BYTES = 256 * 1024;
@@ -137,6 +158,7 @@ export class ImportBook {
       { kind: "ssh-config", path: `${home}/.ssh/config`, label: "SSH config" },
       { kind: "keys-dir", path: `${home}/.ssh`, label: "SSH keys (public files)" },
       { kind: "hosts", path: "/etc/hosts", label: "Hosts file" },
+      { kind: "known-hosts", path: `${home}/.ssh/known_hosts`, label: "Known hosts (host keys to trust)" },
       { kind: "agent", path: null, label: "SSH agent" },
     ];
   }
@@ -266,6 +288,7 @@ export class ImportBook {
     const source = this.enabledSource(sourceId);
     if (source.kind === "agent") return await this.scanAgent();
     if (source.kind === "keys-dir") return await this.scanKeys(source.path as string);
+    if (source.kind === "known-hosts") return await this.scanKnownHosts(source.path as string);
     const { candidates, issues } = await this.candidates(source);
     const plan = this.plan(source, candidates);
     return {
@@ -297,6 +320,7 @@ export class ImportBook {
   /** Imports the chosen keys of a source (all of them when `keys` is omitted). Re-running it is a no-op. */
   async apply(sourceId: string, keys?: string[]): Promise<ImportOutcome> {
     const source = this.enabledSource(sourceId);
+    if (source.kind === "known-hosts") return await this.applyKnownHosts(source.path as string, keys);
     if (source.kind !== "ssh-config" && source.kind !== "hosts") throw new ImportError("invalid_source", "this source holds nothing to import");
     const { candidates } = await this.candidates(source);
     const chosen = keys === undefined ? candidates : candidates.filter((c) => keys.includes(c.key));
@@ -344,6 +368,44 @@ export class ImportBook {
       out.markedStale += 1;
     }
     return out;
+  }
+
+  /** The overlay's entries, for showing what saved-secret SSH sessions trust. */
+  async trustedHosts(): Promise<Array<Omit<TrustItem, "trusted">>> {
+    if (this.deps.knownHosts === undefined) return [];
+    const entries = await parseKnownHosts((await this.deps.knownHosts.list()).join("\n"));
+    return Promise.all(entries.map(async (e) => ({ key: await lineKey(e.line), hosts: e.hosts, hashed: e.hashed, keyType: e.keyType, fingerprint: e.fingerprint })));
+  }
+
+  /** Forgets a host: its keys leave the overlay, so the next session asks again. */
+  async forgetHost(host: string): Promise<number> {
+    if (this.deps.knownHosts === undefined) throw new ImportError("known_hosts_unavailable", "the known hosts file is not available");
+    return await this.deps.knownHosts.remove(host);
+  }
+
+  private async knownHostEntries(path: string): Promise<KnownHostEntry[]> {
+    const text = this.deps.reader.readText(path, MAX_HOSTS_BYTES * 8);
+    if (text === null) throw new ImportError("source_unreadable", "the file could not be read");
+    return await parseKnownHosts(text);
+  }
+
+  private async scanKnownHosts(path: string): Promise<ScanResult> {
+    const entries = await this.knownHostEntries(path);
+    const have = new Set(this.deps.knownHosts === undefined ? [] : (await this.deps.knownHosts.list()).map((l) => l.trim()));
+    const items = await Promise.all(
+      entries.map(async (e) => ({ key: await lineKey(e.line), hosts: e.hosts, hashed: e.hashed, keyType: e.keyType, fingerprint: e.fingerprint, trusted: have.has(e.line) })),
+    );
+    return { kind: "known-hosts", items, issues: this.deps.knownHosts === undefined ? ["the helper's known hosts file is not available"] : [] };
+  }
+
+  /** Copies the chosen host keys into the overlay. Only what the user picks, only plain host-key lines. */
+  private async applyKnownHosts(path: string, keys: string[] | undefined): Promise<ImportOutcome> {
+    if (this.deps.knownHosts === undefined) throw new ImportError("known_hosts_unavailable", "the known hosts file is not available");
+    const entries = await this.knownHostEntries(path);
+    const chosen: string[] = [];
+    for (const e of entries) if (keys === undefined || keys.includes(await lineKey(e.line))) chosen.push(e.line);
+    const added = chosen.length === 0 ? 0 : await this.deps.knownHosts.add(chosen);
+    return { created: added, updated: 0, unchanged: chosen.length - added, conflicts: [], deletedLocally: [], skipped: [], markedStale: 0 };
   }
 
   private async scanAgent(): Promise<ScanResult> {

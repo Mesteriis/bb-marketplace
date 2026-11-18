@@ -136,6 +136,8 @@ export function createRpcHandlers({ service, profiles, credentials, imports }: R
     },
     profile_list: () => imports.decorate(profiles.list()),
     profile_save: (input) => withProfile(async () => imports.decorate([(await credentials.saveProfile(input)).profile])[0] as Profile),
+    known_hosts_list: () => withImport(() => withHelper(() => imports.trustedHosts())),
+    known_hosts_forget: (input) => withImport(() => withHelper(async () => ({ removed: await imports.forgetHost(input.host) }))),
     import_suggestions: () => imports.suggestions(),
     import_source_list: () => imports.sources(),
     import_source_add: (input) => withImport(() => imports.addSource(input)),

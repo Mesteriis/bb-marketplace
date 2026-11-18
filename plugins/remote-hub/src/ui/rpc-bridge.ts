@@ -56,6 +56,8 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
       remove: (id) => send("import_source_remove", { id }),
       scan: (id) => send("import_scan", { id }),
       apply: (id, keys) => send("import_apply", { id, keys }),
+      trusted: () => send("known_hosts_list"),
+      forget: (host) => send("known_hosts_forget", { host }),
     },
     ssh: {
       onSshOpen: (target: SshTarget, profileId?: string, credentialRef?: string) => send<SessionHandle>("ssh_open", { target, profileId, credentialRef }),

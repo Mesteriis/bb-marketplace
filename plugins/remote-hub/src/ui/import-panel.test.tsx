@@ -26,9 +26,11 @@ function fakeApi(over: Partial<ImportApi> = {}) {
     }),
     scan: vi.fn(async (): Promise<ScanResult> => ({ kind: "ssh-config", items: [], stale: [], issues: [] })),
     apply: vi.fn(async (): Promise<ImportOutcome> => ({ created: 1, updated: 0, unchanged: 0, conflicts: [], deletedLocally: [], skipped: [], markedStale: 0 })),
+    trusted: vi.fn(async () => [] as Array<{ key: string; hosts: string[]; hashed: boolean; keyType: string; fingerprint: string }>),
+    forget: vi.fn(async () => ({ removed: 1 })),
     ...over,
-  } satisfies ImportApi;
-  return api;
+  };
+  return api as unknown as ImportApi & typeof api;
 }
 
 const item = (over: Record<string, unknown> = {}) => ({ key: "build", name: "build", action: "create" as const, resolved: true, flags: [] as string[], host: "build.example.test", port: 2222, username: "ci", identityFile: null, skip: null, ...over });
@@ -127,5 +129,50 @@ describe("ImportPanel", () => {
     await waitFor(() => expect((screen.getByRole("button", { name: "Scan SSH config" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Scan SSH config" }));
     expect((await screen.findByRole("alert")).textContent).toContain("the file could not be read");
+  });
+});
+
+describe("ImportPanel and host keys", () => {
+  it("lists what is trusted for saved-password sessions and forgets a host on request", async () => {
+    let list = [{ key: "k1", hosts: ["[box.example.test]:2222"], hashed: false, keyType: "ssh-ed25519", fingerprint: "SHA256:abc" }];
+    const api = fakeApi({ trusted: vi.fn(async () => list), forget: vi.fn(async () => { list = []; return { removed: 1 }; }) });
+    await mount(api);
+    const area = await screen.findByLabelText("Trusted host keys");
+    expect(area.textContent).toContain("[box.example.test]:2222");
+    expect(area.textContent).toContain("SHA256:abc");
+    fireEvent.click(screen.getByRole("button", { name: "Forget [box.example.test]:2222" }));
+    await waitFor(() => expect(api.forget).toHaveBeenCalledWith("[box.example.test]:2222"));
+    await waitFor(() => expect(screen.getByText("None yet.")).toBeTruthy());
+  });
+
+  it("a known_hosts scan trusts only the ticked keys, none by default, and says what it does", async () => {
+    const api = fakeApi({
+      suggestions: vi.fn(async () => [{ kind: "known-hosts" as const, path: "/h/.ssh/known_hosts", label: "Known hosts (host keys to trust)" }]),
+      scan: vi.fn(async (): Promise<ScanResult> => ({
+        kind: "known-hosts",
+        items: [
+          { key: "a", hosts: ["a.example.test"], hashed: false, keyType: "ssh-ed25519", fingerprint: "SHA256:aaa", trusted: false },
+          { key: "b", hosts: [], hashed: true, keyType: "ssh-rsa", fingerprint: "SHA256:bbb", trusted: true },
+        ],
+        issues: [],
+      })),
+      apply: vi.fn(async (): Promise<ImportOutcome> => ({ created: 1, updated: 0, unchanged: 0, conflicts: [], deletedLocally: [], skipped: [], markedStale: 0 })),
+    });
+    await mount(api);
+    fireEvent.click(screen.getByRole("button", { name: "Add Known hosts (host keys to trust)" }));
+    await waitFor(() => screen.getByLabelText("Read this source"));
+    fireEvent.click(screen.getByLabelText("Read this source"));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Scan Known hosts (host keys to trust)" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Scan Known hosts (host keys to trust)" }));
+    const scan = await screen.findByLabelText("Scan result");
+    expect(scan.textContent).toContain("Nothing is trusted unless you tick it.");
+    expect(scan.textContent).toContain("(hashed host name)");
+    expect(scan.textContent).toContain("already trusted");
+    const trust = screen.getByRole("button", { name: "Trust selected host keys" }) as HTMLButtonElement;
+    expect(trust.disabled).toBe(true);
+    fireEvent.click(screen.getByLabelText("a.example.test").querySelector("input") as HTMLInputElement);
+    fireEvent.click(trust);
+    await waitFor(() => expect(api.apply).toHaveBeenCalledWith("s1", ["a"]));
+    expect((await screen.findByRole("status")).textContent).toBe("1 host key(s) trusted, 0 already trusted.");
   });
 });
