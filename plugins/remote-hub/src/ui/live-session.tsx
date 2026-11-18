@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionHandle } from "../core/rpc.ts";
 import { errorTextFromMessage } from "../core/rdp-texts.ts";
 import { ControlBadge, ControlNotice, HUMAN_CONTROL, nextControl, type ControlMessage, type ControlView } from "./control-banner.tsx";
+import type { FeedEvent } from "../core/agent-feed.ts";
+import { CommandLog, applyExecEvent, type LoggedCommand } from "./command-log.tsx";
 import { RdpCanvas } from "./rdp-canvas.tsx";
 import { SshTerminal } from "./ssh-terminal.tsx";
 
@@ -27,6 +29,9 @@ export function LiveSession({ sessionKey, api }: { sessionKey: string; api: Live
   const [view, setView] = useState<{ kind: "ssh" | "rdp"; token: string; wsUrl: string } | { problem: string } | null>(null);
   const [owner, setOwner] = useState<ControlView>(HUMAN_CONTROL);
   const onControl = useCallback((message: ControlMessage) => setOwner((cur) => nextControl(cur, message)), []);
+  // The commands an agent runs on this session, as they happen (shown, not stored: this lives in the open view only).
+  const [commands, setCommands] = useState<LoggedCommand[]>([]);
+  const onAgent = useCallback((event: FeedEvent) => setCommands((cur) => applyExecEvent(cur, event)), []);
   const apiRef = useRef(api);
   apiRef.current = api;
   const key = handle === null ? null : `${handle.generation}.${handle.sessionId}`;
@@ -78,7 +83,10 @@ export function LiveSession({ sessionKey, api }: { sessionKey: string; api: Live
       </div>
       <ControlNotice control={owner} onTakeover={async () => void (await api.takeover(handle))} />
       {view.kind === "ssh" ? (
-        <SshTerminal wsUrl={view.wsUrl} token={view.token} onControl={onControl} />
+        <>
+          <SshTerminal wsUrl={view.wsUrl} token={view.token} onControl={onControl} onAgent={onAgent} />
+          <CommandLog commands={commands} />
+        </>
       ) : (
         <div className="rh-rdp-wrap">
           <RdpCanvas wsUrl={view.wsUrl} token={view.token} fit="fit" label="Remote desktop" onEvent={(e) => (e.type === "control" || e.type === "input_blocked" ? onControl(e as ControlMessage) : undefined)} />

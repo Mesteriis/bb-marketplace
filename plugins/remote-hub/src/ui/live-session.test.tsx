@@ -49,6 +49,18 @@ describe("LiveSession", () => {
     await waitFor(() => expect(a.takeover).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }));
   });
 
+  it("lists the commands an agent runs, live, from the session's feed", async () => {
+    render(<LiveSession sessionKey={KEY} api={api("ssh")} />);
+    await waitFor(() => expect(screen.getByTestId("terminal")).toBeTruthy());
+    const term = (globalThis as unknown as { __term: { onAgent: (e: unknown) => void } }).__term;
+    act(() => term.onAgent({ kind: "exec", commandId: "c1", phase: "started", text: "df -h" }));
+    act(() => term.onAgent({ kind: "exec", commandId: "c1", phase: "output", stream: "stdout", text: "Filesystem  Size\n" }));
+    expect(screen.getByLabelText("Commands an agent ran").textContent).toContain("$ df -h");
+    expect(screen.getByLabelText("Commands an agent ran").textContent).toContain("Filesystem  Size");
+    act(() => term.onAgent({ kind: "exec", commandId: "c1", phase: "finished", text: "", exitCode: 0, reason: "exited" }));
+    expect(screen.getByLabelText("Commands an agent ran").textContent).toContain("exit 0");
+  });
+
   it("shows the desktop for an RDP session", async () => {
     render(<LiveSession sessionKey={KEY} api={api("rdp")} />);
     await waitFor(() => expect(screen.getByTestId("desktop")).toBeTruthy());

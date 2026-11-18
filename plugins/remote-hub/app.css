@@ -731,3 +731,38 @@
 .rh-rule-confirm {
   margin-top: 8px;
 }
+
+/* The commands an agent ran on a session, live in its view. */
+.rh-commands {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rh-commands h4 {
+  margin: 0;
+}
+
+.rh-command {
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.rh-command pre {
+  margin: 0;
+  font-family: var(--font-terminal, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.rh-command-line {
+  color: var(--accent, #d29922);
+}
+
+.rh-command-err {
+  color: #f85149;
+}

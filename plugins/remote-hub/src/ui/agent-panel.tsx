@@ -71,7 +71,7 @@ export const LEVEL_TEXT: Record<AgentLevel, string> = {
   none: "No access",
   observe: "Observe: read output and screenshots",
   input: "Input: observe, connect (saved password only) and type",
-  exec: "Exec: input, and run commands (not yet available)",
+  exec: "Exec: input, and run commands on SSH sessions they opened (you see each command live)",
 };
 
 /** What the owner is told wherever a grant is set. */

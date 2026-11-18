@@ -69,6 +69,7 @@ class FakeHelper {
   onSshAskpass(cb: (sid: number, e: unknown) => void): void {
     this.askpassCb.push(cb);
   }
+  onExecFinished(): void {}
   onRdpEvent(cb: (sid: number, e: RdpHelperEvent) => void): void {
     this.eventCb.push(cb);
   }

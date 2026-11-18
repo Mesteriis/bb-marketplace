@@ -4,6 +4,8 @@
 // service, exposes a schema-validated RPC contract to the app, and tears the
 // helper down on dispose. All wire schemas live in src/core/rpc.ts and
 // src/core/protocol.ts.
+import { agentExecPorts } from "./src/adapters/bb/agent-exec.ts";
+import { createExecTools } from "./src/core/agent-exec-tools.ts";
 import { AgentSettings } from "./src/core/agent-settings.ts";
 import { publishAgentSignals } from "./src/adapters/bb/agent-signals.ts";
 import { AgentFeed } from "./src/core/agent-feed.ts";
@@ -102,7 +104,9 @@ export default function plugin(bb: BbPluginApi): void {
     ports: agentPorts(service, profiles),
     sessionExtras: controlSessionExtras(leases, controlPorts),
   };
-  registerAgentTools(bb, [...createAgentTools(toolDeps), ...createControlTools({ ...toolDeps, leases, control: controlPorts, registry, feed })]);
+  const controlDeps = { ...toolDeps, leases, control: controlPorts, registry, feed };
+  const execPorts = agentExecPorts({ service, profiles, credentials, feed });
+  registerAgentTools(bb, [...createAgentTools(toolDeps), ...createControlTools(controlDeps), ...createExecTools({ ...controlDeps, exec: execPorts })]);
   bb.rpc.register(rpcContract, handlers);
   registerControlLifecycle(bb, { leases, registry, service, watchers, closeSession: (key) => controlPorts.disconnect(key) });
 
