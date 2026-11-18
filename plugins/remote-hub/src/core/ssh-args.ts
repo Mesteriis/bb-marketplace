@@ -51,6 +51,16 @@ export function assertHostToken(host: string): void {
   assertToken(host, "host");
 }
 
+/** The ssh -l user rule, shared with profile validation. */
+export function assertSshUser(user: string): void {
+  assertToken(user, "user");
+}
+
+/** The identity-file rule (absolute, no control characters, no dot segments), shared with profile validation. */
+export function assertIdentityPath(path: string): void {
+  assertAbsolutePath(path, "identityFile");
+}
+
 function assertToken(value: string, field: string): void {
   if (value.length === 0) invalid("invalid_" + field, field + " must not be empty");
   if (value.startsWith("-")) invalid("invalid_" + field, field + " must not start with -");

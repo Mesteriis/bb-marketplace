@@ -24,8 +24,7 @@ describe("profile RPC input", () => {
     expect(rpcSchemas.profile_save.input.safeParse({ fields: FIELDS }).success).toBe(true);
     expect(rpcSchemas.profile_save.input.safeParse({ id: "11111111-2222-4333-8444-555555555555", fields: FIELDS }).success).toBe(true);
     expect(rpcSchemas.profile_save.input.safeParse({ fields: { ...FIELDS, password: "x" } }).success).toBe(false);
-    expect(rpcSchemas.profile_save.input.safeParse({ fields: FIELDS, password: "x" }).success).toBe(true); // an outer extra key is dropped, never stored
-    expect(rpcSchemas.profile_save.input.parse({ fields: FIELDS, password: "x" })).not.toHaveProperty("password");
+    expect(rpcSchemas.profile_save.input.safeParse({ fields: FIELDS, password: "x" }).success).toBe(false);
   });
 
   it("ssh_open and rdp_open accept an optional uuid profileId only", () => {

@@ -5,7 +5,7 @@
 // the only link to a secret is `credentialRef`, an opaque reference that names
 // the execution host it is valid on (stage 3b resolves it).
 import { z } from "zod";
-import { assertHostToken } from "./ssh-args.ts";
+import { assertHostToken, assertIdentityPath, assertSshUser } from "./ssh-args.ts";
 
 /** The only execution host there is until a remote one exists. */
 export const LOCAL_EXECUTION_HOST_ID = "local";
@@ -48,12 +48,22 @@ const tagsSchema = z
   .transform((tags) => [...new Set(tags)])
   .refine((tags) => tags.length <= 20);
 
+// The same guard Connect applies (absolute, no control characters, no "." or
+// ".." segments), so a profile that saves is a profile that opens.
 const absolutePathSchema = z
   .string()
   .max(1024)
-  .refine((path) => path.startsWith("/") && !/[\x00-\x1f\x7f-\x9f]/.test(path), {
-    message: "identityFile must be an absolute path",
-  });
+  .refine(
+    (path) => {
+      try {
+        assertIdentityPath(path);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { message: "identityFile must be an absolute path without control characters or . / .. segments" },
+  );
 
 /** The editable part of a profile. Strict: unknown keys (password, ...) are refused. */
 export const profileFieldsSchema = z
@@ -92,13 +102,20 @@ export const profileFieldsSchema = z
     } else {
       if (p.domain !== null) issue("domain", "only an RDP profile has a domain");
       if (p.rdpWidth !== null || p.rdpHeight !== null) issue("rdpWidth", "only an RDP profile has a desktop size");
+      if (p.username !== null) {
+        try {
+          assertSshUser(p.username);
+        } catch {
+          issue("username", "the user must not start with - or contain spaces or shell characters");
+        }
+      }
       if (p.authType === "key" && p.identityFile === null) issue("identityFile", "key authentication needs a key file");
       if (p.authType !== "key" && p.identityFile !== null) issue("identityFile", "a key file belongs to key authentication");
     }
   });
 
 /** What the page sends to save: the fields, plus the id when it updates. */
-export const profileInputSchema = z.object({ id: z.string().uuid().optional(), fields: profileFieldsSchema });
+export const profileInputSchema = z.object({ id: z.string().uuid().optional(), fields: profileFieldsSchema }).strict();
 
 const recentErrorSchema = z.object({ at: z.string(), code: z.string().min(1).max(64) }).strict();
 

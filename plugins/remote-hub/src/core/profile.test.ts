@@ -3,6 +3,7 @@ import {
   LOCAL_EXECUTION_HOST_ID,
   parseCredentialRef,
   profileFieldsSchema,
+  profileInputSchema,
   profileSchema,
 } from "./profile.ts";
 
@@ -116,5 +117,33 @@ describe("credentialRef", () => {
     expect(
       profileSchema.safeParse({ ...stored, credentialRef: "rh-cred:v1:other-mac:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a" }).success,
     ).toBe(false);
+  });
+});
+
+describe("save refuses what Connect refuses (P5)", () => {
+  const ok = (over: Record<string, unknown>) => profileFieldsSchema.safeParse({ ...SSH_FIELDS, ...over }).success;
+
+  it("an SSH user must pass the ssh user rules", () => {
+    expect(ok({ username: "-oProxyCommand=x" })).toBe(false);
+    expect(ok({ username: "a b" })).toBe(false);
+    expect(ok({ username: "ci" })).toBe(true);
+  });
+
+  it("a key file path must be absolute without control characters or dot segments", () => {
+    expect(ok({ identityFile: "/Users/dev/../root/.ssh/id" })).toBe(false);
+    expect(ok({ identityFile: "/Users/dev/./id" })).toBe(false);
+    expect(ok({ identityFile: "/Users/dev/key\u0007" })).toBe(false);
+    expect(ok({ identityFile: "/Users/dev/my key" })).toBe(true);
+  });
+
+  it("an RDP username keeps its wider rules (spaces and backslashes are common)", () => {
+    expect(profileFieldsSchema.safeParse({ ...RDP_FIELDS, username: "Jane Doe" }).success).toBe(true);
+  });
+});
+
+describe("the save envelope is strict (P6)", () => {
+  it("an extra key beside id and fields is refused", () => {
+    expect(profileInputSchema.safeParse({ fields: SSH_FIELDS, password: "x" }).success).toBe(false);
+    expect(profileInputSchema.safeParse({ fields: SSH_FIELDS }).success).toBe(true);
   });
 });
