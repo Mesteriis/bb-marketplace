@@ -1,3 +1,4 @@
+import { ThreadListLimit } from './src/ui/thread-list-limit';
 import { useEffect, useMemo, useState } from 'react';
 import { definePluginApp, experimental_useSidebarThreads as useThreads, useSettings, useRpc, useBbNavigate, experimental_ThreadActionsContextMenu as ThreadMenu, experimental_ThreadActionsMenu as ActionsMenu, type PluginThreadListProps, type PluginSidebarThread } from '@get-bb/plugin-sdk/app';
 import * as ContextMenu from '@radix-ui/react-context-menu';
@@ -5,6 +6,7 @@ import { toast } from 'sonner';
 import type { contract } from './server';
 import { buildProjectTree, type TreeNode, type ProjectLocation, type ThreadNode } from './src/core/tree';
 import { sidebarPresentation, runningThreads, isRunning } from './src/core/presentation';
+import { activeThreads } from './src/core/active';
 import { ThreadBranch } from './src/ui/thread-branch';
 import { FoldSection } from './src/ui/fold-section';
 import { useHidden, toggle } from './src/adapters/bb/preferences';
@@ -37,8 +39,10 @@ function Sidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
         setError(true); }); return () => { live = false; }; }, [rpc, ids, retry]);
     const { values } = useSettings();
     const rootPath = typeof values?.rootPath === 'string' ? values.rootPath : '';
+    const threadLimit = typeof values?.threadLimit === 'number' && Number.isInteger(values.threadLimit) && values.threadLimit >= 1 && values.threadLimit <= 1000 ? values.threadLimit : 5;
     const view = useMemo(() => sidebarPresentation(projects.map(p => ({...p,path:paths.find(x=>x.id===p.id)?.path??null})), threads, hidden, show, rootPath), [projects,threads,paths,hidden,show,rootPath]);
     const { tree } = view;
+    const active = useMemo(()=>activeThreads(threads),[threads]);
     const byId = new Map(threads.map(t => [t.id, t]));
     const renderRow = (item: ThreadNode['thread'], depth: number, toggleControl: React.ReactNode) => {
         const thread = byId.get(item.id);
@@ -51,12 +55,15 @@ function Sidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
   <button className="hidden-toggle" aria-pressed={show} onClick={() => setShow(!show)}><Glyph kind="eye"/>{show ? 'Скрыть скрытое' : 'Показать скрытое'}</button>
   {error ? <p role="alert">Не удалось загрузить пути проектов. <button onClick={() => setRetry(x => x + 1)}>Повторить</button></p> : null}
   {status === 'loading' ? <p role="status">Загрузка…</p> : status === 'error' ? <p role="alert">Не удалось загрузить список.</p> : <>
+   <section aria-label="Активные"><div className="section-toggle"><span className="label">Активные</span><span className="count">{active.length}</span></div>
+    {active.map(node=><ThreadBranch key={node.thread.id} node={node} depth={0} renderRow={renderRow} initialCollapsed showUnread/>)}
+   </section>
    <FoldSection label="Без проекта" count={view.loose.length} running={view.loose.filter(isRunning).map(t=>renderThread({thread:t,children:[]},0))}>
     {view.loose.map(t=>renderThread({thread:t,children:[]},0))}
    </FoldSection>
    {view.running.map(t=>renderThread({thread:t,children:[]},0))}
    {tree.pinned.length > 0 ? <FoldSection label="Закреплённые" count={tree.pinned.length} running={runningThreads(tree.pinned).map(t=>renderThread({thread:t,children:[]},0))}>{tree.pinned.map(n=>renderThread(n,0))}</FoldSection> : null}
-   {[...tree.roots, ...tree.unrooted].sort((a, b) => b.latestAttentionAt - a.latestAttentionAt || a.label.localeCompare(b.label)).map(node => <Branch key={node.key} node={node} depth={0} hidden={hidden.projects} renderThread={renderThread} onNavigate={onNavigate}/>)}
+   {[...tree.roots, ...tree.unrooted].sort((a, b) => b.latestAttentionAt - a.latestAttentionAt || a.label.localeCompare(b.label)).map(node => <Branch key={node.key} node={node} depth={0} hidden={hidden.projects} threadLimit={threadLimit} renderThread={renderThread} onNavigate={onNavigate}/>)}
    {!tree.roots.length && !tree.unrooted.length && !tree.pinned.length ? <p role="status">Нет видимых проектов и чатов.</p> : null}
   </>}
  </div>;
@@ -64,10 +71,11 @@ function Sidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
 function branchRunning(node: TreeNode): ThreadNode['thread'][] {
     return [...runningThreads(node.threads), ...node.children.flatMap(branchRunning)];
 }
-function Branch({ node, depth, hidden, renderThread, onNavigate }: {
+function Branch({ node, depth, hidden, threadLimit, renderThread, onNavigate }: {
     node: TreeNode;
     depth: number;
     hidden: string[];
+    threadLimit: number;
     renderThread: (n: ThreadNode, d: number) => React.ReactNode;
     onNavigate: () => void;
 }) {
@@ -76,11 +84,11 @@ function Branch({ node, depth, hidden, renderThread, onNavigate }: {
     const project = node.project;
     const muted = project !== null && hidden.includes(project.id);
     const row = <div className={'tree-row' + (muted ? ' user-hidden' : '')} style={{ paddingLeft: 10 + depth * 14 }}>
-  <button aria-expanded={open} onClick={() => setOpen(!open)}><Glyph kind={open ? 'open' : project ? 'project' : 'folder'}/><span className="label">{node.label.split('/').filter(Boolean).at(-1)}</span>{!open && node.threadCount > 0 ? <span className="count">{node.threadCount}</span> : null}</button>
+  <button className="project-toggle" aria-expanded={open} onClick={() => setOpen(!open)}><Glyph kind={open ? 'open' : project ? 'project' : 'folder'}/><span className="label">{node.label.split('/').filter(Boolean).at(-1)}</span>{!open && node.threadCount > 0 ? <span className="count">{node.threadCount}</span> : null}</button>
   {project ? <button className="new-thread" aria-label={`Новый чат в ${project.name}`} onClick={() => { navigate.toCompose({ projectId: project.id }); onNavigate(); }}>+</button> : null}
  </div>;
     return <div>{project ? <ContextMenu.Root><ContextMenu.Trigger asChild>{row}</ContextMenu.Trigger><ContextMenu.Portal><ContextMenu.Content className="makosh-sidebar-menu"><ContextMenu.Item onSelect={() => change('projects', project.id)}>{muted ? 'Вернуть' : 'Скрыть'}</ContextMenu.Item><ContextMenu.Item onSelect={() => { navigate.toCompose({ projectId: project.id }); onNavigate(); }}>Новый чат</ContextMenu.Item></ContextMenu.Content></ContextMenu.Portal></ContextMenu.Root> : row}
- {open ? <>{node.threads.map(n => renderThread(n, depth + 1))}{node.children.map(child => <Branch key={child.key} node={child} depth={depth + 1} hidden={hidden} renderThread={renderThread} onNavigate={onNavigate}/>)}</> : branchRunning(node).map(thread=>renderThread({thread,children:[]},depth+1))}</div>;
+ {open ? <><ThreadListLimit rows={node.threads.map(n => renderThread(n, depth + 1))} limit={threadLimit} depth={depth+1}/>{node.children.map(child => <Branch key={child.key} node={child} depth={depth + 1} hidden={hidden} threadLimit={threadLimit} renderThread={renderThread} onNavigate={onNavigate}/>)}</> : branchRunning(node).map(thread=>renderThread({thread,children:[]},depth+1))}</div>;
 }
 function ThreadRow({ thread, depth, active, muted, onNavigate, toggleControl }: {
     toggleControl: React.ReactNode;
@@ -92,7 +100,7 @@ function ThreadRow({ thread, depth, active, muted, onNavigate, toggleControl }: 
 }) {
     const navigate = useBbNavigate();
     const target = { ...thread, environment: thread.environment?.id ? { id: thread.environment.id, path: thread.environment.path } : null };
-    return <ThreadMenu thread={target}><div className={'tree-row' + (active ? ' active' : '') + (muted ? ' user-hidden' : '')} style={{ paddingLeft: 10 + depth * 14 }}>
+    return <ThreadMenu thread={target}><div className={'tree-row thread-row' + (active ? ' active' : '') + (muted ? ' user-hidden' : '')} style={{ paddingLeft: 10 + depth * 14, '--thread-indent': `${10 + depth * 14}px` } as React.CSSProperties}>
  {toggleControl}
  <a href={thread.href} aria-current={active ? 'page' : undefined} onClick={e => { if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
         return; e.preventDefault(); navigate.toThread(thread.id); onNavigate(); }}><span title={thread.indicatorLabel ?? undefined}>{thread.status === 'active' ? '◉' : thread.isUnread ? '●' : '○'}</span><span className="label">{thread.displayTitle}</span></a>

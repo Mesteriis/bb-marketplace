@@ -6,7 +6,7 @@
 // pure — no React, no SDK calls — so the layout rules are testable on their
 // own.
 interface PluginSidebarThread {
- status?: string; id: string; projectId: string; title: string | null; titleFallback: string | null;
+ isUnread?: boolean; status?: string; id: string; projectId: string; title: string | null; titleFallback: string | null;
  parentThreadId: string | null; isArchived: boolean; isPinned: boolean; latestAttentionAt: number;
 }
 

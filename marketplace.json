@@ -1104,7 +1104,7 @@
     {
       "id": "makosh-sidebar",
       "displayName": "Makosh Sidebar [Experimental]",
-      "description": "Project tree with a configurable root, recent activity sorting, reversible hiding, and running threads visible in collapsed groups.",
+      "description": "Project tree with hiding, recent activity sorting and an Active section for running threads and unread results.",
       "icon": "FolderGit",
       "author": {
         "name": "Mesteriis",

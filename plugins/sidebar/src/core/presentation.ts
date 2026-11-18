@@ -3,8 +3,8 @@ import { visibleItems, type Hidden } from './visibility';
 export function isRunning(thread: {status?:string}) {
   return ['starting','active','stopping'].includes(thread.status ?? '');
 }
-export function runningThreads(nodes: readonly ThreadNode[]): ThreadNode['thread'][] {
-  return nodes.flatMap(node => [...(isRunning(node.thread)?[node.thread]:[]), ...runningThreads(node.children)]);
+export function runningThreads(nodes: readonly ThreadNode[], includeUnread = false): ThreadNode['thread'][] {
+  return nodes.flatMap(node => [...((isRunning(node.thread)||(includeUnread&&node.thread.isUnread))?[node.thread]:[]), ...runningThreads(node.children,includeUnread)]);
 }
 export function sidebarPresentation<T extends ThreadNode['thread'] & {isHidden:boolean}>(
  projects: readonly (ProjectLocation & {isPersonal:boolean})[], threads: readonly T[], hidden: Hidden, show: boolean, rootPath: string,

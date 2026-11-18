@@ -1,0 +1,19 @@
+<!doctype html><meta charset="utf-8"><title>Sidebar alignment regression</title>
+<style>body{background:#252536;color:#ddd;font:14px system-ui}#fixture{width:340px}button{border:0;background:transparent;color:inherit}a{color:inherit;text-decoration:none}</style>
+<link rel="stylesheet" href="../../sidebar.css">
+<div id="fixture" class="makosh-sidebar">
+ <div class="tree-row thread-row" style="padding-left:24px;--thread-indent:24px"><a href="#">○<span class="label">Обычный тред</span></a></div>
+ <div class="tree-row thread-row" style="padding-left:24px;--thread-indent:24px"><button class="subthread-toggle" aria-expanded="true" onclick="this.setAttribute('aria-expanded',this.getAttribute('aria-expanded')!=='true')">⌄</button><a href="#">●<span class="label">Родитель с сабтредами</span></a><button class="thread-menu">⋯</button></div>
+</div>
+<script>
+window.verifyAlignment=()=>{
+ const toggle=document.querySelector('.subthread-toggle');const link=toggle.nextElementSibling;
+ const width=toggle.getBoundingClientRect().width;
+ const gap=link.getBoundingClientRect().left-toggle.getBoundingClientRect().right;
+ const ordinary=document.querySelector('.tree-row>a');
+ const shift=link.getBoundingClientRect().left-ordinary.getBoundingClientRect().left;
+ if(shift!==0)throw Error('Expandable thread is shifted by '+shift+'px');
+ if(width!==12||gap!==2)throw Error('Arrow stretches the row: width='+width+', gap='+gap);
+ return {expanded:toggle.getAttribute('aria-expanded'),width,gap};
+};
+</script>
