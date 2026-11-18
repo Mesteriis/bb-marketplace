@@ -1,7 +1,7 @@
 // Key metadata without key material (stage 3c). Public keys are read for their type, comment and
-// SHA-256 fingerprint. A private key file is looked at through its first bytes only, to learn the
-// format and whether it is passphrase-protected; nothing from it is ever returned except those
-// two facts. Host-free: the SHA-256 is the platform's WebCrypto (`crypto.subtle`), bytes come in.
+// SHA-256 fingerprint. A PRIVATE key file is never opened by this plugin's import: not for its header,
+// not to learn whether a passphrase protects it (the user says so when saving a passphrase).
+// Host-free: the SHA-256 is the platform's WebCrypto (`crypto.subtle`), text comes in.
 
 export interface PublicKeyInfo {
   type: string;
@@ -9,17 +9,6 @@ export interface PublicKeyInfo {
   /** SHA256:<base64 without padding>, as `ssh-keygen -lf` prints it. */
   fingerprint: string;
 }
-
-export interface PrivateKeyHead {
-  format: "openssh" | "pem" | "pkcs8" | "unknown";
-  /** True/false when the head says; null when it cannot be told from the head. */
-  encrypted: boolean | null;
-  /** From a PEM header (RSA, EC, DSA); null for the formats that do not say. */
-  type: string | null;
-}
-
-/** How much of a private key file may be looked at. */
-export const PRIVATE_KEY_HEAD_BYTES = 512;
 
 function base64ToBytes(b64: string): Uint8Array | null {
   try {
@@ -48,38 +37,6 @@ export async function publicKeyInfo(line: string): Promise<PublicKeyInfo | null>
   if (blob === null || blob.length < 8) return null;
   const digest = new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", blob as BufferSource));
   return { type, comment: (comment ?? "").trim().slice(0, 200), fingerprint: "SHA256:" + bytesToBase64NoPad(digest) };
-}
-
-const PEM_TYPES: Record<string, string> = { "RSA PRIVATE KEY": "RSA", "EC PRIVATE KEY": "EC", "DSA PRIVATE KEY": "DSA" };
-
-/** The format and protection of a private key, from at most the first PRIVATE_KEY_HEAD_BYTES bytes. */
-export function classifyPrivateKeyHead(head: Uint8Array): PrivateKeyHead {
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(head.subarray(0, PRIVATE_KEY_HEAD_BYTES));
-  const lines = text.split(/\r?\n/);
-  const first = (lines[0] ?? "").trim();
-  const begin = /^-----BEGIN ([A-Z0-9 ]+)-----$/.exec(first);
-  if (begin === null) return { format: "unknown", encrypted: null, type: null };
-  const label = begin[1] as string;
-  if (label === "OPENSSH PRIVATE KEY") {
-    // "openssh-key-v1\0", then the cipher name as a length-prefixed string: "none" means no passphrase.
-    const body = lines.slice(1).join("").replace(/-----.*$/, "").replace(/[^A-Za-z0-9+/]/g, "");
-    const raw = base64ToBytes(body.slice(0, Math.floor(body.length / 4) * 4));
-    const magic = "openssh-key-v1\0";
-    if (raw === null || raw.length < magic.length + 4) return { format: "openssh", encrypted: null, type: null };
-    if (String.fromCharCode(...raw.subarray(0, magic.length)) !== magic) return { format: "openssh", encrypted: null, type: null };
-    const at = magic.length;
-    const len = ((raw[at] as number) << 24) | ((raw[at + 1] as number) << 16) | ((raw[at + 2] as number) << 8) | (raw[at + 3] as number);
-    if (len < 1 || len > 32 || raw.length < at + 4 + len) return { format: "openssh", encrypted: null, type: null };
-    const cipher = String.fromCharCode(...raw.subarray(at + 4, at + 4 + len));
-    return { format: "openssh", encrypted: cipher !== "none", type: null };
-  }
-  if (label === "ENCRYPTED PRIVATE KEY") return { format: "pkcs8", encrypted: true, type: null };
-  if (label === "PRIVATE KEY") return { format: "pkcs8", encrypted: false, type: null };
-  if (label in PEM_TYPES) {
-    const encrypted = /^Proc-Type:\s*4,ENCRYPTED/m.test(lines.slice(1, 4).join("\n"));
-    return { format: "pem", encrypted, type: PEM_TYPES[label] as string };
-  }
-  return { format: "unknown", encrypted: null, type: null };
 }
 
 export interface AgentKey {

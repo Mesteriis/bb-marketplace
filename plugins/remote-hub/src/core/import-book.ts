@@ -17,7 +17,7 @@ import { parseHostsFile } from "./hosts-file.ts";
 import type { CredentialBook } from "./credential.ts";
 import { profileFieldsOf, type Profile, type Provenance } from "./profile.ts";
 import type { ProfileBook } from "./profile-book.ts";
-import { PRIVATE_KEY_HEAD_BYTES, classifyPrivateKeyHead, parseAgentList, publicKeyInfo, type AgentKey } from "./ssh-keys.ts";
+import { parseAgentList, publicKeyInfo, type AgentKey } from "./ssh-keys.ts";
 import { parseSshConfig, type IncludedFile } from "./ssh-config.ts";
 
 export type SourceKind = "ssh-config" | "hosts" | "keys-dir" | "agent";
@@ -52,8 +52,6 @@ export interface DirEntry {
 export interface SourceReader {
   home(): string;
   readText(path: string, maxBytes: number): string | null;
-  /** The first `bytes` bytes of a file (private keys are looked at through this and nothing more). */
-  readHead(path: string, bytes: number): Uint8Array | null;
   listDir(path: string): DirEntry[] | null;
   /** The files an Include names, refused unless they stay inside the config's own directory. */
   include(configPath: string, pattern: string): IncludedFile[];
@@ -86,15 +84,14 @@ export interface ScanItem {
   skip: string | null;
 }
 
+/** A public key file, with the private file that sits beside it by name (never opened). */
 export interface KeyInfo {
-  path: string;
-  kind: "public" | "private";
-  type: string | null;
-  comment: string | null;
-  fingerprint: string | null;
-  /** private only: the format and whether a passphrase protects it. */
-  format: string | null;
-  encrypted: boolean | null;
+  publicPath: string;
+  /** The sibling file without ".pub", when the directory has one; its contents are not read. */
+  privatePath: string | null;
+  type: string;
+  comment: string;
+  fingerprint: string;
 }
 
 export type ScanResult =
@@ -351,20 +348,15 @@ export class ImportBook {
     const keys: KeyInfo[] = [];
     const files = entries.filter((e) => e.kind === "file").slice(0, MAX_KEY_FILES);
     if (entries.length > MAX_KEY_FILES) issues.push(`only the first ${MAX_KEY_FILES} files were looked at`);
+    const names = new Set(files.map((f) => f.name));
     for (const file of files) {
+      if (!file.name.endsWith(".pub")) continue; // private files are neither opened nor listed on their own
       const path = `${dir.replace(/\/$/, "")}/${file.name}`;
-      if (file.name.endsWith(".pub")) {
-        const text = reader.readText(path, MAX_PUBLIC_BYTES);
-        const info = text === null ? null : await publicKeyInfo(text.split(/\r?\n/)[0] ?? "");
-        if (info !== null) keys.push({ path, kind: "public", type: info.type, comment: info.comment, fingerprint: info.fingerprint, format: null, encrypted: null });
-        continue;
-      }
-      if (/^(known_hosts|config|authorized_keys|environment)/.test(file.name)) continue;
-      const head = reader.readHead(path, PRIVATE_KEY_HEAD_BYTES);
-      if (head === null) continue;
-      const info = classifyPrivateKeyHead(head);
-      if (info.format === "unknown") continue;
-      keys.push({ path, kind: "private", type: info.type, comment: null, fingerprint: null, format: info.format, encrypted: info.encrypted });
+      const text = reader.readText(path, MAX_PUBLIC_BYTES);
+      const info = text === null ? null : await publicKeyInfo(text.split(/\r?\n/)[0] ?? "");
+      if (info === null) continue;
+      const sibling = file.name.slice(0, -4);
+      keys.push({ publicPath: path, privatePath: names.has(sibling) ? `${dir.replace(/\/$/, "")}/${sibling}` : null, type: info.type, comment: info.comment, fingerprint: info.fingerprint });
     }
     return { kind: "keys-dir", keys, issues };
   }

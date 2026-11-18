@@ -31,13 +31,11 @@ class MemImport implements ImportStore {
 }
 
 const FILES: Record<string, string> = {};
-const HEADS: Record<string, Uint8Array> = {};
 const DIRS: Record<string, DirEntry[]> = {};
 const sshG = vi.fn(async (_c: string, _a: string): Promise<string | null> => null);
 const reader: SourceReader = {
   home: () => "/home/fixture",
   readText: (p, max) => (p in FILES ? (FILES[p] as string).slice(0, max) : null),
-  readHead: vi.fn((p: string, n: number) => (p in HEADS ? (HEADS[p] as Uint8Array).slice(0, n) : null)),
   listDir: (p) => DIRS[p] ?? null,
   include: () => [],
   agentList: async () => "256 SHA256:AAA agent key (ED25519)\n",
@@ -223,25 +221,36 @@ describe("importing an ssh config", () => {
 });
 
 describe("keys and the agent: metadata only", () => {
-  it("lists public keys with fingerprints and private keys by format and protection, looking at no more than the head", async () => {
+  it("lists public keys with fingerprints and the private file beside each BY NAME; a private key body is never read", async () => {
     const { book } = setup();
-    const enc = (s: string) => new TextEncoder().encode(s);
-    DIRS["/fixture/keys"] = [{ name: "id_a", kind: "file" }, { name: "id_a.pub", kind: "file" }, { name: "known_hosts", kind: "file" }, { name: "notes.txt", kind: "file" }, { name: "sub", kind: "dir" }];
-    FILES["/fixture/keys/id_a.pub"] = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA me@fixture\n";
-    HEADS["/fixture/keys/id_a"] = enc("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n" + "A".repeat(2000));
-    HEADS["/fixture/keys/notes.txt"] = enc("hello");
+    const SENTINEL = "PRIVATE-BODY-SENTINEL-9f3a";
+    DIRS["/fixture/keys"] = [
+      { name: "id_a", kind: "file" }, { name: "id_a.pub", kind: "file" },
+      { name: "lonely.pub", kind: "file" }, { name: "id_nopub", kind: "file" },
+      { name: "known_hosts", kind: "file" }, { name: "sub", kind: "dir" },
+    ];
+    const pub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA me@fixture\n";
+    FILES["/fixture/keys/id_a.pub"] = pub;
+    FILES["/fixture/keys/lonely.pub"] = pub;
+    // Anything that would read a private file would see the sentinel.
+    FILES["/fixture/keys/id_a"] = "-----BEGIN OPENSSH PRIVATE KEY-----\n" + SENTINEL;
+    FILES["/fixture/keys/id_nopub"] = "-----BEGIN OPENSSH PRIVATE KEY-----\n" + SENTINEL;
+    const reads: string[] = [];
+    const original = reader.readText;
+    reader.readText = (p, m) => (reads.push(p), original(p, m));
     const source = book.addSource({ kind: "keys-dir", path: "/fixture/keys", label: "keys" });
     book.setEnabled(source.id, true);
     const scan = await book.scan(source.id);
+    reader.readText = original;
     if (scan.kind !== "keys-dir") throw new Error("kind");
     expect(scan.keys).toEqual([
-      expect.objectContaining({ kind: "private", path: "/fixture/keys/id_a", format: "pem", encrypted: true, type: "RSA", fingerprint: null }),
-      expect.objectContaining({ kind: "public", path: "/fixture/keys/id_a.pub", type: "ssh-ed25519", comment: "me@fixture", fingerprint: expect.stringMatching(/^SHA256:/) }),
+      expect.objectContaining({ publicPath: "/fixture/keys/id_a.pub", privatePath: "/fixture/keys/id_a", type: "ssh-ed25519", comment: "me@fixture", fingerprint: expect.stringMatching(/^SHA256:/) }),
+      expect.objectContaining({ publicPath: "/fixture/keys/lonely.pub", privatePath: null }),
     ]);
-    const lengths = (reader.readHead as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[1]);
-    expect(Math.max(...lengths)).toBeLessThanOrEqual(512);
+    // Only .pub files were opened; no private file, and no sentinel anywhere in the result.
+    expect(reads.sort()).toEqual(["/fixture/keys/id_a.pub", "/fixture/keys/lonely.pub"]);
+    expect(JSON.stringify(scan)).not.toContain(SENTINEL);
     expect(JSON.stringify(scan)).not.toContain("PRIVATE KEY");
-    expect(JSON.stringify(scan)).not.toContain("AAAAAAAA");
   });
 
   it("the agent list is parsed; no agent is an empty list with a note", async () => {
