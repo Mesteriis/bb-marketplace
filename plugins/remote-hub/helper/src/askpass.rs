@@ -60,6 +60,8 @@ fn ui_timeout() -> Duration {
 }
 const MAX_REQUEST: usize = 8 * 1024;
 const MAX_PROMPT: usize = 1024;
+/// The longest reply line the client reads (a 4096-character secret, escaped, with its framing).
+const MAX_REPLY: usize = 64 * 1024;
 
 /// What a prompt with an empty SSH_ASKPASS_PROMPT is. "stored": exactly the one-line prompt this
 /// session expects (`expected`, built by the server from the user, host or key path it opened ssh
@@ -425,6 +427,12 @@ fn write_reply(stream: &mut UnixStream, reply: Reply) -> std::io::Result<()> {
     written
 }
 
+fn wipe_bytes(bytes: &mut [u8]) {
+    for byte in bytes.iter_mut() {
+        unsafe { std::ptr::write_volatile(byte, 0) };
+    }
+}
+
 /// Overwrites a string's bytes (best effort: the allocator may have copies from growth).
 fn wipe(text: &mut String) {
     // SAFETY: only zero bytes are written, which keep the string valid UTF-8.
@@ -479,20 +487,24 @@ pub fn run_client(args: &[String]) -> i32 {
     if stream.write_all(line.as_bytes()).is_err() {
         return 1;
     }
-    let mut reply = String::new();
+    // Bytes, not characters: the reply is UTF-8 JSON and a secret may hold any character (a byte turned
+    // into a char one by one would turn "é" into "Ã©"). A secret is at most 4096 characters, each up to
+    // 4 bytes and, escaped, up to 12 more: the bound is generous and still a bound.
+    let mut reply: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
-    while reply.len() < MAX_REQUEST {
+    let mut complete = false;
+    while reply.len() < MAX_REPLY {
         match stream.read(&mut byte) {
-            Ok(1) if byte[0] == b'\n' => break,
-            Ok(1) => reply.push(byte[0] as char),
-            _ => {
-                wipe(&mut reply);
-                return 1;
+            Ok(1) if byte[0] == b'\n' => {
+                complete = true;
+                break;
             }
+            Ok(1) => reply.push(byte[0]),
+            _ => break,
         }
     }
-    let parsed = serde_json::from_str::<Reply>(&reply);
-    wipe(&mut reply);
+    let parsed = if complete { serde_json::from_slice::<Reply>(&reply) } else { serde_json::from_slice::<Reply>(b"") };
+    wipe_bytes(&mut reply);
     let answer = match parsed {
         Ok(Reply::Answer { text }) => text,
         _ => return 1,

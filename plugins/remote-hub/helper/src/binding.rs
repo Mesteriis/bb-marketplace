@@ -35,9 +35,18 @@ impl Bind {
         }
     }
 
+    /// The form in which a binding is stored and compared: the host in lower case, which is how
+    /// OpenSSH writes it in its prompts (it lowercases DNS names; so does every resolver).
+    pub fn canonical(self) -> Bind {
+        match self {
+            Bind::Endpoint { protocol, host, port, user, domain } => Bind::Endpoint { protocol, host: host.to_ascii_lowercase(), port, user, domain },
+            key => key,
+        }
+    }
+
     /// A password saved for exactly this RDP endpoint.
     pub fn is_rdp_endpoint(&self, host: &str, port: u16, user: &str, domain: Option<&str>) -> bool {
-        *self == Bind::Endpoint { protocol: "rdp".into(), host: host.into(), port, user: Some(user.into()), domain: domain.map(str::to_string) }
+        *self == Bind::Endpoint { protocol: "rdp".into(), host: host.to_ascii_lowercase(), port, user: Some(user.into()), domain: domain.map(str::to_string) }
     }
 }
 
@@ -66,6 +75,17 @@ mod tests {
         let ssh = Bind::Endpoint { protocol: "ssh".into(), host: "w".into(), port: 3389, user: Some("a".into()), domain: Some("CORP".into()) };
         assert!(!ssh.is_rdp_endpoint("w", 3389, "a", Some("CORP")), "an ssh password must not open an rdp session");
         assert!(!Bind::Key { path: "/k".into() }.is_rdp_endpoint("w", 3389, "a", None));
+    }
+
+    #[test]
+    fn a_host_is_stored_and_compared_in_lower_case() {
+        let stored = Bind::Endpoint { protocol: "rdp".into(), host: "Win.Example.TEST".into(), port: 3389, user: Some("a".into()), domain: None }.canonical();
+        assert_eq!(stored, Bind::Endpoint { protocol: "rdp".into(), host: "win.example.test".into(), port: 3389, user: Some("a".into()), domain: None });
+        assert!(stored.is_rdp_endpoint("WIN.example.test", 3389, "a", None));
+        // The user is case-sensitive; only the host is folded.
+        assert!(!stored.is_rdp_endpoint("win.example.test", 3389, "A", None));
+        let v6 = Bind::Endpoint { protocol: "ssh".into(), host: "FE80::ABCD".into(), port: 22, user: Some("u".into()), domain: None }.canonical();
+        assert_eq!(v6, Bind::Endpoint { protocol: "ssh".into(), host: "fe80::abcd".into(), port: 22, user: Some("u".into()), domain: None });
     }
 
     #[test]

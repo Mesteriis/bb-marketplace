@@ -215,8 +215,10 @@ impl SshFacts {
 pub fn askpass_facts(argv: &[String]) -> Result<SshFacts, String> {
     let bad = ssh_option_rejected;
     let last = argv.len().checked_sub(2).ok_or_else(bad)?;
-    let host = argv.get(last + 1).ok_or_else(bad)?.clone();
-    if host.contains('@') {
+    // The destination is a bare host name or address: no user (it comes from -l), no URI form, no path.
+    // Lower case, which is how OpenSSH writes it in its prompts.
+    let host = argv.get(last + 1).ok_or_else(bad)?.to_ascii_lowercase();
+    if host.is_empty() || host.contains('@') || host.contains('/') || host.contains("://") {
         return Err(bad());
     }
     let (mut user, mut port, mut identity, mut no_config) = (None, 22u16, None, false);
@@ -241,7 +243,10 @@ pub fn askpass_facts(argv: &[String]) -> Result<SshFacts, String> {
                 "NumberOfPasswordPrompts=2" => prompts = true,
                 "IdentityAgent=none" => agent_none = true,
                 "IdentitiesOnly=yes" => identities_only = true,
-                v if v.starts_with("UserKnownHostsFile=") => {}
+                // The host-key file is OpenSSH's own default, with its normal strict checking: a caller-chosen
+                // file could make an unknown server look known. (Test-hooks builds may allow one on request.)
+                #[cfg(feature = "test-hooks")]
+                v if v.starts_with("UserKnownHostsFile=") && std::env::var_os("REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS").is_some() => {}
                 _ => return Err(bad()),
             },
             _ => return Err(bad()),
@@ -253,7 +258,8 @@ pub fn askpass_facts(argv: &[String]) -> Result<SshFacts, String> {
         return Err(bad());
     }
     match method {
-        AuthMethod::Password if user.is_none() => return Err(bad()),
+        // A password session names no key at all.
+        AuthMethod::Password if user.is_none() || identity.is_some() => return Err(bad()),
         AuthMethod::PublicKey if identity.is_none() || !agent_none || !identities_only => return Err(bad()),
         _ => {}
     }

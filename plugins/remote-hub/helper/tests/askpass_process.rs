@@ -68,10 +68,20 @@ struct Fixture {
     dir: PathBuf,
     path: PathBuf,
     h: Option<Helper>,
+    facts: SshFacts,
 }
 
 impl Fixture {
     fn new(tag: &str, extra_env: &[(&str, &str)]) -> Fixture {
+        Fixture::with(tag, extra_env, SECRET, password_bind(), facts())
+    }
+
+    fn new_secret(tag: &str, secret: &str) -> Fixture {
+        Fixture::with(tag, &[], secret, password_bind(), facts())
+    }
+
+    /// A fixture whose saved secret, its binding and the session's facts are chosen by the test.
+    fn with(tag: &str, extra_env: &[(&str, &str)], secret: &str, bind: Bind, facts: SshFacts) -> Fixture {
         watchdog();
         let dir = std::env::temp_dir().join(format!("rh-ask-{}-{tag}", std::process::id()));
         std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir).unwrap();
@@ -80,9 +90,9 @@ impl Fixture {
         let mut env: Vec<(&str, &str)> = vec![("REMOTE_HUB_KEYCHAIN_PATH", path.to_str().unwrap())];
         env.extend_from_slice(extra_env);
         let mut h = start(&env);
-        h.send(&Request::CredentialSave { id: 1, reference: REF.into(), secret: Secret::new(SECRET), bind: password_bind() });
+        h.send(&Request::CredentialSave { id: 1, reference: REF.into(), secret: Secret::new(secret), bind });
         assert!(matches!(h.read_reply(1), Response::CredentialOk { .. }));
-        Fixture { dir, path, h: Some(h) }
+        Fixture { dir, path, h: Some(h), facts }
     }
 
     fn h(&mut self) -> &mut Helper {
@@ -92,6 +102,7 @@ impl Fixture {
     /// Opens `perl -e script` as an ssh-kind session with a saved credential (or without).
     fn open(&mut self, script: &str, askpass: bool) -> u32 {
         let id = 10;
+        let facts = self.facts.clone();
         let mut env = HashMap::new();
         env.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
         self.h().send(&Request::OpenSsh {
@@ -102,7 +113,7 @@ impl Fixture {
             argv: vec!["perl".into(), "-e".into(), format!("{PERL_PRELUDE}\n{script}")],
             env,
             cwd: None,
-            askpass: askpass.then(|| AskpassSpec { credential_ref: REF.into(), test_facts: Some(facts()) }),
+            askpass: askpass.then(|| AskpassSpec { credential_ref: REF.into(), test_facts: Some(facts) }),
         });
         let sid = match self.h().read_reply(id) {
             Response::SessionOpened { session_id, .. } => session_id,
@@ -536,4 +547,63 @@ fn the_askpass_client_refuses_a_socket_that_is_not_the_helpers() {
     assert_eq!(run(&open).status.code(), Some(1));
     assert!(l2.accept().is_err(), "the client must not connect to a world-writable socket");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// T2: a secret with non-ASCII characters reaches the program ssh would read it from byte for byte
+/// (a reply read one byte at a time and turned into chars would make "é" into "Ã©").
+#[test]
+fn a_non_ascii_password_and_passphrase_arrive_byte_for_byte() {
+    // SHA-256 of the UTF-8 bytes, first 16 hex, computed outside this test.
+    let (pw, pw_digest) = ("pässwörd-é€-ASK-1", "00f298c5129e85b3");
+    let mut f = Fixture::new_secret("utf8pw", pw);
+    let sid = f.open(r#"my ($p, $r) = ask("user\@host's password: "); print "H=" . digest($p) . " R=$r DONE\n"; sleep 1;"#, true);
+    let (text, _) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE"));
+    assert_eq!(field(&text, "H"), pw_digest, "the password was altered on its way: {text}");
+    drop(f);
+
+    let (phrase, phrase_digest) = ("Pässphräse-ü€-ASK-2", "b6cc2b2a505c0f64");
+    let key_facts = SshFacts { host: "host".into(), port: 22, user: None, identity: Some("/k/id".into()), method: AuthMethod::PublicKey };
+    let mut f = Fixture::with("utf8key", &[], phrase, Bind::Key { path: "/k/id".into() }, key_facts);
+    let sid = f.open(r#"my ($p, $r) = ask("Enter passphrase for key '/k/id': "); print "H=" . digest($p) . " R=$r DONE\n"; sleep 1;"#, true);
+    let (text, _) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE"));
+    assert_eq!(field(&text, "H"), phrase_digest, "the passphrase was altered on its way: {text}");
+}
+
+/// T3: a session with a saved secret takes no caller-chosen host-key file, no URI destination, and
+/// (for a password) no key.
+#[test]
+fn a_saved_secret_session_refuses_a_caller_chosen_known_hosts_file_a_uri_destination_and_a_key_for_a_password() {
+    let mut f = Fixture::new("t3", &[]);
+    let pw = |extra: &[&str], host: &str| -> Vec<String> {
+        let mut v: Vec<String> = ["ssh", "-tt", "-l", "user", "-F", "none"].iter().map(|s| s.to_string()).collect();
+        v.extend(extra.iter().map(|s| s.to_string()));
+        v.extend(["-o", "PreferredAuthentications=password", "-o", "NumberOfPasswordPrompts=2", "--", host].iter().map(|s| s.to_string()));
+        v
+    };
+    let as_refs = |v: &Vec<String>| v.iter().map(String::as_str).map(str::to_string).collect::<Vec<_>>();
+    let _ = as_refs;
+    let mut id = 400;
+    for (what, argv) in [
+        ("UserKnownHostsFile", pw(&["-o", "UserKnownHostsFile=/tmp/kh"], "host")),
+        ("a key for a password session", pw(&["-i", "/k/id", "-o", "IdentitiesOnly=yes"], "host")),
+        ("a URI destination", pw(&[], "ssh://user@host")),
+        ("a destination with a path", pw(&[], "host/path")),
+    ] {
+        id += 1;
+        let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        assert_eq!(error_code(open_real_shaped(&mut f, id, &refs)), "ssh_option_rejected", "{what}");
+    }
+}
+
+/// T1: OpenSSH lowercases the host it prints in the prompt, so the binding, the argv and the expected
+/// prompt use the lower-case form: a mixed-case name still gets the saved password.
+#[test]
+fn a_mixed_case_host_is_bound_and_prompted_in_lower_case() {
+    let mixed = SshFacts { host: "box.example.test".into(), port: 22, user: Some("User".into()), identity: None, method: AuthMethod::Password };
+    // The binding was saved from "Box.Example.TEST" (the helper stores the lower-case form).
+    let bind = Bind::Endpoint { protocol: "ssh".into(), host: "Box.Example.TEST".into(), port: 22, user: Some("User".into()), domain: None };
+    let mut f = Fixture::with("t1", &[], SECRET, bind, mixed);
+    let sid = f.open(r#"my ($p, $r) = ask("User\@box.example.test's password: "); print "H=" . digest($p) . " R=$r DONE\n"; sleep 1;"#, true);
+    let (text, _) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE"));
+    assert_eq!(field(&text, "H"), SECRET_DIGEST, "{text}");
 }

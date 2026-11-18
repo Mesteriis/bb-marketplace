@@ -247,3 +247,41 @@ fn a_legacy_item_without_a_binding_is_never_used() {
     let empty = Bind::Key { path: String::new() };
     assert_eq!(code(&f.save_bound(2, REF, SECRET, empty)), "invalid_bind");
 }
+
+/// T2 (RDP): a non-ASCII password survives save (Keychain envelope) and open (engine) byte for byte.
+#[test]
+fn a_non_ascii_rdp_password_reaches_the_engine_byte_for_byte() {
+    let mut f = Fixture::new("utf8");
+    let server = silent_server();
+    f.bind_port = server.port;
+    // SHA-256 of the UTF-8 bytes, first 16 hex, computed outside this test.
+    assert!(matches!(f.save(1, REF, "pässwörd-é€-CRED-3"), Response::CredentialOk { .. }));
+    let opened = f.open_with(2, None, Some(REF), server.port);
+    let Response::SessionOpened { session_id, .. } = opened else { panic!("expected session.opened, got {opened:?}") };
+    f.h().wait_state(session_id, "pw_sha256=d7ab5ce8b41ce7bf");
+}
+
+/// T5: a bare legacy secret that happens to LOOK like an envelope (same keys, no marker) is never taken for one.
+#[test]
+fn a_legacy_secret_shaped_like_an_envelope_is_still_unbound() {
+    use std::io::Write;
+    let mut f = Fixture::new("lookalike");
+    let server = silent_server();
+    let fake = format!(
+        r#"{{\"v\":1,\"bind\":{{\"type\":\"endpoint\",\"protocol\":\"rdp\",\"host\":\"127.0.0.1\",\"port\":{},\"user\":\"tester\",\"domain\":null}},\"secret\":\"x\"}}"#,
+        server.port
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_remote-hub-helper"))
+        .arg("--keychain-op")
+        .env("REMOTE_HUB_TEST_ANY_PARENT", "1")
+        .env("REMOTE_HUB_KEYCHAIN_PATH", &f.path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(format!("{{\"op\":\"save_raw\",\"ref\":\"{REF}\",\"secret\":\"{fake}\"}}").as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success() && !String::from_utf8_lossy(&out.stdout).contains("error"), "raw save failed");
+    assert_eq!(code(&f.open_with(1, None, Some(REF), server.port)), "credential_unbound");
+}

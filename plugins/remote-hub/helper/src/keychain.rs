@@ -80,10 +80,14 @@ pub fn classify(status: i32) -> KeychainError {
 /// What the Keychain item holds: the secret and its binding, as one JSON value.
 #[derive(Serialize, Deserialize)]
 struct StoredItem {
+    /// Fixed marker: a bare legacy secret that merely parses as JSON is never taken for an envelope.
+    magic: String,
     v: u8,
     bind: Bind,
     secret: Secret,
 }
+
+const ENVELOPE_MAGIC: &str = "remote-hub/credential-envelope";
 
 pub struct Item {
     pub bind: Bind,
@@ -145,7 +149,7 @@ impl Keychain {
 
     /// Saves the secret TOGETHER with what it is for, as one Keychain item.
     pub fn set_item(&self, account: &str, bind: &Bind, secret: &Secret) -> Result<(), KeychainError> {
-        let stored = StoredItem { v: 1, bind: bind.clone(), secret: secret.clone() };
+        let stored = StoredItem { magic: ENVELOPE_MAGIC.to_string(), v: 1, bind: bind.clone(), secret: secret.clone() };
         let text = serde_json::to_string(&stored).map_err(|_| KeychainError::Unavailable)?;
         self.set(account, &Secret::new(text))
     }
@@ -154,7 +158,7 @@ impl Keychain {
     pub fn get_item(&self, account: &str) -> Result<Item, KeychainError> {
         let raw = self.get(account)?;
         match serde_json::from_str::<StoredItem>(raw.expose()) {
-            Ok(stored) if stored.v == 1 && stored.bind.is_valid() => Ok(Item { bind: stored.bind, secret: stored.secret }),
+            Ok(stored) if stored.magic == ENVELOPE_MAGIC && stored.v == 1 && stored.bind.is_valid() => Ok(Item { bind: stored.bind, secret: stored.secret }),
             _ => Err(KeychainError::Unbound),
         }
     }
@@ -452,7 +456,7 @@ pub fn execute(keychain: &Keychain, request: &OpRequest) -> OpReply {
     let fail = |e: KeychainError| OpReply { error: Some(e.code().to_string()), ..OpReply::default() };
     match (request.op.as_str(), &request.secret) {
         ("save", Some(secret)) => match &request.bind {
-            Some(bind) if bind.is_valid() => match keychain.set_item(&request.reference, bind, secret) {
+            Some(bind) if bind.is_valid() => match keychain.set_item(&request.reference, &bind.clone().canonical(), secret) {
                 Ok(()) => OpReply::default(),
                 Err(e) => fail(e),
             },
