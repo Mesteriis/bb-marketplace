@@ -70,6 +70,22 @@ describe("RdpCertDialog", () => {
     expect(onDecide.mock.calls).toEqual([[FP, "reject"]]);
   });
 
+  it("keeps Tab and Shift+Tab inside the dialog", () => {
+    render(<RdpCertDialog prompt={PROMPT} onDecide={() => {}} />);
+    const dialog = screen.getByRole("alertdialog");
+    const [accept, trust, reject] = ["Accept once", "Trust for this BB run", "Reject"].map((t) => screen.getByText(t));
+    fireEvent.keyDown(dialog, { key: "Tab" }); // from the dialog itself: the first button
+    expect(document.activeElement).toBe(accept);
+    fireEvent.keyDown(accept, { key: "Tab" });
+    expect(document.activeElement).toBe(trust);
+    fireEvent.keyDown(trust, { key: "Tab" });
+    expect(document.activeElement).toBe(reject);
+    fireEvent.keyDown(reject, { key: "Tab" }); // wraps
+    expect(document.activeElement).toBe(accept);
+    fireEvent.keyDown(accept, { key: "Tab", shiftKey: true }); // wraps backwards
+    expect(document.activeElement).toBe(reject);
+  });
+
   it("is labelled and modal for assistive technology", () => {
     render(<RdpCertDialog prompt={PROMPT} onDecide={() => {}} />);
     const dialog = screen.getByRole("alertdialog");

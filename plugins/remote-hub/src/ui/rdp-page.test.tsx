@@ -249,7 +249,7 @@ describe("RdpPage: states, texts and the certificate prompt", () => {
     p.calls.onAttach.mockRejectedValueOnce(new Error("session_not_found: unknown"));
     fireEvent.click(screen.getByText("Reattach"));
     await flush();
-    expect(screen.getByTestId("rdp-state").textContent).toContain("error");
+    expect(screen.getByTestId("rdp-state").textContent).toBe("state: detached");
     expect(screen.getByRole("alert").textContent).toBe("the session is gone");
   });
 
@@ -260,6 +260,98 @@ describe("RdpPage: states, texts and the certificate prompt", () => {
     await flush();
     expect(p.calls.onClose.mock.calls).toEqual([[HANDLE]]);
     expect(screen.getByTestId("rdp-exit").textContent).toBe("disconnected");
+  });
+});
+
+describe("RdpPage: one session at a time on screen (N1, N4, N5)", () => {
+  it("N1: while B is being opened, the page still shows A, drives A's socket and keeps A's handle", async () => {
+    const A: SessionHandle = { generation: "a".repeat(32), sessionId: 1 };
+    const B: SessionHandle = { generation: "a".repeat(32), sessionId: 2 };
+    let finishB: (h: SessionHandle) => void = () => {};
+    const open = vi.fn().mockResolvedValueOnce(A).mockImplementationOnce(() => new Promise<SessionHandle>((r) => (finishB = r)));
+    const p = props({ onRdpOpen: open });
+    const { socket, say } = await connect(p);
+    await say({ type: "desktop", frameId: 1, width: 800, height: 600 });
+    await say({ type: "state", state: "desktop_ready" });
+    type("host", "other.test");
+    type("user", "bob");
+    fireEvent.click(screen.getByText("Connect"));
+    await flush();
+    // B is pending: the header and the canvas label still name A, and A keeps its handle.
+    expect(screen.getByText("alice@rdp.test:3389").tagName).toBe("STRONG");
+    expect(screen.queryByText("bob@other.test:3389")).toBeNull();
+    expect(screen.getByRole("application").getAttribute("aria-label")).toBe("remote desktop alice@rdp.test:3389");
+    expect(screen.getByTestId("rdp-connecting").textContent).toBe("connecting to bob@other.test:3389…");
+    fireEvent.click(screen.getByText("Disconnect"));
+    await flush();
+    expect(p.calls.onClose.mock.calls).toEqual([[A]]);
+    // B opens: now B is the session on screen, with its own handle and socket.
+    await act(async () => finishB(B));
+    await flush();
+    expect(screen.getByText("bob@other.test:3389").tagName).toBe("STRONG");
+    expect(screen.getByRole("application").getAttribute("aria-label")).toBe("remote desktop bob@other.test:3389");
+    expect(FakeWebSocket.instances.length).toBe(2);
+    expect(socket).not.toBe(FakeWebSocket.instances[1]);
+  });
+
+  it("N4: a failed first attach leaves Reattach and Disconnect available for the open session", async () => {
+    const p = props();
+    p.calls.onAttach.mockRejectedValueOnce(new Error("temporary: try again"));
+    render(<RdpPage {...p} />);
+    type("host", "rdp.test");
+    type("user", "alice");
+    fireEvent.click(screen.getByText("Connect"));
+    await flush();
+    expect(screen.getByTestId("rdp-state").textContent).toBe("state: detached");
+    expect((screen.getByText("Reattach") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByText("Disconnect") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByText("Reattach"));
+    await flush();
+    expect(p.calls.onAttach.mock.calls).toEqual([[HANDLE], [HANDLE]]);
+    expect(FakeWebSocket.instances.length).toBe(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("N4: Disconnect works on a session whose attach never succeeded", async () => {
+    const p = props({ onAttach: vi.fn(async () => { throw new Error("temporary"); }) });
+    render(<RdpPage {...p} />);
+    type("host", "rdp.test");
+    type("user", "alice");
+    fireEvent.click(screen.getByText("Connect"));
+    await flush();
+    fireEvent.click(screen.getByText("Disconnect"));
+    await flush();
+    expect(p.calls.onClose.mock.calls).toEqual([[HANDLE]]);
+    expect(screen.getByTestId("rdp-exit").textContent).toBe("disconnected");
+  });
+
+  it("N5: a reason the session already ended with is not replaced when Disconnect resolves", async () => {
+    let finish: (v: { reason: string }) => void = () => {};
+    const p = props({ onClose: vi.fn(() => new Promise<{ reason: string }>((r) => (finish = r))) as never });
+    const { say } = await connect(p);
+    fireEvent.click(screen.getByText("Disconnect"));
+    await flush();
+    await say({ type: "closed", exitCode: null, signal: null, reason: "engine_exited" });
+    expect(screen.getByTestId("rdp-exit").textContent).toBe("the RDP engine stopped unexpectedly");
+    await act(async () => finish({ reason: "killed_by_close" }));
+    expect(screen.getByTestId("rdp-exit").textContent).toBe("the RDP engine stopped unexpectedly");
+  });
+
+  it("N5: otherwise the service's own close reason is shown", async () => {
+    const p = props({ onClose: vi.fn(async () => ({ reason: "server_disconnected" })) as never });
+    await connect(p);
+    fireEvent.click(screen.getByText("Disconnect"));
+    await flush();
+    expect(screen.getByTestId("rdp-exit").textContent).toBe("the server ended the session");
+  });
+
+  it("the rest of the page is inert while the certificate dialog is open", async () => {
+    const { say } = await connect(props());
+    const main = document.querySelector(".rh-rdp-main") as HTMLElement;
+    expect(main.hasAttribute("inert")).toBe(false);
+    await say({ type: "cert_prompt", prompt: PROMPT });
+    expect(main.hasAttribute("inert")).toBe(true);
+    expect(main.contains(screen.getByRole("alertdialog"))).toBe(false);
   });
 });
 

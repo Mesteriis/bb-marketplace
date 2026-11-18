@@ -41,6 +41,17 @@ export function RdpCertDialog(props: RdpCertDialogProps) {
           decide("reject");
         } else if (event.key === "Enter" && event.target === event.currentTarget) {
           event.preventDefault(); // Enter never accepts
+        } else if (event.key === "Tab") {
+          // aria-modal: keep Tab inside the dialog (the page behind it is inert too).
+          const buttons = Array.from(event.currentTarget.querySelectorAll("button:not(:disabled)"));
+          if (buttons.length === 0) {
+            event.preventDefault();
+            return;
+          }
+          const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+          const next = event.shiftKey ? (index <= 0 ? buttons.length - 1 : index - 1) : index === buttons.length - 1 ? 0 : index + 1;
+          event.preventDefault();
+          (buttons[next] as HTMLElement).focus();
         }
       }}
     >

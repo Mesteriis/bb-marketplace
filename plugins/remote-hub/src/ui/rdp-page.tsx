@@ -35,7 +35,8 @@ export interface RdpScreenshotResult {
 export interface RdpPageProps {
   onRdpOpen: (target: RdpConnectTarget, size: { width: number; height: number }) => Promise<SessionHandle>;
   onAttach: (handle: SessionHandle) => Promise<RdpAttach>;
-  onClose: (handle: SessionHandle) => Promise<void>;
+  /** The service's close result; its reason is what the page shows. */
+  onClose: (handle: SessionHandle) => Promise<{ reason?: string | null } | void>;
   onDecision: (handle: SessionHandle, fingerprint: string, accept: RdpDecision) => Promise<void>;
   onScreenshot: (handle: SessionHandle) => Promise<RdpScreenshotResult>;
   /** Save a PNG for the user; the browser download by default. */
@@ -55,6 +56,19 @@ export function downloadPng(filename: string, base64: string): void {
   URL.revokeObjectURL(url);
 }
 
+/** Everything the page shows and drives for ONE session; replaced as a unit, so the
+ *  endpoint on screen, the session handle and the input socket never disagree. */
+interface SessionView {
+  handle: SessionHandle;
+  attach: RdpAttach | null;
+  endpoint: string;
+  state: string;
+  prompt: RdpCertPromptInfo | null;
+  desktop: { width: number; height: number } | null;
+  closeReason: string | null;
+  detached: boolean;
+}
+
 export function RdpPage(props: RdpPageProps) {
   const { onRdpOpen, onAttach, onClose, onDecision, onScreenshot, onSavePng = downloadPng } = props;
   const [host, setHost] = useState("");
@@ -62,55 +76,62 @@ export function RdpPage(props: RdpPageProps) {
   const [username, setUsername] = useState("");
   const [domain, setDomain] = useState("");
   const [password, setPassword] = useState("");
-  const [handle, setHandle] = useState<SessionHandle | null>(null);
-  const [attach, setAttach] = useState<RdpAttach | null>(null);
-  const [endpoint, setEndpoint] = useState<string | null>(null);
-  const [state, setState] = useState<string>("idle");
-  const [prompt, setPrompt] = useState<RdpCertPromptInfo | null>(null);
-  const [desktop, setDesktop] = useState<{ width: number; height: number } | null>(null);
-  const [closeReason, setCloseReason] = useState<string | null>(null);
-  const [detached, setDetached] = useState(false);
+  // The session on screen. A connection in progress to another endpoint does NOT
+  // replace it until that session is open: until then the old view keeps its own
+  // endpoint, handle and input socket.
+  const [view, setView] = useState<SessionView | null>(null);
+  const [connecting, setConnecting] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fit, setFit] = useState<FitMode>("fit");
   const [deciding, setDeciding] = useState(false);
   const canvasHandle = useRef<RdpCanvasHandle | null>(null);
 
-  const onCanvasEvent = useCallback((event: RdpCanvasEvent) => {
-    switch (event.type) {
-      case "socket":
-        setDetached(event.state === "detached");
-        if (event.state === "error") setError("the connection to the page's socket failed");
-        break;
-      case "attached":
-        setDetached(false);
-        setState(event.state);
-        setPrompt(event.state === "cert_prompt" ? event.prompt : null);
-        if (event.desktop !== null) setDesktop({ width: event.desktop.width, height: event.desktop.height });
-        break;
-      case "state":
-        setState(event.state);
-        if (event.state !== "cert_prompt") setPrompt(null);
-        break;
-      case "cert_prompt":
-        setPrompt(event.prompt);
-        break;
-      case "desktop":
-        setDesktop({ width: event.width, height: event.height });
-        break;
-      case "closed":
-        setState("closed");
-        setPrompt(null);
-        setCloseReason(event.reason);
-        break;
-      case "error":
-        setError(errorCodeText(event.code));
-        break;
-      case "notice":
-        setNotice(event.text);
-        break;
-    }
-  }, []);
+  const patch = useCallback((change: Partial<SessionView>) => setView((v) => (v === null ? v : { ...v, ...change })), []);
+
+  const onCanvasEvent = useCallback(
+    (event: RdpCanvasEvent) => {
+      switch (event.type) {
+        case "socket":
+          patch({ detached: event.state === "detached" });
+          if (event.state === "error") setError("the connection to the page's socket failed");
+          break;
+        case "attached":
+          setView((v) =>
+            v === null
+              ? v
+              : {
+                  ...v,
+                  detached: false,
+                  state: event.state,
+                  prompt: event.state === "cert_prompt" ? event.prompt : null,
+                  desktop: event.desktop !== null ? { width: event.desktop.width, height: event.desktop.height } : v.desktop,
+                },
+          );
+          break;
+        case "state":
+          setView((v) => (v === null ? v : { ...v, state: event.state, prompt: event.state === "cert_prompt" ? v.prompt : null }));
+          break;
+        case "cert_prompt":
+          patch({ prompt: event.prompt });
+          break;
+        case "desktop":
+          patch({ desktop: { width: event.width, height: event.height } });
+          break;
+        case "closed":
+          // The first recorded reason stays: a later event must not replace it.
+          setView((v) => (v === null || v.state === "closed" ? v : { ...v, state: "closed", prompt: null, closeReason: event.reason }));
+          break;
+        case "error":
+          setError(errorCodeText(event.code));
+          break;
+        case "notice":
+          setNotice(event.text);
+          break;
+      }
+    },
+    [patch],
+  );
 
   const connect = useCallback(async () => {
     const portNumber = port === "" ? 3389 : Number(port);
@@ -121,167 +142,186 @@ export function RdpPage(props: RdpPageProps) {
     // The password leaves component state HERE; only this call's closure holds it.
     const secret = password;
     setPassword("");
-    setState("connecting");
     setError(null);
     setNotice(null);
-    setCloseReason(null);
-    setPrompt(null);
-    setDesktop(null);
-    setDetached(false);
-    setEndpoint(username + "@" + host + ":" + portNumber);
+    const endpoint = username + "@" + host + ":" + portNumber;
+    setConnecting(endpoint);
+    let handle: SessionHandle;
     try {
       const target: RdpConnectTarget = { host, port: portNumber, username, password: secret, ...(domain !== "" ? { domain } : {}) };
-      const h = await onRdpOpen(target, DESKTOP_SIZE);
-      setHandle(h);
-      setAttach(await onAttach(h));
+      handle = await onRdpOpen(target, DESKTOP_SIZE);
     } catch (e) {
-      setState("error");
+      setConnecting(null);
+      setError(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
+      return;
+    }
+    // The session is open: it is now THE session on screen, whether or not the
+    // first attach works (a failed attach leaves Reattach and Disconnect available).
+    setView({ handle, attach: null, endpoint, state: "connecting", prompt: null, desktop: null, closeReason: null, detached: false });
+    setConnecting(null);
+    try {
+      const attach = await onAttach(handle);
+      patch({ attach });
+    } catch (e) {
+      patch({ detached: true });
       setError(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
     }
-  }, [host, port, username, domain, password, onRdpOpen, onAttach]);
+  }, [host, port, username, domain, password, onRdpOpen, onAttach, patch]);
 
   const disconnect = useCallback(async () => {
-    if (handle === null) return;
+    if (view === null) return;
+    const handle = view.handle;
     try {
-      await onClose(handle);
-      setState("closed");
-      setCloseReason("killed_by_close");
-      setPrompt(null);
-      setAttach(null);
+      const result = await onClose(handle);
+      // Keep a reason the session already ended with; otherwise the service's own.
+      setView((v) =>
+        v === null || v.handle !== handle || v.state === "closed"
+          ? v
+          : { ...v, state: "closed", prompt: null, attach: null, closeReason: (result && result.reason) || "killed_by_close" },
+      );
     } catch (e) {
       setError(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
     }
-  }, [handle, onClose]);
+  }, [view, onClose]);
 
   const reattach = useCallback(async () => {
-    if (handle === null) return;
+    if (view === null) return;
+    const handle = view.handle;
     try {
       setError(null);
-      setAttach(await onAttach(handle));
+      const attach = await onAttach(handle);
+      setView((v) => (v !== null && v.handle === handle ? { ...v, attach, detached: false } : v));
     } catch (e) {
-      setState("error");
+      patch({ detached: true });
       setError(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
     }
-  }, [handle, onAttach]);
+  }, [view, onAttach, patch]);
 
   const decide = useCallback(
     async (fingerprint: string, accept: RdpDecision) => {
-      if (handle === null) return;
+      if (view === null) return;
       setDeciding(true);
       setError(null);
       try {
-        await onDecision(handle, fingerprint, accept);
-        setPrompt(null);
+        await onDecision(view.handle, fingerprint, accept);
+        patch({ prompt: null });
       } catch (e) {
         setError(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
       } finally {
         setDeciding(false);
       }
     },
-    [handle, onDecision],
+    [view, onDecision, patch],
   );
 
   const screenshot = useCallback(async () => {
-    if (handle === null) return;
+    if (view === null) return;
     try {
       setError(null);
-      const shot = await onScreenshot(handle);
+      const shot = await onScreenshot(view.handle);
       onSavePng("rdp-" + shot.width + "x" + shot.height + "-" + shot.frameId + ".png", shot.png);
     } catch (e) {
       setError(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
     }
-  }, [handle, onScreenshot, onSavePng]);
+  }, [view, onScreenshot, onSavePng]);
 
-  const live = handle !== null && state !== "closed" && state !== "error";
-  const ready = state === "desktop_ready";
+  const state = view?.state ?? (connecting !== null ? "connecting" : error !== null ? "error" : "idle");
+  const live = view !== null && view.state !== "closed";
+  const ready = view?.state === "desktop_ready";
+  const prompt = view?.prompt ?? null;
 
   return (
     <div className="rh-page">
-      <form
-        className="rh-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void connect();
-        }}
-      >
-        <input aria-label="host" placeholder="host" value={host} onChange={(e) => setHost(e.target.value)} />
-        <input aria-label="port" placeholder="3389" value={port} onChange={(e) => setPort(e.target.value)} className="rh-port" />
-        <input aria-label="user" placeholder="user" value={username} onChange={(e) => setUsername(e.target.value)} />
-        <input
-          aria-label="password"
-          placeholder="password"
-          type="password"
-          autoComplete="off"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-        <input aria-label="domain" placeholder="domain (optional)" value={domain} onChange={(e) => setDomain(e.target.value)} />
-        <button type="submit" disabled={host === "" || username === "" || state === "connecting"}>
-          Connect
-        </button>
-        {handle !== null && (
-          <>
-            <button type="button" onClick={() => void disconnect()} disabled={!live}>
-              Disconnect
-            </button>
-            <button type="button" onClick={() => void reattach()} disabled={!live || attach === null}>
-              Reattach
-            </button>
-          </>
-        )}
-      </form>
-      <div className="rh-header">
-        {endpoint !== null && (
-          <span>
-            target: <strong>{endpoint}</strong>
+      <div className="rh-rdp-main" inert={prompt !== null}>
+        <form
+          className="rh-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void connect();
+          }}
+        >
+          <input aria-label="host" placeholder="host" value={host} onChange={(e) => setHost(e.target.value)} />
+          <input aria-label="port" placeholder="3389" value={port} onChange={(e) => setPort(e.target.value)} className="rh-port" />
+          <input aria-label="user" placeholder="user" value={username} onChange={(e) => setUsername(e.target.value)} />
+          <input
+            aria-label="password"
+            placeholder="password"
+            type="password"
+            autoComplete="off"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <input aria-label="domain" placeholder="domain (optional)" value={domain} onChange={(e) => setDomain(e.target.value)} />
+          <button type="submit" disabled={host === "" || username === "" || connecting !== null}>
+            Connect
+          </button>
+          {view !== null && (
+            <>
+              <button type="button" onClick={() => void disconnect()} disabled={!live}>
+                Disconnect
+              </button>
+              <button type="button" onClick={() => void reattach()} disabled={!live}>
+                Reattach
+              </button>
+            </>
+          )}
+        </form>
+        <div className="rh-header">
+          {view !== null && (
+            <span>
+              target: <strong>{view.endpoint}</strong>
+            </span>
+          )}
+          <span data-testid="rdp-state" role="status" aria-live="polite">
+            state: <strong>{view !== null && view.detached && state !== "closed" ? "detached" : stateText(state)}</strong>
           </span>
+          {connecting !== null && view !== null && <span data-testid="rdp-connecting">connecting to {connecting}…</span>}
+          {view !== null && view.state === "closed" && view.closeReason !== null && <span data-testid="rdp-exit">{closeReasonText(view.closeReason)}</span>}
+          {view?.desktop != null && (
+            <span>
+              desktop: {view.desktop.width}x{view.desktop.height}
+            </span>
+          )}
+          {view !== null && (
+            <>
+              <button type="button" onClick={() => setFit(fit === "fit" ? "actual" : "fit")} aria-pressed={fit === "actual"}>
+                {fit === "fit" ? "1:1" : "Fit"}
+              </button>
+              <button type="button" onClick={() => canvasHandle.current?.sendCtrlAltDel()} disabled={!ready || view.attach === null}>
+                Ctrl+Alt+Del
+              </button>
+              <button type="button" onClick={() => void screenshot()} disabled={!ready}>
+                Screenshot
+              </button>
+            </>
+          )}
+        </div>
+        {notice !== null && <p className="rh-notice">{notice}</p>}
+        {error !== null && (
+          <p className="rh-error" role="alert">
+            {error}
+          </p>
         )}
-        <span data-testid="rdp-state" role="status" aria-live="polite">
-          state: <strong>{detached && state !== "closed" ? "detached" : stateText(state)}</strong>
-        </span>
-        {state === "closed" && closeReason !== null && <span data-testid="rdp-exit">{closeReasonText(closeReason)}</span>}
-        {desktop !== null && (
-          <span>
-            desktop: {desktop.width}x{desktop.height}
-          </span>
-        )}
-        {handle !== null && (
+        {view !== null && view.attach !== null && (
           <>
-            <button type="button" onClick={() => setFit(fit === "fit" ? "actual" : "fit")} aria-pressed={fit === "actual"}>
-              {fit === "fit" ? "1:1" : "Fit"}
-            </button>
-            <button type="button" onClick={() => canvasHandle.current?.sendCtrlAltDel()} disabled={!ready || attach === null}>
-              Ctrl+Alt+Del
-            </button>
-            <button type="button" onClick={() => void screenshot()} disabled={!ready}>
-              Screenshot
-            </button>
+            <div className="rh-rdp-wrap">
+              <RdpCanvas
+                key={view.attach.token}
+                wsUrl={view.attach.wsUrl}
+                token={view.attach.token}
+                fit={fit}
+                label={"remote desktop " + view.endpoint}
+                onEvent={onCanvasEvent}
+                handleRef={canvasHandle}
+              />
+            </div>
+            <p className="rh-hint">
+              Click the desktop to type into it. Keys go to the remote while it has focus (Tab and Escape too); press Ctrl+Alt+Shift+Escape or click outside it to leave.
+            </p>
           </>
         )}
       </div>
-      {notice !== null && <p className="rh-notice">{notice}</p>}
-      {error !== null && (
-        <p className="rh-error" role="alert">
-          {error}
-        </p>
-      )}
       {prompt !== null && <RdpCertDialog prompt={prompt} onDecide={(fp, accept) => void decide(fp, accept)} disabled={deciding} />}
-      {attach !== null && (
-        <>
-          <div className="rh-rdp-wrap">
-            <RdpCanvas
-              key={attach.token}
-              wsUrl={attach.wsUrl}
-              token={attach.token}
-              fit={fit}
-              label={"remote desktop " + (endpoint ?? "")}
-              onEvent={onCanvasEvent}
-              handleRef={canvasHandle}
-            />
-          </div>
-          <p className="rh-hint">Click the desktop to type into it. Keys go to the remote while it has focus (Escape too); click outside it to leave.</p>
-        </>
-      )}
     </div>
   );
 }

@@ -43,6 +43,7 @@ function ConnectTab() {
   const onClose = async (handle: SessionHandle) => {
     await rpc.call("session_close", handle);
   };
+  const onRdpClose = async (handle: SessionHandle) => rpc.call("session_close", handle);
 
   return (
     <ConnectPage
@@ -54,7 +55,7 @@ function ConnectTab() {
       rdp={{
         onRdpOpen: async (target, size) => rpc.call("rdp_open", { target, width: size.width, height: size.height }),
         onAttach,
-        onClose,
+        onClose: onRdpClose,
         onDecision: async (handle, fingerprint, accept) => {
           await rpc.call("rdp_cert_decision", { generation: handle.generation, sessionId: handle.sessionId, fingerprint, accept });
         },
