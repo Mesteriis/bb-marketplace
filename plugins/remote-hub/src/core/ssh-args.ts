@@ -46,6 +46,11 @@ function invalid(code: string, message: string): never {
   throw new SshArgError(code, message);
 }
 
+/** The SSH host rule (non-empty, no leading '-', no shell metacharacters), shared with RDP. */
+export function assertHostToken(host: string): void {
+  assertToken(host, "host");
+}
+
 function assertToken(value: string, field: string): void {
   if (value.length === 0) invalid("invalid_" + field, field + " must not be empty");
   if (value.startsWith("-")) invalid("invalid_" + field, field + " must not start with -");

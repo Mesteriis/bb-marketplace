@@ -51,6 +51,8 @@ class FakeHelper {
   onSessionOutput(cb: (sessionId: number, data: Uint8Array) => void): void {
     this.outputCb = cb;
   }
+  onRdpEvent(): void {}
+  onRdpUpdate(): void {}
   onSessionClosed(cb: (sessionId: number, info: { exitCode: number | null; signal: number | null; reason: string }) => void): void {
     this.closedCbs.push(cb);
   }

@@ -2,6 +2,8 @@
 // server.ts wraps these with the SDK's defineRpcContract.
 import { z } from "zod";
 import { sessionInputDataSchema } from "./protocol.ts";
+import { MAX_DESKTOP_HEIGHT, MAX_DESKTOP_WIDTH, RDP_CLOSED_REASONS } from "./rdp-protocol.ts";
+import { assertHostToken } from "./ssh-args.ts";
 
 const sessionIdSchema = z.number().int().min(0).max(0xffff_ffff);
 const sizeSchema = z.number().int().min(1).max(10_000);
@@ -29,14 +31,61 @@ const sshTargetSchema = z.object({
   extraOptions: z.array(z.string()).default([]),
 });
 
+/** A host that passes the SSH host rules (no leading '-', no shell metacharacters). */
+const rdpHostSchema = z.string().min(1).max(255).refine(
+  (host) => {
+    try {
+      assertHostToken(host);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  { message: "host contains a character that is not allowed" },
+);
+
+const rdpTargetSchema = z.object({
+  host: rdpHostSchema,
+  port: z.number().int().min(1).max(65535).default(3389),
+  username: z.string().min(1).max(256),
+  // Exists only in this payload, the helper frame and engine memory; never
+  // echoed, logged, listed or kept in a session record.
+  password: z.string().max(1024),
+  domain: z.string().min(1).max(256).optional(),
+  expectedFingerprint: z.string().min(1).max(95).optional(),
+});
+
+export const rdpCertPromptInfoSchema = z.object({
+  host: z.string(),
+  port: z.number().int(),
+  fingerprint: z.string(),
+  subject: z.string(),
+  issuer: z.string(),
+  notBefore: z.string(),
+  notAfter: z.string(),
+  /** untrusted_root, hostname_mismatch, expired, other, or cert_changed (the service's override). */
+  reason: z.string(),
+});
+
+export const rdpInfoSchema = z.object({
+  /** The endpoint, never the password. */
+  target: z.object({ host: z.string(), port: z.number().int(), username: z.string(), domain: z.string().nullable() }),
+  state: z.enum(["connecting", "tls", "cert_prompt", "authenticating", "desktop_ready", "closed"]),
+  prompt: rdpCertPromptInfoSchema.nullable(),
+  desktop: z.object({ frameId: z.number().int(), width: z.number().int(), height: z.number().int() }).nullable(),
+  /** Every state seen so far, in order (a trace the integration tests assert on). */
+  trace: z.array(z.string()),
+});
+
 export const sessionInfoSchema = z.object({
   generation: z.string().regex(/^[0-9a-f]{32}$/),
   sessionId: sessionIdSchema,
-  kind: z.enum(["echo", "ssh"]),
+  kind: z.enum(["echo", "ssh", "rdp"]),
   state: z.enum(["connecting", "running", "closed"]),
   exitCode: z.number().int().nullable(),
   signal: z.number().int().nullable(),
   reason: z.string().nullable(),
+  rdp: rdpInfoSchema.optional(),
 });
 
 export const rpcSchemas = {
@@ -60,6 +109,32 @@ export const rpcSchemas = {
     input: z.object({ target: sshTargetSchema, cols: sizeSchema.default(80), rows: sizeSchema.default(24) }),
     output: sessionHandleSchema,
   },
+  rdp_open: {
+    input: z.object({
+      target: rdpTargetSchema,
+      width: z.number().int().min(1).max(MAX_DESKTOP_WIDTH).default(1280),
+      height: z.number().int().min(1).max(MAX_DESKTOP_HEIGHT).default(800),
+    }),
+    output: sessionHandleSchema,
+  },
+  rdp_cert_decision: {
+    input: sessionHandleSchema.extend({
+      fingerprint: z.string().min(1).max(95),
+      accept: z.enum(["once", "session_trust", "reject"]),
+    }),
+    output: z.object({ decided: z.literal(true) }),
+  },
+  rdp_screenshot: {
+    input: sessionHandleSchema,
+    output: z.object({
+      frameId: z.number().int(),
+      width: z.number().int(),
+      height: z.number().int(),
+      timestamp: z.number().int(),
+      /** Base64 of the PNG. */
+      png: z.string(),
+    }),
+  },
   session_list: {
     input: z.null(),
     output: z.array(sessionInfoSchema),
@@ -78,4 +153,7 @@ export type HelperStatus = z.infer<typeof helperStatusSchema>;
 export type SessionHandle = z.infer<typeof sessionHandleSchema>;
 export type SshTarget = z.infer<typeof sshTargetSchema>;
 export type SessionInfo = z.infer<typeof sessionInfoSchema>;
+export type RdpTarget = z.infer<typeof rdpTargetSchema>;
+export type RdpInfo = z.infer<typeof rdpInfoSchema>;
+export { RDP_CLOSED_REASONS };
 export type RpcSchemas = typeof rpcSchemas;

@@ -5,16 +5,21 @@
 import { AttachTokens, ATTACH_TOKEN_TTL_MS, type Clock } from "../../core/attach.ts";
 import { createCreditState, type CreditState } from "../../core/credit.ts";
 import { buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
-import { HelperProcess, HelperStatus, HelperRuntimeError } from "./helper-process.ts";
-import type { SessionHandle } from "../../core/rpc.ts";
+import { HelperProcess, HelperStatus, HelperRuntimeError, HelperRequestError, type RdpHelperEvent } from "./helper-process.ts";
+import type { RdpInfo, RdpTarget, SessionHandle } from "../../core/rpc.ts";
+import { parseUpdateChunk, RDP_STATES, type RdpInputEvent } from "../../core/rdp-protocol.ts";
+import { createRdpTrustStore, fingerprintEqual, type RdpTrustStore } from "../../core/rdp-trust.ts";
+import { RdpViewMux, type ViewEffects } from "../../core/rdp-views.ts";
+import type { ScreenshotResult } from "../../core/rdp-screenshot.ts";
 
 export type SessionState = "connecting" | "running" | "closed";
 
 export interface SessionInfo {
   generation: string;
   sessionId: number;
-  kind: "echo" | "ssh";
+  kind: "echo" | "ssh" | "rdp";
   target?: SshTarget;
+  rdp?: RdpInfo;
   state: SessionState;
   exitCode: number | null;
   signal: number | null;
@@ -27,6 +32,23 @@ export interface RemoteHubServiceDeps {
   clock?: Clock;
   /** Test-only opener for a raw spawn spec (used by the integration suite against a test-hooks helper). */
   openSshRaw?: (helper: HelperProcess, cols: number, rows: number) => Promise<SessionHandle>;
+  /** In-memory certificate trust; a fresh store per service when omitted. */
+  trust?: RdpTrustStore;
+}
+
+/** What a view receives from the service: binary update payloads and JSON events. */
+export interface RdpViewSink {
+  sendUpdate(payload: Uint8Array): void;
+  sendEvent(event: Record<string, unknown>): void;
+}
+
+export interface RdpAttachment {
+  /** The state to show before any live event: sent first by the socket. */
+  initial: Record<string, unknown>;
+  ack(frameId: number): void;
+  input(events: RdpInputEvent[]): Promise<void>;
+  refresh(): void;
+  detach(): void;
 }
 
 export interface RemoteHubService {
@@ -36,6 +58,12 @@ export interface RemoteHubService {
   echoClose(handle: SessionHandle): Promise<{ closed: boolean }>;
   sshOpen(target: SshTarget, cols: number, rows: number): Promise<SessionHandle>;
   sshOpenTest(cols: number, rows: number): Promise<SessionHandle>;
+  rdpOpen(target: RdpTarget, width: number, height: number): Promise<SessionHandle>;
+  rdpCertDecision(handle: SessionHandle, fingerprint: string, accept: "once" | "session_trust" | "reject"): Promise<void>;
+  rdpScreenshot(handle: SessionHandle): Promise<ScreenshotResult>;
+  rdpAttach(handle: SessionHandle, viewId: string, sink: RdpViewSink): RdpAttachment;
+  /** Test/inspection: the runtime view of one RDP session (never holds a password). */
+  rdpInfo(handle: SessionHandle): RdpInfo | undefined;
   sessionList(): SessionInfo[];
   sessionClose(handle: SessionHandle): Promise<{ exitCode: number | null; signal: number | null; reason: string }>;
   sessionAttach(handle: SessionHandle): string;
@@ -76,6 +104,16 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   const sessionEndListeners = new Map<string, Set<(info: { exitCode: number | null; signal: number | null; reason: string }) => void>>();
   const attachTokens = new AttachTokens(ATTACH_TOKEN_TTL_MS, deps.clock);
   const helperExitCallbacks = new Set<() => void>();
+  const trust = deps.trust ?? createRdpTrustStore();
+  interface RdpRuntime {
+    handle: SessionHandle;
+    mux: RdpViewMux;
+    views: Map<string, RdpViewSink>;
+  }
+  const rdpRuntimes = new Map<string, RdpRuntime>();
+  // Events the helper sends right after `session.opened`, before rdpOpen has
+  // registered the session (both are processed in one stdout chunk).
+  const earlyRdpEvents = new Map<string, RdpHelperEvent[]>();
   const EVICT_CLOSED_AFTER_MS = 5 * 60 * 1000;
 
   const maybeEvictClosed = (key: string): void => {
@@ -87,10 +125,123 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         return;
       }
       sessions.delete(key);
+      rdpRuntimes.delete(key);
+      earlyRdpEvents.delete(key);
       sessionEndListeners.delete(key);
       listeners.delete(key);
       credits.delete(key);
     }, EVICT_CLOSED_AFTER_MS);
+  };
+
+  const rdpRecord = (key: string): SessionInfo | undefined => {
+    const info = sessions.get(key);
+    return info !== undefined && info.kind === "rdp" ? info : undefined;
+  };
+
+  const broadcast = (runtime: RdpRuntime, event: Record<string, unknown>): void => {
+    for (const sink of runtime.views.values()) {
+      try {
+        sink.sendEvent(event);
+      } catch {
+        // one view's failure must not skip the others
+      }
+    }
+  };
+
+  /** Apply what the multiplexer asks of the helper (ack, refresh). Best effort:
+   *  a failure here means the session is ending and the end path reports it. */
+  const applyEffects = (runtime: RdpRuntime, effects: ViewEffects): void => {
+    const h = helper;
+    if (h === null || h.currentGeneration !== runtime.handle.generation) return;
+    if (effects.ackHelper !== null) h.rdpUpdateAck(runtime.handle, effects.ackHelper).catch(() => {});
+    if (effects.refresh) {
+      const info = rdpRecord(keyOf(runtime.handle));
+      // Before the first update the engine paints the whole desktop anyway, and
+      // the helper refuses a refresh before desktop_ready.
+      if (info?.rdp?.state === "desktop_ready") h.rdpRefresh(runtime.handle).catch(() => {});
+    }
+  };
+
+  const handleRdpEvent = (generation: string, sessionId: number, event: RdpHelperEvent): void => {
+    const key = generation + ":" + sessionId;
+    const info = rdpRecord(key);
+    const runtime = rdpRuntimes.get(key);
+    if (info === undefined || info.rdp === undefined || runtime === undefined) {
+      // rdpOpen has not registered the session yet: keep the event for it.
+      const queued = earlyRdpEvents.get(key) ?? [];
+      queued.push(event);
+      earlyRdpEvents.set(key, queued);
+      return;
+    }
+    const rdp = info.rdp;
+    switch (event.type) {
+      case "rdp.state": {
+        if (!(RDP_STATES as readonly string[]).includes(event.state)) return; // e.g. a test engine's paint counter
+        if (rdp.state === "closed") return;
+        rdp.state = event.state as RdpInfo["state"];
+        rdp.trace.push(event.state);
+        if (event.state !== "cert_prompt") rdp.prompt = null;
+        broadcast(runtime, { type: "state", state: event.state });
+        return;
+      }
+      case "rdp.cert_prompt": {
+        const { host, port } = rdp.target;
+        if (trust.isTrusted(host, port, event.fingerprint)) {
+          // A fingerprint the user trusted for this BB run: accept this handshake once.
+          helper?.rdpCertDecision(runtime.handle, event.fingerprint, "once").catch(() => {});
+          return;
+        }
+        // A different certificate on a host:port with a trusted one is never
+        // auto-accepted and is reported as a CHANGED certificate.
+        const reason = trust.trustedFor(host, port).length > 0 ? "cert_changed" : event.reason;
+        rdp.prompt = {
+          host: event.host,
+          port: event.port,
+          fingerprint: event.fingerprint,
+          subject: event.subject,
+          issuer: event.issuer,
+          notBefore: event.notBefore,
+          notAfter: event.notAfter,
+          reason,
+        };
+        broadcast(runtime, { type: "cert_prompt", prompt: rdp.prompt });
+        return;
+      }
+      case "rdp.desktop": {
+        rdp.desktop = { frameId: event.frameId, width: event.width, height: event.height };
+        if (rdp.state !== "closed") {
+          rdp.state = "desktop_ready";
+          rdp.trace.push("desktop_ready");
+          rdp.prompt = null;
+        }
+        broadcast(runtime, { type: "desktop", frameId: event.frameId, width: event.width, height: event.height });
+        broadcast(runtime, { type: "state", state: "desktop_ready" });
+        return;
+      }
+      case "rdp.input_rejected":
+        broadcast(runtime, { type: "input_rejected", applied: event.applied, rejected: event.rejected });
+        return;
+      case "rdp.certificate":
+        return; // the pin check happens in the helper; nothing to keep here
+    }
+  };
+
+  const handleRdpUpdate = (generation: string, sessionId: number, seq: number, payload: Uint8Array): void => {
+    const key = generation + ":" + sessionId;
+    const runtime = rdpRuntimes.get(key);
+    if (runtime === undefined) return;
+    const chunk = parseUpdateChunk(payload);
+    if (chunk === null) return; // the helper validates every frame already
+    const outcome = runtime.mux.onChunk(seq, chunk);
+    if (outcome.violation !== undefined) return; // out of step: nothing is delivered, nothing is acked
+    for (const viewId of outcome.deliver) {
+      try {
+        runtime.views.get(viewId)?.sendUpdate(payload);
+      } catch {
+        // a dead view is removed by its socket's close handler
+      }
+    }
+    applyEffects(runtime, { ackHelper: outcome.ackHelper, refresh: outcome.refresh });
   };
 
   const start = (): Promise<HelperProcess> => {
@@ -118,6 +269,15 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
               for (const key of Array.from(credits.keys())) {
                 if (key.startsWith(generation + ":")) credits.delete(key);
               }
+              for (const [key, info] of sessions) {
+                if (key.startsWith(generation + ":") && info.rdp !== undefined) info.rdp.state = "closed";
+              }
+              for (const key of Array.from(rdpRuntimes.keys())) {
+                if (key.startsWith(generation + ":")) rdpRuntimes.delete(key);
+              }
+              for (const key of Array.from(earlyRdpEvents.keys())) {
+                if (key.startsWith(generation + ":")) earlyRdpEvents.delete(key);
+              }
               for (const key of Array.from(sessions.keys())) {
                 if (key.startsWith(generation + ":")) maybeEvictClosed(key);
               }
@@ -139,6 +299,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
               existing.exitCode = info.exitCode;
               existing.signal = info.signal;
               existing.reason = info.reason;
+              if (existing.rdp !== undefined) existing.rdp.state = "closed";
             }
             const ends = sessionEndListeners.get(key);
             if (ends !== undefined) {
@@ -152,6 +313,8 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
             }
             maybeEvictClosed(key);
           });
+          started.onRdpEvent((sessionId, event) => handleRdpEvent(generation, sessionId, event));
+          started.onRdpUpdate((sessionId, seq, payload) => handleRdpUpdate(generation, sessionId, seq, payload));
           started.onSessionOutput((sessionId, data) => {
             credits.get(generation + ":" + sessionId)?.onConsumed(data.byteLength);
             const set = listeners.get(generation + ":" + sessionId);
@@ -238,6 +401,93 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         reason: null,
       });
       return handle;
+    },
+    async rdpOpen(target, width, height) {
+      const hp = await start();
+      const handle = await hp.openRdp({
+        host: target.host,
+        port: target.port,
+        username: target.username,
+        password: target.password,
+        domain: target.domain ?? null,
+        width,
+        height,
+        expectedFingerprint: target.expectedFingerprint ?? null,
+      });
+      const key = keyOf(handle);
+      // The record keeps the endpoint, never the password.
+      sessions.set(key, {
+        generation: handle.generation,
+        sessionId: handle.sessionId,
+        kind: "rdp",
+        state: "connecting",
+        exitCode: null,
+        signal: null,
+        reason: null,
+        rdp: {
+          target: { host: target.host, port: target.port, username: target.username, domain: target.domain ?? null },
+          state: "connecting",
+          prompt: null,
+          desktop: null,
+          trace: [],
+        },
+      });
+      rdpRuntimes.set(key, { handle, mux: new RdpViewMux(), views: new Map() });
+      const early = earlyRdpEvents.get(key);
+      earlyRdpEvents.delete(key);
+      for (const event of early ?? []) handleRdpEvent(handle.generation, handle.sessionId, event);
+      return handle;
+    },
+    async rdpCertDecision(handle, fingerprint, accept) {
+      requireGeneration(handle);
+      const info = rdpRecord(keyOf(handle));
+      const prompt = info?.rdp?.prompt ?? null;
+      if (prompt === null) throw new HelperRequestError("no_pending_prompt", "no certificate decision is pending");
+      // The decision must name the certificate that was presented.
+      if (!fingerprintEqual(prompt.fingerprint, fingerprint)) {
+        throw new HelperRequestError("fingerprint_mismatch", "the decision names a different certificate than the one presented");
+      }
+      const hp = await start();
+      await hp.rdpCertDecision(handle, prompt.fingerprint, accept);
+      if (accept === "session_trust") trust.trust(prompt.host, prompt.port, prompt.fingerprint);
+      if (info?.rdp !== undefined) info.rdp.prompt = null;
+    },
+    async rdpScreenshot(handle) {
+      requireGeneration(handle);
+      const hp = await start();
+      return hp.rdpScreenshot(handle);
+    },
+    rdpInfo(handle) {
+      return rdpRecord(keyOf(handle))?.rdp;
+    },
+    rdpAttach(handle, viewId, sink) {
+      requireGeneration(handle);
+      const key = keyOf(handle);
+      const runtime = rdpRuntimes.get(key);
+      const info = rdpRecord(key);
+      if (runtime === undefined || info?.rdp === undefined) throw new HelperRuntimeError("session_not_found", "unknown rdp session");
+      runtime.views.set(viewId, sink);
+      applyEffects(runtime, { ackHelper: null, refresh: runtime.mux.attach(viewId).refresh });
+      const rdp = info.rdp;
+      return {
+        initial: { type: "attached", state: rdp.state, prompt: rdp.prompt, desktop: rdp.desktop, target: rdp.target },
+        ack(frameId) {
+          applyEffects(runtime, runtime.mux.onViewAck(viewId, frameId));
+        },
+        async input(events) {
+          if (info.rdp?.state !== "desktop_ready") throw new HelperRequestError("not_ready", "the desktop is not ready yet");
+          const hp = await start();
+          await hp.rdpInput(handle, events);
+        },
+        refresh() {
+          // Resynchronise this view only: it becomes needsFull and the next full update reaches it.
+          applyEffects(runtime, { ackHelper: null, refresh: runtime.mux.resync(viewId).refresh });
+        },
+        detach() {
+          runtime.views.delete(viewId);
+          applyEffects(runtime, runtime.mux.detach(viewId));
+        },
+      };
     },
     sessionList() {
       return Array.from(sessions.values());

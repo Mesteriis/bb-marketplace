@@ -119,6 +119,20 @@ describe("RdpViewMux", () => {
     expect(mux.onChunk(0, full(3))).toMatchObject({ violation: "frame_regressed" });
   });
 
+  it("an explicit resync keeps the in-flight frame, needs a full frame again, and asks once", () => {
+    const mux = new RdpViewMux();
+    mux.attach("a");
+    mux.onChunk(0, full(1));
+    expect(mux.needsFull("a")).toBe(false);
+    expect(mux.resync("a")).toEqual({ refresh: true });
+    expect(mux.inFlight("a")).toBe(1); // still holds frame 1
+    expect(mux.needsFull("a")).toBe(true);
+    expect(mux.resync("a")).toEqual({ refresh: false }); // one request outstanding
+    expect(mux.resync("nobody")).toEqual({ refresh: false });
+    // the ack for the frame it holds still releases the helper
+    expect(mux.onViewAck("a", 1).ackHelper).toBe(1);
+  });
+
   it("an ack for a frame the view does not hold changes nothing", () => {
     const mux = new RdpViewMux();
     mux.attach("a");

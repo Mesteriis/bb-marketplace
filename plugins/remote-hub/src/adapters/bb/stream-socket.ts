@@ -10,6 +10,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { SessionHandle } from "../../core/rpc.ts";
 import { SLOW_VIEW_BYTES } from "../../core/credit.ts";
+import { createRdpSocketHandlers } from "./rdp-socket.ts";
 import type { RemoteHubService } from "./service.ts";
 
 export interface StreamSocketDeps {
@@ -50,6 +51,14 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
   bb.http.experimental_websocket("/attach", ({ url }) => {
     const attachId = url.searchParams.get("attach") ?? "";
     const binding = deps.service.consumeAttachToken(attachId); // single-use, 30 s TTL
+    // An RDP session has no byte stream: its own socket logic (update frames,
+    // acks, input) lives in rdp-socket.ts.
+    if (
+      binding !== null &&
+      deps.service.sessionList().some((r) => r.generation === binding.generation && r.sessionId === binding.sessionId && r.kind === "rdp")
+    ) {
+      return createRdpSocketHandlers(deps.service, binding, attachId);
+    }
     let attached = false;
     let handle: SessionHandle | null = null;
     let unsubscribe: (() => void) | null = null;

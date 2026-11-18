@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, experimental_PluginRpcRefusal, type BbPluginApi } from "@get-bb/plugin-sdk";
-import { HELPER_BIN_NAME, HelperProcess, HelperRuntimeError, HelperStartError } from "./src/adapters/bb/helper-process.ts";
+import { HELPER_BIN_NAME, HelperProcess, HelperRequestError, HelperRuntimeError, HelperStartError } from "./src/adapters/bb/helper-process.ts";
 import { createRemoteHubService } from "./src/adapters/bb/service.ts";
 import { registerStreamSocket } from "./src/adapters/bb/stream-socket.ts";
 import { rpcSchemas } from "./src/core/rpc.ts";
@@ -37,8 +37,10 @@ export default function plugin(bb: BbPluginApi): void {
     try {
       return await run();
     } catch (error) {
-      if (error instanceof HelperStartError || error instanceof HelperRuntimeError) {
-        throw new experimental_PluginRpcRefusal({ code: "not_found", message: error.message });
+      if (error instanceof HelperStartError || error instanceof HelperRuntimeError || error instanceof HelperRequestError) {
+        // The helper's stable code travels in front of the text so the page can act on it.
+        const message = error instanceof HelperRequestError ? error.code + ": " + error.message : error.message;
+        throw new experimental_PluginRpcRefusal({ code: "not_found", message });
       }
       throw error;
     }
@@ -54,6 +56,14 @@ export default function plugin(bb: BbPluginApi): void {
     echo_close: (input) =>
       withHelper(() => service.echoClose({ generation: input.generation, sessionId: input.sessionId })),
     ssh_open: (input) => withHelper(() => service.sshOpen(input.target, input.cols, input.rows)),
+    rdp_open: (input) => withHelper(() => service.rdpOpen(input.target, input.width, input.height)),
+    rdp_cert_decision: (input) =>
+      withHelper(async () => {
+        await service.rdpCertDecision({ generation: input.generation, sessionId: input.sessionId }, input.fingerprint, input.accept);
+        return { decided: true as const };
+      }),
+    rdp_screenshot: (input) =>
+      withHelper(() => service.rdpScreenshot({ generation: input.generation, sessionId: input.sessionId })),
     session_list: () => withHelper(() => service.sessionList()),
     session_close: (input) =>
       withHelper(() =>

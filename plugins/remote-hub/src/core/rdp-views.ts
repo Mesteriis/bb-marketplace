@@ -80,6 +80,16 @@ export class RdpViewMux {
     return { refresh: this.takeRefresh() };
   }
 
+  /** The view asks for a fresh full frame (explicit refresh): it becomes
+   *  needsFull; what it has in flight stays in flight. */
+  resync(viewId: string): { refresh: boolean } {
+    const view = this.views.get(viewId);
+    if (view === undefined) return { refresh: false };
+    view.needsFull = true;
+    view.fullRows = 0;
+    return { refresh: this.takeRefresh() };
+  }
+
   detach(viewId: string): ViewEffects {
     const view = this.views.get(viewId);
     this.views.delete(viewId);
