@@ -6,6 +6,7 @@ import { useCallback, useRef, useState } from "react";
 import { profileToRdpForm, profileToSshTarget } from "../core/catalogue.ts";
 import { profileFieldsOf, type Profile, type ProfileFields } from "../core/profile.ts";
 import { ProfileCatalogue } from "./profile-catalogue.tsx";
+import { AgentPanel, type AgentApi } from "./agent-panel.tsx";
 import { CredentialsPanel } from "./credentials-panel.tsx";
 import { ImportPanel, type ImportApi } from "./import-panel.tsx";
 import { ProfileEditor, type SecretAction } from "./profile-editor.tsx";
@@ -27,6 +28,8 @@ export interface ConnectPageProps {
   credentials?: CredentialsApi;
   /** Sources to import profiles from (ssh config, hosts file, keys, agent); without it there is no Import screen. */
   imports?: ImportApi;
+  /** Agent access and activity (stage 4a); without it there is no such section or screen. */
+  agents?: AgentApi;
 }
 
 export function ConnectPage(props: ConnectPageProps) {
@@ -37,6 +40,7 @@ export function ConnectPage(props: ConnectPageProps) {
   const [notice, setNotice] = useState<string | null>(null);
   const [showCredentials, setShowCredentials] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showAgents, setShowAgents] = useState(false);
   const nonce = useRef(0);
   const api = props.profiles;
   const data = useProfiles(api);
@@ -146,7 +150,8 @@ export function ConnectPage(props: ConnectPageProps) {
             })
           }
           {...(credentialsApi !== undefined ? { onShowCredentials: () => { setShowImport(false); setShowCredentials(true); } } : {})}
-          {...(props.imports !== undefined ? { onShowImport: () => { setShowCredentials(false); setEditing(null); setShowImport(true); } } : {})}
+          {...(props.imports !== undefined ? { onShowImport: () => { setShowCredentials(false); setShowAgents(false); setEditing(null); setShowImport(true); } } : {})}
+          {...(props.agents !== undefined ? { onShowAgents: () => { setShowCredentials(false); setShowImport(false); setEditing(null); setShowAgents(true); } } : {})}
           onRetry={() => void reload()}
         />
       )}
@@ -173,15 +178,19 @@ export function ConnectPage(props: ConnectPageProps) {
         {showImport && props.imports !== undefined && (
           <ImportPanel api={props.imports} onImported={() => void reload()} onClose={() => setShowImport(false)} />
         )}
-        {editing !== null && !showCredentials && !showImport && (
+        {showAgents && props.agents !== undefined && (
+          <AgentPanel api={props.agents} profileNames={new Map((data.profiles ?? []).map((p) => [p.id, p.name]))} onClose={() => setShowAgents(false)} />
+        )}
+        {editing !== null && !showCredentials && !showImport && !showAgents && (
           <ProfileEditor
             key={editing.key}
             initial={editing.profile === null ? null : profileFieldsOf(editing.profile)}
+            {...(props.agents !== undefined ? { agentAccess: { api: props.agents, profileId: editing.profile === null ? null : editing.profile.id } } : {})}
             onSave={save}
             onCancel={() => setEditing(null)}
           />
         )}
-        <div hidden={editing !== null || showCredentials || showImport} className="rh-connect-sessions">
+        <div hidden={editing !== null || showCredentials || showImport || showAgents} className="rh-connect-sessions">
           <div className="rh-kind" role="group" aria-label="connection kind">
             {api !== undefined && <span className="rh-quick">Quick connect</span>}
             <button type="button" aria-pressed={kind === "ssh"} onClick={() => setKind("ssh")}>

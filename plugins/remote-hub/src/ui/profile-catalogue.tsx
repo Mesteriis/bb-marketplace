@@ -22,6 +22,8 @@ export interface ProfileCatalogueProps {
   onShowCredentials?: () => void;
   /** Opens the Import screen; the button shows only when this is given. */
   onShowImport?: () => void;
+  /** Opens the agent access and activity screen (stage 4a). */
+  onShowAgents?: () => void;
 }
 
 function endpoint(p: Profile): string {
@@ -58,6 +60,11 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
         {props.onShowCredentials !== undefined && (
           <button type="button" onClick={props.onShowCredentials}>
             Credentials
+          </button>
+        )}
+        {props.onShowAgents !== undefined && (
+          <button type="button" onClick={props.onShowAgents}>
+            Agent activity
           </button>
         )}
         {props.onShowImport !== undefined && (

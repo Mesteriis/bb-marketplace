@@ -10,6 +10,7 @@ import type { RdpAttach, RdpConnectTarget, RdpPageProps, RdpScreenshotResult } f
 import type { SshAttach, SshPageProps } from "./ssh-page.tsx";
 import type { CredentialItem, CredentialsApi, CredentialStateName } from "./use-credentials.ts";
 import type { ProfilesApi } from "./use-profiles.ts";
+import type { AgentApi } from "./agent-panel.tsx";
 import type { ImportApi } from "./import-panel.tsx";
 
 /** What useRpc().call looks like to this module; the page's own typing stays in app.tsx. */
@@ -19,6 +20,7 @@ export interface ConnectBridge {
   profiles: ProfilesApi;
   credentials: CredentialsApi;
   imports: ImportApi;
+  agents: AgentApi;
   ssh: Pick<SshPageProps, "onSshOpen" | "onAttach" | "onClose">;
   rdp: Pick<RdpPageProps, "onRdpOpen" | "onAttach" | "onClose" | "onDecision" | "onScreenshot">;
 }
@@ -61,6 +63,12 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
       forget: (host) => send("known_hosts_forget", { host }),
       rdpCerts: () => send("rdp_trusted_list", {}),
       forgetRdpCert: (host, port, fingerprint) => send("rdp_trusted_forget", { host, port, fingerprint }),
+    },
+    agents: {
+      list: () => send("agent_access_list", {}),
+      set: (profileId, level, recordCommands) => send("agent_access_set", { profileId, level, recordCommands }),
+      revokeAll: () => send("agent_access_revoke_all", {}),
+      audit: (limit) => send("agent_audit_list", { limit }),
     },
     ssh: {
       onSshOpen: (target: SshTarget, profileId?: string, credentialRef?: string) => send<SessionHandle>("ssh_open", { target, profileId, credentialRef }),

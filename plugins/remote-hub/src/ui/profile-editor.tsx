@@ -1,6 +1,8 @@
 // Host-free profile editor (stage 3a). Sections: Connection, Authentication,
 // the protocol's own fields, Source. No secret field exists here: a password is
 // typed when connecting, and the credential reference is carried through as it was.
+import { AgentAccessSection } from "./agent-access-section.tsx";
+import type { AgentApi } from "./agent-panel.tsx";
 import { useState } from "react";
 import { profileFieldsSchema, type ProfileFields } from "../core/profile.ts";
 
@@ -10,6 +12,8 @@ export type SecretAction = { type: "keep" } | { type: "save"; secret: string } |
 export interface ProfileEditorProps {
   /** null = a new profile. */
   initial: ProfileFields | null;
+  /** Agent access for this profile (stage 4a): a separate, immediate act of the owner. Absent: no such section. */
+  agentAccess?: { api: AgentApi; profileId: string | null };
   onSave: (fields: ProfileFields, secret: SecretAction) => Promise<void>;
   onCancel: () => void;
 }
@@ -265,6 +269,8 @@ export function ProfileEditor(props: ProfileEditorProps) {
           </label>
         </fieldset>
       )}
+
+      {props.agentAccess !== undefined && <AgentAccessSection api={props.agentAccess.api} profileId={props.agentAccess.profileId} />}
 
       <fieldset aria-label="Source">
         <legend>Source</legend>
