@@ -89,6 +89,9 @@ export function RdpCanvas(props: RdpCanvasProps) {
     let fb = { width: 0, height: 0 };
     let lastAcked = -1;
     const held = new HeldKeys();
+    // Buttons pressed on the canvas and not yet released, with the last pointer position.
+    const heldButtons = new Set<number>();
+    let lastPos = { x: 0, y: 0 };
     let queue: RdpViewInputEvent[] = [];
     let frameRequest: number | null = null;
 
@@ -139,11 +142,23 @@ export function RdpCanvas(props: RdpCanvasProps) {
       refresh: () => sendJson({ type: "refresh" }),
     };
 
+    /** Button-up events for every button still held (released outside the canvas, focus
+     *  lost, session ended): the remote must not keep a button pressed. */
+    const releaseButtons = (): RdpViewInputEvent[] => {
+      const events: RdpViewInputEvent[] = [];
+      for (const button of heldButtons) {
+        const up = mouseButtonEvent(button, false, lastPos, fb);
+        if (up !== null) events.push(up);
+      }
+      heldButtons.clear();
+      return events;
+    };
     const setReady = (value: boolean): void => {
       ready = value;
       if (!value) {
         queue = [];
         held.releaseAll();
+        heldButtons.clear();
       }
     };
 
@@ -223,11 +238,14 @@ export function RdpCanvas(props: RdpCanvasProps) {
           break;
       }
     };
-    socket.onclose = (event: { code: number }) => {
+    socket.onclose = (event: { code: number; reason?: string }) => {
       if (disposed) return;
       setReady(false);
       if (event.code === 4000) return; // the closed message already reported the end
-      if (event.code === 4410) emit({ type: "closed", exitCode: null, signal: null, reason: "helper_exited" });
+      // 4410 is both "the helper exited" and "this session is not known to the
+      // helper any more"; the service gives the second its own close reason text.
+      if (event.code === 4410 && event.reason === "session_not_found") emit({ type: "error", code: "session_not_found" });
+      else if (event.code === 4410) emit({ type: "closed", exitCode: null, signal: null, reason: "helper_exited" });
       else if (event.code === 4401) emit({ type: "error", code: "attach_token_expired" });
       else emit({ type: "socket", state: "detached" });
     };
@@ -245,10 +263,30 @@ export function RdpCanvas(props: RdpCanvasProps) {
     const onMouseButton = (down: boolean) => (event: MouseEvent): void => {
       if (down) canvas.focus();
       const pos = position(event);
-      if (pos === null) return;
+      if (pos === null) {
+        // A release over a letterbox bar still ends the press.
+        if (!down) heldButtons.delete(event.button);
+        return;
+      }
+      lastPos = pos;
       const input = mouseButtonEvent(event.button, down, pos, fb);
-      if (input !== null) enqueue([mouseMoveEvent(pos, fb), input]);
+      if (input !== null) {
+        if (down && ready) heldButtons.add(event.button);
+        else heldButtons.delete(event.button);
+        enqueue([mouseMoveEvent(pos, fb), input]);
+      }
       event.preventDefault();
+    };
+    const onWindowMouseUp = (event: MouseEvent): void => {
+      // A release anywhere else in the window (the canvas handler already ran for
+      // a release on it and cleared the button).
+      if (!heldButtons.has(event.button)) return;
+      const up = mouseButtonEvent(event.button, false, lastPos, fb);
+      heldButtons.delete(event.button);
+      if (up !== null && ready && socket.readyState === WebSocket.OPEN) {
+        queue = [];
+        sendJson({ type: "input", events: [up] });
+      }
     };
     const onWheel = (event: WheelEvent): void => {
       const pos = position(event);
@@ -267,7 +305,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
     };
     const onBlur = (): void => {
       // Keys still held would stay stuck on the remote: release them now.
-      const releases = held.releaseAll();
+      const releases = [...held.releaseAll(), ...releaseButtons()];
       if (releases.length > 0 && ready && socket.readyState === WebSocket.OPEN) {
         queue = [];
         sendJson({ type: "input", events: releases });
@@ -285,13 +323,15 @@ export function RdpCanvas(props: RdpCanvasProps) {
       ["contextmenu", onContextMenu],
     ];
     for (const [name, handler] of handlers) canvas.addEventListener(name, handler);
+    window.addEventListener("mouseup", onWindowMouseUp);
 
     return () => {
       disposed = true;
       for (const [name, handler] of handlers) canvas.removeEventListener(name, handler);
+      window.removeEventListener("mouseup", onWindowMouseUp);
       if (frameRequest !== null) cancelAnimationFrame(frameRequest);
       if (socket.readyState === WebSocket.OPEN) {
-        const releases = held.releaseAll();
+        const releases = [...held.releaseAll(), ...releaseButtons()];
         if (releases.length > 0 && ready) socket.send(JSON.stringify({ type: "input", events: releases }));
         socket.send(JSON.stringify({ type: "detach" }));
       }

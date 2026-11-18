@@ -233,6 +233,8 @@ three RPCs and the same attach socket as SSH. There is no UI yet (stage 2b-3).
   error (the helper validates every frame, so it is not expected); `screenshot_too_large`
   cannot occur at the largest desktop (64 chunks = 48 MiB of base64 against a
   ~44 MiB worst-case PNG).
+- **Hidden pane**: the SSH | RDP switch hides the inactive page with `hidden`, it does not unmount it, so a hidden RDP canvas keeps drawing and acking frames (the session stays live and cheap to show again).
+- **Close code 4410** is used for both "the helper exited" (reason `helper exited`) and "this session is not known any more" (reason `session_not_found`); the canvas tells them apart by the close reason.
 - **Live probe**: `scripts/rdp-probe.ts` (not part of the bundle), see
   docs/rdp-windows-check.md.
 

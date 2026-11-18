@@ -12,6 +12,7 @@ interface Put {
   first: number[];
 }
 let puts: Put[] = [];
+let order: string[] = [];
 let rafQueue: Array<() => void> = [];
 
 class FakeImageData {
@@ -26,13 +27,14 @@ class FakeWebSocket {
   sent: string[] = [];
   onopen: (() => void) | null = null;
   onmessage: ((e: { data: unknown }) => void) | null = null;
-  onclose: ((e: { code: number }) => void) | null = null;
+  onclose: ((e: { code: number; reason?: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   constructor(public url: string) {
     FakeWebSocket.instances.push(this);
     queueMicrotask(() => this.onopen?.());
   }
   send(data: string) {
+    if (JSON.parse(data).type === "ack") order.push("ack");
     this.sent.push(data);
   }
   close(code = 1000) {
@@ -52,6 +54,7 @@ class FakeWebSocket {
 
 beforeEach(() => {
   puts = [];
+  order = [];
   rafQueue = [];
   FakeWebSocket.instances = [];
   const g = globalThis as unknown as Record<string, unknown>;
@@ -63,6 +66,7 @@ beforeEach(() => {
   };
   HTMLCanvasElement.prototype.getContext = (() => ({
     putImageData(image: FakeImageData, x: number, y: number) {
+      order.push("draw");
       puts.push({ w: image.width, h: image.height, x, y, first: Array.from(image.data.subarray(0, 4)) });
     },
   })) as never;
@@ -163,6 +167,13 @@ describe("RdpCanvas: painting and acks", () => {
     }
   });
 
+  it("acks only AFTER the update is drawn", async () => {
+    const { binary } = await mount();
+    await binary(chunk(3, [8, 4], [0, 0, 8, 4], [1, 2, 3, 255]));
+    await binary(chunk(4, [8, 4], [3, 1, 2, 2], [1, 2, 3, 255]));
+    expect(order).toEqual(["draw", "ack", "draw", "ack"]);
+  });
+
   it("ignores a malformed binary frame without drawing or acking", async () => {
     const { socket, binary } = await mount();
     await binary(new ArrayBuffer(10));
@@ -188,8 +199,13 @@ describe("RdpCanvas: events from the service", () => {
 
   it("socket close 4410 is a helper_exited close, 4000 reports nothing (the closed message did), others detach", async () => {
     const a = await mount();
-    await act(async () => void a.socket.onclose?.({ code: 4410 }));
+    await act(async () => void a.socket.onclose?.({ code: 4410, reason: "helper exited" }));
     expect(a.events.at(-1)).toEqual({ type: "closed", exitCode: null, signal: null, reason: "helper_exited" });
+    cleanup();
+    FakeWebSocket.instances = [];
+    const stale = await mount();
+    await act(async () => void stale.socket.onclose?.({ code: 4410, reason: "session_not_found" }));
+    expect(stale.events.at(-1)).toEqual({ type: "error", code: "session_not_found" });
     cleanup();
     FakeWebSocket.instances = [];
     const b = await mount();
@@ -318,6 +334,46 @@ describe("RdpCanvas: input", () => {
     fireEvent.blur(canvas);
     fireEvent.blur(canvas);
     expect(socket.inputs.slice(before)).toEqual([[{ kind: "key", scancode: 0x1d, extended: false, down: false }]]);
+  });
+
+  it("a button released OUTSIDE the canvas is released on the remote too (window mouseup)", async () => {
+    const { socket, canvas, ready, frames } = await mount();
+    await ready();
+    fireEvent.mouseDown(canvas, { clientX: 200, clientY: 150, button: 0 });
+    await frames();
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(socket.inputs.at(-1)).toEqual([{ kind: "mouse_button", button: "left", down: false, x: 200, y: 150, fbWidth: 800, fbHeight: 600 }]);
+    fireEvent.mouseUp(window, { button: 0 }); // nothing held any more
+    expect(socket.inputs.length).toBe(2);
+  });
+
+  it("a button still held when focus is lost, the session ends or the view unmounts is released", async () => {
+    const a = await mount();
+    await a.ready();
+    fireEvent.mouseDown(a.canvas, { clientX: 10, clientY: 20, button: 2 });
+    await a.frames();
+    fireEvent.blur(a.canvas);
+    expect(a.socket.inputs.at(-1)).toEqual([{ kind: "mouse_button", button: "right", down: false, x: 10, y: 20, fbWidth: 800, fbHeight: 600 }]);
+    cleanup();
+    FakeWebSocket.instances = [];
+    const b = await mount();
+    await b.ready();
+    fireEvent.mouseDown(b.canvas, { clientX: 30, clientY: 40, button: 0 });
+    await b.frames();
+    b.view.unmount();
+    expect(b.socket.messages.slice(-2)).toEqual([
+      { type: "input", events: [{ kind: "mouse_button", button: "left", down: false, x: 30, y: 40, fbWidth: 800, fbHeight: 600 }] },
+      { type: "detach" },
+    ]);
+  });
+
+  it("a button release over the canvas is not repeated by the window listener", async () => {
+    const { socket, canvas, ready, frames } = await mount();
+    await ready();
+    fireEvent.mouseDown(canvas, { clientX: 5, clientY: 6, button: 0 });
+    fireEvent.mouseUp(canvas, { clientX: 5, clientY: 6, button: 0 });
+    await frames();
+    expect(socket.inputs.flat().filter((e) => e.kind === "mouse_button").map((e) => e.down)).toEqual([true, false]);
   });
 
   it("ctrl_alt_del from the handle goes out at once, and only when the desktop is ready", async () => {
