@@ -8,7 +8,7 @@ import type { AgentAudit, AuditDetailMode, AuditTicket } from "./agent-audit.ts"
 import type { ToolBudget } from "./agent-budget.ts";
 import type { Profile } from "./profile.ts";
 import type { ScrollbackRead } from "./scrollback.ts";
-import { frameRemoteOutput, sanitizeTerminalBytes } from "./terminal-text.ts";
+import { CONTEXT_BYTES, frameRemoteOutput, sanitizeTerminalBytes } from "./terminal-text.ts";
 
 export type ToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 export interface ToolResult {
@@ -282,7 +282,10 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
           const read = ports.sessions.read(params.sessionId, params.sinceOffset ?? null, params.maxBytes ?? TERMINAL_READ_DEFAULT);
           if (read === null) throw noSession();
           const meta = { sessionId: params.sessionId, fromOffset: read.start, nextOffset: read.end, bytes: read.bytes.byteLength, gap: read.gap, state: session.state };
-          return { content: [json(meta), text(frameRemoteOutput(sanitizeTerminalBytes(read.bytes)))] };
+          // A read can start inside an escape sequence: the bytes just before it put the sanitizer in the right state.
+          const before = read.start > 0 ? ports.sessions.read(params.sessionId, Math.max(0, read.start - CONTEXT_BYTES), CONTEXT_BYTES) : null;
+          const context = before === null || before.start >= read.start ? undefined : before.bytes.subarray(0, read.start - before.start);
+          return { content: [json(meta), text(frameRemoteOutput(sanitizeTerminalBytes(read.bytes, context)))] };
         }),
     }),
     def({
