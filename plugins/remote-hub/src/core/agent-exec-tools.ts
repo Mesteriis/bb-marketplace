@@ -119,6 +119,13 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
     if (n > 0) map.set(key, n);
     else map.delete(key);
   };
+  /** Starts that are awaiting the helper: a revoke or a lost watcher marks them, and the mark stays even if access returns. */
+  interface PendingStart {
+    profileId: string;
+    sessionKey: string;
+    invalidated: "owner_not_watching" | "agent_access_denied" | null;
+  }
+  const pendingStarts = new Set<PendingStart>();
   const graceMs = deps.watchGraceMs ?? EXEC_WATCH_GRACE_MS;
   /** Sessions whose watcher left while commands run: the commands are cancelled when the grace ends, unless one returns. */
   const graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -145,6 +152,7 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
     for (const c of commands.values()) {
       if (c.running && !access.check(c.profileId, "exec").ok) stopFor(c, "agent_access_denied");
     }
+    for (const p of pendingStarts) if (p.invalidated === null && !access.check(p.profileId, "exec").ok) p.invalidated = "agent_access_denied";
   });
 
   /**
@@ -170,7 +178,10 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
     timer.unref?.();
     graceTimers.set(sessionKey, timer);
   };
-  control.onWatchChange((sessionKey) => reconcile(sessionKey));
+  control.onWatchChange((sessionKey, watching) => {
+    if (!watching && control.watchingRequired()) for (const p of pendingStarts) if (p.sessionKey === sessionKey && p.invalidated === null) p.invalidated = "owner_not_watching";
+    reconcile(sessionKey);
+  });
   control.onRuleChange(() => {
     for (const key of new Set([...commands.values()].map((c) => c.sessionKey))) reconcile(key);
   });
@@ -229,6 +240,8 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
           bump(starting, ctx.threadId, 1);
           bump(startingBySession, session.key, 1);
           const id = newId();
+          const pending: PendingStart = { profileId: session.profileId, sessionKey: session.key, invalidated: null };
+          pendingStarts.add(pending);
           let run: { runKey: string };
           try {
             run = await exec.start({ commandId: id, sessionKey: session.key, profileId: session.profileId, command: params.command, timeoutMs: timeoutSeconds * 1000 });
@@ -239,6 +252,7 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
             if (typeof code === "string" && code in COMMAND_ERRORS) throw new ToolError(code, COMMAND_ERRORS[code] as string);
             throw new ToolError("exec_failed", "the command could not be started; the owner can see why on the Remote Hub page");
           } finally {
+            pendingStarts.delete(pending);
             bump(starting, ctx.threadId, -1);
             bump(startingBySession, session.key, -1);
           }
@@ -249,7 +263,15 @@ export function createExecTools(deps: AgentExecDeps): AgentToolDef[] {
           deps.feed?.emit(session.key, { kind: "exec", commandId: id, phase: "started", text: params.command.slice(0, 2000) });
           // Authorization is checked again now that the run exists: a revoke, a closed session or a watcher that left while
           // it was starting ends it, and nothing about it is returned.
-          const stillOpen = sessionOf(session.key)?.state !== "closed";
+          // The session must still exist, be open and still be this thread's (the checks made before the start).
+          const now = sessionOf(session.key);
+          const stillOurs = now !== undefined && now.state !== "closed" && now.control !== "never" && registry.threadOf(session.key) === ctx.threadId;
+          const stillOpen = stillOurs;
+          if (pending.invalidated !== null) {
+            // A revoke or a lost watcher happened while the start was in flight: the mark stays even if access is back.
+            stopFor(command, pending.invalidated);
+            throw pending.invalidated === "owner_not_watching" ? NOT_WATCHING : new ToolError("agent_access_denied", "the owner has not allowed agents to run commands on this connection");
+          }
           if (!access.check(session.profileId, "exec").ok) {
             stopFor(command, "agent_access_denied");
             throw new ToolError("agent_access_denied", "the owner has not allowed agents to run commands on this connection");

@@ -575,6 +575,14 @@ impl RdpManager {
     pub fn set_owner(&mut self, id: u32, owner: &str, request: u64) -> Result<OwnerHandoff, EnqueueError> {
         let s = self.sessions.get_mut(&id).ok_or(EnqueueError::UnknownSession)?;
         if s.owner == owner {
+            // The same driver again. If the engine has not yet answered the change to it (a retry after a timeout), this
+            // request joins that outstanding answer: nothing may be reported as applied before the engine confirmed it. The
+            // engine hears the same generation once more (it is idempotent there) so every waiter gets its own answer.
+            if s.fd >= 0 && s.desktop_ready && !s.owner_waiters.is_empty() {
+                s.write_buf.extend(protocol::encode_control(&EngineCommand::SetOwner { generation: s.generation, request: s.generation }));
+                s.owner_waiters.push_back((request, 0));
+                return Ok(OwnerHandoff::Waiting);
+            }
             return Ok(OwnerHandoff::Done { dropped: 0 });
         }
         let dropped: u64 = s.pending_input.drain(..).map(|(_, events)| events.len() as u64).sum();
@@ -1401,6 +1409,27 @@ mod tests {
         write_all(b, &encode_control(&EngineEvent::OwnerSet { request: 1, released: 1 }));
         let frames = mgr.process_readable(id, usize::MAX);
         assert!(matches!(frames.as_slice(), [RdpFrame::OwnerSet { request: 77, dropped: 0, released: 1 }]), "{frames:?}");
+        unsafe { libc::close(b) };
+    }
+
+    #[test]
+    fn a_repeated_request_for_the_owner_being_applied_joins_the_outstanding_answer_instead_of_reporting_done() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        desktop(&mut mgr, id, b, 800, 600);
+        assert_eq!(mgr.set_owner(id, "suspended:L1", 10).unwrap(), OwnerHandoff::Waiting);
+        // The first request timed out in the service and is sent again; the engine has not answered yet.
+        assert_eq!(mgr.set_owner(id, "suspended:L1", 11).unwrap(), OwnerHandoff::Waiting, "must not claim the change was applied");
+        mgr.write_pending(id);
+        let sent = read_available(b);
+        assert_eq!(sent.matches("\"type\":\"set_owner\"").count(), 2, "{sent}");
+        write_all(b, &encode_control(&EngineEvent::OwnerSet { request: 1, released: 2 }));
+        write_all(b, &encode_control(&EngineEvent::OwnerSet { request: 1, released: 0 }));
+        let frames = mgr.process_readable(id, usize::MAX);
+        assert!(matches!(frames.as_slice(), [RdpFrame::OwnerSet { request: 10, .. }, RdpFrame::OwnerSet { request: 11, .. }]), "{frames:?}");
+        // Once answered, a repeat is plain Done.
+        assert_eq!(mgr.set_owner(id, "suspended:L1", 12).unwrap(), OwnerHandoff::Done { dropped: 0 });
         unsafe { libc::close(b) };
     }
 

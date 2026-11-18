@@ -15,7 +15,7 @@ import { AgentBanner, type AgentBannerApi } from "./src/ui/agent-banner.tsx";
 import { LiveSession, parseSessionKey, type LiveSessionApi } from "./src/ui/live-session.tsx";
 import { SessionCard, type SessionCardApi } from "./src/ui/session-card.tsx";
 import type { AgentSessionView } from "./src/ui/agent-panel.tsx";
-import { SESSION_PAGE, autoSplitOnSignal, openWatchInSplit, splitShows } from "./src/ui/split-watch.ts";
+import { SESSION_PAGE, autoSplitOnSignal, focusedThread, openWatchInSplit, splitShows } from "./src/ui/split-watch.ts";
 import { LIVE_TAB_ID, revealSession } from "./src/ui/reveal.ts";
 
 /** The plugin's realtime channel: "an agent did something" (identifiers only). Same string as AGENT_SIGNAL_CHANNEL on the server. */
@@ -44,10 +44,24 @@ function useSplitActions() {
   const layout = useSidebarSplitLayout();
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
+  const context = useBbContext();
+  const contextRef = useRef(context);
+  contextRef.current = context;
   return useMemo(
     () => ({
       watchInSplit: (sessionKey: string, agentThread: string | null) =>
-        openWatchInSplit({ nav: navigate, sessionKey, agentThread, isSplit: (t) => splitShows(layoutRef.current, t) }),
+        openWatchInSplit({
+          nav: navigate,
+          sessionKey,
+          agentThread,
+          isSplit: (t) => splitShows(layoutRef.current, t),
+          // Still where we put them: the agent's thread is in focus, or the surface is not a thread (the plugin page).
+          // Another thread in focus means the owner went elsewhere, and nobody is dragged back.
+          stillHere: () => {
+            const focused = focusedThread(layoutRef.current, contextRef.current.threadId);
+            return focused === null || focused === agentThread;
+          },
+        }),
       open: (sessionKey: string) => navigate.toPluginPanel(SESSION_PAGE, { subPath: sessionKey }),
       openThread: (threadId: string) => navigate.toThread(threadId),
       layout: () => layoutRef.current,

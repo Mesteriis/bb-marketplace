@@ -491,14 +491,21 @@ describe.skipIf(!dockerOk)("remote commands over a real sshd (stage 4b-2)", () =
     const off = c.feed.subscribe(sessionId, (e) => seen.push(e));
     const started = await run("echo LIVE-MARKER-1; sleep 1; echo LIVE-MARKER-2");
     const r = await read(started.commandId);
-    off();
     expect(r.exitCode).toBe(0);
-    await poll(() => seen.some((e) => e.phase === "finished"), 10_000, "the live view saw the end");
-    expect(seen.find((e) => e.commandId === started.commandId && e.phase === "started")).toMatchObject({ kind: "exec", phase: "started", text: "echo LIVE-MARKER-1; sleep 1; echo LIVE-MARKER-2" });
-    expect(seen.filter((e) => e.phase === "output").map((e) => e.text).join("")).toContain("LIVE-MARKER-2");
-    // One public id from start to end, through the production adapter.
-    expect(seen.filter((e) => e.commandId === started.commandId).length).toBeGreaterThanOrEqual(3);
-    expect(seen.every((e) => /^cmd_[0-9a-f]+$/.test(e.commandId))).toBe(true); // never a run key
+    // Keep listening until THIS command's finish event arrives.
+    await poll(() => seen.some((e) => e.kind === "exec" && e.commandId === started.commandId && e.phase === "finished"), 10_000, "the live view saw this command's end");
+    off();
+    const mine = seen.filter((e) => e.kind === "exec" && e.commandId === started.commandId);
+    // One public id from start to end, through the production adapter: the start, every output and the finish carry it.
+    expect(mine[0]).toMatchObject({ phase: "started", text: "echo LIVE-MARKER-1; sleep 1; echo LIVE-MARKER-2" });
+    expect(mine.at(-1)).toMatchObject({ phase: "finished" });
+    const outputs = mine.filter((e) => e.phase === "output");
+    expect(outputs.length).toBeGreaterThan(0);
+    expect(outputs.map((e) => e.text).join("")).toContain("LIVE-MARKER-2");
+    // No event of this run is named by anything else (a run key would not look like a command id).
+    const stray = seen.filter((e) => e.kind === "exec" && e.commandId !== started.commandId && /LIVE-MARKER/.test(e.text ?? ""));
+    expect(stray).toEqual([]);
+    expect(seen.every((e) => e.kind !== "exec" || /^cmd_[0-9a-f]+$/.test(e.commandId))).toBe(true);
     expect(JSON.stringify(c.rows)).not.toContain("LIVE-MARKER");
     expect(c.rows.filter((x) => x.tool === "remote_ssh_exec").every((x) => x.detailMode === "length" && /^len \d+$/.test(x.detail ?? ""))).toBe(true);
     void handle;

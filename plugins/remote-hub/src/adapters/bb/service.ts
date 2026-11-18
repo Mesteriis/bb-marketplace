@@ -214,20 +214,41 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   const appliedOwner = new Map<string, string>();
   /** The last driver tag SCHEDULED for the helper: a change is queued with the tag it had when it happened. */
   const queuedOwner = new Map<string, string>();
-  const syncOwner = async (handle: SessionHandle, want: string): Promise<void> => {
+  /**
+   * The earliest change of driver the helper has NOT confirmed (fail closed). While one is outstanding no input is accepted
+   * for the session, and no later change is sent as if it had been applied: the outstanding one is retried first.
+   */
+  const unconfirmedOwner = new Map<string, string>();
+  /** True when the helper confirmed `want`; false when it could not be (kept as unconfirmed); true also when the session is gone. */
+  const sendOwner = async (handle: SessionHandle, want: string): Promise<boolean> => {
     const key = keyOf(handle);
-    if (deps.control === undefined) return;
     for (let attempt = 0; attempt < 3; attempt++) {
-      if ((appliedOwner.get(key) ?? "human") === want) return;
+      if ((appliedOwner.get(key) ?? "human") === want && unconfirmedOwner.get(key) !== want) return true;
       try {
         await (await start()).sessionSetOwner(handle, want);
         appliedOwner.set(key, want);
+        return true;
       } catch (error) {
         const gone = error instanceof HelperRequestError && (error.code === "unknown_session" || error.code === "session_not_found");
-        if (gone || helper === null || !sessions.has(key) || sessions.get(key)?.state === "closed") return;
+        if (gone || helper === null || !sessions.has(key) || sessions.get(key)?.state === "closed") {
+          unconfirmedOwner.delete(key);
+          return true;
+        }
         await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
       }
     }
+    return false;
+  };
+  const syncOwner = async (handle: SessionHandle, want: string): Promise<void> => {
+    const key = keyOf(handle);
+    if (deps.control === undefined) return;
+    const earlier = unconfirmedOwner.get(key);
+    if (earlier !== undefined && earlier !== want) {
+      if (!(await sendOwner(handle, earlier))) return; // still not confirmed: nothing later is sent as if it were
+      unconfirmedOwner.delete(key);
+    }
+    if (await sendOwner(handle, want)) unconfirmedOwner.delete(key);
+    else unconfirmedOwner.set(key, want);
   };
   /**
    * Schedules a change of driver for the helper. Changes are sent in the order they happened, each with the tag it had THEN
@@ -250,11 +271,14 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   };
   const handoff = async (handle: SessionHandle): Promise<void> => {
     await handoffs.get(keyOf(handle));
-    if (deps.control !== undefined && (appliedOwner.get(keyOf(handle)) ?? "human") !== deps.control.ownerTag(handle)) {
+    const key = keyOf(handle);
+    if (deps.control !== undefined && ((appliedOwner.get(key) ?? "human") !== deps.control.ownerTag(handle) || unconfirmedOwner.has(key))) {
       queueSync(handle, true);
-      await handoffs.get(keyOf(handle));
+      await handoffs.get(key);
     }
   };
+  /** Input is refused while a change of driver is unconfirmed (the helper may still be applying the previous driver). */
+  const ownerUnconfirmed = (handle: SessionHandle): boolean => unconfirmedOwner.has(keyOf(handle));
   const lostLease = () => new HelperRequestError("lease_lost", "this input belongs to a lease that is no longer the session's driver");
   const askpassState = (key: string): AskpassState => {
     let state = askpassStates.get(key);
@@ -378,6 +402,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       appliedOwner.delete(key);
       handoffs.delete(key);
       queuedOwner.delete(key);
+      unconfirmedOwner.delete(key);
     }, EVICT_CLOSED_AFTER_MS);
   };
 
@@ -848,7 +873,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
           if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
           await handoff(handle);
           // Ownership is checked again at dispatch, after the barrier: a takeover or a lease may have come meanwhile.
-          if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
+          if (ownerUnconfirmed(handle) || (deps.control !== undefined && !deps.control.humanMayDrive(handle))) return false;
           const hp = await start();
           await hp.rdpInput(handle, events);
           return true;
@@ -1034,7 +1059,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       requireGeneration(handle);
       if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
       await handoff(handle);
-      if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
+      if (ownerUnconfirmed(handle) || (deps.control !== undefined && !deps.control.humanMayDrive(handle))) return false;
       const process = await start();
       process.writeInput(handle.sessionId, data);
       return true;
@@ -1042,7 +1067,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     async agentTerminalInput(handle, data, owner) {
       requireGeneration(handle);
       await handoff(handle);
-      if (deps.control === undefined || deps.control.ownerTag(handle) !== owner) throw lostLease();
+      if (ownerUnconfirmed(handle) || deps.control === undefined || deps.control.ownerTag(handle) !== owner) throw lostLease();
       const process = await start();
       try {
         await process.sessionInputFrom(handle, new TextDecoder().decode(data), owner);
@@ -1055,7 +1080,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       requireGeneration(handle);
       if (rdpRecord(keyOf(handle))?.rdp?.state !== "desktop_ready") throw new HelperRequestError("not_ready", "the desktop is not ready yet");
       await handoff(handle);
-      if (deps.control === undefined || deps.control.ownerTag(handle) !== owner) throw lostLease();
+      if (ownerUnconfirmed(handle) || deps.control === undefined || deps.control.ownerTag(handle) !== owner) throw lostLease();
       const hp = await start();
       try {
         await hp.rdpInput(handle, events, owner);

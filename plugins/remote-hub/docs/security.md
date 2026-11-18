@@ -111,7 +111,8 @@ Limits, plainly:
 2. Observe shows everything on screen or in the terminal, secrets included, and the scrollback.
 3. The helper binary is unsigned; the Keychain item is protected by the user's login Keychain, not by the helper.
 4. The watching gate proves a view is on screen in the focused BB window, not that a person looks at it; a window left
-   focused on it counts. The owner can
+   focused on it counts. "On screen" is viewport intersection of the view's element, so an element drawn over the view (a modal,
+   another panel) does not stop it counting. The owner can
    switch the rule off, and then an agent can act while nobody looks.
 5. The live-view line in a reply depends on the agent following the skill text; the banner and the audit do not.
 6. `openTab` (opening the live view without a click) is best effort and untested against a real BB; the SDK surfaces used

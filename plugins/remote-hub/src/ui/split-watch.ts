@@ -76,6 +76,8 @@ export async function openWatchInSplit(args: {
   sessionKey: string;
   agentThread: string | null;
   isSplit: (agentThread: string) => boolean;
+  /** True while the owner is still where we put them (the session page or the agent's thread); false once they went elsewhere. */
+  stillHere?: () => boolean;
   wait?: (ms: number) => Promise<void>;
   settleMs?: number;
 }): Promise<SplitOutcome> {
@@ -85,6 +87,8 @@ export async function openWatchInSplit(args: {
   nav.toThread(agentThread, { split: true });
   await (args.wait ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(args.settleMs ?? 1200);
   if (args.isSplit(agentThread)) return { result: "split" };
+  // The owner may have gone somewhere else during the wait: never drag them back.
+  if (args.stillHere !== undefined && !args.stillHere()) return { result: "fallback" };
   nav.toPluginPanel(SESSION_PAGE, { subPath: sessionKey });
   return { result: "fallback" };
 }

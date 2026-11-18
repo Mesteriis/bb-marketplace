@@ -372,6 +372,26 @@ describe("Z2: a change of driver is a barrier the helper acknowledges, and stale
     expect(helper.owners).toEqual(["agent:lease-1", "suspended:lease-1", "agent:lease-1"]);
   });
 
+  it("C2: a suspension the helper cannot confirm keeps input refused, and the resume is not sent as if it had been applied", async () => {
+    const { helper, service, leases, setSuspended } = setup();
+    const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24);
+    leases.acquire(KEY(h), "thr_a", 60);
+    await settle();
+    helper.failOwner = 1000; // the helper does not answer at all for a while
+    setSuspended(h, true);
+    await new Promise((r) => setTimeout(r, 500));
+    setSuspended(h, false); // the watcher is back
+    await new Promise((r) => setTimeout(r, 100));
+    await expect(service.agentTerminalInput(h, new TextEncoder().encode("x"), "agent:lease-1")).rejects.toMatchObject({ code: "lease_lost" });
+    expect(helper.agentTyped, "nothing reaches the session while a change of driver is unconfirmed").toEqual([]);
+    expect(helper.owners.filter((o) => o === "agent:lease-1").length, "only the original acquire carries agent:lease-1").toBe(1);
+    // The helper recovers: the suspension is confirmed first, then the resume.
+    helper.failOwner = 0;
+    await service.agentTerminalInput(h, new TextEncoder().encode("y"), "agent:lease-1");
+    expect(helper.owners.slice(-2)).toEqual(["suspended:lease-1", "agent:lease-1"]);
+    expect(helper.agentTyped.map((t) => t.text)).toEqual(["y"]);
+  }, 10_000);
+
   it("the human's keys wait for the handoff to be acknowledged, then are dropped if an agent is the driver", async () => {
     const { helper, service, leases, attach } = setup();
     const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24);

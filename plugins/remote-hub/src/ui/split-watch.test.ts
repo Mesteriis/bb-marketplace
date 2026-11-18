@@ -28,6 +28,16 @@ describe("openWatchInSplit", () => {
     expect(calls).toEqual([`panel:ssh:${KEY}`, "thread:thr_a:split", `panel:ssh:${KEY}`]);
   });
 
+  it("C3: the fallback does not navigate when the owner has gone elsewhere during the wait", async () => {
+    const { n, calls } = nav();
+    const r = await openWatchInSplit({ nav: n, sessionKey: KEY, agentThread: "thr_a", isSplit: () => false, stillHere: () => false, wait: now });
+    expect(r.result).toBe("fallback");
+    expect(calls).toEqual([`panel:ssh:${KEY}`, "thread:thr_a:split"]);
+    const again = nav();
+    await openWatchInSplit({ nav: again.n, sessionKey: KEY, agentThread: "thr_a", isSplit: () => false, stillHere: () => true, wait: now });
+    expect(again.calls.at(-1)).toBe(`panel:ssh:${KEY}`);
+  });
+
   it("without a thread it only shows the session page", async () => {
     const { n, calls } = nav();
     const r = await openWatchInSplit({ nav: n, sessionKey: KEY, agentThread: null, isSplit: () => true, wait: now });

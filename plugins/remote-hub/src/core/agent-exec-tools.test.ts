@@ -454,6 +454,64 @@ describe("B2: a command does not outlive the authorization it was started under"
     expect(t.cancelled).toEqual(["run-1"]);
   });
 
+  /** Holds exec.start until `release()`, so the test can change the world while the start is in flight. */
+  function gated(t: ReturnType<typeof setup>) {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const start = t.exec.start;
+    t.exec.start = async (req) => {
+      await gate;
+      return start(req);
+    };
+    return release;
+  }
+
+  it("C1: a revoke that is undone before the start returns still ends that start (the mark stays)", async () => {
+    const t = setupExec();
+    const release = gated(t);
+    const pending = t.call("remote_ssh_exec", { sessionId: SSH, command: "id" });
+    await Promise.resolve();
+    t.access.set(P, "input", false); // revoked ...
+    t.access.set(P, "exec", false); // ... and restored before the helper answers
+    release();
+    const text = t.textOf(await pending);
+    expect(text).toContain("agent_access_denied");
+    expect(text).not.toContain("commandId");
+    expect(t.cancelled).toEqual(["run-1"]);
+  });
+
+  it("C1: a watcher that leaves and returns during the start still ends that start", async () => {
+    const t = setupExec();
+    const release = gated(t);
+    const pending = t.call("remote_ssh_exec", { sessionId: SSH, command: "id" });
+    await Promise.resolve();
+    t.setWatching(false);
+    t.setWatching(true);
+    release();
+    const text = t.textOf(await pending);
+    expect(text).toContain("owner_not_watching");
+    expect(text).not.toContain("commandId");
+    expect(t.cancelled).toEqual(["run-1"]);
+  });
+
+  it("C1: a session that vanished, or is no longer this thread's, during the start ends it (a missing session is not an open one)", async () => {
+    for (const how of ["gone", "closed", "not_ours"] as const) {
+      const t = setupExec();
+      const release = gated(t);
+      const pending = t.call("remote_ssh_exec", { sessionId: SSH, command: "id" });
+      await Promise.resolve();
+      const i = t.sessions.findIndex((x) => x.key === SSH);
+      if (how === "gone") t.sessions.splice(i, 1);
+      else if (how === "closed") t.sessions[i] = { ...t.sessions[i]!, state: "closed" };
+      else t.registry.forget(SSH);
+      release();
+      const text = t.textOf(await pending);
+      expect(text, how).toContain("session_closed");
+      expect(text, how).not.toContain("commandId");
+      expect(t.cancelled, how).toEqual(["run-1"]);
+    }
+  });
+
   it("the per-session slot is reserved before the start is awaited: three parallel calls cannot all get in", async () => {
     const t = setupExec();
     let release!: () => void;
