@@ -58,6 +58,25 @@ fn is_dev_null(path: &str) -> bool {
     normalized == ["dev", "null"]
 }
 
+/// The longest remote command line a run may carry.
+pub const EXEC_COMMAND_MAX: usize = 8192;
+
+/// An exec argv is `ssh -T <options> -- <host> <command>`: ONE command word after the host. Returns the shape the
+/// session validators already know (`-tt`, no command) and the command, which is passed to ssh as a single argument
+/// (the remote shell parses it; no local shell is involved).
+pub fn split_exec_argv(argv: &[String]) -> Result<(Vec<String>, String), String> {
+    if argv.len() < 5 || argv[0] != "ssh" || argv[1] != "-T" || argv[argv.len() - 3] != "--" {
+        return Err(ssh_option_rejected());
+    }
+    let command = &argv[argv.len() - 1];
+    if command.is_empty() || command.len() > EXEC_COMMAND_MAX || command.contains('\0') {
+        return Err(ssh_option_rejected());
+    }
+    let mut plain = argv[..argv.len() - 1].to_vec();
+    plain[1] = "-tt".to_string();
+    Ok((plain, command.clone()))
+}
+
 pub fn validate_ssh_spawn(
     program: &str,
     argv: &[String],

@@ -503,8 +503,98 @@ fn handle(
             }))
         }
         Request::Ping { id } => Ok(protocol::encode_response(&Response::Pong { id })),
-        // WIP (stage 4b-2): wired in the next commit.
-        Request::ExecRun { id, .. } | Request::ExecRead { id, .. } | Request::ExecCancel { id, .. } | Request::ExecForget { id, .. } => Ok(protocol::encode_response(&Response::Error { id: Some(id), code: "exec_unavailable".to_string(), message: "not wired yet".to_string() })),
+        Request::ExecRun { id, program, argv, env, askpass, timeout_ms, max_bytes } => {
+            let real = program == "/usr/bin/ssh";
+            // The shape: `ssh -T <the same options as a session> -- host <ONE command word>`. In a build with test-hooks a
+            // free-form program (a fake ssh) is run as given.
+            let plain = if real {
+                match crate::ssh_args::split_exec_argv(&argv).and_then(|(plain, _)| crate::ssh_args::validate_ssh_spawn(&program, &plain, &env).map(|()| plain)) {
+                    Ok(plain) => plain,
+                    Err(_) => return Ok(rdp_error(id, "ssh_option_rejected", "exec.run carries a disallowed program, option or command".to_string())),
+                }
+            } else if cfg!(feature = "test-hooks") {
+                argv.clone()
+            } else {
+                return Ok(rdp_error(id, "ssh_option_rejected", "exec.run carries a disallowed program, option or command".to_string()));
+            };
+            if real && askpass.is_none() {
+                return Ok(rdp_error(id, "needs_saved_credential", "a remote command needs a saved credential: no question can be answered".to_string()));
+            }
+            if !(1_000..=600_000).contains(&timeout_ms) || !(1_024..=4 * 1024 * 1024).contains(&max_bytes) {
+                return Ok(rdp_error(id, "exec_limits_rejected", "timeout or output bound out of range".to_string()));
+            }
+            let mut argv = argv;
+            let mut askpass_plan: Option<(String, crate::binding::Bind, String)> = None;
+            if let Some(spec) = &askpass {
+                if !valid_credential_ref(&spec.credential_ref) {
+                    return Ok(rdp_error(id, "invalid_credential_ref", "not a Remote Hub credential reference".to_string()));
+                }
+                let Ok(facts) = askpass_session_facts(&program, &plain, spec) else {
+                    return Ok(rdp_error(id, "ssh_option_rejected", "a run with a saved secret needs -F none, one fixed method and its user or key".to_string()));
+                };
+                let bound = match keychain_child(current_exe, "bind", &spec.credential_ref, None, None).and_then(keychain_ok) {
+                    Ok(reply) => reply.bind,
+                    Err(refusal) => return Ok(protocol::encode_response(&refusal.into_response(id))),
+                };
+                let required = required_bind(&facts);
+                if bound.as_ref() != Some(&required) {
+                    return Ok(protocol::encode_response(&CredentialRefusal::Mismatch.into_response(id)));
+                }
+                askpass_plan = Some((spec.credential_ref.clone(), required, facts.expected_prompt()));
+            }
+            // Host keys: only a key the owner already confirmed counts. An unknown host is never decided by a run.
+            let mut copy: Option<crate::known_hosts::SessionCopy> = None;
+            if (real || crate::known_hosts::test_overlay_configured()) && !plain.iter().any(|a| a.starts_with("UserKnownHostsFile=")) {
+                let lines = crate::known_hosts::read_lines().unwrap_or_default();
+                let facts = crate::ssh_args::askpass_facts(&plain);
+                let known = match &facts {
+                    Ok(f) => crate::known_hosts::knows_endpoint(&lines, &f.host, f.port),
+                    Err(_) => false,
+                };
+                if real && !known {
+                    return Ok(rdp_error(id, "host_key_unknown", "this server's host key has not been confirmed by the owner yet".to_string()));
+                }
+                if real {
+                    match crate::known_hosts::session_copy().and_then(|c| crate::known_hosts::ssh_known_hosts_option(&c.path).map(|o| (c, o))) {
+                        Ok((c, option)) => {
+                            let at = argv.len().saturating_sub(3); // before the "--" that precedes the host and the command
+                            let mut options = Vec::new();
+                            for o in [option.as_str(), "GlobalKnownHostsFile=none", "StrictHostKeyChecking=yes", "UpdateHostKeys=no", "CheckHostIP=no", "HashKnownHosts=no", "VerifyHostKeyDNS=no", "BatchMode=no"] {
+                                options.push("-o".to_string());
+                                options.push(o.to_string());
+                            }
+                            argv.splice(at..at, options);
+                            copy = Some(c);
+                        }
+                        Err(e) => return Ok(protocol::encode_response(&known_hosts_error(id, e))),
+                    }
+                }
+            }
+            let spec = crate::exec::ExecSpec { program, argv, env: env.into_iter().collect(), timeout: std::time::Duration::from_millis(timeout_ms), max_bytes };
+            match manager.exec_start(spec, askpass_plan, current_exe, copy) {
+                Ok(exec_id) => Ok(protocol::encode_response(&Response::ExecStarted { id, exec_id })),
+                Err(crate::exec::ExecError::TooMany) => Ok(rdp_error(id, "too_many_runs", "too many remote commands are running".to_string())),
+                Err(crate::exec::ExecError::Spawn(_)) => Ok(rdp_error(id, "exec_spawn_failed", "the command could not be started".to_string())),
+            }
+        }
+        Request::ExecRead { id, exec_id, stdout_from, stderr_from, max } => Ok(match manager.exec.read(exec_id, stdout_from, stderr_from, max.min(1 << 20)) {
+            Some(snap) => exec_state(id, exec_id, snap),
+            None => rdp_error(id, "unknown_exec", format!("no run {exec_id}")),
+        }),
+        Request::ExecCancel { id, exec_id } => Ok(if manager.exec.cancel(exec_id) {
+            match manager.exec.read(exec_id, u64::MAX, u64::MAX, 0) {
+                Some(snap) => exec_state(id, exec_id, snap),
+                None => rdp_error(id, "unknown_exec", format!("no run {exec_id}")),
+            }
+        } else if manager.exec.contains(exec_id) {
+            match manager.exec.read(exec_id, u64::MAX, u64::MAX, 0) {
+                Some(snap) => exec_state(id, exec_id, snap),
+                None => rdp_error(id, "unknown_exec", format!("no run {exec_id}")),
+            }
+        } else {
+            rdp_error(id, "unknown_exec", format!("no run {exec_id}"))
+        }),
+        Request::ExecForget { id, exec_id } => Ok(if manager.exec.forget(exec_id) { protocol::encode_response(&Response::ExecForgotten { id }) } else { rdp_error(id, "unknown_exec", format!("no finished run {exec_id}")) }),
         Request::OpenEcho { id, cols, rows } => match manager.open_echo(cols, rows) {
             Ok(session_id) => {
                 let pid = manager.child_pid(session_id).unwrap_or(0);
@@ -947,6 +1037,23 @@ fn session_closed_errors(pending: &[u64]) -> Vec<u8> {
         frames.extend(rdp_error(*req, "session_closed", "the rdp session ended before the screenshot".to_string()));
     }
     frames
+}
+
+/// The answer to exec.read / exec.cancel: state, exit, both streams as base64 slices.
+fn exec_state(id: u64, exec_id: u32, snap: crate::exec::Snapshot) -> Vec<u8> {
+    let chunk = |c: crate::exec::Chunk| protocol::ExecChunk { start: c.start, end: c.end, data: crate::exec::base64(&c.data), total: c.total, truncated: c.truncated };
+    protocol::encode_response(&Response::ExecState {
+        id,
+        exec_id,
+        running: snap.running,
+        exit_code: snap.exit_code,
+        signal: snap.signal,
+        reason: snap.reason,
+        refused: snap.refused,
+        elapsed_ms: snap.elapsed_ms,
+        stdout: chunk(snap.stdout),
+        stderr: chunk(snap.stderr),
+    })
 }
 
 fn rdp_error(id: u64, code: &str, message: String) -> Vec<u8> {
@@ -1451,7 +1558,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         }
 
         // Buffered engine frames are work that poll cannot signal.
-        let poll_timeout = if rdp_buffered { 0 } else { 50 };
+        let poll_timeout = if rdp_buffered { 0 } else if guard.manager.exec.running() > 0 { 20 } else { 50 };
         let r = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, poll_timeout) };
         if r < 0 {
             let err = io::Error::last_os_error();
@@ -1512,7 +1619,30 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         // Askpass requests are decided every turn (the socket is also in the poll set, so
         // a request wakes the loop at once); what the client must hear is queued.
         for event in guard.manager.askpass_service(&mut |reference| resolve_item(&current_exe, reference).map_err(|r| r.code())) {
+            // An exec run has no page to show a question to: what ssh asked or refused is noted on the run, no more.
+            let exec_note = match &event {
+                crate::askpass::BrokerEvent::PromptRefused { session_id, kind } => Some((*session_id, kind.clone())),
+                crate::askpass::BrokerEvent::CredentialRejected { session_id } => Some((*session_id, "credential_rejected".to_string())),
+                crate::askpass::BrokerEvent::CredentialFailed { session_id, .. } => Some((*session_id, "credential_unavailable".to_string())),
+                _ => None,
+            };
+            let exec_id = match &event {
+                crate::askpass::BrokerEvent::Prompt { session_id, .. }
+                | crate::askpass::BrokerEvent::PromptExpired { session_id, .. }
+                | crate::askpass::BrokerEvent::CredentialUsed { session_id }
+                | crate::askpass::BrokerEvent::Connected { session_id }
+                | crate::askpass::BrokerEvent::CredentialRejected { session_id }
+                | crate::askpass::BrokerEvent::CredentialFailed { session_id, .. }
+                | crate::askpass::BrokerEvent::PromptRefused { session_id, .. } => Some(*session_id),
+            };
+            if let Some(eid) = exec_id.filter(|eid| guard.manager.exec.contains(*eid)) {
+                if let Some((_, kind)) = exec_note {
+                    guard.manager.exec.note_refusal(eid, kind);
+                }
+                continue;
+            }
             outbox.extend(protocol::encode_response(&match event {
+                crate::askpass::BrokerEvent::PromptRefused { .. } => continue,
                 crate::askpass::BrokerEvent::Prompt { session_id, prompt_id, text, kind } => {
                     Response::SshPrompt { session_id, prompt_id, text, kind }
                 }
@@ -1522,6 +1652,12 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                 crate::askpass::BrokerEvent::PromptExpired { session_id, prompt_id } => Response::SshPromptExpired { session_id, prompt_id },
                 crate::askpass::BrokerEvent::CredentialFailed { session_id, code } => Response::SshCredentialFailed { session_id, code },
             }));
+        }
+
+        // Remote commands: read what they wrote, enforce their limits, report the ones that ended.
+        for f in guard.manager.exec_pump() {
+            let refused = guard.manager.exec.refused(f.id);
+            outbox.extend(protocol::encode_response(&Response::ExecFinished { exec_id: f.id, exit_code: f.exit_code, signal: f.signal, reason: f.reason, refused }));
         }
 
         guard.manager.merge_host_keys_pending();

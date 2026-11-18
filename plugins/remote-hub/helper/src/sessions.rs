@@ -107,6 +107,9 @@ pub struct SessionManager {
     /// a hold lives, another saved-secret open to the same endpoint is refused: its copy of the overlay would not
     /// have the key the first session is about to record, and it could be shown a DIFFERENT key as unknown.
     endpoint_holds: HashMap<String, (u32, Instant)>,
+    /// Remote commands (stage 4b-2): ids come from the same allocator as sessions.
+    pub(crate) exec: crate::exec::ExecManager,
+    exec_copies: HashMap<u32, crate::known_hosts::SessionCopy>,
 }
 
 /// How long a first-use hold lasts at most: long enough for a person to read a host-key question.
@@ -319,7 +322,80 @@ impl SessionManager {
             host_key_copies: HashMap::new(),
             host_key_confirmed: HashMap::new(),
             endpoint_holds: HashMap::new(),
+            exec: crate::exec::ExecManager::new(),
+            exec_copies: HashMap::new(),
         }
+    }
+
+    /// Starts a remote command under a fresh id. With `askpass` the saved secret is answered for its ONE expected prompt
+    /// and every other question is refused (nobody is there to answer); `copy` is the private known_hosts file ssh uses.
+    pub fn exec_start(
+        &mut self,
+        mut spec: crate::exec::ExecSpec,
+        askpass: Option<(String, crate::binding::Bind, String)>,
+        helper_exe: &str,
+        copy: Option<crate::known_hosts::SessionCopy>,
+    ) -> Result<u32, crate::exec::ExecError> {
+        let id = self.ids.next().ok_or(crate::exec::ExecError::Spawn(0))?;
+        let mut nonce = None;
+        if askpass.is_some() {
+            if self.askpass.is_none() {
+                self.askpass = Some(crate::askpass::Broker::new(helper_exe).map_err(|e| crate::exec::ExecError::Spawn(e.raw_os_error().unwrap_or(0)))?);
+            }
+            let broker = self.askpass.as_mut().expect("just created");
+            let (n, env) = broker.prepare();
+            nonce = Some(n);
+            #[cfg(feature = "test-hooks")]
+            let mut env = env;
+            #[cfg(feature = "test-hooks")]
+            for key in ["REMOTE_HUB_KEYCHAIN_PATH", "REMOTE_HUB_ASKPASS_UI_TIMEOUT_MS"] {
+                if let Ok(value) = std::env::var(key) {
+                    env.push((key.to_string(), value));
+                }
+            }
+            for (k, v) in env {
+                spec.env.retain(|(ek, _)| *ek != k);
+                spec.env.push((k, v));
+            }
+        }
+        match self.exec.start(id, spec) {
+            Ok(()) => {
+                if let (Some(n), Some((reference, bind, expected))) = (nonce, askpass) {
+                    let pid = self.exec.pid(id).unwrap_or(0);
+                    if let Some(broker) = self.askpass.as_mut() {
+                        broker.register(&n, id, pid, &reference, bind, &expected);
+                        broker.set_refuse(id);
+                    }
+                }
+                if let Some(c) = copy {
+                    self.exec_copies.insert(id, c);
+                }
+                Ok(id)
+            }
+            Err(e) => {
+                if let (Some(n), Some(broker)) = (nonce, self.askpass.as_mut()) {
+                    broker.discard(&n);
+                }
+                if let Some(c) = copy {
+                    let _ = std::fs::remove_file(&c.path);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Reads, enforces limits, reaps; ends the askpass of the runs that finished and removes their host-key copies.
+    pub fn exec_pump(&mut self) -> Vec<crate::exec::Finished> {
+        let finished = self.exec.pump();
+        for f in &finished {
+            if let Some(b) = self.askpass.as_mut() {
+                b.session_closed(f.id);
+            }
+            if let Some(c) = self.exec_copies.remove(&f.id) {
+                let _ = std::fs::remove_file(&c.path);
+            }
+        }
+        finished
     }
 
     /// Whether a live session is still deciding this endpoint's first host key.
@@ -1085,6 +1161,10 @@ impl SessionManager {
     }
 
     pub fn terminate_all(&mut self) {
+        self.exec.terminate_all();
+        for (_, c) in self.exec_copies.drain() {
+            let _ = std::fs::remove_file(&c.path);
+        }
         let ids: Vec<u32> = self.sessions.keys().copied().collect();
         for id in ids {
             if let Some(session) = self.sessions.remove(&id) {

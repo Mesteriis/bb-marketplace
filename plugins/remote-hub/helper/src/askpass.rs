@@ -113,6 +113,8 @@ pub enum BrokerEvent {
     CredentialRejected { session_id: u32 },
     /// The saved credential was handed to ssh (once): the strongest signal OpenSSH gives that authentication has begun.
     CredentialUsed { session_id: u32 },
+    /// A question was refused outright (an exec run has no one to ask): `kind` is host_key or login_prompt.
+    PromptRefused { session_id: u32, kind: String },
     /// OpenSSH ran LocalCommand: the server accepted the login (the trusted authentication-complete signal).
     Connected { session_id: u32 },
     /// The Keychain would not hand the saved credential over (keychain_locked, credential_missing, ...).
@@ -127,6 +129,8 @@ struct Session {
     burned: bool,
     rejected_sent: bool,
     connected: bool,
+    /// An exec run: every question that is not the one saved-secret prompt is refused, never shown to anyone.
+    refuse: bool,
 }
 
 enum State {
@@ -237,8 +241,20 @@ impl Broker {
     pub fn register(&mut self, nonce: &str, session_id: u32, child_pid: i32, reference: &str, bind: Bind, expected: &str) {
         if self.pending.remove(nonce).is_some() {
             self.by_nonce.insert(nonce.to_string(), session_id);
-            self.sessions.insert(session_id, Session { child_pid, reference: reference.to_string(), bind, expected: expected.to_string(), burned: false, rejected_sent: false, connected: false });
+            self.sessions.insert(session_id, Session { child_pid, reference: reference.to_string(), bind, expected: expected.to_string(), burned: false, rejected_sent: false, connected: false, refuse: false });
         }
+    }
+
+    /// Marks a registered session as a no-prompt one (an exec run).
+    pub fn set_refuse(&mut self, session_id: u32) {
+        if let Some(s) = self.sessions.get_mut(&session_id) {
+            s.refuse = true;
+        }
+    }
+
+    /// A prepared nonce whose process never started.
+    pub fn discard(&mut self, nonce: &str) {
+        self.pending.remove(nonce);
     }
 
     /// The session ended: nothing may be asked for it any more.
@@ -419,6 +435,13 @@ impl Broker {
                     return Some(Reply::Deny);
                 }
             }
+        }
+        if self.sessions.get(&session_id).map(|s| s.refuse).unwrap_or(false) {
+            // No one is there to answer: the question is refused and ssh is stopped before it can go on.
+            let refused = if kind == "confirm" { "host_key" } else { "login_prompt" };
+            self.events.push(BrokerEvent::PromptRefused { session_id, kind: refused.to_string() });
+            Self::stop_ssh(child_pid);
+            return Some(Reply::Deny);
         }
         // A confirmation (host key), an informational message or anything else: the user decides; nothing is stored.
         let prompt_id = self.next_prompt;

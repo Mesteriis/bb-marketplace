@@ -169,6 +169,10 @@ impl ExecManager {
         Ok(())
     }
 
+    pub fn contains(&self, id: u32) -> bool {
+        self.runs.contains_key(&id)
+    }
+
     pub fn pid(&self, id: u32) -> Option<i32> {
         self.runs.get(&id).map(|r| r.child.id() as i32)
     }
