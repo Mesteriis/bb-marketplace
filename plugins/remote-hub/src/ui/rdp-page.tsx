@@ -3,7 +3,7 @@
 // closed) plus detached / error for the page's socket. The password lives in
 // the form field only until Connect is pressed: it is cleared from component
 // state at once and never shown again.
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FitMode } from "../core/rdp-geometry.ts";
 import { closeReasonText, errorCodeText, errorTextFromMessage, stateText } from "../core/rdp-texts.ts";
 import type { RdpCertPromptInfo, RdpDecision, SessionHandle } from "../core/rpc.ts";
@@ -32,8 +32,21 @@ export interface RdpScreenshotResult {
   png: string;
 }
 
+/** A saved profile to fill into the form: a new `nonce` means a new request. The password is never part of it. */
+export interface RdpPrefill {
+  nonce: number;
+  profileId: string;
+  host: string;
+  port: number;
+  username: string;
+  domain: string | null;
+  width: number | null;
+  height: number | null;
+}
+
 export interface RdpPageProps {
-  onRdpOpen: (target: RdpConnectTarget, size: { width: number; height: number }) => Promise<SessionHandle>;
+  onRdpOpen: (target: RdpConnectTarget, size: { width: number; height: number }, profileId?: string) => Promise<SessionHandle>;
+  prefill?: RdpPrefill;
   onAttach: (handle: SessionHandle) => Promise<RdpAttach>;
   /** The service's close result; its reason is what the page shows. */
   onClose: (handle: SessionHandle) => Promise<{ reason?: string | null } | void>;
@@ -86,6 +99,26 @@ export function RdpPage(props: RdpPageProps) {
   const [fit, setFit] = useState<FitMode>("fit");
   const [deciding, setDeciding] = useState(false);
   const canvasHandle = useRef<RdpCanvasHandle | null>(null);
+  const passwordInput = useRef<HTMLInputElement | null>(null);
+  // The saved profile the form currently stands for; editing the endpoint ends it.
+  const linked = useRef<{ profileId: string; size: { width: number; height: number } | null } | null>(null);
+  const edit = (set: (value: string) => void) => (value: string) => {
+    linked.current = null;
+    set(value);
+  };
+  const lastPrefill = useRef<number | null>(null);
+  useEffect(() => {
+    const fill = props.prefill;
+    if (fill === undefined || lastPrefill.current === fill.nonce) return;
+    lastPrefill.current = fill.nonce;
+    setHost(fill.host);
+    setPort(String(fill.port));
+    setUsername(fill.username);
+    setDomain(fill.domain ?? "");
+    setPassword("");
+    linked.current = { profileId: fill.profileId, size: fill.width !== null && fill.height !== null ? { width: fill.width, height: fill.height } : null };
+    passwordInput.current?.focus();
+  }, [props.prefill]);
 
   const patch = useCallback((change: Partial<SessionView>) => setView((v) => (v === null ? v : { ...v, ...change })), []);
 
@@ -149,7 +182,8 @@ export function RdpPage(props: RdpPageProps) {
     let handle: SessionHandle;
     try {
       const target: RdpConnectTarget = { host, port: portNumber, username, password: secret, ...(domain !== "" ? { domain } : {}) };
-      handle = await onRdpOpen(target, DESKTOP_SIZE);
+      const link = linked.current;
+      handle = await onRdpOpen(target, link?.size ?? DESKTOP_SIZE, link?.profileId);
     } catch (e) {
       setConnecting(null);
       setError(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
@@ -240,18 +274,19 @@ export function RdpPage(props: RdpPageProps) {
             void connect();
           }}
         >
-          <input aria-label="host" placeholder="host" value={host} onChange={(e) => setHost(e.target.value)} />
-          <input aria-label="port" placeholder="3389" value={port} onChange={(e) => setPort(e.target.value)} className="rh-port" />
-          <input aria-label="user" placeholder="user" value={username} onChange={(e) => setUsername(e.target.value)} />
+          <input aria-label="host" placeholder="host" value={host} onChange={(e) => edit(setHost)(e.target.value)} />
+          <input aria-label="port" placeholder="3389" value={port} onChange={(e) => edit(setPort)(e.target.value)} className="rh-port" />
+          <input aria-label="user" placeholder="user" value={username} onChange={(e) => edit(setUsername)(e.target.value)} />
           <input
             aria-label="password"
             placeholder="password"
             type="password"
             autoComplete="off"
+            ref={passwordInput}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
-          <input aria-label="domain" placeholder="domain (optional)" value={domain} onChange={(e) => setDomain(e.target.value)} />
+          <input aria-label="domain" placeholder="domain (optional)" value={domain} onChange={(e) => edit(setDomain)(e.target.value)} />
           <button type="submit" disabled={host === "" || username === "" || connecting !== null}>
             Connect
           </button>

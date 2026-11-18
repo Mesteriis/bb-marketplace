@@ -86,6 +86,68 @@ async function connect(p: RdpPageProps, fill: Array<[string, string]> = []) {
   return { socket, say };
 }
 
+describe("RdpPage: prefilled from a saved profile", () => {
+  const PID = "11111111-2222-4333-8444-555555555555";
+  const fill = (over: Record<string, unknown> = {}) => ({
+    nonce: 1,
+    profileId: PID,
+    host: "win.example.test",
+    port: 3390,
+    username: "admin",
+    domain: "CORP",
+    width: 1920,
+    height: 1080,
+    ...over,
+  });
+
+  it("fills the endpoint, leaves the password empty and focused, and opens with the profile id and size", async () => {
+    const p = props();
+    render(<RdpPage {...p} prefill={fill()} />);
+    expect((screen.getByLabelText("host") as HTMLInputElement).value).toBe("win.example.test");
+    expect((screen.getByLabelText("port") as HTMLInputElement).value).toBe("3390");
+    expect((screen.getByLabelText("user") as HTMLInputElement).value).toBe("admin");
+    expect((screen.getByLabelText("domain") as HTMLInputElement).value).toBe("CORP");
+    expect((screen.getByLabelText("password") as HTMLInputElement).value).toBe("");
+    expect(document.activeElement).toBe(screen.getByLabelText("password"));
+    type("password", SECRET);
+    fireEvent.click(screen.getByText("Connect"));
+    await flush();
+    expect(p.calls.onRdpOpen.mock.calls).toEqual([
+      [{ host: "win.example.test", port: 3390, username: "admin", password: SECRET, domain: "CORP" }, { width: 1920, height: 1080 }, PID],
+    ]);
+  });
+
+  it("a profile without a desktop size uses the page default", async () => {
+    const p = props();
+    render(<RdpPage {...p} prefill={fill({ width: null, height: null })} />);
+    type("password", SECRET);
+    fireEvent.click(screen.getByText("Connect"));
+    await flush();
+    expect(p.calls.onRdpOpen.mock.calls[0]?.[1]).toEqual({ width: 1280, height: 800 });
+  });
+
+  it("editing the endpoint after the prefill ends the link: the open carries no profile id", async () => {
+    const p = props();
+    render(<RdpPage {...p} prefill={fill()} />);
+    type("host", "other.example.test");
+    type("password", SECRET);
+    fireEvent.click(screen.getByText("Connect"));
+    await flush();
+    expect(p.calls.onRdpOpen.mock.calls[0]?.[2]).toBeUndefined();
+  });
+
+  it("the prefill is applied once per nonce: a re-render does not wipe what the user typed", () => {
+    const p = props();
+    const view = render(<RdpPage {...p} prefill={fill()} />);
+    type("password", SECRET);
+    view.rerender(<RdpPage {...p} prefill={fill()} />);
+    expect((screen.getByLabelText("password") as HTMLInputElement).value).toBe(SECRET);
+    view.rerender(<RdpPage {...p} prefill={fill({ nonce: 2, host: "second.example.test" })} />);
+    expect((screen.getByLabelText("host") as HTMLInputElement).value).toBe("second.example.test");
+    expect((screen.getByLabelText("password") as HTMLInputElement).value).toBe("");
+  });
+});
+
 describe("RdpPage: the form", () => {
   it("cannot connect without host and user, and the password field is a password field", () => {
     render(<RdpPage {...props()} />);
@@ -101,7 +163,7 @@ describe("RdpPage: the form", () => {
   it("opens with the default port 3389, no domain, and the 1280x800 desktop", async () => {
     const p = props();
     await connect(p);
-    expect(p.calls.onRdpOpen.mock.calls).toEqual([[{ host: "rdp.test", port: 3389, username: "alice", password: SECRET }, { width: 1280, height: 800 }]]);
+    expect(p.calls.onRdpOpen.mock.calls).toEqual([[{ host: "rdp.test", port: 3389, username: "alice", password: SECRET }, { width: 1280, height: 800 }, undefined]]);
     expect(p.calls.onAttach.mock.calls).toEqual([[HANDLE]]);
   });
 

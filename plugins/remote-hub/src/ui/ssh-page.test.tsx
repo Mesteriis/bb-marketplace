@@ -83,6 +83,46 @@ async function connectAndRun() {
   return { onSshOpen, onAttach, onClose };
 }
 
+describe("SshPage opened from a saved profile", () => {
+  const PID = "11111111-2222-4333-8444-555555555555";
+  const launch = (nonce: number) => ({
+    nonce,
+    profileId: PID,
+    target: { host: "build.example.test", user: "ci", port: 2222, identityFile: "/k/id", extraOptions: [] },
+  });
+
+  it("fills the endpoint, connects with the profile id and the profile's key, and does not repeat on a re-render", async () => {
+    const handle: SessionHandle = { generation: "a".repeat(32), sessionId: 1 };
+    const onSshOpen = vi.fn(async () => handle);
+    const onAttach = vi.fn(async () => ({ token: "b".repeat(32), wsUrl: "ws://x" }));
+    const onClose = vi.fn(async () => {});
+    const view = render(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={onClose} launch={launch(1)} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(onSshOpen.mock.calls).toEqual([[launch(1).target, PID]]);
+    expect((screen.getByPlaceholderText("host") as HTMLInputElement).value).toBe("build.example.test");
+    expect((screen.getByPlaceholderText("user") as HTMLInputElement).value).toBe("ci");
+    expect((screen.getByPlaceholderText("port") as HTMLInputElement).value).toBe("2222");
+    view.rerender(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={onClose} launch={launch(1)} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onSshOpen).toHaveBeenCalledTimes(1);
+    view.rerender(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={onClose} launch={launch(2)} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onSshOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it("the quick-connect form opens without a profile id", async () => {
+    const { onSshOpen } = await connectAndRun();
+    expect(onSshOpen.mock.calls).toEqual([[{ host: "example.com", user: undefined, port: undefined, extraOptions: [] }, undefined]]);
+  });
+});
+
 describe("SshPage state transitions", () => {
   it("shows connecting then running", async () => {
     await connectAndRun();

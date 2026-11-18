@@ -1,6 +1,6 @@
 // Host-free SSH connect form and session view. Real states only: connecting,
 // running, detached, closed (with exit status), error.
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionHandle, SshTarget } from "../core/rpc.ts";
 import { SshTerminal, type SshExitInfo, type SshTerminalState } from "./ssh-terminal.tsx";
 
@@ -9,8 +9,16 @@ export interface SshAttach {
   wsUrl: string;
 }
 
+/** A request to open a saved profile: a new `nonce` means a new request. */
+export interface SshLaunch {
+  nonce: number;
+  profileId: string;
+  target: SshTarget;
+}
+
 export interface SshPageProps {
-  onSshOpen: (target: SshTarget) => Promise<SessionHandle>;
+  onSshOpen: (target: SshTarget, profileId?: string) => Promise<SessionHandle>;
+  launch?: SshLaunch;
   onAttach: (handle: SessionHandle) => Promise<SshAttach>;
   onClose: (handle: SessionHandle) => Promise<void>;
 }
@@ -34,23 +42,41 @@ export function SshPage(props: SshPageProps) {
     if (info !== undefined) setExit(info);
   }, []);
 
+  const open = useCallback(
+    async (t: SshTarget, profileId?: string) => {
+      setState("connecting");
+      setError(null);
+      setExit(null);
+      try {
+        setTarget(t);
+        const h = await onSshOpen(t, profileId);
+        setHandle(h);
+        const a = await onAttach(h);
+        setAttach(a);
+      } catch (e) {
+        setState("error");
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [onSshOpen, onAttach],
+  );
+
   const connect = useCallback(async () => {
     if (host.length === 0) return;
-    setState("connecting");
-    setError(null);
-    setExit(null);
-    try {
-      const t: SshTarget = { host, user: user || undefined, port: port ? Number(port) : undefined, extraOptions: [] };
-      setTarget(t);
-      const h = await onSshOpen(t);
-      setHandle(h);
-      const a = await onAttach(h);
-      setAttach(a);
-    } catch (e) {
-      setState("error");
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [host, user, port, onSshOpen, onAttach]);
+    await open({ host, user: user || undefined, port: port ? Number(port) : undefined, extraOptions: [] });
+  }, [host, user, port, open]);
+
+  // A saved profile asked to open: show its endpoint in the form and connect.
+  const lastLaunch = useRef<number | null>(null);
+  useEffect(() => {
+    if (props.launch === undefined || lastLaunch.current === props.launch.nonce) return;
+    lastLaunch.current = props.launch.nonce;
+    const { target: t, profileId } = props.launch;
+    setHost(t.host);
+    setUser(t.user ?? "");
+    setPort(t.port === undefined ? "" : String(t.port));
+    void open(t, profileId);
+  }, [props.launch, open]);
 
   const disconnect = useCallback(async () => {
     if (handle === null) return;
