@@ -6,6 +6,7 @@ import { ToolError } from "../../core/agent-tools.ts";
 import { ownerTag, type AgentControlPorts, type AgentSessionRegistry } from "../../core/agent-control-tools.ts";
 import { profileToSshTarget } from "../../core/catalogue.ts";
 import type { ControlLeases } from "../../core/control-lease.ts";
+import type { WatcherBook } from "../../core/watchers.ts";
 import type { Profile } from "../../core/profile.ts";
 import type { RpcHandlers } from "./rpc-handlers.ts";
 import type { ControlGate, ControlView, RemoteHubService } from "./service.ts";
@@ -20,7 +21,7 @@ function handleOf(key: string): { generation: string; sessionId: number } {
 const keyOf = (h: { generation: string; sessionId: number }): string => `${h.generation}.${h.sessionId}`;
 
 /** The service's view of the leases: whether the human may type, who drives, and a push when that changes. */
-export function createControlGate(leases: ControlLeases): ControlGate {
+export function createControlGate(leases: ControlLeases, watchers: WatcherBook): ControlGate {
   const views = (h: { generation: string; sessionId: number }): ControlView => {
     const owner = leases.owner(keyOf(h));
     return owner.kind === "human" ? { owner: "human", expiresAt: null } : { owner: "agent", expiresAt: owner.expiresAt };
@@ -37,11 +38,20 @@ export function createControlGate(leases: ControlLeases): ControlGate {
     const handle = handleOf(key);
     for (const cb of owners) cb(handle);
   });
+  // Nobody watching (or somebody again) changes who may act, as a change of driver does: the helper then drops what the
+  // agent had queued and releases what it left pressed, and the view is told.
+  watchers.onChange((key) => {
+    if (leases.owner(key).kind !== "agent") return;
+    const handle = handleOf(key);
+    for (const cb of owners) cb(handle);
+  });
   return {
     humanMayDrive: (h) => leases.owner(keyOf(h)).kind === "human",
     ownerTag: (h) => {
       const owner = leases.owner(keyOf(h));
-      return owner.kind === "human" ? "human" : ownerTag(owner.leaseId);
+      if (owner.kind === "human") return "human";
+      // A lease nobody is watching is suspended: a tag no input carries, so nothing of the agent's is applied.
+      return watchers.watching(keyOf(h)) ? ownerTag(owner.leaseId) : `suspended:${owner.leaseId}`;
     },
     onChange: (cb) => void owners.push(cb),
     state: views,
@@ -76,10 +86,12 @@ export interface AgentControlPortDeps {
   profiles: { get(id: string): Profile | null };
   /** The same handlers the page uses: they check that the saved credential belongs to this endpoint. */
   handlers: Pick<RpcHandlers, "ssh_open" | "rdp_open">;
+  watchers: WatcherBook;
 }
 
-export function agentControlPorts({ service, profiles, handlers }: AgentControlPortDeps): AgentControlPorts {
+export function agentControlPorts({ service, profiles, handlers, watchers }: AgentControlPortDeps): AgentControlPorts {
   return {
+    watching: (key) => watchers.watching(key),
     terminalWrite: async (key, data, owner) => lostLeaseAsToolError(() => service.agentTerminalInput(handleOf(key), data, owner)),
     rdpWrite: async (key, events, owner) => lostLeaseAsToolError(() => service.agentRdpInput(handleOf(key), events, owner)),
     async connect(profileId) {
@@ -125,6 +137,9 @@ export interface ControlLifecycleDeps {
   /** Closes a session by key (the owner's close path). */
   closeSession: (sessionKey: string) => Promise<void>;
   everyMs?: number;
+  watchSweepMs?: number;
+  /** Looked at every second so a heartbeat that stops is noticed within a few seconds (and the lease suspended). */
+  watchers?: WatcherBook;
 }
 
 /**
@@ -163,4 +178,10 @@ export function registerControlLifecycle(bb: BbPluginApi, deps: ControlLifecycle
   }, deps.everyMs ?? 5000);
   timer.unref?.();
   bb.onDispose(() => clearInterval(timer));
+  if (deps.watchers !== undefined) {
+    const watchers = deps.watchers;
+    const watchTimer = setInterval(() => watchers.sweep(), deps.watchSweepMs ?? 1000);
+    watchTimer.unref?.();
+    bb.onDispose(() => clearInterval(watchTimer));
+  }
 }

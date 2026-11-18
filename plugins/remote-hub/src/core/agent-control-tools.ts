@@ -27,6 +27,8 @@ export interface AgentControlPorts {
   disconnect(sessionKey: string): Promise<void>;
   /** The kinds of question the owner has to answer on this session (no text, no fingerprints). */
   waitingForOwner(sessionKey: string): Array<"host_key" | "certificate" | "login_prompt">;
+  /** Whether a human has this session's live view open and visible right now (agents are never hidden). */
+  watching(sessionKey: string): boolean;
 }
 
 /** Which thread opened which session through remote_connect (memory only; empty after a restart, like leases). */
@@ -135,7 +137,7 @@ function terminalBytes(actions: TerminalAction[]): Uint8Array {
 }
 
 /** More fields for a session's row in the read tools: who is driving it and whether the owner is being asked something. */
-export function controlSessionExtras(leases: ControlLeases, control: Pick<AgentControlPorts, "waitingForOwner">) {
+export function controlSessionExtras(leases: ControlLeases, control: Pick<AgentControlPorts, "waitingForOwner" | "watching">) {
   return (s: AgentSessionView): Record<string, unknown> => {
     const owner = leases.owner(s.key);
     const waiting = control.waitingForOwner(s.key);
@@ -143,11 +145,21 @@ export function controlSessionExtras(leases: ControlLeases, control: Pick<AgentC
       controlledBy: owner.kind === "human" ? "human" : "an agent",
       ...(owner.kind === "agent" ? { leaseExpiresAt: new Date(owner.expiresAt).toISOString() } : {}),
       ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}),
+      watchedByOwner: control.watching(s.key),
     };
   };
 }
 
 const CLOSE_CONFIRM_MS = 5000;
+
+/** The line the agent copies into its reply so BB shows the live session inline (a message directive this plugin renders). */
+export const liveViewLine = (sessionKey: string): string => `::remote-session{id="${sessionKey}"}`;
+export const LIVE_VIEW_INSTRUCTION =
+  "Put the liveView line on its own line in your reply so the owner sees this session live. Nothing you type or run is accepted while nobody has the live view open and visible.";
+const NOT_WATCHING = new ToolError(
+  "owner_not_watching",
+  "Nobody has this session's live view open and visible, so nothing was sent. Put the liveView line in your reply (the owner sees the session there, or on the Remote Hub page) and try again once the owner is watching."
+);
 
 export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   const { access, leases, control, ports } = deps;
@@ -201,10 +213,12 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
     // Only the lease THIS call was given: a late abort of an old call must not end the lease that replaced it.
     const onAbort = () => void leases.endLease(key, ctx.threadId, leaseId, "thread_gone");
     ctx.signal?.addEventListener("abort", onAbort, { once: true });
+    if (!control.watching(key)) throw NOT_WATCHING;
     try {
       const stillValid = () =>
-        ctx.signal?.aborted !== true && access.check(profileId, "input").ok && sessionOf(key)?.control === "ready" && leases.check(key, ctx.threadId, leaseId).ok && leases.owner(key).generation === generation;
+        ctx.signal?.aborted !== true && control.watching(key) && access.check(profileId, "input").ok && sessionOf(key)?.control === "ready" && leases.check(key, ctx.threadId, leaseId).ok && leases.owner(key).generation === generation;
       const outcome = await queue.run(key, stillValid, write);
+      if (!outcome.ran && !control.watching(key)) throw NOT_WATCHING;
       if (!outcome.ran) throw new ToolError("lease_lost", "the owner took the session back, or the lease ended, before this input was sent; nothing was sent");
     } finally {
       ctx.signal?.removeEventListener("abort", onAbort);
@@ -239,6 +253,9 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
                 leaseId: result.leaseId,
                 expiresAt: new Date(result.expiresAt).toISOString(),
                 ttlSeconds: Math.min(LEASE_MAX_SECONDS, Math.max(LEASE_MIN_SECONDS, params.seconds ?? LEASE_DEFAULT_SECONDS)),
+                watching: control.watching(session.key),
+                liveView: liveViewLine(session.key),
+                instruction: LIVE_VIEW_INSTRUCTION,
               }),
             ],
           };
@@ -296,7 +313,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
             else opening.delete(ctx.threadId);
           }
           const waiting = control.waitingForOwner(sessionKey);
-          return { content: [json({ sessionId: sessionKey, connectionId: profile.id, state: sessionOf(sessionKey)?.state ?? "connecting", ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}) })] };
+          return { content: [json({ sessionId: sessionKey, connectionId: profile.id, state: sessionOf(sessionKey)?.state ?? "connecting", ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}), watching: control.watching(sessionKey), liveView: liveViewLine(sessionKey), instruction: LIVE_VIEW_INSTRUCTION })] };
         }),
     }),
     def({

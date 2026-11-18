@@ -11,6 +11,7 @@
 // There is no per-view byte queue: the view acks an update after drawing its last band and
 // the service multiplexer (src/core/rdp-views.ts) sends at most one update at a
 // time to it.
+import type { WatcherBook } from "../../core/watchers.ts";
 import type { SessionHandle } from "../../core/rpc.ts";
 import { rdpViewMessageSchema, toHelperEvent } from "../../core/rdp-view-messages.ts";
 import { attachControlView } from "./control-notice.ts";
@@ -39,6 +40,7 @@ export function createRdpSocketHandlers(
   service: RemoteHubService,
   binding: { sessionId: number; generation: string } | null,
   attachId: string,
+  watchers?: WatcherBook,
 ) {
   let attachment: RdpAttachment | null = null;
   let offExit: (() => void) | null = null;
@@ -66,6 +68,7 @@ export function createRdpSocketHandlers(
     if (offExit !== null) offExit();
     if (offEnd !== null) offEnd();
     if (control !== null) control.off();
+    watchers?.remove(attachId);
     offExit = null;
     offEnd = null;
     control = null;
@@ -123,6 +126,9 @@ export function createRdpSocketHandlers(
           break;
         case "detach":
           guardClose(socket, 1000, "detach");
+          break;
+        case "watch":
+          if (handle !== null) watchers?.beat(`${handle.generation}.${handle.sessionId}`, attachId, msg.visible);
           break;
         case "input":
           attachment.input(msg.events.map(toHelperEvent)).then((sent) => {

@@ -4,6 +4,7 @@
 // service, exposes a schema-validated RPC contract to the app, and tears the
 // helper down on dispose. All wire schemas live in src/core/rpc.ts and
 // src/core/protocol.ts.
+import { WatcherBook } from "./src/core/watchers.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -55,8 +56,9 @@ export default function plugin(bb: BbPluginApi): void {
   bb.storage.migrate(db, ALL_MIGRATIONS);
   // Who drives which session (stage 4b-1): in memory only, so a restart gives every session back to the human.
   const leases = new ControlLeases({ now: () => Date.now(), newId: () => randomUUID() });
+  const watchers = new WatcherBook({ now: () => Date.now() });
   const service = createRemoteHubService({
-    control: createControlGate(leases),
+    control: createControlGate(leases, watchers),
     startHelper: () => HelperProcess.start(pluginRootDir()),
     trust: createRdpTrustStore(createSqliteRdpTrust(db)),
   });
@@ -87,7 +89,7 @@ export default function plugin(bb: BbPluginApi): void {
     agents: { access: agentAccess, audit: agentAudit },
     agentControl: createAgentControlRpc({ service, leases, registry, audit: agentAudit }),
   });
-  const controlPorts = agentControlPorts({ service, profiles, handlers });
+  const controlPorts = agentControlPorts({ service, profiles, handlers, watchers });
   const toolDeps = {
     access: agentAccess,
     audit: agentAudit,
@@ -97,9 +99,9 @@ export default function plugin(bb: BbPluginApi): void {
   };
   registerAgentTools(bb, [...createAgentTools(toolDeps), ...createControlTools({ ...toolDeps, leases, control: controlPorts, registry })]);
   bb.rpc.register(rpcContract, handlers);
-  registerControlLifecycle(bb, { leases, registry, service, closeSession: (key) => controlPorts.disconnect(key) });
+  registerControlLifecycle(bb, { leases, registry, service, watchers, closeSession: (key) => controlPorts.disconnect(key) });
 
-  registerStreamSocket(bb, { service, audit: agentAudit });
+  registerStreamSocket(bb, { service, audit: agentAudit, watchers });
 
   bb.onDispose(() => {
     service.stop();

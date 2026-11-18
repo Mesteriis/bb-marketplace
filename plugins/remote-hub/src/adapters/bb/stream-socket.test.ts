@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { WatcherBook } from "../../core/watchers.ts";
 import { registerStreamSocket } from "./stream-socket.ts";
 import type { RemoteHubService } from "./service.ts";
 
@@ -25,7 +26,7 @@ function makeSocket(): FakeSocket {
   };
 }
 
-function makeHarness(overrides: Partial<RemoteHubService> = {}) {
+function makeHarness(overrides: Partial<RemoteHubService> = {}, watchers?: WatcherBook) {
   let handler: ((ctx: { url: URL }) => Record<string, unknown>) | null = null;
   const bb = {
     http: { experimental_websocket(_path: string, h: typeof handler) { handler = h; } },
@@ -65,7 +66,7 @@ function makeHarness(overrides: Partial<RemoteHubService> = {}) {
     ...overrides,
   } as unknown as RemoteHubService;
 
-  registerStreamSocket(bb, { service });
+  registerStreamSocket(bb, { service, ...(watchers === undefined ? {} : { watchers }) });
   const ctx = { url: new URL("http://bb/api/attach?attach=abc") };
   const handlers = handler!(ctx) as {
     onOpen(socket: FakeSocket): Promise<void>;
@@ -93,6 +94,34 @@ describe("stream-socket control validation (V6)", () => {
       expect(socket.sent).toEqual([JSON.stringify({ type: "error", code: "bad_control" })]);
     },
   );
+});
+
+describe("stream-socket: the view reports whether it is being looked at", () => {
+  const key = `${"a".repeat(32)}.1`;
+  it("a visible heartbeat makes the session watched; hidden does not; closing ends it", async () => {
+    const watchers = new WatcherBook({ now: () => 1000 });
+    const { handlers } = makeHarness({}, watchers);
+    const socket = makeSocket();
+    await handlers.onOpen(socket);
+    expect(watchers.watching(key)).toBe(false);
+    handlers.onMessage(socket, JSON.stringify({ type: "watch", visible: true }));
+    expect(watchers.watching(key)).toBe(true);
+    handlers.onMessage(socket, JSON.stringify({ type: "watch", visible: false }));
+    expect(watchers.watching(key)).toBe(false);
+    handlers.onMessage(socket, JSON.stringify({ type: "watch", visible: true }));
+    handlers.onClose();
+    expect(watchers.watching(key)).toBe(false);
+  });
+
+  it("a malformed heartbeat is refused and counts for nothing", async () => {
+    const watchers = new WatcherBook({ now: () => 1000 });
+    const { handlers } = makeHarness({}, watchers);
+    const socket = makeSocket();
+    await handlers.onOpen(socket);
+    handlers.onMessage(socket, JSON.stringify({ type: "watch", visible: "yes" }));
+    expect(watchers.watching(key)).toBe(false);
+    expect(socket.sent.at(-1)).toBe(JSON.stringify({ type: "error", code: "bad_control" }));
+  });
 });
 
 describe("stream-socket snapshot/live ordering (W3)", () => {

@@ -1,3 +1,4 @@
+import { WatcherBook } from "../../core/watchers.ts";
 import { describe, expect, it, vi } from "vitest";
 import { AgentSessionRegistry } from "../../core/agent-control-tools.ts";
 import { ToolError } from "../../core/agent-tools.ts";
@@ -20,7 +21,7 @@ function leasesWithClock() {
 describe("the control gate", () => {
   it("the human may drive until an agent holds the lease, and the views are told about every change", () => {
     const { leases } = leasesWithClock();
-    const gate = createControlGate(leases);
+    const gate = createControlGate(leases, new WatcherBook({ now: () => 1_000_000 }));
     const h = { generation: GEN, sessionId: 1 };
     const seen: unknown[] = [];
     const off = gate.subscribe(h, (v) => seen.push(v));
@@ -34,6 +35,35 @@ describe("the control gate", () => {
     off();
     leases.acquire(`${GEN}.1`, "thr_a", 60);
     expect(seen).toHaveLength(2);
+  });
+});
+
+describe("the control gate and the watchers", () => {
+  it("an agent's lease is suspended (a different owner tag) while nobody watches, and resumes when someone does; every change is announced", () => {
+    let now = 1_000_000;
+    const leases = new ControlLeases({ now: () => now, newId: () => "lease-1" });
+    const watchers = new WatcherBook({ now: () => now });
+    const gate = createControlGate(leases, watchers);
+    const h = { generation: GEN, sessionId: 1 };
+    const key = `${GEN}.1`;
+    const changed: string[] = [];
+    gate.onChange(() => changed.push(gate.ownerTag(h)));
+    leases.acquire(key, "thr_a", 600);
+    expect(gate.ownerTag(h)).toBe("suspended:lease-1");
+    watchers.beat(key, "view", true);
+    expect(gate.ownerTag(h)).toBe("agent:lease-1");
+    now += 7000; // the heartbeat goes stale
+    watchers.sweep();
+    expect(gate.ownerTag(h)).toBe("suspended:lease-1");
+    watchers.beat(key, "view", true);
+    expect(changed).toEqual(["suspended:lease-1", "agent:lease-1", "suspended:lease-1", "agent:lease-1"]);
+    expect(gate.humanMayDrive(h)).toBe(false);
+  });
+
+  it("with no lease nobody is suspended: the human tag stays", () => {
+    const leases = new ControlLeases({ now: () => 1, newId: () => "l" });
+    const gate = createControlGate(leases, new WatcherBook({ now: () => 1 }));
+    expect(gate.ownerTag({ generation: GEN, sessionId: 9 })).toBe("human");
   });
 });
 
@@ -51,7 +81,7 @@ describe("the control ports", () => {
       ...extra,
     };
     const profiles = new Map<string, Profile>();
-    const p = agentControlPorts({ service: service as unknown as RemoteHubService, profiles: { get: (id) => profiles.get(id) ?? null }, handlers: handlers as never });
+    const p = agentControlPorts({ watchers: new WatcherBook({ now: () => 1_000_000 }), service: service as unknown as RemoteHubService, profiles: { get: (id) => profiles.get(id) ?? null }, handlers: handlers as never });
     return { p, handlers, service, profiles };
   }
 
@@ -211,5 +241,27 @@ describe("registerControlLifecycle", () => {
     expect(h.registry.keys()).toEqual([]);
     expect(attempted.length).toBeGreaterThanOrEqual(2);
     for (const hook of h.hooks) hook();
+  });
+});
+
+describe("the watcher sweep", () => {
+  it("a heartbeat that stops is noticed by the timer and the lease is suspended without any other event", async () => {
+    const { registerControlLifecycle } = await import("./agent-control.ts");
+    let now = 1_000_000;
+    const leases = new ControlLeases({ now: () => now, newId: () => "lease-1" });
+    const watchers = new WatcherBook({ now: () => now });
+    const gate = createControlGate(leases, watchers);
+    const tags: string[] = [];
+    gate.onChange((h) => tags.push(gate.ownerTag(h)));
+    const handlers = new Map<string, (...a: unknown[]) => void>();
+    const hooks: Array<() => void> = [];
+    const bb = { events: { on: (n: string, f: (...a: unknown[]) => void) => void handlers.set(n, f) }, onDispose: (f: () => void) => void hooks.push(f) } as never;
+    registerControlLifecycle(bb, { leases, registry: new AgentSessionRegistry(), service: { sessionList: () => [] as SessionInfo[] }, closeSession: async () => undefined, watchers, everyMs: 3_600_000, watchSweepMs: 15 });
+    leases.acquire(`${GEN}.1`, "thr_a", 600);
+    watchers.beat(`${GEN}.1`, "v", true);
+    now += 7000;
+    await new Promise((r) => setTimeout(r, 60));
+    expect(tags.at(-1)).toBe("suspended:lease-1");
+    for (const hook of hooks) hook();
   });
 });

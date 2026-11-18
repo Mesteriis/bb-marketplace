@@ -37,6 +37,7 @@ export const rdpViewMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("input"), events: z.array(rdpViewInputEventSchema).min(1).max(MAX_RDP_INPUT_EVENTS) }),
   z.object({ type: z.literal("refresh") }),
   z.object({ type: z.literal("detach") }),
+  z.object({ type: z.literal("watch"), visible: z.boolean() }),
 ]);
 export type RdpViewMessage = z.infer<typeof rdpViewMessageSchema>;
 

@@ -13,6 +13,7 @@ import { SLOW_VIEW_BYTES } from "../../core/credit.ts";
 import { attachControlView } from "./control-notice.ts";
 import type { AgentAudit } from "../../core/agent-audit.ts";
 import { OWNER_RPC } from "./rpc-handlers.ts";
+import type { WatcherBook } from "../../core/watchers.ts";
 import { createRdpSocketHandlers } from "./rdp-socket.ts";
 import type { RemoteHubService } from "./service.ts";
 
@@ -20,6 +21,8 @@ export interface StreamSocketDeps {
   service: RemoteHubService;
   /** Where the owner's answers to a question are recorded (without the answer). */
   audit?: AgentAudit;
+  /** Who is looking at which session: the view's heartbeats land here (agents are never hidden). */
+  watchers?: WatcherBook;
 }
 
 const WS_TOKEN_EXPIRED = 4401;
@@ -38,6 +41,8 @@ const controlSchema = z.discriminatedUnion("type", [
     bytes: z.number().int().min(1).max(2_147_483_647),
   }),
   z.object({ type: z.literal("detach") }),
+  // The page says whether it is visible: a visible view that keeps reporting is a watcher.
+  z.object({ type: z.literal("watch"), visible: z.boolean() }),
   // The user's answer to an askpass prompt (null = cancelled): passed on once, never kept.
   z.object({
     type: z.literal("prompt_answer"),
@@ -68,7 +73,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
       binding !== null &&
       deps.service.sessionList().some((r) => r.generation === binding.generation && r.sessionId === binding.sessionId && r.kind === "rdp")
     ) {
-      return createRdpSocketHandlers(deps.service, binding, attachId);
+      return createRdpSocketHandlers(deps.service, binding, attachId, deps.watchers);
     }
     let attached = false;
     let handle: SessionHandle | null = null;
@@ -248,6 +253,9 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
             case "detach":
               socket.close(1000, "detach");
               break;
+            case "watch":
+              deps.watchers?.beat(`${handle.generation}.${handle.sessionId}`, attachId, msg.visible);
+              break;
             case "prompt_answer": {
               // Recorded as answered or cancelled, never what was typed (it may be a one-time code).
               const ticket = deps.audit?.begin({ threadId: OWNER_RPC, projectId: "", tool: "prompt.answer", sessionKey: `${handle.generation}.${handle.sessionId}`, detail: msg.answer === null ? "cancelled" : "answered" });
@@ -276,6 +284,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
       },
       onClose() {
         attached = false;
+        deps.watchers?.remove(attachId);
         if (handle !== null) {
           const grant = deps.service.creditDetach(handle, attachId);
           if (grant > 0) deps.service.sessionCredit(handle, grant).catch(() => {});
@@ -288,6 +297,7 @@ export function registerStreamSocket(bb: BbPluginApi, deps: StreamSocketDeps): v
       },
       onError() {
         attached = false;
+        deps.watchers?.remove(attachId);
         if (handle !== null) {
           const grant = deps.service.creditDetach(handle, attachId);
           if (grant > 0) deps.service.sessionCredit(handle, grant).catch(() => {});

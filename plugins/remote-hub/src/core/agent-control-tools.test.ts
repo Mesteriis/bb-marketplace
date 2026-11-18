@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AgentAccessBook, type AgentGrant } from "./agent-access.ts";
 import { AgentAudit, type AuditRow, type AuditStore } from "./agent-audit.ts";
-import { AgentSessionRegistry, createControlTools } from "./agent-control-tools.ts";
+import { AgentSessionRegistry, controlSessionExtras, createControlTools } from "./agent-control-tools.ts";
 import { ToolBudget } from "./agent-budget.ts";
 import type { AgentSessionView, AgentToolDef, ToolResult } from "./agent-tools.ts";
 import { ControlLeases } from "./control-lease.ts";
@@ -62,6 +62,7 @@ function setup(opts: Setup = {}) {
   let connectGate: Promise<void> | null = null;
   const disconnected: string[] = [];
   let failDisconnect = false;
+  let watched = true;
   const waiting = new Map<string, Array<"host_key" | "certificate" | "login_prompt">>();
   const registry = new AgentSessionRegistry();
   const tools = createControlTools({
@@ -95,6 +96,7 @@ function setup(opts: Setup = {}) {
         disconnected.push(key);
       },
       waitingForOwner: (key) => waiting.get(key) ?? [],
+      watching: () => watched,
     },
   });
   const tool = (name: string): AgentToolDef => tools.find((t) => t.name === name)!;
@@ -106,6 +108,7 @@ function setup(opts: Setup = {}) {
   const data = (r: ToolResult) => JSON.parse(textOf(r)) as Record<string, any>;
   return {
     setFailDisconnect: (v: boolean) => void (failDisconnect = v),
+    setWatching: (v: boolean) => void (watched = v),
     registry, access, rows, leases, sessions, wrote, rdpSent, tools, tool, call, textOf, data, opened, disconnected, waiting,
     advance: (ms: number) => void (now += ms),
     holdConnect: () => {
@@ -654,5 +657,68 @@ describe("Z8: RDP input bounds and dispatch-time geometry", () => {
     const { tool } = setup();
     expect(tool("remote_rdp_input").description).toContain("a frame number the desktop has not reached");
     expect(tool("remote_rdp_input").description).not.toContain("newer than you saw");
+  });
+});
+
+describe("agents are never hidden: input needs a watcher", () => {
+  const TYPE = { sessionId: SSH_KEY, actions: [{ type: "text", text: "id" }] };
+
+  it("with nobody watching nothing is typed, and the answer says why; with a watcher it goes through", async () => {
+    const t = setup();
+    t.access.set(P_SSH, "input", false);
+    const lease = t.data(await t.call("remote_control_acquire", { sessionId: SSH_KEY }));
+    t.setWatching(false);
+    const refused = await t.call("remote_terminal_input", { ...TYPE, leaseId: lease.leaseId });
+    expect(refused.isError).toBe(true);
+    expect(t.textOf(refused)).toContain("owner_not_watching");
+    expect(t.wrote).toEqual([]);
+    t.setWatching(true);
+    expect((await t.call("remote_terminal_input", { ...TYPE, leaseId: lease.leaseId })).isError).toBeUndefined();
+    expect(t.wrote.map((w) => w.data)).toEqual(["id"]);
+  });
+
+  it("desktop input is refused the same way", async () => {
+    const t = setup();
+    t.access.set(P_RDP, "input", false);
+    const lease = t.data(await t.call("remote_control_acquire", { sessionId: RDP_KEY }));
+    t.setWatching(false);
+    const r = await t.call("remote_rdp_input", { sessionId: RDP_KEY, leaseId: lease.leaseId, actions: [{ type: "key", code: "Enter" }] });
+    expect(t.textOf(r)).toContain("owner_not_watching");
+    expect(t.rdpSent).toEqual([]);
+  });
+
+  it("input already queued when the last watcher leaves is dropped, not sent", async () => {
+    const t = setup();
+    t.access.set(P_SSH, "input", false);
+    const lease = t.data(await t.call("remote_control_acquire", { sessionId: SSH_KEY }));
+    t.holdWrites();
+    const first = t.call("remote_terminal_input", { ...TYPE, leaseId: lease.leaseId });
+    await until(() => t.rows.length >= 2);
+    const second = t.call("remote_terminal_input", { sessionId: SSH_KEY, leaseId: lease.leaseId, actions: [{ type: "text", text: "late" }] });
+    await until(() => t.rows.length >= 3);
+    t.setWatching(false); // the owner closes the view while the first write is in flight
+    t.releaseWrites();
+    await first;
+    const lateResult = await second;
+    expect(t.textOf(lateResult)).toContain("owner_not_watching");
+    expect(t.wrote.map((w) => w.data)).toEqual(["id"]);
+  });
+
+  it("acquire and connect hand the agent the live-view line and say whether anybody is watching", async () => {
+    const t = setup({ sessions: [] });
+    t.access.set(P_SSH, "input", false);
+    t.setWatching(false);
+    const opened = t.data(await t.call("remote_connect", { connectionId: P_SSH }));
+    expect(opened.watching).toBe(false);
+    expect(opened.liveView).toBe(`::remote-session{id="${opened.sessionId}"}`);
+    expect(String(opened.instruction)).toContain("liveView");
+  });
+
+  it("session rows say whether the owner is watching", () => {
+    const t = setup();
+    const view = { key: SSH_KEY, kind: "ssh", state: "running", profileId: P_SSH, exitCode: null, reason: null, control: "ready" } as AgentSessionView;
+    const extras = (watching: boolean) => controlSessionExtras(t.leases, { waitingForOwner: () => [], watching: () => watching })(view);
+    expect(extras(true)).toMatchObject({ watchedByOwner: true });
+    expect(extras(false)).toMatchObject({ watchedByOwner: false });
   });
 });
