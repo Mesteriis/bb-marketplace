@@ -494,7 +494,7 @@ describe.skipIf(!dockerOk)("remote commands over a real sshd (stage 4b-2)", () =
     off();
     expect(r.exitCode).toBe(0);
     await poll(() => seen.some((e) => e.phase === "finished"), 10_000, "the live view saw the end");
-    expect(seen[0]).toMatchObject({ kind: "exec", phase: "started", text: "echo LIVE-MARKER-1; sleep 1; echo LIVE-MARKER-2" });
+    expect(seen.find((e) => e.commandId === started.commandId && e.phase === "started")).toMatchObject({ kind: "exec", phase: "started", text: "echo LIVE-MARKER-1; sleep 1; echo LIVE-MARKER-2" });
     expect(seen.filter((e) => e.phase === "output").map((e) => e.text).join("")).toContain("LIVE-MARKER-2");
     // One public id from start to end, through the production adapter.
     expect(seen.filter((e) => e.commandId === started.commandId).length).toBeGreaterThanOrEqual(3);
@@ -510,7 +510,7 @@ describe.skipIf(!dockerOk)("remote commands over a real sshd (stage 4b-2)", () =
     expect(c.rows.at(-1)).toMatchObject({ tool: "remote_ssh_exec", detailMode: "text", detail: "echo recorded-marker" });
     c.access.set(profileId, "exec", false);
     const ended: any[] = [];
-    const off = c.feed.subscribe(sessionId, (e) => e.phase === "finished" && ended.push(e));
+    const off = c.feed.subscribe(sessionId, (e) => e.kind === "exec" && e.phase === "finished" && ended.push(e));
     const long = await run("sleep 120");
     c.access.set(profileId, "input", false); // revoke during the run
     expect(c.text(await c.call("remote_command_read", { commandId: long.commandId }))).toContain("agent_access_denied");
