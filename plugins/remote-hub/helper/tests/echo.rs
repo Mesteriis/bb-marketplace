@@ -2028,12 +2028,12 @@ fn w4_hup_does_not_block_the_loop() {
     assert_eq!(hup_count, 50, "every child's hang-up must precede its reap");
     let _ = std::fs::remove_dir_all(&gate_dir);
 
-    // This 5 s bound IS the assertion that reaping 50 hung-up sessions does not
-    // stall the loop: by now every child is closed and nothing is left to
-    // flush, so the helper must exit within a few poll turns. A per-session
-    // delay in the reaper (5 ms before each waitpid, mutation M-h2) turns
-    // this into ~39 s. Stdout is drained while waiting, but the limit is NOT
-    // the generous SHUTDOWN_HANG_GUARD used where output may still be flushing.
+    // Final exit bound. Every child is already closed and nothing is left to
+    // flush, so the helper must exit within a few poll turns. This bound is
+    // plain shutdown timing; the "reaping 50 hung-up sessions does not stall
+    // the loop" property is asserted by the echo round-trip bounds above (a
+    // 20 ms delay before the reaper's waitpid, mutation M-h2, fails the median
+    // bound). Stdout is drained while waiting.
     drop(stdin);
     let status = wait_exit_draining(&mut child, &mut stdout, Duration::from_secs(5))
         .expect("helper did not exit within 5s of stdin close");
