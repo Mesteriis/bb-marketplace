@@ -86,6 +86,8 @@ export const sessionInfoSchema = z.object({
   signal: z.number().int().nullable(),
   reason: z.string().nullable(),
   rdp: rdpInfoSchema.optional(),
+  /** The saved profile the session was opened from, when it was. */
+  profileId: z.string().uuid().optional(),
 });
 
 export const rpcSchemas = {
