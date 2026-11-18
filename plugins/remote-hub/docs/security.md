@@ -80,3 +80,36 @@
   for input. Lowering the grant below `exec` cancels what runs for that connection and ends reading.
 - **Limits.** A command runs as the saved user with that user's rights: exec is the power to act as that user. The
   helper's own bounds do not limit what the remote command does on the server.
+
+## Threat model and every stated limit, in one list
+
+Assets: the saved credentials (Keychain), the sessions and what is on them, the owner's decisions (host keys,
+certificates, grants). Attackers considered: a remote host or its output, an agent that is wrong or manipulated (prompt
+injection through remote text), another local process, a thread that is archived or deleted.
+
+What holds: saved secrets never reach an agent, the page, a log or a profile and work only for the endpoint they are bound
+to; an agent cannot answer a host-key, certificate or login question; agent control needs the owner's grant, an SSH
+session that is authenticated (the server accepted the login: LocalCommand signal) and, by default, a visible live view;
+the owner takes a session back with one click and a handover drops queued input and releases held keys (for a desktop, in
+the engine); output reaching an agent is framed as untrusted data; commands are bounded, never retried and ask no question.
+
+Limits, plainly:
+1. Levels restrict the registered agent tools, not callers: an agent that can run shell commands as the owner can reach
+   the plugin's RPC and the Keychain prompts. Not contained.
+2. Observe shows everything on screen or in the terminal, secrets included, and the scrollback.
+3. The helper binary is unsigned; the Keychain item is protected by the user's login Keychain, not by the helper.
+4. The watching gate proves a visible view is open, not that a person looks at it; one tab left open counts. The owner can
+   switch the rule off, and then an agent can act while nobody looks.
+5. The live-view line in a reply depends on the agent following the skill text; the banner and the audit do not.
+6. `openTab` (opening the live view without a click) is best effort and untested against a real BB; the SDK surfaces used
+   are experimental and may change.
+7. Up to 8 KiB of desktop input already in the engine pipe, and whatever the engine already wrote to the server's socket, are
+   not recalled by a handover.
+8. Exec is the power to act as the saved user on that host; the helper's bounds do not limit what the command does there.
+9. Audit stores lengths, not content (commands only when "record commands" is on, cut at 512 characters).
+10. A changed host key against a real sshd is not tested for exec (the option list and the unknown-host refusal are).
+11. "Credential used" plus the LocalCommand signal is the strongest trusted authentication signal OpenSSH gives; a server
+    that accepts then drops is seen as ready briefly.
+12. Memory-only state (leases, watchers, command lists) is lost on a restart: every session returns to the human.
+13. RDP: sessions the owner opens by hand remain drivable by the owner only; Windows rendering completeness is under
+    investigation (see the RDP notes in docs/rdp-engine.md).

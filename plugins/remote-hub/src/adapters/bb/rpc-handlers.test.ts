@@ -344,3 +344,31 @@ describe("agent access RPCs (stage 4a): the owner's page is the only way to chan
     await expect(handlers.agent_access_list({})).rejects.toMatchObject({ code: "not_found" });
   });
 });
+
+describe("session_list marks sessions an agent opened (stage 4c)", () => {
+  it("adds the opener thread, and null for everything else", async () => {
+    const GEN = "e".repeat(32);
+    const sessions = [
+      { generation: GEN, sessionId: 1, kind: "ssh", state: "running", exitCode: null, signal: null, reason: null },
+      { generation: GEN, sessionId: 2, kind: "ssh", state: "running", exitCode: null, signal: null, reason: null },
+    ];
+    const profiles = new ProfileBook({ store: new MemoryProfileStoreForOpened(), now: () => new Date(), newId: () => "11111111-2222-4333-8444-555555555551" });
+    const handlers = createRpcHandlers({
+      service: { sessionList: () => sessions, helperStatus: async () => ({}) } as unknown as RemoteHubService,
+      profiles,
+      credentials: {} as never,
+      imports: {} as never,
+      openedBy: (key) => (key === `${GEN}.2` ? "thr_agent" : undefined),
+    });
+    const listed = (await handlers.session_list(null)) as Array<{ sessionId: number; openedByAgent: string | null }>;
+    expect(listed.map((s) => [s.sessionId, s.openedByAgent])).toEqual([[1, null], [2, "thr_agent"]]);
+  });
+});
+
+class MemoryProfileStoreForOpened {
+  all() { return []; }
+  get() { return null; }
+  put() {}
+  remove() { return false; }
+  nextOrder() { return 1; }
+}

@@ -7,6 +7,7 @@ import { profileToRdpForm, profileToSshTarget } from "../core/catalogue.ts";
 import { profileFieldsOf, type Profile, type ProfileFields } from "../core/profile.ts";
 import { ProfileCatalogue } from "./profile-catalogue.tsx";
 import { AgentPanel, type AgentApi } from "./agent-panel.tsx";
+import { LiveSession, type LiveSessionApi } from "./live-session.tsx";
 import { CredentialsPanel } from "./credentials-panel.tsx";
 import { ImportPanel, type ImportApi } from "./import-panel.tsx";
 import { ProfileEditor, type SecretAction } from "./profile-editor.tsx";
@@ -30,6 +31,8 @@ export interface ConnectPageProps {
   imports?: ImportApi;
   /** Agent access and activity (stage 4a); without it there is no such section or screen. */
   agents?: AgentApi;
+  /** Live views of sessions agents opened (stage 4c); without it the catalogue has no Watch button. */
+  live?: LiveSessionApi;
 }
 
 export function ConnectPage(props: ConnectPageProps) {
@@ -41,6 +44,7 @@ export function ConnectPage(props: ConnectPageProps) {
   const [showCredentials, setShowCredentials] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showAgents, setShowAgents] = useState(false);
+  const [watched, setWatched] = useState<string | null>(null);
   const nonce = useRef(0);
   const api = props.profiles;
   const data = useProfiles(api);
@@ -153,10 +157,19 @@ export function ConnectPage(props: ConnectPageProps) {
           {...(props.imports !== undefined ? { onShowImport: () => { setShowCredentials(false); setShowAgents(false); setEditing(null); setShowImport(true); } } : {})}
           {...(props.agents !== undefined ? { onShowAgents: () => { setShowCredentials(false); setShowImport(false); setEditing(null); setShowAgents(true); } } : {})}
           onRetry={() => void reload()}
+          {...(props.live !== undefined ? { onWatchAgentSession: (key: string) => setWatched(key) } : {})}
         />
       )}
       <div className="rh-connect">
         {notice !== null && <p className="rh-error">{notice}</p>}
+        {watched !== null && props.live !== undefined && (
+          <section aria-label="Live view of an agent's session" className="rh-watched">
+            <button type="button" onClick={() => setWatched(null)}>
+              Close live view
+            </button>
+            <LiveSession sessionKey={watched} api={props.live} />
+          </section>
+        )}
         {showCredentials && credentialsApi !== undefined && (
           <CredentialsPanel
             items={credentialData.items}

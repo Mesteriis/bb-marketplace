@@ -49,6 +49,19 @@ function mount(over: Partial<ProfileCatalogueProps> = {}) {
   return handlers;
 }
 
+describe("ProfileCatalogue: sessions agents opened (stage 4c)", () => {
+  it("marks a profile whose open session an agent opened, names the thread, and offers Watch for that session", () => {
+    const onWatch = vi.fn();
+    const sessions = [{ generation: "a".repeat(32), sessionId: 4, kind: "ssh", state: "running", exitCode: null, signal: null, reason: null, profileId: A, openedByAgent: "thr_x" }, { generation: "a".repeat(32), sessionId: 5, kind: "ssh", state: "closed", exitCode: 0, signal: null, reason: "exited", profileId: B, openedByAgent: "thr_y" }] as never;
+    mount({ profiles: [profile({ id: A, name: "alpha" }), profile({ id: B, name: "beta" })], sessions, onWatchAgentSession: onWatch });
+    const alpha = screen.getByLabelText("alpha");
+    expect(within(alpha).getByTestId("profile-agent").textContent).toBe("opened by agent thr_x");
+    expect(within(screen.getByLabelText("beta")).queryByTestId("profile-agent")).toBeNull(); // closed: nothing to watch
+    fireEvent.click(within(alpha).getByRole("button", { name: "Watch live" }));
+    expect(onWatch).toHaveBeenCalledWith(`${"a".repeat(32)}.4`);
+  });
+});
+
 describe("ProfileCatalogue", () => {
   it("lists groups with the ungrouped last, favourites first, and the endpoint of each profile", () => {
     mount();

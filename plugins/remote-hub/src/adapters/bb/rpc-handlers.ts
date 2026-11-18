@@ -69,9 +69,11 @@ export interface RpcHandlerDeps {
   agents?: { access: AgentAccessBook; audit: AgentAudit };
   /** Taking a session back from an agent, listing what agents opened, answering their questions (stage 4b-1). */
   agentControl?: AgentControlRpc;
+  /** Which agent thread opened a session (stage 4c): the catalogue marks those. */
+  openedBy?: (sessionKey: string) => string | undefined;
 }
 
-export function createRpcHandlers({ service, profiles, credentials, imports, agents, agentControl }: RpcHandlerDeps): RpcHandlers {
+export function createRpcHandlers({ service, profiles, credentials, imports, agents, agentControl, openedBy }: RpcHandlerDeps): RpcHandlers {
   const control = (): AgentControlRpc => {
     if (agentControl === undefined) throw new experimental_PluginRpcRefusal({ code: "not_found", message: "agent control is not available" });
     return agentControl;
@@ -251,7 +253,7 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
     rdp_trusted_forget: (input) => withHelper(async () => ({ removed: service.rdpTrustedForget(input.host, input.port, input.fingerprint) })),
     rdp_screenshot: (input) =>
       withHelper(() => service.rdpScreenshot({ generation: input.generation, sessionId: input.sessionId })),
-    session_list: () => withHelper(() => service.sessionList()),
+    session_list: () => withHelper(() => service.sessionList().map((s) => ({ ...s, openedByAgent: openedBy?.(`${s.generation}.${s.sessionId}`) ?? null }))),
     session_close: (input) =>
       withHelper(() =>
         service.sessionClose({ generation: input.generation, sessionId: input.sessionId }),

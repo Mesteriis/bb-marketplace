@@ -148,6 +148,8 @@ export const sessionInfoSchema = z.object({
   rdp: rdpInfoSchema.optional(),
   /** The saved profile the session was opened from, when it was. */
   profileId: z.string().uuid().optional(),
+  /** The thread of the agent that opened the session through remote_connect, when one did. */
+  openedByAgent: z.string().nullable().optional(),
 });
 
 export const credentialViewSchema = z.object({

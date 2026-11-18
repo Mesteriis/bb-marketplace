@@ -10,7 +10,7 @@ export interface ProfilesApi {
   /** `deleteCredential` also deletes the profile's saved password (the server does so only when no other profile uses it). */
   remove: (id: string, deleteCredential?: boolean) => Promise<{ deleted: boolean; credentialDeleted?: boolean; credentialError?: string }>;
   duplicate: (id: string) => Promise<Profile>;
-  sessions: () => Promise<Array<SessionInfo & { profileId?: string }>>;
+  sessions: () => Promise<Array<SessionInfo & { profileId?: string; openedByAgent?: string | null }>>;
 }
 
 /** How often the status of the profiles is refreshed from the live sessions. */
@@ -21,7 +21,7 @@ const message = (e: unknown): string => (e instanceof Error ? e.message : String
 export function useProfiles(api: ProfilesApi | undefined) {
   const [profiles, setProfiles] = useState<Profile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<Array<SessionInfo & { profileId?: string }>>([]);
+  const [sessions, setSessions] = useState<Array<SessionInfo & { profileId?: string; openedByAgent?: string | null }>>([]);
   const alive = useRef(true);
   // A response is applied only if no newer request of its kind started after it:
   // an older answer arriving late must not undo a delete or a status change.

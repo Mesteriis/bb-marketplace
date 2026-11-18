@@ -95,6 +95,7 @@ export default function plugin(bb: BbPluginApi): void {
     imports,
     agents: { access: agentAccess, audit: agentAudit },
     agentControl: createAgentControlRpc({ service, leases, registry, audit: agentAudit, watchers, settings: agentSettings }),
+    openedBy: (key) => registry.threadOf(key),
   });
   const controlPorts = agentControlPorts({ service, profiles, handlers, watchers, settings: agentSettings });
   const toolDeps = {

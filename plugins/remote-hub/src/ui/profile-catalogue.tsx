@@ -10,7 +10,7 @@ export interface ProfileCatalogueProps {
   /** null while loading. */
   profiles: Profile[] | null;
   error: string | null;
-  sessions: Array<SessionInfo & { profileId?: string }>;
+  sessions: Array<SessionInfo & { profileId?: string; openedByAgent?: string | null }>;
   onConnect: (profile: Profile) => void;
   onEdit: (profile: Profile) => void;
   onNew: () => void;
@@ -24,6 +24,14 @@ export interface ProfileCatalogueProps {
   onShowImport?: () => void;
   /** Opens the agent access and activity screen (stage 4a). */
   onShowAgents?: () => void;
+  /** Shows an agent-opened session's live view (stage 4c); the Watch button shows only when this is given. */
+  onWatchAgentSession?: (sessionKey: string) => void;
+}
+
+/** An open session of this profile that an agent opened, if any. */
+function agentSession(profileId: string, sessions: ProfileCatalogueProps["sessions"]) {
+  const s = sessions.find((x) => x.profileId === profileId && x.state !== "closed" && typeof x.openedByAgent === "string" && x.openedByAgent !== "");
+  return s === undefined ? null : s;
 }
 
 function endpoint(p: Profile): string {
@@ -107,6 +115,18 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
                     <span data-testid="profile-status" className="rh-status">
                       {status.state === "idle" ? "" : status.sessions > 1 ? `${status.state} ×${status.sessions}` : status.state}
                     </span>
+                    {agentSession(p.id, props.sessions) !== null && (
+                      <>
+                        <span className="rh-badge rh-badge-agent" data-testid="profile-agent">
+                          {"opened by agent " + agentSession(p.id, props.sessions)!.openedByAgent}
+                        </span>
+                        {props.onWatchAgentSession !== undefined && (
+                          <button type="button" onClick={() => props.onWatchAgentSession!(`${agentSession(p.id, props.sessions)!.generation}.${agentSession(p.id, props.sessions)!.sessionId}`)}>
+                            Watch live
+                          </button>
+                        )}
+                      </>
+                    )}
                     {p.credentialRef !== null && <span className="rh-status">saved password</span>}
                     {p.provenance == null && p.needsConfig === true && (
                       <span className="rh-status" data-testid="profile-needs-config">
