@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Makosh Sidebar [Experimental]",
-    "description": "Project tree with a configurable root, recent activity sorting, reversible hiding, and running threads visible in collapsed groups.",
+    "description": "Project tree with hiding, recent activity sorting and an Active section for running threads and unread results.",
     "server": "./server.ts",
     "app": "./app.tsx",
     "branding": {
@@ -39,7 +39,7 @@
     "build": "bb plugin build"
   },
   "license": "MIT",
-  "description": "Project tree with a configurable root, recent activity sorting, reversible hiding, and running threads visible in collapsed groups.",
+  "description": "Project tree with hiding, recent activity sorting and an Active section for running threads and unread results.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Mesteriis/makosh-bb.git",

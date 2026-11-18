@@ -4,7 +4,7 @@ export const contract = defineRpcContract({
     paths: { input: z.null(), output: z.array(z.object({ id: z.string(), name: z.string(), path: z.string().nullable() })) },
 });
 export default function plugin(bb: BbPluginApi) {
-    bb.settings.define({rootPath:{type:'string',label:'Корневая папка проектов',description:'Абсолютный путь. Сама папка не отображается. Проекты вне неё скрыты, но работающие треды остаются видимыми. Пустое значение показывает все проекты.',default:''}});
+    bb.settings.define({threadLimit:{type:'number',label:'Тредов в папке',description:'Сколько тредов показывать до кнопки «Показать больше». От 1 до 1000.',default:5,experimental_schema:z.number().int().min(1).max(1000)},rootPath:{type:'string',label:'Корневая папка проектов',description:'Абсолютный путь. Сама папка не отображается. Проекты вне неё скрыты, но работающие треды остаются видимыми. Пустое значение показывает все проекты.',default:''}});
     bb.rpc.register(contract, {
         async paths() {
             const projects = await bb.sdk.projects.list({ includePersonal: true });

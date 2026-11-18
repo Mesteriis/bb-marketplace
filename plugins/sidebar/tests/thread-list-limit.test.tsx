@@ -1,0 +1,7 @@
+// @vitest-environment jsdom
+import React from 'react';import {afterEach,it,expect} from 'vitest';import {cleanup,render,screen,fireEvent} from '@testing-library/react';import {ThreadListLimit} from '../src/ui/thread-list-limit';
+afterEach(cleanup);
+const rows=Array.from({length:7},(_,i)=><div key={i}>Тред {i+1}</div>);
+it('shows five rows by default, expands all and collapses back',()=>{render(<ThreadListLimit rows={rows}/>);expect(screen.getByText('Тред 5')).toBeTruthy();expect(screen.queryByText('Тред 6')).toBeNull();fireEvent.click(screen.getByRole('button',{name:'Показать больше (ещё 2)'}));expect(screen.getByText('Тред 7')).toBeTruthy();fireEvent.click(screen.getByRole('button',{name:'Показать меньше'}));expect(screen.queryByText('Тред 6')).toBeNull();});
+it('uses a configured limit and omits controls for a short or empty list',()=>{const view=render(<ThreadListLimit rows={rows} limit={2}/>);expect(screen.queryByText('Тред 3')).toBeNull();view.rerender(<ThreadListLimit rows={rows.slice(0,2)} limit={2}/>);expect(screen.queryByRole('button')).toBeNull();view.rerender(<ThreadListLimit rows={[]}/>);expect(screen.queryByRole('button')).toBeNull();});
+it('keeps expansion independent between folders and applies a changed limit',()=>{const view=render(<><ThreadListLimit rows={rows} limit={2}/><ThreadListLimit rows={rows} limit={2}/></>);fireEvent.click(screen.getAllByRole('button')[0]);expect(screen.getAllByText('Тред 7')).toHaveLength(1);view.rerender(<ThreadListLimit rows={rows} limit={3}/>);expect(screen.queryByText('Тред 4')).toBeNull();});

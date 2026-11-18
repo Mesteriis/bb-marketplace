@@ -24,3 +24,7 @@ auth.json
 # Tooling
 .worktrees/
 .DS_Store
+
+# Editor and agent tool state
+.serena/
+.zed/

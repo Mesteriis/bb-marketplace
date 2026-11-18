@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, test } from 'vitest';
-import { fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import { loadPluginApp, renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import app from '../app';
 afterEach(() => { cleanup(); localStorage.clear(); });
@@ -26,7 +26,9 @@ test('collapsed folders and projectless section keep only live threads visible',
  const make=(id:string,projectId:string,status:'active'|'idle')=>({id,projectId,status,title:id,titleFallback:null,parentThreadId:null,parentNotifications:"auto" as const,lifecycleOwnerThreadId:null,sourceThreadId:null,sectionId:null,originKind:null,originPluginId:null,providerId:"test",pinnedAt:null,archivedAt:null,createdAt:1,updatedAt:1,lastReadAt:null,hasPendingInteraction:false,isUnread:false,isPinned:false,pinSortKey:null,isArchived:false,displayTitle:id,href:'/projects/'+projectId+'/threads/'+id,environment:null,host:null,isHidden:false,indicator:'none' as const,indicatorLabel:null,runtimeStatus:status,queuedWork:'none' as const,activity:{workflows:0,backgroundAgents:0,backgroundCommands:0,planMode:0},latestAttentionAt:100});
  const slot=renderSlot(definition.threadLists[0]!,{activeThreadId:null,activeProjectId:null,isCompactViewport:false,onNavigate:()=>{},searchQuery:''},{settings:{rootPath:'/Projects'},sidebarThreads:{status:'ready',projects:[{id:'p',name:'Example',isPersonal:false,href:'/p',settingsHref:'/s'},{id:'loose',name:'Personal',isPersonal:true,href:'/l',settingsHref:'/s'}],threads:[make('busy','p','active'),make('idle','p','idle'),make('loose-idle','loose','idle'),make('loose-busy','loose','active')],sections:[]},rpc:{paths:()=>[{id:'p',name:'Example',path:'/Projects/Personal/Example'}]}});
  await slot.findByRole('button',{name:'Personal 2'});
- expect(slot.getAllByRole('link',{name:/busy/}).length).toBe(2);
+ const activeSection=within(slot.getByRole('region',{name:'Активные'}));
+ expect(activeSection.getAllByRole('link',{name:/busy/}).length).toBe(2);
+ expect(activeSection.queryByRole('link',{name:'idle'})).toBeNull();
  expect(slot.queryByRole('link',{name:'idle'})).toBeNull();
  expect(slot.queryByRole('link',{name:'loose-idle'})).toBeNull();
  fireEvent.click(slot.getByRole('button',{name:'Без проекта 2'}));
