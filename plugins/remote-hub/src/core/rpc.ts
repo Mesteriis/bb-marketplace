@@ -247,6 +247,7 @@ export const rpcSchemas = {
         connectionId: z.string().nullable(),
         state: z.enum(["connecting", "running", "closed"]),
         openedByThread: z.string().nullable(),
+        openedByArchivedThread: z.boolean(),
         controlledBy: z.enum(["human", "agent"]),
         leaseThreadId: z.string().nullable(),
         leaseExpiresAt: z.number().nullable(),

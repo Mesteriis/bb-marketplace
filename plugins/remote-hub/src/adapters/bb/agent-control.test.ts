@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { AgentSessionRegistry } from "../../core/agent-control-tools.ts";
 import { ToolError } from "../../core/agent-tools.ts";
 import { ControlLeases } from "../../core/control-lease.ts";
 import type { Profile } from "../../core/profile.ts";
@@ -125,26 +126,64 @@ describe("sweepControl", () => {
 });
 
 describe("registerControlLifecycle", () => {
-  it("a deleted or archived thread loses its leases at once, other threads keep theirs, and the timer stops on dispose", async () => {
-    const { registerControlLifecycle } = await import("./agent-control.ts");
+  function harness() {
     const handlers = new Map<string, (payload: { thread: { id: string } }) => void>();
     const hooks: Array<() => void> = [];
     const bb = { events: { on: (event: string, h: (payload: { thread: { id: string } }) => void) => void handlers.set(event, h) }, onDispose: (h: () => void) => void hooks.push(h) } as never;
     const { leases } = leasesWithClock();
     const ended: string[] = [];
     leases.onEnd((e) => ended.push(`${e.threadId}:${e.reason}`));
-    leases.acquire(`${GEN}.1`, "thr_gone", 300);
-    leases.acquire(`${GEN}.2`, "thr_kept", 300);
-    leases.acquire(`${GEN}.3`, "thr_archived", 300);
+    const registry = new AgentSessionRegistry();
+    const closed: string[] = [];
+    return { handlers, hooks, bb, leases, ended, registry, closed, close: async (key: string) => void closed.push(key) };
+  }
+
+  it("a deleted thread loses its leases, its opened sessions are CLOSED and forgotten; other threads are untouched; the timer stops on dispose", async () => {
+    const { registerControlLifecycle } = await import("./agent-control.ts");
+    const h = harness();
+    h.leases.acquire(`${GEN}.1`, "thr_gone", 300);
+    h.leases.acquire(`${GEN}.2`, "thr_kept", 300);
+    h.registry.mark(`${GEN}.1`, "thr_gone");
+    h.registry.mark(`${GEN}.3`, "thr_gone");
+    h.registry.mark(`${GEN}.2`, "thr_kept");
     const spy = vi.spyOn(globalThis, "clearInterval");
-    registerControlLifecycle(bb, leases, { sessionList: () => [] as SessionInfo[] }, 3_600_000);
-    expect([...handlers.keys()].sort()).toEqual(["thread.archived", "thread.deleted"]);
-    handlers.get("thread.deleted")!({ thread: { id: "thr_gone" } });
-    handlers.get("thread.archived")!({ thread: { id: "thr_archived" } });
-    expect(ended).toEqual(["thr_gone:thread_gone", "thr_archived:thread_gone"]);
-    expect(leases.owner(`${GEN}.2`).kind).toBe("agent");
-    for (const hook of hooks) hook();
+    registerControlLifecycle(h.bb, { leases: h.leases, registry: h.registry, service: { sessionList: () => [] as SessionInfo[] }, closeSession: h.close, everyMs: 3_600_000 });
+    expect([...h.handlers.keys()].sort()).toEqual(["thread.archived", "thread.deleted"]);
+    h.handlers.get("thread.deleted")!({ thread: { id: "thr_gone" } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.ended).toEqual(["thr_gone:thread_gone"]);
+    expect(h.closed.sort()).toEqual([`${GEN}.1`, `${GEN}.3`]);
+    expect(h.registry.keys()).toEqual([`${GEN}.2`]);
+    expect(h.leases.owner(`${GEN}.2`).kind).toBe("agent");
+    for (const hook of h.hooks) hook();
     expect(spy).toHaveBeenCalledTimes(1);
     spy.mockRestore();
+  });
+
+  it("an archived thread loses its leases but its sessions stay open, remembered as opened by an archived thread", async () => {
+    const { registerControlLifecycle } = await import("./agent-control.ts");
+    const h = harness();
+    h.leases.acquire(`${GEN}.1`, "thr_old", 300);
+    h.registry.mark(`${GEN}.1`, "thr_old");
+    registerControlLifecycle(h.bb, { leases: h.leases, registry: h.registry, service: { sessionList: () => [] as SessionInfo[] }, closeSession: h.close, everyMs: 3_600_000 });
+    h.handlers.get("thread.archived")!({ thread: { id: "thr_old" } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.ended).toEqual(["thr_old:thread_gone"]);
+    expect(h.closed).toEqual([]);
+    expect(h.registry.threadOf(`${GEN}.1`)).toBe("thr_old");
+    expect(h.registry.isArchived("thr_old")).toBe(true);
+    expect(h.registry.isArchived("thr_other")).toBe(false);
+  });
+
+  it("a session that fails to close is still forgotten for that thread and the failure does not stop the others", async () => {
+    const { registerControlLifecycle } = await import("./agent-control.ts");
+    const h = harness();
+    h.registry.mark(`${GEN}.1`, "thr_gone");
+    h.registry.mark(`${GEN}.2`, "thr_gone");
+    const attempted: string[] = [];
+    registerControlLifecycle(h.bb, { leases: h.leases, registry: h.registry, service: { sessionList: () => [] as SessionInfo[] }, closeSession: async (k) => { attempted.push(k); if (k.endsWith(".1")) throw new Error("gone"); }, everyMs: 3_600_000 });
+    h.handlers.get("thread.deleted")!({ thread: { id: "thr_gone" } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(attempted.sort()).toEqual([`${GEN}.1`, `${GEN}.2`]);
   });
 });

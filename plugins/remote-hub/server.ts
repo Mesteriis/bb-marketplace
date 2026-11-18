@@ -97,7 +97,7 @@ export default function plugin(bb: BbPluginApi): void {
   };
   registerAgentTools(bb, [...createAgentTools(toolDeps), ...createControlTools({ ...toolDeps, leases, control: controlPorts, registry })]);
   bb.rpc.register(rpcContract, handlers);
-  registerControlLifecycle(bb, leases, service);
+  registerControlLifecycle(bb, { leases, registry, service, closeSession: (key) => controlPorts.disconnect(key) });
 
   registerStreamSocket(bb, { service });
 

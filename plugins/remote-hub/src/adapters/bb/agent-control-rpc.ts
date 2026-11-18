@@ -55,6 +55,7 @@ export function createAgentControlRpc({ service, leases, registry, audit }: Agen
           connectionId: s.profileId ?? null,
           state: s.state,
           openedByThread,
+          openedByArchivedThread: openedByThread !== null && registry.isArchived(openedByThread),
           controlledBy: owner.kind,
           leaseThreadId: owner.kind === "agent" ? owner.threadId : null,
           leaseExpiresAt: owner.kind === "agent" ? owner.expiresAt : null,

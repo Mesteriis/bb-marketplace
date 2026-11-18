@@ -3,7 +3,7 @@
 // handle, opens a saved connection the way the page does, and keeps leases from outliving their sessions.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { ToolError } from "../../core/agent-tools.ts";
-import type { AgentControlPorts } from "../../core/agent-control-tools.ts";
+import type { AgentControlPorts, AgentSessionRegistry } from "../../core/agent-control-tools.ts";
 import { profileToSshTarget } from "../../core/catalogue.ts";
 import type { ControlLeases } from "../../core/control-lease.ts";
 import type { Profile } from "../../core/profile.ts";
@@ -95,15 +95,34 @@ export function sweepControl(leases: ControlLeases, service: Pick<RemoteHubServi
   leases.endWhere((key) => !live.has(key), "session_closed");
 }
 
+export interface ControlLifecycleDeps {
+  leases: ControlLeases;
+  registry: AgentSessionRegistry;
+  service: Pick<RemoteHubService, "sessionList">;
+  /** Closes a session by key (the owner's close path). */
+  closeSession: (sessionKey: string) => Promise<void>;
+  everyMs?: number;
+}
+
 /**
- * A thread that is deleted or archived stops driving anything at once, and a timer ends leases whose time is up or whose
- * session is gone. The timer stops when the plugin is disposed.
+ * A thread that is deleted stops driving anything and the sessions it opened are CLOSED (a session nobody owns must not
+ * stay connected). An archived thread loses its leases but its sessions stay open, remembered as an archived thread's, so
+ * the owner can see and disconnect them. A timer ends leases whose time is up or whose session is gone; it stops on dispose.
  */
-export function registerControlLifecycle(bb: BbPluginApi, leases: ControlLeases, service: Pick<RemoteHubService, "sessionList">, everyMs = 5000): void {
-  for (const event of ["thread.deleted", "thread.archived"] as const) {
-    bb.events.on(event, ({ thread }) => void leases.endForThread(thread.id, "thread_gone"));
-  }
-  const timer = setInterval(() => sweepControl(leases, service), everyMs);
+export function registerControlLifecycle(bb: BbPluginApi, deps: ControlLifecycleDeps): void {
+  const { leases, registry, service, closeSession } = deps;
+  bb.events.on("thread.deleted", ({ thread }) => {
+    leases.endForThread(thread.id, "thread_gone");
+    for (const key of registry.keysOf(thread.id)) {
+      registry.forget(key);
+      void closeSession(key).catch(() => undefined);
+    }
+  });
+  bb.events.on("thread.archived", ({ thread }) => {
+    leases.endForThread(thread.id, "thread_gone");
+    registry.markArchived(thread.id);
+  });
+  const timer = setInterval(() => sweepControl(leases, service), deps.everyMs ?? 5000);
   timer.unref?.();
   bb.onDispose(() => clearInterval(timer));
 }

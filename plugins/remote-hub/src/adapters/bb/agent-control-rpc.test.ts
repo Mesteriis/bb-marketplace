@@ -72,6 +72,15 @@ describe("agent_sessions", () => {
     expect(list[1]!.questions).toEqual([]);
   });
 
+  it("marks a session whose opener thread was archived", async () => {
+    const { rpc, registry } = setup();
+    registry.mark(K1, "thr_old");
+    registry.mark(K2, "thr_live");
+    registry.markArchived("thr_old");
+    const list = await rpc.agent_sessions({});
+    expect(list.map((s) => [s.sessionId, s.openedByArchivedThread])).toEqual([[1, true], [2, false]]);
+  });
+
   it("is empty when no agent has opened or holds anything", async () => {
     const { rpc } = setup();
     expect(await rpc.agent_sessions({})).toEqual([]);

@@ -35,6 +35,7 @@ export interface AgentSessionView {
   connectionId: string | null;
   state: "connecting" | "running" | "closed";
   openedByThread: string | null;
+  openedByArchivedThread: boolean;
   controlledBy: "human" | "agent";
   leaseThreadId: string | null;
   leaseExpiresAt: number | null;
@@ -158,7 +159,7 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
                 <strong>{label}</strong> <span className="rh-badge">{s.state}</span>
                 <span className="rh-profile-endpoint">
                   {s.kind}
-                  {s.openedByThread !== null ? ` · opened by agent thread ${s.openedByThread}` : ""}
+                  {s.openedByThread !== null ? (s.openedByArchivedThread ? ` · opened by an archived thread (${s.openedByThread})` : ` · opened by agent thread ${s.openedByThread}`) : ""}
                   {" · "}
                   {s.controlledBy === "agent" ? `driven by an agent (thread ${s.leaseThreadId ?? "?"}${s.leaseExpiresAt !== null ? ", until " + new Date(s.leaseExpiresAt).toLocaleTimeString() : ""})` : "driven by you"}
                 </span>

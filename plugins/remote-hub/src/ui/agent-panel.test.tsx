@@ -132,7 +132,7 @@ describe("AgentPanel: sessions agents opened or drive (stage 4b-1)", () => {
   const GEN = "a".repeat(32);
   const base: AgentSessionView = {
     generation: GEN, sessionId: 4, kind: "ssh", connectionId: P1, state: "running", openedByThread: "thr_a", controlledBy: "human",
-    leaseThreadId: null, leaseExpiresAt: null, questions: [], certificate: null,
+    leaseThreadId: null, leaseExpiresAt: null, questions: [], certificate: null, openedByArchivedThread: false,
   };
 
   it("says there are none when no agent opened or holds a session", async () => {
@@ -198,5 +198,14 @@ describe("AgentPanel: sessions agents opened or drive (stage 4b-1)", () => {
     await screen.findByRole("alertdialog");
     expect(screen.getAllByRole("alertdialog")).toHaveLength(1);
     expect(screen.getByText(/opens after the other one is answered/)).toBeTruthy();
+  });
+
+  it("a session opened by an archived thread says so and can be disconnected", async () => {
+    const a = api({ sessionRows: [{ ...base, openedByArchivedThread: true }] });
+    mount(a);
+    const list = await screen.findByLabelText("Agent sessions");
+    expect(list.textContent).toContain("opened by an archived thread (thr_a)");
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect build box" }));
+    await waitFor(() => expect(a.disconnect).toHaveBeenCalled());
   });
 });

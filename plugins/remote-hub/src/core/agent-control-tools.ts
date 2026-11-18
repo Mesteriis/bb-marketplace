@@ -40,6 +40,17 @@ export class AgentSessionRegistry {
   keys(): string[] {
     return [...this.opened.keys()];
   }
+  keysOf(threadId: string): string[] {
+    return [...this.opened].filter(([, t]) => t === threadId).map(([k]) => k);
+  }
+  /** The thread was archived: its sessions stay open but the owner sees whose they were. */
+  markArchived(threadId: string): void {
+    this.archived.add(threadId);
+  }
+  isArchived(threadId: string): boolean {
+    return this.archived.has(threadId);
+  }
+  private readonly archived = new Set<string>();
 }
 
 export interface AgentControlDeps extends AgentToolDeps {
