@@ -67,6 +67,23 @@ impl Fixture {
         self.helper.take().unwrap().shutdown();
         self.helper = Some(start(&[(FAKE, mode), ("REMOTE_HUB_KEYCHAIN_PATH", self.path.to_str().unwrap())]));
     }
+    /// The user's answer to the first-use prompt of session `sid` (the prompt must say it pins the password).
+    fn decide(&mut self, sid: u32, request_id: u64, accept: &str) {
+        let fingerprint = self.h().read_until(std::time::Duration::from_secs(20), |k, p| {
+            if k != FRAME_KIND_CONTROL {
+                return None;
+            }
+            match decode_response(p).ok()? {
+                Response::RdpCertPrompt { session_id, fingerprint, first_use, reason, .. } if session_id == sid => {
+                    assert!(first_use, "a first-use prompt says that accepting pins the password (reason {reason})");
+                    Some(fingerprint)
+                }
+                _ => None,
+            }
+        });
+        self.h().send(&Request::RdpCertDecision { id: request_id, session_id: sid, fingerprint, accept: accept.into() });
+        let _ = self.h().read_reply(request_id);
+    }
     fn h(&mut self) -> &mut Helper {
         self.helper.as_mut().unwrap()
     }
@@ -311,6 +328,13 @@ fn opened_session(f: &mut Fixture, id: u64, port: u16) -> u32 {
     session_id
 }
 
+/// An open of an UNPINNED saved password and the user's explicit "accept once" for the certificate it was shown.
+fn first_use_session(f: &mut Fixture, id: u64, port: u16) -> u32 {
+    let sid = opened_session(f, id, port);
+    f.decide(sid, id + 1000, "once");
+    sid
+}
+
 /// T4: the first certificate that is accepted for a saved password is pinned to it, by the helper;
 /// a later open that meets another certificate is closed as cert_changed before the password is used.
 #[test]
@@ -319,8 +343,8 @@ fn a_saved_rdp_password_is_pinned_to_the_first_certificate_and_a_changed_one_nev
     let mut f = Fixture::with_mode("pin", &format!("cert:{CERT_A}"));
     f.bind_port = server.port;
     assert!(matches!(f.save(1, REF, SECRET), Response::CredentialOk { .. }));
-    // First use: accepted and pinned (the engine reports the password digest only after the certificate).
-    let sid = opened_session(&mut f, 2, server.port);
+    // First use: the user decides on the certificate, then it is pinned (the engine reports the password digest only after).
+    let sid = first_use_session(&mut f, 2, server.port);
     f.h().wait_state(sid, &format!("pw_sha256={SECRET_DIGEST}"));
     // The same certificate again: fine.
     f.restart(&format!("cert:{CERT_A}"));
@@ -340,11 +364,11 @@ fn saving_the_password_again_forgets_the_pin() {
     let mut f = Fixture::with_mode("repin", &format!("cert:{CERT_A}"));
     f.bind_port = server.port;
     assert!(matches!(f.save(1, REF, SECRET), Response::CredentialOk { .. }));
-    let sid = opened_session(&mut f, 2, server.port);
+    let sid = first_use_session(&mut f, 2, server.port);
     f.h().wait_state(sid, &format!("pw_sha256={SECRET_DIGEST}"));
     f.restart(&format!("cert:{CERT_B}"));
     assert!(matches!(f.save(3, REF, SECRET), Response::CredentialOk { .. }));
-    let sid = opened_session(&mut f, 4, server.port);
+    let sid = first_use_session(&mut f, 4, server.port);
     f.h().wait_state(sid, &format!("pw_sha256={SECRET_DIGEST}"));
     f.restart(&format!("cert:{CERT_A}"));
     let sid = opened_session(&mut f, 5, server.port);
@@ -401,6 +425,27 @@ fn of_two_concurrent_first_sessions_with_different_certificates_only_one_receive
         let Response::SessionOpened { session_id, .. } = f.h().read_reply(id) else { panic!("expected session.opened") };
         sessions.push(session_id);
     }
+    // Each session shows its own certificate to the user, who accepts both. The prompts can arrive in any order
+    // and the reader skips what it does not wait for, so both are collected first.
+    let mut prompts = std::collections::HashMap::new();
+    while prompts.len() < 2 {
+        let (sid, fp) = f.h().read_until(std::time::Duration::from_secs(20), |k, p| {
+            if k != FRAME_KIND_CONTROL {
+                return None;
+            }
+            match decode_response(p).ok()? {
+                Response::RdpCertPrompt { session_id, fingerprint, first_use, .. } => {
+                    assert!(first_use);
+                    Some((session_id, fingerprint))
+                }
+                _ => None,
+            }
+        });
+        prompts.insert(sid, fp);
+    }
+    for (n, sid) in sessions.iter().enumerate() {
+        f.h().send(&Request::RdpCertDecision { id: 2002 + n as u64, session_id: *sid, fingerprint: prompts[sid].clone(), accept: "once".into() });
+    }
     let wanted = format!("pw_sha256={SECRET_DIGEST}");
     let mut used = std::collections::HashSet::new();
     let mut closed = std::collections::HashMap::new();
@@ -440,7 +485,7 @@ fn a_pin_that_cannot_be_written_stops_the_session_before_authentication() {
     let mut f = Fixture::with_env("pinfail", &format!("cert:{CERT_A}"), &[("REMOTE_HUB_TEST_PIN_FAIL", "1")]);
     f.bind_port = server.port;
     assert!(matches!(f.save(1, REF, SECRET), Response::CredentialOk { .. }));
-    let sid = opened_session(&mut f, 2, server.port);
+    let sid = first_use_session(&mut f, 2, server.port);
     assert_eq!(f.h().read_closed(sid).2, "cert_rejected");
 }
 
@@ -455,9 +500,47 @@ fn a_callers_expected_fingerprint_does_not_replace_first_use_pinning() {
     // The caller names the OTHER certificate; for an unpinned saved password that expectation is ignored.
     let opened = f.open_sized(2, None, Some(REF), server.port, 600, Some(CERT_B));
     let Response::SessionOpened { session_id, .. } = opened else { panic!("expected session.opened, got {opened:?}") };
+    f.decide(session_id, 1002, "once");
     f.h().wait_state(session_id, &format!("pw_sha256={SECRET_DIGEST}"));
     // And A is what was pinned: a later session shown B is refused.
     f.restart(&format!("cert:{CERT_B}"));
     let sid = opened_session(&mut f, 3, server.port);
     assert_eq!(f.h().read_closed(sid).2, "cert_changed");
+}
+
+/// X1: an unpinned saved password is not used until the user has decided on the certificate that was shown; a
+/// rejection ends the session without the password digest ever being reported.
+#[test]
+fn an_unpinned_saved_password_waits_for_the_users_decision_and_a_rejection_never_uses_it() {
+    let server = silent_server();
+    let mut f = Fixture::with_mode("firstuse", &format!("cert:{CERT_A}"));
+    f.bind_port = server.port;
+    assert!(matches!(f.save(1, REF, SECRET), Response::CredentialOk { .. }));
+    let sid = opened_session(&mut f, 2, server.port);
+    f.decide(sid, 2002, "reject");
+    // Everything the session reported until it closed: the password digest is not among it.
+    let wanted = format!("pw_sha256={SECRET_DIGEST}");
+    let mut digest_seen = false;
+    let reason = loop {
+        let seen = f.h().read_until(std::time::Duration::from_secs(20), |k, p| {
+            if k != FRAME_KIND_CONTROL {
+                return None;
+            }
+            match decode_response(p).ok()? {
+                Response::RdpState { session_id, state } if session_id == sid => Some((state == wanted, None)),
+                Response::SessionClosed { session_id, reason, .. } if session_id == sid => Some((false, Some(reason))),
+                _ => None,
+            }
+        });
+        digest_seen |= seen.0;
+        if let Some(reason) = seen.1 {
+            break reason;
+        }
+    };
+    assert_eq!(reason, "cert_rejected");
+    assert!(!digest_seen, "the password reached the engine without a decision");
+    // And nothing was pinned: the next first use is a first use again (another certificate is accepted, not refused).
+    f.restart(&format!("cert:{CERT_B}"));
+    let sid = first_use_session(&mut f, 3, server.port);
+    f.h().wait_state(sid, &format!("pw_sha256={SECRET_DIGEST}"));
 }

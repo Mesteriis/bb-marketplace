@@ -138,6 +138,8 @@ export const rdpCertPromptSchema = z.object({
   notAfter: z.string(),
   reason: z.string().min(1),
   detail: z.string().nullable().optional(),
+  /** The first use of a saved password: accepting pins the password to this certificate. */
+  firstUse: z.boolean().optional(),
 });
 export const rdpCertificateSchema = z.object({
   type: z.literal("rdp.certificate"),

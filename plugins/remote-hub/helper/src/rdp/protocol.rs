@@ -137,6 +137,9 @@ pub enum EngineEvent {
         reason: String,
         /// The TLS library's own text; diagnostic only.
         detail: Option<String>,
+        /// The first use of a saved password: accepting this certificate PINS the password to it.
+        #[serde(default)]
+        first_use: bool,
     },
     /// The peer certificate of the completed TLS handshake and whether it
     /// validated against the system roots (true) or only passed on a decision

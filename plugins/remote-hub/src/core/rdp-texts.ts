@@ -99,6 +99,7 @@ const PROMPT_REASONS: Record<string, string> = {
   hostname_mismatch: "the certificate was issued for a different host name",
   expired: "the certificate is expired or not yet valid",
   other: "the certificate could not be validated",
+  first_use: "this is the first use of the saved password",
   cert_changed: "this is a DIFFERENT certificate than the one you trusted for this host and port. A saved password is not sent to it. If the server really got a new certificate, accept it once, or forget the old one (Import screen, RDP certificates you trust) and trust the new one.",
 };
 

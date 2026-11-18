@@ -963,7 +963,7 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, current_exe
             RdpFrame::Event(EngineEvent::State { state }) => {
                 outbox.extend(protocol::encode_response(&Response::RdpState { session_id: rid, state }));
             }
-            RdpFrame::Event(EngineEvent::CertPrompt { host, port, fingerprint, subject, issuer, not_before, not_after, reason, detail }) => {
+            RdpFrame::Event(EngineEvent::CertPrompt { host, port, fingerprint, subject, issuer, not_before, not_after, reason, detail, first_use }) => {
                 outbox.extend(protocol::encode_response(&Response::RdpCertPrompt {
                     session_id: rid,
                     host,
@@ -975,6 +975,7 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, current_exe
                     not_after,
                     reason,
                     detail,
+                    first_use,
                 }));
             }
             RdpFrame::Event(EngineEvent::PinRequest { fingerprint }) => {

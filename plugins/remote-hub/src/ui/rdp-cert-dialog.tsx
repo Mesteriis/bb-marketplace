@@ -59,6 +59,11 @@ export function RdpCertDialog(props: RdpCertDialogProps) {
       <p id="rh-rdp-cert-reason" className={prompt.reason === "cert_changed" ? "rh-error" : undefined}>
         {promptReasonText(prompt.reason)}
       </p>
+      {prompt.firstUse === true && (
+        <p data-testid="rdp-cert-pins" className="rh-error">
+          Accepting this pins the saved password to this certificate: it will be sent to no other certificate. Save the password again to change that.
+        </p>
+      )}
       <dl className="rh-rdp-cert-fields">
         <dt>server</dt>
         <dd>

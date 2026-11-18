@@ -85,6 +85,7 @@ export type RdpHelperEvent =
       notBefore: string;
       notAfter: string;
       reason: string;
+      firstUse?: boolean;
     }
   | { type: "rdp.certificate"; fingerprint: string; validated: boolean }
   | { type: "rdp.input_rejected"; applied: number; rejected: Array<{ index: number; code: string }> }

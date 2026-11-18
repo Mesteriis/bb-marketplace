@@ -69,8 +69,32 @@ pub fn run_fake_engine(mode: &str) -> i32 {
             }
         }
         if pin_first_use {
-            // Like the real engine: nothing is authenticated (no password digest is reported) until the
-            // helper's pin-or-compare answer says "allow".
+            // Like the real engine: the user decides on this certificate FIRST (a first-use prompt), then the
+            // helper pins it; nothing is authenticated (no password digest is reported) until it says "allow".
+            let _ = out.send(&protocol::EngineEvent::CertPrompt {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+                fingerprint: presented.clone(),
+                subject: String::new(),
+                issuer: String::new(),
+                not_before: String::new(),
+                not_after: String::new(),
+                reason: "first_use".to_string(),
+                detail: None,
+                first_use: true,
+            });
+            let accepted = loop {
+                match inbox.decisions.recv_timeout(Duration::from_secs(15)) {
+                    Ok(super::engine_io::Decision::Cert { fingerprint, accept }) if super::cert::fingerprint_matches(presented, &fingerprint) => {
+                        break accept == "once" || accept == "session_trust";
+                    }
+                    Ok(_) => {}
+                    Err(_) => break false,
+                }
+            };
+            if !accepted {
+                return if out.closed(RdpClosedReason::CertRejected).is_ok() { 0 } else { 2 };
+            }
             let _ = out.send(&protocol::EngineEvent::PinRequest { fingerprint: presented.clone() });
             let verdict = loop {
                 match inbox.decisions.recv_timeout(Duration::from_secs(15)) {

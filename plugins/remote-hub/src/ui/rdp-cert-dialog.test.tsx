@@ -108,3 +108,13 @@ describe("RdpCertDialog", () => {
     expect(onDecide).not.toHaveBeenCalled();
   });
 });
+
+describe("RdpCertDialog first use of a saved password (X1)", () => {
+  it("says that accepting pins the saved password to this certificate, only for a first use", () => {
+    const { rerender } = render(<RdpCertDialog prompt={{ ...PROMPT, reason: "first_use", firstUse: true }} onDecide={() => {}} />);
+    expect(screen.getByTestId("rdp-cert-pins").textContent).toContain("pins the saved password to this certificate");
+    expect(screen.getByText("this is the first use of the saved password")).toBeTruthy();
+    rerender(<RdpCertDialog prompt={PROMPT} onDecide={() => {}} />);
+    expect(screen.queryByTestId("rdp-cert-pins")).toBeNull();
+  });
+});

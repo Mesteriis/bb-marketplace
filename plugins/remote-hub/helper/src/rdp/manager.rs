@@ -713,11 +713,11 @@ impl RdpManager {
                             out.push(RdpFrame::Event(EngineEvent::Desktop { frame_id, width, height, timestamp }));
                         }
                         Some(RdpFrame::Event(EngineEvent::CertPrompt {
-                            host, port, fingerprint, subject, issuer, not_before, not_after, reason, detail,
+                            host, port, fingerprint, subject, issuer, not_before, not_after, reason, detail, first_use,
                         })) => {
                             s.pending_prompt = Some(fingerprint.clone());
                             out.push(RdpFrame::Event(EngineEvent::CertPrompt {
-                                host, port, fingerprint, subject, issuer, not_before, not_after, reason, detail,
+                                host, port, fingerprint, subject, issuer, not_before, not_after, reason, detail, first_use,
                             }));
                         }
                         Some(RdpFrame::Event(EngineEvent::ScreenshotStart { frame_id, width, height, timestamp, chunks })) => {
@@ -1235,6 +1235,7 @@ mod tests {
             not_after: String::new(),
             reason: "untrusted_root".into(),
             detail: None,
+            first_use: false,
         };
         write_all(b, &encode_control(&prompt));
         let _ = mgr.process_readable(id, usize::MAX);

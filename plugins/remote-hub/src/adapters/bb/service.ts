@@ -302,14 +302,15 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       }
       case "rdp.cert_prompt": {
         const { host, port } = rdp.target;
-        if (trust.isTrusted(host, port, event.fingerprint)) {
+        // A first-use prompt is never answered for the user: accepting it pins a saved password to the certificate.
+        if (event.firstUse !== true && trust.isTrusted(host, port, event.fingerprint)) {
           // A fingerprint the user trusted for this BB run: accept this handshake once.
           helper?.rdpCertDecision(runtime.handle, event.fingerprint, "once").catch(() => {});
           return;
         }
         // A different certificate on a host:port with a trusted one is never
         // auto-accepted and is reported as a CHANGED certificate.
-        const reason = trust.trustedFor(host, port).length > 0 ? "cert_changed" : event.reason;
+        const reason = !trust.isTrusted(host, port, event.fingerprint) && trust.trustedFor(host, port).length > 0 ? "cert_changed" : event.reason;
         rdp.prompt = {
           host: event.host,
           port: event.port,
@@ -319,6 +320,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
           notBefore: event.notBefore,
           notAfter: event.notAfter,
           reason,
+          ...(event.firstUse === true ? { firstUse: true } : {}),
         };
         broadcast(runtime, { type: "cert_prompt", prompt: rdp.prompt });
         return;

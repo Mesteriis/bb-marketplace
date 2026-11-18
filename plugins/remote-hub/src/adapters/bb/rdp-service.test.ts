@@ -96,7 +96,7 @@ class FakeRdpHelper {
   state(sid: number, state: string): void {
     this.event(sid, { type: "rdp.state", state });
   }
-  prompt(sid: number, fingerprint: string, reason = "untrusted_root"): void {
+  prompt(sid: number, fingerprint: string, reason = "untrusted_root", firstUse = false): void {
     this.state(sid, "cert_prompt");
     this.event(sid, {
       type: "rdp.cert_prompt",
@@ -108,6 +108,7 @@ class FakeRdpHelper {
       notBefore: "2026-01-01T00:00:00Z",
       notAfter: "2036-01-01T00:00:00Z",
       reason,
+      ...(firstUse ? { firstUse: true } : {}),
     });
   }
   desktop(sid: number, frameId = 1, width = 8, height = 4): void {
@@ -372,6 +373,35 @@ describe("RDP service: certificate decisions and trust", () => {
     const fourth = await two.service.rdpOpen({ ...TARGET }, 8, 4);
     two.helper.prompt(fourth.sessionId, FP_A);
     expect(two.service.rdpInfo(fourth)?.prompt).toMatchObject({ fingerprint: FP_A, reason: "untrusted_root" });
+  });
+
+  it("a FIRST-USE prompt (the saved password would be pinned) is never answered automatically, even for a certificate trusted for this run or for good (X1)", async () => {
+    const rows: TrustedRdpCert[] = [];
+    const disk: PersistentRdpTrust = { all: () => [...rows], add: (c) => void rows.push(c), remove: () => false };
+    const { helper, service } = setup(disk);
+    const first = await service.rdpOpen({ ...TARGET }, 8, 4);
+    helper.prompt(first.sessionId, FP_A);
+    await service.rdpCertDecision(first, FP_A, "always_trust");
+    const second = await service.rdpOpen({ ...TARGET }, 8, 4);
+    helper.decisions.length = 0;
+    helper.prompt(second.sessionId, FP_A, "first_use", true);
+    // Trusted for good, yet the user is asked: this decision pins a saved password.
+    expect(helper.decisions).toEqual([]);
+    expect(service.rdpInfo(second)?.prompt).toMatchObject({ fingerprint: FP_A, reason: "first_use", firstUse: true });
+    // The same certificate WITHOUT the first-use flag is still answered from the trust record.
+    const third = await service.rdpOpen({ ...TARGET }, 8, 4);
+    helper.prompt(third.sessionId, FP_A);
+    expect(service.rdpInfo(third)?.prompt).toBeNull();
+    // A session-trusted certificate is not answered for a first use either.
+    const sessionOnly = setup();
+    const a = await sessionOnly.service.rdpOpen({ ...TARGET }, 8, 4);
+    sessionOnly.helper.prompt(a.sessionId, FP_A);
+    await sessionOnly.service.rdpCertDecision(a, FP_A, "session_trust");
+    const b = await sessionOnly.service.rdpOpen({ ...TARGET }, 8, 4);
+    sessionOnly.helper.decisions.length = 0;
+    sessionOnly.helper.prompt(b.sessionId, FP_A, "first_use", true);
+    expect(sessionOnly.helper.decisions).toEqual([]);
+    expect(sessionOnly.service.rdpInfo(b)?.prompt).toMatchObject({ firstUse: true });
   });
 
   it("'always trust' on a CHANGED certificate is refused by the service, nothing is stored and the helper is not told (W6a)", async () => {

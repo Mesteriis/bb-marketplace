@@ -284,6 +284,34 @@ pub enum PinOutcome {
     Cancelled(RdpClosedReason),
 }
 
+/// The prompt of a first use whose certificate was not already put to the user by the handshake.
+async fn first_use_decision(ctx: &Arc<PromptContext>, der: &[u8]) -> Result<(), RdpClosedReason> {
+    let presented = fingerprint_sha256(der);
+    let fields = parse_cert_fields(der).unwrap_or(CertFields { subject: String::new(), issuer: String::new(), not_before: String::new(), not_after: String::new() });
+    helper_gone(ctx.out.state("cert_prompt"))?;
+    helper_gone(ctx.out.send(&EngineEvent::CertPrompt {
+        host: ctx.host.clone(),
+        port: ctx.port,
+        fingerprint: presented.clone(),
+        subject: fields.subject,
+        issuer: fields.issuer,
+        not_before: fields.not_before,
+        not_after: fields.not_after,
+        reason: "first_use".to_string(),
+        detail: None,
+        first_use: true,
+    }))?;
+    let outcome = tokio::task::block_in_place(|| {
+        let rx = ctx.decisions.lock().unwrap();
+        wait_for_decision(&rx, &presented, ctx.prompt_timeout)
+    });
+    match outcome {
+        DecisionOutcome::Accepted => Ok(()),
+        DecisionOutcome::Rejected | DecisionOutcome::TimedOut => Err(RdpClosedReason::CertRejected),
+        DecisionOutcome::Cancelled(reason) => Err(reason),
+    }
+}
+
 /// Wait for the helper's `PinAnswer`; certificate decisions arriving meanwhile are not answers and are ignored.
 pub fn wait_for_pin_answer(rx: &Receiver<Decision>, timeout: Duration) -> PinOutcome {
     let deadline = Instant::now() + timeout;
@@ -384,6 +412,10 @@ struct PromptContext {
     meter: Meter,
     /// Set when strict validation failed (the callback ran).
     invoked: AtomicBool,
+    /// A first use of a saved password: every prompt says that accepting pins the password to the certificate.
+    first_use: bool,
+    /// The user explicitly accepted the presented certificate in a prompt of this handshake.
+    decided: AtomicBool,
 }
 
 fn handle_validation_failure(ctx: &PromptContext, der: &[u8], error: &str) -> bool {
@@ -418,6 +450,7 @@ fn handle_validation_failure(ctx: &PromptContext, der: &[u8], error: &str) -> bo
             not_after: fields.not_after,
             reason: mapping::cert_reason_code(error).to_string(),
             detail: Some(error.to_string()),
+            first_use: ctx.first_use,
         })
     });
     if sent.is_err() {
@@ -432,7 +465,10 @@ fn handle_validation_failure(ctx: &PromptContext, der: &[u8], error: &str) -> bo
     });
     ctx.meter.add_prompt_time(ctx.meter.clock.now().saturating_sub(started));
     match outcome {
-        DecisionOutcome::Accepted => true,
+        DecisionOutcome::Accepted => {
+            ctx.decided.store(true, Ordering::SeqCst);
+            true
+        }
         DecisionOutcome::Rejected | DecisionOutcome::TimedOut => {
             *ctx.forced.lock().unwrap() = Some(RdpClosedReason::CertRejected);
             false
@@ -526,6 +562,8 @@ pub async fn connect_sequence(
         forced: Mutex::new(None),
         meter: Meter::new(clock, timeouts.tls),
         invoked: AtomicBool::new(false),
+        first_use: params.pin_first_use,
+        decided: AtomicBool::new(false),
     });
     let upgraded = tls_phase(&ctx, &cancel, tls, tcp).await?;
     let outcome = match upgraded {
@@ -543,6 +581,11 @@ pub async fn connect_sequence(
     // session just wrote, BEFORE anything authenticates. Anything but its "allow" ends the session.
     if params.pin_first_use {
         let fingerprint = fingerprint_sha256(&outcome.leaf_der);
+        // The user decides on THIS certificate first, always: also when it passed system validation, and
+        // whatever the caller already trusts. (A prompt of the handshake that was accepted counts.)
+        if !ctx.decided.load(Ordering::SeqCst) {
+            first_use_decision(&ctx, &outcome.leaf_der).await?;
+        }
         helper_gone(out.send(&EngineEvent::PinRequest { fingerprint }))?;
         let rx = ctx.decisions.lock().unwrap();
         match wait_for_pin_answer(&rx, timeouts.finalize) {
@@ -1037,14 +1080,29 @@ mod tests {
         assert!(out.collector.all().contains(&EngineEvent::Certificate { fingerprint: LEAF_FP.to_string(), validated: false }));
     }
 
-    /// W2: first use of a saved password. The engine reports the certificate, asks the helper to pin it and does NOT
-    /// authenticate until the answer says "allow".
+    fn accept_first_use(ctl: &Ctl) -> EngineEvent {
+        let prompt = ctl.collector.wait_for(|e| matches!(e, EngineEvent::CertPrompt { .. }));
+        let EngineEvent::CertPrompt { fingerprint, .. } = &prompt else { unreachable!() };
+        ctl.decisions.send(Decision::Cert { fingerprint: fingerprint.clone(), accept: "once".to_string() }).unwrap();
+        prompt
+    }
+
+    /// X1: first use of a saved password. EVEN a certificate that passes system validation is put to the user, and
+    /// only after the user accepted it does the engine ask the helper to pin it and wait for the answer.
     #[test]
-    fn a_first_use_waits_for_the_helpers_pin_answer_before_it_authenticates() {
+    fn a_first_use_asks_the_user_even_for_a_valid_certificate_then_waits_for_the_pin_answer() {
         let out = run(Server::Tls, Some("PIN"), budgets(1000), &TestCaTls, |ctl| {
+            let prompt = ctl.collector.wait_for(|e| matches!(e, EngineEvent::CertPrompt { .. }));
+            let EngineEvent::CertPrompt { fingerprint, reason, first_use, .. } = &prompt else { unreachable!() };
+            assert_eq!(fingerprint, LEAF_FP);
+            assert_eq!(reason, "first_use");
+            assert!(first_use, "the prompt says that accepting pins the password");
+            // Before the decision nothing is pinned, requested or authenticated.
+            assert!(!ctl.collector.all().iter().any(|e| matches!(e, EngineEvent::PinRequest { .. })));
+            assert!(!ctl.collector.states().contains(&"authenticating".to_string()));
+            ctl.decisions.send(Decision::Cert { fingerprint: fingerprint.clone(), accept: "once".to_string() }).unwrap();
             let EngineEvent::PinRequest { fingerprint } = ctl.collector.wait_for(|e| matches!(e, EngineEvent::PinRequest { .. })) else { unreachable!() };
             assert_eq!(fingerprint, LEAF_FP);
-            // Nothing has authenticated yet: the state "authenticating" only follows the answer.
             assert!(!ctl.collector.states().contains(&"authenticating".to_string()));
             ctl.decisions.send(Decision::Pin { verdict: "allow".to_string() }).unwrap();
             ctl.collector.wait_for(|e| matches!(e, EngineEvent::State { state } if state == "authenticating"));
@@ -1053,11 +1111,53 @@ mod tests {
         assert!(out.collector.states().contains(&"authenticating".to_string()), "{:?}", out.result.err());
     }
 
+    /// X1: a certificate the handshake already put to the user (it failed validation) and the user accepted there is
+    /// an explicit decision: no second prompt, and the prompt of the handshake carried the "pins" flag.
+    #[test]
+    fn a_first_use_that_was_decided_in_the_handshake_prompt_is_not_asked_twice() {
+        let out = run(Server::Tls12, Some("PIN"), budgets(60_000), &SystemTls, |ctl| {
+            let prompt = accept_first_use(&ctl);
+            let EngineEvent::CertPrompt { reason, first_use, .. } = &prompt else { unreachable!() };
+            assert_eq!(reason, "untrusted_root");
+            assert!(first_use);
+            ctl.collector.wait_for(|e| matches!(e, EngineEvent::PinRequest { .. }));
+            ctl.decisions.send(Decision::Pin { verdict: "allow".to_string() }).unwrap();
+            ctl.collector.wait_for(|e| matches!(e, EngineEvent::State { state } if state == "authenticating"));
+            ctl.cancel.trigger(RdpClosedReason::KilledByClose);
+        });
+        let prompts = out.collector.all().iter().filter(|e| matches!(e, EngineEvent::CertPrompt { .. })).count();
+        assert_eq!(prompts, 1, "{:?}", out.result.err());
+    }
+
+    /// X1: rejecting the first-use prompt ends the session before any pin request or authentication.
+    #[test]
+    fn rejecting_the_first_use_prompt_ends_the_session_without_a_pin_request() {
+        let out = run(Server::Tls, Some("PIN"), budgets(1000), &TestCaTls, |ctl| {
+            let EngineEvent::CertPrompt { fingerprint, .. } = ctl.collector.wait_for(|e| matches!(e, EngineEvent::CertPrompt { .. })) else { unreachable!() };
+            ctl.decisions.send(Decision::Cert { fingerprint, accept: "reject".to_string() }).unwrap();
+        });
+        assert_eq!(out.result.err(), Some(RdpClosedReason::CertRejected));
+        assert!(!out.collector.all().iter().any(|e| matches!(e, EngineEvent::PinRequest { .. })));
+        assert!(!out.collector.states().contains(&"authenticating".to_string()));
+    }
+
+    /// X1: with a pin there is no first-use prompt at all (the pin is enforced by comparison).
+    #[test]
+    fn a_pinned_open_with_a_valid_certificate_is_not_prompted() {
+        let expected = LEAF_FP.to_lowercase().replace(':', "");
+        let out = run(Server::Tls, Some(&expected), budgets(1000), &TestCaTls, |ctl| {
+            ctl.collector.wait_for(|e| matches!(e, EngineEvent::State { state } if state == "authenticating"));
+            ctl.cancel.trigger(RdpClosedReason::KilledByClose);
+        });
+        assert!(!out.collector.all().iter().any(|e| matches!(e, EngineEvent::CertPrompt { .. } | EngineEvent::PinRequest { .. })));
+    }
+
     /// W2: "changed", "failed" and silence all end the session before authentication, with distinct reasons.
     #[test]
     fn a_first_use_that_is_not_allowed_never_authenticates() {
         for (verdict, expected) in [("changed", RdpClosedReason::CertChanged), ("failed", RdpClosedReason::CertRejected), ("whatever", RdpClosedReason::CertRejected)] {
             let out = run(Server::Tls, Some("PIN"), budgets(1000), &TestCaTls, move |ctl| {
+                accept_first_use(&ctl);
                 ctl.collector.wait_for(|e| matches!(e, EngineEvent::PinRequest { .. }));
                 ctl.decisions.send(Decision::Pin { verdict: verdict.to_string() }).unwrap();
             });
@@ -1237,6 +1337,8 @@ mod tests {
             forced: Mutex::new(None),
             meter: Meter::new(clock.clone(), Duration::from_secs(15)),
             invoked: AtomicBool::new(false),
+            first_use: false,
+            decided: AtomicBool::new(false),
         });
         dec_tx.send(Decision::Cert { fingerprint: LEAF_FP.to_string(), accept: "once".to_string() }).unwrap();
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();

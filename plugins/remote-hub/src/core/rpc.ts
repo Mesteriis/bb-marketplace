@@ -123,6 +123,8 @@ export const rdpCertPromptInfoSchema = z.object({
   notAfter: z.string(),
   /** untrusted_root, hostname_mismatch, expired, other, or cert_changed (the service's override). */
   reason: z.string(),
+  /** The first use of a saved password: accepting this certificate pins the password to it (stage 3c-2). */
+  firstUse: z.boolean().optional(),
 });
 
 export const rdpInfoSchema = z.object({

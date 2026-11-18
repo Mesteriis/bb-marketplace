@@ -305,6 +305,9 @@ pub enum Response {
         reason: String,
         /// The TLS library's own text; diagnostic only.
         detail: Option<String>,
+        /// The first use of a saved password: accepting this certificate pins the password to it.
+        #[serde(rename = "firstUse", default)]
+        first_use: bool,
     },
     /// The peer certificate of the finished TLS handshake and whether it
     /// validated against the system roots.
