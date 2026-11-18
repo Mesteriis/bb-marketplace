@@ -74,7 +74,7 @@ pub struct EngineExit {
 /// Block until `pid` is reaped, retrying on EINTR (the helper's SIGCHLD
 /// handler is installed without SA_RESTART, so a blocking waitpid is routinely
 /// interrupted; giving up there would leave a zombie nobody owns).
-fn wait_pid(pid: libc::pid_t) -> Option<libc::c_int> {
+pub(crate) fn wait_pid(pid: libc::pid_t) -> Option<libc::c_int> {
     let mut status: libc::c_int = 0;
     loop {
         let r = unsafe { libc::waitpid(pid, &mut status, 0) };
@@ -88,7 +88,7 @@ fn wait_pid(pid: libc::pid_t) -> Option<libc::c_int> {
     }
 }
 
-fn parse_status(status: libc::c_int) -> EngineExit {
+pub(crate) fn parse_status(status: libc::c_int) -> EngineExit {
     if libc::WIFEXITED(status) {
         EngineExit { code: Some(libc::WEXITSTATUS(status)), signal: None }
     } else if libc::WIFSIGNALED(status) {
@@ -201,14 +201,14 @@ pub struct RdpManager {
     fake_engine: Option<String>,
 }
 
-fn set_nonblocking(fd: RawFd) {
+pub(crate) fn set_nonblocking(fd: RawFd) {
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFL);
         libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
     }
 }
 
-fn set_cloexec(fd: RawFd) {
+pub(crate) fn set_cloexec(fd: RawFd) {
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFD);
         libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
@@ -217,7 +217,7 @@ fn set_cloexec(fd: RawFd) {
 
 /// Move `fd` to a descriptor >= 10 (close-on-exec) so the child's dup2 targets
 /// 0..3 can never collide with it.
-fn lift_fd(fd: RawFd) -> Result<RawFd, String> {
+pub(crate) fn lift_fd(fd: RawFd) -> Result<RawFd, String> {
     let lifted = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10) };
     unsafe { libc::close(fd) };
     if lifted < 0 {

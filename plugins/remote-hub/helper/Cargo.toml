@@ -68,6 +68,11 @@ name = "rdp_process"
 path = "tests/rdp_process.rs"
 required-features = ["test-hooks"]
 
+[[test]]
+name = "pve_process"
+path = "tests/pve_process.rs"
+required-features = ["test-hooks"]
+
 [dependencies]
 libc = "=0.2.191"
 serde = { version = "=1.0.229", features = ["derive"] }

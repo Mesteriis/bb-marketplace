@@ -121,7 +121,7 @@ fn error_of(events: &[PveEvent]) -> (String, Option<String>) {
 
 #[tokio::test]
 async fn targets_by_ticket_list_nodes_guests_and_version() {
-    let fake = start(default_state()).await;
+    let fake = start_fake(default_state()).await;
     let events = targets(&fake, ticket_auth(), ca_trust()).await;
     let [PveEvent::Targets { version, nodes, guests }] = &events[..] else { panic!("{events:?}") };
     assert_eq!(version.as_deref(), Some("9.0.3"));
@@ -139,7 +139,7 @@ async fn targets_by_ticket_list_nodes_guests_and_version() {
 
 #[tokio::test]
 async fn targets_by_api_token_need_no_login() {
-    let fake = start(default_state()).await;
+    let fake = start_fake(default_state()).await;
     let auth = PveAuth::Token { token_id: TOKEN_ID.into(), secret: Secret::new(TOKEN_SECRET) };
     let events = targets(&fake, auth, ca_trust()).await;
     assert!(matches!(&events[..], [PveEvent::Targets { guests, .. }] if guests.len() == 3), "{events:?}");
@@ -148,7 +148,7 @@ async fn targets_by_api_token_need_no_login() {
 
 #[tokio::test]
 async fn a_wrong_password_is_login_failed_after_exactly_one_attempt() {
-    let fake = start(default_state()).await;
+    let fake = start_fake(default_state()).await;
     let auth = PveAuth::Ticket { username: USER.into(), password: Secret::new("wrong-PW-1") };
     let events = targets(&fake, auth, ca_trust()).await;
     assert_eq!(error_of(&events).0, "login_failed");
@@ -160,7 +160,7 @@ async fn a_wrong_password_is_login_failed_after_exactly_one_attempt() {
 async fn an_expired_ticket_is_login_failed_not_a_retry_loop() {
     let mut st = default_state();
     st.expire_tickets = true;
-    let fake = start(st).await;
+    let fake = start_fake(st).await;
     let events = targets(&fake, ticket_auth(), ca_trust()).await;
     assert_eq!(error_of(&events).0, "login_failed");
     assert_eq!(fake.state.lock().unwrap().logins, 1);
@@ -170,7 +170,7 @@ async fn an_expired_ticket_is_login_failed_not_a_retry_loop() {
 async fn a_realm_with_a_second_factor_is_reported_not_attempted() {
     let mut st = default_state();
     st.tfa = true;
-    let fake = start(st).await;
+    let fake = start_fake(st).await;
     let events = targets(&fake, ticket_auth(), ca_trust()).await;
     assert_eq!(error_of(&events).0, "tfa_required");
 }
@@ -179,19 +179,19 @@ async fn a_realm_with_a_second_factor_is_reported_not_attempted() {
 async fn no_guest_privileges_is_no_permission_but_no_guests_with_privileges_is_just_empty() {
     let mut st = default_state();
     st.no_guest_privileges = true;
-    let fake = start(st).await;
+    let fake = start_fake(st).await;
     assert_eq!(error_of(&targets(&fake, ticket_auth(), ca_trust()).await).0, "no_permission");
 
     let mut st = default_state();
     st.guests.clear();
-    let fake = start(st).await;
+    let fake = start_fake(st).await;
     let events = targets(&fake, ticket_auth(), ca_trust()).await;
     assert!(matches!(&events[..], [PveEvent::Targets { guests, nodes, .. }] if guests.is_empty() && nodes.len() == 2), "{events:?}");
 }
 
 #[tokio::test]
 async fn system_trust_refuses_the_fixture_certificate_and_reports_its_fingerprint() {
-    let fake = start(default_state()).await;
+    let fake = start_fake(default_state()).await;
     let (code, fp) = error_of(&targets(&fake, ticket_auth(), Trust::System).await);
     assert_eq!(code, "tls_untrusted");
     assert_eq!(fp.as_deref(), Some(LEAF_FP));
@@ -200,7 +200,7 @@ async fn system_trust_refuses_the_fixture_certificate_and_reports_its_fingerprin
 
 #[tokio::test]
 async fn a_pinned_certificate_is_accepted_and_a_different_pin_is_cert_changed() {
-    let fake = start(default_state()).await;
+    let fake = start_fake(default_state()).await;
     let ok = targets(&fake, ticket_auth(), Trust::Pin { fingerprint: LEAF_FP.into() }).await;
     assert!(matches!(&ok[..], [PveEvent::Targets { .. }]), "{ok:?}");
     let (code, fp) = error_of(&targets(&fake, ticket_auth(), Trust::Pin { fingerprint: CA_FP.into() }).await);
@@ -241,7 +241,7 @@ async fn a_host_with_a_path_is_refused_before_any_connection() {
 
 #[tokio::test]
 async fn an_lxc_terminal_reaches_first_output_echoes_input_resizes_and_closes() {
-    let fake = start(default_state()).await;
+    let fake = start_fake(default_state()).await;
     let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc("pve1", 101))).await;
     d.until_state("open").await;
     d.read_data(b"root@ct101:~# ").await;
@@ -267,7 +267,7 @@ async fn an_lxc_terminal_reaches_first_output_echoes_input_resizes_and_closes() 
 
 #[tokio::test]
 async fn the_node_shell_uses_the_node_termproxy() {
-    let fake = start(default_state()).await;
+    let fake = start_fake(default_state()).await;
     let op = PveOp::Terminal { target: ConsoleTarget::Node { node: "pve2".into() }, cols: 120, rows: 40 };
     let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), op)).await;
     d.until_state("open").await;
@@ -283,7 +283,7 @@ async fn the_node_shell_uses_the_node_termproxy() {
 async fn a_console_the_account_may_not_open_is_no_permission() {
     let mut st = default_state();
     st.forbid_console = true;
-    let fake = start(st).await;
+    let fake = start_fake(st).await;
     let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc("pve1", 101))).await;
     let (events, _) = d.all().await;
     assert!(matches!(&events[0], PveEvent::Error { code, .. } if code == "no_permission"), "{events:?}");
@@ -294,7 +294,7 @@ async fn a_console_the_account_may_not_open_is_no_permission() {
 
 #[tokio::test]
 async fn a_token_reaches_discovery_but_not_a_console_that_needs_a_ticket() {
-    let fake = start(default_state()).await;
+    let fake = start_fake(default_state()).await;
     let auth = PveAuth::Token { token_id: TOKEN_ID.into(), secret: Secret::new(TOKEN_SECRET) };
     let mut d = start_engine(&open(fake.port, auth, ca_trust(), lxc("pve1", 101))).await;
     let (events, _) = d.all().await;
@@ -303,7 +303,7 @@ async fn a_token_reaches_discovery_but_not_a_console_that_needs_a_ticket() {
 
 #[tokio::test]
 async fn an_unknown_node_or_guest_is_an_api_error_with_the_servers_words() {
-    let fake = start(default_state()).await;
+    let fake = start_fake(default_state()).await;
     for (node, vmid, needle) in [("nope", 101u32, "hostname lookup"), ("pve1", 999, "does not exist")] {
         let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc(node, vmid))).await;
         let (events, _) = d.all().await;
@@ -321,7 +321,7 @@ async fn an_unknown_node_or_guest_is_an_api_error_with_the_servers_words() {
 async fn a_refused_ticket_line_is_login_failed() {
     let mut st = default_state();
     st.refuse_ticket_line = true;
-    let fake = start(st).await;
+    let fake = start_fake(st).await;
     let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc("pve1", 101))).await;
     let (events, _) = d.all().await;
     assert!(matches!(&events[0], PveEvent::Error { code, .. } if code == "login_failed"), "{events:?}");
@@ -329,7 +329,7 @@ async fn a_refused_ticket_line_is_login_failed() {
 
 #[tokio::test]
 async fn the_remote_end_closing_is_reported_as_remote_closed() {
-    let fake = start(default_state()).await;
+    let fake = start_fake(default_state()).await;
     let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc("pve1", 101))).await;
     d.until_state("open").await;
     d.input(b"exit\r").await;
@@ -339,7 +339,7 @@ async fn the_remote_end_closing_is_reported_as_remote_closed() {
 
 #[tokio::test]
 async fn keepalive_pings_reach_the_console() {
-    let fake = start(default_state()).await;
+    let fake = start_fake(default_state()).await;
     let cmd = PveCommand::Open {
         endpoint: Endpoint { host: "127.0.0.1".into(), port: fake.port },
         auth: ticket_auth(),
@@ -359,7 +359,7 @@ async fn keepalive_pings_reach_the_console() {
 async fn closing_while_waiting_for_the_console_ends_at_once() {
     let mut st = default_state();
     st.delay_ok_ms = 5000;
-    let fake = start(st).await;
+    let fake = start_fake(st).await;
     let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc("pve1", 101))).await;
     d.until_state("waiting_for_console").await;
     let t = std::time::Instant::now();
@@ -371,7 +371,7 @@ async fn closing_while_waiting_for_the_console_ends_at_once() {
 
 #[tokio::test]
 async fn the_helper_going_away_ends_the_engine_and_closes_the_console() {
-    let fake = start(default_state()).await;
+    let fake = start_fake(default_state()).await;
     let Drive { wr, rd, engine } = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc("pve1", 101))).await;
     let mut d = Drive { wr, rd, engine };
     d.until_state("open").await;
@@ -390,7 +390,7 @@ async fn the_helper_going_away_ends_the_engine_and_closes_the_console() {
 
 #[tokio::test]
 async fn the_password_never_appears_in_any_event() {
-    let fake = start(default_state()).await;
+    let fake = start_fake(default_state()).await;
     let mut d = start_engine(&open(fake.port, ticket_auth(), ca_trust(), lxc("pve1", 101))).await;
     let mut seen = String::new();
     loop {

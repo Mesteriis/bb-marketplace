@@ -12,6 +12,7 @@ use crate::protocol::{
     self, Request, Response, FRAME_KIND_CONTROL, FRAME_KIND_STREAM, MAX_FRAME_BODY_BYTES,
     PROTOCOL_VERSION, STREAM_HEADER_BYTES,
 };
+use crate::pve::manager::PveManager;
 use crate::rdp::manager::{DecisionRefusal, EnqueueError, PinTarget, RdpFrame, RdpManager};
 use crate::rdp::protocol::{EngineCommand, EngineEvent, UpdateHeader};
 use crate::sessions::{SessionError, SessionManager, SpawnSpec, READ_CHUNK};
@@ -30,6 +31,8 @@ const INGRESS_CAP: usize = MAX_FRAME_BODY_BYTES + 4;
 /// Outbox room required before an RDP engine fd is read: one update frame
 /// (<= 1 MiB) plus slack for its relayed events.
 const RDP_RESERVE: usize = 1024 * 1024 + 256 * 1024;
+/// Outbox room a PVE engine read needs: a turn takes at most 16 frames of 16 KiB console bytes.
+const PVE_RESERVE: usize = 512 * 1024;
 
 static SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -143,6 +146,8 @@ fn request_id(req: &Request) -> Option<u64> {
         | Request::ExecForget { id, .. }
         | Request::SshPromptAnswer { id, .. }
         | Request::OpenRdp { id, .. }
+        | Request::OpenPve { id, .. }
+        | Request::PveTargets { id, .. }
         | Request::CredentialSave { id, .. }
         | Request::CredentialDelete { id, .. }
         | Request::CredentialStatus { id, .. }
@@ -164,7 +169,7 @@ fn request_id(req: &Request) -> Option<u64> {
 
 use crate::keychain::valid_credential_ref;
 
-enum CredentialRefusal {
+pub(crate) enum CredentialRefusal {
     BadRef,
     /// The saved credential is for somewhere else than where this request would send it.
     Mismatch,
@@ -180,7 +185,7 @@ impl CredentialRefusal {
         }
     }
 
-    fn into_response(self, id: u64) -> Response {
+    pub(crate) fn into_response(self, id: u64) -> Response {
         let code = self.code();
         let message = match &self {
             CredentialRefusal::BadRef => "not a Remote Hub credential reference",
@@ -366,7 +371,7 @@ fn keychain_ok(reply: crate::keychain::OpReply) -> Result<crate::keychain::OpRep
 }
 
 /// The saved secret and what it is for.
-fn resolve_item(current_exe: &str, reference: &str) -> Result<crate::keychain::Item, CredentialRefusal> {
+pub(crate) fn resolve_item(current_exe: &str, reference: &str) -> Result<crate::keychain::Item, CredentialRefusal> {
     let reply = keychain_ok(keychain_child(current_exe, "get", reference, None, None)?)?;
     match (reply.secret, reply.bind) {
         (Some(secret), Some(bind)) => Ok(crate::keychain::Item { bind, secret }),
@@ -471,6 +476,7 @@ fn build_spawn_spec(
 fn handle(
     manager: &mut SessionManager,
     rdp: &mut RdpManager,
+    pve: &mut PveManager,
     current_exe: &str,
     handshaken: &mut bool,
     generation: &str,
@@ -756,6 +762,10 @@ fn handle(
             }
         }
         Request::SessionSetOwner { id, session_id, owner } => {
+            if pve.contains(session_id) {
+                // A console has one writer at a time only in the sense of the control lease above it.
+                return Ok(protocol::encode_response(&Response::SessionOwnerSet { id, session_id, dropped: 0, released: 0 }));
+            }
             if manager.contains(session_id) {
                 return Ok(match manager.set_owner(session_id, &owner) {
                     Ok(dropped) => protocol::encode_response(&Response::SessionOwnerSet { id, session_id, dropped: dropped as u64, released: 0 }),
@@ -769,6 +779,16 @@ fn handle(
                 Err(e) => rdp_enqueue_error(id, session_id, e),
             })
         }
+        Request::SessionInput { id, session_id, data, .. } if pve.contains(session_id) => Ok(match pve.enqueue_input(session_id, data.as_bytes()) {
+            Ok(()) => protocol::encode_response(&Response::SessionInputAck { id, session_id }),
+            Err(e) => crate::pve::glue::enqueue_error(id, session_id, e),
+        }),
+        Request::SessionResize { id, session_id, cols, rows } if pve.contains(session_id) => Ok(match pve.resize(session_id, cols, rows) {
+            Ok(()) => protocol::encode_response(&Response::SessionResized { id, session_id, cols, rows }),
+            Err(e) => crate::pve::glue::enqueue_error(id, session_id, e),
+        }),
+        // Console bytes are bounded by the outbox room, not by per-session credit: the grant is acknowledged and unused.
+        Request::SessionCredit { id, session_id, .. } if pve.contains(session_id) => Ok(protocol::encode_response(&Response::SessionCreditAck { id, session_id })),
         Request::SessionInput {
             id,
             session_id,
@@ -828,6 +848,13 @@ fn handle(
         Request::SessionClose { id, session_id } => {
             // Ids come from one shared allocator, so an id belongs to exactly
             // one manager.
+            if pve.contains(session_id) {
+                // The engine closes the console politely; `session.closed` answers this request once it has.
+                return Ok(match pve.request_close(session_id, id) {
+                    Ok(()) => Vec::new(),
+                    Err(e) => crate::pve::glue::enqueue_error(id, session_id, e),
+                });
+            }
             if rdp.contains(session_id) {
                 let pending = rdp.take_pending_screenshots(session_id);
                 let reason = rdp.close(session_id).unwrap_or_else(|| "killed_by_close".to_string());
@@ -843,6 +870,10 @@ fn handle(
             }
             handle_pty_close(manager, id, session_id)
         }
+        Request::OpenPve { id, connect, target, cols, rows, keepalive_secs } => {
+            Ok(crate::pve::glue::open_terminal(pve, current_exe, id, &connect, target, cols, rows, keepalive_secs))
+        }
+        Request::PveTargets { id, connect } => Ok(crate::pve::glue::open_targets(pve, current_exe, id, &connect)),
         Request::OpenRdp { id, width, height, .. } if !rdp_geometry_ok(width, height) => Ok(rdp_error(
             id,
             "rdp_invalid_geometry",
@@ -1442,12 +1473,14 @@ fn flush_stdout(outbox: &mut VecDeque<u8>) -> bool {
 struct CleanupGuard {
     manager: SessionManager,
     rdp: RdpManager,
+    pve: PveManager,
 }
 
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
         self.manager.terminate_all();
         self.rdp.terminate_all();
+        self.pve.terminate_all();
     }
 }
 
@@ -1458,6 +1491,7 @@ enum PollRole {
     Stdout,
     Session(u32),
     Rdp(u32),
+    Pve(u32),
     Askpass,
 }
 
@@ -1499,7 +1533,8 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
     let ids = crate::ids::SessionIds::new();
     let mut guard = CleanupGuard {
         manager: SessionManager::with_ids(echo_argv, ids.clone()),
-        rdp: RdpManager::with_ids(ids),
+        rdp: RdpManager::with_ids(ids.clone()),
+        pve: PveManager::with_ids(ids),
     };
     let mut reader = FrameReader::new();
     let mut outbox: VecDeque<u8> = VecDeque::new();
@@ -1567,6 +1602,21 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
             fds.push(pollfd(rfd, events));
         }
 
+        // PVE engines: read only while the outbox has room for a whole data frame.
+        let pve_room = outbox.len() + PVE_RESERVE <= OUTBOX_CAP;
+        let mut pve_buffered = false;
+        for (pid_, pfd) in guard.pve.fds() {
+            let events = guard.pve.poll_interest(pid_, pve_room);
+            if pve_room && guard.pve.has_buffered_frame(pid_) {
+                pve_buffered = true;
+            }
+            if events == 0 {
+                continue;
+            }
+            roles.push(PollRole::Pve(pid_));
+            fds.push(pollfd(pfd, events));
+        }
+
         // The askpass socket and its open requests (stage 3b-2).
         for afd in guard.manager.askpass_fds() {
             roles.push(PollRole::Askpass);
@@ -1574,7 +1624,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         }
 
         // Buffered engine frames are work that poll cannot signal.
-        let poll_timeout = if rdp_buffered { 0 } else if guard.manager.exec.running() > 0 { 20 } else { 50 };
+        let poll_timeout = if rdp_buffered || pve_buffered { 0 } else if guard.manager.exec.running() > 0 { 20 } else { 50 };
         let r = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, poll_timeout) };
         if r < 0 {
             let err = io::Error::last_os_error();
@@ -1626,6 +1676,16 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                         let budget = OUTBOX_CAP.saturating_sub(outbox.len());
                         let frames = guard.rdp.process_readable(*rid, budget);
                         relay_rdp_frames(&mut guard.rdp, &mut outbox, &current_exe, *rid, frames);
+                    }
+                }
+                PollRole::Pve(pid_) => {
+                    guard.pve.handle_poll_events(*pid_, revents);
+                    let readable = revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+                        || guard.pve.has_buffered_frame(*pid_);
+                    if readable && outbox.len() + PVE_RESERVE <= OUTBOX_CAP {
+                        let budget = OUTBOX_CAP.saturating_sub(outbox.len());
+                        let frames = guard.pve.process_readable(*pid_, budget);
+                        crate::pve::glue::relay_frames(&mut guard.pve, &mut outbox, *pid_, frames);
                     }
                 }
                 PollRole::Stdin | PollRole::Askpass => {}
@@ -1692,6 +1752,11 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
             }));
         }
 
+        guard.pve.reap();
+        for closed in guard.pve.take_all_closed() {
+            outbox.extend(crate::pve::glue::closed_frames(&closed));
+        }
+
         // Drain pending output into the bounded outbox in READ_CHUNK frames so
         // per-session sequence numbers stay consecutive.
         let snapshot = guard.manager.fds();
@@ -1751,7 +1816,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
         while outbox.len() + OUTBOX_RESERVE <= OUTBOX_CAP {
             match reader.try_take() {
                 Ok(Some(IncomingFrame::Control(req))) => {
-                    match handle(&mut guard.manager, &mut guard.rdp, &current_exe, &mut handshaken, &generation, req) {
+                    match handle(&mut guard.manager, &mut guard.rdp, &mut guard.pve, &current_exe, &mut handshaken, &generation, req) {
                         Ok(frames) => outbox.extend(frames),
                         Err((code, message)) => {
                             outbox.extend(protocol::encode_response(&Response::Error {
@@ -1955,10 +2020,10 @@ mod tests {
         let mut shake = true;
         for id in [61u64, 62] {
             let frames =
-                handle(&mut manager, &mut rdp, "/nonexistent", &mut shake, "g", Request::RdpScreenshot { id, session_id: sid }).unwrap();
+                handle(&mut manager, &mut rdp, &mut PveManager::new(), "/nonexistent", &mut shake, "g", Request::RdpScreenshot { id, session_id: sid }).unwrap();
             assert!(frames.is_empty(), "an accepted screenshot has no immediate answer");
         }
-        let frames = handle(&mut manager, &mut rdp, "/nonexistent", &mut shake, "g", Request::SessionClose { id: 70, session_id: sid }).unwrap();
+        let frames = handle(&mut manager, &mut rdp, &mut PveManager::new(), "/nonexistent", &mut shake, "g", Request::SessionClose { id: 70, session_id: sid }).unwrap();
         let outbox: VecDeque<u8> = frames.into_iter().collect();
         assert_eq!(
             answers(&outbox),
@@ -1999,7 +2064,7 @@ mod tests {
         let (sid, _peer) = ready_session(&mut rdp);
         let mut shake = true;
         let mut ask = |rdp: &mut RdpManager, id: u64| {
-            handle(&mut manager, rdp, "/nonexistent", &mut shake, "g", Request::RdpScreenshot { id, session_id: sid }).unwrap()
+            handle(&mut manager, rdp, &mut PveManager::new(), "/nonexistent", &mut shake, "g", Request::RdpScreenshot { id, session_id: sid }).unwrap()
         };
         for id in 1..=4u64 {
             assert!(ask(&mut rdp, id).is_empty(), "request {id} must be accepted");

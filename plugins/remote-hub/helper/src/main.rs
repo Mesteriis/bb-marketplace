@@ -15,6 +15,9 @@ fn main() {
     if args.iter().any(|a| a == "--keychain-op") {
         std::process::exit(remote_hub_helper::keychain::run_op());
     }
+    if args.iter().any(|a| a == "--pve-engine") {
+        std::process::exit(remote_hub_helper::pve::engine::run_engine());
+    }
     if args.iter().any(|a| a == "--rdp-engine") {
         std::process::exit(remote_hub_helper::rdp::engine::run_engine());
     }

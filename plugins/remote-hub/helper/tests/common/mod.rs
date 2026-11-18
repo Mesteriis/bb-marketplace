@@ -126,6 +126,8 @@ impl Helper {
                 | Response::CredentialStatus { id, .. }
                 | Response::KnownHostsLines { id, .. }
                 | Response::KnownHostsDone { id, .. }
+                | Response::PveTargetsResult { id, .. }
+                | Response::PveFailed { id, .. }
                 | Response::RdpScreenshot { id, .. } => Some(*id),
                 Response::SessionClosed { id, .. } | Response::Error { id, .. } => *id,
                 _ => None,

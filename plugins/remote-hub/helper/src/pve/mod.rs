@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod engine;
+pub mod glue;
 pub mod manager;
 pub mod protocol;
 pub mod term;

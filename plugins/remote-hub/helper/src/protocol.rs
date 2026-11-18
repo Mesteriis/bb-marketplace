@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // 2: `session.open_rdp` carries `options`; an older peer would silently apply other settings, so both sides refuse each other.
-pub const PROTOCOL_VERSION: u32 = 2;
+// 3: Proxmox VE consoles (`session.open_pve`, `pve.targets` and their events).
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const MAX_FRAME_BODY_BYTES: usize = 4 * 1024 * 1024;
 pub const FRAME_KIND_CONTROL: u8 = 0x01;
 pub const FRAME_KIND_STREAM: u8 = 0x02;
@@ -24,6 +25,24 @@ pub struct AskpassSpec {
     #[cfg(feature = "test-hooks")]
     #[serde(default, rename = "testFacts")]
     pub test_facts: Option<crate::ssh_args::SshFacts>,
+}
+
+/// How a PVE request reaches and signs in to the API. The secret is in exactly one of `password` (use once) and
+/// `credentialRef` (a saved credential the helper resolves from the Keychain itself).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PveConnect {
+    pub host: String,
+    pub port: u16,
+    /// `ticket` (user + password) or `token` (API token id + secret).
+    #[serde(rename = "authMode")]
+    pub auth_mode: String,
+    /// The user (`name@realm`) or the token id (`user@realm!name`).
+    pub user: String,
+    #[serde(default)]
+    pub password: Option<crate::secret::Secret>,
+    #[serde(default, rename = "credentialRef")]
+    pub credential_ref: Option<String>,
+    pub trust: crate::pve::protocol::Trust,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -131,6 +150,18 @@ pub enum Request {
         #[serde(rename = "sessionId")]
         session_id: u32,
     },
+    #[serde(rename = "session.open_pve")]
+    OpenPve {
+        id: u64,
+        connect: PveConnect,
+        target: crate::pve::protocol::ConsoleTarget,
+        cols: u16,
+        rows: u16,
+        #[serde(default, rename = "keepaliveSecs")]
+        keepalive_secs: Option<u64>,
+    },
+    #[serde(rename = "pve.targets")]
+    PveTargets { id: u64, connect: PveConnect },
     #[serde(rename = "session.open_rdp")]
     OpenRdp {
         id: u64,
@@ -412,6 +443,38 @@ pub enum Response {
         id: u64,
         #[serde(rename = "sessionId")]
         session_id: u32,
+    },
+    #[serde(rename = "pve.state")]
+    PveState {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        state: String,
+    },
+    /// A console failure, sent before the session's `session.closed`. `fingerprint` is the certificate the
+    /// server presented (tls_untrusted, cert_changed).
+    #[serde(rename = "pve.error")]
+    PveError {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        code: String,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fingerprint: Option<String>,
+    },
+    #[serde(rename = "pve.targets_result")]
+    PveTargetsResult {
+        id: u64,
+        version: Option<String>,
+        nodes: Vec<crate::pve::protocol::NodeInfo>,
+        guests: Vec<crate::pve::protocol::GuestInfo>,
+    },
+    #[serde(rename = "pve.failed")]
+    PveFailed {
+        id: u64,
+        code: String,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fingerprint: Option<String>,
     },
     #[serde(rename = "rdp.state")]
     RdpState {

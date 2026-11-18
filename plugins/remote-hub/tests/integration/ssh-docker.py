@@ -60,7 +60,7 @@ class Helper:
         self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         _HELPERS.append(self)
         self.seq = 0
-        self.send({"type": "hello", "protocol": 2})
+        self.send({"type": "hello", "protocol": 3})
         ack = self.read_control()
         assert ack["type"] == "hello_ack", ack
 

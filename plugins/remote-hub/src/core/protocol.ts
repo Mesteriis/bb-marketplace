@@ -32,10 +32,12 @@ import {
   rdpStateSchema,
   rdpUpdateAckRequestSchema,
 } from "./rdp-protocol.ts";
+import { pveRequestSchemas, pveResponseSchemas } from "./pve-protocol.ts";
 
 // 2: session.open_rdp carries `options` (compression, colour depth, experience switches). An older peer would ignore them
 // and apply other settings, so the two sides refuse each other at the handshake instead.
-export const PROTOCOL_VERSION = 2;
+// 3: Proxmox VE consoles (session.open_pve, pve.targets and their events).
+export const PROTOCOL_VERSION = 3;
 /** Largest body (everything after the 4-byte length prefix) the codec accepts. */
 export const MAX_FRAME_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB
 export const FRAME_KIND_CONTROL = 0x01;
@@ -213,6 +215,7 @@ export const requestSchema = z.discriminatedUnion("type", [
   sessionCreditRequestSchema,
   sessionCloseRequestSchema,
   ...rdpRequestSchemas,
+  ...pveRequestSchemas,
 ]);
 
 export const responseSchema = z.discriminatedUnion("type", [
@@ -230,6 +233,7 @@ export const responseSchema = z.discriminatedUnion("type", [
   sessionClosedSchema,
   errorEnvelopeSchema,
   ...rdpResponseSchemas,
+  ...pveResponseSchemas,
 ]);
 
 // `rdp.screenshot` is both a request ({id, sessionId}) and the answer to it, so a
@@ -263,6 +267,8 @@ export const controlMessageSchema = z.union([
     ...sshAskpassRequestSchemas,
     ...sshAskpassResponseSchemas,
     openRdpRequestSchema,
+    ...pveRequestSchemas,
+    ...pveResponseSchemas,
     rdpCertDecisionRequestSchema,
     rdpInputRequestSchema,
     rdpUpdateAckRequestSchema,

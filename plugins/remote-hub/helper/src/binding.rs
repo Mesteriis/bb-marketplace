@@ -35,7 +35,7 @@ impl Bind {
         let ok = |s: &str| !s.is_empty() && s.len() <= MAX_FIELD && !s.chars().any(|c| c.is_control());
         match self {
             Bind::Endpoint { protocol, host, user, domain, port, cert } => {
-                (protocol == "ssh" || protocol == "rdp")
+                (protocol == "ssh" || protocol == "rdp" || protocol == "pve")
                     && cert.as_deref().map_or(true, |c| protocol == "rdp" && crate::rdp::cert::normalize_fingerprint(c).is_some())
                     && ok(host)
                     && *port > 0
@@ -59,6 +59,12 @@ impl Bind {
     pub fn is_rdp_endpoint(&self, host: &str, port: u16, user: &str, domain: Option<&str>) -> bool {
         matches!(self, Bind::Endpoint { protocol, host: h, port: p, user: u, domain: d, .. }
             if protocol == "rdp" && *h == host.to_ascii_lowercase() && *p == port && u.as_deref() == Some(user) && d.as_deref() == domain)
+    }
+
+    /// A secret saved for exactly this PVE API endpoint and user (or token id).
+    pub fn is_pve_endpoint(&self, host: &str, port: u16, user: &str) -> bool {
+        matches!(self, Bind::Endpoint { protocol, host: h, port: p, user: u, .. }
+            if protocol == "pve" && *h == host.to_ascii_lowercase() && *p == port && u.as_deref() == Some(user))
     }
 
     /// The certificate fingerprint this password is pinned to, if any.
@@ -116,6 +122,18 @@ mod tests {
         assert!(!stored.is_rdp_endpoint("win.example.test", 3389, "A", None));
         let v6 = Bind::Endpoint { protocol: "ssh".into(), host: "FE80::ABCD".into(), port: 22, user: Some("u".into()), domain: None, cert: None }.canonical();
         assert_eq!(v6, Bind::Endpoint { protocol: "ssh".into(), host: "fe80::abcd".into(), port: 22, user: Some("u".into()), domain: None, cert: None });
+    }
+
+    #[test]
+    fn pve_matching_is_exact_and_kind_specific() {
+        let b = Bind::Endpoint { protocol: "pve".into(), host: "Pve.Test".into(), port: 8006, user: Some("remotehub@pve".into()), domain: None, cert: None }.canonical();
+        assert!(b.is_valid());
+        assert!(b.is_pve_endpoint("PVE.test", 8006, "remotehub@pve"));
+        assert!(!b.is_pve_endpoint("pve.test", 8007, "remotehub@pve"));
+        assert!(!b.is_pve_endpoint("pve.test", 8006, "root@pam"));
+        assert!(!b.is_rdp_endpoint("pve.test", 8006, "remotehub@pve", None), "a pve secret must not open an rdp session");
+        let rdp = Bind::Endpoint { protocol: "rdp".into(), host: "pve.test".into(), port: 8006, user: Some("remotehub@pve".into()), domain: None, cert: None };
+        assert!(!rdp.is_pve_endpoint("pve.test", 8006, "remotehub@pve"), "an rdp secret must not be sent to a PVE API");
     }
 
     #[test]

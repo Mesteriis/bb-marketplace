@@ -494,7 +494,7 @@ describe("helper-process (lifecycle)", () => {
   });
 
   it("this build speaks protocol 2 (the version that carries RDP options)", () => {
-    expect(PROTOCOL_VERSION).toBe(2);
+    expect(PROTOCOL_VERSION).toBe(3);
   });
 
   // S8: a non-version_mismatch handshake error keeps its own code.
