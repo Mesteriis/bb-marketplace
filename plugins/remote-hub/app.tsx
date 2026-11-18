@@ -10,8 +10,7 @@ import type { rpcContract } from "./server.ts";
 import type { SessionHandle } from "./src/core/rpc.ts";
 import { RemoteHubPage } from "./src/ui/remote-hub-page.tsx";
 import { ConnectPage } from "./src/ui/connect-page.tsx";
-import type { ProfilesApi } from "./src/ui/use-profiles.ts";
-import type { SshTarget } from "./src/core/rpc.ts";
+import { createConnectBridge } from "./src/ui/rpc-bridge.ts";
 
 function RemoteHubTab() {
   const rpc = useRpc<typeof rpcContract>();
@@ -41,42 +40,12 @@ function RemoteHubTab() {
 function ConnectTab() {
   const rpc = useRpc<typeof rpcContract>();
   const wsUrl = (typeof window !== "undefined" ? (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host : "") + "/api/v1/plugins/makosh-remote-hub/http/attach";
-  const onAttach = async (handle: SessionHandle) => ({ token: (await rpc.call("session_attach", handle)).token, wsUrl });
-  const onClose = async (handle: SessionHandle) => {
-    await rpc.call("session_close", handle);
-  };
-  const onRdpClose = async (handle: SessionHandle) => rpc.call("session_close", handle);
-  const profiles = useMemo<ProfilesApi>(
-    () => ({
-      list: () => rpc.call("profile_list"),
-      save: (input) => rpc.call("profile_save", input),
-      remove: (id) => rpc.call("profile_delete", { id }),
-      duplicate: (id) => rpc.call("profile_duplicate", { id }),
-      sessions: () => rpc.call("session_list"),
-    }),
-    [rpc],
+  // The bridge strips undefined-valued keys (BB's RPC carries JSON values only).
+  const bridge = useMemo(
+    () => createConnectBridge((method, input) => (rpc.call as (m: string, ...a: unknown[]) => Promise<unknown>)(method, ...(input === undefined ? [] : [input])), wsUrl),
+    [rpc, wsUrl],
   );
-
-  return (
-    <ConnectPage
-      profiles={profiles}
-      ssh={{
-        onSshOpen: async (target: SshTarget, profileId?: string) => rpc.call("ssh_open", { target, ...(profileId !== undefined ? { profileId } : {}) }),
-        onAttach,
-        onClose,
-      }}
-      rdp={{
-        onRdpOpen: async (target, size, profileId) =>
-          rpc.call("rdp_open", { target, width: size.width, height: size.height, ...(profileId !== undefined ? { profileId } : {}) }),
-        onAttach,
-        onClose: onRdpClose,
-        onDecision: async (handle, fingerprint, accept) => {
-          await rpc.call("rdp_cert_decision", { generation: handle.generation, sessionId: handle.sessionId, fingerprint, accept });
-        },
-        onScreenshot: async (handle) => rpc.call("rdp_screenshot", handle),
-      }}
-    />
-  );
+  return <ConnectPage profiles={bridge.profiles} ssh={bridge.ssh} rdp={bridge.rdp} />;
 }
 
 export default definePluginApp((app) => {
