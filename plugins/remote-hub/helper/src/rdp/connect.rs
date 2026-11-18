@@ -144,6 +144,8 @@ pub struct Params {
     pub width: u32,
     pub height: u32,
     pub expected_fingerprint: Option<String>,
+    /// See `EngineCommand::Open::pin_first_use`.
+    pub pin_first_use: bool,
 }
 
 pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send + Sync {}
@@ -274,6 +276,38 @@ pub enum DecisionOutcome {
     Cancelled(RdpClosedReason),
 }
 
+pub enum PinOutcome {
+    Allow,
+    Changed,
+    Failed,
+    TimedOut,
+    Cancelled(RdpClosedReason),
+}
+
+/// Wait for the helper's `PinAnswer`; certificate decisions arriving meanwhile are not answers and are ignored.
+pub fn wait_for_pin_answer(rx: &Receiver<Decision>, timeout: Duration) -> PinOutcome {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return PinOutcome::TimedOut;
+        }
+        match rx.recv_timeout(left) {
+            Ok(Decision::Pin { verdict }) => {
+                return match verdict.as_str() {
+                    "allow" => PinOutcome::Allow,
+                    "changed" => PinOutcome::Changed,
+                    _ => PinOutcome::Failed,
+                }
+            }
+            Ok(Decision::Cert { .. }) => {}
+            Ok(Decision::Cancel(reason)) => return PinOutcome::Cancelled(reason),
+            Err(RecvTimeoutError::Timeout) => return PinOutcome::TimedOut,
+            Err(RecvTimeoutError::Disconnected) => return PinOutcome::Cancelled(RdpClosedReason::HelperShutdown),
+        }
+    }
+}
+
 /// Wait for a decision naming `presented_fp`. A decision that names another
 /// fingerprint is ignored (the helper refuses it before it gets here); only a
 /// matching `once` / `session_trust` accepts, any other matching value rejects.
@@ -294,6 +328,8 @@ pub fn wait_for_decision(rx: &Receiver<Decision>, presented_fp: &str, timeout: D
                     };
                 }
             }
+            // A pin answer is not a certificate decision; nothing asks for one while the prompt is open.
+            Ok(Decision::Pin { .. }) => {}
             Ok(Decision::Cancel(reason)) => return DecisionOutcome::Cancelled(reason),
             Err(RecvTimeoutError::Timeout) => return DecisionOutcome::TimedOut,
             Err(RecvTimeoutError::Disconnected) => return DecisionOutcome::Cancelled(RdpClosedReason::HelperShutdown),
@@ -502,6 +538,21 @@ pub async fn connect_sequence(
     let validated = !ctx.invoked.load(Ordering::SeqCst);
     // Every handshake: report, and enforce the pin, before anything is sent.
     check_presented_certificate(&out, &outcome.leaf_der, validated, params.expected_fingerprint.as_deref())?;
+
+    // A first use of a saved password: the helper pins this certificate, or compares it with the pin another
+    // session just wrote, BEFORE anything authenticates. Anything but its "allow" ends the session.
+    if params.pin_first_use {
+        let fingerprint = fingerprint_sha256(&outcome.leaf_der);
+        helper_gone(out.send(&EngineEvent::PinRequest { fingerprint }))?;
+        let rx = ctx.decisions.lock().unwrap();
+        match wait_for_pin_answer(&rx, timeouts.finalize) {
+            PinOutcome::Allow => {}
+            PinOutcome::Changed => return Err(RdpClosedReason::CertChanged),
+            PinOutcome::Failed => return Err(RdpClosedReason::CertRejected),
+            PinOutcome::TimedOut => return Err(RdpClosedReason::Timeout),
+            PinOutcome::Cancelled(reason) => return Err(reason),
+        }
+    }
 
     // Phase 3: authenticate.
     helper_gone(out.state("authenticating"))?;
@@ -796,7 +847,9 @@ mod tests {
             domain: None,
             width: 800,
             height: 600,
-            expected_fingerprint: expected.map(|s| s.to_string()),
+            // Test convention: the expectation "PIN" means "first use of a saved password" (no expected fingerprint).
+            expected_fingerprint: expected.filter(|e| *e != "PIN").map(|s| s.to_string()),
+            pin_first_use: expected == Some("PIN"),
         }
     }
 
@@ -982,6 +1035,35 @@ mod tests {
             out.result.err()
         );
         assert!(out.collector.all().contains(&EngineEvent::Certificate { fingerprint: LEAF_FP.to_string(), validated: false }));
+    }
+
+    /// W2: first use of a saved password. The engine reports the certificate, asks the helper to pin it and does NOT
+    /// authenticate until the answer says "allow".
+    #[test]
+    fn a_first_use_waits_for_the_helpers_pin_answer_before_it_authenticates() {
+        let out = run(Server::Tls, Some("PIN"), budgets(1000), &TestCaTls, |ctl| {
+            let EngineEvent::PinRequest { fingerprint } = ctl.collector.wait_for(|e| matches!(e, EngineEvent::PinRequest { .. })) else { unreachable!() };
+            assert_eq!(fingerprint, LEAF_FP);
+            // Nothing has authenticated yet: the state "authenticating" only follows the answer.
+            assert!(!ctl.collector.states().contains(&"authenticating".to_string()));
+            ctl.decisions.send(Decision::Pin { verdict: "allow".to_string() }).unwrap();
+            ctl.collector.wait_for(|e| matches!(e, EngineEvent::State { state } if state == "authenticating"));
+            ctl.cancel.trigger(RdpClosedReason::KilledByClose);
+        });
+        assert!(out.collector.states().contains(&"authenticating".to_string()), "{:?}", out.result.err());
+    }
+
+    /// W2: "changed", "failed" and silence all end the session before authentication, with distinct reasons.
+    #[test]
+    fn a_first_use_that_is_not_allowed_never_authenticates() {
+        for (verdict, expected) in [("changed", RdpClosedReason::CertChanged), ("failed", RdpClosedReason::CertRejected), ("whatever", RdpClosedReason::CertRejected)] {
+            let out = run(Server::Tls, Some("PIN"), budgets(1000), &TestCaTls, move |ctl| {
+                ctl.collector.wait_for(|e| matches!(e, EngineEvent::PinRequest { .. }));
+                ctl.decisions.send(Decision::Pin { verdict: verdict.to_string() }).unwrap();
+            });
+            assert_eq!(out.result.err(), Some(expected), "verdict {verdict}");
+            assert!(!out.collector.states().contains(&"authenticating".to_string()), "verdict {verdict}");
+        }
     }
 
     /// H4: a certificate that FAILS validation but is exactly the pinned one

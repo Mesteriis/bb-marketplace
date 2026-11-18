@@ -35,14 +35,14 @@ use super::reasons::RdpClosedReason;
 
 pub fn run_fake_engine(mode: &str) -> i32 {
     let mut stream = unsafe { UnixStream::from_raw_fd(3) };
-    let (width, height, password_digest, expected) = loop {
+    let (width, height, password_digest, expected, pin_first_use) = loop {
         match read_frame(&mut stream) {
             Ok(Some(body)) if body.first() == Some(&protocol::FRAME_CONTROL) => {
-                if let Ok(EngineCommand::Open { width, height, password, expected_fingerprint, .. }) = serde_json::from_slice(&body[1..]) {
+                if let Ok(EngineCommand::Open { width, height, password, expected_fingerprint, pin_first_use, .. }) = serde_json::from_slice(&body[1..]) {
                     use sha2::{Digest, Sha256};
                     let digest = Sha256::digest(password.expose().as_bytes());
                     let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
-                    break (width, height, hex, expected_fingerprint);
+                    break (width, height, hex, expected_fingerprint, pin_first_use);
                 }
             }
             Ok(Some(_)) => {}
@@ -55,12 +55,33 @@ pub fn run_fake_engine(mode: &str) -> i32 {
     let signal = mode.strip_prefix("flood-signal:").map(std::path::PathBuf::from);
     let flood = mode == "flood" || signal.is_some();
     let noise = mode == "noise";
-    let cert = mode.strip_prefix("cert:").map(str::to_string);
+    // `cert:<fp>` presents one certificate; `cert-by-height:<a>,<b>` presents <a> for an even desktop height
+    // and <b> for an odd one, so one helper can show two sessions two different certificates.
+    let cert = mode.strip_prefix("cert:").map(str::to_string).or_else(|| {
+        let (a, b) = mode.strip_prefix("cert-by-height:")?.split_once(',')?;
+        Some((if height % 2 == 0 { a } else { b }).to_string())
+    });
     if let Some(presented) = &cert {
         let _ = out.send(&protocol::EngineEvent::Certificate { fingerprint: presented.clone(), validated: false });
         if let Some(expected) = &expected {
             if !super::cert::fingerprint_matches(presented, expected) {
                 return if out.closed(RdpClosedReason::CertChanged).is_ok() { 0 } else { 2 };
+            }
+        }
+        if pin_first_use {
+            // Like the real engine: nothing is authenticated (no password digest is reported) until the
+            // helper's pin-or-compare answer says "allow".
+            let _ = out.send(&protocol::EngineEvent::PinRequest { fingerprint: presented.clone() });
+            let verdict = loop {
+                match inbox.decisions.recv_timeout(Duration::from_secs(15)) {
+                    Ok(super::engine_io::Decision::Pin { verdict }) => break verdict,
+                    Ok(_) => {}
+                    Err(_) => break "failed".to_string(),
+                }
+            };
+            if verdict != "allow" {
+                let reason = if verdict == "changed" { RdpClosedReason::CertChanged } else { RdpClosedReason::CertRejected };
+                return if out.closed(reason).is_ok() { 0 } else { 2 };
             }
         }
     }

@@ -83,6 +83,7 @@ mod tests {
             800,
             600,
             None,
+            false,
         );
         assert_eq!(refused, Err("session ids are exhausted".to_string()));
         assert_eq!(rdp.count(), 0);

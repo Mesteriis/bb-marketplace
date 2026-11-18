@@ -65,7 +65,14 @@ pub enum EngineCommand {
         width: u32,
         height: u32,
         expected_fingerprint: Option<String>,
+        /// A saved password with no certificate pinned yet: after TLS and before CredSSP the engine asks the
+        /// helper (`PinRequest`) to pin-or-compare the presented certificate and waits for `PinAnswer`.
+        #[serde(default)]
+        pin_first_use: bool,
     },
+    /// The helper's verdict on a `PinRequest`: "allow", "changed" (another certificate is pinned) or
+    /// "failed" (the pin could not be written or checked). Anything but "allow" ends the session.
+    PinAnswer { verdict: String },
     CertDecision { fingerprint: String, accept: String },
     Input { events: Vec<InputEvent> },
     Screenshot,
@@ -135,6 +142,9 @@ pub enum EngineEvent {
     /// validated against the system roots (true) or only passed on a decision
     /// or a matching expected fingerprint (false).
     Certificate { fingerprint: String, validated: bool },
+    /// Sent after `Certificate` for a first use of a saved password: nothing is authenticated until the
+    /// helper answers with `PinAnswer`.
+    PinRequest { fingerprint: String },
     Desktop { frame_id: u64, width: u32, height: u32, timestamp: u64 },
     Closed { reason: String },
     Screenshot { frame_id: u64, width: u32, height: u32, timestamp: u64, png: String },
@@ -376,6 +386,7 @@ mod tests {
             width: 1,
             height: 1,
             expected_fingerprint: None,
+            pin_first_use: false,
         };
         let text = format!("{cmd:?} {cmd:#?}");
         assert!(!text.contains("S3cr3t-MARK-91"), "password printed: {text}");

@@ -54,6 +54,8 @@ impl Out {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Decision {
     Cert { fingerprint: String, accept: String },
+    /// The helper's answer to a `PinRequest`.
+    Pin { verdict: String },
     Cancel(RdpClosedReason),
 }
 
@@ -175,6 +177,9 @@ pub(crate) fn spawn_reader_with_capacity(mut stream: UnixStream, capacity: usize
                     match cmd {
                         EngineCommand::CertDecision { fingerprint, accept } => {
                             let _ = dec_tx.send(Decision::Cert { fingerprint, accept });
+                        }
+                        EngineCommand::PinAnswer { verdict } => {
+                            let _ = dec_tx.send(Decision::Pin { verdict });
                         }
                         EngineCommand::Input { events } => {
                             if !forward(&ctl_tx, Control::Input(events), &thread_cancel, &dec_tx) {

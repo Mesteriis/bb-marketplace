@@ -698,11 +698,14 @@ fn handle(
             expected_fingerprint,
         } => {
             // The secret comes from exactly one place: the request (use once) or the Keychain.
-            // A saved password also brings the certificate it is pinned to (stage 3c-2, T4): the
-            // engine compares the presented certificate with it before CredSSP sends anything, so
-            // a different certificate never receives the saved password. Without a pin yet, the
-            // first certificate that gets accepted is pinned (see `relay_rdp_frames`).
+            // A saved password also brings the certificate it is pinned to (stage 3c-2, T4). With a pin, the
+            // engine compares the presented certificate before CredSSP sends anything, so a different
+            // certificate never receives the saved password; the pin replaces whatever the caller expects.
+            // Without a pin yet (first use) the caller's expectation is not enough: the engine asks the helper
+            // to pin-or-compare the certificate it was shown, atomically, and waits for the answer before it
+            // authenticates (see `relay_rdp_frames`); a different pin or a failed write ends the session.
             let mut pin_target: Option<PinTarget> = None;
+            let mut pin_first_use = false;
             let mut expected_fingerprint = expected_fingerprint;
             let password = match (password, credential_ref) {
                 (Some(password), None) => password,
@@ -712,6 +715,8 @@ fn handle(
                         password
                     }
                     Ok((password, None)) => {
+                        expected_fingerprint = None;
+                        pin_first_use = true;
                         pin_target = Some(PinTarget { reference, host: host.clone(), port, user: username.clone(), domain: domain.clone() });
                         password
                     }
@@ -725,7 +730,7 @@ fn handle(
                     }))
                 }
             };
-            match rdp.open(current_exe, host, port, username, password, domain, width, height, expected_fingerprint) {
+            match rdp.open(current_exe, host, port, username, password, domain, width, height, expected_fingerprint, pin_first_use) {
             Ok((session_id, pid)) => { if let Some(target) = pin_target { rdp.set_pin_target(session_id, target); } Ok(protocol::encode_response(&Response::SessionOpened {
                 id,
                 session_id,
@@ -941,20 +946,34 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, current_exe
                     detail,
                 }));
             }
+            RdpFrame::Event(EngineEvent::PinRequest { fingerprint }) => {
+                // One keychain-child call per request, and this loop is single-threaded: of two first uses,
+                // the first request writes the pin and the second compares against it. Nothing but
+                // "allow" lets the engine authenticate.
+                let verdict = match rdp.take_pin_target(rid) {
+                    None => "failed",
+                    Some(target) => {
+                        let bind = crate::binding::Bind::Endpoint {
+                            protocol: "rdp".to_string(),
+                            host: target.host,
+                            port: target.port,
+                            user: Some(target.user),
+                            domain: target.domain,
+                            cert: Some(fingerprint),
+                        };
+                        match keychain_child(current_exe, "pin", &target.reference, None, Some(&bind)).and_then(keychain_ok) {
+                            Ok(reply) => match reply.pin.as_deref() {
+                                Some("written") | Some("match") => "allow",
+                                Some("mismatch") => "changed",
+                                _ => "failed",
+                            },
+                            Err(_) => "failed",
+                        }
+                    }
+                };
+                rdp.answer_pin(rid, verdict);
+            }
             RdpFrame::Event(EngineEvent::Certificate { fingerprint, validated }) => {
-                // The first accepted certificate of a saved password is the one it is pinned to from
-                // now on. A failure to write the pin does not end the session; the next open tries again.
-                if let Some(target) = rdp.take_pin_target(rid) {
-                    let bind = crate::binding::Bind::Endpoint {
-                        protocol: "rdp".to_string(),
-                        host: target.host,
-                        port: target.port,
-                        user: Some(target.user),
-                        domain: target.domain,
-                        cert: Some(fingerprint.clone()),
-                    };
-                    let _ = keychain_child(current_exe, "pin", &target.reference, None, Some(&bind));
-                }
                 outbox.extend(protocol::encode_response(&Response::RdpCertificate {
                     session_id: rid,
                     fingerprint,

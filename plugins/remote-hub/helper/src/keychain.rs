@@ -449,6 +449,9 @@ pub struct OpReply {
     pub secret: Option<Secret>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind: Option<Bind>,
+    /// The answer of `pin`: "written" (it was empty), "match" or "mismatch".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<String>,
 }
 
 /// Executes one request against `keychain`. Pure of I/O, so it is tested directly.
@@ -480,25 +483,36 @@ pub fn execute(keychain: &Keychain, request: &OpRequest) -> OpReply {
             Ok(item) => OpReply { secret: Some(item.secret), bind: Some(item.bind), ..OpReply::default() },
             Err(e) => fail(e),
         },
-        // Pin the server certificate of a saved RDP password: only when the item is bound to exactly
-        // this endpoint and has no pin yet. A pin that exists is never replaced (saving the password
-        // again is the way to start over).
+        // Pin-or-compare the server certificate of a saved RDP password, in one child call: when the item is
+        // bound to exactly this endpoint and has no pin, write it ("written"); when it has one, compare
+        // ("match" or "mismatch"). An item bound elsewhere is a mismatch. A pin is never replaced (saving the
+        // password again is the way to start over). The caller treats anything but written/match as a refusal.
         ("pin", _) => match &request.bind {
-            Some(wanted) if wanted.is_valid() && wanted.pin().is_some() => match keychain.get_item(&request.reference) {
-                Ok(item) => {
-                    let wanted = wanted.clone().canonical();
-                    let same_endpoint = item.bind.pin().is_none() && item.bind.with_pin(wanted.pin().unwrap_or_default()) == wanted;
-                    if !same_endpoint {
-                        OpReply::default()
-                    } else {
-                        match keychain.set_item(&request.reference, &wanted, &item.secret) {
-                            Ok(()) => OpReply::default(),
-                            Err(e) => fail(e),
-                        }
-                    }
+            Some(wanted) if wanted.is_valid() && wanted.pin().is_some() => {
+                #[cfg(feature = "test-hooks")]
+                if std::env::var_os("REMOTE_HUB_TEST_PIN_FAIL").is_some() {
+                    return OpReply { error: Some("keychain_unavailable".to_string()), ..OpReply::default() };
                 }
-                Err(e) => fail(e),
-            },
+                match keychain.get_item(&request.reference) {
+                    Ok(item) => {
+                        let wanted = wanted.clone().canonical();
+                        let wanted_pin = wanted.pin().unwrap_or_default().to_string();
+                        let pin = match item.bind.pin() {
+                            Some(have) => {
+                                let same = item.bind.with_pin(&wanted_pin) == wanted && crate::rdp::cert::fingerprint_matches(have, &wanted_pin);
+                                if same { "match" } else { "mismatch" }
+                            }
+                            None if item.bind.with_pin(&wanted_pin) == wanted => match keychain.set_item(&request.reference, &wanted, &item.secret) {
+                                Ok(()) => "written",
+                                Err(e) => return fail(e),
+                            },
+                            None => "mismatch",
+                        };
+                        OpReply { pin: Some(pin.to_string()), ..OpReply::default() }
+                    }
+                    Err(e) => fail(e),
+                }
+            }
             _ => OpReply { error: Some("invalid_bind".to_string()), ..OpReply::default() },
         },
         // The binding alone: for checking an open BEFORE anything is started; no secret leaves the child.

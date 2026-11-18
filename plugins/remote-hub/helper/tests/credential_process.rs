@@ -9,7 +9,7 @@ mod common;
 use common::*;
 use remote_hub_helper::binding::Bind;
 use remote_hub_helper::keychain::create_at;
-use remote_hub_helper::protocol::{Request, Response};
+use remote_hub_helper::protocol::{decode_response, Request, Response, FRAME_KIND_CONTROL};
 use remote_hub_helper::secret::Secret;
 use std::path::PathBuf;
 use std::process::Command;
@@ -49,12 +49,17 @@ impl Fixture {
         Fixture::with_mode(tag, "credential")
     }
     fn with_mode(tag: &str, mode: &str) -> Fixture {
+        Fixture::with_env(tag, mode, &[])
+    }
+    fn with_env(tag: &str, mode: &str, extra: &[(&str, &str)]) -> Fixture {
         watchdog();
         let dir = std::env::temp_dir().join(format!("rh-cred-{}-{tag}", std::process::id()));
         std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir).unwrap();
         let path = dir.join("kc.keychain-db");
         create_at(&path, "throwaway-kc-password").expect("temporary keychain");
-        let helper = start(&[(FAKE, mode), ("REMOTE_HUB_KEYCHAIN_PATH", path.to_str().unwrap())]);
+        let mut env = vec![(FAKE, mode), ("REMOTE_HUB_KEYCHAIN_PATH", path.to_str().unwrap())];
+        env.extend_from_slice(extra);
+        let helper = start(&env);
         Fixture { dir, path, helper: Some(helper), bind_port: 3389 }
     }
     /// A new helper process on the SAME temporary keychain, whose engine presents another certificate.
@@ -82,6 +87,9 @@ impl Fixture {
         self.h().read_reply(id)
     }
     fn open_with(&mut self, id: u64, password: Option<&str>, reference: Option<&str>, port: u16) -> Response {
+        self.open_sized(id, password, reference, port, 600, None)
+    }
+    fn open_sized(&mut self, id: u64, password: Option<&str>, reference: Option<&str>, port: u16, height: u32, expected: Option<&str>) -> Response {
         self.h().send(&Request::OpenRdp {
             id,
             host: "127.0.0.1".into(),
@@ -91,8 +99,8 @@ impl Fixture {
             credential_ref: reference.map(str::to_string),
             domain: None,
             width: 800,
-            height: 600,
-            expected_fingerprint: None,
+            height,
+            expected_fingerprint: expected.map(str::to_string),
         });
         self.h().read_reply(id)
     }
@@ -375,4 +383,81 @@ fn a_typed_password_is_not_pinned() {
     let opened = f.open_with(1, Some(SECRET), None, server.port);
     let Response::SessionOpened { session_id, .. } = opened else { panic!("expected session.opened, got {opened:?}") };
     f.h().wait_state(session_id, &format!("pw_sha256={SECRET_DIGEST}"));
+}
+
+/// W2: two first sessions against the same unpinned saved password, each shown a DIFFERENT certificate. The
+/// helper pins the first request and compares the second, so exactly one of them ever gets the password.
+#[test]
+fn of_two_concurrent_first_sessions_with_different_certificates_only_one_receives_the_password() {
+    let server = silent_server();
+    let mut f = Fixture::with_mode("race", &format!("cert-by-height:{CERT_A},{CERT_B}"));
+    f.bind_port = server.port;
+    assert!(matches!(f.save(1, REF, SECRET), Response::CredentialOk { .. }));
+    // Both opens are on the wire before either engine has finished its TLS (the fake engine reports at once).
+    f.h().send(&Request::OpenRdp { id: 2, host: "127.0.0.1".into(), port: server.port, username: "tester".into(), password: None, credential_ref: Some(REF.into()), domain: None, width: 800, height: 600, expected_fingerprint: None });
+    f.h().send(&Request::OpenRdp { id: 3, host: "127.0.0.1".into(), port: server.port, username: "tester".into(), password: None, credential_ref: Some(REF.into()), domain: None, width: 800, height: 601, expected_fingerprint: None });
+    let mut sessions = Vec::new();
+    for id in [2u64, 3] {
+        let Response::SessionOpened { session_id, .. } = f.h().read_reply(id) else { panic!("expected session.opened") };
+        sessions.push(session_id);
+    }
+    let wanted = format!("pw_sha256={SECRET_DIGEST}");
+    let mut used = std::collections::HashSet::new();
+    let mut closed = std::collections::HashMap::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while used.len() + closed.len() < 2 && std::time::Instant::now() < deadline {
+        let seen = f.h().read_until(std::time::Duration::from_secs(20), |k, p| {
+            if k != FRAME_KIND_CONTROL {
+                return None;
+            }
+            match decode_response(p).ok()? {
+                Response::RdpState { session_id, state } if state == wanted => Some((session_id, None)),
+                Response::SessionClosed { session_id, reason, .. } => Some((session_id, Some(reason))),
+                _ => None,
+            }
+        });
+        match seen {
+            (sid, None) => {
+                used.insert(sid);
+            }
+            (sid, Some(reason)) => {
+                closed.insert(sid, reason);
+            }
+        }
+    }
+    assert_eq!(used.len(), 1, "exactly one session may receive the password: used {used:?}, closed {closed:?}");
+    assert_eq!(closed.len(), 1, "the other one is closed: {closed:?}");
+    assert_eq!(closed.values().next().unwrap(), "cert_changed");
+    // The pin is the winner's certificate: opening again with the loser's certificate is refused.
+    let loser = *closed.keys().next().unwrap();
+    assert!(sessions.contains(&loser));
+}
+
+/// W2: a pin that cannot be written or checked is a refusal, never a connection with an unpinned password.
+#[test]
+fn a_pin_that_cannot_be_written_stops_the_session_before_authentication() {
+    let server = silent_server();
+    let mut f = Fixture::with_env("pinfail", &format!("cert:{CERT_A}"), &[("REMOTE_HUB_TEST_PIN_FAIL", "1")]);
+    f.bind_port = server.port;
+    assert!(matches!(f.save(1, REF, SECRET), Response::CredentialOk { .. }));
+    let sid = opened_session(&mut f, 2, server.port);
+    assert_eq!(f.h().read_closed(sid).2, "cert_rejected");
+}
+
+/// W2: while the password has no pin, a certificate the caller "expects" is not a decision: the pin-or-compare
+/// step still runs, and the certificate that was shown is the one pinned.
+#[test]
+fn a_callers_expected_fingerprint_does_not_replace_first_use_pinning() {
+    let server = silent_server();
+    let mut f = Fixture::with_mode("expectedfirst", &format!("cert:{CERT_A}"));
+    f.bind_port = server.port;
+    assert!(matches!(f.save(1, REF, SECRET), Response::CredentialOk { .. }));
+    // The caller names the OTHER certificate; for an unpinned saved password that expectation is ignored.
+    let opened = f.open_sized(2, None, Some(REF), server.port, 600, Some(CERT_B));
+    let Response::SessionOpened { session_id, .. } = opened else { panic!("expected session.opened, got {opened:?}") };
+    f.h().wait_state(session_id, &format!("pw_sha256={SECRET_DIGEST}"));
+    // And A is what was pinned: a later session shown B is refused.
+    f.restart(&format!("cert:{CERT_B}"));
+    let sid = opened_session(&mut f, 3, server.port);
+    assert_eq!(f.h().read_closed(sid).2, "cert_changed");
 }

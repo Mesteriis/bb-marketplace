@@ -52,11 +52,11 @@ fn engine_main(mut stream: UnixStream) -> std::io::Result<i32> {
             None => return Ok(0),
         }
     };
-    let EngineCommand::Open { host, port, username, password, domain, width, height, expected_fingerprint } = open
+    let EngineCommand::Open { host, port, username, password, domain, width, height, expected_fingerprint, pin_first_use } = open
     else {
         return Ok(1);
     };
-    let params = Params { host, port, username, password, domain, width, height, expected_fingerprint };
+    let params = Params { host, port, username, password, domain, width, height, expected_fingerprint, pin_first_use };
     let out = Arc::new(Out::new(stream.try_clone()?));
     let inbox = spawn_reader(stream);
     let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {

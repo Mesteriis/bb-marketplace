@@ -281,6 +281,11 @@ impl RdpManager {
         RdpManager { sessions: HashMap::new(), pin_targets: HashMap::new(), ids, fake_engine }
     }
 
+    /// The helper's verdict for a `PinRequest`, sent to the engine of that session.
+    pub fn answer_pin(&mut self, id: u32, verdict: &str) {
+        let _ = self.enqueue_command(id, &EngineCommand::PinAnswer { verdict: verdict.to_string() });
+    }
+
     pub fn set_pin_target(&mut self, id: u32, target: PinTarget) {
         self.pin_targets.insert(id, target);
     }
@@ -377,6 +382,7 @@ impl RdpManager {
         width: u32,
         height: u32,
         expected_fingerprint: Option<String>,
+        pin_first_use: bool,
     ) -> Result<(u32, libc::pid_t), String> {
         let id = self.ids.next().ok_or_else(|| "session ids are exhausted".to_string())?;
         let exe = CString::new(current_exe).map_err(|_| "current exe has a NUL byte".to_string())?;
@@ -464,6 +470,7 @@ impl RdpManager {
             width,
             height,
             expected_fingerprint,
+            pin_first_use,
         };
         self.sessions.get_mut(&id).unwrap().write_buf.extend(protocol::encode_control(&cmd));
         Ok((id, pid))
