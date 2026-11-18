@@ -21,6 +21,8 @@ export interface ProfileBookDeps {
   store: ProfileStore;
   now: () => Date;
   newId: () => string;
+  /** Called with a short code when the open history could not be written; never with a message. */
+  onHistoryError?: ((code: string) => void) | undefined;
 }
 
 export class ProfileError extends Error {
@@ -34,6 +36,8 @@ export class ProfileError extends Error {
 
 const COPY_SUFFIX = " (copy)";
 const RECENT_ERRORS_MAX = 5;
+/** The shape of a failure code worth keeping; anything else is stored as "unknown". */
+const HISTORY_CODE = /^[a-z0-9_]{1,64}$/;
 
 export class ProfileBook {
   constructor(private readonly deps: ProfileBookDeps) {}
@@ -84,21 +88,37 @@ export class ProfileBook {
   recordFailure(id: string, code: string): void {
     const profile = this.deps.store.get(id);
     if (profile === null) return;
-    const recentErrors = [...profile.recentErrors, { at: this.deps.now().toISOString(), code: code.slice(0, 64) }].slice(-RECENT_ERRORS_MAX);
+    const kept = HISTORY_CODE.test(code) ? code : "unknown";
+    const recentErrors = [...profile.recentErrors, { at: this.deps.now().toISOString(), code: kept }].slice(-RECENT_ERRORS_MAX);
     this.deps.store.put({ ...profile, recentErrors });
   }
 
   /** Runs an open on behalf of a profile and records its outcome. Without a profile id it just runs. */
   async track<T>(profileId: string | undefined, run: () => Promise<T>): Promise<T> {
     if (profileId === undefined) return run();
+    let value: T;
     try {
-      const value = await run();
-      this.recordOpen(profileId);
-      return value;
+      value = await run();
     } catch (error) {
-      const code = typeof (error as { code?: unknown } | null)?.code === "string" ? (error as { code: string }).code : "open_failed";
-      this.recordFailure(profileId, code);
+      const raw = (error as { code?: unknown } | null)?.code;
+      this.history(() => this.recordFailure(profileId, typeof raw === "string" ? raw : "open_failed"));
       throw error;
+    }
+    this.history(() => this.recordOpen(profileId));
+    return value;
+  }
+
+  /** The history is a convenience: a failing write is reported, never allowed to change the open's outcome. */
+  private history(write: () => void): void {
+    try {
+      write();
+    } catch (error) {
+      const raw = (error as { code?: unknown } | null)?.code;
+      try {
+        this.deps.onHistoryError?.(typeof raw === "string" && /^[A-Za-z0-9_]{1,64}$/.test(raw) ? raw : "history_write_failed");
+      } catch {
+        // The reporter must not break the open either.
+      }
     }
   }
 }

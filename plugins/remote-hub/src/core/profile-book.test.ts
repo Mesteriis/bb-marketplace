@@ -4,6 +4,7 @@ import { ProfileBook, ProfileError, type ProfileStore } from "./profile-book.ts"
 
 class MemoryStore implements ProfileStore {
   readonly rows = new Map<string, Profile>();
+  failWrites = false;
   all(): Profile[] {
     return [...this.rows.values()];
   }
@@ -11,6 +12,7 @@ class MemoryStore implements ProfileStore {
     return this.rows.get(id) ?? null;
   }
   put(profile: Profile): void {
+    if (this.failWrites) throw Object.assign(new Error("attempt to write a readonly database"), { code: "SQLITE_READONLY" });
     this.rows.set(profile.id, profile);
   }
   remove(id: string): boolean {
@@ -36,7 +38,7 @@ const FIELDS: ProfileFields = {
   rdpHeight: null,
 };
 
-function book() {
+function book(onHistoryError?: (code: string) => void) {
   const store = new MemoryStore();
   let tick = 0;
   let n = 0;
@@ -44,6 +46,7 @@ function book() {
     store,
     now: () => new Date(Date.UTC(2026, 10, 18, 10, 0, tick++)),
     newId: () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`,
+    onHistoryError,
   });
   return { store, instance };
 }
@@ -153,5 +156,45 @@ describe("ProfileBook.track", () => {
         return "opened";
       }),
     ).resolves.toBe("opened");
+  });
+});
+
+describe("ProfileBook.track when the history cannot be written (P2)", () => {
+  it("a successful open still returns its value, and the failure is reported by code only", async () => {
+    const reported: string[] = [];
+    const { instance, store } = book((code) => reported.push(code));
+    const saved = instance.save({ fields: FIELDS });
+    store.failWrites = true;
+    await expect(instance.track(saved.id, async () => "handle")).resolves.toBe("handle");
+    expect(reported).toEqual(["SQLITE_READONLY"]);
+  });
+
+  it("a failed open rejects with the ORIGINAL error even when recording it fails", async () => {
+    const reported: string[] = [];
+    const { instance, store } = book((code) => reported.push(code));
+    const saved = instance.save({ fields: FIELDS });
+    store.failWrites = true;
+    const original = Object.assign(new Error("helper_unavailable"), { code: "not_found" });
+    await expect(instance.track(saved.id, async () => Promise.reject(original))).rejects.toBe(original);
+    expect(reported).toEqual(["SQLITE_READONLY"]);
+  });
+});
+
+describe("ProfileBook history codes and update (P6, P7)", () => {
+  it("only a code-shaped string is kept; anything else becomes unknown", async () => {
+    const { instance } = book();
+    const saved = instance.save({ fields: FIELDS });
+    for (const code of ["Has Space", "x".repeat(65), "UPPER", "pass:hunter2"]) {
+      await expect(instance.track(saved.id, async () => Promise.reject(Object.assign(new Error("e"), { code })))).rejects.toThrow();
+    }
+    await expect(instance.track(saved.id, async () => Promise.reject(Object.assign(new Error("e"), { code: "auth_failed_2" })))).rejects.toThrow();
+    expect(instance.list()[0]?.recentErrors.map((e) => e.code)).toEqual(["unknown", "unknown", "unknown", "unknown", "auth_failed_2"].slice(-5));
+  });
+
+  it("an update keeps the stored executionHostId", () => {
+    const { instance, store } = book();
+    const saved = instance.save({ fields: FIELDS });
+    store.rows.set(saved.id, { ...saved, executionHostId: "other-mac" });
+    expect(instance.save({ id: saved.id, fields: { ...FIELDS, name: "again" } }).executionHostId).toBe("other-mac");
   });
 });

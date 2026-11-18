@@ -42,6 +42,7 @@ export default function plugin(bb: BbPluginApi): void {
     store: createSqliteProfileStore(db),
     now: () => new Date(),
     newId: () => randomUUID(),
+    onHistoryError: (code) => bb.log.warn(`profile history not written (${code})`),
   });
   const withProfile = <T>(run: () => T): T => {
     try {
