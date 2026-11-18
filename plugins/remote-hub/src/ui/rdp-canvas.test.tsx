@@ -376,6 +376,44 @@ describe("RdpCanvas: input", () => {
     expect(socket.inputs.flat().filter((e) => e.kind === "mouse_button").map((e) => e.down)).toEqual([true, false]);
   });
 
+  it("a key-up still queued when focus is lost is sent, not dropped (Ctrl up + Shift down before the next frame)", async () => {
+    const { socket, canvas, ready, frames } = await mount();
+    await ready();
+    fireEvent.keyDown(canvas, { code: "ControlLeft", key: "Control" });
+    await frames();
+    fireEvent.keyUp(canvas, { code: "ControlLeft", key: "Control" }); // queued, not yet sent
+    fireEvent.keyDown(canvas, { code: "ShiftLeft", key: "Shift" }); // queued
+    fireEvent.blur(canvas);
+    const sent = socket.inputs.flat().map((e) => `${e.kind}:${e.scancode}:${e.down}`);
+    expect(sent).toEqual(["key:29:true", "key:29:false", "key:42:true", "key:42:false"]);
+  });
+
+  it("a key-up still queued at unmount is sent too, before the detach", async () => {
+    const { socket, canvas, ready, frames, view } = await mount();
+    await ready();
+    fireEvent.keyDown(canvas, { code: "ControlLeft", key: "Control" });
+    await frames();
+    fireEvent.keyUp(canvas, { code: "ControlLeft", key: "Control" });
+    view.unmount();
+    expect(socket.inputs.flat().map((e) => `${e.kind}:${e.scancode}:${e.down}`)).toEqual(["key:29:true", "key:29:false"]);
+    expect(socket.messages.at(-1)).toEqual({ type: "detach" });
+  });
+
+  it("Ctrl+Alt+Shift+Escape hands the keyboard back to the page, releases held keys and is not forwarded", async () => {
+    const { socket, canvas, ready, frames } = await mount();
+    await ready();
+    fireEvent.mouseDown(canvas, { clientX: 1, clientY: 1, button: 0 });
+    fireEvent.keyDown(canvas, { code: "KeyA", key: "a" });
+    await frames();
+    expect(document.activeElement).toBe(canvas);
+    fireEvent.keyDown(canvas, { code: "Escape", key: "Escape", ctrlKey: true, altKey: true, shiftKey: true });
+    expect(document.activeElement).not.toBe(canvas);
+    const flat = socket.inputs.flat();
+    expect(flat.some((e) => e.kind === "key" && e.scancode === 1)).toBe(false); // Escape itself never went out
+    expect(flat.at(-2)).toMatchObject({ kind: "key", scancode: 0x1e, down: false });
+    expect(flat.at(-1)).toMatchObject({ kind: "mouse_button", button: "left", down: false });
+  });
+
   it("ctrl_alt_del from the handle goes out at once, and only when the desktop is ready", async () => {
     const { socket, ready, handleRef } = await mount();
     handleRef.current!.sendCtrlAltDel();

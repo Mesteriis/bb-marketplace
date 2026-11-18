@@ -284,7 +284,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
       const up = mouseButtonEvent(event.button, false, lastPos, fb);
       heldButtons.delete(event.button);
       if (up !== null && ready && socket.readyState === WebSocket.OPEN) {
-        queue = [];
+        flushNow(); // keep the order: what was queued goes out before this release
         sendJson({ type: "input", events: [up] });
       }
     };
@@ -296,6 +296,16 @@ export function RdpCanvas(props: RdpCanvasProps) {
       event.preventDefault();
     };
     const onKey = (down: boolean) => (event: KeyboardEvent): void => {
+      // The one keyboard way out: Ctrl+Alt+Shift+Escape (all four held) hands the
+      // keyboard back to the page. It is never forwarded.
+      if (event.ctrlKey && event.altKey && event.shiftKey && event.code === "Escape") {
+        event.preventDefault();
+        if (down) {
+          onBlur();
+          canvas.blur();
+        }
+        return;
+      }
       // Every key is the remote's while the canvas is focused.
       event.preventDefault();
       if (down) held.down(event.code);
@@ -304,10 +314,12 @@ export function RdpCanvas(props: RdpCanvasProps) {
       if (events.length > 0) enqueue(events);
     };
     const onBlur = (): void => {
-      // Keys still held would stay stuck on the remote: release them now.
+      // Send what is still queued FIRST (a queued key-up must never be dropped),
+      // then release what is still held: otherwise a key whose up was queued but
+      // not sent stays pressed on the remote.
+      if (ready && socket.readyState === WebSocket.OPEN) flushNow();
       const releases = [...held.releaseAll(), ...releaseButtons()];
       if (releases.length > 0 && ready && socket.readyState === WebSocket.OPEN) {
-        queue = [];
         sendJson({ type: "input", events: releases });
       }
     };
@@ -329,12 +341,13 @@ export function RdpCanvas(props: RdpCanvasProps) {
       disposed = true;
       for (const [name, handler] of handlers) canvas.removeEventListener(name, handler);
       window.removeEventListener("mouseup", onWindowMouseUp);
-      if (frameRequest !== null) cancelAnimationFrame(frameRequest);
       if (socket.readyState === WebSocket.OPEN) {
+        if (ready) flushNow();
         const releases = [...held.releaseAll(), ...releaseButtons()];
         if (releases.length > 0 && ready) socket.send(JSON.stringify({ type: "input", events: releases }));
         socket.send(JSON.stringify({ type: "detach" }));
       }
+      if (frameRequest !== null) cancelAnimationFrame(frameRequest);
       socket.close();
       sendRef.current = { input: () => {}, refresh: () => {} };
     };
