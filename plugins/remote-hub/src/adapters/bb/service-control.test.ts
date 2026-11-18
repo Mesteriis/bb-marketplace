@@ -21,6 +21,8 @@ class FakeHelper {
   owners: string[] = [];
   /** When set, session.set_owner answers only when this is called (a handoff that takes a while). */
   holdOwner: (() => void)[] | null = null;
+  /** The next N session.set_owner calls fail with a transient error (A4). */
+  failOwner = 0;
   private eventCb: Array<(sid: number, e: RdpHelperEvent) => void> = [];
   private askpassCb: Array<(sid: number, e: unknown) => void> = [];
   async openSsh(): Promise<SessionHandle> {
@@ -37,6 +39,10 @@ class FakeHelper {
   }
   async sessionSetOwner(_handle: SessionHandle, owner: string): Promise<{ dropped: number; released: number }> {
     this.owners.push(owner);
+    if (this.failOwner > 0) {
+      this.failOwner -= 1;
+      throw new Error("transient");
+    }
     if (this.holdOwner !== null) await new Promise<void>((resolve) => this.holdOwner!.push(resolve));
     return { dropped: 0, released: 0 };
   }
@@ -345,6 +351,21 @@ describe("Z2: a change of driver is a barrier the helper acknowledges, and stale
     helper.holdOwner = null;
     await flush();
     expect(helper.typed, "an agent drives now: the human's keys are dropped at dispatch").toEqual([]);
+  });
+
+  it("A4: a failed set_owner while the session is alive is retried, so the human is not left with a stale owner", async () => {
+    const { helper, service, leases, attach } = setup();
+    const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24);
+    leases.acquire(KEY(h), "thr_a", 60);
+    await settle();
+    const { socket, handlers } = await attach(h);
+    helper.failOwner = 2; // the handoff back to the human fails twice, then works
+    leases.takeover(KEY(h));
+    await new Promise((r) => setTimeout(r, 400));
+    expect(helper.owners.slice(-3)).toEqual(["human", "human", "human"]);
+    handlers.onMessage(socket, new TextEncoder().encode("mine"));
+    await settle();
+    expect(helper.typed).toEqual([{ sessionId: h.sessionId, text: "mine" }]);
   });
 
   it("the human's keys that were waiting for a takeover go through once the human is the driver", async () => {

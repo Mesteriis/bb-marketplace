@@ -175,9 +175,39 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   // The driver of a session (Z2). Every change is sent to the helper, which drops what the previous driver had queued and
   // releases what it left down; the answer is the barrier, and every write waits for it and then checks who drives NOW.
   const handoffs = new Map<string, Promise<unknown>>();
-  const lastOwner = new Map<string, string>();
-  const handoff = async (key: string): Promise<void> => {
-    await handoffs.get(key);
+  /** The driver tag the helper has acknowledged; a write whose gate tag differs re-sends it first (A4). */
+  const appliedOwner = new Map<string, string>();
+  const syncOwner = async (handle: SessionHandle): Promise<void> => {
+    const key = keyOf(handle);
+    const gate = deps.control;
+    if (gate === undefined) return;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const want = gate.ownerTag(handle);
+      if ((appliedOwner.get(key) ?? "human") === want) return;
+      try {
+        await (await start()).sessionSetOwner(handle, want);
+        appliedOwner.set(key, want);
+      } catch (error) {
+        const gone = error instanceof HelperRequestError && (error.code === "unknown_session" || error.code === "session_not_found");
+        if (gone || helper === null || !sessions.has(key) || sessions.get(key)?.state === "closed") return;
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+      }
+    }
+  };
+  const queueSync = (handle: SessionHandle): void => {
+    const key = keyOf(handle);
+    const next = (handoffs.get(key) ?? Promise.resolve()).then(() => syncOwner(handle));
+    handoffs.set(key, next);
+    void next.finally(() => {
+      if (handoffs.get(key) === next) handoffs.delete(key);
+    });
+  };
+  const handoff = async (handle: SessionHandle): Promise<void> => {
+    await handoffs.get(keyOf(handle));
+    if (deps.control !== undefined && (appliedOwner.get(keyOf(handle)) ?? "human") !== deps.control.ownerTag(handle)) {
+      queueSync(handle);
+      await handoffs.get(keyOf(handle));
+    }
   };
   const lostLease = () => new HelperRequestError("lease_lost", "this input belongs to a lease that is no longer the session's driver");
   const askpassState = (key: string): AskpassState => {
@@ -285,6 +315,8 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       sessionEndListeners.delete(key);
       listeners.delete(key);
       credits.delete(key);
+      appliedOwner.delete(key);
+      handoffs.delete(key);
     }, EVICT_CLOSED_AFTER_MS);
   };
 
@@ -549,22 +581,8 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   if (deps.control !== undefined) {
     const gate = deps.control;
     gate.onChange((handle) => {
-      const key = keyOf(handle);
-      const tag = gate.ownerTag(handle);
-      if ((lastOwner.get(key) ?? "human") === tag) return; // a renewal, not a change of driver
-      lastOwner.set(key, tag);
       if (helper === null) return;
-      const next = (handoffs.get(key) ?? Promise.resolve()).then(async () => {
-        try {
-          await (await start()).sessionSetOwner(handle, tag);
-        } catch {
-          // the session ended, or the helper went: nothing is left to hand over
-        }
-      });
-      handoffs.set(key, next);
-      void next.finally(() => {
-        if (handoffs.get(key) === next) handoffs.delete(key);
-      });
+      queueSync(handle);
     });
   }
 
@@ -726,7 +744,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         async input(events) {
           if (info.rdp?.state !== "desktop_ready") throw new HelperRequestError("not_ready", "the desktop is not ready yet");
           if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
-          await handoff(key);
+          await handoff(handle);
           // Ownership is checked again at dispatch, after the barrier: a takeover or a lease may have come meanwhile.
           if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
           const hp = await start();
@@ -913,7 +931,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     async sessionTerminalInput(handle, data) {
       requireGeneration(handle);
       if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
-      await handoff(keyOf(handle));
+      await handoff(handle);
       if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
       const process = await start();
       process.writeInput(handle.sessionId, data);
@@ -921,7 +939,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     },
     async agentTerminalInput(handle, data, owner) {
       requireGeneration(handle);
-      await handoff(keyOf(handle));
+      await handoff(handle);
       if (deps.control === undefined || deps.control.ownerTag(handle) !== owner) throw lostLease();
       const process = await start();
       try {
@@ -934,7 +952,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     async agentRdpInput(handle, events, owner) {
       requireGeneration(handle);
       if (rdpRecord(keyOf(handle))?.rdp?.state !== "desktop_ready") throw new HelperRequestError("not_ready", "the desktop is not ready yet");
-      await handoff(keyOf(handle));
+      await handoff(handle);
       if (deps.control === undefined || deps.control.ownerTag(handle) !== owner) throw lostLease();
       const hp = await start();
       try {
