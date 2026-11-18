@@ -11,6 +11,7 @@ pub mod known_hosts;
 pub mod protocol;
 pub mod secret;
 pub mod sessions;
+pub mod pve;
 pub mod rdp;
 pub mod ssh_args;
 pub mod threads;
