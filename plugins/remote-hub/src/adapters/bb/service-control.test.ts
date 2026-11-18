@@ -234,3 +234,54 @@ describe("what waits for the owner", () => {
     expect(service.ownerQuestions(handle)).toEqual([]);
   });
 });
+
+describe("Z1: which sessions an agent may drive", () => {
+  const ASK = { credentialRef: "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a" };
+
+  it("a plain ssh session (no saved secret) is never drivable: its questions appear in the terminal", async () => {
+    const { service } = setup();
+    const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24);
+    expect(service.agentControl(h)).toBe("never");
+  });
+
+  it("a saved-secret session is pending until the helper says the credential was used, then ready; a question for the owner makes it pending again", async () => {
+    const { helper, service } = setup();
+    const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24, undefined, ASK);
+    expect(service.agentControl(h)).toBe("pending");
+    helper.askpass(h.sessionId, { type: "credential_used" });
+    expect(service.agentControl(h)).toBe("ready");
+    helper.askpass(h.sessionId, { type: "prompt", promptId: 3, text: "One-time code:", kind: "secret" });
+    expect(service.agentControl(h)).toBe("pending");
+    await service.sshPromptAnswer(h, 3, "123456").catch(() => undefined);
+    expect(service.agentControl(h)).toBe("ready");
+  });
+
+  it("the credential being used is not shown to the page as a notice", async () => {
+    const { helper, service } = setup();
+    const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24, undefined, ASK);
+    const seen: unknown[] = [];
+    service.subscribeSshAskpass(h, (e) => seen.push(e));
+    helper.askpass(h.sessionId, { type: "credential_used" });
+    expect(seen).toEqual([]);
+  });
+
+  it("a refused or failed credential, and a closed session, are never drivable", async () => {
+    const { helper, service } = setup();
+    const a = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24, undefined, ASK);
+    helper.askpass(a.sessionId, { type: "credential_used" });
+    helper.askpass(a.sessionId, { type: "credential_rejected" });
+    expect(service.agentControl(a)).toBe("never");
+    const b = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24, undefined, ASK);
+    helper.askpass(b.sessionId, { type: "credential_used" });
+    await service.sessionClose(b);
+    expect(service.agentControl(b)).toBe("never");
+  });
+
+  it("a desktop session is ready, an unknown session never", async () => {
+    const { service } = setup();
+    const r = await service.rdpOpen({ host: "rdp.test", port: 3389, username: "u", password: "pw" }, 8, 4);
+    expect(service.agentControl(r)).toBe("ready");
+    expect(service.agentControl({ generation: r.generation, sessionId: 999 })).toBe("never");
+  });
+});
+

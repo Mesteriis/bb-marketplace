@@ -24,6 +24,7 @@ export function agentPorts(service: RemoteHubService, profiles: ProfileBook): Ag
             ...(s.profileId === undefined ? {} : { profileId: s.profileId }),
             exitCode: s.exitCode,
             reason: s.reason,
+            control: service.agentControl(s),
             ...(s.rdp === undefined ? {} : { rdp: { state: s.rdp.state, desktop: s.rdp.desktop } }),
           }),
         ),

@@ -132,7 +132,11 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   function controllable(key: string): { session: AgentSessionView; profileId: string } {
     const session = sessionOf(key);
     if (session === undefined || session.profileId === undefined || !access.check(session.profileId, "input").ok) throw noSession();
+    // A terminal session that is not an askpass session shows its questions in the terminal: it answers exactly like a
+    // missing one, so nothing is learnt about sessions the owner opened by hand.
+    if (session.control === "never") throw noSession();
     if (session.state === "closed") throw new ToolError("session_closed", "this session has ended");
+    if (session.control === "pending") throw new ToolError("session_not_ready", "the session is not authenticated yet, or the owner has a question to answer: try again shortly");
     return { session, profileId: session.profileId };
   }
 
@@ -165,7 +169,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
     const onAbort = () => void leases.endSession(key, "thread_gone");
     ctx.signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      const stillValid = () => ctx.signal?.aborted !== true && access.check(profileId, "input").ok && leases.check(key, ctx.threadId, leaseId).ok && leases.owner(key).generation === generation;
+      const stillValid = () =>
+        ctx.signal?.aborted !== true && access.check(profileId, "input").ok && sessionOf(key)?.control === "ready" && leases.check(key, ctx.threadId, leaseId).ok && leases.owner(key).generation === generation;
       const outcome = await queue.run(key, stillValid, write);
       if (!outcome.ran) throw new ToolError("lease_lost", "the owner took the session back, or the lease ended, before this input was sent; nothing was sent");
     } finally {

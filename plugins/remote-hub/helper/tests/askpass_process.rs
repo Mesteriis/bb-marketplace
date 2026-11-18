@@ -179,6 +179,11 @@ fn the_first_secret_prompt_gets_the_saved_credential_and_a_second_stops_ssh_befo
     // The second prompt is never answered, not even with a failure that OpenSSH would turn into an empty password.
     assert!(!text.contains("DONE2"), "ssh must be stopped before it continues past the second prompt: {text}");
     assert_eq!(events.iter().filter(|r| matches!(r, Response::SshCredentialRejected { session_id } if *session_id == sid)).count(), 1);
+    // The first use is announced once, and before the refusal.
+    let used = events.iter().position(|r| matches!(r, Response::SshCredentialUsed { session_id } if *session_id == sid));
+    let rejected = events.iter().position(|r| matches!(r, Response::SshCredentialRejected { .. }));
+    assert!(used.is_some() && used < rejected, "{events:?}");
+    assert_eq!(events.iter().filter(|r| matches!(r, Response::SshCredentialUsed { .. })).count(), 1);
     assert!(!text.contains(SECRET), "the secret appeared on the terminal");
     assert!(!f.h().stderr_text().contains(SECRET));
 }

@@ -106,6 +106,8 @@ pub enum BrokerEvent {
     PromptExpired { session_id: u32, prompt_id: u64 },
     /// The saved credential was used once and the server asked again: it was refused.
     CredentialRejected { session_id: u32 },
+    /// The saved credential was handed to ssh (once): the strongest signal OpenSSH gives that authentication has begun.
+    CredentialUsed { session_id: u32 },
     /// The Keychain would not hand the saved credential over (keychain_locked, credential_missing, ...).
     CredentialFailed { session_id: u32, code: String },
 }
@@ -369,7 +371,10 @@ impl Broker {
             let reference = session.reference.clone();
             let wanted = session.bind.clone();
             match fetch(&reference) {
-                Ok(item) if item.bind == wanted => return Some(Reply::Answer { text: item.secret.expose().to_string() }),
+                Ok(item) if item.bind == wanted => {
+                    self.events.push(BrokerEvent::CredentialUsed { session_id });
+                    return Some(Reply::Answer { text: item.secret.expose().to_string() });
+                }
                 outcome => {
                     let code = match outcome {
                         Ok(_) => "credential_target_mismatch".to_string(),

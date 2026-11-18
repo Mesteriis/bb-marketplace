@@ -85,7 +85,7 @@ export function SshPage(props: SshPageProps) {
       setNotice(errorCodeText("prompt_expired"));
     } else if (event.type === "credential_rejected") {
       setNotice(errorCodeText("ssh_credential_rejected"));
-    } else {
+    } else if (event.type === "credential_failed") {
       setNotice(errorCodeText(event.code));
     }
   }, []);

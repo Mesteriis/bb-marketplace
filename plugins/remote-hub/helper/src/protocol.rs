@@ -342,6 +342,11 @@ pub enum Response {
         kind: String,
     },
     /// The saved credential was used once and the server asked again: it was refused.
+    #[serde(rename = "ssh.credential_used")]
+    SshCredentialUsed {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+    },
     #[serde(rename = "ssh.credential_rejected")]
     SshCredentialRejected {
         #[serde(rename = "sessionId")]

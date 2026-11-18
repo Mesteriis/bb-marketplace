@@ -51,8 +51,8 @@ function setup(opts: Setup = {}) {
   let lease = 0;
   const leases = new ControlLeases({ now: () => now, newId: () => "lease-" + ++lease });
   const sessions: AgentSessionView[] = opts.sessions ?? [
-    { key: SSH_KEY, kind: "ssh", state: "running", profileId: P_SSH, exitCode: null, reason: null },
-    { key: RDP_KEY, kind: "rdp", state: "running", profileId: P_RDP, exitCode: null, reason: null, rdp: { state: "desktop_ready", desktop: { frameId: 7, width: 800, height: 600 } } },
+    { key: SSH_KEY, kind: "ssh", state: "running", profileId: P_SSH, exitCode: null, reason: null, control: "ready" },
+    { key: RDP_KEY, kind: "rdp", state: "running", profileId: P_RDP, exitCode: null, reason: null, control: "ready", rdp: { state: "desktop_ready", desktop: { frameId: 7, width: 800, height: 600 } } },
   ];
   const wrote: Array<{ key: string; data: string }> = [];
   const rdpSent: Array<{ key: string; events: RdpInputEvent[] }> = [];
@@ -82,7 +82,7 @@ function setup(opts: Setup = {}) {
         const p = profiles.find((x) => x.id === profileId)!;
         const key = `${GEN}.${10 + opened.length}`;
         opened.push(p.id);
-        sessions.push({ key, kind: p.protocol === "rdp" ? "rdp" : "ssh", state: "connecting", profileId: p.id, exitCode: null, reason: null });
+        sessions.push({ key, kind: p.protocol === "rdp" ? "rdp" : "ssh", state: "connecting", profileId: p.id, exitCode: null, reason: null, control: "ready" });
         return { sessionKey: key };
       },
       disconnect: async (key) => void disconnected.push(key),
@@ -435,5 +435,49 @@ describe("remote_connect / remote_disconnect", () => {
     t.access.set(P_SSH, "none", false);
     expect(t.textOf(await t.call("remote_disconnect", { sessionId: mine }))).toContain("session_not_found");
     expect(t.disconnected).toEqual([]);
+  });
+});
+
+describe("Z1: only sessions where no question can appear in the terminal may be driven", () => {
+  const HUMAN_KEY = `${GEN}.7`;
+  const sessionsWith = (control: "never" | "pending"): AgentSessionView[] => [
+    { key: HUMAN_KEY, kind: "ssh", state: "running", profileId: P_SSH, exitCode: null, reason: null, control },
+  ];
+
+  it("a terminal session the human opened without a saved secret answers like a missing one for acquire and input", async () => {
+    const t = setup({ sessions: sessionsWith("never") });
+    t.access.set(P_SSH, "input", false);
+    const missing = t.textOf(await t.call("remote_control_acquire", { sessionId: `${GEN}.99` }));
+    expect(t.textOf(await t.call("remote_control_acquire", { sessionId: HUMAN_KEY }))).toBe(missing);
+    expect(t.textOf(await t.call("remote_terminal_input", { sessionId: HUMAN_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "yes" }] }))).toBe(
+      t.textOf(await t.call("remote_terminal_input", { sessionId: `${GEN}.99`, leaseId: "lease-1", actions: [{ type: "text", text: "yes" }] })),
+    );
+    expect(t.wrote).toEqual([]);
+    expect(t.leases.owner(HUMAN_KEY).kind).toBe("human");
+  });
+
+  it("a session that is not authenticated yet, or has a question for the owner, is not ready: no lease, no input", async () => {
+    const t = setup({ sessions: sessionsWith("pending") });
+    t.access.set(P_SSH, "input", false);
+    expect(t.textOf(await t.call("remote_control_acquire", { sessionId: HUMAN_KEY }))).toContain("session_not_ready");
+    expect(t.textOf(await t.call("remote_terminal_input", { sessionId: HUMAN_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "x" }] }))).toContain("session_not_ready");
+    expect(t.wrote).toEqual([]);
+  });
+
+  it("a lease on a session that stops being ready drops what is still queued", async () => {
+    const t = setup();
+    t.access.set(P_SSH, "input", false);
+    await t.call("remote_control_acquire", { sessionId: SSH_KEY });
+    t.holdWrites();
+    const n0 = t.rows.length;
+    const first = t.call("remote_terminal_input", { sessionId: SSH_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "one" }] });
+    await until(() => t.rows.length >= n0 + 1);
+    const second = t.call("remote_terminal_input", { sessionId: SSH_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "two" }] });
+    await until(() => t.rows.length >= n0 + 2);
+    t.sessions.find((s) => s.key === SSH_KEY)!.control = "pending"; // a question appeared for the owner
+    t.releaseWrites();
+    await first;
+    expect(t.textOf(await second)).toContain("lease_lost");
+    expect(t.wrote.map((w) => w.data)).toEqual(["one"]);
   });
 });

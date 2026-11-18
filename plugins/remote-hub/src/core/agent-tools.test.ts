@@ -44,10 +44,10 @@ function setup(opts: { sessions?: AgentSessionView[]; budget?: ConstructorParame
   const scrollback = new Scrollback(1000);
   scrollback.append(new TextEncoder().encode("\u001b[32mhello\u001b[0m\nworld\n"));
   const sessions: AgentSessionView[] = opts.sessions ?? [
-    { key: `${GEN}.1`, kind: "ssh", state: "running", profileId: P_OPEN, exitCode: null, reason: null },
-    { key: `${GEN}.2`, kind: "rdp", state: "running", profileId: P_SECOND, exitCode: null, reason: null, rdp: { state: "desktop_ready", desktop: { frameId: 7, width: 800, height: 600 } } },
-    { key: `${GEN}.3`, kind: "ssh", state: "running", profileId: P_CLOSED, exitCode: null, reason: null },
-    { key: `${GEN}.4`, kind: "ssh", state: "running", exitCode: null, reason: null }, // quick connect: no saved profile
+    { key: `${GEN}.1`, kind: "ssh", state: "running", profileId: P_OPEN, exitCode: null, reason: null, control: "ready" },
+    { key: `${GEN}.2`, kind: "rdp", state: "running", profileId: P_SECOND, exitCode: null, reason: null, control: "ready", rdp: { state: "desktop_ready", desktop: { frameId: 7, width: 800, height: 600 } } },
+    { key: `${GEN}.3`, kind: "ssh", state: "running", profileId: P_CLOSED, exitCode: null, reason: null, control: "ready" },
+    { key: `${GEN}.4`, kind: "ssh", state: "running", exitCode: null, reason: null, control: "ready" }, // quick connect: no saved profile
   ];
   const calls: string[] = [];
   const tools = createAgentTools({
@@ -177,7 +177,7 @@ describe("remote_rdp_screenshot", () => {
 
   it("only for a desktop session that shows its desktop", async () => {
     const { call, access } = setup({
-      sessions: [{ key: `${GEN}.2`, kind: "rdp", state: "running", profileId: P_SECOND, exitCode: null, reason: null, rdp: { state: "authenticating", desktop: null } }, { key: `${GEN}.1`, kind: "ssh", state: "running", profileId: P_SECOND, exitCode: null, reason: null }],
+      sessions: [{ key: `${GEN}.2`, kind: "rdp", state: "running", profileId: P_SECOND, exitCode: null, reason: null, control: "ready", rdp: { state: "authenticating", desktop: null } }, { key: `${GEN}.1`, kind: "ssh", state: "running", profileId: P_SECOND, exitCode: null, reason: null, control: "ready" }],
     });
     access.set(P_SECOND, "observe", false);
     expect(textOf(await call("remote_rdp_screenshot", { sessionId: `${GEN}.2` }))).toContain("desktop_not_ready");
@@ -313,7 +313,7 @@ describe("Y5: reservation, encoded size, response caps and a screenshot slot cap
   });
 
   it("a sessions list is cut the same way", async () => {
-    const many: AgentSessionView[] = Array.from({ length: 800 }, (_, i) => ({ key: `${GEN}.${i + 1}`, kind: "ssh", state: "running", profileId: P_OPEN, exitCode: null, reason: null }));
+    const many: AgentSessionView[] = Array.from({ length: 800 }, (_, i) => ({ key: `${GEN}.${i + 1}`, kind: "ssh", state: "running", profileId: P_OPEN, exitCode: null, reason: null, control: "ready" }));
     const { call, access } = setup({ sessions: many });
     access.set(P_OPEN, "observe", false);
     const body = JSON.parse(textOf(await call("remote_sessions_list", {}))) as { sessions: unknown[]; truncated: boolean; total: number };
@@ -370,6 +370,16 @@ describe("Y5: no single response is larger than the cap", () => {
     expect(rows.at(-1)!.outcome).toBe("response_too_large");
     // the reservation was given back: the thread can still ask for something small
     expect(budget.admit("thr_agent", 100)).toEqual({ ok: true });
+  });
+});
+
+describe("Z1: reading is allowed on a session an agent may not drive, and says so", () => {
+  it("remote_session_status and the terminal read work at observe; agentControl tells the agent it cannot drive", async () => {
+    const { call, access } = setup({ sessions: [{ key: `${GEN}.1`, kind: "ssh", state: "running", profileId: P_OPEN, exitCode: null, reason: null, control: "never" }] });
+    access.set(P_OPEN, "observe", false);
+    const status = JSON.parse(textOf(await call("remote_session_status", { sessionId: `${GEN}.1` }))) as { session: Record<string, unknown> };
+    expect(status.session).toMatchObject({ sessionId: `${GEN}.1`, agentControl: "never" });
+    expect((await call("remote_terminal_read", { sessionId: `${GEN}.1` })).isError).toBeUndefined();
   });
 });
 

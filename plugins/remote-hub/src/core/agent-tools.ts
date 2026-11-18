@@ -31,6 +31,12 @@ export interface AgentSessionView {
   profileId?: string;
   exitCode: number | null;
   reason: string | null;
+  /**
+   * May an agent drive it (Z1)? "ready": yes. "pending": it will be, once authentication has begun and nothing waits
+   * for the owner. "never": a terminal session that was not opened through the saved-secret path, where ssh asks its
+   * questions in the terminal itself; an agent could answer them. Reading stays allowed whatever this says.
+   */
+  control: "ready" | "pending" | "never";
   rdp?: { state: string; desktop: { frameId: number; width: number; height: number } | null };
 }
 
@@ -203,6 +209,7 @@ export function createGate(deps: AgentToolDeps) {
     connectionId: s.profileId ?? null,
     exitCode: s.exitCode,
     closeReason: s.reason,
+    agentControl: s.control,
     ...(s.rdp === undefined ? {} : { rdp: { state: s.rdp.state, desktop: s.rdp.desktop } }),
     ...(deps.sessionExtras === undefined ? {} : deps.sessionExtras(s)),
   });

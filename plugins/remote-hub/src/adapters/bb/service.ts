@@ -130,6 +130,8 @@ export interface RemoteHubService {
   agentRdpInput(handle: SessionHandle, events: RdpInputEvent[]): Promise<void>;
   controlState(handle: SessionHandle): ControlView;
   subscribeControl(handle: SessionHandle, cb: (view: ControlView) => void): () => void;
+  /** May an agent drive this session (Z1)? See AgentSessionView.control. */
+  agentControl(handle: SessionHandle): "ready" | "pending" | "never";
   /** The kinds of question the owner has to answer on this session: no text, no fingerprint. */
   ownerQuestions(handle: SessionHandle): Array<"host_key" | "certificate" | "login_prompt">;
   /** The SSH questions waiting for the owner, with their text (for the owner's page only; never given to an agent). */
@@ -155,20 +157,31 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   // credential, and the sockets listening. Holds prompt TEXT only, never an answer or a secret.
   interface AskpassState {
     prompts: Map<number, Extract<SshAskpassEvent, { type: "prompt" }>>;
-    notice: Exclude<SshAskpassEvent, { type: "prompt" | "prompt_expired" }> | null;
+    notice: Exclude<SshAskpassEvent, { type: "prompt" | "prompt_expired" | "credential_used" }> | null;
+    /** The helper handed the saved credential to ssh; the saved credential was then refused or could not be read. */
+    used: boolean;
+    failed: boolean;
     listeners: Set<(event: SshAskpassEvent) => void>;
   }
   const askpassStates = new Map<string, AskpassState>();
+  // SSH sessions opened through the saved-secret path (askpass forced): the only terminals where no question can appear.
+  const brokered = new Set<string>();
   const askpassState = (key: string): AskpassState => {
     let state = askpassStates.get(key);
     if (state === undefined) {
-      state = { prompts: new Map(), notice: null, listeners: new Set() };
+      state = { prompts: new Map(), notice: null, used: false, failed: false, listeners: new Set() };
       askpassStates.set(key, state);
     }
     return state;
   };
   const handleSshAskpass = (generation: string, sessionId: number, event: SshAskpassEvent): void => {
     const state = askpassState(generation + ":" + sessionId);
+    if (event.type === "credential_used") {
+      // A fact for the service (agent control), not something the page shows.
+      state.used = true;
+      return;
+    }
+    if (event.type === "credential_rejected" || event.type === "credential_failed") state.failed = true;
     if (event.type === "prompt") state.prompts.set(event.promptId, event);
     else if (event.type === "prompt_expired") state.prompts.delete(event.promptId);
     else state.notice = event;
@@ -555,6 +568,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       const hp = await start();
       const spec = buildSshSpawn(target, deps.env ?? process.env);
       const handle = await hp.openSsh(spec, cols, rows, askpass);
+      if (askpass !== undefined) brokered.add(keyOf(handle));
       sessions.set(keyOf(handle), {
         generation: handle.generation,
         sessionId: handle.sessionId,
@@ -863,6 +877,18 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     },
     subscribeControl(handle, cb) {
       return deps.control?.subscribe(handle, cb) ?? (() => undefined);
+    },
+    agentControl(handle) {
+      const key = keyOf(handle);
+      const info = sessions.get(key);
+      if (info === undefined || info.state === "closed" || info.kind === "echo") return "never";
+      if (info.kind === "rdp") return "ready";
+      if (!brokered.has(key)) return "never";
+      const ask = askpassStates.get(key);
+      if (ask === undefined) return "pending"; // nothing from the helper yet
+      if (ask.failed) return "never";
+      if (!ask.used || ask.prompts.size > 0) return "pending";
+      return "ready";
     },
     sshPendingPrompts(handle) {
       const prompts = askpassStates.get(keyOf(handle))?.prompts;
