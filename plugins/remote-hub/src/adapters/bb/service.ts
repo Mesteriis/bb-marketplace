@@ -427,6 +427,18 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     applyEffects(runtime, { ackHelper: outcome.ackHelper, refresh: outcome.refresh });
   };
 
+  // Agents read the scrollback with no view attached, so output must flow without one: grant the first window now.
+  const startDrain = async (hp: HelperProcess, handle: SessionHandle): Promise<void> => {
+    const key = keyOf(handle);
+    let state = credits.get(key);
+    if (state === undefined) {
+      state = createCreditState();
+      credits.set(key, state);
+    }
+    const grant = state.startDrain();
+    if (grant > 0) await hp.credit(handle, grant).catch(() => {});
+  };
+
   const start = (): Promise<HelperProcess> => {
     if (helper !== null) return Promise.resolve(helper);
     if (starting === null) {
@@ -504,7 +516,9 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
           started.onSshAskpass((sessionId, event) => handleSshAskpass(generation, sessionId, event));
           started.onRdpUpdate((sessionId, seq, payload) => handleRdpUpdate(generation, sessionId, seq, payload));
           started.onSessionOutput((sessionId, data) => {
-            credits.get(generation + ":" + sessionId)?.onConsumed(data.byteLength);
+            const back = credits.get(generation + ":" + sessionId)?.onConsumed(data.byteLength) ?? 0;
+            // No view attached: the scrollback is the only reader, so keep the helper's window full.
+            if (back > 0) started.credit({ generation, sessionId } as SessionHandle, back).catch(() => {});
             const set = listeners.get(generation + ":" + sessionId);
             if (set !== undefined) {
               for (const cb of set) cb(data);
@@ -586,6 +600,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       if (deps.openSshRaw === undefined) throw new Error("sshOpenTest requires a test opener");
       const hp = await start();
       const handle = await deps.openSshRaw(hp, cols, rows);
+      await startDrain(hp, handle);
       sessions.set(keyOf(handle), {
         generation: handle.generation,
         sessionId: handle.sessionId,
@@ -602,6 +617,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       const hp = await start();
       const spec = buildSshSpawn(target, deps.env ?? process.env);
       const handle = await hp.openSsh(spec, cols, rows, askpass);
+      await startDrain(hp, handle);
       if (askpass !== undefined) brokered.add(keyOf(handle));
       sessions.set(keyOf(handle), {
         generation: handle.generation,

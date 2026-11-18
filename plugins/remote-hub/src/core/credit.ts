@@ -24,7 +24,10 @@ interface View {
 export interface CreditState {
   attach(viewId: string): number;
   detach(viewId: string): number;
-  onConsumed(bytes: number): void;
+  /** Returns credit to grant to the helper (headless drain only). */
+  onConsumed(bytes: number): number;
+  /** Output must reach the scrollback with no view attached (agents read without one): grants the first window and arms the drain. */
+  startDrain(): number;
   onLiveSent(viewId: string, bytes: number): void;
   ack(viewId: string, bytes: number): number;
   granted(): number;
@@ -39,6 +42,7 @@ export function createCreditState(): CreditState {
   let consumed = 0;
   const views = new Map<string, View>();
   let owner: string | null = null;
+  let draining = false;
 
   const promote = (): string | null => {
     for (const id of views.keys()) {
@@ -74,13 +78,19 @@ export function createCreditState(): CreditState {
       views.delete(viewId);
       if (!wasOwner) return 0;
       const newOwner = promote();
-      if (newOwner === null) return 0;
+      if (newOwner === null) return draining ? addGrant(Math.max(0, CREDIT_WINDOW_BYTES - (granted - consumed))) : 0;
       const v = views.get(newOwner)!;
       const outstanding = v.sentLive - v.acked;
       return addGrant(Math.max(0, CREDIT_WINDOW_BYTES - (granted - consumed) - outstanding));
     },
     onConsumed(bytes) {
       consumed += bytes;
+      // With a view attached its acks drive the window (backpressure); with none, the scrollback is the only reader.
+      return draining && views.size === 0 ? addGrant(bytes) : 0;
+    },
+    startDrain() {
+      draining = true;
+      return addGrant(Math.max(0, CREDIT_WINDOW_BYTES - (granted - consumed)));
     },
     onLiveSent(viewId, bytes) {
       const v = views.get(viewId);

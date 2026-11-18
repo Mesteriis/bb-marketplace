@@ -273,6 +273,24 @@ describe.skipIf(!dockerOk)("agent control over SSH: connect, owner decides the h
     expect(c.service.agentControl(handle)).toBe("never");
   }, 60_000);
 
+  it("no human view at all: connect, take control, type and read — the scrollback fills without any attached stream", async () => {
+    c.access.set(profileId, "input", true);
+    const opened = key(await c.call("remote_connect", { connectionId: profileId }));
+    sessionId = opened.sessionId as string;
+    const [generation, id] = sessionId.split(".");
+    handle = { generation: generation as string, sessionId: Number(id) };
+    await poll(async () => {
+      for (const q of c.service.sshPendingPrompts(handle)) await c.handlers.agent_prompt_answer({ ...handle, promptId: q.promptId, answer: "yes" } as never);
+      return c.service.agentControl(handle) === "ready";
+    }, 60_000, "the session is ready");
+    const lease = key(await c.call("remote_control_acquire", { sessionId }));
+    await c.call("remote_terminal_input", { sessionId, leaseId: lease.leaseId, actions: [{ type: "text", text: "printf 'N%sV' $((8*9))" }, { type: "key", key: "Enter" }] });
+    const body = await readUntil("N72V");
+    expect(body).toContain("N72V");
+    expect(c.service.creditState(handle)?.size()).toBe(0); // no view was ever attached
+    expect((await c.call("remote_disconnect", { sessionId })).isError).toBeUndefined();
+  }, 150_000);
+
   it("Z1: a terminal session the human opened by hand (plain ssh, its questions in the terminal) cannot be driven; reading it is allowed", async () => {
     const empty = join(tmp, "empty_known_hosts_plain");
     const plain = await c.service.sshOpen({ host: "127.0.0.1", port: sshPort, user: "root", knownHostsFile: empty, extraOptions: [] }, 100, 30, profileId);

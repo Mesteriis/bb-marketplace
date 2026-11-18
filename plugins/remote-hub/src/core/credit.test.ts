@@ -121,3 +121,36 @@ describe("credit state (X1)", () => {
     expect(granted - consumed + outstanding).toBe(262_144);
   });
 });
+
+describe("headless drain (no view attached)", () => {
+  it("startDrain grants one window; with no view every consumed byte is granted back", () => {
+    const s = createCreditState();
+    expect(s.startDrain()).toBe(CREDIT_WINDOW_BYTES);
+    expect(s.onConsumed(1000)).toBe(1000);
+    expect(s.granted() - s.consumed()).toBe(CREDIT_WINDOW_BYTES);
+  });
+
+  it("a view attached while draining adds nothing; its ack, not consumption, then replenishes", () => {
+    const s = createCreditState();
+    s.startDrain();
+    expect(s.attach("a")).toBe(0);
+    expect(s.onConsumed(5000)).toBe(0);
+    s.onLiveSent("a", 5000);
+    expect(s.ack("a", 5000)).toBe(5000);
+  });
+
+  it("when the last view leaves, the window is topped up again", () => {
+    const s = createCreditState();
+    s.startDrain();
+    s.attach("a");
+    s.onConsumed(200_000);
+    s.onLiveSent("a", 200_000);
+    expect(s.detach("a")).toBe(200_000);
+    expect(s.onConsumed(10)).toBe(10);
+  });
+
+  it("without startDrain nothing is granted on consumption (the view-only behaviour is unchanged)", () => {
+    const s = createCreditState();
+    expect(s.onConsumed(10)).toBe(0);
+  });
+});
