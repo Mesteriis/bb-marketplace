@@ -12,7 +12,9 @@ export interface ImportApi {
   set: (input: { id: string; enabled?: boolean; useSshG?: boolean }) => Promise<ImportSource>;
   remove: (id: string) => Promise<{ removed: boolean }>;
   scan: (id: string) => Promise<ScanResult>;
-  apply: (id: string, keys?: string[]) => Promise<ImportOutcome>;
+  apply: (id: string, keys?: string[], scanId?: string) => Promise<ImportOutcome>;
+  /** ssh -G for the chosen entries of the reviewed scan; answers with a NEW scan to review. */
+  resolve: (id: string, scanId: string, keys: string[]) => Promise<ScanResult>;
   /** What saved-secret SSH sessions trust now (the helper's own known hosts). */
   trusted: () => Promise<Array<Omit<TrustItem, "trusted">>>;
   forget: (host: string) => Promise<{ removed: number }>;
@@ -25,6 +27,7 @@ const FLAG_TEXT: Record<string, string> = {
   canonicalize: "uses hostname canonicalization",
   "host-key-alias": "uses HostKeyAlias",
   "multiple-identities": "only the first key file is imported",
+  incomplete: "part of the config could not be read (an Include was refused, missing, cyclic or over the limits)",
 };
 
 const ACTION_TEXT = {
@@ -114,6 +117,7 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
       }
     });
 
+  const sshGOn = scan !== null && (sources ?? []).some((s) => s.id === scan.sourceId && s.kind === "ssh-config" && s.useSshG);
   const registered = new Set((sources ?? []).map((s) => `${s.kind}\u0000${s.path ?? ""}`));
   const unregistered = suggestions.filter((s) => !registered.has(`${s.kind}\u0000${s.path ?? ""}`));
 
@@ -146,7 +150,7 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
               {s.kind === "ssh-config" && s.enabled && (
                 <label className="rh-check">
                   <input type="checkbox" checked={s.useSshG} disabled={busy} onChange={(e) => void run(async () => { await api.set({ id: s.id, useSshG: e.target.checked }); await reload(); })} />
-                  Let ssh -G resolve entries (runs ssh; it evaluates the whole config, including Match exec)
+                  Allow ssh -G for entries I choose. ssh will RUN local commands named in this config (Match exec) and may read files outside its directory; what it answers is true for this moment and network only.
                 </label>
               )}
             </div>
@@ -187,6 +191,11 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
       {scan !== null && (scan.result.kind === "ssh-config" || scan.result.kind === "hosts") && (
         <div aria-label="Scan result">
           <h3>What an import would do</h3>
+          {scan.result.incomplete && (
+            <p role="alert" className="rh-error">
+              Scan incomplete: part of the source could not be read faithfully. Entries that could be affected are not offered as resolved, and nothing is marked as gone.
+            </p>
+          )}
           {scan.result.items.length === 0 && <p className="rh-hint">Nothing importable in this source.</p>}
           <ul>
             {scan.result.items.map((i) => (
@@ -214,12 +223,31 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
           {scan.result.issues.map((t) => (
             <p key={t} className="rh-hint">{t}</p>
           ))}
+          {sshGOn && scan.result.items.some((i) => !i.resolved && picked.has(i.key)) && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                void run(async () => {
+                  const r = scan.result;
+                  if (r.kind !== "ssh-config") return;
+                  const keys = r.items.filter((i) => !i.resolved && picked.has(i.key)).map((i) => i.key);
+                  const next = await api.resolve(scan.sourceId, r.scanId, keys);
+                  setScan({ sourceId: scan.sourceId, result: next });
+                  setMessage("ssh -G answered for the chosen entries. Review them again before importing.");
+                })
+              }
+            >
+              Resolve chosen unresolved entries with ssh -G
+            </button>
+          )}
           <button
             type="button"
             disabled={busy || picked.size === 0}
             onClick={() =>
               void run(async () => {
-                const result = await api.apply(scan.sourceId, [...picked]);
+                const reviewed = scan.result;
+                const result = await api.apply(scan.sourceId, [...picked], reviewed.kind === "ssh-config" || reviewed.kind === "hosts" ? reviewed.scanId : undefined);
                 setMessage(outcomeText(result));
                 onImported();
                 const source = (sources ?? []).find((s) => s.id === scan.sourceId);

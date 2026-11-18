@@ -101,6 +101,11 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
                       {status.state === "idle" ? "" : status.sessions > 1 ? `${status.state} ×${status.sessions}` : status.state}
                     </span>
                     {p.credentialRef !== null && <span className="rh-status">saved password</span>}
+                    {p.provenance == null && p.needsConfig === true && (
+                      <span className="rh-status" data-testid="profile-needs-config">
+                        uses your ssh config, no saved password until you set its host
+                      </span>
+                    )}
                     {p.provenance != null && (
                       <span className="rh-status" data-testid="profile-provenance">
                         {"source: " + (p.provenance.sourceKind === "ssh-config" ? "ssh config" : "hosts file")}

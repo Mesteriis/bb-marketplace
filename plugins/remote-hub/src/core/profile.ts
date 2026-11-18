@@ -153,6 +153,12 @@ export const profileSchema = z
     recentErrors: z.array(recentErrorSchema).max(5),
     /** For an imported profile: where from. Filled in by the import layer when profiles are listed, never stored in the profile. */
     provenance: z.lazy(() => provenanceSchema).nullable().optional(),
+    /**
+     * An imported alias that goes through SSH configuration this plugin cannot read from text (a proxy, a Match
+     * rule): no saved secret can be tied to where it really goes. Stays with the profile (not with the import
+     * source) until the user gives it an explicit destination (changes its host).
+     */
+    needsConfig: z.boolean().optional(),
   })
   .strict()
   .and(profileFieldsSchema)

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CREDENTIAL_MIGRATIONS } from "./credential-sqlite.ts";
 import { IMPORT_MIGRATIONS, createSqliteImportStore } from "./import-sqlite.ts";
-import { PROFILE_MIGRATIONS } from "./profile-sqlite.ts";
+import { ALL_MIGRATIONS } from "./migrations.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -15,7 +15,7 @@ function openDb(): Database.Database {
   const dir = mkdtempSync(join(tmpdir(), "rh-imp-"));
   dirs.push(dir);
   const db = new Database(join(dir, "data.db"));
-  for (const statement of [...PROFILE_MIGRATIONS, ...CREDENTIAL_MIGRATIONS, ...IMPORT_MIGRATIONS]) db.exec(statement);
+  for (const statement of ALL_MIGRATIONS) db.exec(statement);
   return db;
 }
 

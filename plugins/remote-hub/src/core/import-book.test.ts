@@ -35,9 +35,9 @@ const DIRS: Record<string, DirEntry[]> = {};
 const sshG = vi.fn(async (_c: string, _a: string): Promise<string | null> => null);
 const reader: SourceReader = {
   home: () => "/home/fixture",
-  readText: (p, max) => (p in FILES ? (FILES[p] as string).slice(0, max) : null),
+  readText: (p, max) => (p in FILES ? { text: (FILES[p] as string).slice(0, max), truncated: false } : null),
   listDir: (p) => DIRS[p] ?? null,
-  include: () => [],
+  include: () => ({ files: [], complete: true }),
   agentList: async () => "256 SHA256:AAA agent key (ED25519)\n",
   sshG,
 };
@@ -66,7 +66,7 @@ function setup() {
   const store = new MemImport();
   const vault: CredentialVault = { save: async () => {}, delete: async () => {}, status: async () => "present" };
   let book!: ImportBook;
-  const credentials = new CredentialBook({ store: new MemMeta(), vault, profiles, now: () => new Date(), newId: ids, needsConfig: (id) => book.needsConfig(id) });
+  const credentials = new CredentialBook({ store: new MemMeta(), vault, profiles, now: () => new Date(), newId: ids });
   book = new ImportBook({ store, reader, profiles, credentials, newId: ids, knownHosts: overlay });
   return { book, store, profiles, credentials };
 }
@@ -81,6 +81,13 @@ Host jump
 Host *
   ServerAliveInterval 30
 `;
+
+/** Review, then import: apply acts on the scan that was reviewed. */
+async function applyFresh(book: ImportBook, id: string, keys?: string[]) {
+  const scan = await book.scan(id);
+  if (scan.kind !== "ssh-config" && scan.kind !== "hosts") throw new Error("kind");
+  return await book.apply(id, keys, scan.scanId);
+}
 
 function enabledConfig(book: ImportBook, text = CONFIG) {
   FILES["/fixture/ssh/config"] = text;
@@ -97,7 +104,7 @@ describe("sources are off until switched on", () => {
     const source = book.addSource({ kind: "ssh-config", path: "/fixture/ssh/config", label: "x" });
     expect(source).toMatchObject({ enabled: false, useSshG: false });
     await expect(book.scan(source.id)).rejects.toMatchObject({ code: "source_disabled" });
-    await expect(book.apply(source.id)).rejects.toMatchObject({ code: "source_disabled" });
+    await expect(book.apply(source.id, undefined, "x")).rejects.toMatchObject({ code: "source_disabled" });
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });
@@ -127,7 +134,7 @@ describe("importing an ssh config", () => {
     const scan = await book.scan(source.id);
     if (scan.kind !== "ssh-config") throw new Error("kind");
     expect(scan.items.map((i) => [i.key, i.action, i.resolved])).toEqual([["build", "create", true], ["jump", "create", false]]);
-    const out = await book.apply(source.id);
+    const out = await applyFresh(book, source.id);
     expect(out).toMatchObject({ created: 2, updated: 0, unchanged: 0, conflicts: [] });
     const build = profiles.list().find((p) => p.name === "build")!;
     expect(build).toMatchObject({ origin: "imported", host: "build.example.test", port: 2222, username: "ci", authType: "key", identityFile: "/k/id_build", group: "Imported" });
@@ -138,9 +145,9 @@ describe("importing an ssh config", () => {
   it("importing the same source again changes nothing and writes no profile", async () => {
     const { book, profiles } = setup();
     const source = enabledConfig(book);
-    await book.apply(source.id);
+    await applyFresh(book, source.id);
     const before = JSON.stringify(profiles.list());
-    const again = await book.apply(source.id);
+    const again = await applyFresh(book, source.id);
     expect(again).toMatchObject({ created: 0, updated: 0, unchanged: 2 });
     expect(JSON.stringify(profiles.list())).toBe(before);
   });
@@ -148,48 +155,48 @@ describe("importing an ssh config", () => {
   it("a changed source updates an unedited profile; an edited one is a conflict and is left as it is", async () => {
     const { book, profiles } = setup();
     const source = enabledConfig(book);
-    await book.apply(source.id);
+    await applyFresh(book, source.id);
     FILES["/fixture/ssh/config"] = CONFIG.replace("Port 2222", "Port 2200");
-    expect(await book.apply(source.id)).toMatchObject({ updated: 1, unchanged: 1 });
+    expect(await applyFresh(book, source.id)).toMatchObject({ updated: 1, unchanged: 1 });
     expect(profiles.list().find((p) => p.name === "build")?.port).toBe(2200);
     // Edit locally, then change the source again.
     const build = profiles.list().find((p) => p.name === "build")!;
     const id = build.id;
     profiles.save({ id, fields: { ...profileFieldsOf(build), port: 2300 } });
     FILES["/fixture/ssh/config"] = CONFIG.replace("Port 2222", "Port 2201");
-    const out = await book.apply(source.id);
+    const out = await applyFresh(book, source.id);
     expect(out.conflicts).toEqual(["build"]);
     expect(profiles.get(id)?.port).toBe(2300);
     // The source did not change relative to the last import: the local edit is simply kept.
     FILES["/fixture/ssh/config"] = CONFIG.replace("Port 2222", "Port 2200");
-    expect((await book.apply(source.id)).unchanged).toBe(2);
+    expect((await applyFresh(book, source.id)).unchanged).toBe(2);
     expect(profiles.get(id)?.port).toBe(2300);
   });
 
   it("a profile deleted here is not brought back, and an entry removed from the source is marked stale once", async () => {
     const { book, profiles, store } = setup();
     const source = enabledConfig(book);
-    await book.apply(source.id);
+    await applyFresh(book, source.id);
     profiles.remove(profiles.list().find((p) => p.name === "jump")!.id);
     FILES["/fixture/ssh/config"] = CONFIG.replace("Host build", "Host other");
-    const out = await book.apply(source.id);
+    const out = await applyFresh(book, source.id);
     expect(out.deletedLocally).toEqual(["jump"]);
     expect(out.markedStale).toBe(1);
     expect(store.links(source.id).find((l) => l.key === "build")?.stale).toBe(true);
-    expect((await book.apply(source.id)).markedStale).toBe(0);
+    expect((await applyFresh(book, source.id)).markedStale).toBe(0);
   });
 
   it("only the chosen entries are imported", async () => {
     const { book, profiles } = setup();
     const source = enabledConfig(book);
-    expect(await book.apply(source.id, ["build"])).toMatchObject({ created: 1 });
+    expect(await applyFresh(book, source.id, ["build"])).toMatchObject({ created: 1 });
     expect(profiles.list().map((p) => p.name)).toEqual(["build"]);
   });
 
   it("an unresolved profile cannot save a secret and says why; a resolved one can", async () => {
     const { book, profiles, credentials } = setup();
     const source = enabledConfig(book);
-    await book.apply(source.id);
+    await applyFresh(book, source.id);
     const jump = profiles.list().find((p) => p.name === "jump")!;
     const keyed = profiles.save({ id: jump.id, fields: { ...profileFieldsOf(jump), authType: "password" } });
     await expect(credentials.save({ profileId: keyed.id, secret: "pw" })).rejects.toMatchObject({ code: "profile_needs_config" });
@@ -200,23 +207,23 @@ describe("importing an ssh config", () => {
   it("an update that changes what a secret is bound to forgets the secret; one that does not, keeps it", async () => {
     const { book, profiles, credentials } = setup();
     const source = enabledConfig(book);
-    await book.apply(source.id);
+    await applyFresh(book, source.id);
     const build = profiles.list().find((p) => p.name === "build")!;
     await credentials.save({ profileId: build.id, secret: "phrase" });
     // A passphrase is bound to its key file: moving the host keeps it...
     FILES["/fixture/ssh/config"] = CONFIG.replace("Build.Example.Test", "other.example.test");
-    await book.apply(source.id);
+    await applyFresh(book, source.id);
     expect(profiles.get(build.id)).toMatchObject({ host: "other.example.test", credentialRef: expect.stringContaining("rh-cred:v1:") });
     // ...a different key file forgets it.
     FILES["/fixture/ssh/config"] = CONFIG.replace("Build.Example.Test", "other.example.test").replace("/k/id_build", "/k/other_key");
-    await book.apply(source.id);
+    await applyFresh(book, source.id);
     expect(profiles.get(build.id)).toMatchObject({ identityFile: "/k/other_key", credentialRef: null });
   });
 
   it("decorate adds provenance to imported profiles only, and sees a local edit", async () => {
     const { book, profiles } = setup();
     const source = enabledConfig(book);
-    await book.apply(source.id);
+    await applyFresh(book, source.id);
     const manual = profiles.save({ fields: { ...profileFieldsOf(profiles.list()[0]!), name: "mine" } });
     const decorated = book.decorate(profiles.list());
     const jump = decorated.find((p) => p.name === "jump");
@@ -224,15 +231,40 @@ describe("importing an ssh config", () => {
     expect(decorated.find((p) => p.id === manual.id)?.provenance).toBeUndefined();
   });
 
-  it("ssh -G, when switched on, resolves a Match/alias entry that still goes nowhere via a proxy", async () => {
+  it("ssh -G runs only for the entries the user chose, only after a scan, and the answer is a NEW review that apply must use", async () => {
     const { book, profiles } = setup();
-    const source = enabledConfig(book, "Host m\n  User a\nMatch host m\n  User b\n");
+    const source = enabledConfig(book, "Host m\n  User a\nMatch host m\n  User b\nHost n\n  User c\nMatch all\n");
     book.setSshG(source.id, true);
+    const scan = await book.scan(source.id);
+    if (scan.kind !== "ssh-config") throw new Error("kind");
+    expect(sshG).not.toHaveBeenCalled(); // a scan never runs ssh
+    expect(scan.items.map((i) => [i.key, i.resolved])).toEqual([["m", false], ["n", false]]);
     sshG.mockResolvedValueOnce("hostname real.example.test\nport 2022\nuser b\nproxyjump none\nidentityfile ~/.ssh/id_rsa\n");
-    await book.apply(source.id);
+    const next = await book.resolve(source.id, scan.scanId, ["m"]);
+    if (next.kind !== "ssh-config") throw new Error("kind");
     expect(sshG).toHaveBeenCalledTimes(1);
+    expect(sshG.mock.calls[0]?.[1]).toBe("m"); // not "n": it was not chosen
+    expect(next.scanId).not.toBe(scan.scanId);
+    expect(next.items.map((i) => [i.key, i.resolved, i.host])).toEqual([["m", true, "real.example.test"], ["n", false, "n"]]);
+    // The first review is stale now: importing against it is refused.
+    await expect(book.apply(source.id, ["m"], scan.scanId)).rejects.toMatchObject({ code: "scan_required" });
+    await book.apply(source.id, ["m"], next.scanId);
     expect(profiles.list()[0]).toMatchObject({ host: "real.example.test", port: 2022, username: "b", authType: "agent" });
-    expect(book.needsConfig(profiles.list()[0]!.id)).toBe(false);
+    expect(profiles.list()[0]!.needsConfig).toBeUndefined();
+  });
+
+  it("ssh -G needs its switch and a current review; an answer whose HostName is not acceptable shows as skipped in the review", async () => {
+    const { book } = setup();
+    const source = enabledConfig(book, "Host m\n  User a\nMatch host m\n  User b\n");
+    const scan = await book.scan(source.id);
+    if (scan.kind !== "ssh-config") throw new Error("kind");
+    await expect(book.resolve(source.id, scan.scanId, ["m"])).rejects.toMatchObject({ code: "ssh_g_off" });
+    book.setSshG(source.id, true);
+    await expect(book.resolve(source.id, "not-the-review", ["m"])).rejects.toMatchObject({ code: "scan_required" });
+    sshG.mockResolvedValueOnce("hostname -oProxyCommand=evil\nport 22\nuser x\n");
+    const next = await book.resolve(source.id, scan.scanId, ["m"]);
+    if (next.kind !== "ssh-config") throw new Error("kind");
+    expect(next.items[0]?.skip).not.toBeNull();
   });
 });
 
@@ -284,8 +316,8 @@ describe("a hosts file offers candidates", () => {
     FILES["/fixture/hosts"] = "127.0.0.1 localhost\n10.0.0.5 build.example.test\n";
     const source = book.addSource({ kind: "hosts", path: "/fixture/hosts", label: "hosts" });
     book.setEnabled(source.id, true);
-    expect(await book.apply(source.id)).toMatchObject({ created: 1 });
-    expect(await book.apply(source.id)).toMatchObject({ created: 0, unchanged: 1 });
+    expect(await applyFresh(book, source.id)).toMatchObject({ created: 1 });
+    expect(await applyFresh(book, source.id)).toMatchObject({ created: 0, unchanged: 1 });
     expect(profiles.list()[0]).toMatchObject({ name: "build.example.test", host: "build.example.test", authType: "agent", origin: "imported" });
   });
 });
@@ -322,5 +354,108 @@ describe("a known_hosts source adds host keys to the helper's overlay, only the 
     book.setEnabled(source.id, true);
     expect(await book.apply(source.id, [])).toMatchObject({ created: 0 });
     expect(overlayLines).toEqual([]);
+  });
+});
+
+describe("the restriction lives with the profile (U2)", () => {
+  it("removing the source, or duplicating the profile, does not let a password be saved for a ProxyJump alias", async () => {
+    const { book, profiles, credentials } = setup();
+    const source = enabledConfig(book);
+    await applyFresh(book, source.id);
+    const jump = profiles.list().find((p) => p.name === "jump")!;
+    expect(jump.needsConfig).toBe(true);
+    const asPassword = profiles.save({ id: jump.id, fields: { ...profileFieldsOf(jump), authType: "password" } });
+    book.removeSource(source.id);
+    expect(profiles.get(jump.id)?.needsConfig).toBe(true);
+    await expect(credentials.save({ profileId: asPassword.id, secret: "pw" })).rejects.toMatchObject({ code: "profile_needs_config" });
+    const copy = profiles.duplicate(jump.id);
+    expect(copy.needsConfig).toBe(true);
+    const copyPassword = profiles.save({ id: copy.id, fields: { ...profileFieldsOf(copy), authType: "password" } });
+    await expect(credentials.save({ profileId: copyPassword.id, secret: "pw" })).rejects.toMatchObject({ code: "profile_needs_config" });
+  });
+
+  it("it is cleared only when the user gives the profile an explicit destination (changes its host); other edits keep it", async () => {
+    const { book, profiles, credentials } = setup();
+    const source = enabledConfig(book);
+    await applyFresh(book, source.id);
+    const jump = profiles.list().find((p) => p.name === "jump")!;
+    const renamed = profiles.save({ id: jump.id, fields: { ...profileFieldsOf(jump), name: "renamed", authType: "password", username: "u" } });
+    expect(renamed.needsConfig).toBe(true);
+    const explicit = profiles.save({ id: jump.id, fields: { ...profileFieldsOf(renamed), host: "real.example.test" } });
+    expect(explicit.needsConfig).toBeUndefined();
+    await expect(credentials.save({ profileId: explicit.id, secret: "pw" })).resolves.toMatchObject({ ref: expect.any(String) });
+  });
+
+  it("a re-import that makes an entry resolved (or unresolved) updates the restriction", async () => {
+    const { book, profiles } = setup();
+    const source = enabledConfig(book, "Host p\n  HostName p.example.test\n");
+    await applyFresh(book, source.id);
+    expect(profiles.list()[0]!.needsConfig).toBeUndefined();
+    FILES["/fixture/ssh/config"] = "Host p\n  HostName p.example.test\n  ProxyJump bastion\n";
+    await applyFresh(book, source.id);
+    expect(profiles.list()[0]!.needsConfig).toBe(true);
+  });
+});
+
+describe("an import acts on the scan that was reviewed (U4b) and an incomplete scan is never trusted (U5)", () => {
+  it("apply without a scan, or against a different one, is refused; the reviewed data is what is applied even if the file changed since", async () => {
+    const { book, profiles } = setup();
+    const source = enabledConfig(book);
+    await expect(book.apply(source.id, ["build"])).rejects.toMatchObject({ code: "scan_required" });
+    const scan = await book.scan(source.id);
+    if (scan.kind !== "ssh-config") throw new Error("kind");
+    await expect(book.apply(source.id, ["build"], "another")).rejects.toMatchObject({ code: "scan_required" });
+    FILES["/fixture/ssh/config"] = CONFIG.replace("Build.Example.Test", "changed-after-review.example.test");
+    await book.apply(source.id, ["build"], scan.scanId);
+    expect(profiles.list().find((p) => p.name === "build")?.host).toBe("build.example.test");
+  });
+
+  it("an incomplete scan offers nothing as resolved, says so, and marks nothing stale", async () => {
+    const { book, profiles, store } = setup();
+    const source = enabledConfig(book);
+    await applyFresh(book, source.id);
+    // The Include now fails (e.g. over budget): the scan is incomplete.
+    const original = reader.include;
+    reader.include = () => ({ files: [], complete: false });
+    FILES["/fixture/ssh/config"] = "Include conf.d/*\nHost build\n  HostName build.example.test\n";
+    const scan = await book.scan(source.id);
+    reader.include = original;
+    if (scan.kind !== "ssh-config") throw new Error("kind");
+    expect(scan.incomplete).toBe(true);
+    expect(scan.items.every((i) => !i.resolved && i.flags.includes("incomplete"))).toBe(true);
+    expect(scan.stale).toEqual([]); // "jump" is absent from this partial read: that proves nothing
+    const out = await book.apply(source.id, undefined, scan.scanId);
+    expect(out.markedStale).toBe(0);
+    expect(store.links(source.id).every((l) => !l.stale)).toBe(true);
+    // A new profile from an incomplete scan cannot save a secret.
+    const fresh = enabledConfig(book, "Host zed\n  HostName zed.example.test\n");
+    void fresh;
+    expect(profiles.list().length).toBeGreaterThan(0);
+  });
+
+  it("a scan gives each Include one shared budget, so the same pattern repeated cannot read more", async () => {
+    const { book } = setup();
+    const budgets: Array<{ files: number; bytes: number }> = [];
+    const original = reader.include;
+    reader.include = (_c, _p, budget) => (budgets.push(budget), { files: [], complete: true });
+    const source = enabledConfig(book, "Include a\nInclude a\nInclude b\nHost x\n");
+    await book.scan(source.id);
+    reader.include = original;
+    expect(budgets).toHaveLength(3);
+    expect(budgets[0]).toBe(budgets[1]);
+    expect(budgets[1]).toBe(budgets[2]);
+    expect(budgets[0]).toEqual({ files: 50, bytes: 1024 * 1024 });
+  });
+
+  it("an entry that came back after being marked stale is current again without being chosen", async () => {
+    const { book, store } = setup();
+    const source = enabledConfig(book);
+    await applyFresh(book, source.id);
+    FILES["/fixture/ssh/config"] = CONFIG.replace("Host jump", "Host elsewhere");
+    await applyFresh(book, source.id);
+    expect(store.links(source.id).find((l) => l.key === "jump")?.stale).toBe(true);
+    FILES["/fixture/ssh/config"] = CONFIG;
+    await applyFresh(book, source.id, ["build"]);
+    expect(store.links(source.id).find((l) => l.key === "jump")?.stale).toBe(false);
   });
 });

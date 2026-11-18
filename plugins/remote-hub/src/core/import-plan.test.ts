@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import { candidateFromConfigEntry, candidateFromHost, planImport, type ImportLink, type ImportedFields } from "./import-plan.ts";
 import type { ConfigEntry } from "./ssh-config.ts";
 
-const entry = (over: Partial<ConfigEntry> = {}): ConfigEntry => ({ alias: "Build", hostName: "Build.Example.Test", port: 2222, user: "ci", identityFiles: ["/k/id_build"], flags: [], line: 1, ...over });
+const entry = (over: Partial<ConfigEntry> = {}): ConfigEntry => ({ alias: "Build", hostName: "Build.Example.Test", port: 2222, user: "ci", identityFiles: ["/k/id_build"], flags: [], ...over });
 
 describe("candidateFromConfigEntry", () => {
   it("a resolved entry becomes an explicit destination with a lower-case host and its key", () => {
     const c = candidateFromConfigEntry(entry());
-    expect(c).toMatchObject({ key: "build", name: "Build", resolved: true, flags: [], skip: null });
+    expect(c).toMatchObject({ key: "Build", name: "Build", resolved: true, flags: [], skip: null });
     expect(c.imported).toEqual({ host: "build.example.test", port: 2222, username: "ci", authType: "key", identityFile: "/k/id_build" });
   });
 

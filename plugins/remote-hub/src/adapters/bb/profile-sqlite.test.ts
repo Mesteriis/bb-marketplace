@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ProfileBook } from "../../core/profile-book.ts";
 import type { ProfileFields } from "../../core/profile.ts";
-import { PROFILE_MIGRATIONS, createSqliteProfileStore } from "./profile-sqlite.ts";
+import { ALL_MIGRATIONS } from "./migrations.ts";
+import { createSqliteProfileStore } from "./profile-sqlite.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -17,7 +18,7 @@ function openDb(): Database.Database {
   const dir = mkdtempSync(join(tmpdir(), "rh-profiles-"));
   dirs.push(dir);
   const db = new Database(join(dir, "data.db"));
-  for (const statement of PROFILE_MIGRATIONS) db.exec(statement);
+  for (const statement of ALL_MIGRATIONS) db.exec(statement);
   return db;
 }
 
@@ -83,6 +84,7 @@ describe("sqlite profile store", () => {
         "identity_file",
         "last_opened_at",
         "name",
+        "needs_config",
         "origin",
         "port",
         "protocol",

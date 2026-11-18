@@ -222,7 +222,7 @@ describe("ssh_open and a saved credential", () => {
 
 describe("import RPCs (real handlers, an in-memory book over a fixture reader)", () => {
   const files: Record<string, string> = { "/fixture/config": "Host build\n  HostName build.example.test\n  User ci\nHost jump\n  ProxyJump bastion\n" };
-  const reader = { ...emptyReader, readText: (p: string) => files[p] ?? null };
+  const reader = { ...emptyReader, readText: (p: string) => (p in files ? { text: files[p] as string, truncated: false } : null) };
   function withImports() {
     const s = setup();
     const imports = memoryImportBook(s.profiles, s.credentials, reader);
@@ -236,12 +236,14 @@ describe("import RPCs (real handlers, an in-memory book over a fixture reader)",
     expect(source).toMatchObject({ enabled: false, useSshG: false });
     await expect(handlers.import_scan({ id: source.id })).rejects.toMatchObject({ code: "forbidden", message: expect.stringContaining("source_disabled") });
     await handlers.import_source_set({ id: source.id, enabled: true });
-    const scan = await handlers.import_scan({ id: source.id });
+    const scan = (await handlers.import_scan({ id: source.id })) as { scanId: string };
     expect(scan).toMatchObject({ kind: "ssh-config", items: [expect.objectContaining({ key: "build", action: "create" }), expect.objectContaining({ key: "jump", resolved: false })] });
-    expect(await handlers.import_apply({ id: source.id })).toMatchObject({ created: 2 });
+    await expect(handlers.import_apply({ id: source.id })).rejects.toMatchObject({ message: expect.stringContaining("scan_required") });
+    expect(await handlers.import_apply({ id: source.id, scanId: scan.scanId })).toMatchObject({ created: 2 });
     const jump = (await handlers.profile_list(null as never)).find((p) => p.name === "jump");
     expect(jump).toMatchObject({ origin: "imported", provenance: { sourceKind: "ssh-config", resolved: false, flags: ["proxy"] } });
-    expect(await handlers.import_apply({ id: source.id })).toMatchObject({ created: 0, unchanged: 2 });
+    const again = (await handlers.import_scan({ id: source.id })) as { scanId: string };
+    expect(await handlers.import_apply({ id: source.id, scanId: again.scanId })).toMatchObject({ created: 0, unchanged: 2 });
   });
 
   it("a bad path, an unknown source and ssh -G on a disabled source are refused with codes", async () => {

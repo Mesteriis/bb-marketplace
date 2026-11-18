@@ -73,7 +73,7 @@ export class ProfileBook {
     return next;
   }
 
-  save(raw: ProfileInput): Profile {
+  save(raw: ProfileInput, options: { needsConfig?: boolean } = {}): Profile {
     const input = profileInputSchema.parse(raw);
     const stamp = this.deps.now().toISOString();
     const existing = input.id === undefined ? null : this.deps.store.get(input.id);
@@ -87,13 +87,26 @@ export class ProfileBook {
       updatedAt: stamp,
       lastOpenedAt: existing?.lastOpenedAt ?? null,
       recentErrors: existing?.recentErrors ?? [],
+      // The restriction stays until the destination (the host) is changed on purpose; a copy keeps it.
+      ...(options.needsConfig === true || (existing?.needsConfig === true && existing.host === input.fields.host) ? { needsConfig: true } : {}),
     });
     this.deps.store.put(profile);
     return profile;
   }
 
+  /** Sets or clears the restriction (only the import book calls this, from what a scan resolved). */
+  setNeedsConfig(id: string, needsConfig: boolean): Profile {
+    const profile = this.deps.store.get(id);
+    if (profile === null) throw new ProfileError("not_found", "no such profile");
+    const { needsConfig: _old, ...rest } = profile;
+    void _old;
+    const next = profileSchema.parse({ ...rest, ...(needsConfig ? { needsConfig: true } : {}), updatedAt: this.deps.now().toISOString() });
+    this.deps.store.put(next);
+    return next;
+  }
+
   /** A new profile from an import: same rules as `save`, marked as imported. */
-  saveImported(raw: { fields: ProfileInput["fields"] }): Profile {
+  saveImported(raw: { fields: ProfileInput["fields"]; needsConfig?: boolean }): Profile {
     const input = profileInputSchema.parse({ fields: raw.fields });
     const stamp = this.deps.now().toISOString();
     const profile = profileSchema.parse({
@@ -105,6 +118,7 @@ export class ProfileBook {
       updatedAt: stamp,
       lastOpenedAt: null,
       recentErrors: [],
+      ...(raw.needsConfig === true ? { needsConfig: true } : {}),
     });
     this.deps.store.put(profile);
     return profile;
@@ -114,9 +128,9 @@ export class ProfileBook {
   duplicate(id: string): Profile {
     const original = this.deps.store.get(id);
     if (original === null) throw new ProfileError("not_found", "no such profile");
-    const { id: _id, executionHostId: _host, origin: _origin, createdAt: _c, updatedAt: _u, lastOpenedAt: _l, recentErrors: _e, ...fields } = original;
+    const { id: _id, executionHostId: _host, origin: _origin, createdAt: _c, updatedAt: _u, lastOpenedAt: _l, recentErrors: _e, provenance: _p, needsConfig: _n, ...fields } = original;
     const name = original.name.slice(0, 100 - COPY_SUFFIX.length) + COPY_SUFFIX;
-    return this.save({ fields: { ...fields, name, favorite: false, credentialRef: null } });
+    return this.save({ fields: { ...fields, name, favorite: false, credentialRef: null } }, { needsConfig: original.needsConfig === true });
   }
 
   remove(id: string): boolean {

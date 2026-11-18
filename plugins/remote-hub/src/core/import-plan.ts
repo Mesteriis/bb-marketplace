@@ -15,7 +15,7 @@ export interface ImportedFields {
 }
 
 export interface Candidate {
-  /** The entry in its source: the Host alias, or the host name (lower case). */
+  /** The entry in its source: the Host alias as written (case matters to ssh), or the host name (lower case). */
   key: string;
   /** What to call the profile. */
   name: string;
@@ -28,9 +28,10 @@ export interface Candidate {
   skip: string | null;
 }
 
-const BLOCKING = new Set(["proxy", "match", "tokens", "canonicalize", "host-key-alias"]);
+const BLOCKING = new Set(["proxy", "match", "tokens", "canonicalize", "host-key-alias", "incomplete"]);
 
-function validFields(f: ImportedFields, name: string): string | null {
+/** Why an entry cannot become a profile (null when it can). */
+export function skipReason(f: ImportedFields, name: string): string | null {
   const parsed = profileFieldsSchema.safeParse({ ...toProfileFields(f, name, "Imported"), credentialRef: null });
   return parsed.success ? null : (parsed.error.issues[0]?.message ?? "not a valid profile");
 }
@@ -79,12 +80,12 @@ export function candidateFromConfigEntry(entry: ConfigEntry): Candidate {
   } else {
     imported = { host: entry.alias, port: null, username: null, authType: "agent", identityFile: null };
   }
-  return { key: entry.alias.toLowerCase(), name: entry.alias, imported, resolved, flags: flags.sort(), skip: validFields(imported, entry.alias) };
+  return { key: entry.alias, name: entry.alias, imported, resolved, flags: flags.sort(), skip: skipReason(imported, entry.alias) };
 }
 
 export function candidateFromHost(host: HostCandidate): Candidate {
   const imported: ImportedFields = { host: host.name.toLowerCase(), port: null, username: null, authType: "agent", identityFile: null };
-  return { key: host.name.toLowerCase(), name: host.name, imported, resolved: true, flags: [], skip: validFields(imported, host.name) };
+  return { key: host.name.toLowerCase(), name: host.name, imported, resolved: true, flags: [], skip: skipReason(imported, host.name) };
 }
 
 /** What was imported before, per entry. */

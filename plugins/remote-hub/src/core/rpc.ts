@@ -26,8 +26,8 @@ const scanItemSchema = z.object({
   skip: z.string().nullable(),
 });
 export const scanResultSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("ssh-config"), items: z.array(scanItemSchema), stale: z.array(z.string()), issues: z.array(z.string()) }),
-  z.object({ kind: z.literal("hosts"), items: z.array(scanItemSchema), stale: z.array(z.string()), issues: z.array(z.string()) }),
+  z.object({ kind: z.literal("ssh-config"), scanId: z.string(), incomplete: z.boolean(), items: z.array(scanItemSchema), stale: z.array(z.string()), issues: z.array(z.string()) }),
+  z.object({ kind: z.literal("hosts"), scanId: z.string(), incomplete: z.boolean(), items: z.array(scanItemSchema), stale: z.array(z.string()), issues: z.array(z.string()) }),
   z.object({
     kind: z.literal("known-hosts"),
     items: z.array(z.object({ key: z.string(), hosts: z.array(z.string()), hashed: z.boolean(), keyType: z.string(), fingerprint: z.string(), trusted: z.boolean() })),
@@ -262,8 +262,12 @@ export const rpcSchemas = {
   import_source_remove: { input: z.object({ id: z.string().max(64) }).strict(), output: z.object({ removed: z.boolean() }) },
   import_scan: { input: z.object({ id: z.string().max(64) }).strict(), output: scanResultSchema },
   import_apply: {
-    input: z.object({ id: z.string().max(64), keys: z.array(z.string().max(256)).max(500).optional() }).strict(),
+    input: z.object({ id: z.string().max(64), keys: z.array(z.string().max(256)).max(500).optional(), scanId: z.string().max(64).optional() }).strict(),
     output: importOutcomeSchema,
+  },
+  import_resolve: {
+    input: z.object({ id: z.string().max(64), scanId: z.string().max(64), keys: z.array(z.string().max(256)).max(500) }).strict(),
+    output: scanResultSchema,
   },
   known_hosts_list: {
     input: z.null(),

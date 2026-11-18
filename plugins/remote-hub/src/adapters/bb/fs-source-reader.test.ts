@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "rh-fsr-"));
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
+const budget = () => ({ files: 50, bytes: 1024 * 1024 });
 const reader = () => createFsSourceReader({ home: "/home/fixture", env: {} });
 
 describe("fs source reader (fixture directories only)", () => {
@@ -16,7 +18,7 @@ describe("fs source reader (fixture directories only)", () => {
     writeFileSync(join(dir, "big"), "x".repeat(10_000));
     mkdirSync(join(dir, "sub"));
     const r = reader();
-    expect(r.readText(join(dir, "big"), 100)).toHaveLength(100);
+    expect(r.readText(join(dir, "big"), 100)).toEqual({ text: "x".repeat(100), truncated: true });
     expect(r.readText(join(dir, "sub"), 100)).toBeNull();
     expect(r.readText(join(dir, "missing"), 100)).toBeNull();
     writeFileSync(join(dir, "locked"), "secret");
@@ -41,9 +43,9 @@ describe("fs source reader (fixture directories only)", () => {
     writeFileSync(join(dir, "conf.d", "skip.txt"), "no");
     writeFileSync(join(dir, "extra"), "Host extra");
     const r = reader();
-    expect(r.include(join(dir, "config"), "conf.d/*.conf").map((f) => f.text)).toEqual(["Host a", "Host b"]);
-    expect(r.include(join(dir, "config"), "extra").map((f) => f.text)).toEqual(["Host extra"]);
-    expect(r.include(join(dir, "config"), "conf.d/missing")).toEqual([]);
+    expect(r.include(join(dir, "config"), "conf.d/*.conf", budget()).files.map((f) => f.text)).toEqual(["Host a", "Host b"]);
+    expect(r.include(join(dir, "config"), "extra", budget()).files.map((f) => f.text)).toEqual(["Host extra"]);
+    expect(r.include(join(dir, "config"), "conf.d/missing", budget()).files).toEqual([]);
   });
 
   it("an Include cannot leave the directory: absolute paths elsewhere, .., a link out, a glob in the directory part", () => {
@@ -56,14 +58,36 @@ describe("fs source reader (fixture directories only)", () => {
       symlinkSync(outside, join(dir, "ssh", "linkdir"));
       const r = reader();
       const config = join(dir, "ssh", "config");
-      expect(r.include(config, join(outside, "secret.conf"))).toEqual([]);
-      expect(r.include(config, "../../" + outside.split("/").pop() + "/secret.conf")).toEqual([]);
-      expect(r.include(config, "link.conf")).toEqual([]);
-      expect(r.include(config, "linkdir/secret.conf")).toEqual([]);
-      expect(r.include(config, "*/secret.conf")).toEqual([]);
+      expect(r.include(config, join(outside, "secret.conf"), budget()).files).toEqual([]);
+      expect(r.include(config, "../../" + outside.split("/").pop() + "/secret.conf", budget()).files).toEqual([]);
+      expect(r.include(config, "link.conf", budget()).files).toEqual([]);
+      expect(r.include(config, "linkdir/secret.conf", budget()).files).toEqual([]);
+      expect(r.include(config, "*/secret.conf", budget()).files).toEqual([]);
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
+  });
+
+  it("a FIFO reached through an Include is refused without opening it (a read would block forever); a FIFO as the registered file reads as nothing", () => {
+    writeFileSync(join(dir, "config"), "x");
+    execFileSync("/usr/bin/mkfifo", [join(dir, "fifo")]);
+    const r = reader();
+    const result = r.include(join(dir, "config"), "fifo", budget());
+    expect(result.files).toEqual([]);
+    expect(result.complete).toBe(false);
+    expect(r.readText(join(dir, "fifo"), 100)).toBeNull();
+  });
+
+  it("the budget is shared and drained: files and bytes read are subtracted, and running out says the result is incomplete", () => {
+    writeFileSync(join(dir, "config"), "x");
+    for (const n of ["a", "b", "c"]) writeFileSync(join(dir, n + ".conf"), "Host " + n);
+    const b = { files: 2, bytes: 1024 };
+    const r = reader();
+    const result = r.include(join(dir, "config"), "*.conf", b);
+    expect(result.files.map((f) => f.text)).toEqual(["Host a", "Host b"]);
+    expect(result.complete).toBe(false);
+    expect(b.files).toBe(0);
+    expect(r.include(join(dir, "config"), "c.conf", b)).toEqual({ files: [], complete: false });
   });
 
   it("ssh -G resolves a fixture config without connecting (real /usr/bin/ssh, fixture file only)", async () => {

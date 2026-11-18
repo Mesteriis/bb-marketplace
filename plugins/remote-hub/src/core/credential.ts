@@ -54,11 +54,6 @@ export interface CredentialBookDeps {
   profiles: ProfileBook;
   now: () => Date;
   newId: () => string;
-  /**
-   * True for a profile whose destination depends on SSH configuration this plugin cannot resolve (an imported alias
-   * behind ProxyJump, Match...): a saved secret cannot be tied to where such a session really goes, so none is saved.
-   */
-  needsConfig?: ((profileId: string) => boolean) | undefined;
 }
 
 export interface CredentialView {
@@ -162,7 +157,8 @@ export class CredentialBook {
     const profile = this.deps.profiles.get(input.profileId);
     if (profile === null) throw new CredentialError("profile_not_found", "no such profile");
     if (profile.authType === "agent") throw new CredentialError("credential_not_applicable", "this profile does not use a stored secret");
-    if (this.deps.needsConfig?.(profile.id) === true) {
+    // An imported alias behind a proxy or a Match rule: a secret cannot be tied to where it really goes.
+    if (profile.needsConfig === true) {
       throw new CredentialError("profile_needs_config", "this profile goes through your SSH configuration (a proxy, a Match rule...), so a saved secret cannot be tied to its destination");
     }
     if (profile.credentialRef !== null) throw new CredentialError("credential_exists", "this profile already has a saved credential; update it");

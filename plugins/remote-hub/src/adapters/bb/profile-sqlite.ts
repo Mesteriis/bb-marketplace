@@ -36,6 +36,12 @@ export const PROFILE_MIGRATIONS: string[] = [
   `,
 ];
 
+/** Statements for the profiles table that came after other tables existed: they run after them (see migrations.ts). */
+export const PROFILE_LATER_MIGRATIONS: string[] = [
+  // An imported alias that depends on SSH configuration cannot save a secret; the restriction lives with the profile.
+  `ALTER TABLE profiles ADD COLUMN needs_config INTEGER NOT NULL DEFAULT 0;`,
+];
+
 interface Row {
   id: string;
   name: string;
@@ -59,6 +65,7 @@ interface Row {
   updated_at: string;
   last_opened_at: string | null;
   recent_errors: string;
+  needs_config: number;
 }
 
 function parseJson(text: string): unknown {
@@ -93,6 +100,7 @@ function fromRow(row: Row): Profile | null {
     updatedAt: row.updated_at,
     lastOpenedAt: row.last_opened_at,
     recentErrors: parseJson(row.recent_errors),
+    ...(row.needs_config === 1 ? { needsConfig: true } : {}),
   });
   return parsed.success ? parsed.data : null;
 }
@@ -104,11 +112,11 @@ export function createSqliteProfileStore(db: Database.Database): ProfileStore {
     INSERT OR REPLACE INTO profiles (
       id, name, protocol, grp, tags, favorite, color, host, port, username, domain, auth_type,
       identity_file, credential_ref, rdp_width, rdp_height, execution_host_id, origin,
-      created_at, updated_at, last_opened_at, recent_errors
+      created_at, updated_at, last_opened_at, recent_errors, needs_config
     ) VALUES (
       @id, @name, @protocol, @grp, @tags, @favorite, @color, @host, @port, @username, @domain, @auth_type,
       @identity_file, @credential_ref, @rdp_width, @rdp_height, @execution_host_id, @origin,
-      @created_at, @updated_at, @last_opened_at, @recent_errors
+      @created_at, @updated_at, @last_opened_at, @recent_errors, @needs_config
     )
   `);
   const del = db.prepare("DELETE FROM profiles WHERE id = ?");
@@ -144,6 +152,7 @@ export function createSqliteProfileStore(db: Database.Database): ProfileStore {
         updated_at: p.updatedAt,
         last_opened_at: p.lastOpenedAt,
         recent_errors: JSON.stringify(p.recentErrors),
+        needs_config: p.needsConfig === true ? 1 : 0,
       });
     },
     remove: (id) => del.run(id).changes > 0,

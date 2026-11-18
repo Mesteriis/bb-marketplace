@@ -57,7 +57,7 @@ export function createRpcHandlers({ service, profiles, credentials, imports }: R
       return await run();
     } catch (error) {
       if (error instanceof ImportError) {
-        const code = error.code === "source_unknown" ? "not_found" : error.code === "source_disabled" ? "forbidden" : "invalid";
+        const code = error.code === "source_unknown" ? "not_found" : error.code === "source_disabled" || error.code === "ssh_g_off" ? "forbidden" : error.code === "scan_required" ? "conflict" : "invalid";
         throw new experimental_PluginRpcRefusal({ code, message: error.code + ": " + error.message });
       }
       if (error instanceof CredentialError) throw credentialRefusal(error);
@@ -149,7 +149,8 @@ export function createRpcHandlers({ service, profiles, credentials, imports }: R
       }),
     import_source_remove: (input) => withImport(() => ({ removed: imports.removeSource(input.id) })),
     import_scan: (input) => withImport(() => imports.scan(input.id)),
-    import_apply: (input) => withImport(() => imports.apply(input.id, input.keys)),
+    import_apply: (input) => withImport(() => imports.apply(input.id, input.keys, input.scanId)),
+    import_resolve: (input) => withImport(() => imports.resolve(input.id, input.scanId, input.keys)),
     profile_delete: (input) => withProfile(() => credentials.deleteProfile(input.id, input.deleteCredential ?? false)),
     credential_list: () => credentials.list(),
     credential_save: (input) => withProfile(() => credentials.save(input)),

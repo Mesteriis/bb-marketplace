@@ -11,7 +11,8 @@ import { ProfileBook } from "../../core/profile-book.ts";
 import { CREDENTIAL_MIGRATIONS, createSqliteCredentialStore } from "./credential-sqlite.ts";
 import { createFsSourceReader } from "./fs-source-reader.ts";
 import { IMPORT_MIGRATIONS, createSqliteImportStore } from "./import-sqlite.ts";
-import { PROFILE_MIGRATIONS, createSqliteProfileStore } from "./profile-sqlite.ts";
+import { ALL_MIGRATIONS } from "./migrations.ts";
+import { createSqliteProfileStore } from "./profile-sqlite.ts";
 
 const SENTINEL = "PRIVATE-KEY-BODY-SENTINEL-77c1";
 let dir = "";
@@ -43,13 +44,13 @@ Host *
   writeFileSync(join(home, ".ssh", "id_build.pub"), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA build@fixture\n");
   writeFileSync(join(home, "hosts"), "127.0.0.1 localhost\n10.0.0.5 files.example.test\n");
   db = new Database(":memory:");
-  for (const statement of [...PROFILE_MIGRATIONS, ...CREDENTIAL_MIGRATIONS, ...IMPORT_MIGRATIONS]) db.exec(statement);
+  for (const statement of ALL_MIGRATIONS) db.exec(statement);
   let n = 0;
   const ids = () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`;
   profiles = new ProfileBook({ store: createSqliteProfileStore(db), now: () => new Date("2026-11-18T10:00:00.000Z"), newId: ids });
   const vault = { save: async () => {}, delete: async () => {}, status: async () => "present" as const };
   let imports!: ImportBook;
-  const credentials = new CredentialBook({ store: createSqliteCredentialStore(db), vault, profiles, now: () => new Date(), newId: ids, needsConfig: (id) => imports.needsConfig(id) });
+  const credentials = new CredentialBook({ store: createSqliteCredentialStore(db), vault, profiles, now: () => new Date(), newId: ids });
   imports = new ImportBook({ store: createSqliteImportStore(db), reader: createFsSourceReader({ home, env: {} }), profiles, credentials, newId: ids });
   book = imports;
 });
@@ -57,6 +58,12 @@ afterEach(() => {
   db.close();
   rmSync(dir, { recursive: true, force: true });
 });
+
+const applyReviewed = async (id: string) => {
+  const scan = await book.scan(id);
+  if (scan.kind !== "ssh-config" && scan.kind !== "hosts") throw new Error("kind");
+  return book.apply(id, undefined, scan.scanId);
+};
 
 const enable = (kind: "ssh-config" | "keys-dir" | "hosts", path: string) => {
   const s = book.addSource({ kind, path, label: kind });
@@ -67,7 +74,7 @@ const enable = (kind: "ssh-config" | "keys-dir" | "hosts", path: string) => {
 describe("import over fixture directories", () => {
   it("imports aliases from the config and its Include, resolves what it can, keeps the rest on the user's config", async () => {
     const source = enable("ssh-config", join(home, ".ssh", "config"));
-    expect(await book.apply(source.id)).toMatchObject({ created: 3 });
+    expect(await applyReviewed(source.id)).toMatchObject({ created: 3 });
     const by = (name: string) => profiles.list().find((p) => p.name === name)!;
     expect(by("build")).toMatchObject({ host: "build.example.test", port: 2222, username: "ci", authType: "key", identityFile: join(home, ".ssh", "id_build"), origin: "imported" });
     expect(by("web")).toMatchObject({ host: "web.example.test", username: "deploy", authType: "agent" });
@@ -79,10 +86,10 @@ describe("import over fixture directories", () => {
 
   it("importing twice writes nothing the second time (profile and link rows are byte-identical)", async () => {
     const source = enable("ssh-config", join(home, ".ssh", "config"));
-    await book.apply(source.id);
+    await applyReviewed(source.id);
     const dump = () => JSON.stringify([db.prepare("SELECT * FROM profiles ORDER BY id").all(), db.prepare("SELECT * FROM import_links ORDER BY entry_key").all()]);
     const before = dump();
-    expect(await book.apply(source.id)).toMatchObject({ created: 0, updated: 0, unchanged: 3 });
+    expect(await applyReviewed(source.id)).toMatchObject({ created: 0, updated: 0, unchanged: 3 });
     expect(dump()).toBe(before);
   });
 

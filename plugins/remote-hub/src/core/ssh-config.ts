@@ -14,10 +14,8 @@ export interface ConfigEntry {
   user: string | null;
   /** IdentityFile values with ~ expanded, in order. */
   identityFiles: string[];
-  /** Reasons the text alone cannot say where this alias goes: "proxy", "match", "tokens", "canonicalize", "host-key-alias". */
+  /** Reasons the text alone cannot say where this alias goes: "proxy", "match", "tokens", "canonicalize", "host-key-alias", "incomplete" */
   flags: string[];
-  /** 1-based line of the first Host line that names the alias. */
-  line: number;
 }
 
 export interface ConfigParse {
@@ -25,19 +23,34 @@ export interface ConfigParse {
   /** Host blocks made only of patterns (`Host *`, `Host *.example`): they apply to aliases, they are not aliases. */
   patternBlocks: number;
   issues: string[];
+  /**
+   * True when something that could change an alias was not read faithfully: an Include that was refused, cut
+   * short, unreadable, cyclic or too deep, a file cut at its limits. Every entry is then flagged "incomplete".
+   */
+  incomplete: boolean;
 }
 
 export interface IncludedFile {
   path: string;
   text: string;
+  /** The file was cut at a limit: its end was not read. */
+  truncated?: boolean;
+}
+
+/** What an Include resolves to. `complete: false` when a file was refused, missing for a reason other than "no match", or over budget. */
+export interface IncludeResult {
+  files: IncludedFile[];
+  complete: boolean;
 }
 
 export interface ConfigOptions {
   /** The home directory `~` stands for. */
   home: string;
-  /** Files named by an Include directive (a glob or a path), already read; [] when there are none or it is refused. */
-  include: (pattern: string) => IncludedFile[];
+  /** Files named by an Include directive (a glob or a path), already read. */
+  include: (pattern: string) => IncludeResult;
   maxDepth?: number;
+  /** The main text was cut at its limit. */
+  truncated?: boolean;
 }
 
 interface Directive {
@@ -46,11 +59,16 @@ interface Directive {
   line: number;
 }
 
-interface Block {
-  kind: "global" | "host" | "match";
+/** A Host or Match line that must hold for the lines under it. An Include inside a block adds to its conditions. */
+interface Cond {
+  kind: "host" | "match";
   patterns: string[];
-  directives: Directive[];
-  line: number;
+}
+
+/** One directive with the conditions it sits under, in file order (included text where the Include stood). */
+interface Item {
+  conds: Cond[];
+  directive: Directive;
 }
 
 const MAX_LINES = 20_000;
@@ -86,48 +104,88 @@ function splitKeyword(line: string): { key: string; rest: string } | null {
   return { key: (match[1] as string).toLowerCase(), rest: match[2] as string };
 }
 
-function readBlocks(text: string, opts: ConfigOptions, depth: number, issues: string[], out: Block[]): void {
+interface ReadState {
+  opts: ConfigOptions;
+  issues: string[];
+  items: Item[];
+  /** Every Host line read, with the conditions it sits under (an alias is named by one of these, even with no directive under it). */
+  hostChains: Cond[][];
+  incomplete: boolean;
+  /** The canonical paths of the files being read now: an Include that names one of them is a cycle. */
+  stack: string[];
+}
+
+/**
+ * Reads one file into `state.items`, in file order. `base` are the conditions the file is included under; a Host or
+ * Match line inside it adds to them, and nothing the file does leaks back out to the including file: after an
+ * Include the including file carries on in its own scope, exactly as OpenSSH does.
+ */
+function readInto(text: string, base: Cond[], depth: number, state: ReadState): void {
   const lines = text.split(/\r?\n/);
   if (lines.length > MAX_LINES) {
-    issues.push(`a file with more than ${MAX_LINES} lines was cut short`);
+    state.issues.push(`a file with more than ${MAX_LINES} lines was cut short`);
+    state.incomplete = true;
     lines.length = MAX_LINES;
   }
-  let current: Block = out.length > 0 ? (out[out.length - 1] as Block) : { kind: "global", patterns: [], directives: [], line: 0 };
-  if (out.length === 0) out.push(current);
+  let conds: Cond[] = base;
   lines.forEach((raw, index) => {
     const line = raw.trim();
     if (line === "" || line.startsWith("#")) return;
     const kw = splitKeyword(line);
     if (kw === null) return;
-    const lineNo = index + 1;
     if (kw.key === "host") {
-      current = { kind: "host", patterns: splitWords(kw.rest), directives: [], line: lineNo };
-      out.push(current);
+      conds = [...base, { kind: "host", patterns: splitWords(kw.rest) }];
+      state.hostChains.push(conds);
     } else if (kw.key === "match") {
-      current = { kind: "match", patterns: splitWords(kw.rest), directives: [], line: lineNo };
-      out.push(current);
+      conds = [...base, { kind: "match", patterns: splitWords(kw.rest) }];
     } else if (kw.key === "include") {
-      if (depth >= (opts.maxDepth ?? 4)) {
-        issues.push("an Include nested too deeply was not followed");
-        return;
-      }
-      for (const word of splitWords(kw.rest)) {
-        const files = opts.include(word.startsWith("~") ? opts.home + word.slice(1) : word);
-        // The included blocks follow in file order; lines after the Include stay with the block they were in
-        // (so a directive that follows an Include is ordered before the included blocks, a small deviation
-        // from ssh, which reads the included text at that point).
-        for (const file of files) readBlocks(file.text, opts, depth + 1, issues, out);
-      }
+      for (const word of splitWords(kw.rest)) includeInto(word, conds, depth, state);
     } else {
-      current.directives.push({ key: kw.key, value: kw.rest, line: lineNo });
+      state.items.push({ conds, directive: { key: kw.key, value: kw.rest, line: index + 1 } });
     }
   });
 }
 
-/** ssh_config pattern matching for host names: `*` and `?`, case-insensitive. */
+function includeInto(word: string, conds: Cond[], depth: number, state: ReadState): void {
+  const { opts, issues } = state;
+  if (depth >= (opts.maxDepth ?? 4)) {
+    issues.push("an Include nested too deeply was not followed");
+    state.incomplete = true;
+    return;
+  }
+  if (/[$]\{|%/.test(word)) {
+    issues.push("an Include that uses ${VAR} or a %-token was not followed");
+    state.incomplete = true;
+    return;
+  }
+  const result = opts.include(word.startsWith("~") ? opts.home + word.slice(1) : word);
+  if (!result.complete) {
+    issues.push("an Include was refused, unreadable or over the scan's limits");
+    state.incomplete = true;
+  }
+  for (const file of result.files) {
+    if (state.stack.includes(file.path)) {
+      issues.push("an Include cycle was not followed");
+      state.incomplete = true;
+      continue;
+    }
+    if (file.truncated === true) {
+      issues.push("an included file was cut at its size limit");
+      state.incomplete = true;
+    }
+    state.stack.push(file.path);
+    readInto(file.text, conds, depth + 1, state);
+    state.stack.pop();
+  }
+}
+
+/**
+ * ssh_config pattern matching for host names: `*` and `?`. Case-SENSITIVE: ssh compares the name as typed with the
+ * pattern as written (verified with `ssh -G`: `Host Case` selects `ssh Case` and not `ssh case`).
+ */
 export function patternMatches(pattern: string, name: string): boolean {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
-  return new RegExp(`^${escaped}$`, "i").test(name);
+  return new RegExp(`^${escaped}$`).test(name);
 }
 
 function isPlainAlias(pattern: string): boolean {
@@ -152,72 +210,85 @@ function expandHome(path: string, home: string): string {
   return path.startsWith("~/") ? home + path.slice(1) : path;
 }
 
-export function parseSshConfig(text: string, opts: ConfigOptions): ConfigParse {
-  const issues: string[] = [];
-  const blocks: Block[] = [];
-  readBlocks(text, opts, 0, issues, blocks);
+/** `%h` is the alias and `%%` a percent sign: `%%h` is the text "%h", not the alias. Anything else with a % is a token this reader does not know. */
+function expandHostName(value: string, alias: string): { text: string; tokens: boolean } {
+  const masked = value.replace(/%%/g, "\u0000");
+  const tokens = /%[^h]/.test(masked.replace(/%h/g, ""));
+  return { text: masked.replace(/%h/g, alias).replace(/\u0000/g, "%"), tokens };
+}
 
-  const hasMatch = blocks.some((b) => b.kind === "match");
-  const aliases = new Map<string, number>();
+export function parseSshConfig(text: string, opts: ConfigOptions): ConfigParse {
+  const state: ReadState = { opts, issues: [], items: [], hostChains: [], incomplete: opts.truncated === true, stack: [] };
+  if (opts.truncated === true) state.issues.push("the config was cut at its size limit");
+  readInto(text, [], 0, state);
+  const { items } = state;
+
+  const hasMatch = items.some((i) => i.conds.some((c) => c.kind === "match"));
+  // An alias is a plain name on a Host line, and only where the lines before it (the blocks an Include sits in) select it too.
+  const aliases = new Set<string>();
   let patternBlocks = 0;
-  for (const block of blocks) {
-    if (block.kind !== "host") continue;
-    const plain = block.patterns.filter(isPlainAlias);
+  for (const chain of state.hostChains) {
+    const cond = chain[chain.length - 1] as Cond;
+    const outer = chain.slice(0, -1);
+    const plain = cond.patterns.filter(isPlainAlias);
     if (plain.length === 0) patternBlocks += 1;
-    for (const alias of plain) if (!aliases.has(alias.toLowerCase())) aliases.set(alias.toLowerCase(), block.line);
+    for (const alias of plain) {
+      if (outer.every((c) => c.kind === "match" || hostSelects(c.patterns, alias))) aliases.add(alias);
+    }
   }
 
   const entries: ConfigEntry[] = [];
-  for (const [alias, line] of aliases) {
+  for (const written of aliases) {
+    // ssh matches the name AS TYPED against the patterns as written, case-sensitively (verified with `ssh -G`).
+    const alias = written;
     let hostName: string | null = null;
     let port: number | null = null;
     let user: string | null = null;
     const identityFiles: string[] = [];
     const flags = new Set<string>();
     if (hasMatch) flags.add("match");
-    // First value wins, in file order, over every block that applies to this alias (global lines apply to all).
-    for (const block of blocks) {
-      const applies = block.kind === "global" || (block.kind === "host" && hostSelects(block.patterns, alias));
-      if (!applies) continue;
-      for (const d of block.directives) {
-        const value = splitWords(d.value)[0] ?? "";
-        switch (d.key) {
-          case "hostname":
-            if (hostName === null) {
-              if (/%[^h%]/.test(value)) flags.add("tokens");
-              hostName = value.replace(/%h/g, alias).replace(/%%/g, "%");
-            }
-            break;
-          case "port":
-            if (port === null && /^\d{1,5}$/.test(value) && Number(value) >= 1 && Number(value) <= 65535) port = Number(value);
-            break;
-          case "user":
-            if (user === null && value !== "") {
-              if (value.includes("%")) flags.add("tokens");
-              user = value;
-            }
-            break;
-          case "identityfile":
-            if (value !== "") {
-              if (value.includes("%")) flags.add("tokens");
-              identityFiles.push(expandHome(value, opts.home));
-            }
-            break;
-          case "proxyjump":
-          case "proxycommand":
-            if (value.toLowerCase() !== "none") flags.add("proxy");
-            break;
-          case "canonicalizehostname":
-            if (value.toLowerCase() !== "no") flags.add("canonicalize");
-            break;
-          case "hostkeyalias":
-            flags.add("host-key-alias");
-            break;
-          default:
-        }
+    if (state.incomplete) flags.add("incomplete");
+    // First value wins, in FILE order, over every line whose conditions all select this alias.
+    for (const { conds, directive: d } of items) {
+      if (conds.some((c) => c.kind === "match" || !hostSelects(c.patterns, alias))) continue;
+      const value = splitWords(d.value)[0] ?? "";
+      switch (d.key) {
+        case "hostname":
+          if (hostName === null) {
+            const expanded = expandHostName(value, alias);
+            if (expanded.tokens) flags.add("tokens");
+            hostName = expanded.text;
+          }
+          break;
+        case "port":
+          if (port === null && /^\d{1,5}$/.test(value) && Number(value) >= 1 && Number(value) <= 65535) port = Number(value);
+          break;
+        case "user":
+          if (user === null && value !== "") {
+            if (value.includes("%")) flags.add("tokens");
+            user = value;
+          }
+          break;
+        case "identityfile":
+          if (value !== "") {
+            if (value.includes("%")) flags.add("tokens");
+            identityFiles.push(expandHome(value, opts.home));
+          }
+          break;
+        case "proxyjump":
+        case "proxycommand":
+          if (value.toLowerCase() !== "none") flags.add("proxy");
+          break;
+        case "canonicalizehostname":
+          if (value.toLowerCase() !== "no") flags.add("canonicalize");
+          break;
+        case "hostkeyalias":
+          flags.add("host-key-alias");
+          break;
+        default:
       }
     }
-    entries.push({ alias, hostName, port, user, identityFiles, flags: [...flags].sort(), line });
+    entries.push({ alias, hostName, port, user, identityFiles, flags: [...flags].sort() });
   }
-  return { entries, patternBlocks, issues };
+  return { entries, patternBlocks, issues: state.issues, incomplete: state.incomplete };
 }

@@ -24,7 +24,7 @@ function fakeApi(over: Partial<ImportApi> = {}) {
       sources = sources.filter((s) => s.id !== id);
       return { removed: true };
     }),
-    scan: vi.fn(async (): Promise<ScanResult> => ({ kind: "ssh-config", items: [], stale: [], issues: [] })),
+    scan: vi.fn(async (): Promise<ScanResult> => ({ kind: "ssh-config", scanId: "scan-1", incomplete: false, items: [], stale: [], issues: [] })),
     apply: vi.fn(async (): Promise<ImportOutcome> => ({ created: 1, updated: 0, unchanged: 0, conflicts: [], deletedLocally: [], skipped: [], markedStale: 0 })),
     trusted: vi.fn(async () => [] as Array<{ key: string; hosts: string[]; hashed: boolean; keyType: string; fingerprint: string }>),
     forget: vi.fn(async () => ({ removed: 1 })),
@@ -63,7 +63,7 @@ describe("ImportPanel", () => {
     await waitFor(() => screen.getByLabelText("Read this source"));
     expect(screen.queryByLabelText(/ssh -G/)).toBeNull();
     fireEvent.click(screen.getByLabelText("Read this source"));
-    const g = await screen.findByLabelText(/ssh -G resolve entries/);
+    const g = await screen.findByLabelText(/Allow ssh -G for entries I choose/);
     expect(g.parentElement?.textContent).toContain("Match exec");
     expect((g as HTMLInputElement).checked).toBe(false);
     fireEvent.click(g);
@@ -74,6 +74,8 @@ describe("ImportPanel", () => {
     const api = fakeApi({
       scan: vi.fn(async (): Promise<ScanResult> => ({
         kind: "ssh-config",
+        scanId: "scan-1",
+        incomplete: false,
         items: [item(), item({ key: "jump", name: "jump", resolved: false, flags: ["proxy"], port: null, username: null, host: "jump" }), item({ key: "old", name: "old", action: "unchanged" })],
         stale: ["gone"],
         issues: [],
@@ -97,7 +99,7 @@ describe("ImportPanel", () => {
     expect(box("jump").checked).toBe(true);
     fireEvent.click(box("jump")); // untick jump
     fireEvent.click(screen.getByRole("button", { name: "Import selected" }));
-    await waitFor(() => expect(api.apply).toHaveBeenCalledWith("s1", ["build"]));
+    await waitFor(() => expect(api.apply).toHaveBeenCalledWith("s1", ["build"], "scan-1"));
     await waitFor(() => expect(imported).toHaveBeenCalled());
     expect((await screen.findByRole("status")).textContent).toBe("1 created, 0 updated, 0 unchanged.");
   });

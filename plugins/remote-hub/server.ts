@@ -10,12 +10,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { HELPER_BIN_NAME, HelperProcess } from "./src/adapters/bb/helper-process.ts";
-import { PROFILE_MIGRATIONS, createSqliteProfileStore } from "./src/adapters/bb/profile-sqlite.ts";
+import { ALL_MIGRATIONS } from "./src/adapters/bb/migrations.ts";
+import { createSqliteProfileStore } from "./src/adapters/bb/profile-sqlite.ts";
 import { createRemoteHubService } from "./src/adapters/bb/service.ts";
 import { registerStreamSocket } from "./src/adapters/bb/stream-socket.ts";
-import { CREDENTIAL_MIGRATIONS, createSqliteCredentialStore } from "./src/adapters/bb/credential-sqlite.ts";
+import { createSqliteCredentialStore } from "./src/adapters/bb/credential-sqlite.ts";
 import { createFsSourceReader } from "./src/adapters/bb/fs-source-reader.ts";
-import { IMPORT_MIGRATIONS, createSqliteImportStore } from "./src/adapters/bb/import-sqlite.ts";
+import { createSqliteImportStore } from "./src/adapters/bb/import-sqlite.ts";
 import { createRpcHandlers } from "./src/adapters/bb/rpc-handlers.ts";
 import { ImportBook } from "./src/core/import-book.ts";
 import { CredentialBook } from "./src/core/credential.ts";
@@ -43,7 +44,7 @@ export default function plugin(bb: BbPluginApi): void {
   });
 
   const db = bb.storage.database();
-  bb.storage.migrate(db, [...PROFILE_MIGRATIONS, ...CREDENTIAL_MIGRATIONS, ...IMPORT_MIGRATIONS]);
+  bb.storage.migrate(db, ALL_MIGRATIONS);
   const profiles = new ProfileBook({
     store: createSqliteProfileStore(db),
     now: () => new Date(),
@@ -51,17 +52,14 @@ export default function plugin(bb: BbPluginApi): void {
     onHistoryError: (code) => bb.log.warn(`profile history not written (${code})`),
   });
   const importStore = createSqliteImportStore(db);
-  // The import book and the credential book need each other: a profile that depends on SSH configuration cannot save a secret.
-  let imports: ImportBook | undefined;
   const credentials = new CredentialBook({
     store: createSqliteCredentialStore(db),
     vault: service.credentialVault,
     profiles,
     now: () => new Date(),
     newId: () => randomUUID(),
-    needsConfig: (profileId) => imports?.needsConfig(profileId) ?? false,
   });
-  imports = new ImportBook({ store: importStore, reader: createFsSourceReader(), profiles, credentials, newId: () => randomUUID(), knownHosts: service.knownHosts });
+  const imports = new ImportBook({ store: importStore, reader: createFsSourceReader(), profiles, credentials, newId: () => randomUUID(), knownHosts: service.knownHosts });
   bb.rpc.register(rpcContract, createRpcHandlers({ service, profiles, credentials, imports }));
 
   registerStreamSocket(bb, { service });

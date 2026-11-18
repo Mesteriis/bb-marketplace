@@ -7,6 +7,7 @@ import {
   candidateFromHost,
   importedOf,
   planImport,
+  skipReason,
   toProfileFields,
   type Candidate,
   type ImportAction,
@@ -19,7 +20,7 @@ import type { CredentialBook } from "./credential.ts";
 import { profileFieldsOf, type Profile, type Provenance } from "./profile.ts";
 import type { ProfileBook } from "./profile-book.ts";
 import { parseAgentList, publicKeyInfo, type AgentKey } from "./ssh-keys.ts";
-import { parseSshConfig, type IncludedFile } from "./ssh-config.ts";
+import { parseSshConfig, type IncludeResult } from "./ssh-config.ts";
 
 export type SourceKind = "ssh-config" | "hosts" | "keys-dir" | "agent" | "known-hosts";
 
@@ -56,13 +57,26 @@ export interface DirEntry {
   kind: "file" | "dir" | "other";
 }
 
+/** Text read from a file, and whether the file was longer than the limit (the rest was not read). */
+export interface ReadText {
+  text: string;
+  truncated: boolean;
+}
+
+/** What one scan may still read through Include: shared by every Include of that scan, so a pattern cannot be repeated to get more. */
+export interface IncludeBudget {
+  files: number;
+  bytes: number;
+}
+
 /** The outside world, bounded: every read has a size limit and every path is one the caller chose. */
 export interface SourceReader {
   home(): string;
-  readText(path: string, maxBytes: number): string | null;
+  /** A regular file only; a link that leaves the file's own directory, a FIFO, a device... is refused (null). */
+  readText(path: string, maxBytes: number): ReadText | null;
   listDir(path: string): DirEntry[] | null;
-  /** The files an Include names, refused unless they stay inside the config's own directory. */
-  include(configPath: string, pattern: string): IncludedFile[];
+  /** The files an Include names, refused unless they stay inside the config's own directory; draws on `budget`. */
+  include(configPath: string, pattern: string, budget: IncludeBudget): IncludeResult;
   /** `ssh-add -l` output, or null when there is no agent. */
   agentList(): Promise<string | null>;
   /** `ssh -G -F <configPath> -- <alias>` output, or null. */
@@ -113,7 +127,16 @@ export interface TrustItem {
 }
 
 export type ScanResult =
-  | { kind: "ssh-config" | "hosts"; items: ScanItem[]; stale: string[]; issues: string[] }
+  | {
+      kind: "ssh-config" | "hosts";
+      /** Identifies THIS review: apply and resolve act on it and on nothing newer. */
+      scanId: string;
+      /** Part of the source was not read faithfully: no entry is offered as resolved and nothing is marked stale. */
+      incomplete: boolean;
+      items: ScanItem[];
+      stale: string[];
+      issues: string[];
+    }
   | { kind: "known-hosts"; items: TrustItem[]; issues: string[] }
   | { kind: "keys-dir"; keys: KeyInfo[]; issues: string[] }
   | { kind: "agent"; keys: AgentKey[]; issues: string[] };
@@ -139,6 +162,9 @@ export interface ImportBookDeps {
 }
 
 const MAX_CONFIG_BYTES = 256 * 1024;
+/** One scan may follow at most this many Include files and read this many bytes through them, all patterns together. */
+const MAX_SCAN_FILES = 50;
+const MAX_SCAN_BYTES = 1024 * 1024;
 const MAX_HOSTS_BYTES = 512 * 1024;
 const MAX_KEY_FILES = 200;
 const MAX_PUBLIC_BYTES = 8 * 1024;
@@ -202,11 +228,6 @@ export class ImportBook {
     return this.deps.store.removeSource(id);
   }
 
-  /** Whether a saved secret may NOT be used for this profile: it depends on configuration this plugin cannot resolve. */
-  needsConfig(profileId: string): boolean {
-    return this.deps.store.links().some((l) => l.profileId === profileId && !l.resolved);
-  }
-
   /** Imported profiles with where they came from; other profiles unchanged. */
   decorate(profiles: Profile[]): Profile[] {
     const sources = new Map(this.deps.store.sources().map((s) => [s.id, s]));
@@ -234,65 +255,39 @@ export class ImportBook {
     return source;
   }
 
-  private async candidates(source: ImportSource): Promise<{ candidates: Candidate[]; issues: string[] }> {
+  /** The reviewed scans: what each source showed the user last, kept so that apply and resolve act on exactly that. */
+  private readonly reviewed = new Map<string, { id: string; candidates: Candidate[]; incomplete: boolean }>();
+
+  private async candidates(source: ImportSource): Promise<{ candidates: Candidate[]; issues: string[]; incomplete: boolean }> {
     const { reader } = this.deps;
     const path = source.path as string;
     if (source.kind === "hosts") {
-      const text = reader.readText(path, MAX_HOSTS_BYTES);
-      if (text === null) throw new ImportError("source_unreadable", "the file could not be read");
-      return { candidates: parseHostsFile(text).map(candidateFromHost), issues: [] };
+      const read = reader.readText(path, MAX_HOSTS_BYTES);
+      if (read === null) throw new ImportError("source_unreadable", "the file could not be read (a link that leaves its directory, a pipe or a missing file is refused)");
+      return {
+        candidates: parseHostsFile(read.text).map(candidateFromHost),
+        issues: read.truncated ? ["the file was cut at its size limit"] : [],
+        incomplete: read.truncated,
+      };
     }
-    const text = reader.readText(path, MAX_CONFIG_BYTES);
-    if (text === null) throw new ImportError("source_unreadable", "the file could not be read");
-    const parse = parseSshConfig(text, { home: reader.home(), include: (pattern) => reader.include(path, pattern) });
-    const issues = [...parse.issues];
-    const candidates: Candidate[] = [];
-    for (const entry of parse.entries) {
-      let candidate = candidateFromConfigEntry(entry);
-      if (source.useSshG && !candidate.resolved) {
-        const resolved = await this.resolveWithSshG(path, entry.alias, candidate);
-        if (resolved !== null) candidate = resolved;
-        else issues.push(`ssh -G gave no answer for ${entry.alias}`);
-      }
-      candidates.push(candidate);
-    }
-    return { candidates, issues };
+    const read = reader.readText(path, MAX_CONFIG_BYTES);
+    if (read === null) throw new ImportError("source_unreadable", "the file could not be read (a link that leaves its directory, a pipe or a missing file is refused)");
+    // One budget for the whole scan: every Include draws on it.
+    const budget: IncludeBudget = { files: MAX_SCAN_FILES, bytes: MAX_SCAN_BYTES };
+    const parse = parseSshConfig(read.text, { home: reader.home(), include: (pattern) => reader.include(path, pattern, budget), truncated: read.truncated });
+    return { candidates: parse.entries.map(candidateFromConfigEntry), issues: [...parse.issues], incomplete: parse.incomplete };
   }
 
-  /** ssh -G evaluates the whole configuration (Match included): its answer resolves an entry unless it still goes through a proxy. */
-  private async resolveWithSshG(path: string, alias: string, base: Candidate): Promise<Candidate | null> {
-    const out = await this.deps.reader.sshG(path, alias);
-    if (out === null) return null;
-    const values = new Map<string, string>();
-    for (const line of out.split(/\r?\n/)) {
-      const m = /^([a-z]+) (.*)$/.exec(line.trim());
-      if (m !== null && !values.has(m[1] as string)) values.set(m[1] as string, m[2] as string);
-    }
-    const host = values.get("hostname");
-    if (host === undefined) return null;
-    const proxy = [values.get("proxyjump"), values.get("proxycommand")].some((v) => v !== undefined && v !== "none");
-    if (proxy) return { ...base, flags: [...new Set([...base.flags, "proxy"])].sort() };
-    const port = Number(values.get("port") ?? "22");
-    const imported: ImportedFields = {
-      host: host.toLowerCase(),
-      port: port === 22 ? null : port,
-      username: values.get("user") ?? null,
-      authType: "agent",
-      identityFile: null,
-    };
-    // Key files from -G include OpenSSH's defaults whether or not they exist, so they are not taken.
-    return { ...base, imported, resolved: true, flags: base.flags.filter((f) => f === "multiple-identities"), skip: null };
+  private newScanId(): string {
+    return this.deps.newId();
   }
 
-  async scan(sourceId: string): Promise<ScanResult> {
-    const source = this.enabledSource(sourceId);
-    if (source.kind === "agent") return await this.scanAgent();
-    if (source.kind === "keys-dir") return await this.scanKeys(source.path as string);
-    if (source.kind === "known-hosts") return await this.scanKnownHosts(source.path as string);
-    const { candidates, issues } = await this.candidates(source);
-    const plan = this.plan(source, candidates);
+  private scanItems(source: ImportSource, review: { id: string; candidates: Candidate[]; incomplete: boolean }, issues: string[]): ScanResult {
+    const plan = this.plan(source, review.candidates);
     return {
-      kind: source.kind,
+      kind: source.kind as "ssh-config" | "hosts",
+      scanId: review.id,
+      incomplete: review.incomplete,
       items: plan.items.map((i) => ({
         key: i.candidate.key,
         name: i.candidate.name,
@@ -305,9 +300,74 @@ export class ImportBook {
         identityFile: i.candidate.imported.identityFile,
         skip: i.candidate.skip,
       })),
-      stale: plan.stale.map((l) => l.key),
+      // An incomplete scan says nothing about what is gone.
+      stale: review.incomplete ? [] : plan.stale.map((l) => l.key),
       issues,
     };
+  }
+
+  /**
+   * ssh -G for the entries the user chose, and only those: it makes ssh evaluate the configuration, which RUNS local commands
+   * named in it (Match exec) and may read files outside the config's directory. The answer replaces those entries in the
+   * reviewed scan, and a NEW review (a new scan id) is returned, because the destinations may now be different.
+   */
+  async resolve(sourceId: string, scanId: string, keys: string[]): Promise<ScanResult> {
+    const source = this.enabledSource(sourceId);
+    if (source.kind !== "ssh-config") throw new ImportError("invalid_source", "only an ssh config can use ssh -G");
+    if (!source.useSshG) throw new ImportError("ssh_g_off", "ssh -G is switched off for this source");
+    const review = this.reviewed.get(sourceId);
+    if (review === undefined || review.id !== scanId) throw new ImportError("scan_required", "scan the source again before resolving");
+    const next: Candidate[] = [];
+    const issues: string[] = [];
+    for (const candidate of review.candidates) {
+      if (!keys.includes(candidate.key) || candidate.resolved && !review.incomplete) {
+        next.push(candidate);
+        continue;
+      }
+      const resolved = await this.resolveWithSshG(source.path as string, candidate);
+      if (resolved === null) issues.push(`ssh -G gave no answer for ${candidate.name}`);
+      next.push(resolved ?? candidate);
+    }
+    // Entries that ssh resolved are no longer in doubt; the rest of an incomplete scan still is.
+    const fresh = { id: this.newScanId(), candidates: next, incomplete: review.incomplete };
+    this.reviewed.set(sourceId, fresh);
+    return this.scanItems(source, fresh, issues);
+  }
+
+  /** ssh -G evaluates the whole configuration (Match included): its answer resolves an entry unless it still goes through a proxy. */
+  private async resolveWithSshG(path: string, base: Candidate): Promise<Candidate | null> {
+    const out = await this.deps.reader.sshG(path, base.name);
+    if (out === null) return null;
+    const values = new Map<string, string>();
+    for (const line of out.split(/\r?\n/)) {
+      const m = /^([a-z]+) (.*)$/.exec(line.trim());
+      if (m !== null && !values.has(m[1] as string)) values.set(m[1] as string, m[2] as string);
+    }
+    const host = values.get("hostname");
+    if (host === undefined) return null;
+    const proxy = [values.get("proxyjump"), values.get("proxycommand")].some((v) => v !== undefined && v !== "none");
+    if (proxy) return { ...base, flags: [...new Set([...base.flags.filter((f) => f !== "incomplete"), "proxy"])].sort() };
+    const port = Number(values.get("port") ?? "22");
+    const imported: ImportedFields = {
+      host: host.toLowerCase(),
+      port: port === 22 ? null : port,
+      username: values.get("user") ?? null,
+      authType: "agent",
+      identityFile: null,
+    };
+    // What ssh returned is checked like anything else, so a hostile HostName shows up as skipped in the review.
+    return { ...base, imported, resolved: true, flags: base.flags.filter((f) => f === "multiple-identities"), skip: skipReason(imported, base.name) };
+  }
+
+  async scan(sourceId: string): Promise<ScanResult> {
+    const source = this.enabledSource(sourceId);
+    if (source.kind === "agent") return await this.scanAgent();
+    if (source.kind === "keys-dir") return await this.scanKeys(source.path as string);
+    if (source.kind === "known-hosts") return await this.scanKnownHosts(source.path as string);
+    const { candidates, issues, incomplete } = await this.candidates(source);
+    const review = { id: this.newScanId(), candidates, incomplete };
+    this.reviewed.set(sourceId, review);
+    return this.scanItems(source, review, issues);
   }
 
   private plan(source: ImportSource, candidates: Candidate[]) {
@@ -317,24 +377,35 @@ export class ImportBook {
     });
   }
 
-  /** Imports the chosen keys of a source (all of them when `keys` is omitted). Re-running it is a no-op. */
-  async apply(sourceId: string, keys?: string[]): Promise<ImportOutcome> {
+  /**
+   * Imports the chosen entries of the scan the user reviewed (`scanId`), never of a newer read of the file, so what is
+   * applied is what was shown. Re-running it is a no-op.
+   */
+  async apply(sourceId: string, keys?: string[], scanId?: string): Promise<ImportOutcome> {
     const source = this.enabledSource(sourceId);
     if (source.kind === "known-hosts") return await this.applyKnownHosts(source.path as string, keys);
     if (source.kind !== "ssh-config" && source.kind !== "hosts") throw new ImportError("invalid_source", "this source holds nothing to import");
-    const { candidates } = await this.candidates(source);
+    const review = this.reviewed.get(sourceId);
+    if (review === undefined || scanId === undefined || review.id !== scanId) throw new ImportError("scan_required", "review a scan of this source before importing");
+    const { candidates } = review;
     const chosen = keys === undefined ? candidates : candidates.filter((c) => keys.includes(c.key));
     const plan = this.plan(source, candidates);
     const out: ImportOutcome = { created: 0, updated: 0, unchanged: 0, conflicts: [], deletedLocally: [], skipped: [], markedStale: 0 };
     const wanted = new Set(chosen.map((c) => c.key));
     const group = "Imported";
     for (const item of plan.items) {
-      if (!wanted.has(item.candidate.key)) continue;
       const c = item.candidate;
       const link: ImportLink = { profileId: item.profileId ?? "", sourceId: source.id, key: c.key, imported: c.imported, resolved: c.resolved, flags: c.flags, stale: false };
+      // An entry that came back after being marked stale is simply current again, chosen or not.
+      if (item.action === "unchanged" && item.profileId !== null && !wanted.has(c.key)) {
+        const existing = this.deps.store.links(source.id).find((l) => l.key === c.key);
+        if (existing?.stale === true) this.deps.store.putLink({ ...existing, stale: false });
+        continue;
+      }
+      if (!wanted.has(c.key)) continue;
       switch (item.action) {
         case "create": {
-          const profile = this.deps.profiles.saveImported({ fields: toProfileFields(c.imported, c.name, group) });
+          const profile = this.deps.profiles.saveImported({ fields: toProfileFields(c.imported, c.name, group), needsConfig: !c.resolved });
           this.deps.store.putLink({ ...link, profileId: profile.id });
           out.created += 1;
           break;
@@ -344,6 +415,7 @@ export class ImportBook {
           if (current === null) break;
           // Through the credential book: a changed destination forgets a saved secret that was bound to the old one.
           await this.deps.credentials.saveProfile({ id: current.id, fields: { ...profileFieldsOf(current), ...c.imported } });
+          this.deps.profiles.setNeedsConfig(current.id, !c.resolved);
           this.deps.store.putLink(link);
           out.updated += 1;
           break;
@@ -363,9 +435,12 @@ export class ImportBook {
           break;
       }
     }
-    for (const gone of plan.stale) {
-      this.deps.store.putLink({ ...gone, stale: true });
-      out.markedStale += 1;
+    // A scan that was not read faithfully says nothing about what is gone from the source.
+    if (!review.incomplete) {
+      for (const gone of plan.stale) {
+        this.deps.store.putLink({ ...gone, stale: true });
+        out.markedStale += 1;
+      }
     }
     return out;
   }
@@ -384,9 +459,9 @@ export class ImportBook {
   }
 
   private async knownHostEntries(path: string): Promise<KnownHostEntry[]> {
-    const text = this.deps.reader.readText(path, MAX_HOSTS_BYTES * 8);
-    if (text === null) throw new ImportError("source_unreadable", "the file could not be read");
-    return await parseKnownHosts(text);
+    const read = this.deps.reader.readText(path, MAX_HOSTS_BYTES * 8);
+    if (read === null) throw new ImportError("source_unreadable", "the file could not be read (a link that leaves its directory, a pipe or a missing file is refused)");
+    return await parseKnownHosts(read.text);
   }
 
   private async scanKnownHosts(path: string): Promise<ScanResult> {
@@ -425,8 +500,8 @@ export class ImportBook {
     for (const file of files) {
       if (!file.name.endsWith(".pub")) continue; // private files are neither opened nor listed on their own
       const path = `${dir.replace(/\/$/, "")}/${file.name}`;
-      const text = reader.readText(path, MAX_PUBLIC_BYTES);
-      const info = text === null ? null : await publicKeyInfo(text.split(/\r?\n/)[0] ?? "");
+      const read = reader.readText(path, MAX_PUBLIC_BYTES);
+      const info = read === null ? null : await publicKeyInfo(read.text.split(/\r?\n/)[0] ?? "");
       if (info === null) continue;
       const sibling = file.name.slice(0, -4);
       keys.push({ publicPath: path, privatePath: names.has(sibling) ? `${dir.replace(/\/$/, "")}/${sibling}` : null, type: info.type, comment: info.comment, fingerprint: info.fingerprint });

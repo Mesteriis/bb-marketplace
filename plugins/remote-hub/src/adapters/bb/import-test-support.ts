@@ -19,7 +19,7 @@ export const emptyReader: SourceReader = {
   home: () => "/home/fixture",
   readText: () => null,
   listDir: () => null,
-  include: () => [],
+  include: () => ({ files: [], complete: true }),
   agentList: async () => null,
   sshG: async () => null,
 };

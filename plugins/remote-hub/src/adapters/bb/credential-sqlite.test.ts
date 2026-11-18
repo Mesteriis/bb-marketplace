@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CredentialMeta } from "../../core/credential.ts";
 import { CREDENTIAL_MIGRATIONS, createSqliteCredentialStore } from "./credential-sqlite.ts";
-import { PROFILE_MIGRATIONS } from "./profile-sqlite.ts";
+import { ALL_MIGRATIONS } from "./migrations.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -17,7 +17,7 @@ function openDb(): Database.Database {
   const dir = mkdtempSync(join(tmpdir(), "rh-cred-"));
   dirs.push(dir);
   const db = new Database(join(dir, "data.db"));
-  for (const statement of [...PROFILE_MIGRATIONS, ...CREDENTIAL_MIGRATIONS]) db.exec(statement);
+  for (const statement of ALL_MIGRATIONS) db.exec(statement);
   return db;
 }
 

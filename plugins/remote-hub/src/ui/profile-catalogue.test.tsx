@@ -203,4 +203,14 @@ describe("ProfileCatalogue provenance", () => {
     render(<ProfileCatalogue profiles={[base]} error={null} sessions={[]} onConnect={() => {}} onEdit={() => {}} onNew={() => {}} onDuplicate={() => {}} onDelete={() => {}} onRetry={() => {}} />);
     expect(screen.getByTestId("profile-provenance").textContent).toBe("source: ssh config · no longer in the source · edited here · uses your ssh config, no saved password");
   });
+
+  it("a profile whose source is gone still says it cannot hold a password while it needs the ssh config", () => {
+    const orphan = {
+      id: "11111111-2222-4333-8444-555555555552", executionHostId: "local", origin: "imported", createdAt: "x", updatedAt: "x", lastOpenedAt: null, recentErrors: [],
+      name: "jump", protocol: "ssh", group: null, tags: [], favorite: false, color: null, host: "jump", port: null, username: null, domain: null,
+      authType: "agent", identityFile: null, credentialRef: null, rdpWidth: null, rdpHeight: null, needsConfig: true,
+    } as never;
+    render(<ProfileCatalogue profiles={[orphan]} error={null} sessions={[]} onConnect={() => {}} onEdit={() => {}} onNew={() => {}} onDuplicate={() => {}} onDelete={() => {}} onRetry={() => {}} />);
+    expect(screen.getByTestId("profile-needs-config").textContent).toBe("uses your ssh config, no saved password until you set its host");
+  });
 });
