@@ -36,3 +36,23 @@
   was handed over, and once. Until then (and while the owner has a question open, and for ever after a refusal)
   an agent can neither take control nor type. A session the owner opened by hand never carries this and is never
   drivable. Tested against a real sshd that holds its answer for seven seconds after the password.
+
+## Agents are never hidden (stage 4c)
+
+- **The watching gate.** Agent input (terminal and desktop) is refused with `owner_not_watching` unless at least one
+  person has that session's live view open and **visible**. A view reports in over its stream socket every 2 s with its
+  page visibility; a hidden tab counts for nothing and a report older than 6 s is stale. Reads (terminal text,
+  screenshots) need no watcher but are listed in Agent activity. The gate has no per-connection switch.
+- **Suspension.** When the last watcher goes (closed, hidden, stalled) an agent's lease is suspended at once: its owner tag
+  changes in the helper, so what it had queued is dropped and what it held down is released (the same barrier as a
+  takeover), its input is refused, and it resumes when a watcher returns. The lease still expires as usual.
+- **What the owner sees.** `remote_connect` / `remote_control_acquire` return a `liveView` line (`::remote-session{id=…}`)
+  that the agent is told to put in its reply; BB renders it as this plugin's live view of the session. The owner's pages
+  also show a standing banner ("An agent is driving…", Watch / Take control) fed by the plugin's realtime signal,
+  which carries session identifiers only. Typed input appears in the same terminal; a desktop shows the agent's pointer.
+- **Experimental SDK surfaces used** (each has a fallback): `bb.realtime.publish` + `useRealtime`;
+  `slots.experimental_appOverlay` (the banner); `slots.experimental_tab` + `experimental_useAppPanel().openTab` (opens the
+  live view on a thread's side panel without a click — BB answers false when there is no panel, and then the banner and
+  the directive are what the owner has); `slots.messageDirective` (stable). They may change between BB releases.
+- **Limit.** The gate proves a visible view is open, not that a person is looking at it. A directive in the agent's reply
+  depends on the agent following the skill text; the banner does not.
