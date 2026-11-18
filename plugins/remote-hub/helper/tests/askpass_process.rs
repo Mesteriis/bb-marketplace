@@ -517,7 +517,9 @@ fn the_askpass_client_refuses_a_socket_that_is_not_the_helpers() {
     listener.set_nonblocking(false).unwrap();
     let accept = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        // macOS answers EINVAL to SO_RCVTIMEO once the peer (the client, which refuses and exits at once)
+        // has already gone: the timeout is a safety net only, so a refusal to set it is not an error.
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
         let mut got = Vec::new();
         let _ = stream.read_to_end(&mut got);
         got
