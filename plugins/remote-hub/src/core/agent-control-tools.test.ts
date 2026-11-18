@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AgentAccessBook, type AgentGrant } from "./agent-access.ts";
 import { AgentAudit, type AuditRow, type AuditStore } from "./agent-audit.ts";
-import { createControlTools } from "./agent-control-tools.ts";
+import { AgentSessionRegistry, createControlTools } from "./agent-control-tools.ts";
 import { ToolBudget } from "./agent-budget.ts";
 import type { AgentSessionView, AgentToolDef, ToolResult } from "./agent-tools.ts";
 import { ControlLeases } from "./control-lease.ts";
@@ -61,9 +61,11 @@ function setup(opts: Setup = {}) {
   const opened: string[] = [];
   const disconnected: string[] = [];
   const waiting = new Map<string, Array<"host_key" | "certificate" | "login_prompt">>();
+  const registry = new AgentSessionRegistry();
   const tools = createControlTools({
     access, audit, budget: new ToolBudget({ now: () => now, callsPerWindow: 1000, bytesPerWindow: 50 * 1024 * 1024, globalCallsPerWindow: 10000, globalBytesPerWindow: 500 * 1024 * 1024 }),
     leases,
+    registry,
     ports: {
       profiles: { list: () => profiles, get: (id) => profiles.find((p) => p.id === id) ?? null },
       sessions: { list: () => sessions, read: () => null, screenshot: async () => { throw new Error("n/a"); } },
@@ -97,7 +99,7 @@ function setup(opts: Setup = {}) {
   const textOf = (r: ToolResult) => r.content.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n");
   const data = (r: ToolResult) => JSON.parse(textOf(r)) as Record<string, any>;
   return {
-    access, rows, leases, sessions, wrote, rdpSent, tools, tool, call, textOf, data, opened, disconnected, waiting,
+    registry, access, rows, leases, sessions, wrote, rdpSent, tools, tool, call, textOf, data, opened, disconnected, waiting,
     advance: (ms: number) => void (now += ms),
     holdWrites: () => void (hold = true),
     releaseWrites: () => {
@@ -472,3 +474,57 @@ describe("Z1: only sessions where no question can appear in the terminal may be 
     expect(t.wrote.map((w) => w.data)).toEqual(["one"]);
   });
 });
+
+describe("Z5: takeover hold, abort scope, retired threads", () => {
+  it("after a takeover the agent is told owner_took_over, and gets the session when the human allows it", async () => {
+    const t = setup();
+    t.access.set(P_SSH, "input", false);
+    const lease = t.data(await t.call("remote_control_acquire", { sessionId: SSH_KEY }));
+    t.leases.takeover(SSH_KEY);
+    const again = t.textOf(await t.call("remote_control_acquire", { sessionId: SSH_KEY }));
+    expect(again).toContain("owner_took_over");
+    expect(again).toContain("allow agents again");
+    expect(lease.leaseId).toBe("lease-1");
+    t.leases.allowAgents(SSH_KEY);
+    expect((await t.call("remote_control_acquire", { sessionId: SSH_KEY })).isError).toBeUndefined();
+  });
+
+  it("a late abort of an old call does not end the lease that replaced it", async () => {
+    const t = setup();
+    t.access.set(P_SSH, "input", false);
+    await t.call("remote_control_acquire", { sessionId: SSH_KEY });
+    t.holdWrites();
+    const abort = new AbortController();
+    const n0 = t.rows.length;
+    const old = t.call("remote_terminal_input", { sessionId: SSH_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "old" }] }, { ...CTX, signal: abort.signal });
+    await until(() => t.rows.length >= n0 + 1);
+    // the lease is released and a new one is taken by the same thread while the old call is still waiting
+    t.leases.release(SSH_KEY, "thr_a", "lease-1");
+    const next = t.data(await t.call("remote_control_acquire", { sessionId: SSH_KEY }));
+    expect(next.leaseId).toBe("lease-2");
+    abort.abort();
+    t.releaseWrites();
+    await old;
+    expect(t.leases.owner(SSH_KEY)).toMatchObject({ kind: "agent", leaseId: "lease-2" });
+  });
+
+  it("an archived or deleted thread cannot acquire or connect; an unarchived one can again", async () => {
+    const t = setup({ sessions: [] });
+    t.access.set(P_SSH, "input", false);
+    t.registry.markArchived("thr_a");
+    expect(t.textOf(await t.call("remote_connect", { connectionId: P_SSH }))).toContain("thread_retired");
+    t.registry.unarchive("thr_a");
+    expect((await t.call("remote_connect", { connectionId: P_SSH })).isError).toBeUndefined();
+    t.registry.markDeleted("thr_a");
+    expect(t.textOf(await t.call("remote_connect", { connectionId: P_SSH }))).toContain("thread_retired");
+  });
+
+  it("a retired thread cannot acquire control of a session", async () => {
+    const t = setup();
+    t.access.set(P_SSH, "input", false);
+    t.registry.markDeleted("thr_a");
+    expect(t.textOf(await t.call("remote_control_acquire", { sessionId: SSH_KEY }))).toContain("thread_retired");
+    expect(t.leases.owner(SSH_KEY).kind).toBe("human");
+  });
+});
+

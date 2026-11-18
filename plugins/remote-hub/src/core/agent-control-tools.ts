@@ -51,10 +51,23 @@ export class AgentSessionRegistry {
   markArchived(threadId: string): void {
     this.archived.add(threadId);
   }
+  /** The thread was deleted: it never comes back. */
+  markDeleted(threadId: string): void {
+    this.deleted.add(threadId);
+  }
+  /** The thread came back from the archive. */
+  unarchive(threadId: string): void {
+    this.archived.delete(threadId);
+  }
   isArchived(threadId: string): boolean {
     return this.archived.has(threadId);
   }
+  /** An archived or deleted thread may not start anything new (a delayed call from it is refused). */
+  isRetired(threadId: string): boolean {
+    return this.archived.has(threadId) || this.deleted.has(threadId);
+  }
   private readonly archived = new Set<string>();
+  private readonly deleted = new Set<string>();
 }
 
 export interface AgentControlDeps extends AgentToolDeps {
@@ -146,6 +159,10 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   }
 
   /** The lease check as an error; also tells the caller when the lease is gone for any reason. */
+  const refuseRetired = (ctx: AgentCallContext): void => {
+    if (openedBy.isRetired(ctx.threadId)) throw new ToolError("thread_retired", "this thread has been archived or deleted");
+  };
+
   function leaseGeneration(key: string, ctx: AgentCallContext, leaseId: string): number {
     const check = leases.check(key, ctx.threadId, leaseId);
     if (!check.ok) throw new ToolError(check.code, check.code === "lease_expired" ? "the lease ran out; take control again" : check.code === "no_lease" ? "no lease is held on this session: use remote_control_acquire" : "this lease is not yours");
@@ -165,7 +182,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   /** Runs `write` in the session's queue if, when its turn comes, the same lease still holds, the grant is intact and the call was not aborted. */
   async function driven(key: string, ctx: AgentCallContext, leaseId: string, profileId: string, write: () => Promise<void>): Promise<void> {
     const generation = leaseGeneration(key, ctx, leaseId);
-    const onAbort = () => void leases.endSession(key, "thread_gone");
+    // Only the lease THIS call was given: a late abort of an old call must not end the lease that replaced it.
+    const onAbort = () => void leases.endLease(key, ctx.threadId, leaseId, "thread_gone");
     ctx.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const stillValid = () =>
@@ -187,13 +205,17 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
       parameters: z.object({ sessionId: sessionIdSchema, seconds: z.number().int().min(LEASE_MIN_SECONDS).max(LEASE_MAX_SECONDS).optional() }).strict(),
       execute: (params, ctx) =>
         guarded("remote_control_acquire", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId) }, async () => {
+          refuseRetired(ctx);
           const { session } = controllable(params.sessionId);
           let result = leases.acquire(params.sessionId, ctx.threadId, params.seconds);
           if (!result.ok && result.code === "already_held_by_you") {
             const owner = leases.owner(params.sessionId);
             if (owner.kind === "agent") result = leases.renew(params.sessionId, ctx.threadId, owner.leaseId, params.seconds);
           }
-          if (!result.ok) throw new ToolError(result.code, result.code === "held_by_another_thread" ? "another agent holds this session" : "this lease is not yours");
+          if (!result.ok) {
+            const message = { held_by_another_thread: "another agent holds this session", owner_took_over: "the owner took this session back; it stays with them for a few minutes or until they allow agents again", already_held_by_you: "this lease is not yours", not_the_owner: "this lease is not yours" }[result.code];
+            throw new ToolError(result.code, message);
+          }
           return {
             content: [
               json({
@@ -228,6 +250,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
       parameters: z.object({ connectionId: connectionIdSchema }).strict(),
       execute: (params, ctx) =>
         guarded("remote_connect", ctx, { profileId: params.connectionId }, async () => {
+          refuseRetired(ctx);
           const profile = ports.profiles.get(params.connectionId);
           if (profile === null || !access.check(params.connectionId, "connect").ok) throw new ToolError("agent_access_denied", "the owner has not allowed agents to use this connection");
           if (profile.credentialRef === null) throw new ToolError("needs_saved_credential", "this connection has no saved credential; the owner must save one on the Remote Hub page first");

@@ -36,6 +36,7 @@ export interface AgentSessionView {
   state: "connecting" | "running" | "closed";
   openedByThread: string | null;
   openedByArchivedThread: boolean;
+  holdUntil: number | null;
   controlledBy: "human" | "agent";
   leaseThreadId: string | null;
   leaseExpiresAt: number | null;
@@ -51,6 +52,8 @@ export interface AgentApi {
   sessions: () => Promise<AgentSessionView[]>;
   /** The owner takes a session back from an agent at once. */
   takeover: (handle: SessionHandle) => Promise<{ tookOver: boolean }>;
+  /** The owner lets agents drive again before the hold after a takeover has run out. */
+  allowAgents: (handle: SessionHandle) => Promise<{ allowed: boolean }>;
   /** The owner's answer to a host-key or login question (null = refuse). */
   answer: (handle: SessionHandle, promptId: number, answer: string | null) => Promise<{ answered: true }>;
   decideCertificate: (handle: SessionHandle, fingerprint: string, accept: RdpDecision) => Promise<void>;
@@ -161,13 +164,18 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
                   {s.kind}
                   {s.openedByThread !== null ? (s.openedByArchivedThread ? ` · opened by an archived thread (${s.openedByThread})` : ` · opened by agent thread ${s.openedByThread}`) : ""}
                   {" · "}
-                  {s.controlledBy === "agent" ? `driven by an agent (thread ${s.leaseThreadId ?? "?"}${s.leaseExpiresAt !== null ? ", until " + new Date(s.leaseExpiresAt).toLocaleTimeString() : ""})` : "driven by you"}
+                  {s.holdUntil !== null ? `kept by you until ${new Date(s.holdUntil).toLocaleTimeString()} · ` : ""}{s.controlledBy === "agent" ? `driven by an agent (thread ${s.leaseThreadId ?? "?"}${s.leaseExpiresAt !== null ? ", until " + new Date(s.leaseExpiresAt).toLocaleTimeString() : ""})` : "driven by you"}
                 </span>
               </div>
               <div className="rh-profile-actions">
                 {s.controlledBy === "agent" && (
                   <button type="button" aria-label={"Take control of " + label} onClick={() => act(() => api.takeover(handle))}>
                     Take control
+                  </button>
+                )}
+                {s.holdUntil !== null && (
+                  <button type="button" aria-label={"Let agents drive " + label + " again"} onClick={() => act(() => api.allowAgents(handle))}>
+                    Let agents drive again
                   </button>
                 )}
                 {s.state !== "closed" && (

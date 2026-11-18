@@ -120,6 +120,7 @@ describe("the bridge's agent-control calls (stage 4b-1)", () => {
     const bridge = createConnectBridge(call, "ws://x");
     await bridge.agents.sessions();
     await bridge.agents.takeover(HANDLE);
+    await bridge.agents.allowAgents(HANDLE);
     await bridge.agents.answer(HANDLE, 7, "yes");
     await bridge.agents.answer(HANDLE, 8, null);
     await bridge.agents.decideCertificate(HANDLE, "AA:BB", "reject");
@@ -129,6 +130,7 @@ describe("the bridge's agent-control calls (stage 4b-1)", () => {
     expect(calls).toEqual([
       { method: "agent_sessions", input: {} },
       { method: "agent_control_takeover", input: HANDLE },
+      { method: "agent_control_allow", input: HANDLE },
       { method: "agent_prompt_answer", input: { ...HANDLE, promptId: 7, answer: "yes" } },
       { method: "agent_prompt_answer", input: { ...HANDLE, promptId: 8, answer: null } },
       { method: "rdp_cert_decision", input: { ...HANDLE, fingerprint: "AA:BB", accept: "reject" } },

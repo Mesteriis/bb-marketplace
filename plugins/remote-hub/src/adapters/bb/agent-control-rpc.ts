@@ -14,6 +14,7 @@ import type { RemoteHubService } from "./service.ts";
 type Handler<K extends keyof RpcSchemas> = (input: z.output<RpcSchemas[K]["input"]>) => Promise<z.input<RpcSchemas[K]["output"]>>;
 export interface AgentControlRpc {
   agent_control_takeover: Handler<"agent_control_takeover">;
+  agent_control_allow: Handler<"agent_control_allow">;
   agent_sessions: Handler<"agent_sessions">;
   agent_prompt_answer: Handler<"agent_prompt_answer">;
 }
@@ -38,6 +39,14 @@ export function createAgentControlRpc({ service, leases, registry, audit }: Agen
       ticket.finish("ok");
       return { tookOver: true };
     },
+    agent_control_allow: async (handle) => {
+      const key = keyOf(handle);
+      if (leases.holdUntil(key) === null) return { allowed: false };
+      const ticket = audit.begin({ threadId: OWNER_RPC, projectId: "", tool: "control.allow", sessionKey: key });
+      leases.allowAgents(key);
+      ticket.finish("ok");
+      return { allowed: true };
+    },
     agent_sessions: async () => {
       const all = service.sessionList();
       const present = new Set(all.map((s) => `${s.generation}.${s.sessionId}`));
@@ -47,7 +56,8 @@ export function createAgentControlRpc({ service, leases, registry, audit }: Agen
         const key = keyOf(s);
         const owner = leases.owner(key);
         const openedByThread = registry.threadOf(key) ?? null;
-        if (openedByThread === null && owner.kind === "human") continue;
+        const holdUntil = leases.holdUntil(key);
+        if (openedByThread === null && owner.kind === "human" && holdUntil === null) continue;
         out.push({
           generation: s.generation,
           sessionId: s.sessionId,
@@ -56,6 +66,7 @@ export function createAgentControlRpc({ service, leases, registry, audit }: Agen
           state: s.state,
           openedByThread,
           openedByArchivedThread: openedByThread !== null && registry.isArchived(openedByThread),
+          holdUntil,
           controlledBy: owner.kind,
           leaseThreadId: owner.kind === "agent" ? owner.threadId : null,
           leaseExpiresAt: owner.kind === "agent" ? owner.expiresAt : null,

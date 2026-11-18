@@ -233,6 +233,7 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
       }),
     agent_audit_list: async (input) => withAgents(({ audit }) => audit.list(input.limit)),
     agent_control_takeover: async (input) => control().agent_control_takeover(input),
+    agent_control_allow: async (input) => control().agent_control_allow(input),
     agent_sessions: async (input) => control().agent_sessions(input),
     agent_prompt_answer: async (input) => control().agent_prompt_answer(input),
     rdp_trusted_list: () => withHelper(async () => service.rdpTrustedList()),

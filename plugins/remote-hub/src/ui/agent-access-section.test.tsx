@@ -15,6 +15,7 @@ function api(initial: Array<{ level: "observe" | "input" | "exec"; recordCommand
     audit: vi.fn(async () => []),
     sessions: vi.fn(async () => []),
     takeover: vi.fn(async () => ({ tookOver: false })),
+    allowAgents: vi.fn(async () => ({ allowed: false })),
     answer: vi.fn(async () => ({ answered: true as const })),
     decideCertificate: vi.fn(async () => {}),
     disconnect: vi.fn(async () => {}),

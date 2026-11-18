@@ -148,9 +148,11 @@ describe("registerControlLifecycle", () => {
     h.registry.mark(`${GEN}.2`, "thr_kept");
     const spy = vi.spyOn(globalThis, "clearInterval");
     registerControlLifecycle(h.bb, { leases: h.leases, registry: h.registry, service: { sessionList: () => [] as SessionInfo[] }, closeSession: h.close, everyMs: 3_600_000 });
-    expect([...h.handlers.keys()].sort()).toEqual(["thread.archived", "thread.deleted"]);
+    expect([...h.handlers.keys()].sort()).toEqual(["thread.archived", "thread.deleted", "thread.unarchived"]);
+    expect(h.registry.isRetired("thr_gone")).toBe(false);
     h.handlers.get("thread.deleted")!({ thread: { id: "thr_gone" } });
     await new Promise((r) => setTimeout(r, 0));
+    expect(h.registry.isRetired("thr_gone")).toBe(true);
     expect(h.ended).toEqual(["thr_gone:thread_gone"]);
     expect(h.closed.sort()).toEqual([`${GEN}.1`, `${GEN}.3`]);
     expect(h.registry.keys()).toEqual([`${GEN}.2`]);
@@ -173,6 +175,9 @@ describe("registerControlLifecycle", () => {
     expect(h.registry.threadOf(`${GEN}.1`)).toBe("thr_old");
     expect(h.registry.isArchived("thr_old")).toBe(true);
     expect(h.registry.isArchived("thr_other")).toBe(false);
+    expect(h.registry.isRetired("thr_old")).toBe(true);
+    h.handlers.get("thread.unarchived")!({ thread: { id: "thr_old" } });
+    expect(h.registry.isRetired("thr_old")).toBe(false);
   });
 
   it("a session that fails to close is still forgotten for that thread and the failure does not stop the others", async () => {

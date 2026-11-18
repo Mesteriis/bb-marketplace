@@ -237,6 +237,11 @@ export const rpcSchemas = {
     input: sessionHandleSchema,
     output: z.object({ tookOver: z.boolean() }),
   },
+  /** The owner lets agents drive a session again before the hold after a takeover has run out. */
+  agent_control_allow: {
+    input: sessionHandleSchema,
+    output: z.object({ allowed: z.boolean() }),
+  },
   agent_sessions: {
     input: z.object({}).strict(),
     output: z.array(
@@ -248,6 +253,8 @@ export const rpcSchemas = {
         state: z.enum(["connecting", "running", "closed"]),
         openedByThread: z.string().nullable(),
         openedByArchivedThread: z.boolean(),
+        /** After a takeover agents may not drive it until this time (epoch ms), unless the owner allows it. */
+        holdUntil: z.number().nullable(),
         controlledBy: z.enum(["human", "agent"]),
         leaseThreadId: z.string().nullable(),
         leaseExpiresAt: z.number().nullable(),

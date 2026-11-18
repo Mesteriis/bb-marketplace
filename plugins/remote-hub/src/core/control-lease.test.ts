@@ -84,7 +84,7 @@ describe("how a lease ends", () => {
     expect(leases.release(S1, "thr_a", a.leaseId)).toEqual({ ok: false, code: "no_lease" });
   });
 
-  it("the human takes over at once: the lease ends, the generation moves, the old lease id is useless, and the agent can acquire again afterwards", () => {
+  it("the human takes over at once: the lease ends, the generation moves, the old lease id is useless, and the agent can acquire again only after the human allows it", () => {
     const { leases, ended } = setup();
     const a = leases.acquire(S1, "thr_a", 60);
     if (!a.ok) throw new Error("acquire");
@@ -93,6 +93,8 @@ describe("how a lease ends", () => {
     expect(leases.owner(S1)).toEqual({ kind: "human", generation: 2 });
     expect(ended).toEqual([{ sessionKey: S1, threadId: "thr_a", leaseId: a.leaseId, reason: "takeover", generation: 2 }]);
     expect(leases.takeover(S1)).toEqual({ ok: true, previous: null }); // nothing to take: idempotent
+    expect(leases.acquire(S1, "thr_a", 60)).toEqual({ ok: false, code: "owner_took_over" });
+    leases.allowAgents(S1);
     expect(leases.acquire(S1, "thr_a", 60)).toMatchObject({ ok: true, generation: 3 });
   });
 
@@ -194,3 +196,52 @@ describe("onChange: whoever shows the owner is told after every change of it", (
   });
 });
 
+
+describe("Z5: after the human takes control the agent does not get the session back at once", () => {
+  it("acquire is refused with owner_took_over for 5 minutes after a takeover, by anyone, and works again after that", () => {
+    const { leases, advance } = setup();
+    leases.acquire(S1, "thr_a", 60);
+    leases.takeover(S1);
+    expect(leases.acquire(S1, "thr_a", 60)).toEqual({ ok: false, code: "owner_took_over" });
+    expect(leases.acquire(S1, "thr_b", 60)).toEqual({ ok: false, code: "owner_took_over" });
+    expect(leases.acquire(S2, "thr_a", 60)).toMatchObject({ ok: true }); // another session is not held
+    advance(299_000);
+    expect(leases.acquire(S1, "thr_a", 60)).toEqual({ ok: false, code: "owner_took_over" });
+    advance(2_000);
+    expect(leases.acquire(S1, "thr_a", 60)).toMatchObject({ ok: true });
+  });
+
+  it("the human can lift the hold early; a takeover with nothing to take sets no hold", () => {
+    const { leases } = setup();
+    leases.acquire(S1, "thr_a", 60);
+    leases.takeover(S1);
+    expect(leases.holdUntil(S1)).not.toBeNull();
+    leases.allowAgents(S1);
+    expect(leases.holdUntil(S1)).toBeNull();
+    expect(leases.acquire(S1, "thr_a", 60)).toMatchObject({ ok: true });
+    leases.takeover(S2); // nobody held S2
+    expect(leases.holdUntil(S2)).toBeNull();
+    expect(leases.acquire(S2, "thr_a", 60)).toMatchObject({ ok: true });
+  });
+
+  it("an expiry or a release is not a takeover and sets no hold", () => {
+    const { leases, advance } = setup();
+    const a = leases.acquire(S1, "thr_a", 5);
+    if (!a.ok) throw new Error("acquire");
+    advance(6_000);
+    expect(leases.acquire(S1, "thr_a", 5)).toMatchObject({ ok: true });
+  });
+
+  it("endLease ends only the lease it names: a late abort of an old call cannot end its successor", () => {
+    const { leases } = setup();
+    const first = leases.acquire(S1, "thr_a", 60);
+    if (!first.ok) throw new Error("acquire");
+    leases.release(S1, "thr_a", first.leaseId);
+    const second = leases.acquire(S1, "thr_a", 60);
+    if (!second.ok) throw new Error("acquire");
+    expect(leases.endLease(S1, "thr_a", first.leaseId, "thread_gone")).toBe(false);
+    expect(leases.owner(S1).kind).toBe("agent");
+    expect(leases.endLease(S1, "thr_a", second.leaseId, "thread_gone")).toBe(true);
+    expect(leases.owner(S1).kind).toBe("human");
+  });
+});

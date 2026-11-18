@@ -170,6 +170,7 @@ describe("a terminal session while an agent holds the lease", () => {
       { type: "control", owner: "agent", expiresAt: 1_060_000 },
       { type: "control", owner: "human", expiresAt: null },
     ]);
+    leases.allowAgents(KEY(handle));
     leases.acquire(KEY(handle), "thr_b", 30);
     const late = await attach(handle);
     expect(texts(late.socket).filter((m) => m.type === "control")).toEqual([{ type: "control", owner: "agent", expiresAt: 1_030_000 }]);

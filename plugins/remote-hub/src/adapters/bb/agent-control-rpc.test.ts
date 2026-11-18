@@ -60,6 +60,20 @@ describe("agent_control_takeover", () => {
   });
 });
 
+describe("agent_control_allow (Z5)", () => {
+  it("lifts the hold a takeover set, audited, and says false when there is none", async () => {
+    const { rpc, rows, leases } = setup();
+    leases.acquire(K1, "thr_a", 60);
+    await rpc.agent_control_takeover(H1);
+    const listed = await rpc.agent_sessions({});
+    expect(listed.find((s) => s.sessionId === 1)).toMatchObject({ controlledBy: "human", holdUntil: 1_300_000 });
+    expect(await rpc.agent_control_allow(H1)).toEqual({ allowed: true });
+    expect(leases.acquire(K1, "thr_a", 60)).toMatchObject({ ok: true });
+    expect(await rpc.agent_control_allow(H2)).toEqual({ allowed: false });
+    expect(rows.map((r) => [r.tool, r.threadId])).toContainEqual(["control.allow", "owner RPC"]);
+  });
+});
+
 describe("agent_sessions", () => {
   it("lists only sessions an agent opened or holds, with the owner, lease time and what waits", async () => {
     const { rpc, leases, registry } = setup();

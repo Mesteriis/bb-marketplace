@@ -132,6 +132,7 @@ export interface ControlLifecycleDeps {
 export function registerControlLifecycle(bb: BbPluginApi, deps: ControlLifecycleDeps): void {
   const { leases, registry, service, closeSession } = deps;
   bb.events.on("thread.deleted", ({ thread }) => {
+    registry.markDeleted(thread.id);
     leases.endForThread(thread.id, "thread_gone");
     for (const key of registry.keysOf(thread.id)) {
       registry.forget(key);
@@ -142,6 +143,7 @@ export function registerControlLifecycle(bb: BbPluginApi, deps: ControlLifecycle
     leases.endForThread(thread.id, "thread_gone");
     registry.markArchived(thread.id);
   });
+  bb.events.on("thread.unarchived", ({ thread }) => registry.unarchive(thread.id));
   const timer = setInterval(() => sweepControl(leases, service), deps.everyMs ?? 5000);
   timer.unref?.();
   bb.onDispose(() => clearInterval(timer));

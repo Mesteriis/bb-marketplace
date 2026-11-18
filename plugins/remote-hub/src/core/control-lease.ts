@@ -6,6 +6,8 @@
 export const LEASE_DEFAULT_SECONDS = 120;
 export const LEASE_MAX_SECONDS = 600;
 export const LEASE_MIN_SECONDS = 5;
+/** After the human takes a session back, agents may not take it again for this long (or until the human allows it). */
+export const TAKEOVER_HOLD_MS = 5 * 60_000;
 
 export type LeaseEndReason = "released" | "expired" | "takeover" | "thread_gone" | "revoked" | "session_closed";
 
@@ -22,7 +24,7 @@ export type Owner =
   | { kind: "human"; generation: number }
   | { kind: "agent"; threadId: string; leaseId: string; expiresAt: number; generation: number };
 
-export type AcquireResult = { ok: true; leaseId: string; expiresAt: number; generation: number } | { ok: false; code: "held_by_another_thread" | "already_held_by_you" | "not_the_owner" };
+export type AcquireResult = { ok: true; leaseId: string; expiresAt: number; generation: number } | { ok: false; code: "held_by_another_thread" | "already_held_by_you" | "not_the_owner" | "owner_took_over" };
 export type CheckResult = { ok: true; generation: number } | { ok: false; code: "no_lease" | "lease_expired" | "not_the_owner" };
 
 interface Lease {
@@ -42,6 +44,7 @@ export interface ControlLeasesDeps {
 
 export class ControlLeases {
   private readonly sessions = new Map<string, Entry>();
+  private readonly holds = new Map<string, number>();
   private readonly listeners: Array<(end: LeaseEnd) => void> = [];
   private readonly changeListeners: Array<(sessionKey: string) => void> = [];
   constructor(private readonly deps: ControlLeasesDeps) {}
@@ -73,8 +76,25 @@ export class ControlLeases {
       : { kind: "agent", threadId: entry.lease.threadId, leaseId: entry.lease.leaseId, expiresAt: entry.lease.expiresAt, generation: entry.generation };
   }
 
+  /** When the human's hold on a session ends (epoch ms), or null. */
+  holdUntil(sessionKey: string): number | null {
+    const until = this.holds.get(sessionKey);
+    if (until === undefined) return null;
+    if (this.deps.now() >= until) {
+      this.holds.delete(sessionKey);
+      return null;
+    }
+    return until;
+  }
+
+  /** The human lets agents drive this session again before the hold runs out. */
+  allowAgents(sessionKey: string): void {
+    if (this.holds.delete(sessionKey)) this.changed(sessionKey);
+  }
+
   acquire(sessionKey: string, threadId: string, seconds?: number): AcquireResult {
     const entry = this.live(sessionKey);
+    if (this.holdUntil(sessionKey) !== null) return { ok: false, code: "owner_took_over" };
     if (entry.lease !== null) return { ok: false, code: entry.lease.threadId === threadId ? "already_held_by_you" : "held_by_another_thread" };
     entry.generation += 1;
     entry.lease = { threadId, leaseId: this.deps.newId(), expiresAt: this.deps.now() + this.ttl(seconds) };
@@ -103,8 +123,17 @@ export class ControlLeases {
     const entry = this.live(sessionKey);
     if (entry.lease === null) return { ok: true, previous: null };
     const previous = { threadId: entry.lease.threadId, leaseId: entry.lease.leaseId };
+    this.holds.set(sessionKey, this.deps.now() + TAKEOVER_HOLD_MS);
     this.end(sessionKey, entry, "takeover");
     return { ok: true, previous };
+  }
+
+  /** Ends the lease only if it is exactly this one (a late abort of an old call must not end a successor's lease). */
+  endLease(sessionKey: string, threadId: string, leaseId: string, reason: LeaseEndReason): boolean {
+    const entry = this.sessions.get(sessionKey);
+    if (entry === undefined || entry.lease === null || entry.lease.threadId !== threadId || entry.lease.leaseId !== leaseId) return false;
+    this.end(sessionKey, entry, reason);
+    return true;
   }
 
   /** Whether `threadId` holds the lease `leaseId` on this session right now. */
@@ -141,6 +170,7 @@ export class ControlLeases {
   forget(sessionKey: string): void {
     this.endSession(sessionKey, "session_closed");
     this.sessions.delete(sessionKey);
+    this.holds.delete(sessionKey);
   }
 
   /** Ends the leases for which `pick` says so; the number ended. */

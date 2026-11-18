@@ -23,6 +23,7 @@ function api(over: Partial<AgentApi> & { grants?: AgentGrantView[]; rows?: Agent
     audit: over.audit ?? vi.fn(async () => over.rows ?? []),
     sessions: over.sessions ?? vi.fn(async () => over.sessionRows ?? []),
     takeover: over.takeover ?? vi.fn(async () => ({ tookOver: true })),
+    allowAgents: over.allowAgents ?? vi.fn(async () => ({ allowed: true })),
     answer: over.answer ?? vi.fn(async () => ({ answered: true as const })),
     decideCertificate: over.decideCertificate ?? vi.fn(async () => {}),
     disconnect: over.disconnect ?? vi.fn(async () => {}),
@@ -132,7 +133,7 @@ describe("AgentPanel: sessions agents opened or drive (stage 4b-1)", () => {
   const GEN = "a".repeat(32);
   const base: AgentSessionView = {
     generation: GEN, sessionId: 4, kind: "ssh", connectionId: P1, state: "running", openedByThread: "thr_a", controlledBy: "human",
-    leaseThreadId: null, leaseExpiresAt: null, questions: [], certificate: null, openedByArchivedThread: false,
+    leaseThreadId: null, leaseExpiresAt: null, questions: [], certificate: null, openedByArchivedThread: false, holdUntil: null,
   };
 
   it("says there are none when no agent opened or holds a session", async () => {
@@ -208,4 +209,14 @@ describe("AgentPanel: sessions agents opened or drive (stage 4b-1)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Disconnect build box" }));
     await waitFor(() => expect(a.disconnect).toHaveBeenCalled());
   });
+
+  it("a session the owner took back shows the hold and offers to let agents drive again", async () => {
+    const a = api({ sessionRows: [{ ...base, holdUntil: 1_700_000_000_000 }] });
+    mount(a);
+    const list = await screen.findByLabelText("Agent sessions");
+    expect(list.textContent).toContain("kept by you until");
+    fireEvent.click(screen.getByRole("button", { name: "Let agents drive build box again" }));
+    await waitFor(() => expect(a.allowAgents).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }));
+  });
 });
+
