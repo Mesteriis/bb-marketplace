@@ -44,7 +44,13 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm run test",
-    "test:integration": "python3 tests/integration/ssh-docker.py && python3 tests/integration/rdp-docker.py && cargo build --features test-hooks --manifest-path helper/Cargo.toml && REMOTE_HUB_INTEGRATION=1 REMOTE_HUB_HELPER=helper/target/debug/remote-hub-helper vitest run tests/integration/ssh-service.test.ts tests/integration/rdp-probe.test.ts tests/integration/rdp-service.test.ts tests/integration/credential-leak.test.ts tests/integration/ssh-askpass.test.ts tests/integration/agent-control.test.ts"
+    "test:integration": "python3 tests/integration/ssh-docker.py && python3 tests/integration/rdp-docker.py && cargo build --features test-hooks --manifest-path helper/Cargo.toml && REMOTE_HUB_INTEGRATION=1 REMOTE_HUB_HELPER=helper/target/debug/remote-hub-helper vitest run tests/integration/ssh-service.test.ts tests/integration/rdp-probe.test.ts tests/integration/rdp-service.test.ts tests/integration/credential-leak.test.ts tests/integration/ssh-askpass.test.ts tests/integration/agent-control.test.ts",
+    "helper:sums": "node scripts/helper-sums.mjs",
+    "verify:helper": "node scripts/verify-helper.mjs",
+    "check:dist": "node scripts/check-build-output.mjs",
+    "check:release": "node scripts/check-build-output.mjs --release",
+    "check:notices": "node scripts/gen-notices.mjs --check && node scripts/check-notices.mjs",
+    "build:clean-clone": "bash scripts/clean-clone-build.sh"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.10.0",

@@ -10,6 +10,7 @@
 import type { ExecFinishedMessage, ExecStateMessage } from "../../core/exec-protocol.ts";
 import type { CredentialBind } from "../../core/credential.ts";
 import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
+import { checkHelperIntegrity, type IntegrityResult } from "./helper-integrity.ts";
 import { experimental_execHostFile, experimental_spawnHostProcess } from "@get-bb/plugin-sdk/process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -142,7 +143,7 @@ export function parseHelperVersion(stdout: string): string {
 }
 
 export type HelperProbe =
-  | { ok: true; version: string; path: string }
+  | { ok: true; version: string; path: string; verified: boolean }
   | { ok: false; error: HelperStartFailure };
 
 /** Locate, platform-check and version-check the helper binary. */
@@ -150,13 +151,30 @@ export async function probeHelper(binPath: string): Promise<HelperProbe> {
   const unsupported = platformError();
   if (unsupported !== null) return { ok: false, error: unsupported };
   if (!existsSync(binPath)) return { ok: false, error: helperMissingError(binPath) };
+  // Before anything is executed: a release's checksum file must match the binary.
+  let integrity: IntegrityResult;
+  try {
+    integrity = checkHelperIntegrity(binPath);
+  } catch {
+    integrity = { ok: false, code: "helper_tampered", reason: "unreadable_sums" };
+  }
+  if (!integrity.ok) {
+    return {
+      ok: false,
+      error: {
+        code: "helper_tampered",
+        message: "Remote Hub helper at " + binPath + " does not match its checksum file (" + integrity.reason + "); it was not started. Reinstall the plugin.",
+        path: binPath,
+      },
+    };
+  }
   try {
     const { stdout } = await experimental_execHostFile(binPath, ["--version"]);
     const version = parseHelperVersion(stdout);
     if (version !== HELPER_VERSION) {
       return { ok: false, error: helperMismatchError(binPath, HELPER_VERSION, version || "unknown") };
     }
-    return { ok: true, version, path: binPath };
+    return { ok: true, version, path: binPath, verified: integrity.verified };
   } catch (error) {
     return {
       ok: false,

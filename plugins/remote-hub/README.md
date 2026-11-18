@@ -61,6 +61,20 @@ npm run build          # bb plugin build
 
 Rust-тесты помощника: `cd helper && cargo test --locked --features test-hooks`.
 
+## Проверки релиза (этап 5)
+
+- `npm run check:dist` — состав dist/ (файлы bb plugin build, версия и id, нет домашнего каталога сборщика; карта
+  источников с таким путём даёт предупреждение — не поставлять).
+- `npm run helper:sums` — пишет bin/SHA256SUMS; `npm run check:release` — бинарник arm64 Mach-O, сумма совпадает,
+  `--version` равен версии пакета. Сервер сверяет сумму перед запуском помощника (`helper_tampered`); без файла сумм
+  (сборка из репозитория) помощник запускается как непроверенный.
+- `npm run verify:helper` — пересобирает помощника во временном каталоге и сравнивает хэши (сборки Rust не обязаны быть
+  побайтно одинаковыми: различие сообщается, решает человек).
+- `npm run check:notices` — таблица всех связанных crate в THIRD_PARTY_NOTICES.md актуальна (`node scripts/gen-notices.mjs`
+  перезаписывает её) и покрывает prod-зависимости npm.
+- `npm run build:clean-clone [ref]` — чистый клон зафиксированного коммита: npm ci, check, build, release-помощник и все
+  проверки выше. Ничего не публикует и не устанавливает.
+
 ## Структура
 
 - src/core — zod-схемы протокола, кодек кадров, построитель ssh argv, credit (без host-кода).

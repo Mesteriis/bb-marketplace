@@ -110,6 +110,25 @@ describe("helper-process (pure parts)", () => {
     expect(platformError()).toBeNull();
   });
 
+  it("a binary that does not match its checksum file is refused before anything is executed", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "rh-probe-"));
+    try {
+      const bin = join(dir, HELPER_BIN_NAME);
+      writeFileSync(bin, "#!/bin/sh\ntouch " + join(dir, "RAN") + "\n", { mode: 0o755 });
+      writeFileSync(join(dir, "SHA256SUMS"), "0".repeat(64) + "  " + HELPER_BIN_NAME + "\n");
+      const probe = await probeHelper(bin);
+      expect(probe.ok).toBe(false);
+      if (probe.ok) return;
+      expect(probe.error.code).toBe("helper_tampered");
+      expect((await import("node:fs")).existsSync(join(dir, "RAN"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // R10: the expected message is a literal, not built with the function under test.
   it("returns helper_missing with a literal expected message", async () => {
     const missing = "/fixed/plugin/root/bin/" + HELPER_BIN_NAME;
