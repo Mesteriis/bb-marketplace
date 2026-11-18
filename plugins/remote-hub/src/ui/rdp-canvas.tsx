@@ -41,6 +41,17 @@ export interface RdpCanvasProps {
   handleRef?: Ref<RdpCanvasHandle>;
 }
 
+function applyFit(canvas: HTMLCanvasElement, fit: FitMode): void {
+  if (fit === "actual" && canvas.width > 0) {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.style.width = canvas.width / dpr + "px";
+    canvas.style.height = canvas.height / dpr + "px";
+  } else {
+    canvas.style.width = "";
+    canvas.style.height = "";
+  }
+}
+
 export function RdpCanvas(props: RdpCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const fitRef = useRef<FitMode>(props.fit);
@@ -60,6 +71,14 @@ export function RdpCanvas(props: RdpCanvasProps) {
     }),
     [],
   );
+
+  // "1:1": one framebuffer pixel is one device pixel, so the CSS size is the
+  // framebuffer size divided by the device pixel ratio; "fit" is left to the CSS.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas === null) return;
+    applyFit(canvas, props.fit);
+  }, [props.fit]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -134,6 +153,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
       if (canvas.width !== chunk.fbWidth || canvas.height !== chunk.fbHeight) {
         canvas.width = chunk.fbWidth;
         canvas.height = chunk.fbHeight;
+        applyFit(canvas, fitRef.current);
       }
       fb = { width: chunk.fbWidth, height: chunk.fbHeight };
       // `payload` is the WebSocket's own ArrayBuffer: the pixel rows are a view of it.

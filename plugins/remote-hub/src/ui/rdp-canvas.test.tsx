@@ -147,6 +147,22 @@ describe("RdpCanvas: painting and acks", () => {
     expect(puts.length).toBe(4);
   });
 
+  it("1:1 sizes the canvas in CSS pixels from the framebuffer and the device pixel ratio; fit leaves it to the CSS", async () => {
+    Object.defineProperty(window, "devicePixelRatio", { value: 2, configurable: true });
+    try {
+      const actual = await mount({ fit: "actual" });
+      await actual.binary(chunk(1, [8, 4], [0, 0, 8, 4], [1, 1, 1, 255]));
+      expect([actual.canvas.style.width, actual.canvas.style.height]).toEqual(["4px", "2px"]);
+      cleanup();
+      FakeWebSocket.instances = [];
+      const fitted = await mount({ fit: "fit" });
+      await fitted.binary(chunk(1, [8, 4], [0, 0, 8, 4], [1, 1, 1, 255]));
+      expect([fitted.canvas.style.width, fitted.canvas.style.height]).toEqual(["", ""]);
+    } finally {
+      Object.defineProperty(window, "devicePixelRatio", { value: 1, configurable: true });
+    }
+  });
+
   it("ignores a malformed binary frame without drawing or acking", async () => {
     const { socket, binary } = await mount();
     await binary(new ArrayBuffer(10));

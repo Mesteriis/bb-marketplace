@@ -8,7 +8,7 @@ import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
 import type { SessionHandle } from "./src/core/rpc.ts";
 import { RemoteHubPage } from "./src/ui/remote-hub-page.tsx";
-import { SshPage } from "./src/ui/ssh-page.tsx";
+import { ConnectPage } from "./src/ui/connect-page.tsx";
 import type { SshTarget } from "./src/core/rpc.ts";
 
 function RemoteHubTab() {
@@ -36,16 +36,29 @@ function RemoteHubTab() {
   return <RemoteHubPage loadStatus={loadStatus} onOpen={onOpen} onInput={onInput} onClose={onClose} />;
 }
 
-function SshTab() {
+function ConnectTab() {
   const rpc = useRpc<typeof rpcContract>();
   const wsUrl = (typeof window !== "undefined" ? (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host : "") + "/api/v1/plugins/makosh-remote-hub/http/attach";
+  const onAttach = async (handle: SessionHandle) => ({ token: (await rpc.call("session_attach", handle)).token, wsUrl });
+  const onClose = async (handle: SessionHandle) => {
+    await rpc.call("session_close", handle);
+  };
 
   return (
-    <SshPage
-      onSshOpen={async (target: SshTarget) => rpc.call("ssh_open", { target })}
-      onAttach={async (handle) => ({ token: (await rpc.call("session_attach", handle)).token, wsUrl })}
-      onClose={async (handle) => {
-        await rpc.call("session_close", handle);
+    <ConnectPage
+      ssh={{
+        onSshOpen: async (target: SshTarget) => rpc.call("ssh_open", { target }),
+        onAttach,
+        onClose,
+      }}
+      rdp={{
+        onRdpOpen: async (target, size) => rpc.call("rdp_open", { target, width: size.width, height: size.height }),
+        onAttach,
+        onClose,
+        onDecision: async (handle, fingerprint, accept) => {
+          await rpc.call("rdp_cert_decision", { generation: handle.generation, sessionId: handle.sessionId, fingerprint, accept });
+        },
+        onScreenshot: async (handle) => rpc.call("rdp_screenshot", handle),
       }}
     />
   );
@@ -61,9 +74,9 @@ export default definePluginApp((app) => {
   });
   app.slots.navPanel({
     id: "remote-hub-ssh",
-    title: "SSH",
+    title: "SSH / RDP",
     icon: "Terminal",
     path: "ssh",
-    component: SshTab,
+    component: ConnectTab,
   });
 });
