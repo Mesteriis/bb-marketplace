@@ -420,6 +420,16 @@ describe("RDP service: ending", () => {
     expect(late.socket.closed[0].code).toBe(4000);
   });
 
+  it("an explicit close of a session that already ended does not announce the end again", async () => {
+    const { helper, service, handle, sid } = await readySession();
+    const ends: string[] = [];
+    service.subscribeSessionEnd(handle, (info) => ends.push(info.reason));
+    helper.closed(sid, "network_error");
+    await service.sessionClose(handle);
+    expect(ends).toEqual(["network_error"]);
+    expect(service.sessionList().find((s) => s.sessionId === sid)?.reason).toBe("network_error");
+  });
+
   it("helper exit closes the socket with 4410", async () => {
     const { helper, service, wire, handle } = await readySession();
     const { socket } = await attach(service, wire, handle);

@@ -75,6 +75,13 @@ async function readPassword(): Promise<string> {
 }
 
 const say = (line: string): void => void process.stdout.write(line + "\n");
+// The attach snapshot and the live events can both carry the same state: print each change once.
+let lastState: string | null = null;
+const sayState = (state: string): void => {
+  if (state === lastState) return;
+  lastState = state;
+  say("state: " + state);
+};
 
 async function main(): Promise<void> {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -154,7 +161,7 @@ async function main(): Promise<void> {
       attachment.ack(frameId);
     },
     sendEvent(event) {
-      if (event.type === "state") say("state: " + String(event.state));
+      if (event.type === "state") sayState(String(event.state));
       else if (event.type === "cert_prompt") onPrompt(event.prompt as Parameters<typeof onPrompt>[0]);
       else if (event.type === "desktop") {
         say("desktop_ready: " + String(event.width) + "x" + String(event.height));
@@ -164,7 +171,7 @@ async function main(): Promise<void> {
   });
   // The attach snapshot may already carry the state and a pending prompt.
   const initial = attachment.initial as { state: string; prompt: Parameters<typeof onPrompt>[0] | null; desktop: { width: number; height: number } | null };
-  say("state: " + initial.state);
+  sayState(initial.state);
   if (initial.prompt !== null) onPrompt(initial.prompt);
   if (initial.desktop !== null) {
     say("desktop_ready: " + initial.desktop.width + "x" + initial.desktop.height);

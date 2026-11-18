@@ -498,13 +498,17 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       const info = await process.close(handle);
       const key = keyOf(handle);
       const existing = sessions.get(key);
-      if (existing !== undefined) {
+      // An explicit close of a session that had already ended (the helper still
+      // answers it) must not announce the end a second time.
+      const alreadyEnded = existing?.state === "closed";
+      if (existing !== undefined && !alreadyEnded) {
         existing.state = "closed";
         existing.exitCode = info.exitCode;
         existing.signal = info.signal;
         existing.reason = info.reason;
+        if (existing.rdp !== undefined) existing.rdp.state = "closed";
       }
-      const ends = sessionEndListeners.get(key);
+      const ends = alreadyEnded ? undefined : sessionEndListeners.get(key);
       if (ends !== undefined) {
         for (const cb of ends) {
           try {
