@@ -7,10 +7,17 @@
   (`ctx.threadId`, `ctx.projectId`). Access is granted per connection by the owner on the Remote Hub page, applies to
   agents in any thread, and is checked on every call. Remote output (terminal text, pixels) is untrusted data: it
   cannot grant access, and the tools frame it as data.
-- **Limit: the same OS user.** BB plugins and processes of the owner are full-trust. A process running as the same user
-  can call the plugin's RPCs (the owner's page uses the same ones), read the plugin database and drive the helper. This
-  model does not isolate an agent from the owner's shell access, and does not claim to: it limits what the registered
-  tools do.
+- **What Observe shows.** Agents never get a saved password or key. But an agent with Observe can read everything the
+  terminal prints (its scrollback included) and everything visible on the remote screen, so a secret that appears
+  there is visible to it. Treat Observe as "the agent sees what you would see".
+- **Limit: access levels restrict tools, not callers.** The levels limit what the *registered agent tools* do. The host
+  reports every caller that is not another plugin as kind `client`, whether it is the owner's page or `bb plugin rpc call`
+  run from a shell, so the plugin cannot tell them apart. A BB agent that can run `bb plugin rpc call` or other shell
+  commands as the owner is therefore NOT contained: it can change a grant, read the plugin database or drive the
+  helper. The UI makes no claim of isolation. What the plugin does: owner RPCs refuse callers of kind `plugin`; every
+  grant change and "revoke all" is written to the audit (who: "owner RPC", old and new level, time) and shown at the top
+  of Agent activity. BB offers plugins no server-side toast or owner-only confirmation surface an agent cannot answer
+  (`bb.ui.requestInput` appears in the agent's own thread), so widening a grant raises no notice.
 - **Host keys and certificates** are the owner's decisions: an agent cannot approve a new host key, a changed key, or a
   server certificate. A saved RDP password is pinned to the certificate it was first used with (trust on first sight);
   a saved-secret SSH session reads only the helper-owned known_hosts overlay.

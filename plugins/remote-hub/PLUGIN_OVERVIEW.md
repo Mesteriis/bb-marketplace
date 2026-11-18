@@ -39,18 +39,19 @@ both through a Rust helper, plus the echo console from stage 1.
   keeps using your ssh config and cannot save a password.
 - Agent access (read-only for now): per connection, default none, set by you in
   the editor (any thread of this BB). Six tools list allowed connections and
-  sessions, read terminal output and take a desktop screenshot: no secret, no typing,
-  no connecting. Every call is audited without content and revocable in Agent activity.
+  sessions, read terminal output and take a desktop screenshot: no saved secret, no typing,
+  no connecting. Observe shows all the terminal or screen shows, secrets too.
+  Levels limit these tools only; an agent with a shell as you is not contained. Calls and grant changes are audited, revocable in Agent activity.
 - The helper owns every session; detaching a view never ends it, and disconnecting never logs the remote user off.
 
 ## Honest limits
 
-Passwords saved before bindings existed must be saved again. The helper is unsigned: same-user code injected into it is not stopped. A saved RDP password is bound to
+Passwords saved before bindings existed must be saved again. Helper unsigned. A saved RDP password is bound to
 host, port, user and domain and, after its first accepted use, to that server
 certificate (trust on first sight): the helper sends it to no other (save it
 again to start over).
-One-time codes are always typed by you. Agents cannot type, connect or run commands yet; no CLI. macOS may ask you to approve the helper's Keychain access first. "Last opened" means the open succeeded, not that the server accepted a login.
-No clipboard, remote resize or Kerberos. NLA against a real Windows host and strict TLS were checked by hand; the plugin was not run in a live BB server. The helper binary is not in bin/: npm run build:helper (Rust, aarch64-apple-darwin).
+One-time codes are always typed by you. Agents cannot type, connect or run commands yet. macOS may ask to approve Keychain access. "Last opened" means the open succeeded, not that the login was accepted.
+No clipboard, remote resize or Kerberos. NLA and strict TLS were checked by hand; not run in a live BB server. The helper binary is built with npm run build:helper (Rust, aarch64-apple-darwin).
 
 ## Source
 

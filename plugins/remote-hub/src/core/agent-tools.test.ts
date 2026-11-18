@@ -74,7 +74,7 @@ describe("the tool set", () => {
   it("is exactly the six read-only tools, and every description starts with what the tool cannot do", () => {
     const { tools } = setup();
     expect(tools.map((t) => t.name)).toEqual(["remote_connections_list", "remote_connection_get", "remote_sessions_list", "remote_session_status", "remote_terminal_read", "remote_rdp_screenshot"]);
-    for (const t of tools) expect(t.description.startsWith("Cannot read or write passwords, passphrases or keys, and cannot approve hosts or certificates"), t.name).toBe(true);
+    for (const t of tools) expect(t.description.startsWith("Cannot get a saved password, passphrase or key, and cannot approve hosts or certificates"), t.name).toBe(true);
     // No universal secret tool, no input tool in this stage.
     expect(tools.some((t) => /secret|password|input|exec|connect$/.test(t.name))).toBe(false);
   });
@@ -245,5 +245,14 @@ describe("nothing secret in any result", () => {
     expect(everything).not.toContain(SECRET_REF);
     expect(everything).not.toContain(SECRET_PATH);
     expect(everything).not.toContain("rh-cred");
+  });
+});
+
+describe("Y1: tool descriptions do not promise that session content is free of secrets", () => {
+  it("every description starts with what the tool cannot do and says what the owner's grant does not hide", async () => {
+    const { CANNOT } = await import("./agent-tools.ts");
+    expect(CANNOT).toContain("a saved password");
+    expect(CANNOT).toContain("everything the session shows");
+    expect(CANNOT).not.toContain("Cannot read or write passwords, passphrases or keys");
   });
 });

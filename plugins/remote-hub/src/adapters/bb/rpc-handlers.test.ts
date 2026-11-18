@@ -301,6 +301,34 @@ describe("agent access RPCs (stage 4a): the owner's page is the only way to chan
     expect(rows.map((r) => [r.tool, r.outcome, r.threadId])).toEqual([["c", "ok", "thr"], ["b", "ok", "thr"]]);
   });
 
+  const PLUGIN_CALLER = { experimental_caller: { kind: "plugin" as const, pluginId: "other" }, experimental_signal: new AbortController().signal };
+  const CLIENT_CALLER = { experimental_caller: { kind: "client" as const }, experimental_signal: new AbortController().signal };
+
+  it("Y2: every owner RPC refuses a caller that is another plugin and serves the app", async () => {
+    const { handlers, profiles, access } = await withAgents();
+    const p = profiles.save({ fields: RDP });
+    const call = handlers as unknown as Record<string, (input: unknown, ctx: unknown) => Promise<unknown>>;
+    await expect(call.agent_access_set!({ profileId: p.id, level: "exec", recordCommands: false }, PLUGIN_CALLER)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(call.agent_access_revoke_all!({}, PLUGIN_CALLER)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(call.profile_list!({}, PLUGIN_CALLER)).rejects.toMatchObject({ code: "forbidden" });
+    expect(access.get(p.id).level).toBe("none");
+    await expect(call.agent_access_set!({ profileId: p.id, level: "observe", recordCommands: false }, CLIENT_CALLER)).resolves.toMatchObject({ level: "observe" });
+  });
+
+  it("Y2: every grant change and revoke is audited as the owner RPC with old and new level", async () => {
+    const { handlers, profiles, audit } = await withAgents();
+    const p = profiles.save({ fields: RDP });
+    await handlers.agent_access_set({ profileId: p.id, level: "exec", recordCommands: false });
+    await handlers.agent_access_set({ profileId: p.id, level: "observe", recordCommands: false });
+    await handlers.agent_access_revoke_all({});
+    const rows = audit.list(10).map((r) => [r.tool, r.threadId, r.profileId, r.detail, r.outcome]);
+    expect(rows).toEqual([
+      ["access.revoke_all", "owner RPC", null, "removed 1", "ok"],
+      ["access.set", "owner RPC", p.id, "observe <- exec", "ok"],
+      ["access.set", "owner RPC", p.id, "exec <- none", "ok"],
+    ]);
+  });
+
   it("without the agent deps the RPCs are not available instead of silently allowing", async () => {
     const { handlers } = setup();
     await expect(handlers.agent_access_list({})).rejects.toMatchObject({ code: "not_found" });

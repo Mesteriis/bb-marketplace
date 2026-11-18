@@ -36,6 +36,36 @@ describe("AgentPanel", () => {
     expect((await screen.findByLabelText("Agent activity")).textContent).toContain("ANY thread of this BB");
   });
 
+  it("Y1: the note does not claim agents never see secrets; it says what Observe shows and what is never given", async () => {
+    expect(ACCESS_NOTE).not.toContain("never see or type a password or key");
+    expect(ACCESS_NOTE).toContain("never get a saved password or key");
+    expect(ACCESS_NOTE).toContain("everything the terminal prints");
+    expect(ACCESS_NOTE).toContain("including a secret shown there");
+  });
+
+  it("Y2: grant changes are shown at the top, apart from the tool calls, with who, old and new level and a limit note", async () => {
+    const a = api({
+      rows: [
+        row({ id: 5, tool: "remote_terminal_read" }),
+        row({ id: 4, tool: "access.set", threadId: "owner RPC", projectId: "", sessionKey: null, detail: "exec <- observe", at: "2026-11-18T12:05:00.000Z" }),
+        row({ id: 3, tool: "access.revoke_all", threadId: "owner RPC", projectId: "", profileId: null, sessionKey: null, detail: "removed 2" }),
+      ],
+    });
+    mount(a);
+    const changes = await screen.findByLabelText("Access changes");
+    expect(changes.textContent).toContain("exec <- observe");
+    expect(changes.textContent).toContain("owner RPC");
+    expect(changes.textContent).toContain("removed 2");
+    expect(changes.textContent).not.toContain("remote_terminal_read");
+    expect(screen.getByLabelText("Agent activity list").textContent).toContain("remote_terminal_read");
+    expect(screen.getByLabelText("Agent activity list").textContent).not.toContain("access.set");
+    const panel = screen.getByLabelText("Agent activity");
+    expect(panel.compareDocumentPosition(changes) & Node.DOCUMENT_POSITION_CONTAINED_BY).toBeTruthy();
+    expect(changes.compareDocumentPosition(screen.getByLabelText("Granted connections")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(ACCESS_NOTE).toContain("restrict the tools registered for agents");
+    expect(ACCESS_NOTE).toContain("not a sandbox");
+  });
+
   it("with no grants it says agents can use nothing, and the revoke-all button is off", async () => {
     mount(api());
     expect((await screen.findByLabelText("Agent activity")).textContent).toContain("Agents cannot see or use any connection");

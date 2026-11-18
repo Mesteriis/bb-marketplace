@@ -17,7 +17,30 @@ import type { RemoteHubService } from "./service.ts";
 type Input<K extends keyof RpcSchemas> = z.output<RpcSchemas[K]["input"]>;
 type Output<K extends keyof RpcSchemas> = z.input<RpcSchemas[K]["output"]>;
 /** Every handler takes its parsed input and returns (a promise of) its declared output. */
-export type RpcHandlers = { [K in keyof RpcSchemas]: (input: Input<K>) => Output<K> | Promise<Output<K>> };
+/** The second argument is what the host passes: who is calling. Absent only in tests that call a handler directly. */
+export interface RpcCallContext {
+  readonly experimental_caller?: { readonly kind: "plugin"; readonly pluginId: string } | { readonly kind: "client" };
+}
+export type RpcHandlers = { [K in keyof RpcSchemas]: (input: Input<K>, ctx?: RpcCallContext) => Output<K> | Promise<Output<K>> };
+
+/** Who the audit names for a change made through the owner's page. */
+export const OWNER_RPC = "owner RPC";
+
+/**
+ * These RPCs are the owner's page talking to this plugin. Another plugin has no business calling them, least of
+ * all to widen an agent grant, so a caller of kind "plugin" is refused. (The host reports every other caller,
+ * including `bb plugin rpc call` from a shell, as kind "client": that cannot be told apart from the page.)
+ */
+export function ownerOnly(handlers: RpcHandlers): RpcHandlers {
+  const wrapped: Record<string, unknown> = {};
+  for (const [name, handler] of Object.entries(handlers) as Array<[string, (input: unknown, ctx?: RpcCallContext) => unknown]>) {
+    wrapped[name] = async (input: unknown, ctx?: RpcCallContext) => {
+      if (ctx?.experimental_caller?.kind === "plugin") throw new experimental_PluginRpcRefusal({ code: "forbidden", message: "this RPC is for the Remote Hub page, not for other plugins" });
+      return await handler(input, ctx);
+    };
+  }
+  return wrapped as unknown as RpcHandlers;
+}
 
 /** A credential failure as an RPC refusal; the stable code travels in front of the text. */
 export function credentialRefusal(error: CredentialError): experimental_PluginRpcRefusal {
@@ -92,7 +115,7 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
     }
   };
 
-  return {
+  return ownerOnly({
     helper_status: () => withHelper(() => service.helperStatus()),
     echo_open: (input) => withHelper(() => service.echoOpen(input.cols, input.rows)),
     echo_input: (input) =>
@@ -183,11 +206,24 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
       }),
     agent_access_list: async () => withAgents(({ access }) => access.list().map(({ profileId, level, recordCommands, updatedAt }) => ({ profileId, level: level as "observe" | "input" | "exec", recordCommands, updatedAt }))),
     agent_access_set: async (input) =>
-      withAgents(({ access }) => {
-        const grant = access.set(input.profileId, input.level, input.recordCommands);
-        return { profileId: grant.profileId, level: grant.level, recordCommands: grant.recordCommands };
+      withAgents(({ access, audit }) => {
+        const ticket = audit.begin({ threadId: OWNER_RPC, projectId: "", tool: "access.set", profileId: input.profileId, detail: `${input.level} <- ${access.get(input.profileId).level}` });
+        try {
+          const grant = access.set(input.profileId, input.level, input.recordCommands);
+          ticket.finish("ok");
+          return { profileId: grant.profileId, level: grant.level, recordCommands: grant.recordCommands };
+        } catch (error) {
+          ticket.finish(error instanceof AgentAccessError ? error.code : "error");
+          throw error;
+        }
       }),
-    agent_access_revoke_all: async () => withAgents(({ access }) => ({ revoked: access.revokeAll() })),
+    agent_access_revoke_all: async () =>
+      withAgents(({ access, audit }) => {
+        const ticket = audit.begin({ threadId: OWNER_RPC, projectId: "", tool: "access.revoke_all", detail: `removed ${access.list().length}` });
+        const revoked = access.revokeAll();
+        ticket.finish("ok");
+        return { revoked };
+      }),
     agent_audit_list: async (input) => withAgents(({ audit }) => audit.list(input.limit)),
     rdp_trusted_list: () => withHelper(async () => service.rdpTrustedList()),
     rdp_trusted_forget: (input) => withHelper(async () => ({ removed: service.rdpTrustedForget(input.host, input.port, input.fingerprint) })),
@@ -200,5 +236,5 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
       ),
     session_attach: (input) =>
       withHelper(() => ({ token: service.sessionAttach({ generation: input.generation, sessionId: input.sessionId }) })),
-  };
+  });
 }

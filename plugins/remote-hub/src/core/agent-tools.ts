@@ -77,7 +77,8 @@ export const SCREENSHOT_DEFAULT_DIM = 1280;
 export const SCREENSHOT_MAX_DIM = 1920;
 export const SCREENSHOT_MAX_BYTES = 700 * 1024;
 
-export const CANNOT = "Cannot read or write passwords, passphrases or keys, and cannot approve hosts or certificates (the owner does that on the Remote Hub page). ";
+export const CANNOT =
+  "Cannot get a saved password, passphrase or key, and cannot approve hosts or certificates (the owner does that on the Remote Hub page). With observe it can read everything the session shows, including a secret that appears on the remote screen or in the terminal output. ";
 
 export class ToolError extends Error {
   constructor(readonly code: string, message: string) {
