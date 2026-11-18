@@ -21,7 +21,7 @@ const profile = (id: string, over: Partial<Profile> = {}): Profile =>
     username: "ops", domain: null, authType: "password", identityFile: null, credentialRef: SECRET_REF, rdpWidth: null, rdpHeight: null, ...over,
   }) as Profile;
 
-function setup(opts: { sessions?: AgentSessionView[]; budget?: ConstructorParameters<typeof ToolBudget>[0]; shotWait?: Promise<void>; extraProfiles?: number } = {}) {
+function setup(opts: { sessions?: AgentSessionView[]; budget?: ConstructorParameters<typeof ToolBudget>[0]; shotWait?: Promise<void>; extraProfiles?: number; fitPng?: string } = {}) {
   const profiles = [profile(P_OPEN), profile(P_SECOND, { protocol: "rdp", authType: "password", username: "u", domain: "CORP", port: 3389, rdpWidth: 800, rdpHeight: 600 }), profile(P_CLOSED, { authType: "key", identityFile: SECRET_PATH })];
   for (let i = 0; i < (opts.extraProfiles ?? 0); i++) profiles.push(profile(`22222222-2222-4333-8444-${String(i).padStart(12, "0")}`, { name: "bulk-" + i }));
   const grants = new Map<string, AgentGrant>();
@@ -59,7 +59,7 @@ function setup(opts: { sessions?: AgentSessionView[]; budget?: ConstructorParame
         read: (key, from, max) => (key === `${GEN}.1` ? (calls.push("read"), from === null ? scrollback.tail(max) : scrollback.read(from, max)) : key === `${GEN}.3` ? scrollback.tail(max) : null),
         screenshot: async () => (calls.push("shot"), await opts.shotWait, { png: "UE5H", frameId: 7, width: 800, height: 600, timestamp: 123 }),
       },
-      fitScreenshot: (png) => ({ png, width: 400, height: 300, sourceWidth: 800, sourceHeight: 600, scale: 0.5, downscaled: true }),
+      fitScreenshot: (png) => ({ png: opts.fitPng ?? png, width: 400, height: 300, sourceWidth: 800, sourceHeight: 600, scale: 0.5, downscaled: true }),
     },
   });
   const tool = (name: string): AgentToolDef => tools.find((t) => t.name === name)!;
@@ -358,3 +358,18 @@ describe("Y6: a read that starts inside an escape sequence is cleaned using the 
     expect(a).toContain(`[end of remote output ${token(a)}]`);
   });
 });
+
+describe("Y5: no single response is larger than the cap", () => {
+  it("an answer over 1 MiB is replaced by an error, audited as response_too_large, and only the small error is charged", async () => {
+    const { call, access, rows, budget } = setup({ fitPng: "A".repeat(1024 * 1024 + 1) });
+    access.set(P_SECOND, "observe", false);
+    const r = await call("remote_rdp_screenshot", { sessionId: `${GEN}.2` });
+    expect(r.isError).toBe(true);
+    expect(r.content.some((p) => p.type === "image")).toBe(false);
+    expect(textOf(r)).toContain("response_too_large");
+    expect(rows.at(-1)!.outcome).toBe("response_too_large");
+    // the reservation was given back: the thread can still ask for something small
+    expect(budget.admit("thr_agent", 100)).toEqual({ ok: true });
+  });
+});
+
