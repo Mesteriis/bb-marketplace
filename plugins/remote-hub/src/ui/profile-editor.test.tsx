@@ -1,0 +1,143 @@
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ProfileFields } from "../core/profile.ts";
+import { ProfileEditor } from "./profile-editor.tsx";
+
+afterEach(cleanup);
+
+const type = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
+
+const REF = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";
+const EXISTING: ProfileFields = {
+  name: "win",
+  protocol: "rdp",
+  group: "lab",
+  tags: ["a"],
+  favorite: false,
+  color: null,
+  host: "win.example.test",
+  port: null,
+  username: "admin",
+  domain: "CORP",
+  authType: "password",
+  identityFile: null,
+  credentialRef: REF,
+  rdpWidth: 1280,
+  rdpHeight: 800,
+};
+
+function mount(initial: ProfileFields | null = null) {
+  const onSave = vi.fn(async (_fields: ProfileFields) => {});
+  const onCancel = vi.fn();
+  render(<ProfileEditor initial={initial} onSave={onSave} onCancel={onCancel} />);
+  return { onSave, onCancel };
+}
+
+describe("ProfileEditor", () => {
+  it("has the Connection, Authentication and Source sections and no password or secret input", () => {
+    const { container } = render(<ProfileEditor initial={null} onSave={async () => {}} onCancel={() => {}} />);
+    expect(screen.getByRole("group", { name: "Connection" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Authentication" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Source" })).toBeTruthy();
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    fireEvent.change(screen.getByLabelText("Authentication type"), { target: { value: "password" } });
+    expect(screen.getByText(/not stored/i)).toBeTruthy();
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+  });
+
+  it("saves a new SSH key profile with exactly the typed values", async () => {
+    const { onSave } = mount();
+    type("Name", "  build  ");
+    type("Host", "build.example.test");
+    type("Port", "2222");
+    type("User", "ci");
+    type("Group", "lab");
+    type("Tags", "linux, ci, linux");
+    fireEvent.change(screen.getByLabelText("Authentication type"), { target: { value: "key" } });
+    type("Key file", "/Users/dev/.ssh/id_ed25519");
+    fireEvent.click(screen.getByLabelText("Favorite"));
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0]?.[0]).toEqual({
+      name: "build",
+      protocol: "ssh",
+      group: "lab",
+      tags: ["linux", "ci"],
+      favorite: true,
+      color: null,
+      host: "build.example.test",
+      port: 2222,
+      username: "ci",
+      domain: null,
+      authType: "key",
+      identityFile: "/Users/dev/.ssh/id_ed25519",
+      credentialRef: null,
+      rdpWidth: null,
+      rdpHeight: null,
+    });
+  });
+
+  it("refuses an invalid host with a message at the field and calls nothing", async () => {
+    const { onSave } = mount();
+    type("Name", "x");
+    type("Host", "-oProxyCommand=evil");
+    fireEvent.click(screen.getByText("Save"));
+    expect((await screen.findAllByRole("alert")).some((a) => /host/i.test(a.textContent ?? ""))).toBe(true);
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("a port that is not a whole number is refused before saving", async () => {
+    const { onSave } = mount();
+    type("Name", "x");
+    type("Host", "h.example.test");
+    type("Port", "22x");
+    fireEvent.click(screen.getByText("Save"));
+    expect((await screen.findAllByRole("alert")).some((a) => /port/i.test(a.textContent ?? ""))).toBe(true);
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("choosing RDP shows domain and desktop size, forces password sign-in and requires a user", async () => {
+    const { onSave } = mount();
+    type("Name", "win");
+    type("Host", "win.example.test");
+    fireEvent.change(screen.getByLabelText("Protocol"), { target: { value: "rdp" } });
+    expect(screen.getByLabelText("Domain")).toBeTruthy();
+    expect(screen.getByLabelText("Desktop width")).toBeTruthy();
+    expect((screen.getByLabelText("Authentication type") as HTMLSelectElement).value).toBe("password");
+    expect(Array.from((screen.getByLabelText("Authentication type") as HTMLSelectElement).options).map((o) => o.value)).toEqual(["password"]);
+    fireEvent.click(screen.getByText("Save"));
+    expect((await screen.findAllByRole("alert")).some((a) => /user/i.test(a.textContent ?? ""))).toBe(true);
+    expect(onSave).not.toHaveBeenCalled();
+    type("User", "admin");
+    type("Desktop width", "1920");
+    type("Desktop height", "1080");
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0]?.[0]).toMatchObject({ protocol: "rdp", username: "admin", authType: "password", rdpWidth: 1920, rdpHeight: 1080, domain: null });
+  });
+
+  it("editing keeps the credential reference untouched and shows where the profile came from", async () => {
+    const { onSave } = mount(EXISTING);
+    expect(screen.getByText(/created manually/i)).toBeTruthy();
+    type("Name", "win2");
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0]?.[0]).toEqual({ ...EXISTING, name: "win2" });
+  });
+
+  it("shows the error of a failed save and stays editable; Cancel closes", async () => {
+    const onSave = vi.fn(async () => {
+      throw new Error("no such profile");
+    });
+    const onCancel = vi.fn();
+    render(<ProfileEditor initial={null} onSave={onSave} onCancel={onCancel} />);
+    type("Name", "x");
+    type("Host", "h.example.test");
+    fireEvent.click(screen.getByText("Save"));
+    expect(await screen.findByText("no such profile")).toBeTruthy();
+    expect((screen.getByText("Save") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+});
