@@ -195,4 +195,21 @@ describe("registerControlLifecycle", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(attempted.sort()).toEqual([`${GEN}.1`, `${GEN}.2`]);
   });
+
+  it("A3: a deleted thread's session whose close fails stays registered and is closed again by the sweep", async () => {
+    const { registerControlLifecycle } = await import("./agent-control.ts");
+    const h = harness();
+    h.registry.mark(`${GEN}.1`, "thr_gone");
+    let fail = true;
+    const attempted: string[] = [];
+    registerControlLifecycle(h.bb, { leases: h.leases, registry: h.registry, service: { sessionList: () => [{ generation: GEN, sessionId: 1, state: "running" }] as unknown as SessionInfo[] }, closeSession: async (k) => { attempted.push(k); if (fail) throw new Error("no"); }, everyMs: 20 });
+    h.handlers.get("thread.deleted")!({ thread: { id: "thr_gone" } });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(h.registry.keys(), "still registered while the close is unconfirmed").toEqual([`${GEN}.1`]);
+    fail = false;
+    await new Promise((r) => setTimeout(r, 80));
+    expect(h.registry.keys()).toEqual([]);
+    expect(attempted.length).toBeGreaterThanOrEqual(2);
+    for (const hook of h.hooks) hook();
+  });
 });

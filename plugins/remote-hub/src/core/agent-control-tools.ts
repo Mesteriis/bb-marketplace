@@ -40,7 +40,16 @@ export class AgentSessionRegistry {
   }
   forget(sessionKey: string): void {
     this.opened.delete(sessionKey);
+    this.closing.delete(sessionKey);
   }
+  /** A session whose close could not be confirmed: it stays registered (and counted) until it is. */
+  markClosing(sessionKey: string): void {
+    this.closing.add(sessionKey);
+  }
+  closingKeys(): string[] {
+    return [...this.closing];
+  }
+  private readonly closing = new Set<string>();
   keys(): string[] {
     return [...this.opened.keys()];
   }
@@ -58,6 +67,9 @@ export class AgentSessionRegistry {
   /** The thread came back from the archive. */
   unarchive(threadId: string): void {
     this.archived.delete(threadId);
+  }
+  isDeleted(threadId: string): boolean {
+    return this.deleted.has(threadId);
   }
   isArchived(threadId: string): boolean {
     return this.archived.has(threadId);
@@ -134,6 +146,8 @@ export function controlSessionExtras(leases: ControlLeases, control: Pick<AgentC
     };
   };
 }
+
+const CLOSE_CONFIRM_MS = 5000;
 
 export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   const { access, leases, control, ports } = deps;
@@ -263,12 +277,19 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
           let sessionKey: string;
           try {
             ({ sessionKey } = await control.connect(profile.id));
+            // Registered at once: whatever happens next, the session is accounted for until it is confirmed closed.
+            openedBy.mark(sessionKey, ctx.threadId);
             // The open took time: if the grant, the thread or the call ended meanwhile, the session is closed, not handed over.
             if (!access.check(profile.id, "connect").ok || openedBy.isRetired(ctx.threadId) || ctx.signal?.aborted === true) {
-              await control.disconnect(sessionKey).catch(() => undefined);
+              try {
+                await Promise.race([control.disconnect(sessionKey), new Promise((_, reject) => setTimeout(() => reject(new Error("close timed out")), CLOSE_CONFIRM_MS).unref?.())]);
+              } catch {
+                openedBy.markClosing(sessionKey);
+                throw new ToolError("connect_cancelled", "the permission to connect ended while the connection was opening; the session could not be confirmed closed, it stays listed and Remote Hub keeps trying to close it");
+              }
+              openedBy.forget(sessionKey);
               throw new ToolError("connect_cancelled", "the permission to connect ended while the connection was opening; it was closed");
             }
-            openedBy.mark(sessionKey, ctx.threadId);
           } finally {
             const left = (opening.get(ctx.threadId) ?? 1) - 1;
             if (left > 0) opening.set(ctx.threadId, left);

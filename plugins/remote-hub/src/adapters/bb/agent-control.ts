@@ -134,20 +134,33 @@ export interface ControlLifecycleDeps {
  */
 export function registerControlLifecycle(bb: BbPluginApi, deps: ControlLifecycleDeps): void {
   const { leases, registry, service, closeSession } = deps;
+  /** Closes what is waiting to be closed; a session leaves the registry only when its close is confirmed (or it is gone). */
+  const closePending = (): void => {
+    for (const key of new Set([...registry.closingKeys(), ...registry.keys().filter((k) => registry.isDeleted(registry.threadOf(k) ?? ""))])) {
+      registry.markClosing(key);
+      void closeSession(key).then(
+        () => registry.forget(key),
+        () => {
+          // A close that fails for a session that is already gone is done; otherwise it stays and is tried again.
+          if (!service.sessionList().some((s) => keyOf(s) === key && s.state !== "closed")) registry.forget(key);
+        },
+      );
+    }
+  };
   bb.events.on("thread.deleted", ({ thread }) => {
     registry.markDeleted(thread.id);
     leases.endForThread(thread.id, "thread_gone");
-    for (const key of registry.keysOf(thread.id)) {
-      registry.forget(key);
-      void closeSession(key).catch(() => undefined);
-    }
+    closePending();
   });
   bb.events.on("thread.archived", ({ thread }) => {
     leases.endForThread(thread.id, "thread_gone");
     registry.markArchived(thread.id);
   });
   bb.events.on("thread.unarchived", ({ thread }) => registry.unarchive(thread.id));
-  const timer = setInterval(() => sweepControl(leases, service), deps.everyMs ?? 5000);
+  const timer = setInterval(() => {
+    sweepControl(leases, service);
+    closePending();
+  }, deps.everyMs ?? 5000);
   timer.unref?.();
   bb.onDispose(() => clearInterval(timer));
 }

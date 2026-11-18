@@ -61,6 +61,7 @@ function setup(opts: Setup = {}) {
   const opened: string[] = [];
   let connectGate: Promise<void> | null = null;
   const disconnected: string[] = [];
+  let failDisconnect = false;
   const waiting = new Map<string, Array<"host_key" | "certificate" | "login_prompt">>();
   const registry = new AgentSessionRegistry();
   const tools = createControlTools({
@@ -89,7 +90,10 @@ function setup(opts: Setup = {}) {
         sessions.push({ key, kind: p.protocol === "rdp" ? "rdp" : "ssh", state: "connecting", profileId: p.id, exitCode: null, reason: null, control: "ready" });
         return { sessionKey: key };
       },
-      disconnect: async (key) => void disconnected.push(key),
+      disconnect: async (key) => {
+        if (failDisconnect) throw new Error("close failed");
+        disconnected.push(key);
+      },
       waitingForOwner: (key) => waiting.get(key) ?? [],
     },
   });
@@ -101,6 +105,7 @@ function setup(opts: Setup = {}) {
   const textOf = (r: ToolResult) => r.content.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n");
   const data = (r: ToolResult) => JSON.parse(textOf(r)) as Record<string, any>;
   return {
+    setFailDisconnect: (v: boolean) => void (failDisconnect = v),
     registry, access, rows, leases, sessions, wrote, rdpSent, tools, tool, call, textOf, data, opened, disconnected, waiting,
     advance: (ms: number) => void (now += ms),
     holdConnect: () => {
@@ -564,6 +569,27 @@ describe("Z6: remote_connect reserves its slot before awaiting and revalidates a
     expect(t.textOf(r)).toContain("connect_cancelled");
     expect(t.disconnected).toEqual([`${GEN}.10`]);
     expect(t.registry.threadOf(`${GEN}.10`)).toBeUndefined();
+  });
+
+  it("A3: when closing a late result fails, the session stays registered (counts against the cap, found by deletion cleanup) until closed", async () => {
+    const t = setup({ sessions: [] });
+    t.access.set(P_SSH, "input", false);
+    const release = t.holdConnect();
+    const pending = t.call("remote_connect", { connectionId: P_SSH });
+    await until(() => t.rows.length >= 1);
+    t.access.set(P_SSH, "none", false);
+    t.setFailDisconnect(true);
+    release();
+    const r = await pending;
+    expect(t.textOf(r)).toContain("connect_cancelled");
+    expect(t.textOf(r)).toContain("could not be confirmed closed");
+    expect(t.registry.threadOf(`${GEN}.10`)).toBe("thr_a");
+    expect(t.registry.closingKeys()).toEqual([`${GEN}.10`]);
+    // The slot is still taken: four more opens fit only three.
+    t.access.set(P_SSH, "input", false);
+    t.setFailDisconnect(false);
+    const more = await Promise.all(Array.from({ length: 4 }, () => t.call("remote_connect", { connectionId: P_SSH })));
+    expect(more.filter((x) => x.isError !== true)).toHaveLength(3);
   });
 
   it("a thread archived, or a call aborted, while the connection opens closes it too", async () => {
