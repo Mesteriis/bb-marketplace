@@ -25,15 +25,24 @@ both through a Rust helper, plus the echo console from stage 1.
   (SSH at once; RDP fills the form and waits for the password). A profile holds
   no password or key material, and it records only when it was last opened and
   the codes of recent failed opens.
+- Saved passwords for RDP profiles, kept in the macOS Keychain (never in the profile,
+  the database, the page or any log). A profile can save a password, replace it or
+  remove it; Connect then uses it without typing. A saved password only works for
+  the host, port, user and domain it was saved for, and editing those forgets it.
+  A Credentials screen lists what is saved, which profiles use each entry, and can
+  check, change or delete it. A locked or refusing Keychain is shown as such; there
+  is no fallback to storing the password anywhere else.
 - The helper owns every session; detaching a view never ends it, and
   disconnecting never logs the remote user off. Session end is reported with its
   reason.
 
 ## Honest limits
 
-Passwords and key passphrases are not stored (you type them each time), certificate
-trust lasts for the BB run, and there is no import of SSH config, no keychain use,
-no agent tools and no CLI yet. "Last opened" means the open call succeeded, not that
+SSH passwords and key passphrases are still typed each time (saving them needs the
+askpass work of stage 3b-2), certificate trust lasts for the BB run, and there is no
+import of SSH config, no agent tools and no CLI yet. The helper is not code-signed,
+so macOS may ask you to approve its Keychain access; until you do, a saved password
+reports "locked or needs approval" instead of a dialog. "Last opened" means the open call succeeded, not that
 the server accepted a login. No clipboard, no remote resize, no
 Kerberos. NLA against a real Windows host and strict TLS were checked by hand;
 the plugin has not otherwise been exercised inside a live BB server. The helper

@@ -96,8 +96,12 @@ fn a_locked_keychain_is_an_error_not_a_dialog_and_not_a_fallback() {
 fn a_keychain_file_that_does_not_exist_is_unavailable() {
     let kc = Keychain::at_path(std::env::temp_dir().join("rh-kc-does-not-exist-1/none.keychain-db"));
     watchdog();
-    let missing = kc.set("a", &Secret::new("x")).unwrap_err();
-    assert!(matches!(missing, KeychainError::Unavailable | KeychainError::Missing), "{missing:?}");
+    // Precisely Unavailable (checked before any keychain call): SecKeychainOpen would hand back a
+    // reference for a missing file and a write through it lands in the user's DEFAULT keychain.
+    assert_eq!(kc.set("a", &Secret::new("x")).unwrap_err(), KeychainError::Unavailable);
+    assert_eq!(kc.get("a").unwrap_err(), KeychainError::Unavailable);
+    assert_eq!(kc.exists("a"), Err(KeychainError::Unavailable));
+    assert_eq!(kc.delete("a").unwrap_err(), KeychainError::Unavailable);
     assert!(!std::env::temp_dir().join("rh-kc-does-not-exist-1").exists(), "a missing keychain file must not be created");
 }
 

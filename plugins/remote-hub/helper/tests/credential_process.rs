@@ -154,3 +154,30 @@ fn a_locked_keychain_is_a_code_for_every_operation_and_never_a_fallback() {
     assert_eq!(code(&f.open_with(5, None, Some(REF), server.port)), "keychain_locked");
     assert!(!f.h().stderr_text().contains(SECRET));
 }
+
+/// A test-hooks helper that was NOT given a temporary keychain has no keychain at all:
+/// it must never fall back to the user's default (login) keychain.
+#[test]
+fn a_test_helper_without_a_named_keychain_has_none_and_never_uses_the_login_keychain() {
+    watchdog();
+    let mut h = start(&[]);
+    h.send(&Request::CredentialSave { id: 1, reference: REF.into(), secret: Secret::new(SECRET) });
+    assert_eq!(code(&h.read_reply(1)), "keychain_unavailable");
+    h.send(&Request::CredentialStatus { id: 2, reference: REF.into() });
+    assert_eq!(code(&h.read_reply(2)), "keychain_unavailable");
+    h.send(&Request::CredentialDelete { id: 3, reference: REF.into() });
+    assert_eq!(code(&h.read_reply(3)), "keychain_unavailable");
+    h.shutdown();
+}
+
+/// A named keychain that does not exist is an error, never a write to the default keychain.
+#[test]
+fn a_named_keychain_that_does_not_exist_is_unavailable() {
+    watchdog();
+    let missing = std::env::temp_dir().join(format!("rh-cred-{}-missing/none.keychain-db", std::process::id()));
+    let mut h = start(&[("REMOTE_HUB_KEYCHAIN_PATH", missing.to_str().unwrap())]);
+    h.send(&Request::CredentialSave { id: 1, reference: REF.into(), secret: Secret::new(SECRET) });
+    assert_eq!(code(&h.read_reply(1)), "keychain_unavailable");
+    assert!(!missing.exists());
+    h.shutdown();
+}

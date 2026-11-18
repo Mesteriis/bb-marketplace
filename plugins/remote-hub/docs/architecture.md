@@ -283,3 +283,28 @@ table; append-only). An open from a profile passes `profileId` to `ssh_open` /
 the message), and `session_list` shows the profile of each session, from which
 the catalogue derives its status. The UI is `ProfileCatalogue`, `ProfileEditor`
 and `useProfiles` around the existing session pages; Quick connect stays.
+
+## Stage 3b-1 — saved credentials (Keychain), RDP wired
+
+- **Where the secret lives:** only in the macOS Keychain, service `remote-hub`,
+  account = the credential reference `rh-cred:v1:<executionHostId>:<uuid>`. The
+  database holds metadata (`credentials` table: kind, label, what it is bound to);
+  no column can hold a secret. The TypeScript side passes a secret DOWN once
+  (`credential.save`) and never receives one: there is no RPC that returns it.
+- **Helper:** `helper/src/keychain.rs`. The Security framework starts threads and
+  the helper must stay single-threaded (it forks), so every Keychain operation runs in
+  a short-lived `remote-hub-helper --keychain-op` child that reads one JSON request on
+  stdin and answers on stdout (secret over the pipes only, never argv or environment).
+  Keychain user interaction is switched off for the whole child process (the switch is
+  process-global and its guard turns it back on when dropped, so it is switched off once and
+  never restored): a locked keychain or an item needing approval is the code
+  `keychain_locked`, never a dialog. `session.open_rdp` takes `password` (use once) or
+  `credentialRef` (resolved by the helper itself): exactly one.
+- **Binding:** a credential records the endpoint it was saved for
+  (`CredentialBook.authorizeEndpoint`); `rdp_open` refuses any other host, port, user or
+  domain (`credential_target_mismatch`). Editing a profile's endpoint drops the credential.
+- **Tests never touch the login keychain:** a `test-hooks` helper is pointed at a
+  temporary keychain FILE with `REMOTE_HUB_KEYCHAIN_PATH` (created by the helper with a
+  throwaway password; the user's keychain search list and default keychain are not
+  changed). With no path a test-hooks helper has no keychain at all, a path that is not a
+  file is an error, and the production binary does not contain these strings.

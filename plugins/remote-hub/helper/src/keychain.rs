@@ -64,9 +64,14 @@ pub fn classify(status: i32) -> KeychainError {
 
 #[derive(Clone, Debug)]
 enum Target {
+    #[cfg(not(feature = "test-hooks"))]
     Default,
     #[cfg(feature = "test-hooks")]
     Path(std::path::PathBuf),
+    /// A test-hooks build with no keychain named: there is NO default. No test may reach
+    /// the user's login keychain by forgetting to name a temporary one.
+    #[cfg(feature = "test-hooks")]
+    Unconfigured,
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +94,9 @@ impl Keychain {
             }
             return Keychain { target: Target::Path(path) };
         }
+        #[cfg(feature = "test-hooks")]
+        return Keychain { target: Target::Unconfigured };
+        #[cfg(not(feature = "test-hooks"))]
         Keychain { target: Target::Default }
     }
 
@@ -151,9 +159,20 @@ mod imp {
 
     fn open(target: &Target) -> Result<SecKeychain, KeychainError> {
         match target {
+            #[cfg(not(feature = "test-hooks"))]
             Target::Default => SecKeychain::default().map_err(|e| classify(e.code())),
             #[cfg(feature = "test-hooks")]
-            Target::Path(path) => SecKeychain::open(path).map_err(|e| classify(e.code())),
+            Target::Unconfigured => Err(KeychainError::Unavailable),
+            #[cfg(feature = "test-hooks")]
+            Target::Path(path) => {
+                // SecKeychainOpen returns a reference even for a file that is not there, and a
+                // write through it lands in the user's DEFAULT keychain. A named keychain that
+                // does not exist is therefore an error, never a fallback.
+                if !path.is_file() {
+                    return Err(KeychainError::Unavailable);
+                }
+                SecKeychain::open(path).map_err(|e| classify(e.code()))
+            }
         }
     }
 
