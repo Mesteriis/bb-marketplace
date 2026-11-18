@@ -1,6 +1,7 @@
 // Host-free profile editor (stage 3a). Sections: Connection, Authentication,
 // the protocol's own fields, Source. No secret field exists here: a password is
 // typed when connecting, and the credential reference is carried through as it was.
+import { COLOR_DEPTHS, PRESET_LABELS, RDP_PRESETS, effectiveRdpOptions, presetOf, type RdpOptions } from "../core/rdp-options.ts";
 import { AgentAccessSection } from "./agent-access-section.tsx";
 import type { AgentApi } from "./agent-panel.tsx";
 import { useState } from "react";
@@ -34,7 +35,18 @@ const BLANK: ProfileFields = {
   credentialRef: null,
   rdpWidth: null,
   rdpHeight: null,
+  rdpOptions: null,
 };
+
+/** The six experience switches and what each one is called to the owner. */
+const EFFECT_SWITCHES: Array<[Exclude<keyof RdpOptions, "compression" | "colorDepth">, string]> = [
+  ["wallpaper", "Desktop wallpaper"],
+  ["fullWindowDrag", "Show window contents while dragging"],
+  ["menuAnimations", "Menu and window animations"],
+  ["fontSmoothing", "Font smoothing"],
+  ["desktopComposition", "Desktop composition"],
+  ["themes", "Visual themes"],
+];
 
 const orNull = (text: string): string | null => (text.trim() === "" ? null : text.trim());
 
@@ -73,6 +85,8 @@ export function ProfileEditor(props: ProfileEditorProps) {
   const [identityFile, setIdentityFile] = useState(start.identityFile ?? "");
   const [width, setWidth] = useState(start.rdpWidth === null ? "" : String(start.rdpWidth));
   const [height, setHeight] = useState(start.rdpHeight === null ? "" : String(start.rdpHeight));
+  // Connection quality (RDP): a profile saved without options shows, and keeps, the default.
+  const [rdpOpts, setRdpOpts] = useState<RdpOptions>(effectiveRdpOptions(start.rdpOptions));
   // A password typed here lives only until Save is pressed; it is cleared at once.
   const [secret, setSecret] = useState("");
   const [removeSaved, setRemoveSaved] = useState(false);
@@ -122,6 +136,7 @@ export function ProfileEditor(props: ProfileEditorProps) {
       credentialRef: start.credentialRef,
       rdpWidth: rdp ? numberOrNull(width) : null,
       rdpHeight: rdp ? numberOrNull(height) : null,
+      rdpOptions: rdp ? rdpOpts : null,
     };
     const parsed = profileFieldsSchema.safeParse(candidate);
     if (!parsed.success) {
@@ -267,6 +282,47 @@ export function ProfileEditor(props: ProfileEditorProps) {
             Desktop height
             <input value={height} onChange={(e) => setHeight(e.target.value)} placeholder="800" />
           </label>
+          <label>
+            Connection quality
+            <select
+              value={presetOf(rdpOpts)}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (next === "slow" || next === "balanced" || next === "quality") setRdpOpts(RDP_PRESETS[next]);
+              }}
+            >
+              {(["slow", "balanced", "quality"] as const).map((name) => (
+                <option key={name} value={name}>
+                  {PRESET_LABELS[name]}
+                </option>
+              ))}
+              {presetOf(rdpOpts) === "custom" && <option value="custom">{PRESET_LABELS.custom}</option>}
+            </select>
+          </label>
+          <p className="rh-hint">Fewer bytes on a slow link, more detail on a fast one. The server may ignore the effect switches.</p>
+          <details>
+            <summary>Advanced</summary>
+            <label className="rh-check">
+              <input type="checkbox" checked={rdpOpts.compression} onChange={(e) => setRdpOpts({ ...rdpOpts, compression: e.target.checked })} />
+              Compress the update stream
+            </label>
+            <label>
+              Colour depth
+              <select value={rdpOpts.colorDepth} onChange={(e) => setRdpOpts({ ...rdpOpts, colorDepth: Number(e.target.value) as RdpOptions["colorDepth"] })}>
+                {COLOR_DEPTHS.map((d) => (
+                  <option key={d} value={d}>
+                    {d} bits per pixel
+                  </option>
+                ))}
+              </select>
+            </label>
+            {EFFECT_SWITCHES.map(([key, label]) => (
+              <label key={key} className="rh-check">
+                <input type="checkbox" checked={rdpOpts[key]} onChange={(e) => setRdpOpts({ ...rdpOpts, [key]: e.target.checked })} />
+                {label}
+              </label>
+            ))}
+          </details>
         </fieldset>
       )}
 

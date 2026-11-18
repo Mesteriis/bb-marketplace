@@ -14,6 +14,7 @@ pub mod input;
 pub mod input_encode;
 pub mod mapping;
 pub mod manager;
+pub mod options;
 pub mod protocol;
 pub mod pump;
 pub mod reasons;

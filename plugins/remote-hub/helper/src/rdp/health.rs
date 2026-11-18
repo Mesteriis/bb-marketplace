@@ -14,9 +14,12 @@ use tracing_core::{Dispatch, Event, Level, Metadata, Subscriber};
 // on separate threads, so there each thread has its own.
 #[cfg(not(test))]
 static DISCARDED: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static IGNORED_OTHER: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 thread_local! {
     static DISCARDED: AtomicU64 = const { AtomicU64::new(0) };
+    static IGNORED_OTHER: AtomicU64 = const { AtomicU64::new(0) };
 }
 
 /// Updates IronRDP said it ignored (its "Ignoring ..." warnings) since the process began.
@@ -27,6 +30,14 @@ pub fn discarded_updates() -> u64 {
     DISCARDED.with(|d| d.load(Ordering::Relaxed))
 }
 
+/// Updates of a kind IronRDP could not decode and ignored (not a lost piece of the picture as far as is known).
+pub fn ignored_other_updates() -> u64 {
+    #[cfg(not(test))]
+    return IGNORED_OTHER.load(Ordering::Relaxed);
+    #[cfg(test)]
+    IGNORED_OTHER.with(|d| d.load(Ordering::Relaxed))
+}
+
 fn count_discarded() {
     #[cfg(not(test))]
     DISCARDED.fetch_add(1, Ordering::Relaxed);
@@ -34,9 +45,24 @@ fn count_discarded() {
     DISCARDED.with(|d| d.fetch_add(1, Ordering::Relaxed));
 }
 
+fn count_ignored_other() {
+    #[cfg(not(test))]
+    IGNORED_OTHER.fetch_add(1, Ordering::Relaxed);
+    #[cfg(test)]
+    IGNORED_OTHER.with(|d| d.fetch_add(1, Ordering::Relaxed));
+}
+
 struct IgnoreCounter;
 
-struct Message(bool);
+/// What an ignored update was: a lost piece of the picture, some other update, or nothing we count.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ignored {
+    No,
+    Visual,
+    Other,
+}
+
+struct Message(Ignored);
 impl Visit for Message {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         // The text is looked at and thrown away: only whether it says a VISUAL update was ignored matters. An ignored
@@ -44,7 +70,9 @@ impl Visit for Message {
         if field.name() == "message" {
             let text = format!("{value:?}");
             if text.starts_with("Ignoring") && !text.contains("pointer") {
-                self.0 = true;
+                // Only a visual update (a bitmap or surface band) is a lost piece of the picture. "Ignoring invalid
+                // Fast-Path update" is IronRDP's catch-all for an update type it does not decode: counted apart.
+                self.0 = if text.contains("visual") || text.contains("bitmap") || text.contains("surface") { Ignored::Visual } else { Ignored::Other };
             }
         }
     }
@@ -62,10 +90,12 @@ impl Subscriber for IgnoreCounter {
     fn record(&self, _: &Id, _: &Record<'_>) {}
     fn record_follows_from(&self, _: &Id, _: &Id) {}
     fn event(&self, event: &Event<'_>) {
-        let mut message = Message(false);
+        let mut message = Message(Ignored::No);
         event.record(&mut message);
-        if message.0 {
-            count_discarded();
+        match message.0 {
+            Ignored::Visual => count_discarded(),
+            Ignored::Other => count_ignored_other(),
+            Ignored::No => {}
         }
     }
     fn enter(&self, _: &Id) {}
@@ -98,6 +128,8 @@ pub struct Snapshot {
     pub recoveries: u64,
     pub recovery_skipped: u64,
     pub ignored_outputs: u64,
+    /// Bytes of server PDU payload received (the wire, before decoding; TLS/TPKT framing not counted).
+    pub bytes_in: u64,
 }
 
 pub struct Health {
@@ -108,6 +140,7 @@ pub struct Health {
     recoveries: u64,
     recovery_skipped: u64,
     ignored_outputs: u64,
+    bytes_in: u64,
     recent: Vec<Instant>,
     last_sent: Option<(Snapshot, Instant)>,
 }
@@ -117,7 +150,7 @@ impl Health {
         let started = Instant::now();
         // The baseline is the all-zero snapshot, back-dated so the first change is sent at once; nothing is sent while nothing happened.
         let baseline = (Snapshot { discarded: discarded_updates(), ..Snapshot::default() }, started.checked_sub(STATS_EVERY).unwrap_or(started));
-        Health { started, updates: 0, pixels: 0, last_update: None, recoveries: 0, recovery_skipped: 0, ignored_outputs: 0, recent: Vec::new(), last_sent: Some(baseline) }
+        Health { started, updates: 0, pixels: 0, last_update: None, recoveries: 0, recovery_skipped: 0, ignored_outputs: 0, bytes_in: 0, recent: Vec::new(), last_sent: Some(baseline) }
     }
 
     /// A region was applied to the framebuffer.
@@ -125,6 +158,11 @@ impl Health {
         self.updates += 1;
         self.pixels = self.pixels.saturating_add(u64::from(width) * u64::from(height));
         self.last_update = Some(Instant::now());
+    }
+
+    /// A PDU of `n` payload bytes arrived from the server.
+    pub fn received(&mut self, n: usize) {
+        self.bytes_in = self.bytes_in.saturating_add(n as u64);
     }
 
     /// An output kind this engine does not act on (see `handle_outputs`).
@@ -158,7 +196,9 @@ impl Health {
             discarded: discarded_updates(),
             recoveries: self.recoveries,
             recovery_skipped: self.recovery_skipped,
-            ignored_outputs: self.ignored_outputs,
+            // Output kinds this engine does not act on, plus updates IronRDP could not decode (counted apart in the hook).
+            ignored_outputs: self.ignored_outputs.saturating_add(ignored_other_updates()),
+            bytes_in: self.bytes_in,
         }
     }
 
@@ -185,14 +225,26 @@ mod tests {
         let before = discarded_updates();
         tracing_core::dispatcher::with_default(&dispatch, || {
             tracing::warn!(target: "ironrdp_session::fast_path", "Ignoring truncated Fast-Path visual update PDU");
-            tracing::warn!(target: "ironrdp_session::fast_path", update_code = 1, "Ignoring invalid Fast-Path update");
+            tracing::warn!(target: "ironrdp_session::fast_path", update_code = 1, "Ignoring truncated Fast-Path visual update");
             tracing::warn!(target: "ironrdp_session::fast_path", "something else went wrong");
             tracing::warn!(target: "some_other_crate", "Ignoring this one: not ironrdp");
             tracing::warn!(target: "ironrdp_connector::connection", "Ignoring a server capability during the handshake");
             tracing::warn!(target: "ironrdp_session::fast_path", pointer_error = "x", "Ignoring unsupported pointer update");
             tracing::info!(target: "ironrdp_session::fast_path", "Ignoring but only info");
+            tracing::warn!(target: "ironrdp_session::fast_path", reason = "x", "Ignoring invalid Fast-Path update");
         });
+        // A visual update the session ignored counts as discarded; an update type it cannot decode counts apart.
         assert_eq!(discarded_updates() - before, 2);
+        assert_eq!(ignored_other_updates(), 1);
+    }
+
+    #[test]
+    fn received_bytes_add_up_and_show_in_the_snapshot() {
+        let mut h = Health::new();
+        h.received(1200);
+        h.received(34);
+        h.applied(10, 10);
+        assert_eq!(h.snapshot().bytes_in, 1234);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 // and helper/src/rdp/protocol.rs) as zod schemas, plus the parser for the
 // binary update frames. Host-free; protocol.ts folds these into its unions.
 import { z } from "zod";
+import { rdpOptionsSchema } from "./rdp-options.ts";
 
 const idSchema = z.number().int().min(0);
 const sessionIdSchema = z.number().int().min(0).max(0xffff_ffff);
@@ -82,6 +83,8 @@ export const openRdpRequestSchema = z.object({
   width: z.number().int().min(1).max(MAX_DESKTOP_WIDTH),
   height: z.number().int().min(1).max(MAX_DESKTOP_HEIGHT),
   expectedFingerprint: z.string().nullable(),
+  /** Compression, colour depth and experience switches (closed set; the helper validates them again). */
+  options: rdpOptionsSchema.optional(),
 }).refine((message) => (message.password === undefined) !== (message.credentialRef === undefined), {
   message: "give exactly one of password and credentialRef",
 });

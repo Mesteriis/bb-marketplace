@@ -859,7 +859,12 @@ fn handle(
             width,
             height,
             expected_fingerprint,
+            options,
         } => {
+            let options = options.unwrap_or_default();
+            if let Err(why) = options.validate() {
+                return Ok(rdp_error(id, "rdp_invalid_options", why.to_string()));
+            }
             // The secret comes from exactly one place: the request (use once) or the Keychain.
             // A saved password also brings the certificate it is pinned to (stage 3c-2, T4). With a pin, the
             // engine compares the presented certificate before CredSSP sends anything, so a different
@@ -893,7 +898,7 @@ fn handle(
                     }))
                 }
             };
-            match rdp.open(current_exe, host, port, username, password, domain, width, height, expected_fingerprint, pin_first_use) {
+            match rdp.open(current_exe, host, port, username, password, domain, width, height, expected_fingerprint, pin_first_use, options) {
             Ok((session_id, pid)) => { if let Some(target) = pin_target { rdp.set_pin_target(session_id, target); } Ok(protocol::encode_response(&Response::SessionOpened {
                 id,
                 session_id,
@@ -1228,9 +1233,9 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, current_exe
             RdpFrame::Event(EngineEvent::OwnerSet { .. }) => {
                 // The manager turns this into RdpFrame::OwnerSet.
             }
-            RdpFrame::Event(EngineEvent::Stats { updates, pixels, last_update_ms, discarded, recoveries, recovery_skipped, ignored_outputs }) => {
+            RdpFrame::Event(EngineEvent::Stats { updates, pixels, last_update_ms, discarded, recoveries, recovery_skipped, ignored_outputs, bytes_in }) => {
                 // Counts only. Carried as one `rdp.state` line so a reader of session_list sees them without a new message type.
-                let state = format!("stats updates={updates} pixels={pixels} last_ms={last_update_ms} discarded={discarded} recoveries={recoveries} skipped={recovery_skipped} ignored={ignored_outputs}");
+                let state = format!("stats updates={updates} pixels={pixels} last_ms={last_update_ms} discarded={discarded} recoveries={recoveries} skipped={recovery_skipped} ignored={ignored_outputs} bytes={bytes_in} avg={}", if updates == 0 { 0 } else { bytes_in / updates });
                 outbox.extend(protocol::encode_response(&Response::RdpState { session_id: rid, state }));
             }
             RdpFrame::Event(EngineEvent::Closed { .. }) => {

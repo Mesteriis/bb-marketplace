@@ -9,6 +9,7 @@
 // child_process, which is what the BB server itself runs on.
 import type { ExecFinishedMessage, ExecStateMessage } from "../../core/exec-protocol.ts";
 import type { CredentialBind } from "../../core/credential.ts";
+import type { RdpOptions } from "../../core/rdp-options.ts";
 import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
 import { checkHelperIntegrity, type IntegrityResult } from "./helper-integrity.ts";
 import { experimental_execHostFile, experimental_spawnHostProcess } from "@get-bb/plugin-sdk/process";
@@ -910,6 +911,7 @@ export class HelperProcess {
     width: number;
     height: number;
     expectedFingerprint: string | null;
+    options?: RdpOptions;
   }): Promise<SessionHandle> {
     const resp = await this.request({ type: "session.open_rdp", ...params } as RequestMessage);
     if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);

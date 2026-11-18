@@ -407,6 +407,7 @@ impl RdpManager {
         height: u32,
         expected_fingerprint: Option<String>,
         pin_first_use: bool,
+        options: crate::rdp::options::RdpOptions,
     ) -> Result<(u32, libc::pid_t), String> {
         let id = self.ids.next().ok_or_else(|| "session ids are exhausted".to_string())?;
         let exe = CString::new(current_exe).map_err(|_| "current exe has a NUL byte".to_string())?;
@@ -495,6 +496,7 @@ impl RdpManager {
             height,
             expected_fingerprint,
             pin_first_use,
+            options,
         };
         self.sessions.get_mut(&id).unwrap().write_buf.extend(protocol::encode_control(&cmd));
         Ok((id, pid))

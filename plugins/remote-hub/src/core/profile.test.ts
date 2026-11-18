@@ -89,6 +89,22 @@ describe("profile fields", () => {
   });
 });
 
+describe("RDP connection options in a profile (P1)", () => {
+  const OPTS = { compression: true, colorDepth: 16, wallpaper: false, fullWindowDrag: false, menuAnimations: false, fontSmoothing: true, desktopComposition: false, themes: false };
+  it("an RDP profile may carry options (or none: the default applies); an SSH profile may not", () => {
+    expect(profileFieldsSchema.safeParse({ ...RDP_FIELDS, rdpOptions: OPTS }).success).toBe(true);
+    expect(profileFieldsSchema.safeParse({ ...RDP_FIELDS, rdpOptions: null }).success).toBe(true);
+    expect(profileFieldsSchema.safeParse(RDP_FIELDS).success).toBe(true);
+    expect(profileFieldsSchema.safeParse({ ...SSH_FIELDS, rdpOptions: OPTS }).success).toBe(false);
+    expect(profileFieldsSchema.safeParse({ ...SSH_FIELDS, rdpOptions: null }).success).toBe(true);
+  });
+  it("the options are a closed set: a depth outside 16/24/32, a free-form flag or a missing switch is refused", () => {
+    for (const bad of [{ ...OPTS, colorDepth: 8 }, { ...OPTS, performanceFlags: 3 }, { ...OPTS, themes: "no" }, { compression: true }]) {
+      expect(profileFieldsSchema.safeParse({ ...RDP_FIELDS, rdpOptions: bad }).success, JSON.stringify(bad)).toBe(false);
+    }
+  });
+});
+
 describe("credentialRef", () => {
   it("parses the scoped reference into execution host and id", () => {
     expect(parseCredentialRef(REF)).toEqual({ executionHostId: "local", id: "0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a" });

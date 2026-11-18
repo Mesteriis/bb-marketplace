@@ -5,6 +5,7 @@
 // the only link to a secret is `credentialRef`, an opaque reference that names
 // the execution host it is valid on (stage 3b resolves it).
 import { z } from "zod";
+import { rdpOptionsSchema } from "./rdp-options.ts";
 import { assertHostToken, assertIdentityPath, assertSshUser } from "./ssh-args.ts";
 
 /** The only execution host there is until a remote one exists. */
@@ -90,6 +91,8 @@ export const profileFieldsSchema = z
     /** RDP desktop size; null = the page default. */
     rdpWidth: z.number().int().min(1).max(3840).nullable(),
     rdpHeight: z.number().int().min(1).max(2160).nullable(),
+    /** RDP only: compression, colour depth and experience switches. null or absent = the default (Balanced). */
+    rdpOptions: rdpOptionsSchema.nullable().optional(),
   })
   .strict()
   .superRefine((p, ctx) => {
@@ -102,6 +105,7 @@ export const profileFieldsSchema = z
     } else {
       if (p.domain !== null) issue("domain", "only an RDP profile has a domain");
       if (p.rdpWidth !== null || p.rdpHeight !== null) issue("rdpWidth", "only an RDP profile has a desktop size");
+      if (p.rdpOptions !== null && p.rdpOptions !== undefined) issue("rdpOptions", "only an RDP profile has connection options");
       if (p.username !== null) {
         try {
           assertSshUser(p.username);
@@ -192,5 +196,6 @@ export function profileFieldsOf(p: Profile): ProfileFields {
     credentialRef: p.credentialRef,
     rdpWidth: p.rdpWidth,
     rdpHeight: p.rdpHeight,
+    rdpOptions: p.rdpOptions ?? null,
   };
 }

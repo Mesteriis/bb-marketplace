@@ -118,6 +118,7 @@ impl Fixture {
             width: 800,
             height,
             expected_fingerprint: expected.map(str::to_string),
+            options: None,
         });
         self.h().read_reply(id)
     }
@@ -394,6 +395,7 @@ fn a_pin_given_at_save_time_is_enforced_even_against_the_callers_expected_finger
         width: 800,
         height: 600,
         expected_fingerprint: Some(CERT_B.into()),
+        options: None,
     });
     let Response::SessionOpened { session_id, .. } = f.h().read_reply(2) else { panic!("expected session.opened") };
     assert_eq!(f.h().read_closed(session_id).2, "cert_changed");
@@ -418,8 +420,8 @@ fn of_two_concurrent_first_sessions_with_different_certificates_only_one_receive
     f.bind_port = server.port;
     assert!(matches!(f.save(1, REF, SECRET), Response::CredentialOk { .. }));
     // Both opens are on the wire before either engine has finished its TLS (the fake engine reports at once).
-    f.h().send(&Request::OpenRdp { id: 2, host: "127.0.0.1".into(), port: server.port, username: "tester".into(), password: None, credential_ref: Some(REF.into()), domain: None, width: 800, height: 600, expected_fingerprint: None });
-    f.h().send(&Request::OpenRdp { id: 3, host: "127.0.0.1".into(), port: server.port, username: "tester".into(), password: None, credential_ref: Some(REF.into()), domain: None, width: 800, height: 601, expected_fingerprint: None });
+    f.h().send(&Request::OpenRdp { id: 2, host: "127.0.0.1".into(), port: server.port, username: "tester".into(), password: None, credential_ref: Some(REF.into()), domain: None, width: 800, height: 600, expected_fingerprint: None, options: None });
+    f.h().send(&Request::OpenRdp { id: 3, host: "127.0.0.1".into(), port: server.port, username: "tester".into(), password: None, credential_ref: Some(REF.into()), domain: None, width: 800, height: 601, expected_fingerprint: None, options: None });
     let mut sessions = Vec::new();
     for id in [2u64, 3] {
         let Response::SessionOpened { session_id, .. } = f.h().read_reply(id) else { panic!("expected session.opened") };

@@ -54,12 +54,19 @@ fn engine_main(mut stream: UnixStream) -> std::io::Result<i32> {
             None => return Ok(0),
         }
     };
-    let EngineCommand::Open { host, port, username, password, domain, width, height, expected_fingerprint, pin_first_use } = open
+    let EngineCommand::Open { host, port, username, password, domain, width, height, expected_fingerprint, pin_first_use, options } = open
     else {
         return Ok(1);
     };
+    // Validated on this side too: a value outside the closed set never reaches the connector.
+    if options.validate().is_err() {
+        let out = Out::new(stream.try_clone()?);
+        let _ = out.send(&EngineEvent::Error { code: "invalid_options".to_string(), message: "invalid connection options".to_string() });
+        let _ = out.closed(RdpClosedReason::ProtocolError);
+        return Ok(1);
+    }
     health::install_counter();
-    let params = Params { host, port, username, password, domain, width, height, expected_fingerprint, pin_first_use };
+    let params = Params { host, port, username, password, domain, width, height, expected_fingerprint, pin_first_use, options };
     let out = Arc::new(Out::new(stream.try_clone()?));
     let inbox = spawn_reader(stream);
     let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
@@ -238,6 +245,9 @@ async fn drive(
     paint: FirstPaint,
 ) -> std::io::Result<()> {
     let mut held: Option<Control> = None;
+    // The counters are flushed on a timer too: after the last PDU the numbers would otherwise never be sent.
+    let mut stats_tick = tokio::time::interval(health::STATS_EVERY);
+    stats_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         if !a.desk.desktop_sent && paint.expired() {
             return report_closed(out, RdpClosedReason::Timeout);
@@ -249,16 +259,20 @@ async fn drive(
                 reason = cancel.wait() => return report_closed(out, reason),
                 // Re-checks the first-paint budget while the server is quiet.
                 _ = tokio::time::sleep(super::connect::BUDGET_TICK), if !a.desk.desktop_sent => Vec::new(),
+                _ = stats_tick.tick() => Vec::new(),
                 ctl = control.recv() => match ctl {
                     // The helper went away: end the session and exit.
                     None => return Ok(()),
                     Some(c) => handle_control(&mut a, out, c, &mut control, &mut held)?,
                 },
                 frame = a.reader.read_pdu() => match frame {
-                    Ok((action, payload)) => match a.stage.process(&mut a.image, action, &payload, None) {
-                        Ok(o) => o,
-                        Err(_) => return report_closed(out, RdpClosedReason::ProtocolError),
-                    },
+                    Ok((action, payload)) => {
+                        a.health.received(payload.len());
+                        match a.stage.process(&mut a.image, action, &payload, None) {
+                            Ok(o) => o,
+                            Err(_) => return report_closed(out, RdpClosedReason::ProtocolError),
+                        }
+                    }
                     Err(_) => return report_closed(out, RdpClosedReason::NetworkError),
                 },
             }
@@ -306,6 +320,7 @@ async fn recover_and_report(a: &mut Active, out: &Out) -> std::io::Result<Option
             recoveries: s.recoveries,
             recovery_skipped: s.recovery_skipped,
             ignored_outputs: s.ignored_outputs,
+            bytes_in: s.bytes_in,
         })?;
     }
     Ok(None)

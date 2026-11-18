@@ -230,12 +230,13 @@ describe("RDP service: states and the desktop", () => {
     const handle = await service.rdpOpen({ ...TARGET }, 8, 4);
     const sid = handle.sessionId;
     helper.state(sid, "connecting");
+    helper.state(sid, "stats updates=1 pixels=64 last_ms=120 discarded=0 recoveries=0 skipped=0 ignored=2 bytes=3000 avg=3000");
+    helper.state(sid, "stats updates=5 pixels=900 last_ms=480 discarded=1 recoveries=1 skipped=0 ignored=2 bytes=9500 avg=1900");
+    helper.state(sid, "stats updates=1 pixels=64 last_ms=120 discarded=0 recoveries=0 skipped=0 ignored=<script> bytes=1 avg=1");
     helper.state(sid, "stats updates=1 pixels=64 last_ms=120 discarded=0 recoveries=0 skipped=0 ignored=2");
-    helper.state(sid, "stats updates=5 pixels=900 last_ms=480 discarded=1 recoveries=1 skipped=0 ignored=2");
-    helper.state(sid, "stats updates=1 pixels=64 last_ms=120 discarded=0 recoveries=0 skipped=0 ignored=<script>");
     expect(service.rdpInfo(handle)?.trace).toEqual([
       "connecting",
-      "stats updates=5 pixels=900 last_ms=480 discarded=1 recoveries=1 skipped=0 ignored=2",
+      "stats updates=5 pixels=900 last_ms=480 discarded=1 recoveries=1 skipped=0 ignored=2 bytes=9500 avg=1900",
     ]);
     expect(service.rdpInfo(handle)?.state).toBe("connecting");
   });

@@ -578,6 +578,7 @@ fn h9_rdp_open_refuses_a_desktop_size_out_of_range() {
             width: w,
             height: ht,
             expected_fingerprint: None,
+            options: None,
         });
         match h.read_reply(id) {
             Response::Error { code, .. } => assert_eq!(code, "rdp_invalid_geometry", "{w}x{ht}"),
@@ -588,6 +589,33 @@ fn h9_rdp_open_refuses_a_desktop_size_out_of_range() {
     let server = silent_server();
     let (_rdp, pid) = h.open_rdp_sized(server.port, 3840, 2160);
     assert!(pid_alive(pid));
+    h.shutdown();
+}
+
+/// P1: connection options are a closed set. A colour depth outside 16/24/32 is refused with a stable code before an engine
+/// starts; a request with options in the closed set opens.
+#[test]
+fn p1_rdp_open_refuses_options_outside_the_closed_set() {
+    use remote_hub_helper::rdp::options::RdpOptions;
+    let mut h = start(&[]);
+    let bad = RdpOptions { color_depth: 8, ..RdpOptions::default() };
+    h.send(&Request::OpenRdp {
+        id: 70,
+        host: "127.0.0.1".to_string(),
+        port: 1,
+        username: "tester".to_string(),
+        password: Some(Secret::new("S3cr3t-MARK-91")),
+        credential_ref: None,
+        domain: None,
+        width: 800,
+        height: 600,
+        expected_fingerprint: None,
+        options: Some(bad),
+    });
+    match h.read_reply(70) {
+        Response::Error { code, .. } => assert_eq!(code, "rdp_invalid_options"),
+        other => panic!("expected rdp_invalid_options, got {other:?}"),
+    }
     h.shutdown();
 }
 

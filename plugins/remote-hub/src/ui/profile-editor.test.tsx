@@ -82,6 +82,7 @@ describe("ProfileEditor", () => {
       credentialRef: null,
       rdpWidth: null,
       rdpHeight: null,
+      rdpOptions: null,
     });
   });
 
@@ -124,13 +125,59 @@ describe("ProfileEditor", () => {
     expect(onSave.mock.calls[0]?.[0]).toMatchObject({ protocol: "rdp", username: "admin", authType: "password", rdpWidth: 1920, rdpHeight: 1080, domain: null });
   });
 
+  it("P1: an RDP profile shows the Balanced default, saves a chosen preset, and the switches under Advanced make it Custom", async () => {
+    const { onSave } = mount();
+    type("Name", "win");
+    type("Host", "win.example.test");
+    fireEvent.change(screen.getByLabelText("Protocol"), { target: { value: "rdp" } });
+    type("User", "admin");
+    const quality = screen.getByLabelText("Connection quality") as HTMLSelectElement;
+    expect(quality.value).toBe("balanced");
+    expect(Array.from(quality.options).map((o) => o.textContent)).toEqual(["Slow link", "Balanced (default)", "Best quality"]);
+    fireEvent.change(quality, { target: { value: "slow" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0]?.[0].rdpOptions).toEqual({ compression: true, colorDepth: 16, wallpaper: false, fullWindowDrag: false, menuAnimations: false, fontSmoothing: true, desktopComposition: false, themes: false });
+    // Advanced: individual switches; leaving the presets shows "Custom".
+    fireEvent.click(screen.getByLabelText("Desktop wallpaper"));
+    expect((screen.getByLabelText("Connection quality") as HTMLSelectElement).value).toBe("custom");
+    fireEvent.change(screen.getByLabelText("Colour depth"), { target: { value: "24" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
+    expect(onSave.mock.calls[1]?.[0].rdpOptions).toEqual({ compression: true, colorDepth: 24, wallpaper: true, fullWindowDrag: false, menuAnimations: false, fontSmoothing: true, desktopComposition: false, themes: false });
+  });
+
+  it("P1: the six experience switches, compression and colour depth are all offered; an SSH profile has no such controls and saves none", async () => {
+    const { onSave } = mount();
+    expect(screen.queryByLabelText("Connection quality")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Protocol"), { target: { value: "rdp" } });
+    for (const label of ["Compress the update stream", "Desktop wallpaper", "Show window contents while dragging", "Menu and window animations", "Font smoothing", "Desktop composition", "Visual themes"]) {
+      expect(screen.getByLabelText(label), label).toBeTruthy();
+    }
+    expect(Array.from((screen.getByLabelText("Colour depth") as HTMLSelectElement).options).map((o) => o.value)).toEqual(["32", "24", "16"]);
+    fireEvent.change(screen.getByLabelText("Protocol"), { target: { value: "ssh" } });
+    type("Name", "box");
+    type("Host", "box.example.test");
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0]?.[0].rdpOptions).toBeNull();
+  });
+
+  it("P1: editing a profile saved without options shows and keeps the default", async () => {
+    const { onSave } = mount(EXISTING);
+    expect((screen.getByLabelText("Connection quality") as HTMLSelectElement).value).toBe("balanced");
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0]?.[0].rdpOptions).toMatchObject({ compression: true, colorDepth: 32 });
+  });
+
   it("editing keeps the credential reference untouched and shows where the profile came from", async () => {
     const { onSave } = mount(EXISTING);
     expect(screen.getByText(/created manually/i)).toBeTruthy();
     type("Name", "win2");
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    expect(onSave.mock.calls[0]?.[0]).toEqual({ ...EXISTING, name: "win2" });
+    expect(onSave.mock.calls[0]?.[0]).toEqual({ ...EXISTING, name: "win2", rdpOptions: { compression: true, colorDepth: 32, wallpaper: false, fullWindowDrag: false, menuAnimations: false, fontSmoothing: true, desktopComposition: false, themes: true } });
   });
 
   it("shows the error of a failed save and stays editable; Cancel closes", async () => {

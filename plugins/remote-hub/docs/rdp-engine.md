@@ -385,6 +385,28 @@ messages added in the repair round: `rdp.certificate`, `rdp.input_rejected`,
 `screenshot_busy`, `screenshot_too_large`, `rdp_invalid_geometry`, `response_too_large`,
 `session_closed`.
 
+## Connection options and the byte counters (stage 5 prep, P1)
+
+A profile (or nothing, for quick connect: the default) carries `RdpOptions`: bulk `compression`, `colorDepth` (32, 24 or 16)
+and six experience switches (`wallpaper`, `fullWindowDrag`, `menuAnimations`, `fontSmoothing`, `desktopComposition`,
+`themes`). They travel in `session.open_rdp` (`options`) and in the engine's `Open` frame, and both the helper and the engine
+refuse a value outside the closed set (`rdp_invalid_options`). What each does with the pinned IronRDP 0.12/0.13:
+
+| Option | Effect on the wire | Honoured by IronRDP |
+| --- | --- | --- |
+| compression | Client Info `COMPRESSION` with RDP 5.0 64 K bulk compression; the session decompresses (`ActiveStageBuilder.compression_type`) | yes |
+| colorDepth 24 / 16 | GCC core data (`highColorDepth`) and the Bitmap capability ask for that depth; 32 is IronRDP's default (no override) | yes: the session decodes 16/24/32 bpp, raw and RLE |
+| the six switches | Client Info performance flags (off = a `DISABLE_*` flag; font smoothing and composition = `ENABLE_*`) | sent as hints; a server may ignore them |
+
+Defaults: **Balanced** (compression on, 32 bpp, wallpaper, window drag, menu animations and composition off, font smoothing
+and themes on), chosen for a VPN/WAN link; **Slow link** is the same at 16 bpp with themes off; **Best quality** turns
+compression off and every effect on. Profiles saved before this get Balanced through the migration. The connection-type
+hint is always BroadbandHigh. No RemoteFX/NSCodec/graphics pipeline is negotiated: those would need codecs this engine
+does not enable. The stats line in `rdp.trace` carries `bytes` (server PDU payload received) and `avg` (bytes per applied
+update), flushed every 1.5 s while the session runs, so settings can be compared on a real host. Against the Docker xrdp
+target the first-stats byte counts were about 11 KB (Slow link), 31 KB (Balanced), 71 KB (24 bpp, no compression) and 155 KB
+(Best quality) for an 800x600 desktop: xrdp, not Windows, and a first paint only.
+
 ## Who drives, decided inside the engine (stage 4b-1, A2)
 
 The helper queues input per sender and moves it to the engine pipe only while less than 8 KiB is waiting there; a

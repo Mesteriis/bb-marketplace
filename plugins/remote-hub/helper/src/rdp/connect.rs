@@ -146,6 +146,8 @@ pub struct Params {
     pub expected_fingerprint: Option<String>,
     /// See `EngineCommand::Open::pin_first_use`.
     pub pin_first_use: bool,
+    /// Compression, colour depth and experience switches (validated before the engine connects).
+    pub options: super::options::RdpOptions,
 }
 
 pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send + Sync {}
@@ -239,9 +241,10 @@ pub fn connector_config(p: &Params) -> Config {
         keyboard_subtype: 0,
         keyboard_functional_keys_count: 12,
         keyboard_layout: 0x409,
-        connection_type: ironrdp_pdu::gcc::ConnectionType::Lan,
+        // A hint, not a capability: the link is not assumed to be a LAN (RDS over a VPN is the common case).
+        connection_type: ironrdp_pdu::gcc::ConnectionType::BroadbandHigh,
         ime_file_name: String::new(),
-        bitmap: None,
+        bitmap: p.options.bitmap(),
         dig_product_id: String::new(),
         client_dir: String::new(),
         alternate_shell: String::new(),
@@ -258,10 +261,10 @@ pub fn connector_config(p: &Params) -> Config {
         autologon: true,
         enable_audio_playback: false,
         enable_audio_capture: false,
-        performance_flags: ironrdp_pdu::rdp::client_info::PerformanceFlags::default(),
+        performance_flags: p.options.performance_flags(),
         license_cache: None,
         timezone_info: ironrdp_pdu::rdp::client_info::TimezoneInfo::default(),
-        compression_type: None,
+        compression_type: p.options.compression_type(),
         enable_server_pointer: false,
         pointer_software_rendering: false,
         multitransport_flags: None,
@@ -893,6 +896,7 @@ mod tests {
             // Test convention: the expectation "PIN" means "first use of a saved password" (no expected fingerprint).
             expected_fingerprint: expected.filter(|e| *e != "PIN").map(|s| s.to_string()),
             pin_first_use: expected == Some("PIN"),
+            options: Default::default(),
         }
     }
 
@@ -1434,5 +1438,21 @@ mod tests {
         let cfg = connector_config(&params(3389, None));
         assert_eq!(cfg.client_name, "remote-hub");
         assert!(cfg.autologon);
+    }
+
+    /// The mapping from options to the connector config, with literal expected values.
+    #[test]
+    fn options_reach_the_connector_config() {
+        let cfg = connector_config(&params(3389, None));
+        assert_eq!(cfg.performance_flags.bits(), 0x0000_0001 | 0x0000_0002 | 0x0000_0004 | 0x0000_0080, "balanced");
+        assert_eq!(cfg.compression_type.map(|c| c.as_u8()), Some(1));
+        assert_eq!(cfg.connection_type as u32, 4, "BroadbandHigh hint");
+        assert!(cfg.bitmap.is_none() && !cfg.support_dyn_vc_gfx_protocol);
+        let mut p = params(3389, None);
+        p.options = crate::rdp::options::RdpOptions { compression: false, color_depth: 16, wallpaper: true, full_window_drag: true, menu_animations: true, font_smoothing: false, desktop_composition: true, themes: false };
+        let cfg = connector_config(&p);
+        assert_eq!(cfg.performance_flags.bits(), 0x0000_0008 | 0x0000_0100);
+        assert!(cfg.compression_type.is_none());
+        assert_eq!(cfg.bitmap.as_ref().map(|b| b.color_depth), Some(16));
     }
 }

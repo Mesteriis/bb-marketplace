@@ -7,6 +7,7 @@ import { AttachTokens, ATTACH_TOKEN_TTL_MS, type Clock } from "../../core/attach
 import { createCreditState, type CreditState } from "../../core/credit.ts";
 import { CredentialError, type CredentialVault } from "../../core/credential.ts";
 import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
+import type { RdpOptions } from "../../core/rdp-options.ts";
 import type { KnownHostsOverlay } from "../../core/import-book.ts";
 import { buildSshExecSpawn, buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
 import { HelperProcess, type HelperStatus, HelperRuntimeError, HelperRequestError, type RdpHelperEvent } from "./helper-process.ts";
@@ -101,7 +102,7 @@ export interface RemoteHubService {
   /** The user's answer to a prompt (null = cancelled). Passed to the helper once and never kept here. */
   sshPromptAnswer(handle: SessionHandle, promptId: number, answer: string | null): Promise<void>;
   sshOpenTest(cols: number, rows: number): Promise<SessionHandle>;
-  rdpOpen(target: RdpTarget, width: number, height: number, profileId?: string): Promise<SessionHandle>;
+  rdpOpen(target: RdpTarget, width: number, height: number, profileId?: string, options?: RdpOptions): Promise<SessionHandle>;
   rdpCertDecision(handle: SessionHandle, fingerprint: string, accept: RdpDecision): Promise<void>;
   /** Certificates trusted for good (stage 3c-2). */
   rdpTrustedList(): TrustedRdpCert[];
@@ -468,7 +469,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       case "rdp.state": {
         if (event.state.startsWith("stats ")) {
           // Picture-completeness counters (numbers only): one line, replaced as it changes, so the trace stays short.
-          const line = /^stats( [a-z_]+=\d{1,20}){7}$/.test(event.state) ? event.state : null;
+          const line = /^stats( [a-z_]+=\d{1,20}){9}$/.test(event.state) ? event.state : null;
           if (line !== null) {
             const at = rdp.trace.findIndex((t) => t.startsWith("stats "));
             if (at >= 0) rdp.trace[at] = line;
@@ -781,7 +782,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       applyEarlyClosed(keyOf(handle));
       return handle;
     }),
-    rdpOpen: tracked(async (target, width, height, profileId) => {
+    rdpOpen: tracked(async (target, width, height, profileId, options) => {
       const hp = await start();
       const handle = await hp.openRdp({
         host: target.host,
@@ -793,6 +794,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         width,
         height,
         expectedFingerprint: target.expectedFingerprint ?? null,
+        ...(options === undefined ? {} : { options }),
       });
       const key = keyOf(handle);
       // The record keeps the endpoint, never the password.

@@ -126,10 +126,13 @@ class Helper:
     def stats_lines(self):
         return [m["state"] for m in self.trace if m.get("type") == "rdp.state" and m["state"].startswith("stats ")]
 
-    def open_rdp(self, host, port, user, password, width=800, height=600, expected=None):
-        self.send({"type": "session.open_rdp", "id": 100, "host": host, "port": port,
+    def open_rdp(self, host, port, user, password, width=800, height=600, expected=None, options=None):
+        request = {"type": "session.open_rdp", "id": 100, "host": host, "port": port,
                    "username": user, "password": password, "domain": None,
-                   "width": width, "height": height, "expectedFingerprint": expected})
+                   "width": width, "height": height, "expectedFingerprint": expected}
+        if options is not None:
+            request["options"] = options
+        self.send(request)
         resp = self.read_control()
         assert resp["type"] == "session.opened", resp
         return resp["sessionId"], resp["pid"]
@@ -390,6 +393,47 @@ def cases(tmp, cid, port, user, password):
     assert certs6a and certs6a[0]["fingerprint"] == fp and certs6a[0]["validated"] is False, certs6a
     no_password_in(h6a, password, "session 6a")
     h6a.terminate()
+
+    mark("P1")
+    # Case P1: the connection options are honoured end to end. Each preset connects to the real xrdp, paints, and the
+    # stats line carries received bytes. (A server may ignore the effect flags; what is asserted is that the connection
+    # works with every option set and that the bytes are counted, so the coordinator can compare them on a real host.)
+    PRESETS = {
+        "slow": {"compression": True, "colorDepth": 16, "wallpaper": False, "fullWindowDrag": False, "menuAnimations": False, "fontSmoothing": True, "desktopComposition": False, "themes": False},
+        "balanced": {"compression": True, "colorDepth": 32, "wallpaper": False, "fullWindowDrag": False, "menuAnimations": False, "fontSmoothing": True, "desktopComposition": False, "themes": True},
+        "quality": {"compression": False, "colorDepth": 32, "wallpaper": True, "fullWindowDrag": True, "menuAnimations": True, "fontSmoothing": True, "desktopComposition": True, "themes": True},
+        "depth24": {"compression": False, "colorDepth": 24, "wallpaper": True, "fullWindowDrag": True, "menuAnimations": True, "fontSmoothing": True, "desktopComposition": True, "themes": True},
+    }
+    seen_bytes = {}
+    for name, opts in PRESETS.items():
+        h8 = Helper()
+        sid8, pid8 = h8.open_rdp("127.0.0.1", port, user, password, options=opts)
+        assert h8.read_until(lambda m: m.get("type") == "rdp.cert_prompt", timeout=30) is not None, name
+        h8.cert_decision(sid8, fp, "once")
+        assert h8.read_until(lambda m: m.get("type") == "rdp.desktop", timeout=30) is not None, ("desktop with options " + name, h8.states())
+        def stats_kv(line):
+            return dict(p.split("=") for p in line.split()[1:])
+        def with_bytes():
+            ok = [stats_kv(l) for l in h8.stats_lines() if int(stats_kv(l)["updates"]) > 0 and int(stats_kv(l)["bytes"]) > 0]
+            return ok[-1] if ok else None
+        # The stats line may already have arrived (with the desktop); otherwise keep reading.
+        deadline = time.time() + 20
+        kv = with_bytes()
+        while kv is None and time.time() < deadline:
+            h8.read_until(lambda m: m.get("type") == "rdp.state" and m["state"].startswith("stats "), timeout=max(0.1, deadline - time.time()))
+            kv = with_bytes()
+        assert kv is not None, ("a stats line with received bytes for " + name, h8.stats_lines(), [(m.get("type"), m.get("state")) for m in h8.trace][-12:])
+        seen_bytes[name] = int(kv["bytes"])
+        no_password_in(h8, password, "session 8 " + name)
+        h8.terminate()
+    print("case P1 bytes at first stats:", seen_bytes, flush=True)
+    # A depth outside the closed set never starts an engine.
+    h8b = Helper()
+    h8b.send({"type": "session.open_rdp", "id": 101, "host": "127.0.0.1", "port": port, "username": user, "password": password, "domain": None,
+              "width": 800, "height": 600, "expectedFingerprint": None, "options": dict(PRESETS["slow"], colorDepth=8)})
+    refused = h8b.read_control()
+    assert refused["type"] == "error" and refused["code"] == "rdp_invalid_options", refused
+    h8b.terminate()
 
     mark("7")
     # Case 7: kill the container during desktop_ready -> network_error within

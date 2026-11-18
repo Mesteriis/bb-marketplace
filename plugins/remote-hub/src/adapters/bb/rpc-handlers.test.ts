@@ -115,6 +115,16 @@ describe("rdp_open and a saved credential (R5a: the REAL handler)", () => {
     expect(attributed).toBe(p.id);
   });
 
+  it("P1: a profile's stored connection options reach the service; quick connect (no profile) sends none, so the default applies", async () => {
+    const { profiles, handlers, service } = setup();
+    const SLOW = { compression: true, colorDepth: 16, wallpaper: false, fullWindowDrag: false, menuAnimations: false, fontSmoothing: true, desktopComposition: false, themes: false } as const;
+    const p = profiles.save({ fields: { ...RDP, rdpOptions: SLOW } });
+    await handlers.rdp_open(rdpInput({ password: SECRET }, { profileId: p.id }));
+    expect((service.rdpOpen.mock.calls[0] as unknown as unknown[])[4]).toEqual(SLOW);
+    await handlers.rdp_open(rdpInput({ password: SECRET }));
+    expect((service.rdpOpen.mock.calls[1] as unknown as unknown[])[4]).toBeUndefined();
+  });
+
   it("a typed password skips the credential check and a mismatching profile id runs unattributed (P4 at the handler)", async () => {
     const { profiles, handlers, service } = setup();
     const p = profiles.save({ fields: RDP });

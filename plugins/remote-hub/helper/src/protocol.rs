@@ -147,6 +147,9 @@ pub enum Request {
         height: u32,
         #[serde(rename = "expectedFingerprint")]
         expected_fingerprint: Option<String>,
+        /// Compression, colour depth and experience switches (closed set; absent = the default).
+        #[serde(default)]
+        options: Option<crate::rdp::options::RdpOptions>,
     },
     /// Store (or replace) a secret in the Keychain under `ref`. The secret is consumed here.
     #[serde(rename = "credential.save")]

@@ -69,6 +69,9 @@ pub enum EngineCommand {
         /// helper (`PinRequest`) to pin-or-compare the presented certificate and waits for `PinAnswer`.
         #[serde(default)]
         pin_first_use: bool,
+        /// Compression, colour depth and experience switches; the engine validates them again.
+        #[serde(default)]
+        options: crate::rdp::options::RdpOptions,
     },
     /// The helper's verdict on a `PinRequest`: "allow", "changed" (another certificate is pinned) or
     /// "failed" (the pin could not be written or checked). Anything but "allow" ends the session.
@@ -159,7 +162,7 @@ pub enum EngineEvent {
     Desktop { frame_id: u64, width: u32, height: u32, timestamp: u64 },
     /// How complete the picture is (counts only): applied updates, covered pixels, time of the last one, updates IronRDP
     /// discarded, full-redraw requests sent and not sent, output kinds this engine does not act on.
-    Stats { updates: u64, pixels: u64, last_update_ms: u64, discarded: u64, recoveries: u64, recovery_skipped: u64, ignored_outputs: u64 },
+    Stats { updates: u64, pixels: u64, last_update_ms: u64, discarded: u64, recoveries: u64, recovery_skipped: u64, ignored_outputs: u64, #[serde(default)] bytes_in: u64 },
     Closed { reason: String },
     Screenshot { frame_id: u64, width: u32, height: u32, timestamp: u64, png: String },
     /// The header of a chunked screenshot (a PNG whose base64 does not fit one
@@ -403,6 +406,7 @@ mod tests {
             height: 1,
             expected_fingerprint: None,
             pin_first_use: false,
+            options: Default::default(),
         };
         let text = format!("{cmd:?} {cmd:#?}");
         assert!(!text.contains("S3cr3t-MARK-91"), "password printed: {text}");

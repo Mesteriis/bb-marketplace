@@ -158,6 +158,7 @@ impl Helper {
             width,
             height,
             expected_fingerprint: None,
+            options: None,
         });
         match self.read_reply(2) {
             Response::SessionOpened { session_id, pid, kind, .. } => {

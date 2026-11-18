@@ -42,6 +42,15 @@ export const PROFILE_LATER_MIGRATIONS: string[] = [
   `ALTER TABLE profiles ADD COLUMN needs_config INTEGER NOT NULL DEFAULT 0;`,
 ];
 
+/**
+ * RDP connection options (compression, colour depth, experience). Added after other tables existed, so it runs at the END
+ * of the ordered list (see migrations.ts). Profiles saved before it get the default for a VPN/WAN link (Balanced).
+ */
+export const PROFILE_RDP_OPTIONS_MIGRATIONS: string[] = [
+  `ALTER TABLE profiles ADD COLUMN rdp_options TEXT;`,
+  `UPDATE profiles SET rdp_options = '{"compression":true,"colorDepth":32,"wallpaper":false,"fullWindowDrag":false,"menuAnimations":false,"fontSmoothing":true,"desktopComposition":false,"themes":true}' WHERE protocol = 'rdp' AND rdp_options IS NULL;`,
+];
+
 interface Row {
   id: string;
   name: string;
@@ -66,6 +75,7 @@ interface Row {
   last_opened_at: string | null;
   recent_errors: string;
   needs_config: number;
+  rdp_options: string | null;
 }
 
 function parseJson(text: string): unknown {
@@ -94,6 +104,7 @@ function fromRow(row: Row): Profile | null {
     credentialRef: row.credential_ref,
     rdpWidth: row.rdp_width,
     rdpHeight: row.rdp_height,
+    ...(row.rdp_options === null ? {} : { rdpOptions: parseJson(row.rdp_options) }),
     executionHostId: row.execution_host_id,
     origin: row.origin,
     createdAt: row.created_at,
@@ -112,11 +123,11 @@ export function createSqliteProfileStore(db: Database.Database): ProfileStore {
     INSERT OR REPLACE INTO profiles (
       id, name, protocol, grp, tags, favorite, color, host, port, username, domain, auth_type,
       identity_file, credential_ref, rdp_width, rdp_height, execution_host_id, origin,
-      created_at, updated_at, last_opened_at, recent_errors, needs_config
+      created_at, updated_at, last_opened_at, recent_errors, needs_config, rdp_options
     ) VALUES (
       @id, @name, @protocol, @grp, @tags, @favorite, @color, @host, @port, @username, @domain, @auth_type,
       @identity_file, @credential_ref, @rdp_width, @rdp_height, @execution_host_id, @origin,
-      @created_at, @updated_at, @last_opened_at, @recent_errors, @needs_config
+      @created_at, @updated_at, @last_opened_at, @recent_errors, @needs_config, @rdp_options
     )
   `);
   const del = db.prepare("DELETE FROM profiles WHERE id = ?");
@@ -153,6 +164,7 @@ export function createSqliteProfileStore(db: Database.Database): ProfileStore {
         last_opened_at: p.lastOpenedAt,
         recent_errors: JSON.stringify(p.recentErrors),
         needs_config: p.needsConfig === true ? 1 : 0,
+        rdp_options: p.rdpOptions === null || p.rdpOptions === undefined ? null : JSON.stringify(p.rdpOptions),
       });
     },
     remove: (id) => del.run(id).changes > 0,
