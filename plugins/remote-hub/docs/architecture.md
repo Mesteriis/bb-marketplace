@@ -492,3 +492,30 @@ and `useProfiles` around the existing session pages; Quick connect stays.
   -> access check -> action -> outcome filled in. A refused call is audited too; a flood of over-budget calls is one
   counted row. The audit keeps the newest 5000 rows and holds no terminal text, keystrokes, pixels or secrets.
 - **Not in 4a:** connecting, typing, mouse/keyboard, exec, the control lease, the agent skill text (stages 4b, 4c).
+
+## Stage 4b-1 — control: lease, connect, typed input
+
+- **Lease** (`core/control-lease.ts`). One owner per session: the human (default) or one agent thread holding a lease
+  (id, TTL 120 s default, 5-600 s). Every change of owner moves the session's generation, so a queued operation can tell
+  that it is stale. In memory only: nothing is restored after a helper or plugin restart. A lease ends by release,
+  expiry, the owner's takeover, the grant dropping below `input`, the thread being deleted or archived, the call's abort
+  signal, or the session closing. A 5 s timer (`adapters/bb/agent-control.ts`) sweeps expired leases and those of closed
+  sessions.
+- **Tools** (`core/agent-control-tools.ts`, same gate as the read tools): `remote_control_acquire`/`_release`,
+  `remote_connect`/`_disconnect`, `remote_terminal_input`, `remote_rdp_input`. Input is typed: terminal text has no control
+  characters (Enter, Tab, arrows and Ctrl-C/D/Z/L are named keys); RDP actions are a closed list, positions need the
+  `observed` frame and size of the screenshot they come from (`stale_geometry`, `out_of_bounds`; never clamped). A
+  per-session serial queue drops an operation whose lease, grant or call is gone when its turn comes; keys and buttons
+  an agent left down are released when its lease ends. `remote_connect` takes a connection id and uses its SAVED
+  credential through the same RPC path as the page; there is no password, host or approval parameter. SSH connections
+  with an agent or an unsaved key are refused (`needs_saved_credential`): OpenSSH could prompt in the PTY, where an agent
+  could type. At most four open sessions per thread. The audit keeps the length and a short hash of an input.
+- **Human side.** The service drops the human's input while an agent holds the lease (`sessionTerminalInput` and the RDP
+  attachment return false); the view is told the owner (`control`) and, at most every 2 s, `input_blocked`. The page shows
+  an owner badge, a paused-input notice and one-click Take control (`agent_control_takeover`: ends the lease, drops queued
+  input, releases held keys, bumps the generation; audited as "owner RPC").
+- **Questions stay with the owner.** Host-key, certificate and login questions of a session an agent opened are listed
+  in Agent activity (`agent_sessions`, `agent_prompt_answer`, `rdp_cert_decision`); the agent only sees the kind in
+  `waitingForOwner`. Typing into the session cannot answer them (askpass is not on the PTY).
+- **Not in 4b-1:** command execution (4b-2), the agent skill text (4c).
+

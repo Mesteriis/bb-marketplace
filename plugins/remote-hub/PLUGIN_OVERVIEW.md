@@ -4,8 +4,7 @@ both through a Rust helper, plus the echo console from stage 1.
 
 ## What you get
 
-- A Remote Hub page with a live helper status line (version, pid, platform,
-  open sessions) and an echo console.
+- A Remote Hub page with a helper status line and an echo console.
 - An "SSH / RDP" page with a switch between the two kinds.
 - SSH: connect form (host, user, port), a real /usr/bin/ssh session on a
   helper-owned PTY, xterm.js rendering, resize, and a binary WebSocket with
@@ -14,11 +13,9 @@ both through a Rust helper, plus the echo console from stage 1.
   a canvas with mouse, wheel and keyboard input (Ctrl+Alt+Del button), Fit and
   1:1 views, a PNG screenshot, disconnect and reattach. The server certificate is
   validated strictly; when it is not trusted you see its fingerprint, subject,
-  issuer and validity and choose to accept it once, trust it for this BB run, or
-  reject it, or trust it for good (listed, and forgotten, in Import). A different
-  certificate that your Mac does not trust by itself is shown as changed and is
-  not accepted automatically. Sign-in uses NLA/CredSSP when the server
-  offers it.
+  issuer and validity and choose to accept it once, trust it for this BB run,
+  reject it, or trust it for good (listed, and forgotten, in Import). A changed
+  certificate is never accepted automatically. Sign-in uses NLA/CredSSP when offered.
 - Saved profiles: a catalogue beside Quick connect (nothing saved) with search,
   an SSH/RDP filter, groups, tags, favourites and live status; an editor for name,
   host, port, user, domain, authentication, key-file path and RDP size. A profile
@@ -37,11 +34,7 @@ both through a Rust helper, plus the echo console from stage 1.
   in a helper-owned file used by saved-password SSH). Profiles keep their source; re-importing changes
   nothing. Private keys are never opened. An alias behind a proxy or Match rule
   keeps using your ssh config and cannot save a password.
-- Agent access (read-only for now): per connection, default none, set by you in
-  the editor (any thread of this BB). Six tools list allowed connections and
-  sessions, read terminal output and take a desktop screenshot: no saved secret, no typing,
-  no connecting. Observe shows all the terminal or screen shows, secrets too.
-  Levels limit these tools only; an agent with a shell as you is not contained. Calls and grant changes are audited, revocable in Agent activity.
+- Agent access: per connection, default none, set by you in the editor (any thread of this BB). Observe: agents list connections, read terminals, take screenshots, and see all the terminal or screen shows, secrets too. Input: they may open a connection that has a SAVED password (never shown or typed by them), hold a lease on a session (2 min; your input pauses, one click, Take control, ends it) and send typed keys, text and pointer actions. Host keys and certificates stay yours. Levels limit these tools only; an agent with a shell as you is not contained. All audited (input: length, hash).
 - The helper owns every session; detaching a view never ends it, and disconnecting never logs the remote user off.
 
 ## Honest limits
@@ -50,8 +43,8 @@ Passwords saved before bindings existed must be saved again. Helper unsigned. A 
 host, port, user and domain and, after its first accepted use, to that server
 certificate (trust on first sight): the helper sends it to no other (save it
 again to start over).
-One-time codes are always typed by you. Agents cannot type, connect or run commands yet. macOS may ask to approve Keychain access. "Last opened" means the open succeeded, not that the login was accepted.
-No clipboard, remote resize or Kerberos. NLA and strict TLS were checked by hand; not run in a live BB server. The helper binary is built with npm run build:helper (Rust, aarch64-apple-darwin).
+One-time codes are always typed by you. Agents cannot run commands yet. macOS may ask to approve Keychain access. "Last opened" means the open succeeded, not that the login was accepted.
+No clipboard, remote resize or Kerberos. NLA and strict TLS checked by hand; not run in a live BB server. The helper binary is built with npm run build:helper (Rust, aarch64-apple-darwin).
 
 ## Source
 

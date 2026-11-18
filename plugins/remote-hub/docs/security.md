@@ -1,4 +1,4 @@
-# Remote Hub: security model (stage 4a state)
+# Remote Hub: security model (stage 4b-1 state)
 
 - **Secrets** live in the macOS Keychain only, bound inside the item to the endpoint or key file they were saved for,
   and are used by the helper (askpass for SSH, the engine for RDP). No page call, tool result, log, audit row or
@@ -22,4 +22,10 @@
   server certificate. A saved RDP password is pinned to the certificate it was first used with (trust on first sight);
   a saved-secret SSH session reads only the helper-owned known_hosts overlay.
 - **Audit** records who (thread), what (tool, connection, session) and the outcome; it never records terminal text,
-  keystrokes, screenshots or secrets. Input and command text are stored only as the owner chooses (stage 4b).
+  keystrokes, screenshots or secrets. An input is recorded as its length and a short hash; command text only when the
+  owner enables it (stage 4b-2).
+- **Control.** At the `input` level an agent can open a connection with its SAVED credential (it never gets or types a
+  secret), hold a lease on a session and send typed input. The owner sees who drives each session, the human's input is
+  paused while an agent drives, and one click takes the session back at once. A lease is in memory only, ends when the
+  grant drops, the thread goes or the call is aborted, and never survives a restart. What an agent types is visible to the
+  remote side, as for a person: Input is the power to act as the logged-in user on that session.
