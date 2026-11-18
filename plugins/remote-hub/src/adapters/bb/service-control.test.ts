@@ -216,6 +216,10 @@ describe("what waits for the owner", () => {
     helper.askpass(handle.sessionId, { type: "prompt", promptId: 2, text: "One-time code:", kind: "secret" });
     helper.askpass(handle.sessionId, { type: "prompt", promptId: 3, text: "Welcome", kind: "none" });
     expect(service.ownerQuestions(handle)).toEqual(["host_key", "login_prompt"]);
+    expect(service.sshPendingPrompts(handle)).toEqual([
+      { promptId: 1, text: "Are you sure you want to continue connecting (yes/no)?", kind: "confirm" },
+      { promptId: 2, text: "One-time code:", kind: "secret" },
+    ]);
   });
 
   it("an RDP certificate question is a certificate, and nothing once it is decided", async () => {

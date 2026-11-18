@@ -12,6 +12,7 @@ import type { RpcSchemas } from "../../core/rpc.ts";
 import type { SshTarget as SshOpenTarget } from "../../core/ssh-args.ts";
 import type { z } from "zod";
 import { HelperRequestError, HelperRuntimeError, HelperStartError } from "./helper-process.ts";
+import type { AgentControlRpc } from "./agent-control-rpc.ts";
 import type { RemoteHubService } from "./service.ts";
 
 type Input<K extends keyof RpcSchemas> = z.output<RpcSchemas[K]["input"]>;
@@ -66,9 +67,15 @@ export interface RpcHandlerDeps {
   imports: ImportBook;
   /** Agent grants and the audit (stage 4a); the owner's page is the only caller of these RPCs. */
   agents?: { access: AgentAccessBook; audit: AgentAudit };
+  /** Taking a session back from an agent, listing what agents opened, answering their questions (stage 4b-1). */
+  agentControl?: AgentControlRpc;
 }
 
-export function createRpcHandlers({ service, profiles, credentials, imports, agents }: RpcHandlerDeps): RpcHandlers {
+export function createRpcHandlers({ service, profiles, credentials, imports, agents, agentControl }: RpcHandlerDeps): RpcHandlers {
+  const control = (): AgentControlRpc => {
+    if (agentControl === undefined) throw new experimental_PluginRpcRefusal({ code: "not_found", message: "agent control is not available" });
+    return agentControl;
+  };
   const withAgents = <T>(run: (a: { access: AgentAccessBook; audit: AgentAudit }) => T): T => {
     if (agents === undefined) throw new experimental_PluginRpcRefusal({ code: "not_found", message: "agent access is not available" });
     try {
@@ -225,6 +232,9 @@ export function createRpcHandlers({ service, profiles, credentials, imports, age
         return { revoked };
       }),
     agent_audit_list: async (input) => withAgents(({ audit }) => audit.list(input.limit)),
+    agent_control_takeover: async (input) => control().agent_control_takeover(input),
+    agent_sessions: async (input) => control().agent_sessions(input),
+    agent_prompt_answer: async (input) => control().agent_prompt_answer(input),
     rdp_trusted_list: () => withHelper(async () => service.rdpTrustedList()),
     rdp_trusted_forget: (input) => withHelper(async () => ({ removed: service.rdpTrustedForget(input.host, input.port, input.fingerprint) })),
     rdp_screenshot: (input) =>

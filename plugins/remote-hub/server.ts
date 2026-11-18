@@ -14,7 +14,11 @@ import { ALL_MIGRATIONS } from "./src/adapters/bb/migrations.ts";
 import { AgentAccessBook } from "./src/core/agent-access.ts";
 import { AgentAudit } from "./src/core/agent-audit.ts";
 import { ToolBudget } from "./src/core/agent-budget.ts";
+import { AgentSessionRegistry, controlSessionExtras, createControlTools } from "./src/core/agent-control-tools.ts";
+import { ControlLeases } from "./src/core/control-lease.ts";
 import { createAgentTools } from "./src/core/agent-tools.ts";
+import { agentControlPorts, createControlGate, registerControlLifecycle } from "./src/adapters/bb/agent-control.ts";
+import { createAgentControlRpc } from "./src/adapters/bb/agent-control-rpc.ts";
 import { agentPorts, registerAgentTools } from "./src/adapters/bb/agent-tools.ts";
 import { createSqliteAgentAuditStore, createSqliteAgentGrantStore } from "./src/adapters/bb/agent-sqlite.ts";
 import { createRdpTrustStore } from "./src/core/rdp-trust.ts";
@@ -49,7 +53,10 @@ function pluginRootDir(): string {
 export default function plugin(bb: BbPluginApi): void {
   const db = bb.storage.database();
   bb.storage.migrate(db, ALL_MIGRATIONS);
+  // Who drives which session (stage 4b-1): in memory only, so a restart gives every session back to the human.
+  const leases = new ControlLeases({ now: () => Date.now(), newId: () => randomUUID() });
   const service = createRemoteHubService({
+    control: createControlGate(leases),
     startHelper: () => HelperProcess.start(pluginRootDir()),
     trust: createRdpTrustStore(createSqliteRdpTrust(db)),
   });
@@ -71,8 +78,26 @@ export default function plugin(bb: BbPluginApi): void {
   // Agent access (stage 4a): grants the owner sets on the page, an audit of every tool call, and the read-only tools.
   const agentAccess = new AgentAccessBook({ store: createSqliteAgentGrantStore(db), profiles: { has: (id) => profiles.get(id) !== null }, now: () => new Date() });
   const agentAudit = new AgentAudit({ store: createSqliteAgentAuditStore(db), now: () => new Date() });
-  registerAgentTools(bb, createAgentTools({ access: agentAccess, audit: agentAudit, budget: new ToolBudget({ now: () => Date.now() }), ports: agentPorts(service, profiles) }));
-  bb.rpc.register(rpcContract, createRpcHandlers({ service, profiles, credentials, imports, agents: { access: agentAccess, audit: agentAudit } }));
+  const registry = new AgentSessionRegistry();
+  const handlers = createRpcHandlers({
+    service,
+    profiles,
+    credentials,
+    imports,
+    agents: { access: agentAccess, audit: agentAudit },
+    agentControl: createAgentControlRpc({ service, leases, registry, audit: agentAudit }),
+  });
+  const controlPorts = agentControlPorts({ service, profiles, handlers });
+  const toolDeps = {
+    access: agentAccess,
+    audit: agentAudit,
+    budget: new ToolBudget({ now: () => Date.now() }),
+    ports: agentPorts(service, profiles),
+    sessionExtras: controlSessionExtras(leases, controlPorts),
+  };
+  registerAgentTools(bb, [...createAgentTools(toolDeps), ...createControlTools({ ...toolDeps, leases, control: controlPorts, registry })]);
+  bb.rpc.register(rpcContract, handlers);
+  registerControlLifecycle(bb, leases, service);
 
   registerStreamSocket(bb, { service });
 

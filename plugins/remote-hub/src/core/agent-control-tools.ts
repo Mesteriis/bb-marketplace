@@ -25,9 +25,28 @@ export interface AgentControlPorts {
   waitingForOwner(sessionKey: string): Array<"host_key" | "certificate" | "login_prompt">;
 }
 
+/** Which thread opened which session through remote_connect (memory only; empty after a restart, like leases). */
+export class AgentSessionRegistry {
+  private readonly opened = new Map<string, string>();
+  mark(sessionKey: string, threadId: string): void {
+    this.opened.set(sessionKey, threadId);
+  }
+  threadOf(sessionKey: string): string | undefined {
+    return this.opened.get(sessionKey);
+  }
+  forget(sessionKey: string): void {
+    this.opened.delete(sessionKey);
+  }
+  keys(): string[] {
+    return [...this.opened.keys()];
+  }
+}
+
 export interface AgentControlDeps extends AgentToolDeps {
   leases: ControlLeases;
   control: AgentControlPorts;
+  /** Shared with the owner's page, which lists what agents opened. */
+  registry?: AgentSessionRegistry;
 }
 
 export const MAX_SESSIONS_PER_THREAD = 4;
@@ -92,7 +111,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   const queue = new SerialQueue();
   const held = new Map<string, HeldInput>();
   /** Which thread opened which session (memory only): a thread may disconnect what it opened, and no more than four at a time. */
-  const openedBy = new Map<string, string>();
+  const openedBy = deps.registry ?? new AgentSessionRegistry();
 
   const sessionOf = (key: string): AgentSessionView | undefined => ports.sessions.list().find((s) => s.key === key);
   /** For the owner's audit only: which connection a session belongs to, whatever the grant says. */
@@ -118,6 +137,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   leases.onEnd((end: LeaseEnd) => {
     const input = held.get(end.sessionKey);
     const events = input === undefined ? [] : input.releaseEvents();
+    held.delete(end.sessionKey);
     if (events.length > 0) void queue.run(end.sessionKey, () => true, () => control.rdpWrite(end.sessionKey, events)).catch(() => undefined);
   });
   // A grant lowered below `input` ends the leases that depended on it.
@@ -196,10 +216,10 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
           const profile = ports.profiles.get(params.connectionId);
           if (profile === null || !access.check(params.connectionId, "connect").ok) throw new ToolError("agent_access_denied", "the owner has not allowed agents to use this connection");
           if (profile.credentialRef === null) throw new ToolError("needs_saved_credential", "this connection has no saved credential; the owner must save one on the Remote Hub page first");
-          const live = ports.sessions.list().filter((s) => s.state !== "closed" && openedBy.get(s.key) === ctx.threadId).length;
+          const live = ports.sessions.list().filter((s) => s.state !== "closed" && openedBy.threadOf(s.key) === ctx.threadId).length;
           if (live >= MAX_SESSIONS_PER_THREAD) throw new ToolError("too_many_sessions", `this thread already has ${MAX_SESSIONS_PER_THREAD} open sessions: disconnect one first`);
           const { sessionKey } = await control.connect(profile.id);
-          openedBy.set(sessionKey, ctx.threadId);
+          openedBy.mark(sessionKey, ctx.threadId);
           const waiting = control.waitingForOwner(sessionKey);
           return { content: [json({ sessionId: sessionKey, connectionId: profile.id, state: sessionOf(sessionKey)?.state ?? "connecting", ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}) })] };
         }),
@@ -211,10 +231,10 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
       execute: (params, ctx) =>
         guarded("remote_disconnect", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId) }, async () => {
           controllable(params.sessionId);
-          if (openedBy.get(params.sessionId) !== ctx.threadId) throw new ToolError("not_opened_by_you", "this thread did not open this session");
+          if (openedBy.threadOf(params.sessionId) !== ctx.threadId) throw new ToolError("not_opened_by_you", "this thread did not open this session");
           await control.disconnect(params.sessionId);
           leases.endSession(params.sessionId, "session_closed");
-          openedBy.delete(params.sessionId);
+          openedBy.forget(params.sessionId);
           return { content: [json({ sessionId: params.sessionId, disconnected: true })] };
         }),
     }),

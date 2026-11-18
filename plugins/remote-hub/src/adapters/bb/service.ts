@@ -132,6 +132,8 @@ export interface RemoteHubService {
   subscribeControl(handle: SessionHandle, cb: (view: ControlView) => void): () => void;
   /** The kinds of question the owner has to answer on this session: no text, no fingerprint. */
   ownerQuestions(handle: SessionHandle): Array<"host_key" | "certificate" | "login_prompt">;
+  /** The SSH questions waiting for the owner, with their text (for the owner's page only; never given to an agent). */
+  sshPendingPrompts(handle: SessionHandle): Array<{ promptId: number; text: string; kind: string }>;
   sessionResize(handle: SessionHandle, cols: number, rows: number): Promise<void>;
   sessionCredit(handle: SessionHandle, bytes: number): Promise<void>;
   onHelperExit(cb: () => void): () => void;
@@ -861,6 +863,10 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     },
     subscribeControl(handle, cb) {
       return deps.control?.subscribe(handle, cb) ?? (() => undefined);
+    },
+    sshPendingPrompts(handle) {
+      const prompts = askpassStates.get(keyOf(handle))?.prompts;
+      return prompts === undefined ? [] : [...prompts.values()].filter((p) => p.kind === "confirm" || p.kind === "secret").map((p) => ({ promptId: p.promptId, text: p.text, kind: p.kind }));
     },
     ownerQuestions(handle) {
       const key = keyOf(handle);

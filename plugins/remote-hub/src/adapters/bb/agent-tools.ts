@@ -50,7 +50,7 @@ export function registerAgentTools(bb: BbPluginApi, tools: AgentToolDef[]): void
       description: tool.description,
       parameters: tool.parameters,
       // The thread and project come from the host's trusted call context, never from the arguments.
-      execute: (params, ctx) => tool.execute(params, { threadId: ctx.threadId, projectId: ctx.projectId }),
+      execute: (params, ctx) => tool.execute(params, { threadId: ctx.threadId, projectId: ctx.projectId, signal: ctx.signal }),
     });
   }
   // The agent skill text is written in stage 4c; until then no skill is offered.

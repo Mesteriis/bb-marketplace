@@ -233,6 +233,32 @@ export const rpcSchemas = {
       }),
     ),
   },
+  agent_control_takeover: {
+    input: sessionHandleSchema,
+    output: z.object({ tookOver: z.boolean() }),
+  },
+  agent_sessions: {
+    input: z.object({}).strict(),
+    output: z.array(
+      z.object({
+        generation: z.string(),
+        sessionId: z.number().int(),
+        kind: z.enum(["echo", "ssh", "rdp"]),
+        connectionId: z.string().nullable(),
+        state: z.enum(["connecting", "running", "closed"]),
+        openedByThread: z.string().nullable(),
+        controlledBy: z.enum(["human", "agent"]),
+        leaseThreadId: z.string().nullable(),
+        leaseExpiresAt: z.number().nullable(),
+        questions: z.array(z.object({ kind: z.enum(["host_key", "login_prompt"]), promptId: z.number().int(), text: z.string() })),
+        certificate: rdpCertPromptInfoSchema.nullable(),
+      }),
+    ),
+  },
+  agent_prompt_answer: {
+    input: sessionHandleSchema.extend({ promptId: z.number().int().min(0), answer: z.string().max(4096).nullable() }),
+    output: z.object({ answered: z.literal(true) }),
+  },
   rdp_trusted_list: {
     input: z.object({}).strict(),
     output: z.array(z.object({ host: z.string(), port: z.number().int(), fingerprint: z.string(), addedAt: z.string() })),
