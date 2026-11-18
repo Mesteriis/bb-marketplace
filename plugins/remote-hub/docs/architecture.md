@@ -519,3 +519,26 @@ and `useProfiles` around the existing session pages; Quick connect stays.
   `waitingForOwner`. Typing into the session cannot answer them (askpass is not on the PTY).
 - **Not in 4b-1:** command execution (4b-2), the agent skill text (4c).
 
+
+## Remote commands, visibility and the owner's rule (stages 4b-2 / 4c)
+
+- **Helper.** `exec.run / exec.read / exec.cancel / exec.forget` and the unsolicited `exec.finished`
+  (`helper/src/exec.rs`, wired in `ipc.rs` and `sessions.rs`). A run is `/usr/bin/ssh -T` with the command as the last
+  argv word (`ssh_args::split_exec_argv` turns it into the `-tt` shape the session validators already know, then the same
+  validators run), spawned with `std::process::Command` (no pty, stdin null, own process group, `env_clear`), never through a
+  shell. The loop calls `pump()` every turn (20 ms while a run lives): bounded head capture per stream with the total
+  counted, timeout → TERM → KILL after 2 s, cancel, flood stop, at most 16 live and 64 kept runs. Run ids come from the same
+  allocator as sessions. The askpass broker marks such a run `refuse`: only the one expected saved-secret prompt is
+  answered; anything else is refused, ssh is stopped, and the run says why (`host_key`, `login_prompt`,
+  `credential_rejected`, `credential_unavailable`; none of it reaches the page).
+- **TypeScript.** `core/exec-protocol.ts` (wire), `core/ssh-args.ts` (`buildSshExecSpawn`), service `execRun/Read/Cancel/Forget`,
+  `core/agent-exec-tools.ts` (the three tools and every rule), `adapters/bb/agent-exec.ts` (target from the connection's saved
+  credential, the live poll that feeds the owner's view).
+- **Visibility.** `core/watchers.ts` (a view reports `visible` every 2 s over its stream socket; fresh for 6 s),
+  `core/agent-feed.ts` (what an agent does, to the open views: typed length, desktop pointer, commands),
+  `adapters/bb/agent-signals.ts` (realtime signal with identifiers only), UI `live-session.tsx`, `agent-banner.tsx`,
+  `command-log.tsx`. A lease nobody watches changes its owner tag (`suspended:<lease>`), which the helper treats as any change
+  of driver (drop queued input, release held keys, the RDP engine does it against its own framebuffer).
+- **The owner's rule.** `core/agent-settings.ts`: "Agents may act only while I am watching the session", default ON, stored in
+  `agent_settings`, changed only by the owner RPC (`agent_settings_set`, audited as `access.require_watching`) and read on
+  every call. OFF removes the refusal and the suspension only; everything that shows the owner what agents do stays.

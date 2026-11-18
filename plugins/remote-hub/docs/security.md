@@ -56,3 +56,27 @@
   the directive are what the owner has); `slots.messageDirective` (stable). They may change between BB releases.
 - **Limit.** The gate proves a visible view is open, not that a person is looking at it. A directive in the agent's reply
   depends on the agent following the skill text; the banner does not.
+
+## Remote commands (stage 4b-2)
+
+- **What a command is.** At the `exec` level an agent may run ONE command on the host of an SSH session it opened
+  (`remote_ssh_exec`; read with `remote_command_read`, stopped with `remote_command_cancel`). The command is a single string
+  (at most 8192 bytes) that ssh hands to the **remote** user's shell, which parses it. No local shell is involved and
+  nothing is expanded on this machine. It runs in its own `/usr/bin/ssh -T` process (no pty, stdin closed, so a command that
+  reads input sees end of file), built by the same argv builder and validated by the same strict allowlist as a session.
+- **No question can reach an agent.** The run uses the connection's saved credential through the same askpass broker
+  (the one expected prompt, once) and in refuse mode: any other prompt is refused and ssh is stopped, so a host key, a code or
+  a refused password ends the run with a closed-list code (`host_key`, `login_prompt`, `credential_rejected`,
+  `credential_unavailable`). Host keys come from a private copy of the owner's confirmed keys with
+  `StrictHostKeyChecking=yes`: an unknown endpoint is refused before anything starts (`host_key_unknown`), a changed key
+  stops the run. A command never decides a key.
+- **Bounded.** 3 live commands per thread, 2 per session, a timeout (default 60 s, at most 600 s; TERM then KILL after 2 s,
+  by process group), the head of each stream kept (1 MiB, the total counted and the cut said), a 256 MiB flood stop, no
+  automatic retry, the tool budget on every call. Output reaches the agent as text with control sequences removed, framed as
+  untrusted data. Binary output is not passed through.
+- **Visible and audited.** The command text and its output stream live to the session's open views (the "Commands an agent
+  ran" list) even when "record commands" is off: shown, not stored. The audit keeps the command's length, or its text cut
+  at 512 characters only when the owner switched "record commands" on for that connection. The watching rule applies as
+  for input. Lowering the grant below `exec` cancels what runs for that connection and ends reading.
+- **Limits.** A command runs as the saved user with that user's rights: exec is the power to act as that user. The
+  helper's own bounds do not limit what the remote command does on the server.

@@ -558,12 +558,7 @@ fn handle(
                     match crate::known_hosts::session_copy().and_then(|c| crate::known_hosts::ssh_known_hosts_option(&c.path).map(|o| (c, o))) {
                         Ok((c, option)) => {
                             let at = argv.len().saturating_sub(3); // before the "--" that precedes the host and the command
-                            let mut options = Vec::new();
-                            for o in [option.as_str(), "GlobalKnownHostsFile=none", "StrictHostKeyChecking=yes", "UpdateHostKeys=no", "CheckHostIP=no", "HashKnownHosts=no", "VerifyHostKeyDNS=no", "BatchMode=no"] {
-                                options.push("-o".to_string());
-                                options.push(o.to_string());
-                            }
-                            argv.splice(at..at, options);
+                            argv.splice(at..at, exec_known_hosts_options(&option));
                             copy = Some(c);
                         }
                         Err(e) => return Ok(protocol::encode_response(&known_hosts_error(id, e))),
@@ -1037,6 +1032,17 @@ fn session_closed_errors(pending: &[u64]) -> Vec<u8> {
         frames.extend(rdp_error(*req, "session_closed", "the rdp session ended before the screenshot".to_string()));
     }
     frames
+}
+
+/// ssh options for a remote command's host-key handling: only the owner's confirmed keys (a private copy of the overlay),
+/// a refusal for an unknown or changed key, no updates, no DNS trust. Never a question: nobody is there to answer it.
+fn exec_known_hosts_options(known_hosts_option: &str) -> Vec<String> {
+    let mut options = Vec::new();
+    for o in [known_hosts_option, "GlobalKnownHostsFile=none", "StrictHostKeyChecking=yes", "UpdateHostKeys=no", "CheckHostIP=no", "HashKnownHosts=no", "VerifyHostKeyDNS=no", "BatchMode=no"] {
+        options.push("-o".to_string());
+        options.push(o.to_string());
+    }
+    options
 }
 
 /// The answer to exec.read / exec.cancel: state, exit, both streams as base64 slices.
@@ -1809,6 +1815,18 @@ mod tests {
 
     /// A keychain operation never resolves the helper by PATH: without an absolute path the
     /// operation fails closed (no process is started at all).
+    #[test]
+    fn a_remote_command_never_asks_about_a_host_key_it_refuses_an_unknown_or_changed_one() {
+        let options = exec_known_hosts_options("UserKnownHostsFile=\"/p/known\"");
+        let pairs: Vec<&str> = options.chunks(2).map(|c| c[1].as_str()).collect();
+        assert!(options.chunks(2).all(|c| c[0] == "-o"));
+        assert!(pairs.contains(&"StrictHostKeyChecking=yes"), "{pairs:?}");
+        assert!(!pairs.iter().any(|o| o.starts_with("StrictHostKeyChecking=") && *o != "StrictHostKeyChecking=yes"));
+        for needed in ["GlobalKnownHostsFile=none", "UpdateHostKeys=no", "CheckHostIP=no", "VerifyHostKeyDNS=no", "UserKnownHostsFile=\"/p/known\""] {
+            assert!(pairs.contains(&needed), "{needed} missing: {pairs:?}");
+        }
+    }
+
     #[test]
     fn a_keychain_child_needs_an_absolute_executable_path() {
         let reference = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";

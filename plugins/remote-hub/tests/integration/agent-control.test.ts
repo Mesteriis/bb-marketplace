@@ -12,6 +12,7 @@ import { AgentFeed } from "../../src/core/agent-feed.ts";
 import { AgentSettings } from "../../src/core/agent-settings.ts";
 import { WatcherBook } from "../../src/core/watchers.ts";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createConnection, createServer } from "node:net";
@@ -511,6 +512,21 @@ describe.skipIf(!dockerOk)("remote commands over a real sshd (stage 4b-2)", () =
     await poll(async () => (await read(long.commandId, { waitSeconds: 0 })).running === false, 30_000, "the revoked command was stopped");
     expect((await read(long.commandId, { waitSeconds: 0 })).reason).toBe("cancelled");
   }, 120_000);
+
+  it("a host key the owner has not confirmed is never decided by a command: refused with a closed-list code, nothing started", async () => {
+    const path = join(tmp, "Application Support", "Remote Hub", "known_hosts");
+    const saved = readFileSync(path, "utf8");
+    expect(saved.length).toBeGreaterThan(0); // the owner's earlier "yes" is in the overlay
+    writeFileSync(path, "");
+    try {
+      const refused = c.text(await c.call("remote_ssh_exec", { sessionId, command: "echo should-not-run" }));
+      expect(refused).toContain("host_key_unknown");
+      expect(refused).not.toMatch(/fingerprint|SHA256|ssh-ed25519|continue connecting/);
+    } finally {
+      writeFileSync(path, saved);
+    }
+    expect((await run("echo back-again")).commandId).toBeTruthy();
+  }, 90_000);
 
   it("the owner's watching rule: refused with nobody looking, accepted when the owner turned the rule off", async () => {
     // The owner closes the view that was open all along.
