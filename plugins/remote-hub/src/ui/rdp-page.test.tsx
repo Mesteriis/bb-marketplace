@@ -86,6 +86,29 @@ async function connect(p: RdpPageProps, fill: Array<[string, string]> = []) {
   return { socket, say };
 }
 
+describe("RdpPage: one open at a time (P1)", () => {
+  it("a second submit while the first open is pending does not open a second session", async () => {
+    let finish!: (h: SessionHandle) => void;
+    const onRdpOpen = vi.fn(() => new Promise<SessionHandle>((resolve) => (finish = resolve)));
+    const p = props({ onRdpOpen: onRdpOpen as never });
+    render(<RdpPage {...p} />);
+    type("host", "rdp.test");
+    type("user", "alice");
+    type("password", SECRET);
+    const form = screen.getByLabelText("host").closest("form") as HTMLFormElement;
+    fireEvent.submit(form);
+    fireEvent.submit(form); // Enter pressed again, or a second click racing the disabled state
+    await flush();
+    expect(onRdpOpen).toHaveBeenCalledTimes(1);
+    await act(async () => finish(HANDLE));
+    await flush();
+    type("password", SECRET);
+    fireEvent.submit(form);
+    await flush();
+    expect(onRdpOpen).toHaveBeenCalledTimes(2); // free again once the first open settled
+  });
+});
+
 describe("RdpPage: prefilled from a saved profile", () => {
   const PID = "11111111-2222-4333-8444-555555555555";
   const fill = (over: Record<string, unknown> = {}) => ({

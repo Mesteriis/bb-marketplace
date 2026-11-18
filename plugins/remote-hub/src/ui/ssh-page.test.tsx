@@ -123,6 +123,83 @@ describe("SshPage opened from a saved profile", () => {
   });
 });
 
+describe("SshPage overlapping opens (P1)", () => {
+  const HA: SessionHandle = { generation: "a".repeat(32), sessionId: 1 };
+  const HB: SessionHandle = { generation: "a".repeat(32), sessionId: 2 };
+  const TA = { host: "a.example.test", extraOptions: [] };
+  const TB = { host: "b.example.test", extraOptions: [] };
+  const launch = (nonce: number, target: typeof TA) => ({ nonce, profileId: "11111111-2222-4333-8444-555555555555", target });
+
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+  const settle = () =>
+    act(async () => {
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+    });
+  const tokens = () => FakeWebSocket.instances.map((w) => decodeURIComponent(w.url.split("attach=")[1] ?? ""));
+
+  it("a slow open that loses to a newer launch is closed, never shown, and Disconnect closes the session on screen", async () => {
+    const openA = deferred<SessionHandle>();
+    const onSshOpen = vi.fn((t: { host: string }) => (t.host === TA.host ? openA.promise : Promise.resolve(HB)));
+    const onAttach = vi.fn(async (h: SessionHandle) => ({ token: "tok" + h.sessionId, wsUrl: "ws://x" }));
+    const onClose = vi.fn(async () => {});
+    const view = render(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={onClose} launch={launch(1, TA)} />);
+    view.rerender(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={onClose} launch={launch(2, TB)} />);
+    await settle();
+    expect(tokens()).toEqual(["tok2"]);
+    await act(async () => {
+      openA.resolve(HA); // the older open finishes last
+    });
+    await settle();
+    expect(onClose.mock.calls).toEqual([[HA]]); // opened but lost: closed explicitly
+    expect(onAttach.mock.calls.map((c) => c[0])).toEqual([HB]); // never attached
+    expect(tokens()).toEqual(["tok2"]); // only B's terminal
+    expect(screen.getByText(/b\.example\.test/, { selector: "strong" })).toBeTruthy();
+    fireEvent.click(screen.getByText("Disconnect"));
+    await settle();
+    expect(onClose.mock.calls).toEqual([[HA], [HB]]); // Disconnect closed B
+  });
+
+  it("a session replaced by a newer launch is closed, and its late attach cannot replace the new terminal", async () => {
+    const attachA = deferred<{ token: string; wsUrl: string }>();
+    const onSshOpen = vi.fn(async (t: { host: string }) => (t.host === TA.host ? HA : HB));
+    const onAttach = vi.fn((h: SessionHandle) => (h.sessionId === 1 ? attachA.promise : Promise.resolve({ token: "tok2", wsUrl: "ws://x" })));
+    const onClose = vi.fn(async () => {});
+    const view = render(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={onClose} launch={launch(1, TA)} />);
+    await settle(); // A is open, its attach is still pending
+    view.rerender(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={onClose} launch={launch(2, TB)} />);
+    await settle();
+    expect(onClose.mock.calls).toEqual([[HA]]); // the replaced session is closed
+    await act(async () => {
+      attachA.resolve({ token: "tok1", wsUrl: "ws://x" }); // A's attach arrives late
+    });
+    await settle();
+    expect(tokens()).toEqual(["tok2"]);
+  });
+
+  it("the open that lost the race and then fails shows no error", async () => {
+    const openA = deferred<SessionHandle>();
+    const onSshOpen = vi.fn((t: { host: string }) => (t.host === TA.host ? openA.promise : Promise.resolve(HB)));
+    const onAttach = vi.fn(async (h: SessionHandle) => ({ token: "tok" + h.sessionId, wsUrl: "ws://x" }));
+    const view = render(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={vi.fn(async () => {})} launch={launch(1, TA)} />);
+    view.rerender(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={vi.fn(async () => {})} launch={launch(2, TB)} />);
+    await settle();
+    await act(async () => {
+      openA.reject(new Error("boom from the stale open"));
+    });
+    await settle();
+    expect(screen.queryByText("boom from the stale open")).toBeNull();
+    expect(screen.getByTestId("ssh-state").textContent).toContain("running");
+  });
+});
+
 describe("SshPage state transitions", () => {
   it("shows connecting then running", async () => {
     await connectAndRun();

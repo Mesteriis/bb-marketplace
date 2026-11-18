@@ -25,17 +25,37 @@ export interface SshPageProps {
 
 type PageState = "idle" | "connecting" | "running" | "detached" | "closed" | "error";
 
+/** Everything on screen for ONE session; replaced as a unit, so the endpoint
+ *  shown, the handle Disconnect closes and the terminal attached never disagree. */
+interface Session {
+  target: SshTarget;
+  handle: SessionHandle;
+  attach: SshAttach | null;
+}
+
 export function SshPage(props: SshPageProps) {
   const { onSshOpen, onAttach, onClose } = props;
   const [host, setHost] = useState("");
   const [user, setUser] = useState("");
   const [port, setPort] = useState("");
-  const [handle, setHandle] = useState<SessionHandle | null>(null);
-  const [attach, setAttach] = useState<SshAttach | null>(null);
-  const [target, setTarget] = useState<SshTarget | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [pending, setPending] = useState<SshTarget | null>(null);
   const [state, setState] = useState<PageState>("idle");
   const [exit, setExit] = useState<SshExitInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // One guard for every way to open (Quick connect and the catalogue): the
+  // latest request wins. An open that finishes after a newer one started is
+  // closed at once, and a session replaced by a newer one is closed too, so
+  // nothing is left running that nobody can see.
+  const latest = useRef(0);
+  const shown = useRef<Session | null>(null);
+  shown.current = session;
+  const closeQuietly = useCallback(
+    (handle: SessionHandle) => {
+      void onClose(handle).catch(() => undefined);
+    },
+    [onClose],
+  );
 
   const onTerminalState = useCallback((next: SshTerminalState, info?: SshExitInfo) => {
     setState(next);
@@ -44,21 +64,40 @@ export function SshPage(props: SshPageProps) {
 
   const open = useCallback(
     async (t: SshTarget, profileId?: string) => {
+      const mine = ++latest.current;
       setState("connecting");
       setError(null);
       setExit(null);
+      setPending(t);
+      let handle: SessionHandle;
       try {
-        setTarget(t);
-        const h = await onSshOpen(t, profileId);
-        setHandle(h);
-        const a = await onAttach(h);
-        setAttach(a);
+        handle = await onSshOpen(t, profileId);
       } catch (e) {
+        if (mine !== latest.current) return;
+        setPending(null);
+        setState("error");
+        setError(e instanceof Error ? e.message : String(e));
+        return;
+      }
+      if (mine !== latest.current) {
+        closeQuietly(handle); // opened, but a newer request took over: never orphaned
+        return;
+      }
+      const replaced = shown.current;
+      if (replaced !== null) closeQuietly(replaced.handle);
+      setPending(null);
+      setSession({ target: t, handle, attach: null });
+      try {
+        const attach = await onAttach(handle);
+        // Keyed by handle: a late attach can only land on its own session.
+        setSession((cur) => (cur !== null && cur.handle === handle ? { ...cur, attach } : cur));
+      } catch (e) {
+        if (mine !== latest.current) return;
         setState("error");
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [onSshOpen, onAttach],
+    [onSshOpen, onAttach, closeQuietly],
   );
 
   const connect = useCallback(async () => {
@@ -79,28 +118,33 @@ export function SshPage(props: SshPageProps) {
   }, [props.launch, open]);
 
   const disconnect = useCallback(async () => {
-    if (handle === null) return;
+    if (session === null) return;
     try {
-      await onClose(handle);
+      await onClose(session.handle);
       setState("closed");
       setExit({ exitCode: null, signal: null, reason: "killed_by_close" });
-      setAttach(null);
+      setSession((cur) => (cur !== null && cur.handle === session.handle ? { ...cur, attach: null } : cur));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [handle, onClose]);
+  }, [session, onClose]);
 
   const reattach = useCallback(async () => {
-    if (handle === null) return;
+    if (session === null) return;
+    const handle = session.handle;
     try {
       setState("connecting");
-      const a = await onAttach(handle);
-      setAttach(a);
+      const attach = await onAttach(handle);
+      setSession((cur) => (cur !== null && cur.handle === handle ? { ...cur, attach } : cur));
     } catch (e) {
       setState("error");
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [handle, onAttach]);
+  }, [session, onAttach]);
+
+  const handle = session?.handle ?? null;
+  const attach = session?.attach ?? null;
+  const target = session?.target ?? pending;
 
   return (
     <div className="rh-page">

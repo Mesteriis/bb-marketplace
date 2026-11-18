@@ -100,6 +100,8 @@ export function RdpPage(props: RdpPageProps) {
   const [deciding, setDeciding] = useState(false);
   const canvasHandle = useRef<RdpCanvasHandle | null>(null);
   const passwordInput = useRef<HTMLInputElement | null>(null);
+  // True while an open call is in flight: a second submit must not open a second session.
+  const opening = useRef(false);
   // The saved profile the form currently stands for; editing the endpoint ends it.
   const linked = useRef<{ profileId: string; size: { width: number; height: number } | null } | null>(null);
   const edit = (set: (value: string) => void) => (value: string) => {
@@ -172,6 +174,7 @@ export function RdpPage(props: RdpPageProps) {
       setError("port must be a whole number from 1 to 65535");
       return;
     }
+    if (opening.current) return;
     // The password leaves component state HERE; only this call's closure holds it.
     const secret = password;
     setPassword("");
@@ -180,15 +183,18 @@ export function RdpPage(props: RdpPageProps) {
     const endpoint = username + "@" + host + ":" + portNumber;
     setConnecting(endpoint);
     let handle: SessionHandle;
+    opening.current = true;
     try {
       const target: RdpConnectTarget = { host, port: portNumber, username, password: secret, ...(domain !== "" ? { domain } : {}) };
       const link = linked.current;
       handle = await onRdpOpen(target, link?.size ?? DESKTOP_SIZE, link?.profileId);
     } catch (e) {
+      opening.current = false;
       setConnecting(null);
       setError(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
       return;
     }
+    opening.current = false;
     // The session is open: it is now THE session on screen, whether or not the
     // first attach works (a failed attach leaves Reattach and Disconnect available).
     setView({ handle, attach: null, endpoint, state: "connecting", prompt: null, desktop: null, closeReason: null, detached: false });
