@@ -3,6 +3,7 @@
 import type Database from "better-sqlite3";
 import { AGENT_LEVELS, type AgentGrant, type AgentGrantStore, type AgentLevel } from "../../core/agent-access.ts";
 import type { AuditRow, AuditStore } from "../../core/agent-audit.ts";
+import type { AgentSettingsStore } from "../../core/agent-settings.ts";
 
 /** Appended after every earlier migration (see migrations.ts). */
 export const AGENT_MIGRATIONS: string[] = [
@@ -26,6 +27,11 @@ export const AGENT_MIGRATIONS: string[] = [
     count INTEGER NOT NULL
   );
   CREATE INDEX agent_audit_thread_tool ON agent_audit (thread_id, tool, id);`,
+  // Plugin-wide agent settings (stage 4c): one row per key; today only require_watching.
+  `CREATE TABLE agent_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );`,
 ];
 
 interface GrantRow {
@@ -107,5 +113,16 @@ export function createSqliteAgentAuditStore(db: Database.Database): AuditStore {
     },
     list: (limit) => (db.prepare("SELECT * FROM agent_audit ORDER BY id DESC LIMIT ?").all(limit) as AuditDbRow[]).map(toAudit),
     prune: (keep) => void db.prepare("DELETE FROM agent_audit WHERE id <= (SELECT MAX(id) FROM agent_audit) - ?").run(keep),
+  };
+}
+
+export function createSqliteAgentSettingsStore(db: Database.Database): AgentSettingsStore {
+  return {
+    loadRequireWatching: () => {
+      const row = db.prepare("SELECT value FROM agent_settings WHERE key = 'require_watching'").get() as { value: string } | undefined;
+      // Anything but an explicit "off" is the strict default.
+      return row === undefined ? null : row.value !== "off";
+    },
+    saveRequireWatching: (value) => void db.prepare("INSERT INTO agent_settings (key, value) VALUES ('require_watching', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(value ? "on" : "off"),
   };
 }

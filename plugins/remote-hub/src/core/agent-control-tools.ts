@@ -30,6 +30,8 @@ export interface AgentControlPorts {
   waitingForOwner(sessionKey: string): Array<"host_key" | "certificate" | "login_prompt">;
   /** Whether a human has this session's live view open and visible right now (agents are never hidden). */
   watching(sessionKey: string): boolean;
+  /** The owner's setting: agents act only while the session is watched (default true). Read on every call. */
+  watchingRequired(): boolean;
 }
 
 /** Which thread opened which session through remote_connect (memory only; empty after a restart, like leases). */
@@ -146,7 +148,7 @@ function terminalBytes(actions: TerminalAction[]): Uint8Array {
 }
 
 /** More fields for a session's row in the read tools: who is driving it and whether the owner is being asked something. */
-export function controlSessionExtras(leases: ControlLeases, control: Pick<AgentControlPorts, "waitingForOwner" | "watching">) {
+export function controlSessionExtras(leases: ControlLeases, control: Pick<AgentControlPorts, "waitingForOwner" | "watching" | "watchingRequired">) {
   return (s: AgentSessionView): Record<string, unknown> => {
     const owner = leases.owner(s.key);
     const waiting = control.waitingForOwner(s.key);
@@ -155,6 +157,7 @@ export function controlSessionExtras(leases: ControlLeases, control: Pick<AgentC
       ...(owner.kind === "agent" ? { leaseExpiresAt: new Date(owner.expiresAt).toISOString() } : {}),
       ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}),
       watchedByOwner: control.watching(s.key),
+      watchingRequired: control.watchingRequired(),
     };
   };
 }
@@ -216,18 +219,21 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
     }, "revoked");
   });
 
+  /** Whether an agent may act on this session now: always when the owner switched the gate off, else only while it is watched. */
+  const mayAct = (key: string): boolean => !control.watchingRequired() || control.watching(key);
+
   /** Runs `write` in the session's queue if, when its turn comes, the same lease still holds, the grant is intact and the call was not aborted. */
   async function driven(key: string, ctx: AgentCallContext, leaseId: string, profileId: string, write: () => Promise<void>): Promise<void> {
     const generation = leaseGeneration(key, ctx, leaseId);
     // Only the lease THIS call was given: a late abort of an old call must not end the lease that replaced it.
     const onAbort = () => void leases.endLease(key, ctx.threadId, leaseId, "thread_gone");
     ctx.signal?.addEventListener("abort", onAbort, { once: true });
-    if (!control.watching(key)) throw NOT_WATCHING;
+    if (!mayAct(key)) throw NOT_WATCHING;
     try {
       const stillValid = () =>
-        ctx.signal?.aborted !== true && control.watching(key) && access.check(profileId, "input").ok && sessionOf(key)?.control === "ready" && leases.check(key, ctx.threadId, leaseId).ok && leases.owner(key).generation === generation;
+        ctx.signal?.aborted !== true && mayAct(key) && access.check(profileId, "input").ok && sessionOf(key)?.control === "ready" && leases.check(key, ctx.threadId, leaseId).ok && leases.owner(key).generation === generation;
       const outcome = await queue.run(key, stillValid, write);
-      if (!outcome.ran && !control.watching(key)) throw NOT_WATCHING;
+      if (!outcome.ran && !mayAct(key)) throw NOT_WATCHING;
       if (!outcome.ran) throw new ToolError("lease_lost", "the owner took the session back, or the lease ended, before this input was sent; nothing was sent");
     } finally {
       ctx.signal?.removeEventListener("abort", onAbort);
@@ -263,6 +269,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
                 expiresAt: new Date(result.expiresAt).toISOString(),
                 ttlSeconds: Math.min(LEASE_MAX_SECONDS, Math.max(LEASE_MIN_SECONDS, params.seconds ?? LEASE_DEFAULT_SECONDS)),
                 watching: control.watching(session.key),
+                watchingRequired: control.watchingRequired(),
                 liveView: liveViewLine(session.key),
                 instruction: LIVE_VIEW_INSTRUCTION,
               }),
@@ -322,7 +329,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
             else opening.delete(ctx.threadId);
           }
           const waiting = control.waitingForOwner(sessionKey);
-          return { content: [json({ sessionId: sessionKey, connectionId: profile.id, state: sessionOf(sessionKey)?.state ?? "connecting", ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}), watching: control.watching(sessionKey), liveView: liveViewLine(sessionKey), instruction: LIVE_VIEW_INSTRUCTION })] };
+          return { content: [json({ sessionId: sessionKey, connectionId: profile.id, state: sessionOf(sessionKey)?.state ?? "connecting", ...(waiting.length > 0 ? { waitingForOwner: waiting } : {}), watching: control.watching(sessionKey), watchingRequired: control.watchingRequired(), liveView: liveViewLine(sessionKey), instruction: LIVE_VIEW_INSTRUCTION })] };
         }),
     }),
     def({

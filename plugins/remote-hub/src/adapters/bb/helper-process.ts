@@ -7,6 +7,7 @@
 // experimental_execHostFile from "@get-bb/plugin-sdk/process"
 // (bundled-types/bb-plugin-sdk-process.d.ts:46-54); both wrap Node's
 // child_process, which is what the BB server itself runs on.
+import type { ExecFinishedMessage, ExecStateMessage } from "../../core/exec-protocol.ts";
 import type { CredentialBind } from "../../core/credential.ts";
 import type { SshAskpassEvent } from "../../core/ssh-askpass-protocol.ts";
 import { experimental_execHostFile, experimental_spawnHostProcess } from "@get-bb/plugin-sdk/process";
@@ -231,6 +232,7 @@ export class HelperProcess {
   private readonly echoSessions = new Set<number>();
   private readonly rdpSessions = new Set<number>();
   private readonly screens = new Map<number, PendingScreenshot>();
+  private readonly onExecFinishedCallbacks: Array<(event: ExecFinishedMessage) => void> = [];
   private readonly onSshAskpassCallbacks: Array<(sessionId: number, event: SshAskpassEvent) => void> = [];
   private readonly onRdpEventCallbacks: Array<(sessionId: number, event: RdpHelperEvent) => void> = [];
   private readonly onRdpUpdateCallbacks: Array<(sessionId: number, seq: number, payload: Uint8Array) => void> = [];
@@ -383,6 +385,10 @@ export class HelperProcess {
     }
     if (this.handleRdpControl(resp)) return;
     if (this.handleSshAskpassControl(resp)) return;
+    if (resp.type === "exec.finished") {
+      for (const cb of this.onExecFinishedCallbacks) cb(resp);
+      return;
+    }
     const id = "id" in resp ? (resp as { id?: unknown }).id : undefined;
     if (typeof id === "number" && this.pending.has(id)) {
       const entry = this.pending.get(id)!;
@@ -736,6 +742,41 @@ export class HelperProcess {
     if (resp.type !== "session.opened") throw new Error("unexpected helper response: " + resp.type);
     if (this._status !== null) this._status.sessionCount += 1;
     return { generation: this.generation, sessionId: resp.sessionId };
+  }
+
+  /**
+   * Starts ONE remote command (ssh without a pty). The helper validates the argv again, answers the saved secret for its one
+   * expected prompt and refuses every other question. Returns the run's id (same allocator as sessions).
+   */
+  async execRun(spec: SshSpawnSpec, askpass: { credentialRef: string }, timeoutMs: number, maxBytes: number): Promise<number> {
+    const resp = await this.request({ type: "exec.run", program: spec.program, argv: spec.argv, env: spec.env, askpass, timeoutMs, maxBytes } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "exec.started") throw new HelperRequestError("protocol_error", "unexpected answer to exec.run");
+    return resp.execId;
+  }
+
+  async execRead(execId: number, stdoutFrom: number, stderrFrom: number, max: number): Promise<ExecStateMessage> {
+    const resp = await this.request({ type: "exec.read", execId, stdoutFrom, stderrFrom, max } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "exec.state") throw new HelperRequestError("protocol_error", "unexpected answer to exec.read");
+    return resp;
+  }
+
+  async execCancel(execId: number): Promise<ExecStateMessage> {
+    const resp = await this.request({ type: "exec.cancel", execId } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "exec.state") throw new HelperRequestError("protocol_error", "unexpected answer to exec.cancel");
+    return resp;
+  }
+
+  async execForget(execId: number): Promise<void> {
+    const resp = await this.request({ type: "exec.forget", execId } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+  }
+
+  /** A run ended (the helper tells it unasked). */
+  onExecFinished(cb: (event: ExecFinishedMessage) => void): void {
+    this.onExecFinishedCallbacks.push(cb);
   }
 
   async credit(handle: SessionHandle, bytes: number): Promise<void> {

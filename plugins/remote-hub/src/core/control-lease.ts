@@ -69,6 +69,11 @@ export class ControlLeases {
     }
   }
 
+  /** Sessions an agent holds right now (for a change that touches every lease, such as the owner's setting). */
+  heldKeys(): string[] {
+    return [...this.sessions.keys()].filter((key) => this.owner(key).kind === "agent");
+  }
+
   owner(sessionKey: string): Owner {
     const entry = this.live(sessionKey);
     return entry.lease === null

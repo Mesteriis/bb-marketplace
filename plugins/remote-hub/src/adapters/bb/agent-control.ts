@@ -7,6 +7,7 @@ import { ownerTag, type AgentControlPorts, type AgentSessionRegistry } from "../
 import { profileToSshTarget } from "../../core/catalogue.ts";
 import type { ControlLeases } from "../../core/control-lease.ts";
 import type { WatcherBook } from "../../core/watchers.ts";
+import type { AgentSettings } from "../../core/agent-settings.ts";
 import type { Profile } from "../../core/profile.ts";
 import type { RpcHandlers } from "./rpc-handlers.ts";
 import type { ControlGate, ControlView, RemoteHubService } from "./service.ts";
@@ -21,7 +22,7 @@ function handleOf(key: string): { generation: string; sessionId: number } {
 const keyOf = (h: { generation: string; sessionId: number }): string => `${h.generation}.${h.sessionId}`;
 
 /** The service's view of the leases: whether the human may type, who drives, and a push when that changes. */
-export function createControlGate(leases: ControlLeases, watchers: WatcherBook): ControlGate {
+export function createControlGate(leases: ControlLeases, watchers: WatcherBook, settings: AgentSettings): ControlGate {
   const views = (h: { generation: string; sessionId: number }): ControlView => {
     const owner = leases.owner(keyOf(h));
     return owner.kind === "human" ? { owner: "human", expiresAt: null } : { owner: "agent", expiresAt: owner.expiresAt };
@@ -45,13 +46,20 @@ export function createControlGate(leases: ControlLeases, watchers: WatcherBook):
     const handle = handleOf(key);
     for (const cb of owners) cb(handle);
   });
+  // The owner switches the gate on or off: every lease changes its tag at once.
+  settings.onChange(() => {
+    for (const key of leases.heldKeys()) {
+      const handle = handleOf(key);
+      for (const cb of owners) cb(handle);
+    }
+  });
   return {
     humanMayDrive: (h) => leases.owner(keyOf(h)).kind === "human",
     ownerTag: (h) => {
       const owner = leases.owner(keyOf(h));
       if (owner.kind === "human") return "human";
       // A lease nobody is watching is suspended: a tag no input carries, so nothing of the agent's is applied.
-      return watchers.watching(keyOf(h)) ? ownerTag(owner.leaseId) : `suspended:${owner.leaseId}`;
+      return !settings.requireWatching() || watchers.watching(keyOf(h)) ? ownerTag(owner.leaseId) : `suspended:${owner.leaseId}`;
     },
     onChange: (cb) => void owners.push(cb),
     state: views,
@@ -87,11 +95,13 @@ export interface AgentControlPortDeps {
   /** The same handlers the page uses: they check that the saved credential belongs to this endpoint. */
   handlers: Pick<RpcHandlers, "ssh_open" | "rdp_open">;
   watchers: WatcherBook;
+  settings: AgentSettings;
 }
 
-export function agentControlPorts({ service, profiles, handlers, watchers }: AgentControlPortDeps): AgentControlPorts {
+export function agentControlPorts({ service, profiles, handlers, watchers, settings }: AgentControlPortDeps): AgentControlPorts {
   return {
     watching: (key) => watchers.watching(key),
+    watchingRequired: () => settings.requireWatching(),
     terminalWrite: async (key, data, owner) => lostLeaseAsToolError(() => service.agentTerminalInput(handleOf(key), data, owner)),
     rdpWrite: async (key, events, owner) => lostLeaseAsToolError(() => service.agentRdpInput(handleOf(key), events, owner)),
     async connect(profileId) {

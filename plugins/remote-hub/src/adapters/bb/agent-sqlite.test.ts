@@ -2,7 +2,8 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentAccessBook } from "../../core/agent-access.ts";
 import { AgentAudit } from "../../core/agent-audit.ts";
-import { AGENT_MIGRATIONS, createSqliteAgentAuditStore, createSqliteAgentGrantStore } from "./agent-sqlite.ts";
+import { AgentSettings } from "../../core/agent-settings.ts";
+import { AGENT_MIGRATIONS, createSqliteAgentAuditStore, createSqliteAgentGrantStore, createSqliteAgentSettingsStore } from "./agent-sqlite.ts";
 import { ALL_MIGRATIONS } from "./migrations.ts";
 
 const P1 = "11111111-2222-4333-8444-555555555551";
@@ -12,6 +13,22 @@ beforeEach(() => {
   for (const statement of ALL_MIGRATIONS) db.exec(statement);
 });
 afterEach(() => db.close());
+
+describe("agent settings in SQLite", () => {
+  it("require watching is on until the owner turns it off, and the choice survives a restart", () => {
+    expect(new AgentSettings(createSqliteAgentSettingsStore(db)).requireWatching()).toBe(true);
+    new AgentSettings(createSqliteAgentSettingsStore(db)).setRequireWatching(false);
+    expect(new AgentSettings(createSqliteAgentSettingsStore(db)).requireWatching()).toBe(false);
+    new AgentSettings(createSqliteAgentSettingsStore(db)).setRequireWatching(true);
+    expect(new AgentSettings(createSqliteAgentSettingsStore(db)).requireWatching()).toBe(true);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM agent_settings").get()).toEqual({ n: 1 });
+  });
+
+  it("a stored value that is not exactly 'off' is read as the strict default", () => {
+    db.prepare("INSERT INTO agent_settings (key, value) VALUES ('require_watching', 'maybe')").run();
+    expect(new AgentSettings(createSqliteAgentSettingsStore(db)).requireWatching()).toBe(true);
+  });
+});
 
 describe("agent grants in SQLite", () => {
   it("are appended after every earlier migration and survive a restart", () => {

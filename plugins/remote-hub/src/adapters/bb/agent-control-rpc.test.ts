@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentAudit, type AuditRow, type AuditStore } from "../../core/agent-audit.ts";
 import { AgentSessionRegistry } from "../../core/agent-control-tools.ts";
+import { AgentSettings } from "../../core/agent-settings.ts";
 import { WatcherBook } from "../../core/watchers.ts";
 import { ControlLeases } from "../../core/control-lease.ts";
 import type { RemoteHubService, SessionInfo } from "./service.ts";
@@ -42,8 +43,10 @@ function setup() {
     sshPromptAnswer: vi.fn(async () => undefined),
   };
   const watchers = new WatcherBook({ now: () => 1_000_000 });
-  const rpc = createAgentControlRpc({ service: service as unknown as RemoteHubService, leases, registry, audit, watchers });
-  return { rpc, rows, leases, registry, service, sessions, watchers };
+  let saved: boolean | null = null;
+  const settings = new AgentSettings({ loadRequireWatching: () => saved, saveRequireWatching: (v) => void (saved = v) });
+  const rpc = createAgentControlRpc({ service: service as unknown as RemoteHubService, leases, registry, audit, watchers, settings });
+  return { rpc, rows, leases, registry, service, sessions, watchers, settings };
 }
 
 describe("agent_control_takeover", () => {
@@ -73,6 +76,38 @@ describe("agent_control_allow (Z5)", () => {
     expect(leases.acquire(K1, "thr_a", 60)).toMatchObject({ ok: true });
     expect(await rpc.agent_control_allow(H2)).toEqual({ allowed: false });
     expect(rows.map((r) => [r.tool, r.threadId])).toContainEqual(["control.allow", "owner RPC"]);
+  });
+});
+
+describe("the owner's watching setting", () => {
+  it("is ON by default, is changed only through the owner RPC, takes effect at once, and every change is audited as the owner's act", async () => {
+    const { rpc, rows, settings } = setup();
+    expect(await rpc.agent_settings_get({})).toEqual({ requireWatching: true });
+    expect(await rpc.agent_settings_set({ requireWatching: false })).toEqual({ requireWatching: false, changed: true });
+    expect(settings.requireWatching()).toBe(false);
+    expect(await rpc.agent_settings_set({ requireWatching: false })).toEqual({ requireWatching: false, changed: false });
+    expect(await rpc.agent_settings_set({ requireWatching: true })).toEqual({ requireWatching: true, changed: true });
+    // A change is a row; asking for what already is, is not.
+    expect(rows.map((r) => [r.tool, r.threadId, r.detail, r.outcome])).toEqual([
+      ["access.require_watching", "owner RPC", "off", "ok"],
+      ["access.require_watching", "owner RPC", "on", "ok"],
+    ]);
+  });
+
+  it("a store that cannot save refuses and leaves the mode as it was", async () => {
+    const { rpc, rows } = setup();
+    const broken = createAgentControlRpc({ ...(rpc as object), service: { sessionList: () => [] } as never, leases: new ControlLeases({ now: () => 1, newId: () => "x" }), registry: new AgentSessionRegistry(), audit: new AgentAudit({ store: { begin: (r) => (rows.push({ ...r, id: 99, outcome: null }), 99), finish: (_id, o) => void (rows.at(-1)!.outcome = o), collapse: () => false, list: () => [], prune: () => {} }, now: () => new Date() }), watchers: new WatcherBook({ now: () => 1 }), settings: new AgentSettings({ loadRequireWatching: () => null, saveRequireWatching: () => { throw new Error("disk"); } }) });
+    await expect(broken.agent_settings_set({ requireWatching: false })).rejects.toBeTruthy();
+    expect(await broken.agent_settings_get({})).toEqual({ requireWatching: true });
+    expect(rows.at(-1)!.outcome).toBe("error");
+  });
+
+  it("agent_sessions rows say which mode is in force", async () => {
+    const { rpc, leases, settings } = setup();
+    leases.acquire(K1, "thr_a", 60);
+    expect((await rpc.agent_sessions({}))[0]).toMatchObject({ watchingRequired: true });
+    settings.setRequireWatching(false);
+    expect((await rpc.agent_sessions({}))[0]).toMatchObject({ watchingRequired: false });
   });
 });
 

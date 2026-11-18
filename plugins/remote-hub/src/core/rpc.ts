@@ -233,6 +233,9 @@ export const rpcSchemas = {
       }),
     ),
   },
+  /** The owner's setting: agents act only while the session is watched (default on). */
+  agent_settings_get: { input: z.object({}).strict(), output: z.object({ requireWatching: z.boolean() }) },
+  agent_settings_set: { input: z.object({ requireWatching: z.boolean() }).strict(), output: z.object({ requireWatching: z.boolean(), changed: z.boolean() }) },
   agent_control_takeover: {
     input: sessionHandleSchema,
     output: z.object({ tookOver: z.boolean() }),
@@ -262,6 +265,8 @@ export const rpcSchemas = {
         certificate: rdpCertPromptInfoSchema.nullable(),
         /** A person has this session's live view open and visible right now. */
         watching: z.boolean(),
+        /** The owner's setting in force: whether an agent needs a watcher to act. */
+        watchingRequired: z.boolean(),
       }),
     ),
   },

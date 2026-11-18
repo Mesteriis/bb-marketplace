@@ -1,3 +1,4 @@
+import { AgentSettings } from "../../core/agent-settings.ts";
 import { WatcherBook } from "../../core/watchers.ts";
 import { describe, expect, it, vi } from "vitest";
 import { AgentSessionRegistry } from "../../core/agent-control-tools.ts";
@@ -21,7 +22,7 @@ function leasesWithClock() {
 describe("the control gate", () => {
   it("the human may drive until an agent holds the lease, and the views are told about every change", () => {
     const { leases } = leasesWithClock();
-    const gate = createControlGate(leases, new WatcherBook({ now: () => 1_000_000 }));
+    const gate = createControlGate(leases, new WatcherBook({ now: () => 1_000_000 }), new AgentSettings(memStore()));
     const h = { generation: GEN, sessionId: 1 };
     const seen: unknown[] = [];
     const off = gate.subscribe(h, (v) => seen.push(v));
@@ -38,12 +39,50 @@ describe("the control gate", () => {
   });
 });
 
+function memStore(initial: boolean | null = null) {
+  let value = initial;
+  return { loadRequireWatching: () => value, saveRequireWatching: (v: boolean) => void (value = v) };
+}
+
+describe("the control gate with the owner's setting", () => {
+  it("with the setting OFF a lease nobody watches is NOT suspended; switching it back ON suspends at once, and every switch is announced", () => {
+    const now = 1_000_000;
+    const leases = new ControlLeases({ now: () => now, newId: () => "lease-1" });
+    const watchers = new WatcherBook({ now: () => now });
+    const settings = new AgentSettings(memStore());
+    const gate = createControlGate(leases, watchers, settings);
+    const h = { generation: GEN, sessionId: 1 };
+    const key = `${GEN}.1`;
+    const changed: string[] = [];
+    gate.onChange(() => changed.push(gate.ownerTag(h)));
+    leases.acquire(key, "thr_a", 600);
+    expect(gate.ownerTag(h)).toBe("suspended:lease-1");
+    settings.setRequireWatching(false);
+    expect(gate.ownerTag(h)).toBe("agent:lease-1");
+    watchers.beat(key, "v", true);
+    watchers.remove("v");
+    expect(gate.ownerTag(h), "nobody watches, but the owner allowed that").toBe("agent:lease-1");
+    settings.setRequireWatching(true);
+    expect(gate.ownerTag(h)).toBe("suspended:lease-1");
+    // (a watcher arriving and leaving are announced too, but change nothing while the gate is off)
+    expect(changed).toEqual(["suspended:lease-1", "agent:lease-1", "agent:lease-1", "agent:lease-1", "suspended:lease-1"]);
+  });
+
+  it("the ports read the setting on every call", () => {
+    const settings = new AgentSettings(memStore());
+    const p = agentControlPorts({ settings, watchers: new WatcherBook({ now: () => 1 }), service: {} as never, profiles: { get: () => null }, handlers: {} as never });
+    expect(p.watchingRequired()).toBe(true);
+    settings.setRequireWatching(false);
+    expect(p.watchingRequired()).toBe(false);
+  });
+});
+
 describe("the control gate and the watchers", () => {
   it("an agent's lease is suspended (a different owner tag) while nobody watches, and resumes when someone does; every change is announced", () => {
     let now = 1_000_000;
     const leases = new ControlLeases({ now: () => now, newId: () => "lease-1" });
     const watchers = new WatcherBook({ now: () => now });
-    const gate = createControlGate(leases, watchers);
+    const gate = createControlGate(leases, watchers, new AgentSettings(memStore()));
     const h = { generation: GEN, sessionId: 1 };
     const key = `${GEN}.1`;
     const changed: string[] = [];
@@ -62,7 +101,7 @@ describe("the control gate and the watchers", () => {
 
   it("with no lease nobody is suspended: the human tag stays", () => {
     const leases = new ControlLeases({ now: () => 1, newId: () => "l" });
-    const gate = createControlGate(leases, new WatcherBook({ now: () => 1 }));
+    const gate = createControlGate(leases, new WatcherBook({ now: () => 1 }), new AgentSettings(memStore()));
     expect(gate.ownerTag({ generation: GEN, sessionId: 9 })).toBe("human");
   });
 });
@@ -81,7 +120,7 @@ describe("the control ports", () => {
       ...extra,
     };
     const profiles = new Map<string, Profile>();
-    const p = agentControlPorts({ watchers: new WatcherBook({ now: () => 1_000_000 }), service: service as unknown as RemoteHubService, profiles: { get: (id) => profiles.get(id) ?? null }, handlers: handlers as never });
+    const p = agentControlPorts({ settings: new AgentSettings(memStore()), watchers: new WatcherBook({ now: () => 1_000_000 }), service: service as unknown as RemoteHubService, profiles: { get: (id) => profiles.get(id) ?? null }, handlers: handlers as never });
     return { p, handlers, service, profiles };
   }
 
@@ -250,7 +289,7 @@ describe("the watcher sweep", () => {
     let now = 1_000_000;
     const leases = new ControlLeases({ now: () => now, newId: () => "lease-1" });
     const watchers = new WatcherBook({ now: () => now });
-    const gate = createControlGate(leases, watchers);
+    const gate = createControlGate(leases, watchers, new AgentSettings(memStore()));
     const tags: string[] = [];
     gate.onChange((h) => tags.push(gate.ownerTag(h)));
     const handlers = new Map<string, (...a: unknown[]) => void>();

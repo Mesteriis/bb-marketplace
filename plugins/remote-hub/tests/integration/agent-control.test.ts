@@ -6,6 +6,7 @@
 //  RDP: an agent moves the pointer on a real desktop with typed actions; a stale geometry is refused and moves nothing;
 //       a takeover refuses the next input.
 // Needs docker and REMOTE_HUB_INTEGRATION=1; a 300 s watchdog aborts a hung run.
+import { AgentSettings } from "../../src/core/agent-settings.ts";
 import { WatcherBook } from "../../src/core/watchers.ts";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -103,8 +104,10 @@ async function compose(env: Record<string, string>) {
   const profiles = new ProfileBook({ store: new MemoryProfiles(), now: () => new Date(), newId: () => randomUUID() });
   const leases = new ControlLeases({ now: () => Date.now(), newId: () => randomUUID() });
   const watchers = new WatcherBook({ now: () => Date.now() });
+  let savedRequire: boolean | null = null;
+  const settings = new AgentSettings({ loadRequireWatching: () => savedRequire, saveRequireWatching: (v) => void (savedRequire = v) });
   const service = createRemoteHubService({
-    control: createControlGate(leases, watchers),
+    control: createControlGate(leases, watchers, settings),
     startHelper: () => HelperProcess.spawn(HELPER, (bin, args) => spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, ...env } }) as unknown as ChildProcessWithoutNullStreams),
     env: { ...process.env, REMOTE_HUB_TEST_ALLOW_KNOWN_HOSTS: "1" } as Record<string, string | undefined>,
   });
@@ -126,8 +129,8 @@ async function compose(env: Record<string, string>) {
   };
   const audit = new AgentAudit({ store, now: () => new Date() });
   const registry = new AgentSessionRegistry();
-  const handlers = createRpcHandlers({ service, profiles, credentials: book, imports: memoryImportBook(profiles, book), agentControl: createAgentControlRpc({ service, leases, registry, audit, watchers }) });
-  const controlPorts = agentControlPorts({ service, profiles, handlers, watchers });
+  const handlers = createRpcHandlers({ service, profiles, credentials: book, imports: memoryImportBook(profiles, book), agentControl: createAgentControlRpc({ service, leases, registry, audit, watchers, settings }) });
+  const controlPorts = agentControlPorts({ service, profiles, handlers, watchers, settings });
   const toolDeps = {
     access, audit,
     budget: new ToolBudget({ now: () => Date.now(), callsPerWindow: 10_000, bytesPerWindow: 500 * 1024 * 1024, globalCallsPerWindow: 100_000, globalBytesPerWindow: 5_000 * 1024 * 1024 }),
@@ -150,7 +153,7 @@ async function compose(env: Record<string, string>) {
     if (visible !== null) h.onMessage(socket, JSON.stringify({ type: "watch", visible }));
     return { socket, h };
   };
-  return { profiles, book, leases, registry, service, access, rows, handlers, call, text, view, tools, watchers };
+  return { profiles, book, leases, registry, service, access, rows, handlers, call, text, view, tools, watchers, settings };
 }
 
 const fields = (over: Partial<ProfileFields>): ProfileFields => ({

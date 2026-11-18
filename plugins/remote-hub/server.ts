@@ -4,6 +4,7 @@
 // service, exposes a schema-validated RPC contract to the app, and tears the
 // helper down on dispose. All wire schemas live in src/core/rpc.ts and
 // src/core/protocol.ts.
+import { AgentSettings } from "./src/core/agent-settings.ts";
 import { publishAgentSignals } from "./src/adapters/bb/agent-signals.ts";
 import { AgentFeed } from "./src/core/agent-feed.ts";
 import { WatcherBook } from "./src/core/watchers.ts";
@@ -23,7 +24,7 @@ import { createAgentTools } from "./src/core/agent-tools.ts";
 import { agentControlPorts, createControlGate, registerControlLifecycle } from "./src/adapters/bb/agent-control.ts";
 import { createAgentControlRpc } from "./src/adapters/bb/agent-control-rpc.ts";
 import { agentPorts, registerAgentTools } from "./src/adapters/bb/agent-tools.ts";
-import { createSqliteAgentAuditStore, createSqliteAgentGrantStore } from "./src/adapters/bb/agent-sqlite.ts";
+import { createSqliteAgentAuditStore, createSqliteAgentGrantStore, createSqliteAgentSettingsStore } from "./src/adapters/bb/agent-sqlite.ts";
 import { createRdpTrustStore } from "./src/core/rdp-trust.ts";
 import { createSqliteRdpTrust } from "./src/adapters/bb/rdp-trust-sqlite.ts";
 import { createSqliteProfileStore } from "./src/adapters/bb/profile-sqlite.ts";
@@ -59,9 +60,10 @@ export default function plugin(bb: BbPluginApi): void {
   // Who drives which session (stage 4b-1): in memory only, so a restart gives every session back to the human.
   const leases = new ControlLeases({ now: () => Date.now(), newId: () => randomUUID() });
   const watchers = new WatcherBook({ now: () => Date.now() });
+  const agentSettings = new AgentSettings(createSqliteAgentSettingsStore(db));
   const feed = new AgentFeed();
   const service = createRemoteHubService({
-    control: createControlGate(leases, watchers),
+    control: createControlGate(leases, watchers, agentSettings),
     startHelper: () => HelperProcess.start(pluginRootDir()),
     trust: createRdpTrustStore(createSqliteRdpTrust(db)),
   });
@@ -90,9 +92,9 @@ export default function plugin(bb: BbPluginApi): void {
     credentials,
     imports,
     agents: { access: agentAccess, audit: agentAudit },
-    agentControl: createAgentControlRpc({ service, leases, registry, audit: agentAudit, watchers }),
+    agentControl: createAgentControlRpc({ service, leases, registry, audit: agentAudit, watchers, settings: agentSettings }),
   });
-  const controlPorts = agentControlPorts({ service, profiles, handlers, watchers });
+  const controlPorts = agentControlPorts({ service, profiles, handlers, watchers, settings: agentSettings });
   const toolDeps = {
     access: agentAccess,
     audit: agentAudit,

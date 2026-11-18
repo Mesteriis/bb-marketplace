@@ -7,6 +7,7 @@ import type { AgentAudit } from "../../core/agent-audit.ts";
 import type { AgentSessionRegistry } from "../../core/agent-control-tools.ts";
 import type { ControlLeases } from "../../core/control-lease.ts";
 import type { WatcherBook } from "../../core/watchers.ts";
+import type { AgentSettings } from "../../core/agent-settings.ts";
 import type { RpcSchemas } from "../../core/rpc.ts";
 import type { z } from "zod";
 import { OWNER_RPC } from "./rpc-handlers.ts";
@@ -16,6 +17,8 @@ type Handler<K extends keyof RpcSchemas> = (input: z.output<RpcSchemas[K]["input
 export interface AgentControlRpc {
   agent_control_takeover: Handler<"agent_control_takeover">;
   agent_control_allow: Handler<"agent_control_allow">;
+  agent_settings_get: Handler<"agent_settings_get">;
+  agent_settings_set: Handler<"agent_settings_set">;
   agent_sessions: Handler<"agent_sessions">;
   agent_prompt_answer: Handler<"agent_prompt_answer">;
 }
@@ -26,11 +29,12 @@ export interface AgentControlRpcDeps {
   registry: AgentSessionRegistry;
   audit: AgentAudit;
   watchers: WatcherBook;
+  settings: AgentSettings;
 }
 
 const keyOf = (h: { generation: string; sessionId: number }): string => `${h.generation}.${h.sessionId}`;
 
-export function createAgentControlRpc({ service, leases, registry, audit, watchers }: AgentControlRpcDeps): AgentControlRpc {
+export function createAgentControlRpc({ service, leases, registry, audit, watchers, settings }: AgentControlRpcDeps): AgentControlRpc {
   return {
     agent_control_takeover: async (handle) => {
       const key = keyOf(handle);
@@ -48,6 +52,20 @@ export function createAgentControlRpc({ service, leases, registry, audit, watche
       leases.allowAgents(key);
       ticket.finish("ok");
       return { allowed: true };
+    },
+    agent_settings_get: async () => ({ requireWatching: settings.requireWatching() }),
+    agent_settings_set: async (input) => {
+      // Asking for what already is changes nothing and leaves no row.
+      if (input.requireWatching === settings.requireWatching()) return { requireWatching: input.requireWatching, changed: false };
+      const ticket = audit.begin({ threadId: OWNER_RPC, projectId: "", tool: "access.require_watching", detail: input.requireWatching ? "on" : "off" });
+      try {
+        settings.setRequireWatching(input.requireWatching);
+        ticket.finish("ok");
+        return { requireWatching: input.requireWatching, changed: true };
+      } catch (error) {
+        ticket.finish("error");
+        throw error;
+      }
     },
     agent_sessions: async () => {
       const all = service.sessionList();
@@ -77,6 +95,7 @@ export function createAgentControlRpc({ service, leases, registry, audit, watche
             .map((p) => ({ kind: p.kind === "confirm" ? ("host_key" as const) : ("login_prompt" as const), promptId: p.promptId, text: p.text })),
           certificate: s.rdp?.prompt ?? null,
           watching: watchers.watching(key),
+          watchingRequired: settings.requireWatching(),
         });
       }
       return out;

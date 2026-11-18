@@ -64,6 +64,7 @@ function setup(opts: Setup = {}) {
   const disconnected: string[] = [];
   let failDisconnect = false;
   let watched = true;
+  let required = true;
   const waiting = new Map<string, Array<"host_key" | "certificate" | "login_prompt">>();
   const registry = new AgentSessionRegistry();
   const feed = new AgentFeed();
@@ -102,6 +103,7 @@ function setup(opts: Setup = {}) {
       },
       waitingForOwner: (key) => waiting.get(key) ?? [],
       watching: () => watched,
+      watchingRequired: () => required,
     },
   });
   const tool = (name: string): AgentToolDef => tools.find((t) => t.name === name)!;
@@ -114,6 +116,7 @@ function setup(opts: Setup = {}) {
   return {
     setFailDisconnect: (v: boolean) => void (failDisconnect = v),
     setWatching: (v: boolean) => void (watched = v),
+    setRequired: (v: boolean) => void (required = v),
     feedSeen, registry, access, rows, leases, sessions, wrote, rdpSent, tools, tool, call, textOf, data, opened, disconnected, waiting,
     advance: (ms: number) => void (now += ms),
     holdConnect: () => {
@@ -682,6 +685,35 @@ describe("agents are never hidden: input needs a watcher", () => {
     expect(t.wrote.map((w) => w.data)).toEqual(["id"]);
   });
 
+  it("with the owner's setting OFF input goes through without a watcher, and the change counts from the very next call", async () => {
+    const t = setup();
+    t.access.set(P_SSH, "input", false);
+    const lease = t.data(await t.call("remote_control_acquire", { sessionId: SSH_KEY }));
+    expect(lease.watchingRequired).toBe(true);
+    t.setWatching(false);
+    expect(t.textOf(await t.call("remote_terminal_input", { ...TYPE, leaseId: lease.leaseId }))).toContain("owner_not_watching");
+    t.setRequired(false);
+    expect((await t.call("remote_terminal_input", { ...TYPE, leaseId: lease.leaseId })).isError).toBeUndefined();
+    expect(t.wrote.map((w) => w.data)).toEqual(["id"]);
+    t.setRequired(true);
+    expect(t.textOf(await t.call("remote_terminal_input", { ...TYPE, leaseId: lease.leaseId }))).toContain("owner_not_watching");
+    expect(t.wrote).toHaveLength(1);
+    // The results still say so, and still carry the live-view line.
+    t.setRequired(false);
+    const again = t.data(await t.call("remote_control_acquire", { sessionId: SSH_KEY }));
+    expect(again).toMatchObject({ watching: false, watchingRequired: false, liveView: `::remote-session{id="${SSH_KEY}"}` });
+  });
+
+  it("with the setting OFF the live view and the pointer are still announced (visibility stays, only the gate goes)", async () => {
+    const t = setup();
+    t.access.set(P_RDP, "input", false);
+    t.setRequired(false);
+    t.setWatching(false);
+    const lease = t.data(await t.call("remote_control_acquire", { sessionId: RDP_KEY }));
+    await t.call("remote_rdp_input", { sessionId: RDP_KEY, leaseId: lease.leaseId, observed: { frameId: 7, width: 800, height: 600 }, actions: [{ type: "mouse_move", x: 3, y: 4 }] });
+    expect(t.feedSeen).toContainEqual({ key: RDP_KEY, event: { kind: "pointer", x: 3, y: 4, width: 800, height: 600 } });
+  });
+
   it("desktop input is refused the same way", async () => {
     const t = setup();
     t.access.set(P_RDP, "input", false);
@@ -736,7 +768,7 @@ describe("agents are never hidden: input needs a watcher", () => {
   it("session rows say whether the owner is watching", () => {
     const t = setup();
     const view = { key: SSH_KEY, kind: "ssh", state: "running", profileId: P_SSH, exitCode: null, reason: null, control: "ready" } as AgentSessionView;
-    const extras = (watching: boolean) => controlSessionExtras(t.leases, { waitingForOwner: () => [], watching: () => watching })(view);
+    const extras = (watching: boolean) => controlSessionExtras(t.leases, { waitingForOwner: () => [], watching: () => watching, watchingRequired: () => true })(view);
     expect(extras(true)).toMatchObject({ watchedByOwner: true });
     expect(extras(false)).toMatchObject({ watchedByOwner: false });
   });
