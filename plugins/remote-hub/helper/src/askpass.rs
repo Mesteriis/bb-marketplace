@@ -54,13 +54,13 @@ fn ui_timeout() -> Duration {
 const MAX_REQUEST: usize = 8 * 1024;
 const MAX_PROMPT: usize = 1024;
 
-/// What a prompt with an empty SSH_ASKPASS_PROMPT is. "stored": the one-line password or key
-/// passphrase prompt OpenSSH itself writes for the method this session was fixed to.
-/// "confirm": a yes/no question (the host key). Anything else is "secret": the user types it.
-fn classify_prompt(prompt: &str) -> &'static str {
-    let single_line = !prompt.contains('\n');
-    let trimmed = prompt.trim_end();
-    if single_line && (trimmed.ends_with("'s password:") || (trimmed.starts_with("Enter passphrase for ") && trimmed.ends_with(':'))) {
+/// What a prompt with an empty SSH_ASKPASS_PROMPT is. "stored": exactly the one-line prompt this
+/// session expects (`expected`, built by the server from the user, host or key path it opened ssh
+/// with), so a look-alike text shown by a server never receives the secret. "confirm": a yes/no
+/// question (the host key). Anything else is "secret": the user types it.
+fn classify_prompt(prompt: &str, expected: &str) -> &'static str {
+    let expected = expected.trim_end();
+    if !expected.is_empty() && !prompt.contains('\n') && prompt.trim_end() == expected {
         return "stored";
     }
     if prompt.contains("(yes/no") {
@@ -112,6 +112,7 @@ struct Outcome {
 struct Session {
     child_pid: i32,
     reference: String,
+    expected: String,
     burned: bool,
     rejected_sent: bool,
 }
@@ -225,10 +226,10 @@ impl Broker {
     }
 
     /// Binds a prepared nonce to the session that was spawned with it.
-    pub fn register(&mut self, nonce: &str, session_id: u32, child_pid: i32, reference: &str) {
+    pub fn register(&mut self, nonce: &str, session_id: u32, child_pid: i32, reference: &str, expected: &str) {
         if self.pending.remove(nonce).is_some() {
             self.by_nonce.insert(nonce.to_string(), session_id);
-            self.sessions.insert(session_id, Session { child_pid, reference: reference.to_string(), burned: false, rejected_sent: false });
+            self.sessions.insert(session_id, Session { child_pid, reference: reference.to_string(), expected: expected.to_string(), burned: false, rejected_sent: false });
         }
     }
 
@@ -404,7 +405,7 @@ impl Broker {
         // question, so the stored secret is given ONLY to the prompt the session is configured to
         // expect (decided from its text, which the client generates, never the server). Anything
         // else that is not marked confirm/none goes to the user and is never stored.
-        let kind = if request.kind.is_empty() { classify_prompt(&request.prompt) } else { request.kind.as_str() };
+        let kind = if request.kind.is_empty() { classify_prompt(&request.prompt, &session.expected) } else { request.kind.as_str() };
         if kind == "stored" {
             if !session.burned && valid_credential_ref(&session.reference) {
                 // The stored secret answers the FIRST secret prompt of the session and burns the nonce.
@@ -529,15 +530,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_one_line_password_and_passphrase_prompts_are_eligible_for_the_stored_secret() {
-        assert_eq!(classify_prompt("root@127.0.0.1's password: "), "stored");
-        assert_eq!(classify_prompt("Enter passphrase for key '/Users/x/.ssh/id_ed25519': "), "stored");
-        assert_eq!(classify_prompt("The authenticity of host 'h' can't be established.\nAre you sure you want to continue connecting (yes/no/[fingerprint])? "), "confirm");
-        assert_eq!(classify_prompt("Are you sure you want to continue connecting (yes/no)? "), "confirm");
-        assert_eq!(classify_prompt("Verification code: "), "secret");
-        assert_eq!(classify_prompt("Password: "), "secret");
-        // Multi-line text that merely ends like a password prompt is not eligible.
-        assert_eq!(classify_prompt("anything\nu@h's password: "), "secret");
+    fn only_the_exact_expected_prompt_is_eligible_for_the_stored_secret() {
+        let pw = "root@127.0.0.1's password: ";
+        let key = "Enter passphrase for key '/Users/x/.ssh/id_ed25519': ";
+        assert_eq!(classify_prompt(pw, pw), "stored");
+        assert_eq!(classify_prompt(key, key), "stored");
+        // The same SHAPE for another user, host or key is a stranger's text.
+        assert_eq!(classify_prompt("admin@127.0.0.1's password: ", pw), "secret");
+        assert_eq!(classify_prompt("Enter passphrase for key '/tmp/other': ", key), "secret");
+        assert_eq!(classify_prompt(pw, key), "secret");
+        assert_eq!(classify_prompt(key, pw), "secret");
+        // No expectation means nothing is eligible.
+        assert_eq!(classify_prompt(pw, ""), "secret");
+        assert_eq!(classify_prompt("The authenticity of host 'h' can't be established.\nAre you sure you want to continue connecting (yes/no/[fingerprint])? ", pw), "confirm");
+        assert_eq!(classify_prompt("Are you sure you want to continue connecting (yes/no)? ", pw), "confirm");
+        assert_eq!(classify_prompt("Verification code: ", pw), "secret");
+        // Multi-line text that ends like the expected prompt is not eligible.
+        assert_eq!(classify_prompt("anything\nroot@127.0.0.1's password: ", pw), "secret");
     }
 
     #[test]
@@ -571,9 +580,9 @@ mod tests {
         assert_eq!(a.len(), 48);
         assert!(env_a.iter().any(|(k, v)| k == "SSH_ASKPASS_REQUIRE" && v == "force"));
         assert!(env_a.iter().any(|(k, v)| k == ENV_NONCE && *v == a));
-        broker.register(&a, 7, 100, "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a");
+        broker.register(&a, 7, 100, "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a", "p: ");
         // Registering the same nonce again changes nothing: it is no longer pending.
-        broker.register(&a, 8, 200, "x");
+        broker.register(&a, 8, 200, "x", "p: ");
         assert_eq!(broker.by_nonce.get(&a), Some(&7));
     }
 }

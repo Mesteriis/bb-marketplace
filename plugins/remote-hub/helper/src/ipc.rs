@@ -434,6 +434,13 @@ fn handle(
                 }));
             }
             if let Some(spec) = &askpass {
+                if spec.expected_prompt.is_empty() || spec.expected_prompt.len() > 512 || spec.expected_prompt.contains('\n') {
+                    return Ok(protocol::encode_response(&Response::Error {
+                        id: Some(id),
+                        code: "invalid_expected_prompt".to_string(),
+                        message: "askpass needs one non-empty line as the expected prompt".to_string(),
+                    }));
+                }
                 if !valid_credential_ref(&spec.credential_ref) {
                     return Ok(protocol::encode_response(&Response::Error {
                         id: Some(id),
@@ -445,7 +452,7 @@ fn handle(
             let spec = build_spawn_spec(program, argv, env, cwd);
             match spec {
                 Ok(spec) => match match &askpass {
-                    Some(a) => manager.open_ssh_with_askpass(spec, cols, rows, &a.credential_ref, current_exe),
+                    Some(a) => manager.open_ssh_with_askpass(spec, cols, rows, &a.credential_ref, &a.expected_prompt, current_exe),
                     None => manager.open_ssh(spec, cols, rows),
                 } {
                     Ok(session_id) => {

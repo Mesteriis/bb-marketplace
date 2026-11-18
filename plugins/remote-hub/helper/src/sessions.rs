@@ -311,6 +311,7 @@ impl SessionManager {
         cols: u16,
         rows: u16,
         reference: &str,
+        expected_prompt: &str,
         helper_exe: &str,
     ) -> Result<u32, SessionError> {
         if self.askpass.is_none() {
@@ -338,7 +339,7 @@ impl SessionManager {
         let id = self.open_session(spec, cols, rows, "ssh".to_string())?;
         let pid = self.child_pid(id).unwrap_or(0);
         if let Some(broker) = self.askpass.as_mut() {
-            broker.register(&nonce, id, pid, reference);
+            broker.register(&nonce, id, pid, reference, expected_prompt);
         }
         Ok(id)
     }

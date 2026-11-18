@@ -38,6 +38,8 @@ sub digest { return substr(sha256_hex($_[0] // ""), 0, 16); }
 
 const SECRET: &str = "S3cr3t-ASK-1";
 /// First 16 hex of SHA-256("S3cr3t-ASK-1"), computed outside this test.
+/// The prompt the fake ssh scripts write for the saved secret.
+const EXPECTED: &str = "user@host's password: ";
 const SECRET_DIGEST: &str = "8e7c875e48e8e54c";
 const REF: &str = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";
 
@@ -90,7 +92,7 @@ impl Fixture {
             argv: vec!["perl".into(), "-e".into(), format!("{PERL_PRELUDE}\n{script}")],
             env,
             cwd: None,
-            askpass: askpass.then(|| AskpassSpec { credential_ref: REF.into() }),
+            askpass: askpass.then(|| AskpassSpec { credential_ref: REF.into(), expected_prompt: EXPECTED.into() }),
         });
         let sid = match self.h().read_reply(id) {
             Response::SessionOpened { session_id, .. } => session_id,
@@ -228,7 +230,7 @@ sleep 6;
     // This test process holds the right nonce and the right uid, but is not the ssh child.
     let mut stream = UnixStream::connect(&socket).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    stream.write_all(format!("{{\"nonce\":\"{nonce}\",\"prompt\":\"u@h's password: \",\"kind\":\"\"}}\n").as_bytes()).unwrap();
+    stream.write_all(format!("{{\"nonce\":\"{nonce}\",\"prompt\":\"user@host's password: \",\"kind\":\"\"}}\n").as_bytes()).unwrap();
     let mut reply = String::new();
     let _ = stream.read_to_string(&mut reply);
     assert!(reply.contains("deny"), "an outsider with the nonce must be denied, got {reply:?}");
@@ -240,7 +242,7 @@ fn the_nonce_is_burned_by_the_first_secret_so_an_outsider_replay_after_it_also_f
     let mut f = Fixture::new("replay", &[]);
     let script = r#"
 print "SOCK=$ENV{REMOTE_HUB_ASKPASS_SOCKET} NONCE=$ENV{REMOTE_HUB_ASKPASS_NONCE}\n";
-my ($p, $r) = ask("u\@h's password: "); print "FIRST=$r DONE1\n";
+my ($p, $r) = ask("user\@host's password: "); print "FIRST=$r DONE1\n";
 sleep 6;
 "#;
     let sid = f.open(script, true);
@@ -248,7 +250,7 @@ sleep 6;
     assert_eq!(field(&text, "FIRST"), "0");
     let mut stream = UnixStream::connect(field(&text, "SOCK")).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    stream.write_all(format!("{{\"nonce\":\"{}\",\"prompt\":\"u@h's password: \",\"kind\":\"\"}}\n", field(&text, "NONCE")).as_bytes()).unwrap();
+    stream.write_all(format!("{{\"nonce\":\"{}\",\"prompt\":\"user@host's password: \",\"kind\":\"\"}}\n", field(&text, "NONCE")).as_bytes()).unwrap();
     let mut reply = String::new();
     let _ = stream.read_to_string(&mut reply);
     assert!(!reply.contains("stored"), "a burned nonce must not release the credential again: {reply:?}");
@@ -285,7 +287,7 @@ fn a_reference_that_is_not_ours_is_refused_at_open() {
         argv: vec!["perl".into(), "-e".into(), "1".into()],
         env: HashMap::new(),
         cwd: None,
-        askpass: Some(AskpassSpec { credential_ref: "login".into() }),
+        askpass: Some(AskpassSpec { credential_ref: "login".into(), expected_prompt: EXPECTED.into() }),
     });
     assert!(matches!(f.h().read_reply(40), Response::Error { code, .. } if code == "invalid_credential_ref"));
 }
@@ -297,7 +299,7 @@ fn a_host_key_question_with_an_empty_prompt_kind_goes_to_the_user_and_the_saved_
     let script = r#"
 my ($a, $r) = ask("The authenticity of host 'h' can't be established.\nED25519 key fingerprint is: SHA256:x\nAre you sure you want to continue connecting (yes/no/[fingerprint])? ");
 print "A=[" . ($a // "") . "] R=$r DONE1\n";
-my ($p, $r2) = ask("u\@h's password: ");
+my ($p, $r2) = ask("user\@host's password: ");
 print "H=" . digest($p) . " R=$r2 DONE2\n";
 sleep 1;
 "#;
@@ -330,4 +332,32 @@ sleep 1;
     let (text, _) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE"));
     assert_eq!(field(&text, "A"), "[123456]");
     assert!(!text.contains(SECRET_DIGEST));
+}
+
+#[test]
+fn look_alike_password_and_passphrase_prompts_from_a_server_never_receive_the_saved_secret() {
+    // Keyboard-interactive text is chosen by the server. Both shapes, for another user and another key,
+    // arrive with an empty prompt kind: neither is the prompt this session expects.
+    let mut f = Fixture::new("lookalike", &[]);
+    let script = r#"
+my ($a, $r) = ask("Enter passphrase for key '/tmp/not-my-key': ");
+print "A=[" . ($a // "") . "] R=$r DONE1\n";
+my ($b, $r2) = ask("admin\@host's password: ");
+print "B=[" . ($b // "") . "] R=$r2 DONE2\n";
+my ($c, $r3) = ask("user\@host's password: ");
+print "H=" . digest($c) . " R=$r3 DONE3\n";
+sleep 1;
+"#;
+    let sid = f.open(script, true);
+    for (n, answer) in [(51u64, "typed-one"), (52, "typed-two")] {
+        let (_, events) = f.drive(sid, Duration::from_secs(20), |_, ev| ev.iter().filter(|r| matches!(r, Response::SshPrompt { .. })).count() >= (n as usize - 50));
+        let Some(Response::SshPrompt { prompt_id, kind, .. }) = events.into_iter().filter(|r| matches!(r, Response::SshPrompt { .. })).last() else { unreachable!() };
+        assert_eq!(kind, "secret", "a look-alike must be asked of the user");
+        f.h().send(&Request::SshPromptAnswer { id: n, session_id: sid, prompt_id, answer: Some(answer.into()) });
+    }
+    let (text, _) = f.drive(sid, Duration::from_secs(20), |t, _| t.contains("DONE3"));
+    assert_eq!(field(&text, "A"), "[typed-one]");
+    assert_eq!(field(&text, "B"), "[typed-two]");
+    // The nonce was not spent on the strangers: the REAL expected prompt still gets the saved secret.
+    assert_eq!(field(&text, "H"), SECRET_DIGEST, "{text}");
 }

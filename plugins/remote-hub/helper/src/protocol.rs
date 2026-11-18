@@ -19,6 +19,11 @@ pub const STREAM_HEADER_BYTES: usize = 8;
 pub struct AskpassSpec {
     #[serde(rename = "credentialRef")]
     pub credential_ref: String,
+    /// The exact one-line prompt OpenSSH will write for this session's password or key passphrase.
+    /// Only a prompt equal to it is answered from the Keychain; anything else (a server-controlled
+    /// keyboard-interactive text imitating it, say) goes to the user.
+    #[serde(rename = "expectedPrompt")]
+    pub expected_prompt: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
