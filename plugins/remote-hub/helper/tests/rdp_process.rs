@@ -29,7 +29,7 @@ fn g7_ids_are_distinct_and_close_is_per_session() {
     assert!(pid_alive(engine_pid), "closing the echo session killed the rdp engine");
     // The session is still there: a not-yet-ready desktop answers `not_ready`,
     // an unknown one `session_not_found`.
-    h.send(&Request::RdpInput { id: 21, session_id: rdp, events: vec![] });
+    h.send(&Request::RdpInput { id: 21, session_id: rdp, events: vec![], owner: None });
     match h.read_reply(21) {
         Response::Error { code, .. } => assert_eq!(code, "not_ready"),
         other => panic!("rdp session was lost: {other:?}"),
@@ -182,7 +182,7 @@ fn g15_screenshot_before_desktop_ready_is_refused_with_its_request_id() {
 #[test]
 fn g16_unknown_session_input_and_decision_are_refused() {
     let mut h = start(&[]);
-    h.send(&Request::RdpInput { id: 1, session_id: 999, events: vec![] });
+    h.send(&Request::RdpInput { id: 1, session_id: 999, events: vec![], owner: None });
     match h.read_reply(1) {
         Response::Error { id, code, .. } => assert_eq!((id, code.as_str()), (Some(1), "session_not_found")),
         other => panic!("expected session_not_found, got {other:?}"),
@@ -539,7 +539,7 @@ fn h1_input_and_acks_before_the_desktop_are_refused_and_helper_death_is_noticed(
     let (rdp, engine_pid) = h.open_rdp(server.port);
     h.wait_state(rdp, "connecting");
     for i in 0..100u64 {
-        h.send(&Request::RdpInput { id: 1000 + i, session_id: rdp, events: vec![] });
+        h.send(&Request::RdpInput { id: 1000 + i, session_id: rdp, events: vec![], owner: None });
         match h.read_reply(1000 + i) {
             Response::Error { code, .. } => assert_eq!(code, "not_ready"),
             other => panic!("input {i}: expected not_ready, got {other:?}"),

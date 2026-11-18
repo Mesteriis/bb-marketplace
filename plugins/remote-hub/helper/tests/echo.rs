@@ -359,6 +359,7 @@ fn echo_round_trip_resize_and_close() {
         id: 2,
         session_id,
         data: "héllo\n".to_string(),
+        owner: None,
     });
     match helper.read_response() {
         Response::SessionInputAck { .. } => {}
@@ -475,6 +476,7 @@ fn r1_closing_one_session_keeps_others_alive() {
         id: 11,
         session_id: b_id,
         data: "still-alive\n".to_string(),
+        owner: None,
     });
     match helper.read_response() {
         Response::SessionInputAck { .. } => {}
@@ -512,6 +514,7 @@ fn r2_large_input_echoes_in_order_and_shutdown_clean() {
         id: 1,
         session_id: sid,
         data: payload.clone(),
+        owner: None,
     });
     match helper.read_response() {
         Response::SessionInputAck { .. } => {}
@@ -580,6 +583,7 @@ fn r6_closing_one_session_does_not_disturb_another() {
         id: 2,
         session_id: b_id,
         data: "b-still-works\n".to_string(),
+        owner: None,
     });
     match helper.read_response() {
         Response::SessionInputAck { .. } => {}
@@ -645,6 +649,7 @@ fn r11_resize_is_visible_to_the_child() {
         id: 2,
         session_id: sid,
         data: "\n".to_string(),
+        owner: None,
     });
     match helper.read_response() {
         Response::SessionInputAck { .. } => {}
@@ -932,7 +937,8 @@ fn s5_concurrent_sessions_across_helpers() {
             id: 200 + n as u64,
             session_id: *sid,
             data: line.clone(),
-        });
+        owner: None,
+    });
         match helpers[*hi].read_response() {
             Response::SessionInputAck { .. } => {}
             other => panic!("expected session.input_ack, got {other:?}"),
@@ -974,6 +980,7 @@ fn t1_oversized_input_is_rejected_and_helper_survives() {
         id: 1,
         session_id: sid,
         data: "x".repeat(1_100_067),
+        owner: None,
     });
     match helper.read_response() {
         Response::Error { code, .. } => assert_eq!(code, "input_overflow"),
@@ -997,6 +1004,7 @@ fn t1_input_boundary_262144_ascii() {
         id: 1,
         session_id: sid,
         data: data.clone(),
+        owner: None,
     });
     match helper.read_response() {
         Response::SessionInputAck { .. } => {}
@@ -1022,6 +1030,7 @@ fn t1_input_262145_overflow() {
         id: 1,
         session_id: sid,
         data: "x".repeat(262_145),
+        owner: None,
     });
     match helper.read_response() {
         Response::Error { code, .. } => assert_eq!(code, "input_overflow"),
@@ -1041,6 +1050,7 @@ fn t1_input_boundary_multibyte() {
         id: 1,
         session_id: sid,
         data: data.clone(),
+        owner: None,
     });
     match helper.read_response() {
         Response::SessionInputAck { .. } => {}
@@ -1497,6 +1507,7 @@ fn b3_credit_isolates_sessions() {
         id: 3,
         session_id: y_sid,
         data: "y-alive\n".to_string(),
+        owner: None,
     });
     match helper.read_response() {
         Response::SessionInputAck { .. } => {}
@@ -1970,7 +1981,8 @@ fn w4_hup_does_not_block_the_loop() {
                 id: 500 + n,
                 session_id: echo_sid,
                 data: line,
-            },
+        owner: None,
+    },
         );
         let needle = format!("ping-{n}");
         let mut acked = false;
