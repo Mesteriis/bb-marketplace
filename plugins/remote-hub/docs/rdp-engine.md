@@ -384,3 +384,23 @@ messages added in the repair round: `rdp.certificate`, `rdp.input_rejected`,
 `fingerprint_mismatch`, `no_pending_prompt`, `rdp_input_overflow`,
 `screenshot_busy`, `screenshot_too_large`, `rdp_invalid_geometry`, `response_too_large`,
 `session_closed`.
+
+## Who drives, decided inside the engine (stage 4b-1, A2)
+
+The helper queues input per sender and moves it to the engine pipe only while less than 8 KiB is waiting there; a
+frame that would take the buffer past that bound is encoded first and waits. Every input command carries the **driver
+generation** it was queued under. On a change of driver the helper drops what it still had queued, bumps the generation
+and sends `set_owner {generation, request}`. The engine, in command order:
+
+1. takes the new generation, so input of an older generation still in the pipe is dropped when it arrives;
+2. releases the keys and buttons **it applied** and still holds down, against **its own** framebuffer at that moment
+   (positions clamped into it, geometry stated), so a resize between the press and the handover cannot leave a button
+   down or put the release outside the desktop;
+3. answers `owner_set {request, released}`.
+
+`session.set_owner` for an RDP session is answered by the helper only when that answer arrives (or when the engine is
+gone, or no desktop exists yet so nothing could have been applied). The next driver is told to go ahead after that.
+
+Remaining bound, stated plainly: events the engine had **already written to the server's socket** when the handover was
+processed cannot be taken back; the key or button releases that follow reach the server after them, in order. Nothing
+queued behind the handover is applied.

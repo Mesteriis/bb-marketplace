@@ -30,7 +30,8 @@ use std::time::Duration;
 use super::engine::{send_region, Desk};
 use super::engine_io::{read_frame, spawn_reader, Control, Inbox, Out};
 use super::framebuffer::{Framebuffer, Rect};
-use super::protocol::{self, EngineCommand};
+use super::driver::Driver;
+use super::protocol::{self, EngineCommand, EngineEvent};
 use super::reasons::RdpClosedReason;
 
 pub fn run_fake_engine(mode: &str) -> i32 {
@@ -164,6 +165,7 @@ async fn run(
     let mut pixels = vec![0u8; width as usize * height as usize * 4];
     let blocks = [(0, 0), (64, 0), (0, 64), (64, 64)];
     let mut tick: u32 = 0;
+    let mut driver = Driver::default();
     loop {
         tokio::select! {
             reason = cancel.wait() => {
@@ -174,7 +176,15 @@ async fn run(
                 Some(Control::Ack(frame_id)) => desk.ack(&out, frame_id)?,
                 Some(Control::Screenshot) => desk.screenshot(&out)?,
                 Some(Control::Refresh) => desk.refresh(&out)?,
-                Some(Control::Input(_)) => {}
+                Some(Control::Input { generation, events }) => {
+                    if driver.accepts(generation) {
+                        driver.applied(&events, &[]);
+                    }
+                }
+                Some(Control::SetOwner { generation, request }) => {
+                    let released = driver.hand_over(generation, (width, height)).len() as u32;
+                    out.send(&EngineEvent::OwnerSet { request, released })?;
+                }
             },
             _ = tokio::time::sleep(Duration::from_millis(1)) => {
                 tick = tick.wrapping_add(1);

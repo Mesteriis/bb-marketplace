@@ -62,7 +62,8 @@ pub enum Decision {
 /// Everything else the helper can ask of a running session.
 #[derive(Debug)]
 pub enum Control {
-    Input(Vec<InputEvent>),
+    Input { generation: u64, events: Vec<InputEvent> },
+    SetOwner { generation: u64, request: u64 },
     Screenshot,
     Ack(u64),
     Refresh,
@@ -181,8 +182,13 @@ pub(crate) fn spawn_reader_with_capacity(mut stream: UnixStream, capacity: usize
                         EngineCommand::PinAnswer { verdict } => {
                             let _ = dec_tx.send(Decision::Pin { verdict });
                         }
-                        EngineCommand::Input { events } => {
-                            if !forward(&ctl_tx, Control::Input(events), &thread_cancel, &dec_tx) {
+                        EngineCommand::Input { events, generation } => {
+                            if !forward(&ctl_tx, Control::Input { generation, events }, &thread_cancel, &dec_tx) {
+                                break;
+                            }
+                        }
+                        EngineCommand::SetOwner { generation, request } => {
+                            if !forward(&ctl_tx, Control::SetOwner { generation, request }, &thread_cancel, &dec_tx) {
                                 break;
                             }
                         }
@@ -281,7 +287,7 @@ mod tests {
     }
 
     fn input_frame() -> Vec<u8> {
-        protocol::encode_control(&EngineCommand::Input { events: vec![] })
+        protocol::encode_control(&EngineCommand::Input { events: vec![], generation: 0 })
     }
 
     #[test]

@@ -5,6 +5,7 @@
 
 pub mod cert;
 pub mod connect;
+pub mod driver;
 pub mod engine;
 pub mod engine_io;
 pub mod framebuffer;

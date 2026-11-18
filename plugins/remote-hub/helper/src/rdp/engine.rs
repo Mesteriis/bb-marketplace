@@ -17,6 +17,7 @@ use ironrdp_tokio::FramedWrite as _;
 use super::connect::{
     connect_sequence, Clock, Connected, FramedRead, FramedWrite, Params, SystemClock, SystemTls, Timeouts, TlsUpgrader,
 };
+use super::driver::Driver;
 use super::engine_io::{read_frame, spawn_reader, Cancel, Control, Inbox, Out};
 use super::framebuffer::{Framebuffer, Rect};
 use super::input::Geometry;
@@ -168,6 +169,8 @@ struct Active {
     stage: ActiveStage,
     image: DecodedImage,
     desk: Desk,
+    /// Who drives (A2): stale input is dropped here, and what was applied and is still down is released on a handover.
+    driver: Driver,
 }
 
 /// How long the session may wait for its first painted update.
@@ -213,7 +216,7 @@ async fn run_active(
     }
     .build();
     let image = DecodedImage::new(PixelFormat::RgbA32, framebuffer.width() as u16, framebuffer.height() as u16);
-    let a = Active { reader, writer, stage, image, desk: Desk::new(framebuffer) };
+    let a = Active { reader, writer, stage, image, desk: Desk::new(framebuffer), driver: Driver::default() };
     drive(a, out, control, cancel, FirstPaint::new(clock, first_paint)).await
 }
 
@@ -270,10 +273,18 @@ fn handle_control(
     held: &mut Option<Control>,
 ) -> std::io::Result<Vec<ActiveStageOutput>> {
     match ctl {
-        Control::Input(events) => {
-            let (batches, next) = drain_input(events, control);
+        Control::Input { generation, events } => {
+            let (batches, next) = drain_input((generation, events), control);
             *held = next;
             handle_inputs(a, out, &batches)
+        }
+        Control::SetOwner { generation, request } => {
+            // The release is computed from what THIS process applied, against THIS framebuffer as it is now.
+            let release = a.driver.hand_over(generation, (a.desk.fb.width(), a.desk.fb.height()));
+            let released = release.len() as u32;
+            let outputs = if release.is_empty() { Vec::new() } else { handle_inputs(a, out, &[(generation, release)])? };
+            out.send(&EngineEvent::OwnerSet { request, released })?;
+            Ok(outputs)
         }
         Control::Screenshot => {
             a.desk.screenshot(out)?;
@@ -293,13 +304,13 @@ fn handle_control(
 /// Collect every input batch already queued behind `first`, stopping at the
 /// first other command (returned so the caller can handle it next).
 pub fn drain_input(
-    first: Vec<protocol::InputEvent>,
+    first: (u64, Vec<protocol::InputEvent>),
     control: &mut tokio::sync::mpsc::Receiver<Control>,
-) -> (Vec<Vec<protocol::InputEvent>>, Option<Control>) {
+) -> (Vec<(u64, Vec<protocol::InputEvent>)>, Option<Control>) {
     let mut batches = vec![first];
     loop {
         match control.try_recv() {
-            Ok(Control::Input(more)) => batches.push(more),
+            Ok(Control::Input { generation, events }) => batches.push((generation, events)),
             Ok(other) => return (batches, Some(other)),
             Err(_) => return (batches, None),
         }
@@ -451,12 +462,18 @@ fn base64_encode(data: &[u8]) -> String {
 fn handle_inputs(
     a: &mut Active,
     out: &Out,
-    batches: &[Vec<protocol::InputEvent>],
+    batches: &[(u64, Vec<protocol::InputEvent>)],
 ) -> std::io::Result<Vec<ActiveStageOutput>> {
     let fb = Geometry { width: a.desk.fb.width(), height: a.desk.fb.height() };
     let mut fast = Vec::new();
-    for batch in batches {
+    for (generation, batch) in batches {
+        // Input queued under an older driver is dropped here, wherever it was in the pipe when the driver changed.
+        if !a.driver.accepts(*generation) {
+            continue;
+        }
         let encoded = encode_input(batch, fb);
+        let refused: Vec<u32> = encoded.rejected.iter().map(|r| r.index).collect();
+        a.driver.applied(batch, &refused);
         if !encoded.rejected.is_empty() {
             out.send(&EngineEvent::InputRejected { applied: encoded.applied, rejected: encoded.rejected })?;
         }
@@ -499,17 +516,17 @@ mod tests {
         use super::super::protocol::InputEvent;
         let mv = |x| InputEvent::MouseMove { x, y: 0, geom_width: 10, geom_height: 10 };
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        tx.try_send(Control::Input(vec![mv(2)])).unwrap();
-        tx.try_send(Control::Input(vec![mv(3), mv(4)])).unwrap();
+        tx.try_send(Control::Input { generation: 0, events: vec![mv(2)] }).unwrap();
+        tx.try_send(Control::Input { generation: 0, events: vec![mv(3), mv(4)] }).unwrap();
         tx.try_send(Control::Screenshot).unwrap();
-        tx.try_send(Control::Input(vec![mv(9)])).unwrap();
-        let (batches, next) = drain_input(vec![mv(1)], &mut rx);
+        tx.try_send(Control::Input { generation: 0, events: vec![mv(9)] }).unwrap();
+        let (batches, next) = drain_input((0, vec![mv(1)]), &mut rx);
         assert_eq!(batches.len(), 3);
-        assert_eq!(batches.iter().map(|b| b.len()).sum::<usize>(), 4);
+        assert_eq!(batches.iter().map(|b| b.1.len()).sum::<usize>(), 4);
         assert!(matches!(next, Some(Control::Screenshot)));
         // the input behind the screenshot is still queued, in order
-        assert!(matches!(rx.try_recv(), Ok(Control::Input(_))));
-        let (batches, next) = drain_input(vec![mv(1)], &mut rx);
+        assert!(matches!(rx.try_recv(), Ok(Control::Input { .. })));
+        let (batches, next) = drain_input((0, vec![mv(1)]), &mut rx);
         assert_eq!(batches.len(), 1);
         assert!(next.is_none());
     }
@@ -693,8 +710,43 @@ mod tests {
             stage,
             image: DecodedImage::new(PixelFormat::RgbA32, 8, 8),
             desk: Desk::new(Framebuffer::new(8, 8).unwrap()),
+            driver: Driver::default(),
         };
         (a, server_r, server_w)
+    }
+
+    fn event_texts(out: Out, peer: &mut std::os::unix::net::UnixStream) -> String {
+        use std::io::Read as _;
+        drop(out);
+        let mut all = Vec::new();
+        peer.read_to_end(&mut all).unwrap();
+        String::from_utf8_lossy(&all).to_string()
+    }
+
+    #[test]
+    fn a_handover_in_the_engine_drops_older_input_and_releases_what_it_applied_against_its_own_framebuffer() {
+        use super::super::protocol::InputEvent;
+        let (mut a, _r, _w) = quiet_active();
+        let (engine_end, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let out = Out::new(engine_end);
+        let (_tx, mut control) = tokio::sync::mpsc::channel::<Control>(8);
+        let mut held = None;
+        let press = |down| InputEvent::MouseButton { button: "left".into(), down, x: 7, y: 7, geom_width: 8, geom_height: 8 };
+        // The first driver (generation 0) presses at the far corner of an 8x8 desktop.
+        handle_control(&mut a, &out, Control::Input { generation: 0, events: vec![press(true)] }, &mut control, &mut held).unwrap();
+        assert_eq!(a.driver.held(), 1);
+        // The desktop shrinks, then the driver changes: the release lands inside the NEW 4x4 desktop and is accepted.
+        a.desk = Desk::new(Framebuffer::new(4, 4).unwrap());
+        handle_control(&mut a, &out, Control::SetOwner { generation: 1, request: 9 }, &mut control, &mut held).unwrap();
+        assert_eq!(a.driver.held(), 0, "the held button was released");
+        // Input of the old generation that was still in the pipe is dropped, not applied.
+        handle_control(&mut a, &out, Control::Input { generation: 0, events: vec![InputEvent::Key { scancode: 0x1e, extended: false, down: true }] }, &mut control, &mut held).unwrap();
+        assert_eq!(a.driver.held(), 0, "stale input must not be applied");
+        handle_control(&mut a, &out, Control::Input { generation: 1, events: vec![InputEvent::Key { scancode: 0x1e, extended: false, down: true }] }, &mut control, &mut held).unwrap();
+        assert_eq!(a.driver.held(), 1, "the new driver's input is applied");
+        let text = event_texts(out, &mut peer);
+        assert!(text.contains("\"type\":\"owner_set\"") && text.contains("\"request\":9") && text.contains("\"released\":1"), "{text}");
+        assert!(!text.contains("input_rejected"), "the release must be valid for the current geometry: {text}");
     }
 
     /// Run `drive` while `script` moves the clock; returns the Closed reason the

@@ -74,7 +74,15 @@ pub enum EngineCommand {
     /// "failed" (the pin could not be written or checked). Anything but "allow" ends the session.
     PinAnswer { verdict: String },
     CertDecision { fingerprint: String, accept: String },
-    Input { events: Vec<InputEvent> },
+    /// `generation` is the driver generation the input was queued under; the engine drops a stale one.
+    Input {
+        events: Vec<InputEvent>,
+        #[serde(default)]
+        generation: u64,
+    },
+    /// A new driver: the engine releases what it applied and still holds down, against its own framebuffer, then
+    /// answers `OwnerSet` with this `request`.
+    SetOwner { generation: u64, request: u64 },
     Screenshot,
     /// Mark the whole framebuffer dirty: the next update (immediately, or once
     /// the update in flight is acked) covers the full desktop. A new or lagging
@@ -157,6 +165,8 @@ pub enum EngineEvent {
     ScreenshotChunk { index: u32, data: String },
     /// A screenshot request that could not be served (e.g. not_ready).
     ScreenshotError { code: String },
+    /// The handover is complete: nothing from an older generation will be applied any more.
+    OwnerSet { request: u64, released: u32 },
     /// Input events that were refused; the rest of the batch was applied.
     InputRejected { applied: u32, rejected: Vec<InputRejection> },
     Error { code: String, message: String },

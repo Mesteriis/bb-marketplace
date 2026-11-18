@@ -590,3 +590,39 @@ fn h9_rdp_open_refuses_a_desktop_size_out_of_range() {
     assert!(pid_alive(pid));
     h.shutdown();
 }
+
+#[test]
+fn a2_a_handover_is_answered_by_the_engine_after_it_released_what_it_applied() {
+    use remote_hub_helper::rdp::protocol::InputEvent;
+    let mut h = start(&[(FAKE, "ack")]);
+    let (rdp, _) = h.open_rdp_sized(closed_port(), 128, 128);
+    h.wait_state(rdp, "paint=25");
+    // The human holds Shift and the left button; the engine applied both.
+    h.send(&Request::RdpInput {
+        id: 70,
+        session_id: rdp,
+        events: vec![
+            InputEvent::Key { scancode: 0x2a, extended: false, down: true },
+            InputEvent::MouseButton { button: "left".into(), down: true, x: 3, y: 4, geom_width: 128, geom_height: 128 },
+        ],
+        owner: Some("human".into()),
+    });
+    h.send(&Request::SessionSetOwner { id: 71, session_id: rdp, owner: "agent:L1".into() });
+    match h.read_reply(71) {
+        Response::SessionOwnerSet { dropped, released, .. } => assert_eq!((dropped, released), (0, 2), "the engine released the key and the button it applied"),
+        other => panic!("expected session.owner_set, got {other:?}"),
+    }
+    // Nothing is left down: the next handover releases nothing.
+    h.send(&Request::SessionSetOwner { id: 72, session_id: rdp, owner: "human".into() });
+    match h.read_reply(72) {
+        Response::SessionOwnerSet { released, .. } => assert_eq!(released, 0),
+        other => panic!("{other:?}"),
+    }
+    // The old driver's tag is stale now that the generation moved on, wherever it was in the pipe.
+    h.send(&Request::RdpInput { id: 73, session_id: rdp, events: vec![InputEvent::Key { scancode: 0x1e, extended: false, down: true }], owner: Some("agent:L1".into()) });
+    match h.read_reply(73) {
+        Response::Error { code, .. } => assert_eq!(code, "stale_owner"),
+        other => panic!("expected stale_owner, got {other:?}"),
+    }
+    h.shutdown();
+}

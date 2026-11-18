@@ -111,11 +111,12 @@ pub struct RdpSession {
     /// Input waiting to go to the engine, by sender (stage 4b-1, Z2). It moves into `write_buf` only while that holds
     /// less than `INPUT_FLUSH_SOFT`, so a driver that is replaced leaves at most a few kilobytes already on their way.
     pending_input: VecDeque<(String, Vec<protocol::InputEvent>)>,
-    /// Who may send input; keys and buttons applied (moved to the engine) and still down, and the desktop's size now.
+    /// Who may send input, and the driver generation the engine is told with every input command: the engine drops
+    /// input of an older generation and releases what the previous driver left down (A2).
     owner: String,
-    held_keys: Vec<(u8, bool)>,
-    held_buttons: Vec<(String, u32, u32)>,
-    fb: Option<(u32, u32)>,
+    generation: u64,
+    /// Handovers waiting for the engine's answer: (the helper request to answer, events dropped here).
+    owner_waiters: VecDeque<(u64, u64)>,
     state: String,
     desktop_ready: bool,
     close_reason: Option<String>,
@@ -139,6 +140,15 @@ pub enum RdpFrame {
     ScreenshotStart { id: Option<u64>, frame_id: u64, width: u32, height: u32, timestamp: u64, chunks: u32 },
     ScreenshotChunk { id: u64, index: u32, count: u32, data: String },
     Update { header: UpdateHeader, rgba: Vec<u8> },
+    /// The engine finished a handover (or died before it could): answer the helper request that waited for it.
+    OwnerSet { request: u64, dropped: u64, released: u32 },
+}
+
+/// What `set_owner` leaves to do: answer now, or wait for the engine's `OwnerSet` (delivered as `RdpFrame::OwnerSet`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum OwnerHandoff {
+    Done { dropped: u64 },
+    Waiting,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -512,9 +522,8 @@ impl RdpManager {
                 write_buf: VecDeque::new(),
                 pending_input: VecDeque::new(),
                 owner: "human".to_string(),
-                held_keys: Vec::new(),
-                held_buttons: Vec::new(),
-                fb: None,
+                generation: 0,
+                owner_waiters: VecDeque::new(),
                 state: "connecting".to_string(),
                 desktop_ready: false,
                 close_reason: None,
@@ -528,29 +537,17 @@ impl RdpManager {
         );
     }
 
-    /// Moves waiting input into the engine's write buffer while it is nearly empty, noting which keys and buttons that
-    /// leaves down (applied, as far as this process can tell).
+    /// Moves waiting input into the engine's write buffer while it is nearly empty. The bound is checked AFTER the
+    /// frame is encoded: a frame that would take the buffer past `INPUT_FLUSH_SOFT` waits (unless the buffer is empty,
+    /// so one large batch still goes), which keeps what is already on its way to the engine small.
     fn flush_input(s: &mut RdpSession) {
-        while s.write_buf.len() < INPUT_FLUSH_SOFT {
-            let Some((_, events)) = s.pending_input.pop_front() else { return };
-            for e in &events {
-                match e {
-                    protocol::InputEvent::Key { scancode, extended, down } => {
-                        s.held_keys.retain(|k| *k != (*scancode, *extended));
-                        if *down {
-                            s.held_keys.push((*scancode, *extended));
-                        }
-                    }
-                    protocol::InputEvent::MouseButton { button, down, x, y, .. } => {
-                        s.held_buttons.retain(|b| b.0 != *button);
-                        if *down {
-                            s.held_buttons.push((button.clone(), *x, *y));
-                        }
-                    }
-                    _ => {}
-                }
+        while let Some((owner, events)) = s.pending_input.pop_front() {
+            let frame = protocol::encode_control(&EngineCommand::Input { events: events.clone(), generation: s.generation });
+            if !s.write_buf.is_empty() && s.write_buf.len() + frame.len() > INPUT_FLUSH_SOFT {
+                s.pending_input.push_front((owner, events));
+                return;
             }
-            s.write_buf.extend(protocol::encode_control(&EngineCommand::Input { events }));
+            s.write_buf.extend(frame);
         }
     }
 
@@ -571,31 +568,27 @@ impl RdpManager {
         Ok(())
     }
 
-    /// A new driver. What the previous one had waiting is dropped; what it left pressed is released against the desktop as
-    /// it is NOW (a resize between the press and now moves the position inside it) and queued ahead of anything new.
-    /// Returns (events dropped, keys and buttons released). The caller answers only after this returns: the barrier.
-    pub fn set_owner(&mut self, id: u32, owner: &str) -> Result<(u64, u64), EnqueueError> {
+    /// A new driver. What the previous one had waiting here is dropped and the engine is told the new generation: it
+    /// drops older input still in the pipe, releases what it applied and still holds down against its OWN framebuffer,
+    /// and answers `OwnerSet`. `request` is the helper request to answer then (the barrier); `Done` means no
+    /// engine answer is awaited (no engine, or no desktop yet so nothing could be applied).
+    pub fn set_owner(&mut self, id: u32, owner: &str, request: u64) -> Result<OwnerHandoff, EnqueueError> {
         let s = self.sessions.get_mut(&id).ok_or(EnqueueError::UnknownSession)?;
         if s.owner == owner {
-            return Ok((0, 0));
+            return Ok(OwnerHandoff::Done { dropped: 0 });
         }
         let dropped: u64 = s.pending_input.drain(..).map(|(_, events)| events.len() as u64).sum();
-        let mut release: Vec<protocol::InputEvent> = Vec::new();
-        for (scancode, extended) in s.held_keys.drain(..) {
-            release.push(protocol::InputEvent::Key { scancode, extended, down: false });
-        }
-        let held_buttons: Vec<(String, u32, u32)> = s.held_buttons.drain(..).collect();
-        if let Some((w, h)) = s.fb {
-            for (button, x, y) in held_buttons {
-                release.push(protocol::InputEvent::MouseButton { button, down: false, x: x.min(w.saturating_sub(1)), y: y.min(h.saturating_sub(1)), geom_width: w, geom_height: h });
-            }
-        }
-        let released = release.len() as u64;
-        if !release.is_empty() && s.fd >= 0 {
-            s.write_buf.extend(protocol::encode_control(&EngineCommand::Input { events: release }));
-        }
+        s.generation += 1;
         s.owner = owner.to_string();
-        Ok((dropped, released))
+        if s.fd < 0 {
+            return Ok(OwnerHandoff::Done { dropped });
+        }
+        s.write_buf.extend(protocol::encode_control(&EngineCommand::SetOwner { generation: s.generation, request: s.generation }));
+        if !s.desktop_ready {
+            return Ok(OwnerHandoff::Done { dropped });
+        }
+        s.owner_waiters.push_back((request, dropped));
+        Ok(OwnerHandoff::Waiting)
     }
 
     pub fn enqueue_command(&mut self, id: u32, cmd: &EngineCommand) -> Result<(), EnqueueError> {
@@ -799,8 +792,13 @@ impl RdpManager {
                         }
                         Some(RdpFrame::Event(EngineEvent::Desktop { frame_id, width, height, timestamp })) => {
                             s.desktop_ready = true;
-                            s.fb = Some((width, height));
                             out.push(RdpFrame::Event(EngineEvent::Desktop { frame_id, width, height, timestamp }));
+                        }
+                        Some(RdpFrame::Event(EngineEvent::OwnerSet { released, .. })) => {
+                            // Answered in the order asked; an answer nobody waits for (a handover the helper did not need to await) is ignored.
+                            if let Some((request, dropped)) = s.owner_waiters.pop_front() {
+                                out.push(RdpFrame::OwnerSet { request, dropped, released });
+                            }
                         }
                         Some(RdpFrame::Event(EngineEvent::CertPrompt {
                             host, port, fingerprint, subject, issuer, not_before, not_after, reason, detail, first_use,
@@ -865,6 +863,12 @@ impl RdpManager {
                 break;
             }
             s.read_buf.extend_from_slice(&chunk[..n as usize]);
+        }
+        if s.fd < 0 {
+            // The engine is gone: nothing more will be applied, so the handovers that waited for it are complete.
+            while let Some((request, dropped)) = s.owner_waiters.pop_front() {
+                out.push(RdpFrame::OwnerSet { request, dropped, released: 0 });
+            }
         }
         out
     }
@@ -1345,7 +1349,7 @@ mod tests {
         let id = mgr.adopt(None, a);
         assert_eq!(mgr.enqueue_input(id, "agent:L1", vec![key(0x1e, true)]), Err(EnqueueError::StaleOwner));
         assert_eq!(mgr.enqueue_input(id, "human", vec![key(0x1e, true)]), Ok(()));
-        mgr.set_owner(id, "agent:L1").unwrap();
+        mgr.set_owner(id, "agent:L1", 1).unwrap();
         assert_eq!(mgr.enqueue_input(id, "human", vec![key(0x1e, false)]), Err(EnqueueError::StaleOwner));
         assert_eq!(mgr.enqueue_input(id, "agent:L1", vec![key(0x30, true)]), Ok(()));
         assert_eq!(mgr.enqueue_input(id, "agent:L0", vec![key(0x30, false)]), Err(EnqueueError::StaleOwner), "an older lease is not the owner");
@@ -1357,15 +1361,14 @@ mod tests {
         let (a, b) = socketpair();
         let mut mgr = RdpManager::new();
         let id = mgr.adopt(None, a);
-        mgr.set_owner(id, "agent:L1").unwrap();
+        mgr.set_owner(id, "agent:L1", 1).unwrap();
         // An engine that is not reading: fill the write buffer so later batches wait in the per-sender queue.
         mgr.sessions.get_mut(&id).unwrap().write_buf.extend(vec![0u8; INPUT_FLUSH_SOFT]);
         for sc in 0x10..0x15u8 {
             mgr.enqueue_input(id, "agent:L1", vec![key(sc, true), key(sc, false)]).unwrap();
         }
         assert_eq!(mgr.sessions[&id].pending_input.len(), 5);
-        let (dropped, _) = mgr.set_owner(id, "human").unwrap();
-        assert_eq!(dropped, 10, "five batches of two events were waiting");
+        assert_eq!(mgr.set_owner(id, "human", 2).unwrap(), OwnerHandoff::Done { dropped: 10 }, "five batches of two events were waiting; no desktop yet, so no engine answer is awaited");
         assert_eq!(mgr.sessions[&id].pending_input.len(), 0);
         mgr.sessions.get_mut(&id).unwrap().write_buf.clear();
         // The human's own input goes through afterwards.
@@ -1378,39 +1381,50 @@ mod tests {
     }
 
     #[test]
-    fn keys_and_buttons_the_driver_left_down_are_released_against_the_current_desktop_before_anything_new() {
+    fn a_handover_tells_the_engine_the_new_generation_and_the_barrier_waits_for_its_answer() {
         let (a, b) = socketpair();
         let mut mgr = RdpManager::new();
         let id = mgr.adopt(None, a);
         desktop(&mut mgr, id, b, 800, 600);
-        mgr.set_owner(id, "agent:L1").unwrap();
-        mgr.enqueue_input(id, "agent:L1", vec![key(0x2a, true), press("left", 700, 500, 800, 600)]).unwrap();
-        mgr.write_pending(id);
-        let _ = read_available(b);
-        // The desktop shrinks between the press and the takeover.
-        desktop(&mut mgr, id, b, 400, 300);
-        let (_, released) = mgr.set_owner(id, "human").unwrap();
-        assert_eq!(released, 2);
+        // Input under generation 0, then a handover to an agent: the engine hears generation 1 and the input after it carries 1.
+        mgr.enqueue_input(id, "human", vec![key(0x2a, true)]).unwrap();
+        assert_eq!(mgr.set_owner(id, "agent:L1", 77).unwrap(), OwnerHandoff::Waiting);
+        mgr.enqueue_input(id, "agent:L1", vec![key(0x1e, true)]).unwrap();
         mgr.write_pending(id);
         let sent = read_available(b);
-        assert!(sent.contains("\"scancode\":42") && sent.contains("\"down\":false"), "{sent}");
-        assert!(sent.contains("\"button\":\"left\"") && sent.contains("\"geom_width\":400") && sent.contains("\"x\":399") && sent.contains("\"y\":299"), "the release must use the CURRENT geometry and stay inside it: {sent}");
-        // Nothing is released twice.
-        let (_, again) = mgr.set_owner(id, "agent:L2").unwrap();
-        assert_eq!(again, 0);
+        let first = sent.find("\"generation\":0").expect(&sent);
+        let handover = sent.find("\"type\":\"set_owner\"").expect(&sent);
+        let second = sent.rfind("\"generation\":1").expect(&sent);
+        assert!(first < handover && handover < second, "{sent}");
+        // No answer is produced until the engine answers.
+        assert!(mgr.process_readable(id, usize::MAX).is_empty());
+        write_all(b, &encode_control(&EngineEvent::OwnerSet { request: 1, released: 1 }));
+        let frames = mgr.process_readable(id, usize::MAX);
+        assert!(matches!(frames.as_slice(), [RdpFrame::OwnerSet { request: 77, dropped: 0, released: 1 }]), "{frames:?}");
         unsafe { libc::close(b) };
     }
 
     #[test]
-    fn a_key_the_driver_pressed_and_released_is_not_held() {
+    fn an_engine_that_dies_during_a_handover_still_completes_it() {
         let (a, b) = socketpair();
         let mut mgr = RdpManager::new();
         let id = mgr.adopt(None, a);
-        desktop(&mut mgr, id, b, 100, 100);
+        desktop(&mut mgr, id, b, 800, 600);
+        assert_eq!(mgr.set_owner(id, "agent:L1", 5).unwrap(), OwnerHandoff::Waiting);
+        unsafe { libc::close(b) };
+        let frames = mgr.process_readable(id, usize::MAX);
+        assert!(frames.iter().any(|f| matches!(f, RdpFrame::OwnerSet { request: 5, .. })), "{frames:?}");
+    }
+
+    #[test]
+    fn a_batch_that_would_take_the_pipe_past_its_soft_bound_waits_and_is_not_appended_first() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        mgr.sessions.get_mut(&id).unwrap().write_buf.extend(vec![0u8; INPUT_FLUSH_SOFT - 10]);
         mgr.enqueue_input(id, "human", vec![key(0x1e, true), key(0x1e, false)]).unwrap();
-        mgr.write_pending(id);
-        let _ = read_available(b);
-        assert_eq!(mgr.set_owner(id, "agent:L1").unwrap(), (0, 0));
+        assert!(mgr.sessions[&id].write_buf.len() <= INPUT_FLUSH_SOFT, "the frame was appended beyond the bound");
+        assert_eq!(mgr.sessions[&id].pending_input.len(), 1);
         unsafe { libc::close(b) };
     }
 
@@ -1450,7 +1464,7 @@ mod tests {
         let mut mgr = RdpManager::new();
         let id = mgr.adopt(None, a);
         mgr.sessions.get_mut(&id).unwrap().write_buf.extend(vec![0u8; WRITE_INPUT_SOFT_CAP + 1]);
-        for cmd in [EngineCommand::Input { events: vec![] }, EngineCommand::Ack { frame_id: 1 }, EngineCommand::Screenshot] {
+        for cmd in [EngineCommand::Input { events: vec![], generation: 0 }, EngineCommand::Ack { frame_id: 1 }, EngineCommand::Screenshot] {
             assert_eq!(mgr.enqueue_command(id, &cmd), Err(EnqueueError::Full), "{cmd:?}");
         }
         assert_eq!(

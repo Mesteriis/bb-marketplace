@@ -677,8 +677,10 @@ fn handle(
                     Err(_) => rdp_error(id, "session_not_found", format!("no session {session_id}")),
                 });
             }
-            Ok(match rdp.set_owner(session_id, &owner) {
-                Ok((dropped, released)) => protocol::encode_response(&Response::SessionOwnerSet { id, session_id, dropped, released }),
+            Ok(match rdp.set_owner(session_id, &owner, id) {
+                Ok(crate::rdp::manager::OwnerHandoff::Done { dropped }) => protocol::encode_response(&Response::SessionOwnerSet { id, session_id, dropped, released: 0 }),
+                // The engine answers when it has released what it applied; the reply is sent then (the barrier).
+                Ok(crate::rdp::manager::OwnerHandoff::Waiting) => Vec::new(),
                 Err(e) => rdp_enqueue_error(id, session_id, e),
             })
         }
@@ -1106,6 +1108,12 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, current_exe
             }
             RdpFrame::Event(EngineEvent::ScreenshotStart { .. } | EngineEvent::ScreenshotChunk { .. }) => {
                 // The manager turns these into RdpFrame::ScreenshotStart/Chunk.
+            }
+            RdpFrame::OwnerSet { request, dropped, released } => {
+                outbox.extend(protocol::encode_response(&Response::SessionOwnerSet { id: request, session_id: rid, dropped, released: released as u64 }));
+            }
+            RdpFrame::Event(EngineEvent::OwnerSet { .. }) => {
+                // The manager turns this into RdpFrame::OwnerSet.
             }
             RdpFrame::Event(EngineEvent::Closed { .. }) => {
                 // Reported once via RdpManager::take_all_closed().
