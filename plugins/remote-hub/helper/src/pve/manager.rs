@@ -37,6 +37,8 @@ pub enum PveFrame {
     Data { seq: u32, bytes: Vec<u8> },
     Targets { version: Option<String>, nodes: Vec<NodeInfo>, guests: Vec<GuestInfo> },
     Error { code: String, message: String, fingerprint: Option<String> },
+    /// The VNC password of a graphical console (only a vnc session may send it).
+    VncPassword(crate::secret::Secret),
     Plan { role: String, user: String, acl: String },
     Provisioned { role: String, user: String, acl: String, password: Option<crate::secret::Secret> },
 }
@@ -76,6 +78,8 @@ struct Session {
     close_request: Option<u64>,
     /// Where the password a provision creates goes: the Keychain reference and what it is bound to.
     job_save: Option<(String, crate::binding::Bind)>,
+    /// A graphical (RFB) console: its bytes are an opaque stream and it may announce a VNC password.
+    vnc: bool,
 }
 
 pub struct PveManager {
@@ -239,13 +243,22 @@ impl PveManager {
                 job_request,
                 close_request: None,
                 job_save: None,
+                vnc: false,
             },
         );
         Ok((id, pid))
     }
 
-    pub fn open_terminal(&mut self, current_exe: &str, open: &PveCommand) -> Result<(u32, libc::pid_t), String> {
-        self.spawn(current_exe, Kind::Terminal, open, None)
+    pub fn open_terminal(&mut self, current_exe: &str, open: &PveCommand, vnc: bool) -> Result<(u32, libc::pid_t), String> {
+        let (id, pid) = self.spawn(current_exe, Kind::Terminal, open, None)?;
+        if let Some(s) = self.sessions.get_mut(&id) {
+            s.vnc = vnc;
+        }
+        Ok((id, pid))
+    }
+
+    pub fn is_vnc(&self, id: u32) -> bool {
+        self.sessions.get(&id).is_some_and(|s| s.vnc)
     }
 
     pub fn open_targets(&mut self, current_exe: &str, open: &PveCommand, request_id: u64) -> Result<(u32, libc::pid_t), String> {
@@ -393,6 +406,13 @@ impl PveManager {
                                 break;
                             }
                             out.push(PveFrame::Targets { version, nodes, guests });
+                        }
+                        Ok(PveEvent::VncPassword { password }) => {
+                            if !s.vnc {
+                                Self::fail_protocol(s);
+                                break;
+                            }
+                            out.push(PveFrame::VncPassword(password));
                         }
                         Ok(PveEvent::Plan { role, user, acl }) => {
                             if s.kind != Kind::Provision || s.job_request.is_none() {

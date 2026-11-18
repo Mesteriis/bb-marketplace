@@ -51,6 +51,17 @@ pub struct State {
     pub roles: Vec<(String, String)>,
     /// (path, roleid, userid)
     pub acl: Vec<(String, String, String)>,
+    /// Graphical consoles: every byte the client sent after the websocket opened, the handshake response, the opened count.
+    pub vnc_input: Vec<u8>,
+    pub vnc_response: Vec<u8>,
+    pub vnc_opened: u32,
+    pub vnc_updates_sent: u32,
+    /// The last VNC password issued.
+    pub vnc_password: Option<String>,
+    /// Every console websocket is refused (a ticket the server will not take).
+    pub refuse_ws_ticket: bool,
+    /// The RFB server hangs up right after its first framebuffer update.
+    pub vnc_drop_after_update: bool,
     /// Calls that wrote to /access, in order.
     pub access_writes: Vec<String>,
     pub vnc_tickets: HashMap<String, String>,
@@ -307,6 +318,36 @@ fn route(method: &Method, path: &str, form: &HashMap<String, String>, req: &Requ
                 _ => json_resp(404, json!({"data": null, "message": "no such method"})),
             }
         }
+        ("POST", p) if p.ends_with("/vncproxy") => {
+            if who == Who::Token && !st.tokens_reach_consoles {
+                return json_resp(401, json!({"data": null, "message": "No ticket"}));
+            }
+            if st.forbid_console {
+                return json_resp(403, json!({"data": null, "message": "Permission check failed (/vms/100, VM.Console)"}));
+            }
+            let parts: Vec<&str> = p.trim_start_matches('/').split('/').collect();
+            // api2 json nodes {node} qemu {vmid} vncproxy
+            let node = parts[3];
+            if !st.nodes.iter().any(|(n, _)| n == node) {
+                return json_resp(500, json!({"data": null, "message": format!("hostname lookup '{node}' failed - failed to get address info for: {node}: Name or service not known")}));
+            }
+            let vmid: u32 = parts[5].parse().unwrap_or(0);
+            let Some(guest) = st.guests.iter().find(|(id, _, kind, n, _, _)| *id == vmid && kind == "qemu" && n == node) else {
+                return json_resp(500, json!({"data": null, "message": format!("Configuration file 'nodes/{node}/qemu-server/{vmid}.conf' does not exist")}));
+            };
+            if guest.4 != "running" {
+                return json_resp(500, json!({"data": null, "message": format!("VM {vmid} not running")}));
+            }
+            if form.get("websocket").map(String::as_str) != Some("1") {
+                return json_resp(400, json!({"data": null, "message": "this fake only serves the websocket form"}));
+            }
+            st.counter += 1;
+            let ticket = format!("PVEVNC:{:08X}::vnc+ticket/{}==", st.counter, st.counter);
+            let password = format!("vncPw{:03}", st.counter % 1000);
+            st.vnc_password = Some(password.clone());
+            st.vnc_tickets.insert(ticket.clone(), p.trim_end_matches("/vncproxy").to_string());
+            json_resp(200, json!({"data": {"user": USER, "ticket": ticket, "password": password, "cert": "-----BEGIN CERTIFICATE-----", "port": 5901 + st.counter % 50, "upid": "UPID:fake"}}))
+        }
         ("POST", p) if p.ends_with("/termproxy") => {
             if who == Who::Token && !st.tokens_reach_consoles {
                 return json_resp(401, json!({"data": null, "message": "No ticket"}));
@@ -322,9 +363,11 @@ fn route(method: &Method, path: &str, form: &HashMap<String, String>, req: &Requ
             }
             if parts.len() == 7 {
                 let vmid: u32 = parts[5].parse().unwrap_or(0);
-                let on_node = st.guests.iter().any(|(id, _, kind, n, _, _)| *id == vmid && kind == "lxc" && n == node);
-                if !on_node {
+                let Some(guest) = st.guests.iter().find(|(id, _, kind, n, _, _)| *id == vmid && kind == "lxc" && n == node) else {
                     return json_resp(500, json!({"data": null, "message": format!("Configuration file 'nodes/{node}/lxc/{vmid}.conf' does not exist")}));
+                };
+                if guest.4 != "running" {
+                    return json_resp(500, json!({"data": null, "message": format!("CT {vmid} not running")}));
                 }
             }
             st.counter += 1;
@@ -339,6 +382,10 @@ fn route(method: &Method, path: &str, form: &HashMap<String, String>, req: &Requ
 async fn websocket(req: Request<Incoming>, state: Arc<Mutex<State>>, path: &str, query: &str) -> Response<Full<Bytes>> {
     let q: HashMap<String, String> = query.split('&').filter_map(|p| p.split_once('=').map(|(k, v)| (k.to_string(), unescape(v)))).collect();
     let owner_path = path.trim_end_matches("/vncwebsocket").to_string();
+    let graphical = owner_path.contains("/qemu/");
+    if state.lock().unwrap().refuse_ws_ticket {
+        return json_resp(403, json!({"data": null, "message": "invalid vncticket"}));
+    }
     let cookie = req.headers().get("cookie").and_then(|v| v.to_str().ok()).map(str::to_string);
     let key = req.headers().get("sec-websocket-key").and_then(|v| v.to_str().ok()).map(str::to_string);
     {
@@ -361,7 +408,11 @@ async fn websocket(req: Request<Incoming>, state: Arc<Mutex<State>>, path: &str,
     tokio::spawn(async move {
         let Ok(upgraded) = on_upgrade.await else { return };
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
-        shell(ws, st).await;
+        if graphical {
+            rfb(ws, st).await;
+        } else {
+            shell(ws, st).await;
+        }
     });
     Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
@@ -455,5 +506,87 @@ async fn shell<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(mut ws: 
             }
         }
     }
+    state.lock().unwrap().ws_closed += 1;
+}
+
+/// A minimal RFB 3.8 server behind the websocket: greeting, VNC authentication (the challenge is sent and any 16-byte
+/// answer is accepted: DES is not checked here), ServerInit of a 2x1 desktop, and one raw framebuffer update per
+/// FramebufferUpdateRequest. Everything the client sends after the upgrade is recorded.
+async fn rfb<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(mut ws: WebSocketStream<S>, state: Arc<Mutex<State>>) {
+    state.lock().unwrap().vnc_opened += 1;
+    let mut buf: Vec<u8> = Vec::new();
+    // `need(n)`: wait until n bytes are buffered; None when the client went away.
+    async fn need<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(ws: &mut WebSocketStream<S>, buf: &mut Vec<u8>, state: &Arc<Mutex<State>>, n: usize) -> Option<()> {
+        while buf.len() < n {
+            match ws.next().await {
+                Some(Ok(Message::Binary(b))) => {
+                    state.lock().unwrap().vnc_input.extend_from_slice(&b);
+                    buf.extend_from_slice(&b);
+                }
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                _ => return None,
+            }
+        }
+        Some(())
+    }
+    if ws.send(Message::binary(&b"RFB 003.008\n"[..])).await.is_err() {
+        return;
+    }
+    let done = async {
+        need(&mut ws, &mut buf, &state, 12).await?;
+        buf.drain(..12);
+        ws.send(Message::binary(vec![1u8, 2])).await.ok()?; // one security type: VNC authentication
+        need(&mut ws, &mut buf, &state, 1).await?;
+        buf.drain(..1);
+        ws.send(Message::binary(vec![7u8; 16])).await.ok()?; // the challenge
+        need(&mut ws, &mut buf, &state, 16).await?;
+        state.lock().unwrap().vnc_response = buf.drain(..16).collect();
+        ws.send(Message::binary(vec![0u8; 4])).await.ok()?; // SecurityResult: OK
+        need(&mut ws, &mut buf, &state, 1).await?; // ClientInit
+        buf.drain(..1);
+        let mut init: Vec<u8> = vec![0, 2, 0, 1]; // 2 x 1
+        init.extend_from_slice(&[32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]); // pixel format
+        init.extend_from_slice(&4u32.to_be_bytes());
+        init.extend_from_slice(b"fake");
+        ws.send(Message::binary(init)).await.ok()?;
+        loop {
+            need(&mut ws, &mut buf, &state, 1).await?;
+            let want = match buf[0] {
+                0 => 20,                                       // SetPixelFormat
+                2 => {
+                    need(&mut ws, &mut buf, &state, 4).await?;
+                    4 + 4 * u16::from_be_bytes([buf[2], buf[3]]) as usize // SetEncodings
+                }
+                3 => 10,                                       // FramebufferUpdateRequest
+                4 => 8,                                        // KeyEvent
+                5 => 6,                                        // PointerEvent
+                6 => {
+                    need(&mut ws, &mut buf, &state, 8).await?;
+                    8 + u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize // ClientCutText
+                }
+                _ => return None,
+            };
+            need(&mut ws, &mut buf, &state, want).await?;
+            let kind = buf[0];
+            buf.drain(..want);
+            if kind == 3 {
+                let mut update: Vec<u8> = vec![0, 0, 0, 1]; // FramebufferUpdate, one rectangle
+                update.extend_from_slice(&[0, 0, 0, 0, 0, 2, 0, 1]); // x y w h
+                update.extend_from_slice(&0i32.to_be_bytes()); // raw
+                update.extend_from_slice(&[0x10, 0x20, 0x30, 0, 0x40, 0x50, 0x60, 0]); // two pixels (B G R pad)
+                ws.send(Message::binary(update)).await.ok()?;
+                let drop_now = {
+                    let mut st = state.lock().unwrap();
+                    st.vnc_updates_sent += 1;
+                    st.vnc_drop_after_update
+                };
+                if drop_now {
+                    let _ = ws.close(None).await;
+                    return None;
+                }
+            }
+        }
+    };
+    let _: Option<()> = done.await;
     state.lock().unwrap().ws_closed += 1;
 }

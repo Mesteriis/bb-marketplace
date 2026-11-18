@@ -170,6 +170,14 @@ pub enum Request {
     },
     #[serde(rename = "pve.targets")]
     PveTargets { id: u64, connect: PveConnect },
+    /// Raw bytes for a graphical (RFB) console, base64: they are not text, so `session.input` cannot carry them.
+    #[serde(rename = "pve.vnc_input")]
+    PveVncInput {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        data: String,
+    },
     /// Onboarding mode 1. `connect` carries the admin's own login (password, used once). A dry run only reads and
     /// answers `pve.plan`; an apply needs `save` and answers `pve.provisioned`.
     #[serde(rename = "pve.provision")]
@@ -481,6 +489,13 @@ pub enum Response {
         message: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fingerprint: Option<String>,
+    },
+    /// The short-lived VNC password of a graphical console, for the one view of that session.
+    #[serde(rename = "pve.vnc_password")]
+    PveVncPassword {
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        password: crate::secret::Secret,
     },
     #[serde(rename = "pve.targets_result")]
     PveTargetsResult {

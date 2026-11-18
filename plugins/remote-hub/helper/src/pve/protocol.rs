@@ -103,6 +103,8 @@ pub enum ConsoleTarget {
     Node { node: String },
     /// An LXC container terminal (`/nodes/{node}/lxc/{vmid}/termproxy`).
     Lxc { node: String, vmid: u32 },
+    /// A QEMU guest's graphical console: the raw RFB stream over the VNC proxy websocket (no decoding here).
+    Qemu { node: String, vmid: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +178,8 @@ pub enum PveEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fingerprint: Option<String>,
     },
+    /// The short-lived VNC password of a graphical console. It goes to the one page that views that session, nowhere else.
+    VncPassword { password: Secret },
     /// The answer to a dry-run provision: what would happen to each object (`create`, `keep`, `update`, `rotate_password`).
     Plan { role: String, user: String, acl: String },
     /// A provision that was applied. `password` is the new password of the created user, for the helper to put in

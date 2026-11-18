@@ -366,6 +366,19 @@ impl Client {
         Ok(TermProxy { user: user.to_string(), ticket: Secret::new(ticket), port: port as u16 })
     }
 
+    /// `POST …/qemu/{vmid}/vncproxy` with `websocket=1`: the ticket for the socket and the separate password of the RFB handshake.
+    pub async fn vncproxy(&self, session: &Session, path: &str) -> Result<VncProxy, ApiError> {
+        let data = self.post(session, path, &[("websocket", "1")]).await?;
+        let ticket = data.get("ticket").and_then(Value::as_str).ok_or_else(|| ApiError::Protocol("vncproxy: no ticket".to_string()))?;
+        let password = data.get("password").and_then(Value::as_str).ok_or_else(|| ApiError::Protocol("vncproxy: no password".to_string()))?;
+        let port = data
+            .get("port")
+            .and_then(|p| p.as_u64().or_else(|| p.as_str().and_then(|s| s.parse().ok())))
+            .filter(|p| (1..=65535).contains(p))
+            .ok_or_else(|| ApiError::Protocol("vncproxy: no valid port".to_string()))?;
+        Ok(VncProxy { ticket: Secret::new(ticket), password: Secret::new(password), port: port as u16 })
+    }
+
     /// The websocket of a console, over the same strict TLS, authenticated like the REST calls.
     pub async fn websocket(&self, session: &Session, path_and_query: &str) -> Result<WebSocketStream<Tls>, ApiError> {
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -389,6 +402,12 @@ impl Client {
             Ok(Err(e)) => Err(ApiError::Unreachable(format!("websocket: {}", e.to_string().chars().take(120).collect::<String>()))),
         }
     }
+}
+
+pub struct VncProxy {
+    pub ticket: Secret,
+    pub password: Secret,
+    pub port: u16,
 }
 
 pub struct TermProxy {
@@ -436,21 +455,38 @@ pub fn valid_acl_path(path: &str) -> bool {
     path.strip_prefix("/pool/").is_some_and(|id| !id.is_empty() && id != "." && id != ".." && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')))
 }
 
-/// For tests and the manager: the console paths, built only from validated parts.
-pub fn termproxy_path(node: &str, vmid: Option<u32>) -> Result<String, ApiError> {
+/// Which console of which object: the node's shell, an LXC terminal or a QEMU graphical console.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsoleKind {
+    Node,
+    Lxc(u32),
+    Qemu(u32),
+}
+
+fn console_base(node: &str, kind: ConsoleKind) -> Result<String, ApiError> {
     if !valid_node(node) {
         return Err(ApiError::Invalid("the node name is not valid"));
     }
-    match vmid {
-        None => Ok(format!("/api2/json/nodes/{node}/termproxy")),
-        Some(v) if valid_vmid(v) => Ok(format!("/api2/json/nodes/{node}/lxc/{v}/termproxy")),
-        Some(_) => Err(ApiError::Invalid("the guest id is not valid")),
+    match kind {
+        ConsoleKind::Node => Ok(format!("/api2/json/nodes/{node}")),
+        ConsoleKind::Lxc(v) if valid_vmid(v) => Ok(format!("/api2/json/nodes/{node}/lxc/{v}")),
+        ConsoleKind::Qemu(v) if valid_vmid(v) => Ok(format!("/api2/json/nodes/{node}/qemu/{v}")),
+        _ => Err(ApiError::Invalid("the guest id is not valid")),
     }
 }
 
-pub fn websocket_path(node: &str, vmid: Option<u32>, port: u16, ticket: &str) -> Result<String, ApiError> {
-    let base = termproxy_path(node, vmid)?.replace("/termproxy", "/vncwebsocket");
-    Ok(format!("{base}?port={port}&vncticket={}", urlenc(ticket)))
+/// The create call: `termproxy` for terminals, `vncproxy` for QEMU graphics. Built only from validated parts.
+pub fn proxy_path(node: &str, kind: ConsoleKind) -> Result<String, ApiError> {
+    let base = console_base(node, kind)?;
+    Ok(match kind {
+        ConsoleKind::Qemu(_) => format!("{base}/vncproxy"),
+        _ => format!("{base}/termproxy"),
+    })
+}
+
+pub fn websocket_path(node: &str, kind: ConsoleKind, port: u16, ticket: &str) -> Result<String, ApiError> {
+    let base = console_base(node, kind)?;
+    Ok(format!("{base}/vncwebsocket?port={port}&vncticket={}", urlenc(ticket)))
 }
 
 #[cfg(test)]
@@ -499,14 +535,17 @@ mod tests {
 
     #[test]
     fn console_paths_are_built_from_validated_parts() {
-        assert_eq!(termproxy_path("n1", None).unwrap(), "/api2/json/nodes/n1/termproxy");
-        assert_eq!(termproxy_path("n1", Some(101)).unwrap(), "/api2/json/nodes/n1/lxc/101/termproxy");
-        assert!(termproxy_path("n1/../x", Some(101)).is_err());
-        assert!(termproxy_path("n1", Some(5)).is_err());
+        assert_eq!(proxy_path("n1", ConsoleKind::Node).unwrap(), "/api2/json/nodes/n1/termproxy");
+        assert_eq!(proxy_path("n1", ConsoleKind::Lxc(101)).unwrap(), "/api2/json/nodes/n1/lxc/101/termproxy");
+        assert_eq!(proxy_path("n1", ConsoleKind::Qemu(100)).unwrap(), "/api2/json/nodes/n1/qemu/100/vncproxy");
+        assert!(proxy_path("n1/../x", ConsoleKind::Lxc(101)).is_err());
+        assert!(proxy_path("n1", ConsoleKind::Lxc(5)).is_err());
+        assert!(proxy_path("n1", ConsoleKind::Qemu(5)).is_err());
         assert_eq!(
-            websocket_path("n1", Some(101), 5901, "PVEVNC:a+b").unwrap(),
+            websocket_path("n1", ConsoleKind::Lxc(101), 5901, "PVEVNC:a+b").unwrap(),
             "/api2/json/nodes/n1/lxc/101/vncwebsocket?port=5901&vncticket=PVEVNC%3Aa%2Bb"
         );
+        assert_eq!(websocket_path("n1", ConsoleKind::Qemu(100), 5902, "T").unwrap(), "/api2/json/nodes/n1/qemu/100/vncwebsocket?port=5902&vncticket=T");
     }
 
     #[test]

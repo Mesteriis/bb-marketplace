@@ -148,6 +148,7 @@ fn request_id(req: &Request) -> Option<u64> {
         | Request::OpenRdp { id, .. }
         | Request::OpenPve { id, .. }
         | Request::PveTargets { id, .. }
+        | Request::PveVncInput { id, .. }
         | Request::PveProvision { id, .. }
         | Request::CredentialSave { id, .. }
         | Request::CredentialDelete { id, .. }
@@ -874,6 +875,8 @@ fn handle(
         Request::OpenPve { id, connect, target, cols, rows, keepalive_secs } => {
             Ok(crate::pve::glue::open_terminal(pve, current_exe, id, &connect, target, cols, rows, keepalive_secs))
         }
+        Request::PveVncInput { id, session_id, data } if pve.is_vnc(session_id) => Ok(crate::pve::glue::vnc_input(pve, id, session_id, &data)),
+        Request::PveVncInput { id, session_id, .. } => Ok(crate::pve::glue::enqueue_error(id, session_id, crate::pve::manager::EnqueueError::UnknownSession)),
         Request::PveTargets { id, connect } => Ok(crate::pve::glue::open_targets(pve, current_exe, id, &connect)),
         Request::PveProvision { id, connect, dry_run, acl_path, save } => {
             Ok(crate::pve::glue::open_provision(pve, current_exe, id, &connect, dry_run, acl_path, save))

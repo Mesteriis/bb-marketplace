@@ -2046,6 +2046,7 @@ dependencies = [
 name = "remote-hub-helper"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "core-foundation",
  "futures-util",

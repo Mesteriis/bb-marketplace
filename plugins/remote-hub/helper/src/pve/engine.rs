@@ -9,8 +9,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::api::{self, ApiError, Client, Session};
+use super::api::{self, ApiError, Client, ConsoleKind, Session};
 use super::provision;
+use crate::secret::Secret;
 use super::protocol::{self, ConsoleTarget, PveAuth, PveCommand, PveEvent, PveOp, Trust};
 use super::term::{self, Gate, OkGate};
 
@@ -144,7 +145,10 @@ pub async fn serve(stream: tokio::net::UnixStream) -> i32 {
             PveOp::Provision { dry_run, acl_path } => bounded(PROVISION_DEADLINE, &out, run_provision(&client, &auth, dry_run, &acl_path, &out)).await,
             PveOp::Terminal { target, cols, rows } => {
                 let keepalive = Duration::from_secs(keepalive_secs.unwrap_or(DEFAULT_KEEPALIVE).clamp(1, 120));
-                run_terminal(&client, &auth, &target, (cols, rows), keepalive, &out, &mut cmd_rx).await
+                match &target {
+                    ConsoleTarget::Qemu { node, vmid } => run_vnc(&client, &auth, node, *vmid, keepalive, &out, &mut cmd_rx).await,
+                    _ => run_terminal(&client, &auth, &target, (cols, rows), keepalive, &out, &mut cmd_rx).await,
+                }
             }
         },
     };
@@ -222,13 +226,14 @@ async fn connect_terminal(
     out.state("authenticating").await;
     let session: Session = client.authenticate(auth).await?;
     out.state("creating_console").await;
-    let (node, vmid) = match target {
-        ConsoleTarget::Node { node } => (node.as_str(), None),
-        ConsoleTarget::Lxc { node, vmid } => (node.as_str(), Some(*vmid)),
+    let (node, kind) = match target {
+        ConsoleTarget::Node { node } => (node.as_str(), ConsoleKind::Node),
+        ConsoleTarget::Lxc { node, vmid } => (node.as_str(), ConsoleKind::Lxc(*vmid)),
+        ConsoleTarget::Qemu { .. } => return Err(ApiError::Invalid("a graphical console is not a terminal")),
     };
-    let proxy = client.termproxy(&session, &api::termproxy_path(node, vmid)?).await?;
+    let proxy = client.termproxy(&session, &api::proxy_path(node, kind)?).await?;
     out.state("connecting").await;
-    let path = api::websocket_path(node, vmid, proxy.port, proxy.ticket.expose())?;
+    let path = api::websocket_path(node, kind, proxy.port, proxy.ticket.expose())?;
     let mut ws = client.websocket(&session, &path).await?;
     ws.send(Message::text(String::from_utf8_lossy(&term::ticket_line(&proxy.user, proxy.ticket.expose())).to_string()))
         .await
@@ -262,6 +267,83 @@ async fn connect_terminal(
         .await
         .map_err(|_| ApiError::Unreachable("websocket closed".to_string()))?;
     Ok((ws, rest))
+}
+
+type Ws = tokio_tungstenite::WebSocketStream<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
+
+/// Everything up to the RFB server's greeting: the VNC proxy, the websocket, and the first bytes the server sends
+/// (a QEMU console speaks first). Returns the socket, the handshake password and those first bytes.
+async fn connect_vnc(client: &Client, auth: &PveAuth, node: &str, vmid: u32, out: &Out) -> Result<(Ws, Secret, Vec<u8>), ApiError> {
+    out.state("authenticating").await;
+    let session: Session = client.authenticate(auth).await?;
+    out.state("creating_console").await;
+    let kind = ConsoleKind::Qemu(vmid);
+    let proxy = client.vncproxy(&session, &api::proxy_path(node, kind)?).await?;
+    out.state("connecting").await;
+    let path = api::websocket_path(node, kind, proxy.port, proxy.ticket.expose())?;
+    let mut ws = client.websocket(&session, &path).await?;
+    out.state("waiting_for_console").await;
+    let first = tokio::time::timeout(OK_TIMEOUT, async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Binary(b))) => return Some(b.to_vec()),
+                Some(Ok(Message::Text(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => continue,
+                _ => return None,
+            }
+        }
+    })
+    .await
+    .map_err(|_| ApiError::Timeout)?;
+    match first {
+        Some(bytes) => Ok((ws, proxy.password, bytes)),
+        None => Err(ApiError::Unreachable("the console closed before it opened".to_string())),
+    }
+}
+
+/// A QEMU graphical console: the raw RFB stream, relayed both ways without looking inside it.
+async fn run_vnc(client: &Client, auth: &PveAuth, node: &str, vmid: u32, keepalive: Duration, out: &Out, cmds: &mut mpsc::Receiver<Cmd>) -> i32 {
+    let connected = tokio::select! {
+        r = connect_vnc(client, auth, node, vmid, out) => r,
+        _ = async { while let Some(c) = cmds.recv().await { if matches!(c, Cmd::Close) { break; } } } => {
+            out.event(&PveEvent::Closed { reason: "closed_by_user".to_string() }).await;
+            return 0;
+        }
+    };
+    let (mut ws, password, first) = match connected {
+        Ok(v) => v,
+        Err(e) => {
+            out.error(&e).await;
+            out.event(&PveEvent::Closed { reason: "error".to_string() }).await;
+            return 1;
+        }
+    };
+    // The password first: whoever views the session needs it before the server's greeting is answered.
+    out.event(&PveEvent::VncPassword { password }).await;
+    out.state("open").await;
+    if !out.data(&first).await {
+        return 2;
+    }
+    let mut ping = tokio::time::interval(keepalive);
+    ping.reset();
+    let reason = loop {
+        tokio::select! {
+            msg = ws.next() => match msg {
+                Some(Ok(Message::Binary(b))) => { if !out.data(&b).await { break "helper_gone"; } }
+                Some(Ok(Message::Close(_))) | None => break "remote_closed",
+                Some(Ok(_)) => {}
+                Some(Err(_)) => break "websocket_error",
+            },
+            cmd = cmds.recv() => match cmd {
+                Some(Cmd::Input(bytes)) => { if ws.send(Message::binary(bytes)).await.is_err() { break "websocket_error"; } }
+                Some(Cmd::Resize(..)) => {}
+                Some(Cmd::Close) | None => break "closed_by_user",
+            },
+            _ = ping.tick() => { if ws.send(Message::Ping(Vec::new().into())).await.is_err() { break "websocket_error"; } }
+        }
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(2), ws.close(None)).await;
+    out.event(&PveEvent::Closed { reason: reason.to_string() }).await;
+    0
 }
 
 async fn run_terminal(

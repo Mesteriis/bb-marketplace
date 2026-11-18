@@ -60,8 +60,9 @@ pub fn open_terminal(
         Ok(o) => o,
         Err(frames) => return frames,
     };
-    match pve.open_terminal(current_exe, &open) {
-        Ok((session_id, pid)) => protocol::encode_response(&Response::SessionOpened { id, session_id, cols, rows, pid: pid as u32, kind: "pve".to_string() }),
+    let vnc = matches!(&open, PveCommand::Open { op: PveOp::Terminal { target: ConsoleTarget::Qemu { .. }, .. }, .. });
+    match pve.open_terminal(current_exe, &open, vnc) {
+        Ok((session_id, pid)) => protocol::encode_response(&Response::SessionOpened { id, session_id, cols, rows, pid: pid as u32, kind: if vnc { "vnc" } else { "pve" }.to_string() }),
         Err(message) => error(id, "pve_open_failed", message),
     }
 }
@@ -109,6 +110,21 @@ pub fn open_provision(pve: &mut PveManager, current_exe: &str, id: u64, c: &PveC
     }
 }
 
+/// Raw RFB bytes from the viewer (base64 on the wire) to the console.
+pub fn vnc_input(pve: &mut PveManager, id: u64, session_id: u32, data: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else {
+        return error(id, "invalid_request", "the input is not base64");
+    };
+    if bytes.is_empty() || bytes.len() > 64 * 1024 {
+        return error(id, "invalid_request", "a vnc input is 1 byte to 64 KiB");
+    }
+    match pve.enqueue_input(session_id, &bytes) {
+        Ok(()) => protocol::encode_response(&Response::SessionInputAck { id, session_id }),
+        Err(e) => enqueue_error(id, session_id, e),
+    }
+}
+
 pub fn enqueue_error(id: u64, session_id: u32, e: EnqueueError) -> Vec<u8> {
     match e {
         EnqueueError::UnknownSession => error(id, "session_not_found", format!("no pve session {session_id}")),
@@ -127,6 +143,7 @@ pub fn relay_frames(pve: &mut PveManager, outbox: &mut VecDeque<u8>, current_exe
                     outbox.extend(protocol::encode_response(&Response::PveState { session_id, state }));
                 }
             }
+            PveFrame::VncPassword(password) => outbox.extend(protocol::encode_response(&Response::PveVncPassword { session_id, password })),
             PveFrame::Data { seq, bytes } => outbox.extend(protocol::encode_stream(session_id, seq, &bytes)),
             PveFrame::Targets { version, nodes, guests } => {
                 if let Some(id) = pve.job_request(session_id) {
