@@ -47,6 +47,7 @@ class FakeRdpHelper {
     if (this.vaultError !== null) throw this.vaultError;
     return this.vault.has(ref);
   }
+  async credit(): Promise<void> {}
   async openSsh(): Promise<SessionHandle> {
     return { generation: GEN, sessionId: this.nextSessionId++ };
   }

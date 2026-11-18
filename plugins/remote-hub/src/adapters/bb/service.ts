@@ -60,6 +60,8 @@ export interface RemoteHubServiceDeps {
   clock?: Clock;
   /** Test-only opener for a raw spawn spec (used by the integration suite against a test-hooks helper). */
   openSshRaw?: (helper: HelperProcess, cols: number, rows: number) => Promise<SessionHandle>;
+  /** Fill the scrollback with no view attached (default true). Tests of the attach-time credit await turn it off. */
+  headlessDrain?: boolean;
   /** In-memory certificate trust; a fresh store per service when omitted. */
   trust?: RdpTrustStore;
 }
@@ -429,6 +431,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
 
   // Agents read the scrollback with no view attached, so output must flow without one: grant the first window now.
   const startDrain = async (hp: HelperProcess, handle: SessionHandle): Promise<void> => {
+    if (deps.headlessDrain === false) return;
     const key = keyOf(handle);
     let state = credits.get(key);
     if (state === undefined) {

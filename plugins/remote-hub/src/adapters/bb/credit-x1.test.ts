@@ -100,11 +100,12 @@ type Handlers = {
   onError(): void;
 };
 
-function makeServiceAndSocket() {
+function makeServiceAndSocket(opts: { headlessDrain?: boolean } = {}) {
   const helper = new FakeHelper();
   const service = createRemoteHubService({
     startHelper: async () => helper as unknown as HelperProcess,
     env: {} as Record<string, string | undefined>,
+    ...opts,
   });
   let captured: ((ctx: { url: URL }) => Handlers) | null = null;
   registerStreamSocket(
@@ -263,7 +264,7 @@ describe("credit window X1 (real service + real socket)", () => {
   });
 
   it("scenario 7: snapshot before buffered tail, each byte once", async () => {
-    const { helper, service, wire } = makeServiceAndSocket();
+    const { helper, service, wire } = makeServiceAndSocket({ headlessDrain: false });
     const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
     helper.scrollback = new Uint8Array([65]);
     helper.emitOnCredit = new Uint8Array([66]); // arrives during the credit await
@@ -323,7 +324,7 @@ describe("credit window X1 (real service + real socket)", () => {
   });
 
   it("Y1: session end during the credit await delivers closed after the tail", async () => {
-    const { helper, service, wire } = makeServiceAndSocket();
+    const { helper, service, wire } = makeServiceAndSocket({ headlessDrain: false });
     const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
     helper.credit = async (h: SessionHandle, b: number) => {
       helper.creditFrames.push({ sessionId: h.sessionId, bytes: b });
@@ -343,7 +344,7 @@ describe("credit window X1 (real service + real socket)", () => {
   });
 
   it("Y1: helper exit during the credit await closes 4410 without rejecting", async () => {
-    const { helper, service, wire } = makeServiceAndSocket();
+    const { helper, service, wire } = makeServiceAndSocket({ headlessDrain: false });
     const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
     helper.credit = async () => {
       helper.emitExit();
@@ -359,7 +360,7 @@ describe("credit window X1 (real service + real socket)", () => {
   });
 
   it("Z1: credit rejection after session end still delivers the stored closed status", async () => {
-    const { helper, service, wire } = makeServiceAndSocket();
+    const { helper, service, wire } = makeServiceAndSocket({ headlessDrain: false });
     const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
     helper.credit = async (h: SessionHandle, b: number) => {
       helper.creditFrames.push({ sessionId: h.sessionId, bytes: b });
@@ -442,7 +443,7 @@ describe("credit window X1 (real service + real socket)", () => {
   });
 
   it("A1: credit throws while the record is running closes 4410 and sends no closed frame", async () => {
-    const { helper, service, wire } = makeServiceAndSocket();
+    const { helper, service, wire } = makeServiceAndSocket({ headlessDrain: false });
     const handle = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24);
     helper.credit = async () => {
       throw new Error("session_not_found");
