@@ -16,6 +16,12 @@ fn security(args: &[&str]) -> String {
 
 #[test]
 fn a_temporary_keychain_opened_by_path_holds_a_generic_password_and_nothing_else_changes() {
+    // No dialog can hold this run: prompts off for the process, and a watchdog aborts after 60 s.
+    std::mem::forget(SecKeychain::disable_user_interaction().expect("prompts off"));
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        std::process::abort();
+    });
     let dir = std::env::temp_dir().join(format!("rh-spike-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("spike.keychain-db");

@@ -2,6 +2,7 @@
 //! integration tests import the framing and message types from here.
 pub mod ids;
 pub mod ipc;
+pub mod keychain;
 pub mod protocol;
 pub mod secret;
 pub mod sessions;
