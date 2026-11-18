@@ -84,7 +84,12 @@
 - **Visible and audited.** The command text and its output stream live to the session's open views (the "Commands an agent
   ran" list) even when "record commands" is off: shown, not stored. The audit keeps the command's length, or its text cut
   at 512 characters only when the owner switched "record commands" on for that connection. The watching rule applies as
-  for input. Lowering the grant below `exec` cancels what runs for that connection and ends reading.
+  for input: with the rule on, a session whose last watcher leaves has its running commands cancelled after a **5 s grace**
+  (so a tab switch does not kill a run; a watcher back inside it keeps them), and a read after that returns the
+  cancellation (`reason: owner_not_watching`), never what the command printed later. A start is checked again once the run
+  exists: a revoke, a closed session or a lost watcher while it was starting cancels it and nothing is returned. Both the
+  per-thread and the per-session slot are reserved before the start is awaited. Lowering the grant below `exec` cancels what
+  runs for that connection and ends reading. One public command id names the start, the output and the end in the live list.
 - **Limits.** A command runs as the saved user with that user's rights: exec is the power to act as that user. The
   helper's own bounds do not limit what the remote command does on the server.
 
@@ -121,3 +126,10 @@ Limits, plainly:
 12. Memory-only state (leases, watchers, command lists) is lost on a restart: every session returns to the human.
 13. RDP: sessions the owner opens by hand remain drivable by the owner only; Windows rendering completeness is under
     investigation (see the RDP notes in docs/rdp-engine.md).
+14. A remote command is a child `ssh` process of the helper. If the helper dies hard (killed, crashed) the ssh process is not
+    ended by the system (macOS has no parent-death signal), so a running command can outlive it until its own timeout or the
+    server closes it. A clean stop, a revoke, closing the session and the timeout all kill it.
+15. The "Watch in split" arrangement (live view in the main pane, the agent's thread in a split) depends on BB's
+    `toThread(…, { split: true })` and `useSidebarSplitLayout`; where BB does not split, the live view stays and a link to the
+    thread is shown. Whether the owner is "looking at the agent's thread" is read from the focused split pane or the
+    surface's thread id; neither is verified against a real BB yet.

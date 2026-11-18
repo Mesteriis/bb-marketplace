@@ -534,7 +534,10 @@ and `useProfiles` around the existing session pages; Quick connect stays.
 - **TypeScript.** `core/exec-protocol.ts` (wire), `core/ssh-args.ts` (`buildSshExecSpawn`), service `execRun/Read/Cancel/Forget`,
   `core/agent-exec-tools.ts` (the three tools and every rule), `adapters/bb/agent-exec.ts` (target from the connection's saved
   credential, the live poll that feeds the owner's view).
-- **Visibility.** `core/watchers.ts` (a view reports `visible` every 2 s over its stream socket; fresh for 6 s),
+- **Visibility.** `core/watchers.ts` (a view reports `visible` every 2 s over its stream socket, at once on a change; fresh for 6 s;
+  `ui/watch-beat.ts`: visible = element at least half in the viewport AND document visible AND window focused),
+  `ui/split-watch.ts` + `ui/session-card.tsx` (the directive is a card; "Watch in split" = live view in the main pane, the agent's
+  thread in a split; automatic only when the owner is already on that thread),
   `core/agent-feed.ts` (what an agent does, to the open views: typed length, desktop pointer, commands),
   `adapters/bb/agent-signals.ts` (realtime signal with identifiers only), UI `live-session.tsx`, `agent-banner.tsx`,
   `command-log.tsx`. A lease nobody watches changes its owner tag (`suspended:<lease>`), which the helper treats as any change

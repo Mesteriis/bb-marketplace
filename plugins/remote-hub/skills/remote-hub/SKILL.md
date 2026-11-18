@@ -13,8 +13,9 @@ anything for yourself: a new host key, a changed key or a certificate is the own
 
 1. **Connect.** `remote_connect` with a connection id from `remote_connections_list`. Read the result: it carries
    `liveView`, `watching` and `watchingRequired`.
-2. **Show the owner.** Put the `liveView` line (`::remote-session{id="…"}`) on its own line in your reply. BB then shows
-   the live session inline; that open view is what lets you act. If `waitingForOwner` appears, the owner has a host-key or
+2. **Show the owner.** Put the `liveView` line (`::remote-session{id="…"}`) on its own line in your reply. BB shows a card
+   with "Watch in split" and "Open live view"; you can act only while the owner has the live view on screen in a focused
+   window (a split beside this thread, the page or the side tab). Say so and wait if `watching` is false. If `waitingForOwner` appears, the owner has a host-key or
    certificate question: say so and wait, never try to answer it.
 3. **Observe.** `remote_session_status`, `remote_terminal_read`, `remote_rdp_screenshot`. Reads need no watcher.
 4. **Acquire.** `remote_control_acquire` (a lease of about two minutes; asking again extends it).
