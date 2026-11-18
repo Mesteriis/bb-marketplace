@@ -42,6 +42,7 @@ describe("ConnectPage", () => {
 });
 
 import { waitFor } from "@testing-library/react";
+import { nonJsonPath } from "../core/json-wire.ts";
 import type { Profile, ProfileInput } from "../core/profile.ts";
 import type { ProfilesApi } from "./use-profiles.ts";
 
@@ -134,6 +135,8 @@ describe("ConnectPage with saved profiles", () => {
     await waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
     expect(api.save.mock.calls[0]?.[0]).toMatchObject({ fields: { name: "fresh", host: "fresh.example.test", protocol: "ssh" } });
     expect(api.save.mock.calls[0]?.[0].id).toBeUndefined();
+    // BB's RPC refuses an undefined-valued key (not just a present one): the payload must be strict JSON.
+    expect(nonJsonPath(api.save.mock.calls[0]?.[0])).toBeNull();
     expect(await screen.findByText("fresh")).toBeTruthy();
     expect(view.container.querySelector(".rh-editor")).toBeNull();
     expect((view.container.querySelector(".rh-connect-sessions") as HTMLElement).hidden).toBe(false);
@@ -146,6 +149,7 @@ describe("ConnectPage with saved profiles", () => {
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
     expect(api.save.mock.calls[0]?.[0].id).toBe(SID);
+    expect(nonJsonPath(api.save.mock.calls[0]?.[0])).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: "Delete Build box 2" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm delete Build box 2" }));
     await waitFor(() => expect(api.remove).toHaveBeenCalledWith(SID));

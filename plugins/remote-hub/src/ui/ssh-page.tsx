@@ -102,7 +102,8 @@ export function SshPage(props: SshPageProps) {
 
   const connect = useCallback(async () => {
     if (host.length === 0) return;
-    await open({ host, user: user || undefined, port: port ? Number(port) : undefined, extraOptions: [] });
+    // Keys that are not set are left out, not set to undefined: BB's RPC refuses an undefined value.
+    await open({ host, ...(user !== "" ? { user } : {}), ...(port !== "" ? { port: Number(port) } : {}), extraOptions: [] });
   }, [host, user, port, open]);
 
   // A saved profile asked to open: show its endpoint in the form and connect.

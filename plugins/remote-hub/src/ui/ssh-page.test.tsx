@@ -54,6 +54,7 @@ class FakeWebSocket {
 }
 
 import { SshPage } from "./ssh-page.tsx";
+import { nonJsonPath } from "../core/json-wire.ts";
 import type { SessionHandle } from "../core/rpc.ts";
 
 beforeEach(() => {
@@ -70,7 +71,7 @@ afterEach(() => {
 
 async function connectAndRun() {
   const handle: SessionHandle = { generation: "a".repeat(32), sessionId: 1 };
-  const onSshOpen = vi.fn(async () => handle);
+  const onSshOpen = vi.fn(async (_target: unknown, _profileId?: string) => handle);
   const onAttach = vi.fn(async () => ({ token: "b".repeat(32), wsUrl: "ws://x" }));
   const onClose = vi.fn(async () => {});
   render(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={onClose} />);
@@ -119,7 +120,9 @@ describe("SshPage opened from a saved profile", () => {
 
   it("the quick-connect form opens without a profile id", async () => {
     const { onSshOpen } = await connectAndRun();
-    expect(onSshOpen.mock.calls).toEqual([[{ host: "example.com", user: undefined, port: undefined, extraOptions: [] }, undefined]]);
+    expect(onSshOpen.mock.calls).toEqual([[{ host: "example.com", extraOptions: [] }, undefined]]);
+    // No undefined-valued key: BB's RPC refuses it before the handler.
+    expect(nonJsonPath(onSshOpen.mock.calls[0]?.[0])).toBeNull();
   });
 });
 

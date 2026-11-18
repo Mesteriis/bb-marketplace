@@ -48,7 +48,8 @@ export function ConnectPage(props: ConnectPageProps) {
   const save = useCallback(
     async (fields: ProfileFields) => {
       if (api === undefined) return;
-      await api.save({ id: editing?.profile?.id, fields });
+      // A new profile has no id key at all: BB's RPC refuses an undefined value.
+      await api.save(editing?.profile != null ? { id: editing.profile.id, fields } : { fields });
       setEditing(null);
       await reload();
     },

@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RdpPage, type RdpPageProps } from "./rdp-page.tsx";
+import { nonJsonPath } from "../core/json-wire.ts";
 import type { SessionHandle } from "../core/rpc.ts";
 
 const SECRET = "S3cr3t-MARK-91";
@@ -106,6 +107,15 @@ describe("RdpPage: one open at a time (P1)", () => {
     fireEvent.submit(form);
     await flush();
     expect(onRdpOpen).toHaveBeenCalledTimes(2); // free again once the first open settled
+  });
+});
+
+describe("RdpPage: the open payload is strict JSON", () => {
+  it("target and size carry no undefined-valued key, with and without a domain", async () => {
+    const p = props();
+    await connect(p);
+    expect(nonJsonPath(p.calls.onRdpOpen.mock.calls[0]?.[0])).toBeNull();
+    expect(nonJsonPath(p.calls.onRdpOpen.mock.calls[0]?.[1])).toBeNull();
   });
 });
 
