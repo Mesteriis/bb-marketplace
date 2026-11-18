@@ -691,6 +691,133 @@
   flex: 1 1 200px;
 }
 
+/* An agent drives the session: a light layer of dots over the widget (a picture only: translucent, no blur, no dimming, no
+   pointer events, transform/opacity animation) and a small card with the label and the Take control button. */
+.rh-agent-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.rh-agent-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  border-radius: 4px;
+  box-shadow: inset 0 0 22px color-mix(in srgb, var(--accent, #d29922) 28%, transparent);
+}
+
+.rh-agent-dots {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Two dot lattices drifting in different directions: the waves come from their beating, not from any blur. */
+.rh-agent-dots::before,
+.rh-agent-dots::after {
+  content: "";
+  position: absolute;
+  inset: -48px;
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--accent, #d29922) 70%, transparent) 1.4px, transparent 1.9px);
+  background-size: 24px 24px;
+  opacity: 0.22;
+  will-change: transform, opacity;
+}
+
+.rh-agent-dots::before {
+  animation: rh-agent-drift-a 14s linear infinite, rh-agent-breathe 5s ease-in-out infinite;
+}
+
+.rh-agent-dots::after {
+  background-size: 31px 31px;
+  animation: rh-agent-drift-b 19s linear infinite, rh-agent-breathe 7s ease-in-out infinite reverse;
+}
+
+@keyframes rh-agent-drift-a {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(48px, 24px, 0);
+  }
+}
+
+@keyframes rh-agent-drift-b {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-62px, 31px, 0);
+  }
+}
+
+@keyframes rh-agent-breathe {
+  0%,
+  100% {
+    opacity: 0.1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* Reduced motion: the dots stay, static. */
+.rh-agent-overlay.rh-reduced-motion .rh-agent-dots::before,
+.rh-agent-overlay.rh-reduced-motion .rh-agent-dots::after {
+  animation: none;
+  opacity: 0.18;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rh-agent-dots::before,
+  .rh-agent-dots::after {
+    animation: none;
+    opacity: 0.18;
+  }
+}
+
+.rh-agent-card {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  left: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px 10px;
+  max-width: max-content;
+  margin-left: auto;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent, #d29922) 60%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-recessed-solid, #161b22) 88%, transparent);
+  color: var(--ink, #c9d1d9);
+  pointer-events: auto;
+}
+
+.rh-agent-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rh-agent-blocked {
+  flex: 1 1 100%;
+  color: var(--destructive, #e06c75);
+}
+
+.rh-agent-take {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
 /* The directive in a message: a card with two buttons, never a live view. */
 .rh-session-card {
   display: flex;

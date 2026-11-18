@@ -509,9 +509,10 @@ describe("SshPage: who drives the session (stage 4b-1)", () => {
     const { say } = await running();
     expect(screen.getByTestId("control-owner").textContent).toBe("driven by you");
     expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+    expect(screen.queryByTestId("agent-overlay")).toBeNull();
     await say({ type: "control", owner: "agent", expiresAt: Date.now() + 60_000 });
     expect(screen.getByTestId("control-owner").textContent).toContain("driven by an agent");
-    expect(screen.getByText(/An agent is driving this session/)).toBeTruthy();
+    expect(screen.getByText(/Agent is controlling this session/)).toBeTruthy();
   });
 
   it("a blocked key becomes an alert, and Take control calls the owner RPC with this session's handle", async () => {

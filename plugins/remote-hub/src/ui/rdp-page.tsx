@@ -9,7 +9,8 @@ import type { FitMode } from "../core/rdp-geometry.ts";
 import { closeReasonText, errorCodeText, errorTextFromMessage, stateText } from "../core/rdp-texts.ts";
 import type { RdpCertPromptInfo, RdpDecision, SessionHandle } from "../core/rpc.ts";
 import { RdpCanvas, type RdpCanvasEvent, type RdpCanvasHandle } from "./rdp-canvas.tsx";
-import { ControlBadge, ControlNotice, HUMAN_CONTROL, nextControl, type ControlView } from "./control-banner.tsx";
+import { ControlBadge, HUMAN_CONTROL, nextControl, type ControlView } from "./control-banner.tsx";
+import { AgentStage } from "./agent-overlay.tsx";
 import { RdpCertDialog } from "./rdp-cert-dialog.tsx";
 
 export interface RdpAttach {
@@ -389,9 +390,6 @@ export function RdpPage(props: RdpPageProps) {
             </>
           )}
         </div>
-        {view !== null && view.attach !== null && view.state !== "closed" && (
-          <ControlNotice control={view.control} onTakeover={async () => (props.onTakeover === undefined ? Promise.reject(new Error("not_found: taking control is not available")) : props.onTakeover(view.handle))} />
-        )}
         {notice !== null && <p className="rh-notice">{notice}</p>}
         {error !== null && (
           <p className="rh-error" role="alert">
@@ -400,17 +398,23 @@ export function RdpPage(props: RdpPageProps) {
         )}
         {view !== null && view.attach !== null && (
           <>
-            <div className="rh-rdp-wrap">
-              <RdpCanvas
-                key={view.attach.token}
-                wsUrl={view.attach.wsUrl}
-                token={view.attach.token}
-                fit={fit}
-                label={"remote desktop " + view.endpoint}
-                onEvent={onCanvasEvent}
-                handleRef={canvasHandle}
-              />
-            </div>
+            <AgentStage
+              handle={view.handle}
+              control={view.state === "closed" ? HUMAN_CONTROL : view.control}
+              onTakeover={async () => (props.onTakeover === undefined ? Promise.reject(new Error("not_found: taking control is not available")) : props.onTakeover(view.handle))}
+            >
+              <div className="rh-rdp-wrap">
+                <RdpCanvas
+                  key={view.attach.token}
+                  wsUrl={view.attach.wsUrl}
+                  token={view.attach.token}
+                  fit={fit}
+                  label={"remote desktop " + view.endpoint}
+                  onEvent={onCanvasEvent}
+                  handleRef={canvasHandle}
+                />
+              </div>
+            </AgentStage>
             <p className="rh-hint">
               Click the desktop to type into it. Keys go to the remote while it has focus (Tab and Escape too); press Ctrl+Alt+Shift+Escape or click outside it to leave.
             </p>

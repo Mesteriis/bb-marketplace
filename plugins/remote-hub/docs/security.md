@@ -50,6 +50,14 @@
   thread comes from the service's record of who holds or opened the session, never from the directive text. The owner's
   screen is moved automatically only when they are already looking at that agent's thread; anywhere else the banner asks. Reads (terminal text,
   screenshots) need no watcher but are listed in Agent activity. The gate has no per-connection switch; there is ONE plugin-wide owner setting, "Agents may act only while I am watching the session" (default ON, stored in SQLite, changed only by the owner RPC from the Agent activity screen, every change audited and listed under Access changes). OFF means an agent can act while nobody looks: input and commands are not refused and leases are not suspended, but the banner, the live-view line, the pointer and the live command list stay. Tool results carry `watchingRequired`.
+- **The overlay while an agent drives.** The live view (terminal and desktop, on the page, in the tab and wherever the widget is
+  mounted) shows a light layer of drifting dots over the widget and a small card, "Agent is controlling this session" (with the
+  agent thread's title when the service knows the thread), with one button, "Take control", which uses the owner's existing
+  take-over path (audited the same way as the banner's). It is a picture only: translucent, no blur or dimming, no pointer
+  events (text can still be selected; the human's input is refused by the service while the agent drives, which stays the
+  source of truth), CSS transform/opacity animation, static under `prefers-reduced-motion`. It follows the same lease state the
+  banner uses and sits beside the widget, so it neither counts as "not watching" nor changes the view's on-screen ratio. It can
+  cover the top-right of the first lines of a terminal; the card is small and the owner can take control to remove it.
 - **Suspension.** When the last watcher goes (closed, hidden, stalled) an agent's lease is suspended at once: its owner tag
   changes in the helper, so what it had queued is dropped and what it held down is released (the same barrier as a
   takeover), its input is refused, and it resumes when a watcher returns. The lease still expires as usual.

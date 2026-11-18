@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionHandle, SshTarget } from "../core/rpc.ts";
 import { errorCodeText } from "../core/rdp-texts.ts";
 import type { SshAskpassEvent } from "../core/ssh-askpass-protocol.ts";
-import { ControlBadge, ControlNotice, HUMAN_CONTROL, nextControl, type ControlMessage, type ControlView } from "./control-banner.tsx";
+import { ControlBadge, HUMAN_CONTROL, nextControl, type ControlMessage, type ControlView } from "./control-banner.tsx";
+import { AgentStage } from "./agent-overlay.tsx";
 import { SshPromptDialog, type SshPromptInfo } from "./ssh-prompt.tsx";
 import { SshTerminal, type SshExitInfo, type SshTerminalState } from "./ssh-terminal.tsx";
 
@@ -223,9 +224,6 @@ export function SshPage(props: SshPageProps) {
           </span>
         )}
       </div>
-      {attach !== null && state !== "closed" && handle !== null && (
-        <ControlNotice control={owner} onTakeover={async () => (props.onTakeover === undefined ? Promise.reject(new Error("not_found: taking control is not available")) : props.onTakeover(handle))} />
-      )}
       {error !== null && <p className="rh-error">{error}</p>}
       {notice !== null && (
         <p role="alert" className="rh-error" data-testid="ssh-credential-notice">
@@ -234,9 +232,11 @@ export function SshPage(props: SshPageProps) {
       )}
       {prompts.length > 0 && state !== "closed" && <SshPromptDialog prompt={prompts[0]} onAnswer={answerPrompt} />}
       {attach !== null && (
-        <div className="rh-terminal-wrap">
-          <SshTerminal wsUrl={attach.wsUrl} token={attach.token} onStateChange={onTerminalState} onAskpass={onAskpass} onControl={onControl} controlRef={control} />
-        </div>
+        <AgentStage handle={handle} control={state === "closed" ? HUMAN_CONTROL : owner} onTakeover={async () => (props.onTakeover === undefined || handle === null ? Promise.reject(new Error("not_found: taking control is not available")) : props.onTakeover(handle))}>
+          <div className="rh-terminal-wrap">
+            <SshTerminal wsUrl={attach.wsUrl} token={attach.token} onStateChange={onTerminalState} onAskpass={onAskpass} onControl={onControl} controlRef={control} />
+          </div>
+        </AgentStage>
       )}
     </div>
   );

@@ -594,7 +594,7 @@ describe("RdpPage: who drives the session (stage 4b-1)", () => {
     expect(screen.getByTestId("control-owner").textContent).toBe("driven by you");
     await say({ type: "control", owner: "agent", expiresAt: Date.now() + 60_000 });
     expect(screen.getByTestId("control-owner").textContent).toContain("driven by an agent");
-    expect(screen.getByText(/An agent is driving this session/)).toBeTruthy();
+    expect(screen.getByText(/Agent is controlling this session/)).toBeTruthy();
     await say({ type: "input_blocked" });
     expect(screen.getAllByRole("alert").some((a) => a.textContent?.includes("Your input was not sent"))).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Take control" }));

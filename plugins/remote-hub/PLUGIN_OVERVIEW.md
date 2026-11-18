@@ -1,6 +1,6 @@
 Remote Hub is an experimental SSH/RDP connection manager for BB. It runs one real
 SSH session in the embedded xterm terminal and one real RDP session on a canvas,
-both through a Rust helper, plus the echo console from stage 1.
+both through a Rust helper.
 
 ## What you get
 
@@ -10,8 +10,7 @@ both through a Rust helper, plus the echo console from stage 1.
   helper-owned PTY, xterm.js rendering, resize, and a binary WebSocket with
   attach/detach and a bounded scrollback snapshot on re-attach.
 - RDP: connect form (host, port, user, password, domain), the desktop painted on
-  a canvas with mouse, wheel and keyboard input (Ctrl+Alt+Del button), Fit and
-  1:1 views, a PNG screenshot, disconnect and reattach. The server certificate is
+  a canvas with mouse, wheel and keyboard input (Ctrl+Alt+Del button), a PNG screenshot, disconnect and reattach. The server certificate is
   validated strictly; when it is not trusted you see its fingerprint, subject,
   issuer and validity and choose to accept it once, trust it for this BB run,
   reject it, or trust it for good. A changed
@@ -35,7 +34,7 @@ both through a Rust helper, plus the echo console from stage 1.
   in a helper-owned file used by saved-password SSH). Profiles keep their source; re-importing changes
   nothing. Private keys are never opened. An alias behind a proxy or Match rule
   keeps using your ssh config; no password can be saved for it.
-- Agent access: per connection, default none, set by you in the editor (any thread of this BB). Observe: agents list connections, read terminals, take screenshots, and see all the terminal or screen shows, secrets too. Input: they may open a connection that has a SAVED password (never shown or typed by them), hold a lease (2 min; Take control ends it) send typed keys, text and pointer actions, and (Exec) run commands on sessions they opened, only while that session's live view is on screen in a focused window (banner; "Watch in split"). Host keys stay yours.
+- Agent access: per connection, default none, set by you in the editor. Observe: agents list connections, read terminals, take screenshots, and see all the terminal or screen shows, secrets too. Input: they may open a connection that has a SAVED password (never shown or typed by them), hold a lease (2 min; Take control ends it) send typed keys, text and pointer actions, and (Exec) run commands on sessions they opened, only while that session's live view is on screen in a focused window (banner; "Watch in split"). While an agent drives, an overlay of light dots and a Take control button show it.
 - The helper owns every session; detaching a view never ends it, and disconnecting never logs the remote user off.
 
 ## Honest limits

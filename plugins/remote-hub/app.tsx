@@ -5,7 +5,7 @@
 // file must be loaded by BB, not imported directly.
 import "./app.css";
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { definePluginApp, experimental_useAppPanel, useBbContext, useBbNavigate, useRealtime, useRpc, useSidebarSplitLayout } from "@get-bb/plugin-sdk/app";
+import { ThreadTitle, definePluginApp, experimental_useAppPanel, useBbContext, useBbNavigate, useRealtime, useRpc, useSidebarSplitLayout } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
 import type { SessionHandle } from "./src/core/rpc.ts";
 import { RemoteHubPage } from "./src/ui/remote-hub-page.tsx";
@@ -14,6 +14,7 @@ import { createConnectBridge } from "./src/ui/rpc-bridge.ts";
 import { AgentBanner, type AgentBannerApi } from "./src/ui/agent-banner.tsx";
 import { LiveSession, parseSessionKey, type LiveSessionApi } from "./src/ui/live-session.tsx";
 import { SessionCard, type SessionCardApi } from "./src/ui/session-card.tsx";
+import { AgentContextProvider, type AgentContextValue } from "./src/ui/agent-context.tsx";
 import type { AgentSessionView } from "./src/ui/agent-panel.tsx";
 import { markSessionPage, sessionPageShowing } from "./src/ui/active-surface.ts";
 import { SESSION_PAGE, autoSplitOnSignal, focusedThread, openWatchInSplit, splitShows, stillWhereWePutThem } from "./src/ui/split-watch.ts";
@@ -88,11 +89,34 @@ function RemoteSessionDirective({ attributes }: { attributes: Readonly<Record<st
   return <SessionCard sessionKey={attributes.id ?? ""} api={api} />;
 }
 
+/**
+ * What the live widgets need to name the agent that drives a session: the thread that holds the lease (from the service's
+ * own record, never from message text) and BB's title for it.
+ */
+function WithAgentContext({ children }: { children: React.ReactNode }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const value = useMemo<AgentContextValue>(
+    () => ({
+      leaseThread: async (h) => {
+        const all = (await rpc.call("agent_sessions", {})) as AgentSessionView[];
+        return all.find((x) => x.generation === h.generation && x.sessionId === h.sessionId)?.leaseThreadId ?? null;
+      },
+      renderThreadTitle: (threadId) => <ThreadTitle threadId={threadId} />,
+    }),
+    [rpc],
+  );
+  return <AgentContextProvider value={value}>{children}</AgentContextProvider>;
+}
+
 /** The side-panel tab the overlay opens when an agent starts acting. */
 function LiveTab({ params }: { params: unknown }) {
   const api = useLiveApi();
   const id = typeof params === "object" && params !== null && typeof (params as { sessionId?: unknown }).sessionId === "string" ? (params as { sessionId: string }).sessionId : "";
-  return <LiveSession sessionKey={id} api={api} />;
+  return (
+    <WithAgentContext>
+      <LiveSession sessionKey={id} api={api} />
+    </WithAgentContext>
+  );
 }
 
 /** App-wide: a standing notice while an agent is active, and a best-effort opening of its live view. */
@@ -190,10 +214,10 @@ function ConnectTab({ subPath }: { subPath: string }) {
     [rpc, wsUrl],
   );
   return (
-    <>
+    <WithAgentContext>
       {watched !== null && <LiveSession sessionKey={`${watched.generation}.${watched.sessionId}`} api={liveApi} />}
       <ConnectPage profiles={bridge.profiles} credentials={bridge.credentials} imports={bridge.imports} agents={bridge.agents} live={liveApi} ssh={bridge.ssh} rdp={bridge.rdp} />
-    </>
+    </WithAgentContext>
   );
 }
 

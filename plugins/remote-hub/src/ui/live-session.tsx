@@ -6,7 +6,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionHandle } from "../core/rpc.ts";
 import { parseSessionKey } from "./session-key.ts";
 import { errorTextFromMessage } from "../core/rdp-texts.ts";
-import { ControlBadge, ControlNotice, HUMAN_CONTROL, nextControl, type ControlMessage, type ControlView } from "./control-banner.tsx";
+import { ControlBadge, HUMAN_CONTROL, nextControl, type ControlMessage, type ControlView } from "./control-banner.tsx";
+import { AgentStage } from "./agent-overlay.tsx";
 import type { FeedEvent } from "../core/agent-feed.ts";
 import { CommandLog, applyExecEvent, type LoggedCommand } from "./command-log.tsx";
 import { RdpCanvas } from "./rdp-canvas.tsx";
@@ -78,17 +79,16 @@ export function LiveSession({ sessionKey, api }: { sessionKey: string; api: Live
       <div className="rh-live-head">
         <ControlBadge control={owner} />
       </div>
-      <ControlNotice control={owner} onTakeover={async () => void (await api.takeover(handle))} />
-      {view.kind === "ssh" ? (
-        <>
+      <AgentStage handle={handle} control={owner} onTakeover={async () => void (await api.takeover(handle))}>
+        {view.kind === "ssh" ? (
           <SshTerminal wsUrl={view.wsUrl} token={view.token} onControl={onControl} onAgent={onAgent} />
-          <CommandLog commands={commands} />
-        </>
-      ) : (
-        <div className="rh-rdp-wrap">
-          <RdpCanvas wsUrl={view.wsUrl} token={view.token} fit="fit" label="Remote desktop" onEvent={(e) => (e.type === "control" || e.type === "input_blocked" ? onControl(e as ControlMessage) : undefined)} />
-        </div>
-      )}
+        ) : (
+          <div className="rh-rdp-wrap">
+            <RdpCanvas wsUrl={view.wsUrl} token={view.token} fit="fit" label="Remote desktop" onEvent={(e) => (e.type === "control" || e.type === "input_blocked" ? onControl(e as ControlMessage) : undefined)} />
+          </div>
+        )}
+      </AgentStage>
+      {view.kind === "ssh" && <CommandLog commands={commands} />}
     </div>
   );
 }
