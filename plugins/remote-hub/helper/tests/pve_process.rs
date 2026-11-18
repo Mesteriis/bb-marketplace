@@ -10,7 +10,7 @@ use common::*;
 use pve_fake::*;
 use remote_hub_helper::binding::Bind;
 use remote_hub_helper::keychain::create_at;
-use remote_hub_helper::protocol::{decode_response, PveConnect, Request, Response, FRAME_KIND_CONTROL, FRAME_KIND_STREAM};
+use remote_hub_helper::protocol::{decode_response, PveConnect, PveSave, Request, Response, FRAME_KIND_CONTROL, FRAME_KIND_STREAM};
 use remote_hub_helper::pve::protocol::{ConsoleTarget, Trust};
 use remote_hub_helper::secret::Secret;
 
@@ -224,4 +224,75 @@ fn the_password_is_in_no_argv_and_no_stderr() {
     assert!(!h.stderr_text().contains(PASSWORD));
     h.shutdown();
     drop(w.rt);
+}
+
+fn admin_connect(port: u16) -> PveConnect {
+    PveConnect {
+        host: "127.0.0.1".into(),
+        port,
+        auth_mode: "ticket".into(),
+        user: ADMIN.into(),
+        password: Some(Secret::new(ADMIN_PASSWORD)),
+        credential_ref: None,
+        trust: ca(),
+    }
+}
+
+const NEW_REF: &str = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b77";
+
+fn pve_bind(port: u16, user: &str) -> Bind {
+    Bind::Endpoint { protocol: "pve".into(), host: "127.0.0.1".into(), port, user: Some(user.into()), domain: None, cert: None }
+}
+
+#[test]
+fn provisioning_saves_the_new_password_in_the_keychain_and_never_returns_it() {
+    let w = world(provision_state());
+    let dir = std::env::temp_dir().join(format!("rh-pve-prov-{}", std::process::id()));
+    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir).unwrap();
+    let path = dir.join("kc.keychain-db");
+    create_at(&path, "throwaway-kc-password").expect("temporary keychain");
+    let mut h = start(&[("REMOTE_HUB_KEYCHAIN_PATH", path.to_str().unwrap())]);
+    let port = w.fake.port;
+
+    h.send(&Request::PveProvision { id: 1, connect: admin_connect(port), dry_run: true, acl_path: "/".into(), save: None });
+    match h.read_reply(1) {
+        Response::PvePlan { role, user, acl, .. } => assert_eq!((role.as_str(), user.as_str(), acl.as_str()), ("create", "create", "create")),
+        other => panic!("{other:?}"),
+    }
+    assert!(w.fake.state.lock().unwrap().access_writes.is_empty());
+
+    // The new password may only be saved for this endpoint and remotehub@pve.
+    let wrong = PveSave { reference: NEW_REF.into(), bind: pve_bind(port, "root@pam") };
+    h.send(&Request::PveProvision { id: 2, connect: admin_connect(port), dry_run: false, acl_path: "/".into(), save: Some(wrong) });
+    assert!(matches!(h.read_reply(2), Response::Error { ref code, .. } if code == "invalid_request"));
+    h.send(&Request::PveProvision { id: 3, connect: admin_connect(port), dry_run: false, acl_path: "/".into(), save: None });
+    assert!(matches!(h.read_reply(3), Response::Error { ref code, .. } if code == "invalid_request"));
+    assert!(w.fake.state.lock().unwrap().access_writes.is_empty(), "a refused request must not reach the server");
+
+    let save = PveSave { reference: NEW_REF.into(), bind: pve_bind(port, USER) };
+    h.send(&Request::PveProvision { id: 4, connect: admin_connect(port), dry_run: false, acl_path: "/".into(), save: Some(save) });
+    let reply = h.read_reply(4);
+    assert!(matches!(reply, Response::PveProvisioned { .. }), "{reply:?}");
+    let new_password = w.fake.state.lock().unwrap().users.get(USER).cloned().unwrap();
+    assert!(!format!("{reply:?}").contains(&new_password), "the new password came back to the client");
+
+    // The saved credential signs in as the created user, and only for the endpoint it was saved for.
+    h.send(&Request::PveTargets { id: 5, connect: connect(port, None, Some(NEW_REF), ca()) });
+    assert!(matches!(h.read_reply(5), Response::PveTargetsResult { ref guests, .. } if guests.len() == 3));
+    assert!(!h.stderr_text().contains(&new_password));
+    assert!(!h.stderr_text().contains(ADMIN_PASSWORD));
+    h.shutdown();
+    drop(w.rt);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn provisioning_needs_a_one_time_password_not_a_saved_credential() {
+    let mut h = start(&[]);
+    let mut c = admin_connect(1);
+    c.password = None;
+    c.credential_ref = Some(NEW_REF.into());
+    h.send(&Request::PveProvision { id: 1, connect: c, dry_run: true, acl_path: "/".into(), save: None });
+    assert!(matches!(h.read_reply(1), Response::Error { ref code, .. } if code == "invalid_credential_source"));
+    h.shutdown();
 }

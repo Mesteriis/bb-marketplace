@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::api::{self, ApiError, Client, Session};
+use super::provision;
 use super::protocol::{self, ConsoleTarget, PveAuth, PveCommand, PveEvent, PveOp, Trust};
 use super::term::{self, Gate, OkGate};
 
@@ -127,6 +128,7 @@ pub async fn serve(stream: tokio::net::UnixStream) -> i32 {
         }
         Ok(client) => match op {
             PveOp::Targets => run_targets(&client, &auth, &out).await,
+            PveOp::Provision { dry_run, acl_path } => run_provision(&client, &auth, dry_run, &acl_path, &out).await,
             PveOp::Terminal { target, cols, rows } => {
                 let keepalive = Duration::from_secs(keepalive_secs.unwrap_or(DEFAULT_KEEPALIVE).clamp(1, 120));
                 run_terminal(&client, &auth, &target, (cols, rows), keepalive, &out, &mut cmd_rx).await
@@ -154,6 +156,39 @@ async fn run_targets(client: &Client, auth: &PveAuth, out: &Out) -> i32 {
     match result {
         Ok((version, nodes, guests)) => {
             out.event(&PveEvent::Targets { version, nodes, guests }).await;
+            0
+        }
+        Err(e) => {
+            out.error(&e).await;
+            1
+        }
+    }
+}
+
+async fn run_provision(client: &Client, auth: &PveAuth, dry_run: bool, acl_path: &str, out: &Out) -> i32 {
+    if !api::valid_acl_path(acl_path) {
+        out.error(&ApiError::Invalid("the ACL path must be / or /pool/<id>")).await;
+        return 1;
+    }
+    out.state("authenticating").await;
+    let result = async {
+        let session = client.authenticate(auth).await?;
+        let plan = provision::read_plan(client, &session, acl_path).await?;
+        if dry_run {
+            return Ok((plan, None));
+        }
+        out.state("provisioning").await;
+        let password = provision::apply(client, &session, &plan, acl_path).await?;
+        Ok((plan, Some(password)))
+    }
+    .await;
+    match result {
+        Ok((plan, None)) => {
+            out.event(&PveEvent::Plan { role: plan.role.to_string(), user: plan.user.to_string(), acl: plan.acl.to_string() }).await;
+            0
+        }
+        Ok((plan, Some(password))) => {
+            out.event(&PveEvent::Provisioned { role: plan.role.to_string(), user: plan.user.to_string(), acl: plan.acl.to_string(), password: Some(password) }).await;
             0
         }
         Err(e) => {

@@ -25,6 +25,8 @@ pub const CA_DER: &[u8] = include_bytes!("../fixtures/tls-ca.der");
 pub const LEAF_DER: &[u8] = include_bytes!("../fixtures/tls-leaf.der");
 const LEAF_KEY: &[u8] = include_bytes!("../fixtures/tls-leaf-key.pkcs8.der");
 pub const PASSWORD: &str = "Fake-PW-9d41";
+pub const ADMIN: &str = "root@pam";
+pub const ADMIN_PASSWORD: &str = "Admin-PW-77x";
 pub const USER: &str = "remotehub@pve";
 pub const TOKEN_ID: &str = "remotehub@pve!rh";
 pub const TOKEN_SECRET: &str = "0a1b2c3d-fake-token";
@@ -43,6 +45,14 @@ pub struct State {
     pub refuse_ticket_line: bool,
     pub delay_ok_ms: u64,
     pub tickets: Vec<String>,
+    /// ticket -> who logged in
+    pub ticket_users: HashMap<String, String>,
+    pub users: HashMap<String, String>,
+    pub roles: Vec<(String, String)>,
+    /// (path, roleid, userid)
+    pub acl: Vec<(String, String, String)>,
+    /// Calls that wrote to /access, in order.
+    pub access_writes: Vec<String>,
     pub vnc_tickets: HashMap<String, String>,
     pub requests: Vec<String>,
     pub ws_open: u32,
@@ -78,8 +88,17 @@ fn server_config() -> Arc<rustls::ServerConfig> {
     Arc::new(config)
 }
 
+/// A PVE where only the admin exists: nothing of Remote Hub's is set up yet.
+pub fn provision_state() -> State {
+    let mut st = default_state();
+    st.users.remove(USER);
+    st
+}
+
 pub fn default_state() -> State {
     State {
+        users: HashMap::from([(USER.to_string(), PASSWORD.to_string()), (ADMIN.to_string(), ADMIN_PASSWORD.to_string())]),
+        roles: vec![("Administrator".into(), "Sys.Console,Sys.Modify,VM.Audit".into())],
         nodes: vec![("pve1".into(), "online".into()), ("pve2".into(), "online".into())],
         guests: vec![
             (100, "db".into(), "qemu".into(), "pve1".into(), "running".into(), false),
@@ -169,18 +188,21 @@ fn route(method: &Method, path: &str, form: &HashMap<String, String>, req: &Requ
     let h = |n: &str| req.headers().get(n).and_then(|v| v.to_str().ok()).map(str::to_string);
     if method == Method::POST && path == "/api2/json/access/ticket" {
         st.logins += 1;
-        if form.get("username").map(String::as_str) == Some(USER) && form.get("password").map(String::as_str) == Some(PASSWORD) {
+        let who = form.get("username").cloned().unwrap_or_default();
+        if st.users.get(&who).is_some_and(|pw| form.get("password") == Some(pw)) {
             st.counter += 1;
-            let ticket = format!("PVE:{USER}:{:08X}::fake+sig/{}==", st.counter, st.counter);
+            let ticket = format!("PVE:{who}:{:08X}::fake+sig/{}==", st.counter, st.counter);
             st.tickets.push(ticket.clone());
+            st.ticket_users.insert(ticket.clone(), who.clone());
             if st.tfa {
-                return json_resp(200, json!({"data": {"ticket": format!("!tfa!{ticket}"), "NeedTFA": 1, "username": USER}}));
+                return json_resp(200, json!({"data": {"ticket": format!("!tfa!{ticket}"), "NeedTFA": 1, "username": who}}));
             }
-            return json_resp(200, json!({"data": {"ticket": ticket, "CSRFPreventionToken": "CSRF-FAKE", "username": USER, "cap": {}}}));
+            return json_resp(200, json!({"data": {"ticket": ticket, "CSRFPreventionToken": "CSRF-FAKE", "username": who, "cap": {}}}));
         }
         return json_resp(401, json!({"data": null, "message": "authentication failure"}));
     }
     // Authenticate everything else.
+    let mut ticket_user = String::new();
     let who = {
         let cookie = h("cookie");
         let auth = h("authorization");
@@ -189,6 +211,7 @@ fn route(method: &Method, path: &str, form: &HashMap<String, String>, req: &Requ
             if st.expire_tickets || !st.tickets.contains(&c) {
                 return json_resp(401, json!({"data": null, "message": "invalid PVE ticket"}));
             }
+            ticket_user = st.ticket_users.get(&c).cloned().unwrap_or_default();
             if write && csrf.is_none() {
                 return json_resp(401, json!({"data": null, "message": "No CSRF prevention token"}));
             }
@@ -220,6 +243,68 @@ fn route(method: &Method, path: &str, form: &HashMap<String, String>, req: &Requ
                 json_resp(200, json!({"data": {"/": {"Sys.Audit": 1}}}))
             } else {
                 json_resp(200, json!({"data": {"/": {"VM.Audit": 1, "VM.Console": 1, "Sys.Console": 1}}}))
+            }
+        }
+        ("GET", "/api2/json/access/roles") => {
+            json_resp(200, json!({"data": st.roles.iter().map(|(r, p)| json!({"roleid": r, "privs": p})).collect::<Vec<_>>()}))
+        }
+        ("GET", "/api2/json/access/users") => {
+            json_resp(200, json!({"data": st.users.keys().map(|u| json!({"userid": u, "enable": 1})).collect::<Vec<_>>()}))
+        }
+        ("GET", "/api2/json/access/acl") => json_resp(
+            200,
+            json!({"data": st.acl.iter().map(|(p, r, u)| json!({"path": p, "type": "user", "ugid": u, "roleid": r, "propagate": 1})).collect::<Vec<_>>()}),
+        ),
+        (m, p) if (m == "POST" || m == "PUT") && p.starts_with("/api2/json/access/") => {
+            if ticket_user != ADMIN || who == Who::Token {
+                return json_resp(403, json!({"data": null, "message": "Permission check failed (/access, Sys.Modify)"}));
+            }
+            st.access_writes.push(format!("{m} {p}"));
+            let get = |k: &str| form.get(k).cloned().unwrap_or_default();
+            match (m, p) {
+                ("POST", "/api2/json/access/roles") => {
+                    if st.roles.iter().any(|(r, _)| *r == get("roleid")) {
+                        return json_resp(500, json!({"data": null, "message": "role already exists"}));
+                    }
+                    let mut privs: Vec<String> = get("privs").split(',').map(str::to_string).collect();
+                    privs.sort();
+                    st.roles.push((get("roleid"), privs.join(",")));
+                    json_resp(200, json!({"data": null}))
+                }
+                ("PUT", p) if p.starts_with("/api2/json/access/roles/") => {
+                    let id = p.trim_start_matches("/api2/json/access/roles/").to_string();
+                    let mut privs: Vec<String> = get("privs").split(',').map(str::to_string).collect();
+                    privs.sort();
+                    match st.roles.iter_mut().find(|(r, _)| *r == id) {
+                        Some(r) => {
+                            r.1 = privs.join(",");
+                            json_resp(200, json!({"data": null}))
+                        }
+                        None => json_resp(500, json!({"data": null, "message": "role does not exist"})),
+                    }
+                }
+                ("POST", "/api2/json/access/users") => {
+                    if st.users.contains_key(&get("userid")) {
+                        return json_resp(500, json!({"data": null, "message": "user already exists"}));
+                    }
+                    if get("password").len() < 8 {
+                        return json_resp(400, json!({"data": null, "message": "password: value must be at least 8 characters long"}));
+                    }
+                    st.users.insert(get("userid"), get("password"));
+                    json_resp(200, json!({"data": null}))
+                }
+                ("PUT", "/api2/json/access/password") => {
+                    if !st.users.contains_key(&get("userid")) {
+                        return json_resp(500, json!({"data": null, "message": "user does not exist"}));
+                    }
+                    st.users.insert(get("userid"), get("password"));
+                    json_resp(200, json!({"data": null}))
+                }
+                ("PUT", "/api2/json/access/acl") => {
+                    st.acl.push((get("path"), get("roles"), get("users")));
+                    json_resp(200, json!({"data": null}))
+                }
+                _ => json_resp(404, json!({"data": null, "message": "no such method"})),
             }
         }
         ("POST", p) if p.ends_with("/termproxy") => {

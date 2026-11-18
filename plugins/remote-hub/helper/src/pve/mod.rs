@@ -8,5 +8,6 @@ pub mod engine;
 pub mod glue;
 pub mod manager;
 pub mod protocol;
+pub mod provision;
 pub mod term;
 pub mod tls;

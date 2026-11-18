@@ -4,9 +4,9 @@
 use std::collections::VecDeque;
 
 use super::manager::{ClosedReport, EnqueueError, Kind, PveFrame, PveManager};
-use super::protocol::{ConsoleTarget, Endpoint, PveAuth, PveCommand, PveOp};
-use crate::ipc::{resolve_item, CredentialRefusal};
-use crate::protocol::{self, PveConnect, Response};
+use super::protocol::{ConsoleTarget, Endpoint, PveAuth, PveCommand, PveOp, PROVISION_USER};
+use crate::ipc::{keychain_child, keychain_ok, resolve_item, CredentialRefusal};
+use crate::protocol::{self, PveConnect, PveSave, Response};
 use crate::secret::Secret;
 
 fn error(id: u64, code: &str, message: impl Into<String>) -> Vec<u8> {
@@ -78,6 +78,37 @@ pub fn open_targets(pve: &mut PveManager, current_exe: &str, id: u64, c: &PveCon
     }
 }
 
+/// Onboarding mode 1. The admin's login is a use-once password (never a saved credential); an apply must say where the
+/// created user's password is saved, and that place must be a `pve` binding for this very endpoint and the created user,
+/// so the new password cannot be directed anywhere else.
+pub fn open_provision(pve: &mut PveManager, current_exe: &str, id: u64, c: &PveConnect, dry_run: bool, acl_path: String, save: Option<PveSave>) -> Vec<u8> {
+    if c.credential_ref.is_some() || c.password.is_none() {
+        return error(id, "invalid_credential_source", "provisioning signs in with a password that is used once");
+    }
+    if !super::api::valid_acl_path(&acl_path) {
+        return error(id, "invalid_request", "the ACL path must be / or /pool/<id>");
+    }
+    let target = match (dry_run, save) {
+        (true, _) => None,
+        (false, None) => return error(id, "invalid_request", "an apply needs a place to save the new password"),
+        (false, Some(save)) => {
+            let bind = save.bind.canonical();
+            if !crate::keychain::valid_credential_ref(&save.reference) || !bind.is_valid() || !bind.is_pve_endpoint(&c.host, c.port, PROVISION_USER) {
+                return error(id, "invalid_request", "the password may only be saved for this endpoint and the user remotehub@pve");
+            }
+            Some((save.reference, bind))
+        }
+    };
+    let open = match build_open(current_exe, id, c, PveOp::Provision { dry_run, acl_path }, None) {
+        Ok(o) => o,
+        Err(frames) => return frames,
+    };
+    match pve.open_provision(current_exe, &open, id, target) {
+        Ok(_) => Vec::new(),
+        Err(message) => error(id, "pve_open_failed", message),
+    }
+}
+
 pub fn enqueue_error(id: u64, session_id: u32, e: EnqueueError) -> Vec<u8> {
     match e {
         EnqueueError::UnknownSession => error(id, "session_not_found", format!("no pve session {session_id}")),
@@ -88,7 +119,7 @@ pub fn enqueue_error(id: u64, session_id: u32, e: EnqueueError) -> Vec<u8> {
 
 /// Wire frames for what the engine said. Console bytes become stream frames; a discovery answer or failure answers
 /// the request that asked.
-pub fn relay_frames(pve: &mut PveManager, outbox: &mut VecDeque<u8>, session_id: u32, frames: Vec<PveFrame>) {
+pub fn relay_frames(pve: &mut PveManager, outbox: &mut VecDeque<u8>, current_exe: &str, session_id: u32, frames: Vec<PveFrame>) {
     for frame in frames {
         match frame {
             PveFrame::State(state) => {
@@ -102,6 +133,32 @@ pub fn relay_frames(pve: &mut PveManager, outbox: &mut VecDeque<u8>, session_id:
                     outbox.extend(protocol::encode_response(&Response::PveTargetsResult { id, version, nodes, guests }));
                     pve.mark_job_answered(session_id);
                 }
+            }
+            PveFrame::Plan { role, user, acl } => {
+                if let Some(id) = pve.job_request(session_id) {
+                    outbox.extend(protocol::encode_response(&Response::PvePlan { id, role, user, acl }));
+                    pve.mark_job_answered(session_id);
+                }
+            }
+            PveFrame::Provisioned { role, user, acl, password } => {
+                let Some(id) = pve.job_request(session_id) else { continue };
+                pve.mark_job_answered(session_id);
+                // The new password goes to the Keychain here and nowhere else; the client is told what happened, never the secret.
+                let saved = match (password, pve.take_job_save(session_id)) {
+                    (Some(secret), Some((reference, bind))) => {
+                        keychain_child(current_exe, "save", &reference, Some(&secret), Some(&bind)).and_then(keychain_ok).map(|_| ()).map_err(|r| r.code())
+                    }
+                    _ => Err("credential_unavailable".to_string()),
+                };
+                outbox.extend(protocol::encode_response(&match saved {
+                    Ok(()) => Response::PveProvisioned { id, role, user, acl },
+                    Err(code) => Response::PveFailed {
+                        id,
+                        code,
+                        message: "the user was set up on the server but its new password could not be saved; run the setup again to replace it".to_string(),
+                        fingerprint: None,
+                    },
+                }));
             }
             PveFrame::Error { code, message, fingerprint } => match pve.job_request(session_id) {
                 Some(id) => {
@@ -118,7 +175,7 @@ pub fn relay_frames(pve: &mut PveManager, outbox: &mut VecDeque<u8>, session_id:
 /// for a console.
 pub fn closed_frames(report: &ClosedReport) -> Vec<u8> {
     match report.kind {
-        Kind::Targets => match report.unanswered_job {
+        Kind::Targets | Kind::Provision => match report.unanswered_job {
             Some(id) => protocol::encode_response(&Response::PveFailed {
                 id,
                 code: "engine_exited".to_string(),

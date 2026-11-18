@@ -1,6 +1,7 @@
 // The Proxmox VE part of the helper stdio protocol (mirror of helper/src/protocol.rs and
 // helper/src/pve/protocol.rs) as zod schemas. Host-free; protocol.ts folds these into its unions.
 import { z } from "zod";
+import { credentialBindSchema } from "./credential-protocol.ts";
 
 const idSchema = z.number().int().min(0);
 const sessionIdSchema = z.number().int().min(0).max(0xffff_ffff);
@@ -102,5 +103,36 @@ export const PVE_ERROR_CODES = [
 ] as const;
 export type PveErrorCode = (typeof PVE_ERROR_CODES)[number];
 
-export const pveRequestSchemas = [openPveRequestSchema, pveTargetsRequestSchema] as const;
-export const pveResponseSchemas = [pveStateSchema, pveErrorSchema, pveTargetsResultSchema, pveFailedSchema] as const;
+/** Onboarding mode 1. `connect` is the admin's own login (a password, used once). A dry run only reads and answers
+ *  `pve.plan`; an apply names where the created user's password is saved and answers `pve.provisioned`. */
+export const pveProvisionRequestSchema = z.object({
+  type: z.literal("pve.provision"),
+  id: idSchema,
+  connect: pveConnectSchema,
+  dryRun: z.boolean(),
+  aclPath: z.string().min(1).max(80),
+  save: z.object({ ref: z.string().min(1).max(96), bind: credentialBindSchema }).optional(),
+});
+
+export const PVE_PROVISION_ACTIONS = ["create", "keep", "update", "rotate_password"] as const;
+const provisionActionSchema = z.enum(PVE_PROVISION_ACTIONS);
+export const pvePlanSchema = z.object({
+  type: z.literal("pve.plan"),
+  id: idSchema,
+  role: provisionActionSchema,
+  user: provisionActionSchema,
+  acl: provisionActionSchema,
+});
+export const pveProvisionedSchema = z.object({
+  type: z.literal("pve.provisioned"),
+  id: idSchema,
+  role: provisionActionSchema,
+  user: provisionActionSchema,
+  acl: provisionActionSchema,
+});
+
+/** What mode 1 creates: fixed, and shown to the owner before anything is written. */
+export const PVE_PROVISION = { role: "RemoteHubConsole", user: "remotehub@pve", privileges: ["Sys.Audit", "Sys.Console", "VM.Audit", "VM.Console"] } as const;
+
+export const pveRequestSchemas = [openPveRequestSchema, pveTargetsRequestSchema, pveProvisionRequestSchema] as const;
+export const pveResponseSchemas = [pveStateSchema, pveErrorSchema, pveTargetsResultSchema, pveFailedSchema, pvePlanSchema, pveProvisionedSchema] as const;

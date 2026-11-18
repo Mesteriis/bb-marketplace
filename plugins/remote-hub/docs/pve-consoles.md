@@ -81,13 +81,13 @@ configuration.
 
 ## 3. Onboarding mode 1: a restricted user
 
-Admin needs `Sys.Modify` on `/access` (create role), `User.Modify` (create user) and `Permissions.Modify` on the ACL path (`root@pam` has all). [src Role.pm:80; ACL.pm]
+Admin needs `Sys.Modify` on `/access` (create role), `User.Modify` (create user) and `Permissions.Modify` on the ACL path (ACL calls live at `/access/acl`) (`root@pam` has all). [src Role.pm:80; ACL.pm]
 
 | Step | Call | Idempotence |
 |---|---|---|
 | 1 role | `POST /access/roles` `roleid=RemoteHubConsole`, `privs=VM.Audit,VM.Console,Sys.Audit,Sys.Console` | `GET /access/roles/RemoteHubConsole` first; exists with these privs → skip; exists with other privs → `PUT /access/roles/RemoteHubConsole privs=… append=0` after the owner confirmed the diff |
 | 2 user | `POST /access/users` `userid=remotehub@pve`, `password=<generated>`, `comment=Remote Hub (managed)` | `GET /access/users/remotehub@pve` first; exists → rotate with `PUT /access/password` (`userid`, `password`; 8..64 characters; admin needs `Realm.AllocateUser` and `User.Modify` on a group of the user) [src AccessControl.pm:403-440]; the keychain keeps only the newest |
-| 3 ACL | `PUT /access` `path=/` (or `/pool/<id>`), `roles=RemoteHubConsole`, `users=remotehub@pve`, `propagate=1` | The ACL update is idempotent by itself |
+| 3 ACL | `PUT /access/acl` `path=/` (or `/pool/<id>`), `roles=RemoteHubConsole`, `users=remotehub@pve`, `propagate=1` | The ACL update is idempotent by itself |
 
 Privilege names exist in `PVE::AccessControl` for master: `VM.Console` (:1154), `VM.Audit` (:1162), `Sys.Console` (:1173), `Sys.Audit` (:1177) [src]; 8.x [live].
 `root@pam`'s password and a role id beginning with `PVE` are never used: role ids starting with `PVE` are refused [src Role.pm:100].

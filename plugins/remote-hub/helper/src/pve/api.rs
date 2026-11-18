@@ -294,6 +294,34 @@ impl Client {
         self.request(Method::POST, path, session.headers(true), Some(form_body(form))).await
     }
 
+    pub async fn put(&self, session: &Session, path: &str, form: &[(&str, &str)]) -> Result<Value, ApiError> {
+        self.request(Method::PUT, path, session.headers(true), Some(form_body(form))).await
+    }
+
+    /// `(roleid, privs)` of every role; privs is PVE's sorted comma-joined list.
+    pub async fn roles(&self, session: &Session) -> Result<Vec<(String, String)>, ApiError> {
+        let data = self.get(session, "/api2/json/access/roles").await?;
+        let list = data.as_array().ok_or_else(|| ApiError::Protocol("roles is not a list".to_string()))?;
+        Ok(list
+            .iter()
+            .filter_map(|r| Some((r.get("roleid")?.as_str()?.to_string(), r.get("privs").and_then(Value::as_str).unwrap_or("").to_string())))
+            .collect())
+    }
+
+    pub async fn users(&self, session: &Session) -> Result<Vec<String>, ApiError> {
+        let data = self.get(session, "/api2/json/access/users").await?;
+        let list = data.as_array().ok_or_else(|| ApiError::Protocol("users is not a list".to_string()))?;
+        Ok(list.iter().filter_map(|u| u.get("userid")?.as_str().map(str::to_string)).collect())
+    }
+
+    /// `(path, type, ugid, roleid)` of every ACL entry the account may see.
+    pub async fn acl(&self, session: &Session) -> Result<Vec<(String, String, String, String)>, ApiError> {
+        let data = self.get(session, "/api2/json/access/acl").await?;
+        let list = data.as_array().ok_or_else(|| ApiError::Protocol("acl is not a list".to_string()))?;
+        let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+        Ok(list.iter().filter_map(|e| Some((s(e, "path")?, s(e, "type")?, s(e, "ugid")?, s(e, "roleid")?))).collect())
+    }
+
     pub async fn version(&self, session: &Session) -> Result<Option<String>, ApiError> {
         let data = self.get(session, "/api2/json/version").await?;
         Ok(data.get("version").and_then(Value::as_str).map(str::to_string))
@@ -400,6 +428,14 @@ pub fn permissions_allow_guests(data: &Value) -> bool {
     })
 }
 
+/// An ACL path Remote Hub will write: `/` or `/pool/<id>`, with a conservative character set.
+pub fn valid_acl_path(path: &str) -> bool {
+    if path == "/" {
+        return true;
+    }
+    path.strip_prefix("/pool/").is_some_and(|id| !id.is_empty() && id != "." && id != ".." && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')))
+}
+
 /// For tests and the manager: the console paths, built only from validated parts.
 pub fn termproxy_path(node: &str, vmid: Option<u32>) -> Result<String, ApiError> {
     if !valid_node(node) {
@@ -447,6 +483,18 @@ mod tests {
         assert!(!valid_node(""));
         assert!(valid_vmid(100));
         assert!(!valid_vmid(99));
+    }
+
+    #[test]
+    fn acl_paths_are_root_or_a_pool() {
+        assert!(valid_acl_path("/"));
+        assert!(valid_acl_path("/pool/lab-1"));
+        assert!(!valid_acl_path("/vms/100"));
+        assert!(!valid_acl_path("/pool/"));
+        assert!(!valid_acl_path("/pool/a b"));
+        assert!(!valid_acl_path("/pool/../x"));
+        assert!(!valid_acl_path("/pool/.."));
+        assert!(!valid_acl_path(""));
     }
 
     #[test]

@@ -402,3 +402,106 @@ async fn the_password_never_appears_in_any_event() {
     }
     assert!(!seen.contains(PASSWORD), "{seen}");
 }
+
+// ---- onboarding mode 1: provisioning ----
+
+fn admin_auth() -> PveAuth {
+    PveAuth::Ticket { username: ADMIN.into(), password: Secret::new(ADMIN_PASSWORD) }
+}
+
+async fn provision(fake: &Fake, auth: PveAuth, dry_run: bool, acl_path: &str) -> Vec<PveEvent> {
+    let op = PveOp::Provision { dry_run, acl_path: acl_path.to_string() };
+    let mut d = start_engine(&open(fake.port, auth, ca_trust(), op)).await;
+    let (events, _) = d.all().await;
+    d.engine.await.unwrap();
+    events
+}
+
+fn plan(role: &str, user: &str, acl: &str) -> PveEvent {
+    PveEvent::Plan { role: role.into(), user: user.into(), acl: acl.into() }
+}
+
+#[tokio::test]
+async fn a_dry_run_reports_the_plan_and_writes_nothing() {
+    let fake = start_fake(provision_state()).await;
+    let events = provision(&fake, admin_auth(), true, "/").await;
+    assert_eq!(events, vec![plan("create", "create", "create")]);
+    let st = fake.state.lock().unwrap();
+    assert!(st.access_writes.is_empty(), "{:?}", st.access_writes);
+    assert!(!st.users.contains_key(USER));
+}
+
+#[tokio::test]
+async fn applying_creates_the_role_the_user_and_the_acl_entry_and_the_new_password_logs_in() {
+    let fake = start_fake(provision_state()).await;
+    let events = provision(&fake, admin_auth(), false, "/").await;
+    let [PveEvent::Provisioned { role, user, acl, password: Some(password) }] = &events[..] else { panic!("{events:?}") };
+    assert_eq!((role.as_str(), user.as_str(), acl.as_str()), ("create", "create", "create"));
+    assert_eq!(password.expose().len(), 32);
+    {
+        let st = fake.state.lock().unwrap();
+        assert_eq!(st.access_writes, vec!["POST /api2/json/access/roles", "POST /api2/json/access/users", "PUT /api2/json/access/acl"]);
+        assert!(st.roles.contains(&("RemoteHubConsole".to_string(), "Sys.Audit,Sys.Console,VM.Audit,VM.Console".to_string())));
+        assert_eq!(st.acl, vec![("/".to_string(), "RemoteHubConsole".to_string(), "remotehub@pve".to_string())]);
+        assert_eq!(st.users.get(USER), Some(&password.expose().to_string()));
+    }
+    // The created user can sign in and discover.
+    let auth = PveAuth::Ticket { username: USER.into(), password: Secret::new(password.expose()) };
+    let found = targets(&fake, auth, ca_trust()).await;
+    assert!(matches!(&found[..], [PveEvent::Targets { guests, .. }] if guests.len() == 3), "{found:?}");
+}
+
+#[tokio::test]
+async fn applying_twice_duplicates_nothing_and_only_rotates_the_password() {
+    let fake = start_fake(provision_state()).await;
+    let first = provision(&fake, admin_auth(), false, "/").await;
+    let second_plan = provision(&fake, admin_auth(), true, "/").await;
+    assert_eq!(second_plan, vec![plan("keep", "rotate_password", "keep")]);
+    fake.state.lock().unwrap().access_writes.clear();
+    let second = provision(&fake, admin_auth(), false, "/").await;
+    let (PveEvent::Provisioned { password: Some(p1), .. }, PveEvent::Provisioned { password: Some(p2), .. }) = (&first[0], &second[0]) else { panic!() };
+    assert_ne!(p1.expose(), p2.expose());
+    let st = fake.state.lock().unwrap();
+    assert_eq!(st.access_writes, vec!["PUT /api2/json/access/password"]);
+    assert_eq!(st.roles.iter().filter(|(r, _)| r == "RemoteHubConsole").count(), 1);
+    assert_eq!(st.acl.len(), 1);
+    assert_eq!(st.users.get(USER), Some(&p2.expose().to_string()));
+}
+
+#[tokio::test]
+async fn a_role_with_other_privileges_is_updated_to_the_fixed_set() {
+    let mut st = provision_state();
+    st.roles.push(("RemoteHubConsole".into(), "VM.Audit".into()));
+    let fake = start_fake(st).await;
+    assert_eq!(provision(&fake, admin_auth(), true, "/").await, vec![plan("update", "create", "create")]);
+    provision(&fake, admin_auth(), false, "/").await;
+    let st = fake.state.lock().unwrap();
+    assert_eq!(st.access_writes[0], "PUT /api2/json/access/roles/RemoteHubConsole");
+    assert!(st.roles.contains(&("RemoteHubConsole".to_string(), "Sys.Audit,Sys.Console,VM.Audit,VM.Console".to_string())));
+}
+
+#[tokio::test]
+async fn a_pool_acl_path_is_used_when_given() {
+    let fake = start_fake(provision_state()).await;
+    provision(&fake, admin_auth(), false, "/pool/lab").await;
+    assert_eq!(fake.state.lock().unwrap().acl[0].0, "/pool/lab");
+}
+
+#[tokio::test]
+async fn an_account_without_admin_rights_changes_nothing() {
+    let fake = start_fake(default_state()).await;
+    let events = provision(&fake, ticket_auth(), false, "/").await;
+    assert_eq!(error_of(&events).0, "no_permission");
+    assert!(fake.state.lock().unwrap().access_writes.is_empty());
+}
+
+#[tokio::test]
+async fn a_wrong_admin_password_or_a_bad_acl_path_never_writes() {
+    let fake = start_fake(provision_state()).await;
+    let bad = PveAuth::Ticket { username: ADMIN.into(), password: Secret::new("nope-nope-1") };
+    assert_eq!(error_of(&provision(&fake, bad, false, "/").await).0, "login_failed");
+    assert_eq!(error_of(&provision(&fake, admin_auth(), false, "/vms/100").await).0, "invalid_request");
+    let st = fake.state.lock().unwrap();
+    assert!(st.access_writes.is_empty());
+    assert_eq!(st.logins, 1, "an invalid path must be refused before any login");
+}

@@ -148,6 +148,7 @@ fn request_id(req: &Request) -> Option<u64> {
         | Request::OpenRdp { id, .. }
         | Request::OpenPve { id, .. }
         | Request::PveTargets { id, .. }
+        | Request::PveProvision { id, .. }
         | Request::CredentialSave { id, .. }
         | Request::CredentialDelete { id, .. }
         | Request::CredentialStatus { id, .. }
@@ -177,7 +178,7 @@ pub(crate) enum CredentialRefusal {
 }
 
 impl CredentialRefusal {
-    fn code(&self) -> String {
+    pub(crate) fn code(&self) -> String {
         match self {
             CredentialRefusal::BadRef => "invalid_credential_ref".to_string(),
             CredentialRefusal::Mismatch => "credential_target_mismatch".to_string(),
@@ -259,7 +260,7 @@ fn end_keychain_child(mut child: std::process::Child) {
 /// single-threaded; see keychain.rs). The secret goes over the child's stdin pipe. One deadline
 /// covers writing, reading and the child's exit; the child is killed and reaped on every
 /// failure, and its exit status must be success.
-fn keychain_child(
+pub(crate) fn keychain_child(
     current_exe: &str,
     op: &str,
     reference: &str,
@@ -363,7 +364,7 @@ fn keychain_child(
     serde_json::from_slice::<crate::keychain::OpReply>(&body).map_err(|_| unavailable())
 }
 
-fn keychain_ok(reply: crate::keychain::OpReply) -> Result<crate::keychain::OpReply, CredentialRefusal> {
+pub(crate) fn keychain_ok(reply: crate::keychain::OpReply) -> Result<crate::keychain::OpReply, CredentialRefusal> {
     match reply.error {
         Some(code) => Err(CredentialRefusal::Keychain(code)),
         None => Ok(reply),
@@ -874,6 +875,9 @@ fn handle(
             Ok(crate::pve::glue::open_terminal(pve, current_exe, id, &connect, target, cols, rows, keepalive_secs))
         }
         Request::PveTargets { id, connect } => Ok(crate::pve::glue::open_targets(pve, current_exe, id, &connect)),
+        Request::PveProvision { id, connect, dry_run, acl_path, save } => {
+            Ok(crate::pve::glue::open_provision(pve, current_exe, id, &connect, dry_run, acl_path, save))
+        }
         Request::OpenRdp { id, width, height, .. } if !rdp_geometry_ok(width, height) => Ok(rdp_error(
             id,
             "rdp_invalid_geometry",
@@ -1685,7 +1689,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                     if readable && outbox.len() + PVE_RESERVE <= OUTBOX_CAP {
                         let budget = OUTBOX_CAP.saturating_sub(outbox.len());
                         let frames = guard.pve.process_readable(*pid_, budget);
-                        crate::pve::glue::relay_frames(&mut guard.pve, &mut outbox, *pid_, frames);
+                        crate::pve::glue::relay_frames(&mut guard.pve, &mut outbox, &current_exe, *pid_, frames);
                     }
                 }
                 PollRole::Stdin | PollRole::Askpass => {}

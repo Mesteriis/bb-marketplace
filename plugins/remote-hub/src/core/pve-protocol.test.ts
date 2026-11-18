@@ -29,6 +29,17 @@ describe("PVE wire messages (mirror of helper/src/protocol.rs)", () => {
     expect(pveConnectSchema.safeParse({ ...connect, trust: { mode: "system" } }).success).toBe(true);
   });
 
+  it("accepts provisioning requests and answers, and refuses a save bound to the wrong kind", () => {
+    const bind = { type: "endpoint", protocol: "pve", host: "pve.test", port: 8006, user: "remotehub@pve", domain: null };
+    const admin = { host: "pve.test", port: 8006, authMode: "ticket", user: "root@pam", password: "x", trust: trustPin };
+    const req = { type: "pve.provision", id: 1, connect: admin, dryRun: false, aclPath: "/", save: { ref: "rh-cred:v1:local:abc", bind } };
+    expect(controlMessageSchema.safeParse(req).success).toBe(true);
+    expect(controlMessageSchema.safeParse({ ...req, dryRun: true, save: undefined }).success).toBe(true);
+    expect(controlMessageSchema.safeParse({ type: "pve.plan", id: 1, role: "create", user: "rotate_password", acl: "keep" }).success).toBe(true);
+    expect(controlMessageSchema.safeParse({ type: "pve.plan", id: 1, role: "delete", user: "create", acl: "keep" }).success).toBe(false);
+    expect(controlMessageSchema.safeParse({ type: "pve.provisioned", id: 1, role: "keep", user: "create", acl: "keep" }).success).toBe(true);
+  });
+
   it("parses the answers the helper sends", () => {
     const result = {
       type: "pve.targets_result",

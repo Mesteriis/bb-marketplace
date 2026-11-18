@@ -127,6 +127,8 @@ impl Helper {
                 | Response::KnownHostsLines { id, .. }
                 | Response::KnownHostsDone { id, .. }
                 | Response::PveTargetsResult { id, .. }
+                | Response::PvePlan { id, .. }
+                | Response::PveProvisioned { id, .. }
                 | Response::PveFailed { id, .. }
                 | Response::RdpScreenshot { id, .. } => Some(*id),
                 Response::SessionClosed { id, .. } | Response::Error { id, .. } => *id,

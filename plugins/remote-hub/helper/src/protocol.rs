@@ -27,6 +27,14 @@ pub struct AskpassSpec {
     pub test_facts: Option<crate::ssh_args::SshFacts>,
 }
 
+/// Where the helper stores the password a provision creates: the Keychain reference and what it is bound to.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PveSave {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub bind: crate::binding::Bind,
+}
+
 /// How a PVE request reaches and signs in to the API. The secret is in exactly one of `password` (use once) and
 /// `credentialRef` (a saved credential the helper resolves from the Keychain itself).
 #[derive(Debug, Serialize, Deserialize)]
@@ -162,6 +170,19 @@ pub enum Request {
     },
     #[serde(rename = "pve.targets")]
     PveTargets { id: u64, connect: PveConnect },
+    /// Onboarding mode 1. `connect` carries the admin's own login (password, used once). A dry run only reads and
+    /// answers `pve.plan`; an apply needs `save` and answers `pve.provisioned`.
+    #[serde(rename = "pve.provision")]
+    PveProvision {
+        id: u64,
+        connect: PveConnect,
+        #[serde(rename = "dryRun")]
+        dry_run: bool,
+        #[serde(rename = "aclPath")]
+        acl_path: String,
+        #[serde(default)]
+        save: Option<PveSave>,
+    },
     #[serde(rename = "session.open_rdp")]
     OpenRdp {
         id: u64,
@@ -468,6 +489,10 @@ pub enum Response {
         nodes: Vec<crate::pve::protocol::NodeInfo>,
         guests: Vec<crate::pve::protocol::GuestInfo>,
     },
+    #[serde(rename = "pve.plan")]
+    PvePlan { id: u64, role: String, user: String, acl: String },
+    #[serde(rename = "pve.provisioned")]
+    PveProvisioned { id: u64, role: String, user: String, acl: String },
     #[serde(rename = "pve.failed")]
     PveFailed {
         id: u64,

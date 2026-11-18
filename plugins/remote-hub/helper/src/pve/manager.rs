@@ -27,6 +27,8 @@ pub enum Kind {
     Terminal,
     /// A discovery request: the engine answers once and exits.
     Targets,
+    /// An onboarding request (plan or apply): the engine answers once and exits.
+    Provision,
 }
 
 #[derive(Debug)]
@@ -35,6 +37,8 @@ pub enum PveFrame {
     Data { seq: u32, bytes: Vec<u8> },
     Targets { version: Option<String>, nodes: Vec<NodeInfo>, guests: Vec<GuestInfo> },
     Error { code: String, message: String, fingerprint: Option<String> },
+    Plan { role: String, user: String, acl: String },
+    Provisioned { role: String, user: String, acl: String, password: Option<crate::secret::Secret> },
 }
 
 #[derive(Debug)]
@@ -70,6 +74,8 @@ struct Session {
     reported_closed: bool,
     job_request: Option<u64>,
     close_request: Option<u64>,
+    /// Where the password a provision creates goes: the Keychain reference and what it is bound to.
+    job_save: Option<(String, crate::binding::Bind)>,
 }
 
 pub struct PveManager {
@@ -232,6 +238,7 @@ impl PveManager {
                 reported_closed: false,
                 job_request,
                 close_request: None,
+                job_save: None,
             },
         );
         Ok((id, pid))
@@ -243,6 +250,19 @@ impl PveManager {
 
     pub fn open_targets(&mut self, current_exe: &str, open: &PveCommand, request_id: u64) -> Result<(u32, libc::pid_t), String> {
         self.spawn(current_exe, Kind::Targets, open, Some(request_id))
+    }
+
+    pub fn open_provision(&mut self, current_exe: &str, open: &PveCommand, request_id: u64, save: Option<(String, crate::binding::Bind)>) -> Result<(u32, libc::pid_t), String> {
+        let (id, pid) = self.spawn(current_exe, Kind::Provision, open, Some(request_id))?;
+        if let Some(s) = self.sessions.get_mut(&id) {
+            s.job_save = save;
+        }
+        Ok((id, pid))
+    }
+
+    /// The Keychain target of a provision job, taken once.
+    pub fn take_job_save(&mut self, id: u32) -> Option<(String, crate::binding::Bind)> {
+        self.sessions.get_mut(&id).and_then(|s| s.job_save.take())
     }
 
     pub fn enqueue_input(&mut self, id: u32, bytes: &[u8]) -> Result<(), EnqueueError> {
@@ -373,6 +393,20 @@ impl PveManager {
                                 break;
                             }
                             out.push(PveFrame::Targets { version, nodes, guests });
+                        }
+                        Ok(PveEvent::Plan { role, user, acl }) => {
+                            if s.kind != Kind::Provision || s.job_request.is_none() {
+                                Self::fail_protocol(s);
+                                break;
+                            }
+                            out.push(PveFrame::Plan { role, user, acl });
+                        }
+                        Ok(PveEvent::Provisioned { role, user, acl, password }) => {
+                            if s.kind != Kind::Provision || s.job_request.is_none() {
+                                Self::fail_protocol(s);
+                                break;
+                            }
+                            out.push(PveFrame::Provisioned { role, user, acl, password });
                         }
                         Ok(PveEvent::Error { code, message, fingerprint }) => {
                             out.push(PveFrame::Error { code, message, fingerprint });

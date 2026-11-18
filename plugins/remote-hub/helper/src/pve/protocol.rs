@@ -111,7 +111,22 @@ pub enum PveOp {
     /// Login, version, nodes and guests. One answer, then the engine exits.
     Targets,
     Terminal { target: ConsoleTarget, cols: u16, rows: u16 },
+    /// Onboarding mode 1: create (or reconcile) the restricted role, user and ACL entry. `dry_run` only reads and
+    /// reports what would be done.
+    Provision { dry_run: bool, acl_path: String },
 }
+
+/// The role, user and privileges Remote Hub creates. Fixed: the owner is shown exactly these.
+pub const PROVISION_ROLE: &str = "RemoteHubConsole";
+pub const PROVISION_USER: &str = "remotehub@pve";
+/// As `GET /access/roles` returns them: sorted, comma-joined.
+pub const PROVISION_PRIVS: &str = "Sys.Audit,Sys.Console,VM.Audit,VM.Console";
+
+/// What provisioning does (or did) with one object.
+pub const ACTION_CREATE: &str = "create";
+pub const ACTION_KEEP: &str = "keep";
+pub const ACTION_UPDATE: &str = "update";
+pub const ACTION_ROTATE: &str = "rotate_password";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -161,6 +176,11 @@ pub enum PveEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fingerprint: Option<String>,
     },
+    /// The answer to a dry-run provision: what would happen to each object (`create`, `keep`, `update`, `rotate_password`).
+    Plan { role: String, user: String, acl: String },
+    /// A provision that was applied. `password` is the new password of the created user, for the helper to put in
+    /// the Keychain; it is never forwarded to the client.
+    Provisioned { role: String, user: String, acl: String, password: Option<Secret> },
     Closed { reason: String },
 }
 

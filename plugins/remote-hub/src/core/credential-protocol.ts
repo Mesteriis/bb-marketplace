@@ -10,7 +10,7 @@ const refSchema = z.string().regex(/^rh-cred:v1:[a-z0-9][a-z0-9-]{0,31}:[0-9a-f-
 export const credentialBindSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("endpoint"),
-    protocol: z.enum(["ssh", "rdp"]),
+    protocol: z.enum(["ssh", "rdp", "pve"]),
     host: z.string(),
     port: z.number().int(),
     user: z.string().nullable(),
