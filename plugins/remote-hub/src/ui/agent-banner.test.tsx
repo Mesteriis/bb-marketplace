@@ -9,7 +9,7 @@ const GEN = "a".repeat(32);
 const row = (over: Partial<AgentSessionView>): AgentSessionView =>
   ({
     generation: GEN, sessionId: 1, kind: "ssh", connectionId: "c1", state: "running", openedByThread: null, openedByArchivedThread: false, holdUntil: null,
-    controlledBy: "human", leaseThreadId: null, leaseExpiresAt: null, questions: [], certificate: null, watching: false, ...over,
+    controlledBy: "human", leaseThreadId: null, leaseExpiresAt: null, questions: [], certificate: null, watching: false, watchingRequired: true, ...over,
   }) as AgentSessionView;
 
 describe("bannerRows: which sessions the owner must be told about", () => {
@@ -57,6 +57,16 @@ describe("AgentBanner", () => {
     expect(a.watch).toHaveBeenCalledWith(`${GEN}.1`);
     fireEvent.click(screen.getByRole("button", { name: "Take control" }));
     await waitFor(() => expect(a.takeover).toHaveBeenCalledWith({ generation: GEN, sessionId: 1 }));
+  });
+
+  it("with the owner's rule OFF an unwatched agent is announced as acting anyway, not as paused", async () => {
+    const a = api([row({ controlledBy: "agent", leaseThreadId: "thr_a", watching: false, watchingRequired: false }), row({ sessionId: 2, openedByThread: "thr_b", watching: false, watchingRequired: false })]);
+    render(<AgentBanner api={a} />);
+    await waitFor(() => expect(screen.getAllByRole("status")).toHaveLength(2));
+    const text = screen.getAllByRole("status").map((r) => r.textContent).join(" | ");
+    expect(text).toContain("Nobody is watching, and your setting lets it act anyway");
+    expect(text).not.toContain("paused");
+    expect(text).not.toContain("cannot act until you watch");
   });
 
   it("while someone watches it says so and the pause note is gone", async () => {

@@ -7,7 +7,7 @@ afterEach(cleanup);
 const P1 = "11111111-2222-4333-8444-555555555551";
 const row = (over: Partial<AgentAuditView>): AgentAuditView => ({ id: 1, at: "2026-11-18T12:00:00.000Z", threadId: "thr_a", projectId: "prj_1", tool: "remote_terminal_read", profileId: P1, sessionKey: "g.1", detailMode: "none", detail: null, outcome: "ok", count: 1, ...over });
 
-function api(over: Partial<AgentApi> & { grants?: AgentGrantView[]; rows?: AgentAuditView[]; sessionRows?: AgentSessionView[] } = {}): AgentApi {
+function api(over: Partial<AgentApi> & { grants?: AgentGrantView[]; rows?: AgentAuditView[]; sessionRows?: AgentSessionView[]; requireWatching?: boolean } = {}): AgentApi {
   let grants = over.grants ?? [];
   return {
     list: over.list ?? vi.fn(async () => grants),
@@ -27,10 +27,59 @@ function api(over: Partial<AgentApi> & { grants?: AgentGrantView[]; rows?: Agent
     answer: over.answer ?? vi.fn(async () => ({ answered: true as const })),
     decideCertificate: over.decideCertificate ?? vi.fn(async () => {}),
     disconnect: over.disconnect ?? vi.fn(async () => {}),
+    settings: over.settings ?? vi.fn(async () => ({ requireWatching: over.requireWatching ?? true })),
+    setRequireWatching: over.setRequireWatching ?? vi.fn(async (v: boolean) => ({ requireWatching: v, changed: true })),
   };
 }
 const names = new Map([[P1, "build box"]]);
 const mount = (a: AgentApi) => render(<AgentPanel api={a} profileNames={names} onClose={() => {}} />);
+
+describe("AgentPanel: the watching rule (stage 4c)", () => {
+  it("states the mode prominently at the top: ON says agents act only while you watch", async () => {
+    mount(api());
+    const box = await screen.findByTestId("watching-rule");
+    expect(box.textContent).toContain("Agents may act only while I am watching the session");
+    expect(box.textContent).toContain("ON");
+    expect(box.textContent).toContain("An agent's input and commands are refused");
+  });
+
+  it("OFF says honestly that an agent can act while nobody looks, and what still stays visible", async () => {
+    mount(api({ requireWatching: false }));
+    const box = await screen.findByTestId("watching-rule");
+    expect(box.textContent).toContain("OFF");
+    expect(box.textContent).toContain("An agent CAN act while nobody is looking");
+    expect(box.textContent).toContain("banner");
+  });
+
+  it("turning it OFF asks for confirmation and only then changes it; turning it ON needs none", async () => {
+    const a = api();
+    mount(a);
+    await screen.findByTestId("watching-rule");
+    fireEvent.click(screen.getByRole("button", { name: "Turn off" }));
+    expect(a.setRequireWatching).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog").textContent).toContain("can act while nobody is looking");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(a.setRequireWatching).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Turn off" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, let agents act unwatched" }));
+    await waitFor(() => expect(a.setRequireWatching).toHaveBeenCalledWith(false));
+  });
+
+  it("when it is OFF the button turns it back ON at once", async () => {
+    const a = api({ requireWatching: false });
+    mount(a);
+    await screen.findByTestId("watching-rule");
+    fireEvent.click(screen.getByRole("button", { name: "Turn on" }));
+    await waitFor(() => expect(a.setRequireWatching).toHaveBeenCalledWith(true));
+  });
+
+  it("a change of the rule is listed with the grant changes", async () => {
+    mount(api({ rows: [row({ id: 9, tool: "access.require_watching", threadId: "owner RPC", projectId: "", profileId: null, sessionKey: null, detail: "off" })] }));
+    const list = await screen.findByLabelText("Access changes");
+    expect(list.textContent).toContain("Watching rule");
+    expect(list.textContent).toContain("off");
+  });
+});
 
 describe("AgentPanel", () => {
   it("says the grant applies to agents in ANY thread, the order of the levels, and that connect starts at input", async () => {
@@ -133,7 +182,7 @@ describe("AgentPanel: sessions agents opened or drive (stage 4b-1)", () => {
   const GEN = "a".repeat(32);
   const base: AgentSessionView = {
     generation: GEN, sessionId: 4, kind: "ssh", connectionId: P1, state: "running", openedByThread: "thr_a", controlledBy: "human",
-    leaseThreadId: null, leaseExpiresAt: null, questions: [], certificate: null, openedByArchivedThread: false, holdUntil: null, watching: false,
+    leaseThreadId: null, leaseExpiresAt: null, questions: [], certificate: null, openedByArchivedThread: false, holdUntil: null, watching: false, watchingRequired: true,
   };
 
   it("says whether anybody is watching each session, and that an unwatched one cannot be acted on", async () => {
@@ -142,6 +191,12 @@ describe("AgentPanel: sessions agents opened or drive (stage 4b-1)", () => {
     const text = document.body.textContent ?? "";
     expect(text).toContain("nobody is watching: an agent cannot act on it");
     expect(text).toContain("you are watching");
+  });
+
+  it("with the rule OFF an unwatched session is described as one an agent can act on anyway", async () => {
+    mount(api({ sessionRows: [{ ...base, controlledBy: "agent" as const, leaseThreadId: "thr_a", watching: false, watchingRequired: false }] }));
+    await screen.findByText(/driven by an agent/);
+    expect(document.body.textContent).toContain("your setting lets an agent act anyway");
   });
 
   it("says there are none when no agent opened or holds a session", async () => {

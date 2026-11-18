@@ -44,6 +44,8 @@ export interface AgentSessionView {
   certificate: RdpCertPromptInfo | null;
   /** A person has this session's live view open and visible right now. */
   watching: boolean;
+  /** The owner's rule in force: an agent needs a watcher to act. */
+  watchingRequired: boolean;
 }
 
 export interface AgentApi {
@@ -60,6 +62,9 @@ export interface AgentApi {
   answer: (handle: SessionHandle, promptId: number, answer: string | null) => Promise<{ answered: true }>;
   decideCertificate: (handle: SessionHandle, fingerprint: string, accept: RdpDecision) => Promise<void>;
   disconnect: (handle: SessionHandle) => Promise<void>;
+  /** The owner's rule: agents act only while the session is watched (default on). */
+  settings: () => Promise<{ requireWatching: boolean }>;
+  setRequireWatching: (value: boolean) => Promise<{ requireWatching: boolean; changed: boolean }>;
 }
 
 export const LEVEL_TEXT: Record<AgentLevel, string> = {
@@ -94,12 +99,15 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
   const [problem, setProblem] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [requireWatching, setRequireWatching] = useState<boolean | null>(null);
+  const [confirmOff, setConfirmOff] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setGrants(await api.list());
       setRows(await api.audit(500));
       setAgentSessions(await api.sessions());
+      setRequireWatching((await api.settings()).requireWatching);
       setProblem(null);
     } catch (e) {
       setProblem(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
@@ -116,6 +124,7 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
 
   // Questions are dialogs over the page: only the first session that asks gets one, so two never overlap.
   const asking = (agentSessions ?? []).find((s) => s.questions.length > 0 || s.certificate !== null);
+  const changeRule = (value: boolean) => void api.setRequireWatching(value).then((r) => { setRequireWatching(r.requireWatching); setConfirmOff(false); return load(); }).catch(fail);
   const isChange = (r: AgentAuditView) => r.tool.startsWith("access.");
   const changes = (rows ?? []).filter(isChange).slice(0, 20);
   const activity = (rows ?? []).filter((r) => !isChange(r));
@@ -129,6 +138,34 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
           Close
         </button>
       </div>
+      {requireWatching !== null && (
+        <div data-testid="watching-rule" className={requireWatching ? "rh-rule rh-rule-on" : "rh-rule rh-rule-off"}>
+          <p>
+            <strong>Agents may act only while I am watching the session: {requireWatching ? "ON" : "OFF"}</strong>
+          </p>
+          <p className="rh-hint">
+            {requireWatching
+              ? "An agent's input and commands are refused unless you have that session's live view open and visible, and its control pauses when you stop looking."
+              : "An agent CAN act while nobody is looking. The banner, the live-view line in the agent's reply, the pointer and the live command list stay, and every call is still audited."}
+          </p>
+          {!confirmOff && (
+            <button type="button" onClick={() => (requireWatching ? setConfirmOff(true) : changeRule(true))}>
+              {requireWatching ? "Turn off" : "Turn on"}
+            </button>
+          )}
+          {confirmOff && (
+            <div role="alertdialog" aria-label="Turn off the watching rule" className="rh-rule-confirm">
+              <p>With this off an agent can act while nobody is looking at the session. You will still see it afterwards, in the banner and in this list.</p>
+              <button type="button" onClick={() => changeRule(false)}>
+                Yes, let agents act unwatched
+              </button>{" "}
+              <button type="button" onClick={() => setConfirmOff(false)}>
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       <p className="rh-hint">{ACCESS_NOTE}</p>
       {problem !== null && <p className="rh-error" role="alert">{problem}</p>}
       {message !== null && <p role="status" className="rh-hint">{message}</p>}
@@ -140,7 +177,7 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
         {changes.map((r) => (
           <li key={r.id} className="rh-profile">
             <div className="rh-profile-main">
-              <strong>{r.tool === "access.revoke_all" ? "Revoke all" : "Set access"}</strong> <span className="rh-badge">{outcomeText(r.outcome)}</span>
+              <strong>{r.tool === "access.revoke_all" ? "Revoke all" : r.tool === "access.require_watching" ? "Watching rule" : "Set access"}</strong> <span className="rh-badge">{outcomeText(r.outcome)}</span>
               <span className="rh-profile-endpoint">
                 {r.at} · by {r.threadId}
                 {r.profileId !== null ? " · " + name(r.profileId) : ""}
@@ -168,7 +205,7 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
                   {" · "}
                   {[
                     s.holdUntil !== null ? `kept by you until ${new Date(s.holdUntil).toLocaleTimeString()}` : null,
-                    s.watching ? "you are watching" : "nobody is watching: an agent cannot act on it",
+                    s.watching ? "you are watching" : s.watchingRequired ? "nobody is watching: an agent cannot act on it" : "nobody is watching (your setting lets an agent act anyway)",
                     s.controlledBy === "agent" ? `driven by an agent (thread ${s.leaseThreadId ?? "?"}${s.leaseExpiresAt !== null ? ", until " + new Date(s.leaseExpiresAt).toLocaleTimeString() : ""})` : "driven by you",
                   ]
                     .filter((part): part is string => part !== null)

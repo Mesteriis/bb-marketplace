@@ -710,3 +710,24 @@
 .rh-live .rh-rdp-wrap {
   min-height: 280px;
 }
+
+/* The owner's watching rule, stated at the top of Agent activity: loud when it is OFF. */
+.rh-rule {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+}
+
+.rh-rule-on {
+  border-color: var(--border, #30363d);
+}
+
+.rh-rule-off {
+  border-color: var(--accent, #d29922);
+  background: color-mix(in srgb, var(--accent, #d29922) 12%, transparent);
+}
+
+.rh-rule-confirm {
+  margin-top: 8px;
+}

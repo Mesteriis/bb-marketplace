@@ -19,6 +19,8 @@ function api(initial: Array<{ level: "observe" | "input" | "exec"; recordCommand
     answer: vi.fn(async () => ({ answered: true as const })),
     decideCertificate: vi.fn(async () => {}),
     disconnect: vi.fn(async () => {}),
+    settings: vi.fn(async () => ({ requireWatching: true })),
+    setRequireWatching: vi.fn(async (v: boolean) => ({ requireWatching: v, changed: true })),
   };
 }
 

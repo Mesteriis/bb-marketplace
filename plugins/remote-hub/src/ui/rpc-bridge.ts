@@ -72,6 +72,8 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
       sessions: () => send("agent_sessions", {}),
       takeover: (handle) => send("agent_control_takeover", handle),
       allowAgents: (handle) => send("agent_control_allow", handle),
+      settings: () => send("agent_settings_get", {}),
+      setRequireWatching: (value) => send("agent_settings_set", { requireWatching: value }),
       answer: (handle, promptId, answer) => send("agent_prompt_answer", { generation: handle.generation, sessionId: handle.sessionId, promptId, answer }),
       decideCertificate: async (handle, fingerprint, accept) => {
         await send("rdp_cert_decision", { generation: handle.generation, sessionId: handle.sessionId, fingerprint, accept });

@@ -50,7 +50,7 @@ export function AgentBanner({ api }: { api: AgentBannerApi }) {
           <div key={key} role="status" className="rh-agent-banner-row" data-testid="agent-banner-row">
             <span>
               {driving ? "An agent is driving" : "An agent opened"} a {s.kind === "rdp" ? "desktop" : "terminal"} session.{" "}
-              {driving ? (s.watching ? "You are watching." : "It is paused: nobody is watching it.") : s.watching ? "You are watching." : "It cannot act until you watch."}
+              {s.watching ? "You are watching." : !s.watchingRequired ? "Nobody is watching, and your setting lets it act anyway." : driving ? "It is paused: nobody is watching it." : "It cannot act until you watch."}
             </span>
             <button type="button" onClick={() => api.watch(key)}>
               Watch

@@ -316,6 +316,16 @@ describe.skipIf(!dockerOk)("agent control over SSH: connect, owner decides the h
     expect((await type("printf 'M%sV' 4")).isError).toBeUndefined();
     expect(await readUntil("M4V")).toContain("M4V");
     again.h.onClose();
+    // The owner turns the rule OFF: the very next call is accepted with nobody watching, and the lease was never suspended.
+    expect(c.text(await type("printf 'Q%sV' 5"))).toContain("owner_not_watching");
+    expect(await c.handlers.agent_settings_set({ requireWatching: false })).toEqual({ requireWatching: false, changed: true });
+    expect(key(await c.call("remote_control_acquire", { sessionId })).watchingRequired).toBe(false);
+    expect((await type("printf 'U%sV' 6")).isError).toBeUndefined();
+    expect(await readUntil("U6V")).toContain("U6V");
+    // Back ON: refused again from the next call.
+    expect(await c.handlers.agent_settings_set({ requireWatching: true })).toEqual({ requireWatching: true, changed: true });
+    expect(c.text(await type("printf 'W%sV' 7"))).toContain("owner_not_watching");
+    expect(c.rows.filter((r) => r.tool === "access.require_watching").map((r) => [r.threadId, r.detail])).toEqual([["owner RPC", "off"], ["owner RPC", "on"]]);
     expect((await c.call("remote_disconnect", { sessionId })).isError).toBeUndefined();
   }, 180_000);
 

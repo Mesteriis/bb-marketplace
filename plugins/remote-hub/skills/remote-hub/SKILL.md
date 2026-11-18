@@ -10,7 +10,7 @@ Remote Hub holds the owner's saved SSH and RDP connections. The owner decides, p
 
 ## The rule: the owner can always see what you do
 
-Nothing you type or run on a session is accepted unless a person has that session's **live view open and visible**.
+Unless the owner switched the rule off (results say `watchingRequired: false`), nothing you type or run on a session is accepted unless a person has that session's **live view open and visible**. Put the line in your reply either way: the owner sees what you do.
 Every result of `remote_connect` and `remote_control_acquire` carries a `liveView` line:
 
     ::remote-session{id="<session id>"}

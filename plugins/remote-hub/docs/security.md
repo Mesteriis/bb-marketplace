@@ -42,7 +42,7 @@
 - **The watching gate.** Agent input (terminal and desktop) is refused with `owner_not_watching` unless at least one
   person has that session's live view open and **visible**. A view reports in over its stream socket every 2 s with its
   page visibility; a hidden tab counts for nothing and a report older than 6 s is stale. Reads (terminal text,
-  screenshots) need no watcher but are listed in Agent activity. The gate has no per-connection switch.
+  screenshots) need no watcher but are listed in Agent activity. The gate has no per-connection switch; there is ONE plugin-wide owner setting, "Agents may act only while I am watching the session" (default ON, stored in SQLite, changed only by the owner RPC from the Agent activity screen, every change audited and listed under Access changes). OFF means an agent can act while nobody looks: input and commands are not refused and leases are not suspended, but the banner, the live-view line, the pointer and the live command list stay. Tool results carry `watchingRequired`.
 - **Suspension.** When the last watcher goes (closed, hidden, stalled) an agent's lease is suspended at once: its owner tag
   changes in the helper, so what it had queued is dropped and what it held down is released (the same barrier as a
   takeover), its input is refused, and it resumes when a watcher returns. The lease still expires as usual.
