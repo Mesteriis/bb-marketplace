@@ -108,6 +108,8 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
   const fail = (e: unknown) => setProblem(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
   const act = (run: () => Promise<unknown>) => void run().then(load).catch(fail);
 
+  // Questions are dialogs over the page: only the first session that asks gets one, so two never overlap.
+  const asking = (agentSessions ?? []).find((s) => s.questions.length > 0 || s.certificate !== null);
   const isChange = (r: AgentAuditView) => r.tool.startsWith("access.");
   const changes = (rows ?? []).filter(isChange).slice(0, 20);
   const activity = (rows ?? []).filter((r) => !isChange(r));
@@ -173,10 +175,11 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
                   </button>
                 )}
               </div>
-              {s.questions[0] !== undefined && (
+              {(s.questions.length > 0 || s.certificate !== null) && s !== asking && <p className="rh-hint">A question is waiting for you on this session; it opens after the other one is answered.</p>}
+              {s === asking && s.questions[0] !== undefined && (
                 <SshPromptDialog prompt={{ promptId: s.questions[0].promptId, text: s.questions[0].text, kind: s.questions[0].kind === "host_key" ? "confirm" : "secret" }} onAnswer={(promptId, answer) => act(() => api.answer(handle, promptId, answer))} />
               )}
-              {s.certificate !== null && <RdpCertDialog prompt={s.certificate} onDecide={(fingerprint, accept) => act(() => api.decideCertificate(handle, fingerprint, accept))} />}
+              {s === asking && s.questions[0] === undefined && s.certificate !== null && <RdpCertDialog prompt={s.certificate} onDecide={(fingerprint, accept) => act(() => api.decideCertificate(handle, fingerprint, accept))} />}
             </li>
           );
         })}

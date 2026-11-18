@@ -191,4 +191,12 @@ describe("AgentPanel: sessions agents opened or drive (stage 4b-1)", () => {
     fireEvent.click(screen.getByRole("button", { name: /Reject/ }));
     await waitFor(() => expect(a.decideCertificate).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }, fp, "reject"));
   });
+
+  it("two sessions that ask at once open one dialog; the other says it is waiting", async () => {
+    const q = (promptId: number) => [{ kind: "host_key" as const, promptId, text: "Are you sure (yes/no)?" }];
+    mount(api({ sessionRows: [{ ...base, sessionId: 4, questions: q(1) }, { ...base, sessionId: 5, questions: q(2) }] }));
+    await screen.findByRole("alertdialog");
+    expect(screen.getAllByRole("alertdialog")).toHaveLength(1);
+    expect(screen.getByText(/opens after the other one is answered/)).toBeTruthy();
+  });
 });

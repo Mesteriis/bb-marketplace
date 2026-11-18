@@ -378,6 +378,22 @@
   color: var(--muted-foreground, #8b949e);
 }
 
+.rh-badge-agent {
+  border-color: var(--accent, #d29922);
+  color: var(--accent, #d29922);
+}
+
+.rh-control-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.rh-control-notice p {
+  margin: 0;
+}
+
 .rh-profile-actions {
   display: flex;
   gap: 4px;
