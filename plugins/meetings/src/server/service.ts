@@ -3,7 +3,8 @@
 // snapshots to statuses, ingests segments, notifies threads and runs the
 // scheduler/reconcile loop. RPC, CLI, tools and HTTP are thin layers over it.
 import { buildNamingPrompt } from "./speaker-naming.js";
-import { rosterKeys } from "./roster.js";
+import { applyTextFixes, buildTextFixPrompt, type TextFix } from "./text-fix.js";
+import { calendarHints, rosterKeys, titleIsSkipped } from "./roster.js";
 import type { BbPluginApi, ExperimentalHostClient } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
 import { MAX_SEGMENTS_PAGE, type EnvReport, type HostContract, type RuntimeSnapshot } from "../shared/contract.js";
@@ -147,6 +148,7 @@ export class MeetingsService {
   private readonly voiceTasks = new Set<Promise<void>>();
   /** Voice changes reach the host in the order the owner made them. */
   private voiceQueue: Promise<void> = Promise.resolve();
+  private lastAudioSweep: number | null = null;
   /** Settles once an in-flight start has recorded its outcome (a stop waits for it). */
   private readonly startSettled = new Map<string, Promise<void>>();
   /** Joins whose caller is waiting and reports a failure itself (no thread message). */
@@ -585,6 +587,7 @@ export class MeetingsService {
       // Absent when the row knows no invitees: the roster already in config.json stays (a row
       // read before the calendar answered must not erase it).
       ...(roster.length > 0 ? { roster } : {}),
+      ...(settings.localFinalModel === "large-v3" ? { finalModel: "large-v3" as const } : {}),
     };
   }
 
@@ -1201,7 +1204,7 @@ export class MeetingsService {
       );
       this.repo.updateMeeting(id, { hostId, startedAt: now });
       await this.withLock(id, () => this.applySnapshot(this.requireMeeting(id), snapshot, signal));
-      if (settings.localCalendarTitles) this.nameFromCalendar(id, appKey, hostId, now);
+      if (settings.localCalendarTitles) this.nameFromCalendar(id, appKey, hostId, now, settings.localSkipTitles);
     } catch (error) {
       this.bb.log.warn(`Could not start local recording for ${appKey}: ${errorMessage(error)}`);
       this.repo.updateMeeting(id, { status: "failed", statusDetail: "Не удалось начать локальную запись", errorCode: "unknown", errorMessage: errorMessage(error), endedAt: this.now() });
@@ -1218,7 +1221,7 @@ export class MeetingsService {
    * background: the first lookup can wait on the owner answering macOS's
    * calendar prompt, and the recording must not wait for a title.
    */
-  private nameFromCalendar(id: string, appKey: string, hostId: string, at: number): void {
+  private nameFromCalendar(id: string, appKey: string, hostId: string, at: number, skipTitles: string): void {
     const defaultTitle = this.requireMeeting(id).title;
     const task = this.call("local.calendarEvent", { appKey, at }, { hostId, timeoutMs: 40_000 })
       .then((found) => {
@@ -1228,13 +1231,19 @@ export class MeetingsService {
         }
         const row = this.repo.getMeeting(id);
         if (found.title === null || row === null) return;
+        if (titleIsSkipped(found.title, skipTitles)) {
+          // The owner's rule: this meeting is not to be recorded. What was captured so far goes too.
+          this.bb.log.info(`Local recording ${id} dropped: its calendar title matches a skip rule`);
+          return this.delete(id).then(() => undefined);
+        }
         // The invitees are candidates for speaker names (namingPrompt), whoever titled the meeting.
         const options = { ...row.options, calendarAttendees: found.attendees.slice(0, 50) };
         // Not over a title the owner has typed meanwhile.
         this.repo.updateMeeting(id, row.title === defaultTitle ? { title: found.title.slice(0, 200), options } : { options });
         this.publishMeeting(id);
         // The transcriber reads the roster in its final pass, as a hint for known voices.
-        return this.call("local.setRoster", { meetingId: id, roster: rosterKeys(options.calendarAttendees) }, { hostId, timeoutMs: 15_000 }).then(() => undefined);
+        const hints = calendarHints(found.title, options.calendarAttendees);
+        return this.call("local.setRoster", { meetingId: id, roster: rosterKeys(options.calendarAttendees), hints }, { hostId, timeoutMs: 15_000 }).then(() => undefined);
       })
       .catch((error: unknown) => this.bb.log.warn(`No calendar title for ${id}: ${errorMessage(error)}`))
       .finally(() => this.titleLookups.delete(task));
@@ -1266,6 +1275,7 @@ export class MeetingsService {
       await this.envReport(true).catch(() => undefined);
     }
     this.calendar.syncIfDue(signal);
+    await this.sweepAudio().catch((error: unknown) => this.bb.log.warn(`Audio retention sweep failed: ${errorMessage(error)}`));
     let delay = busy ? ACTIVE_POLL_MS : IDLE_POLL_MS;
     const now = this.now();
     for (const row of this.repo.meetingsWithStatus(["scheduled"])) {
@@ -1273,6 +1283,26 @@ export class MeetingsService {
       if (row.scheduledAt !== null && row.scheduledAt > now) delay = Math.min(delay, Math.max(500, row.scheduledAt - now));
     }
     return delay;
+  }
+
+  /**
+   * Audio retention: recordings that ended more than audioRetentionDays ago lose
+   * their audio; the transcript stays. Looked at once an hour.
+   */
+  private async sweepAudio(): Promise<void> {
+    const now = this.now();
+    if (this.lastAudioSweep !== null && now - this.lastAudioSweep < 3_600_000) return;
+    this.lastAudioSweep = now;
+    const days = (await this.settings.get()).audioRetentionDays;
+    if (!(days > 0)) return;
+    const cutoff = now - days * 86_400_000;
+    for (const row of this.repo.listMeetings({ statuses: ["done", "failed"], before: cutoff, limit: 500 })) {
+      if (!row.hasAudio || row.endedAt === null || row.endedAt > cutoff) continue;
+      await this.call("meeting.dropAudio", { meetingId: row.id }, { hostId: row.hostId, timeoutMs: 30_000 });
+      this.repo.updateMeeting(row.id, { hasAudio: false });
+      this.publishMeeting(row.id);
+      this.bb.log.info(`Audio of ${row.id} removed after ${days} days`);
+    }
   }
 
   /** The background `scheduler` service body: returns promptly after abort. */
@@ -1544,6 +1574,57 @@ export class MeetingsService {
     });
   }
 
+  /** The request for an agent that fixes recognition errors in this meeting's text. */
+  async textFixPrompt(id: string): Promise<{ prompt: string; corrected: number }> {
+    const row = this.requireMeeting(id);
+    if (!row.transcriptFinal) {
+      throw new MeetingsError("still_recording", "Дождитесь окончательного транскрипта встречи", "Wait for the final transcript before fixing its text");
+    }
+    const settings = await this.settings.get();
+    return {
+      prompt: buildTextFixPrompt({ meetingId: row.id, title: row.title, glossary: settings.localGlossary, attendees: row.options.calendarAttendees ?? [] }),
+      corrected: this.repo.correctedSegments(id),
+    };
+  }
+
+  /** Apply "heard as X, should be Y" pairs to the whole meeting; returns how many places each changed. */
+  fixText(id: string, fixes: readonly TextFix[]): { counts: number[]; segments: number } {
+    const row = this.requireMeeting(id);
+    if (!row.transcriptFinal) {
+      throw new MeetingsError("still_recording", "Дождитесь окончательного транскрипта встречи", "Wait for the final transcript before fixing its text");
+    }
+    const counts = fixes.map(() => 0);
+    const texts = new Map<number, string>();
+    for (const segment of this.repo.allSegments(id)) {
+      const fixed = applyTextFixes(segment.text, fixes);
+      fixed.counts.forEach((count, index) => (counts[index] = counts[index]! + count));
+      if (fixed.text !== segment.text) texts.set(segment.id, fixed.text);
+    }
+    const segments = this.repo.correctSegments(id, texts);
+    if (segments > 0) this.bb.realtime.publish(CHANNEL_MEETING_SEGMENTS, { id, lastId: -1 });
+    return { counts, segments };
+  }
+
+  /** Put the recognised text back; returns how many segments had been corrected. */
+  revertTextFixes(id: string): number {
+    this.requireMeeting(id);
+    const reverted = this.repo.revertCorrections(id);
+    if (reverted > 0) this.bb.realtime.publish(CHANNEL_MEETING_SEGMENTS, { id, lastId: -1 });
+    return reverted;
+  }
+
+  /** Known voices that this meeting's numbered speakers resemble, for the owner to confirm. */
+  async voiceSuggestions(id: string): Promise<{ speakerKey: string; name: string; similarity: number }[]> {
+    const row = this.requireMeeting(id);
+    if (!row.transcriptFinal || !(await this.settings.get()).voiceRecognition) return [];
+    const numbered = row.speakers.filter((speaker) => speaker.key.startsWith("spk:") && !row.speakerNames[speaker.key]);
+    if (numbered.length === 0) return [];
+    const taken = row.speakers.filter((speaker) => !numbered.includes(speaker)).map((speaker) => row.speakerNames[speaker.key] || speaker.label);
+    const hostId = row.hostId ?? (await this.primaryHostId());
+    const { suggestions } = await this.call("voices.suggest", { meetingId: id, speakerKeys: numbered.map((speaker) => speaker.key), taken }, { hostId, timeoutMs: 30_000 });
+    return suggestions;
+  }
+
   /** Test hook: resolves when the voices being remembered have been. */
   async voicesSettled(): Promise<void> {
     await Promise.all([...this.voiceTasks]);
@@ -1695,7 +1776,7 @@ export class MeetingsService {
     const settings = await this.settings.get();
     const report = await this.call(
       "env.setup",
-      { force, chromePath: settings.chromePath.trim(), gigaamUrl: settings.gigaamUrl.trim() },
+      { force, chromePath: settings.chromePath.trim(), gigaamUrl: settings.gigaamUrl.trim(), finalModel: settings.localFinalModel === "large-v3" },
       { timeoutMs: 30_000 },
     );
     this.envCache = { at: this.now(), report };

@@ -124,7 +124,15 @@ export const hostContract = defineRpcContract({
   "env.setup": {
     experimental_description:
       "Start installing missing runtime pieces in the background (system packages only with passwordless sudo); returns at once.",
-    input: z.object({ force: z.boolean(), chromePath: z.string(), gigaamUrl: z.string() }).strict(),
+    input: z
+      .object({
+        force: z.boolean(),
+        chromePath: z.string(),
+        gigaamUrl: z.string(),
+        /** Also download the exact Whisper model for final transcripts (macOS). */
+        finalModel: z.boolean(),
+      })
+      .strict(),
     output: envReportSchema,
   },
   "gigaam.discover": {
@@ -291,6 +299,11 @@ export const hostContract = defineRpcContract({
     input: meetingRef,
     output: z.object({ deleted: z.boolean() }).strict(),
   },
+  "meeting.dropAudio": {
+    experimental_description: "Remove a finished meeting's audio files, keeping its transcript (audio retention).",
+    input: meetingRef,
+    output: z.object({ dropped: z.number() }).strict(),
+  },
   "runtime.list": {
     experimental_description: "Meeting ids that have a directory on this host.",
     input: z.object({}).strict(),
@@ -348,6 +361,19 @@ export const hostContract = defineRpcContract({
     input: z.object({ meetingId: meetingIdSchema, speakerKey: z.string().min(1).max(300) }).strict(),
     output: z.object({ retracted: z.boolean() }).strict(),
   },
+  "voices.suggest": {
+    experimental_description: "Known voices that unnamed speakers of a meeting resemble, for the owner to confirm.",
+    input: z
+      .object({
+        meetingId: meetingIdSchema,
+        speakerKeys: z.array(z.string().min(1).max(300)).max(100),
+        taken: z.array(z.string().max(100)).max(200),
+      })
+      .strict(),
+    output: z
+      .object({ suggestions: z.array(z.object({ speakerKey: z.string(), name: z.string(), similarity: z.number() }).strict()) })
+      .strict(),
+  },
   "voices.list": {
     experimental_description: "Known voices, without their embeddings.",
     input: z.object({}).strict(),
@@ -362,7 +388,14 @@ export const hostContract = defineRpcContract({
   },
   "local.setRoster": {
     experimental_description: "Record a meeting's calendar roster in its config.json for the transcriber's final pass.",
-    input: z.object({ meetingId: meetingIdSchema, roster: z.array(z.string().max(200)).max(100) }).strict(),
+    input: z
+      .object({
+        meetingId: meetingIdSchema,
+        roster: z.array(z.string().max(200)).max(100),
+        /** The meeting's title and invitee names for the ASR prompt. */
+        hints: z.array(z.string().max(200)).max(40),
+      })
+      .strict(),
     output: z.object({ ok: z.boolean() }).strict(),
   },
   "local.calendarEvent": {

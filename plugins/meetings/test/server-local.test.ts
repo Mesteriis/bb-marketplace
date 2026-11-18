@@ -18,6 +18,9 @@ function macSettings() {
     localEngine: "whisper",
     localLanguage: "ru",
     localGlossary: "",
+    localFinalModel: "turbo",
+    localSkipTitles: "",
+    audioRetentionDays: 0,
     localApps: "",
   };
 }
@@ -241,7 +244,7 @@ describe("local recording auto-record", () => {
     await loaded.service.pollLocalDetection();
     await loaded.service.localTitlesSettled();
     const id = loaded.service.list("all", 50, null).meetings[0]!.id;
-    expect(loaded.fake.rosterCalls).toEqual([{ meetingId: id, roster: ["a.smirnova@x.io", "b.orlov@x.io"] }]);
+    expect(loaded.fake.rosterCalls).toEqual([{ meetingId: id, roster: ["a.smirnova@x.io", "b.orlov@x.io"], hints: ["Дейли", "Анна Смирнова"] }]);
     const row = (loaded.service as unknown as { repo: { updateMeeting(id: string, patch: object): { options: object } } }).repo.updateMeeting(id, {
       speakers: [{ key: "spk:1", label: "Спикер 1", source: "acoustic", talkSec: 40, segments: 9 }],
     });
@@ -277,6 +280,92 @@ describe("local recording auto-record", () => {
     expect(loaded.fake.voiceLearnCalls).toEqual([]);
     expect(loaded.fake.voiceRetractCalls).toEqual([{ meetingId: id, speakerKey: "spk:1" }]);
     expect(loaded.fake.voiceOrder).toEqual(["retract", "forget"]);
+  });
+
+  it("does not keep a recording whose calendar title matches a skip rule", async () => {
+    const loaded = await load({ settings: { ...macSettings(), localSkipTitles: "личное\n1:1" }, now: () => T0 });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.calendarLookup = { access: "granted", title: "Анна / Пётр 1:1", attendees: [] };
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.pollLocalDetection();
+    await loaded.service.localTitlesSettled();
+    expect(loaded.service.list("all", 50, null).meetings).toEqual([]);
+    expect(loaded.fake.rosterCalls).toEqual([]);
+  });
+
+  it("asks for the exact model in the final pass only when the owner chose it", async () => {
+    const loaded = await load({ settings: macSettings(), now: () => T0 });
+    const row = { source: "local", options: {} };
+    const settings = { ...macSettings(), diarization: "ui+acoustic", speakerLagMs: 700, keepRawAudio: false };
+    expect(loaded.service.transcriberConfigFor(row as never, settings as never, null)).not.toHaveProperty("finalModel");
+    expect(loaded.service.transcriberConfigFor(row as never, { ...settings, localFinalModel: "large-v3" } as never, null)).toMatchObject({ finalModel: "large-v3" });
+  });
+
+  it("asks for voice suggestions only for numbered speakers, telling which names are taken", async () => {
+    const loaded = await load({ settings: macSettings(), now: () => T0 });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.pollLocalDetection();
+    await loaded.service.localTitlesSettled();
+    const id = loaded.service.list("all", 50, null).meetings[0]!.id;
+    const repo = (loaded.service as unknown as { repo: { updateMeeting(id: string, patch: object): unknown } }).repo;
+    repo.updateMeeting(id, {
+      transcriptFinal: true,
+      speakerNames: { "spk:2": "Борис" },
+      speakers: [
+        { key: "ui:Я", label: "Я", source: "ui", talkSec: 50, segments: 9 },
+        { key: "voice:Анна", label: "Анна", source: "voice", talkSec: 40, segments: 9 },
+        { key: "spk:1", label: "Спикер 1", source: "acoustic", talkSec: 40, segments: 9 },
+        { key: "spk:2", label: "Спикер 2", source: "acoustic", talkSec: 40, segments: 9 },
+      ],
+    });
+    loaded.fake.suggestions = [{ speakerKey: "spk:1", name: "Марина", similarity: 0.58 }];
+    expect(await loaded.service.voiceSuggestions(id)).toEqual([{ speakerKey: "spk:1", name: "Марина", similarity: 0.58 }]);
+    expect(loaded.fake.suggestCalls).toEqual([{ meetingId: id, speakerKeys: ["spk:1"], taken: ["Я", "Анна", "Борис"] }]);
+  });
+
+  it("deletes a recording's audio after the retention period and keeps the transcript", async () => {
+    let clock = T0;
+    const loaded = await load({ settings: { ...macSettings(), audioRetentionDays: 30 }, now: () => clock });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.pollLocalDetection();
+    await loaded.service.localTitlesSettled();
+    const id = loaded.service.list("all", 50, null).meetings[0]!.id;
+    const internals = loaded.service as unknown as { repo: { updateMeeting(id: string, patch: object): unknown; getMeeting(id: string): { hasAudio: boolean; transcriptFinal: boolean } }; sweepAudio(): Promise<void> };
+    internals.repo.updateMeeting(id, { status: "done", endedAt: T0 + 60_000, hasAudio: true, transcriptFinal: true });
+    clock = T0 + 29 * 86_400_000;
+    await internals.sweepAudio();
+    expect(loaded.fake.dropAudioCalls).toEqual([]);
+    clock = T0 + 31 * 86_400_000;
+    await internals.sweepAudio();
+    expect(loaded.fake.dropAudioCalls).toEqual([id]);
+    expect(internals.repo.getMeeting(id)).toMatchObject({ hasAudio: false, transcriptFinal: true });
+  });
+
+  it("fixes recognition errors across a meeting, keeps the search in step and puts the text back", async () => {
+    const loaded = await load({ settings: macSettings(), now: () => T0 });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.pollLocalDetection();
+    await loaded.service.localTitlesSettled();
+    const id = loaded.service.list("all", 50, null).meetings[0]!.id;
+    const repo = (loaded.service as unknown as {
+      repo: { updateMeeting(id: string, patch: object): unknown; upsertSegments(id: string, segments: object[], final: boolean): void; allSegments(id: string): { text: string }[] };
+    }).repo;
+    const segment = (n: number, text: string) => ({ id: n, start: n, end: n + 1, speakerKey: "spk:1", speaker: "Спикер 1", source: "acoustic", text });
+    repo.upsertSegments(id, [segment(0, "Поднимаем кубернетис"), segment(1, "Всё готово"), segment(2, "Кубернетис упал")], true);
+    expect(() => loaded.service.fixText(id, [{ from: "кубернетис", to: "Kubernetes" }])).toThrow();
+    repo.updateMeeting(id, { transcriptFinal: true });
+    expect(loaded.service.fixText(id, [{ from: "кубернетис", to: "Kubernetes" }, { from: "нет такого", to: "x" }])).toEqual({ counts: [2, 0], segments: 2 });
+    expect(repo.allSegments(id).map((s) => s.text)).toEqual(["Поднимаем Kubernetes", "Всё готово", "Kubernetes упал"]);
+    expect(loaded.service.search("Kubernetes", 10).map((hit) => hit.segmentId)).toEqual([0, 2]);
+    expect((await loaded.service.textFixPrompt(id)).corrected).toBe(2);
+    // A second fix on an already corrected segment still remembers the recognised text.
+    loaded.service.fixText(id, [{ from: "Kubernetes упал", to: "Kubernetes лежит" }]);
+    expect(loaded.service.revertTextFixes(id)).toBe(2);
+    expect(repo.allSegments(id).map((s) => s.text)).toEqual(["Поднимаем кубернетис", "Всё готово", "Кубернетис упал"]);
+    expect(loaded.service.search("Kubernetes", 10)).toEqual([]);
   });
 
   it("leaves the stored roster alone when the meeting has no calendar invitees", async () => {

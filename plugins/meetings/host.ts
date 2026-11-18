@@ -32,8 +32,8 @@ import {
   stopMeeting,
 } from "./src/host/meetings.js";
 import { lookupCalendarEvent } from "./src/host/local-calendar.js";
-import { forgetVoice, learnVoice, listVoices, retractVoice } from "./src/host/voices.js";
-import { setTranscriberRoster } from "./src/host/meetings.js";
+import { forgetVoice, learnVoice, listVoices, retractVoice, suggestVoices } from "./src/host/voices.js";
+import { dropAudio, setTranscriberRoster } from "./src/host/meetings.js";
 import { localPoll, startLocalMeeting } from "./src/host/local-recording.js";
 import { hostPaths, type HostPaths } from "./src/host/paths.js";
 import { cancelSetups, startSetup } from "./src/host/setup.js";
@@ -67,10 +67,10 @@ const handlers: ExperimentalHostRpcHandlers<typeof hostContract> = {
   "env.check": async ({ chromePath, gigaamUrl }, context) =>
     checkEnv(pathsFor(context.experimental_paths.dataDir), { chromePath, gigaamUrl }),
 
-  "env.setup": async ({ force, chromePath, gigaamUrl }, context) => {
+  "env.setup": async ({ force, chromePath, gigaamUrl, finalModel }, context) => {
     const paths = pathsFor(context.experimental_paths.dataDir);
     // The lease keeps the worker alive for the whole background install.
-    await startSetup(paths, { force, chromePath }, () => context.experimental_retainWorker());
+    await startSetup(paths, { force, chromePath, finalModel }, () => context.experimental_retainWorker());
     return checkEnv(paths, { chromePath, gigaamUrl });
   },
 
@@ -137,6 +137,10 @@ const handlers: ExperimentalHostRpcHandlers<typeof hostContract> = {
     deleted: await deleteMeeting(pathsFor(context.experimental_paths.dataDir), meetingId),
   }),
 
+  "meeting.dropAudio": async ({ meetingId }, context) => ({
+    dropped: await dropAudio(pathsFor(context.experimental_paths.dataDir), meetingId),
+  }),
+
   "runtime.list": async (_input, context) => ({
     meetingIds: await listMeetingIds(pathsFor(context.experimental_paths.dataDir)),
   }),
@@ -146,10 +150,11 @@ const handlers: ExperimentalHostRpcHandlers<typeof hostContract> = {
 
   "voices.learn": async (input, context) => learnVoice(pathsFor(context.experimental_paths.dataDir), input, Date.now()),
   "voices.retract": async (input, context) => ({ retracted: await retractVoice(pathsFor(context.experimental_paths.dataDir), input, Date.now()) }),
+  "voices.suggest": async (input, context) => ({ suggestions: await suggestVoices(pathsFor(context.experimental_paths.dataDir), input) }),
   "voices.list": async (_input, context) => ({ voices: await listVoices(pathsFor(context.experimental_paths.dataDir)) }),
   "voices.forget": async ({ name }, context) => ({ forgotten: await forgetVoice(pathsFor(context.experimental_paths.dataDir), name) }),
-  "local.setRoster": async ({ meetingId, roster }, context) => ({
-    ok: await setTranscriberRoster(pathsFor(context.experimental_paths.dataDir), meetingId, roster),
+  "local.setRoster": async ({ meetingId, roster, hints }, context) => ({
+    ok: await setTranscriberRoster(pathsFor(context.experimental_paths.dataDir), meetingId, roster, hints),
   }),
   "local.calendarEvent": async ({ appKey, at }, context) => lookupCalendarEvent(pathsFor(context.experimental_paths.dataDir), appKey, at),
   "local.start": async (input, context) => startLocalMeeting(pathsFor(context.experimental_paths.dataDir), input),

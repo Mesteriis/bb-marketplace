@@ -62,6 +62,22 @@ export const STOP_ESCALATION_MS = 45_000;
  * only a bot that is hung or ignores the request gets killed.
  */
 export const AUTO_STOP_ESCALATION_MS = 2 * STOP_ESCALATION_MS;
+/**
+ * A local recording's helper compresses three streams after the stop, which on
+ * a busy Mac took more than 45 s for a 26-minute call: the kill left a
+ * truncated audio.ogg and no stream copies. It gets much longer.
+ */
+export const LOCAL_STOP_ESCALATION_MS = 15 * 60_000;
+
+/** How long a recorder of this platform may take to finish after a stop request before it is killed. */
+export function stopEscalationMs(platform: unknown): number {
+  return platform === "local" ? LOCAL_STOP_ESCALATION_MS : STOP_ESCALATION_MS;
+}
+
+async function meetingStopEscalationMs(dir: string): Promise<number> {
+  const config = (await readJson(file(dir, F.config))) as { platform?: unknown } | null;
+  return stopEscalationMs(config?.platform);
+}
 /** SIGTERM before SIGKILL when tearing down a meeting's processes (ffmpeg finalizes, Chrome flushes the profile). */
 const TEARDOWN_GRACE_MS = 1_500;
 const IMPORT_TIMEOUT_MS = 30 * 60_000;
@@ -139,7 +155,7 @@ export async function snapshot(paths: HostPaths, meetingId: string): Promise<Run
 
   let state = await readState(dir);
   let botPid = await liveBotPid(dir, state, pids, scriptName);
-  if (botPid !== null && (await stopRequestAge(dir)) > AUTO_STOP_ESCALATION_MS) {
+  if (botPid !== null && (await stopRequestAge(dir)) > 2 * (await meetingStopEscalationMs(dir))) {
     // Asked to stop long ago and still running: hung (its own timeouts never fired).
     await forceStopBot(paths, meetingId, dir, pids, botPid);
     botPid = await liveBotPid(dir, state, pids, scriptName);
@@ -497,8 +513,26 @@ async function stopTranscriber(dir: string, pid: number): Promise<void> {
 }
 
 /** Record the meeting's calendar roster for the transcriber; false when the meeting has no config yet. */
-export async function setTranscriberRoster(paths: HostPaths, meetingId: string, roster: readonly string[]): Promise<boolean> {
-  return mergeConfigTranscriber(meetingDir(paths, meetingId), { roster: [...roster] });
+export async function setTranscriberRoster(paths: HostPaths, meetingId: string, roster: readonly string[], hints: readonly string[] = []): Promise<boolean> {
+  return mergeConfigTranscriber(meetingDir(paths, meetingId), { roster: [...roster], ...(hints.length > 0 ? { hints: [...hints] } : {}) });
+}
+
+/** Remove a meeting's audio (the archive, the stream copies, raw leftovers); the transcript stays. Returns how many files went. */
+export async function dropAudio(paths: HostPaths, meetingId: string): Promise<number> {
+  const dir = meetingDir(paths, meetingId);
+  let dropped = 0;
+  for (const name of ["audio.ogg", "mic.ogg", "system.ogg", "audio.pcm", "mic.pcm", "system.pcm", "audio.decoded.pcm"]) {
+    if (!(await isFile(file(dir, name)))) continue;
+    await removeTree(file(dir, name));
+    dropped += 1;
+  }
+  return dropped;
+}
+
+/** Where the exact model is, when the owner asked for it and it is fully downloaded; "" otherwise. */
+export async function finalModelPatch(paths: HostPaths, finalModel: unknown): Promise<{ whisperFinalModel: string }> {
+  const ready = finalModel === "large-v3" && (await isFile(path.join(paths.whisperFinalModel, ".complete")));
+  return { whisperFinalModel: ready ? paths.whisperFinalModel : "" };
 }
 
 /**
@@ -519,8 +553,8 @@ export function mergeConfigTranscriber(dir: string, patch: Record<string, unknow
   });
 }
 
-async function updateConfigTranscriber(dir: string, transcriber: TranscriberConfig): Promise<void> {
-  if (!(await mergeConfigTranscriber(dir, transcriber))) {
+async function updateConfigTranscriber(paths: HostPaths, dir: string, transcriber: TranscriberConfig): Promise<void> {
+  if (!(await mergeConfigTranscriber(dir, { ...transcriber, ...(await finalModelPatch(paths, transcriber.finalModel)) }))) {
     throw new Error(`В каталоге встречи нет корректного config.json: ${dir}`);
   }
 }
@@ -565,7 +599,7 @@ export async function ensureTranscriber(paths: HostPaths, input: EnsureTranscrib
     const noLiveInput = !botAlive && hasArchive && !(await isFile(file(dir, F.pcm)));
     const mode = last?.mode === "offline" || noLiveInput ? "offline" : "live";
     await requireTranscriberRuntime(paths);
-    await updateConfigTranscriber(dir, input.transcriber);
+    await updateConfigTranscriber(paths, dir, input.transcriber);
     if (mode === "offline") await clearTranscriptionOutputs(dir);
     const pid = await spawnTranscriber(paths, dir, input.transcriber, mode);
     await updatePids(file(dir, F.pids), { transcriber: { pid, startedAt: Date.now(), mode, restarts } });
@@ -577,7 +611,7 @@ export async function ensureTranscriber(paths: HostPaths, input: EnsureTranscrib
   // Before anything is stopped or deleted: a re-transcription that cannot start must not cost the old transcript.
   await requireTranscriberRuntime(paths);
   if (alive !== null) await stopTranscriber(dir, alive);
-  await updateConfigTranscriber(dir, input.transcriber);
+  await updateConfigTranscriber(paths, dir, input.transcriber);
   await clearTranscriptionOutputs(dir);
   const pid = await spawnTranscriber(paths, dir, input.transcriber, "offline");
   await updatePids(file(dir, F.pids), { transcriber: { pid, startedAt: Date.now(), mode: "offline", restarts: 0 } });
@@ -701,7 +735,7 @@ export async function stopMeeting(paths: HostPaths, meetingId: string): Promise<
   const state = await readState(dir);
   const botPid = await liveBotPid(dir, state, pids, await recorderScriptName(dir));
   if (botPid !== null) {
-    if (requestedAt !== null && now - requestedAt > STOP_ESCALATION_MS) await forceStopBot(paths, meetingId, dir, pids, botPid);
+    if (requestedAt !== null && now - requestedAt > (await meetingStopEscalationMs(dir))) await forceStopBot(paths, meetingId, dir, pids, botPid);
     else signalPid(botPid, "SIGTERM");
   }
   return snapshot(paths, meetingId);
