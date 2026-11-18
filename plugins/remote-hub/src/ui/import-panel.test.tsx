@@ -154,6 +154,7 @@ describe("ImportPanel and host keys", () => {
       suggestions: vi.fn(async () => [{ kind: "known-hosts" as const, path: "/h/.ssh/known_hosts", label: "Known hosts (host keys to trust)" }]),
       scan: vi.fn(async (): Promise<ScanResult> => ({
         kind: "known-hosts",
+        scanId: "scan-kh",
         items: [
           { key: "a", hosts: ["a.example.test"], hashed: false, keyType: "ssh-ed25519", fingerprint: "SHA256:aaa", trusted: false },
           { key: "b", hosts: [], hashed: true, keyType: "ssh-rsa", fingerprint: "SHA256:bbb", trusted: true },
@@ -176,7 +177,7 @@ describe("ImportPanel and host keys", () => {
     expect(trust.disabled).toBe(true);
     fireEvent.click(screen.getByLabelText("a.example.test").querySelector("input") as HTMLInputElement);
     fireEvent.click(trust);
-    await waitFor(() => expect(api.apply).toHaveBeenCalledWith("s1", ["a"]));
+    await waitFor(() => expect(api.apply).toHaveBeenCalledWith("s1", ["a"], "scan-kh"));
     expect((await screen.findByRole("status")).textContent).toBe("1 host key(s) trusted, 0 already trusted.");
   });
 

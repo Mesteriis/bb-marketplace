@@ -260,7 +260,7 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
             onClick={() =>
               void run(async () => {
                 const reviewed = scan.result;
-                const result = await api.apply(scan.sourceId, [...picked], reviewed.kind === "ssh-config" || reviewed.kind === "hosts" ? reviewed.scanId : undefined);
+                const result = await api.apply(scan.sourceId, [...picked], reviewed.kind === "ssh-config" || reviewed.kind === "hosts" || reviewed.kind === "known-hosts" ? reviewed.scanId : undefined);
                 setMessage(outcomeText(result));
                 onImported();
                 const source = (sources ?? []).find((s) => s.id === scan.sourceId);
@@ -305,7 +305,8 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
             disabled={busy || picked.size === 0}
             onClick={() =>
               void run(async () => {
-                const result = await api.apply(scan.sourceId, [...picked]);
+                const reviewed = scan.result;
+                const result = await api.apply(scan.sourceId, [...picked], reviewed.kind === "known-hosts" ? reviewed.scanId : undefined);
                 setMessage(`${result.created} host key(s) trusted, ${result.unchanged} already trusted.`);
                 await reloadTrusted();
                 const source = (sources ?? []).find((s) => s.id === scan.sourceId);
@@ -355,6 +356,7 @@ export function ImportPanel({ api, onImported, onClose }: ImportPanelProps) {
                     Forget
                   </button>
                 )}
+                {t.hashed && <span className="rh-hint">Cannot be forgotten here: the host name is hashed, so it cannot be matched.</span>}
               </div>
             </li>
           ))}

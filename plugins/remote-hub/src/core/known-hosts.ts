@@ -24,8 +24,17 @@ function plainLine(raw: string): string | null {
 
 /** Entries of a known_hosts text, keeping only lines the helper would accept. */
 export async function parseKnownHosts(text: string): Promise<KnownHostEntry[]> {
+  return (await parseKnownHostsText(text)).entries;
+}
+
+/**
+ * Like `parseKnownHosts`, and counts the otherwise valid lines it refused because their host list holds a
+ * wildcard or a negation (`*`, `?`, `!`): such a line would trust one key for many hosts.
+ */
+export async function parseKnownHostsText(text: string): Promise<{ entries: KnownHostEntry[]; wildcardLines: number }> {
   const out: KnownHostEntry[] = [];
   const seen = new Set<string>();
+  let wildcardLines = 0;
   for (const raw of text.split(/\r?\n/)) {
     const line = plainLine(raw);
     if (line === null || seen.has(line)) continue;
@@ -34,11 +43,16 @@ export async function parseKnownHosts(text: string): Promise<KnownHostEntry[]> {
     const info = await publicKeyInfo(rest.join(" "));
     if (info === null) continue;
     const hashed = hostSpec.startsWith("|1|");
-    if (!hashed && !/^[A-Za-z0-9.:,*?![\]_-]+$/.test(hostSpec)) continue;
+    if (!hashed && /[*?!]/.test(hostSpec) && /^[A-Za-z0-9.:,*?![\]_-]+$/.test(hostSpec)) {
+      seen.add(line);
+      wildcardLines += 1;
+      continue;
+    }
+    if (!hashed && !/^[A-Za-z0-9.:,[\]_-]+$/.test(hostSpec)) continue;
     seen.add(line);
     out.push({ line, hosts: hashed ? [] : hostSpec.split(","), hashed, keyType: info.type, fingerprint: info.fingerprint });
   }
-  return out;
+  return { entries: out, wildcardLines };
 }
 
 /** A short stable key for a line (the first 16 hex of its SHA-256), for choosing it in a list. */

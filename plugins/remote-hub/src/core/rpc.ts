@@ -30,6 +30,7 @@ export const scanResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("hosts"), scanId: z.string(), incomplete: z.boolean(), items: z.array(scanItemSchema), stale: z.array(z.string()), issues: z.array(z.string()) }),
   z.object({
     kind: z.literal("known-hosts"),
+    scanId: z.string(),
     items: z.array(z.object({ key: z.string(), hosts: z.array(z.string()), hashed: z.boolean(), keyType: z.string(), fingerprint: z.string(), trusted: z.boolean() })),
     issues: z.array(z.string()),
   }),

@@ -15,7 +15,7 @@ import {
   type ImportedFields,
 } from "./import-plan.ts";
 import { parseHostsFile } from "./hosts-file.ts";
-import { lineKey, parseKnownHosts, type KnownHostEntry } from "./known-hosts.ts";
+import { lineKey, parseKnownHosts, parseKnownHostsText, type KnownHostEntry } from "./known-hosts.ts";
 import type { CredentialBook } from "./credential.ts";
 import { profileFieldsOf, type Profile, type Provenance } from "./profile.ts";
 import type { ProfileBook } from "./profile-book.ts";
@@ -137,7 +137,7 @@ export type ScanResult =
       stale: string[];
       issues: string[];
     }
-  | { kind: "known-hosts"; items: TrustItem[]; issues: string[] }
+  | { kind: "known-hosts"; scanId: string; items: TrustItem[]; issues: string[] }
   | { kind: "keys-dir"; keys: KeyInfo[]; issues: string[] }
   | { kind: "agent"; keys: AgentKey[]; issues: string[] };
 
@@ -169,6 +169,16 @@ const MAX_HOSTS_BYTES = 512 * 1024;
 const MAX_KEY_FILES = 200;
 const MAX_PUBLIC_BYTES = 8 * 1024;
 const SOURCE_PATH = /^\/[^\0\n\r]*$/;
+
+/**
+ * Host names are case-insensitive but ssh_config aliases are not: `Prod` and `prod` are two entries. Keys are lower
+ * case, so when two entries of one scan would share a key they keep their alias as typed instead.
+ */
+function separateCaseOnlyDuplicates(candidates: Candidate[]): Candidate[] {
+  const count = new Map<string, number>();
+  for (const c of candidates) count.set(c.key, (count.get(c.key) ?? 0) + 1);
+  return candidates.map((c) => ((count.get(c.key) ?? 0) > 1 ? { ...c, key: c.name } : c));
+}
 
 export class ImportBook {
   constructor(private readonly deps: ImportBookDeps) {}
@@ -277,7 +287,7 @@ export class ImportBook {
     // One budget for the whole scan: every Include draws on it.
     const budget: IncludeBudget = { files: MAX_SCAN_FILES, bytes: MAX_SCAN_BYTES };
     const parse = parseSshConfig(read.text, { home: reader.home(), include: (pattern) => reader.include(path, pattern, budget), truncated: read.truncated });
-    return { candidates: parse.entries.map(candidateFromConfigEntry), issues: [...parse.issues], incomplete: parse.incomplete };
+    return { candidates: separateCaseOnlyDuplicates(parse.entries.map(candidateFromConfigEntry)), issues: [...parse.issues], incomplete: parse.incomplete };
   }
 
   private newScanId(): string {
@@ -366,7 +376,7 @@ export class ImportBook {
     const source = this.enabledSource(sourceId);
     if (source.kind === "agent") return await this.scanAgent();
     if (source.kind === "keys-dir") return await this.scanKeys(source.path as string);
-    if (source.kind === "known-hosts") return await this.scanKnownHosts(source.path as string);
+    if (source.kind === "known-hosts") return await this.scanKnownHosts(source.id, source.path as string);
     const { candidates, issues, incomplete } = await this.candidates(source);
     const review = { id: this.newScanId(), candidates, incomplete };
     this.reviewed.set(sourceId, review);
@@ -386,7 +396,7 @@ export class ImportBook {
    */
   async apply(sourceId: string, keys?: string[], scanId?: string): Promise<ImportOutcome> {
     const source = this.enabledSource(sourceId);
-    if (source.kind === "known-hosts") return await this.applyKnownHosts(source.path as string, keys);
+    if (source.kind === "known-hosts") return await this.applyKnownHosts(source.id, keys, scanId);
     if (source.kind !== "ssh-config" && source.kind !== "hosts") throw new ImportError("invalid_source", "this source holds nothing to import");
     const review = this.reviewed.get(sourceId);
     if (review === undefined || scanId === undefined || review.id !== scanId) throw new ImportError("scan_required", "review a scan of this source before importing");
@@ -461,27 +471,48 @@ export class ImportBook {
     return await this.deps.knownHosts.remove(host);
   }
 
-  private async knownHostEntries(path: string): Promise<KnownHostEntry[]> {
+  private async knownHostEntries(path: string): Promise<{ entries: KnownHostEntry[]; wildcardLines: number }> {
     const read = this.deps.reader.readText(path, MAX_HOSTS_BYTES * 8);
     if (read === null) throw new ImportError("source_unreadable", "the file could not be read (a link that leaves its directory, a pipe or a missing file is refused)");
-    return await parseKnownHosts(read.text);
+    return await parseKnownHostsText(read.text);
   }
 
-  private async scanKnownHosts(path: string): Promise<ScanResult> {
-    const entries = await this.knownHostEntries(path);
+  /** What the user was shown for each known_hosts source: the lines by their key, and nothing else is ever added. */
+  private readonly reviewedKnownHosts = new Map<string, { id: string; lines: Map<string, string> }>();
+
+  private async scanKnownHosts(sourceId: string, path: string): Promise<ScanResult> {
+    const { entries, wildcardLines } = await this.knownHostEntries(path);
     const have = new Set(this.deps.knownHosts === undefined ? [] : (await this.deps.knownHosts.list()).map((l) => l.trim()));
     const items = await Promise.all(
       entries.map(async (e) => ({ key: await lineKey(e.line), hosts: e.hosts, hashed: e.hashed, keyType: e.keyType, fingerprint: e.fingerprint, trusted: have.has(e.line) })),
     );
-    return { kind: "known-hosts", items, issues: this.deps.knownHosts === undefined ? ["the helper's known hosts file is not available"] : [] };
+    const lines = new Map<string, string>();
+    for (let i = 0; i < entries.length; i++) lines.set((items[i] as { key: string }).key, (entries[i] as KnownHostEntry).line);
+    const review = { id: this.newScanId(), lines };
+    this.reviewedKnownHosts.set(sourceId, review);
+    const issues: string[] = [];
+    if (this.deps.knownHosts === undefined) issues.push("the helper's known hosts file is not available");
+    if (wildcardLines > 0) {
+      issues.push(wildcardLines === 1 ? "1 line that trusts a key for many hosts (wildcards or negation) was not offered" : `${wildcardLines} lines that trust a key for many hosts (wildcards or negation) were not offered`);
+    }
+    return { kind: "known-hosts", scanId: review.id, items, issues };
   }
 
-  /** Copies the chosen host keys into the overlay. Only what the user picks, only plain host-key lines. */
-  private async applyKnownHosts(path: string, keys: string[] | undefined): Promise<ImportOutcome> {
+  /**
+   * Copies the chosen host keys into the overlay: only lines of the scan the user reviewed (`scanId`), only the keys
+   * named in an explicit selection, only plain host-key lines. A later change of the file adds nothing.
+   */
+  private async applyKnownHosts(sourceId: string, keys: string[] | undefined, scanId: string | undefined): Promise<ImportOutcome> {
     if (this.deps.knownHosts === undefined) throw new ImportError("known_hosts_unavailable", "the known hosts file is not available");
-    const entries = await this.knownHostEntries(path);
+    const review = this.reviewedKnownHosts.get(sourceId);
+    if (review === undefined || scanId === undefined || review.id !== scanId) throw new ImportError("scan_required", "review a scan of this source before trusting keys");
+    if (keys === undefined) throw new ImportError("selection_required", "choose which keys to trust: nothing is trusted by default");
     const chosen: string[] = [];
-    for (const e of entries) if (keys === undefined || keys.includes(await lineKey(e.line))) chosen.push(e.line);
+    for (const key of keys) {
+      const line = review.lines.get(key);
+      if (line === undefined) throw new ImportError("unknown_entry", "a chosen key is not in the reviewed scan");
+      chosen.push(line);
+    }
     const added = chosen.length === 0 ? 0 : await this.deps.knownHosts.add(chosen);
     return { created: added, updated: 0, unchanged: chosen.length - added, conflicts: [], deletedLocally: [], skipped: [], markedStale: 0 };
   }

@@ -362,6 +362,16 @@ describe("incomplete reads are never credential-eligible (W3d)", () => {
 });
 
 describe("a known_hosts source adds host keys to the helper's overlay, only the chosen ones", () => {
+  async function scanned(book: ImportBook, text: string) {
+    overlayLines.length = 0;
+    FILES["/fixture/known_hosts"] = text;
+    const source = book.addSource({ kind: "known-hosts", path: "/fixture/known_hosts", label: "kh" });
+    book.setEnabled(source.id, true);
+    const scan = await book.scan(source.id);
+    if (scan.kind !== "known-hosts") throw new Error("kind");
+    return { source, scan };
+  }
+
   it("scan lists plain host keys (none chosen), apply trusts the chosen ones once, and the overlay is what 'trusted' shows", async () => {
     const { book } = setup();
     overlayLines.length = 0;
@@ -374,8 +384,8 @@ describe("a known_hosts source adds host keys to the helper's overlay, only the 
     expect(scan.items.map((i) => [i.hosts, i.trusted])).toEqual([[["a.example.test"], false], [["b.example.test", "10.0.0.9"], false]]);
     expect(overlay.add).not.toHaveBeenCalled(); // scanning trusts nothing
     const chosen = scan.items[1]!.key;
-    expect(await book.apply(source.id, [chosen])).toMatchObject({ created: 1, unchanged: 0 });
-    expect(await book.apply(source.id, [chosen])).toMatchObject({ created: 0, unchanged: 1 });
+    expect(await book.apply(source.id, [chosen], scan.scanId)).toMatchObject({ created: 1, unchanged: 0 });
+    expect(await book.apply(source.id, [chosen], scan.scanId)).toMatchObject({ created: 0, unchanged: 1 });
     expect(overlayLines).toEqual([`b.example.test,10.0.0.9 ${KH}`]);
     expect((await book.trustedHosts()).map((t) => t.hosts)).toEqual([["b.example.test", "10.0.0.9"]]);
     expect(await book.forgetHost("10.0.0.9")).toBe(1);
@@ -385,14 +395,53 @@ describe("a known_hosts source adds host keys to the helper's overlay, only the 
     expect(again.items.every((i) => !i.trusted)).toBe(true);
   });
 
-  it("applying with no keys list is trust-all only when the caller says so explicitly; an empty choice trusts nothing", async () => {
+  it("apply needs the reviewed scan and an explicit selection: no scan id, a wrong one, or no keys list is an error; an empty choice trusts nothing (W6b)", async () => {
     const { book } = setup();
-    overlayLines.length = 0;
-    FILES["/fixture/known_hosts"] = `a.example.test ${KH}\n`;
-    const source = book.addSource({ kind: "known-hosts", path: "/fixture/known_hosts", label: "kh" });
-    book.setEnabled(source.id, true);
-    expect(await book.apply(source.id, [])).toMatchObject({ created: 0 });
+    const { source, scan } = await scanned(book, `a.example.test ${KH}\n`);
+    const key = scan.items[0]!.key;
+    await expect(book.apply(source.id, [key])).rejects.toMatchObject({ code: "scan_required" });
+    await expect(book.apply(source.id, [key], "not-the-review")).rejects.toMatchObject({ code: "scan_required" });
+    await expect(book.apply(source.id, undefined, scan.scanId)).rejects.toMatchObject({ code: "selection_required" });
+    await expect(book.apply(source.id, ["0000000000000000"], scan.scanId)).rejects.toMatchObject({ code: "unknown_entry" });
+    expect(await book.apply(source.id, [], scan.scanId)).toMatchObject({ created: 0 });
     expect(overlayLines).toEqual([]);
+  });
+
+  it("only the lines that were REVIEWED are added, even if the file changed after the scan (W6b)", async () => {
+    const { book } = setup();
+    const { source, scan } = await scanned(book, `a.example.test ${KH}\n`);
+    FILES["/fixture/known_hosts"] = `a.example.test ${KH}\nevil.example.test ${KH}\n`;
+    expect(await book.apply(source.id, [scan.items[0]!.key], scan.scanId)).toMatchObject({ created: 1 });
+    expect(overlayLines).toEqual([`a.example.test ${KH}`]);
+    // A new scan is a new review; the earlier id no longer applies.
+    const next = await book.scan(source.id);
+    if (next.kind !== "known-hosts") throw new Error("kind");
+    await expect(book.apply(source.id, [scan.items[0]!.key], scan.scanId)).rejects.toMatchObject({ code: "scan_required" });
+    expect(next.items.map((i) => i.hosts)).toEqual([["a.example.test"], ["evil.example.test"]]);
+  });
+
+  it("a line with a wildcard or negated pattern is refused, and the scan says how many (W8)", async () => {
+    const { book } = setup();
+    const { scan } = await scanned(book, `* ${KH}\n*.corp,!x.corp ${KH}\nh?st ${KH}\nplain.example.test ${KH}\n`);
+    expect(scan.items.map((i) => i.hosts)).toEqual([["plain.example.test"]]);
+    expect(scan.issues).toContain("3 lines that trust a key for many hosts (wildcards or negation) were not offered");
+  });
+});
+
+describe("aliases that differ only in case (W8)", () => {
+  it("Prod and prod are two entries with two keys, and re-importing changes nothing", async () => {
+    const { book, profiles } = setup();
+    const source = enabledConfig(book, "Host Prod\n  HostName upper.example.test\nHost prod\n  HostName lower.example.test\nHost solo\n  HostName solo.example.test\n");
+    const scan = await book.scan(source.id);
+    if (scan.kind !== "ssh-config") throw new Error("kind");
+    expect(scan.items.map((i) => [i.key, i.name, i.host])).toEqual([
+      ["Prod", "Prod", "upper.example.test"],
+      ["prod", "prod", "lower.example.test"],
+      ["solo", "solo", "solo.example.test"],
+    ]);
+    expect(await book.apply(source.id, undefined, scan.scanId)).toMatchObject({ created: 3 });
+    expect(profiles.list().map((p) => p.host).sort()).toEqual(["lower.example.test", "solo.example.test", "upper.example.test"]);
+    expect(await applyFresh(book, source.id)).toMatchObject({ created: 0, updated: 0, unchanged: 3 });
   });
 });
 
