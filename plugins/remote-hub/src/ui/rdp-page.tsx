@@ -8,6 +8,7 @@ import type { FitMode } from "../core/rdp-geometry.ts";
 import { closeReasonText, errorCodeText, errorTextFromMessage, stateText } from "../core/rdp-texts.ts";
 import type { RdpCertPromptInfo, RdpDecision, SessionHandle } from "../core/rpc.ts";
 import { RdpCanvas, type RdpCanvasEvent, type RdpCanvasHandle } from "./rdp-canvas.tsx";
+import { ControlBadge, ControlNotice, HUMAN_CONTROL, nextControl, type ControlView } from "./control-banner.tsx";
 import { RdpCertDialog } from "./rdp-cert-dialog.tsx";
 
 export interface RdpAttach {
@@ -57,6 +58,8 @@ export interface RdpPageProps {
   onClose: (handle: SessionHandle) => Promise<{ reason?: string | null } | void>;
   onDecision: (handle: SessionHandle, fingerprint: string, accept: RdpDecision) => Promise<void>;
   onScreenshot: (handle: SessionHandle) => Promise<RdpScreenshotResult>;
+  /** The owner takes the session back from an agent at once. */
+  onTakeover?: (handle: SessionHandle) => Promise<void>;
   /** Save a PNG for the user; the browser download by default. */
   onSavePng?: (filename: string, base64: string) => void;
 }
@@ -85,6 +88,8 @@ interface SessionView {
   desktop: { width: number; height: number } | null;
   closeReason: string | null;
   detached: boolean;
+  /** Who drives it: the human until an agent takes it (stage 4b-1). */
+  control: ControlView;
 }
 
 export function RdpPage(props: RdpPageProps) {
@@ -172,6 +177,10 @@ export function RdpPage(props: RdpPageProps) {
         case "notice":
           setNotice(event.text);
           break;
+        case "control":
+        case "input_blocked":
+          setView((v) => (v === null ? v : { ...v, control: nextControl(v.control, event) }));
+          break;
       }
     },
     [patch],
@@ -213,7 +222,7 @@ export function RdpPage(props: RdpPageProps) {
     opening.current = false;
     // The session is open: it is now THE session on screen, whether or not the
     // first attach works (a failed attach leaves Reattach and Disconnect available).
-    setView({ handle, attach: null, endpoint, state: "connecting", prompt: null, desktop: null, closeReason: null, detached: false });
+    setView({ handle, attach: null, endpoint, state: "connecting", prompt: null, desktop: null, closeReason: null, detached: false, control: HUMAN_CONTROL });
     setConnecting(null);
     try {
       const attach = await onAttach(handle);
@@ -342,6 +351,7 @@ export function RdpPage(props: RdpPageProps) {
             state: <strong>{view !== null && view.detached && state !== "closed" ? "detached" : stateText(state)}</strong>
           </span>
           {connecting !== null && view !== null && <span data-testid="rdp-connecting">connecting to {connecting}…</span>}
+          {view !== null && view.attach !== null && view.state !== "closed" && <ControlBadge control={view.control} />}
           {view !== null && view.state === "closed" && view.closeReason !== null && <span data-testid="rdp-exit">{closeReasonText(view.closeReason)}</span>}
           {view?.desktop != null && (
             <span>
@@ -362,6 +372,9 @@ export function RdpPage(props: RdpPageProps) {
             </>
           )}
         </div>
+        {view !== null && view.attach !== null && view.state !== "closed" && (
+          <ControlNotice control={view.control} onTakeover={async () => (props.onTakeover === undefined ? Promise.reject(new Error("not_found: taking control is not available")) : props.onTakeover(view.handle))} />
+        )}
         {notice !== null && <p className="rh-notice">{notice}</p>}
         {error !== null && (
           <p className="rh-error" role="alert">

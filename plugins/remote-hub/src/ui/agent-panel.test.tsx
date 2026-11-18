@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ACCESS_NOTE, AgentPanel, type AgentApi, type AgentAuditView, type AgentGrantView } from "./agent-panel.tsx";
+import { ACCESS_NOTE, AgentPanel, type AgentApi, type AgentAuditView, type AgentGrantView, type AgentSessionView } from "./agent-panel.tsx";
 
 afterEach(cleanup);
 const P1 = "11111111-2222-4333-8444-555555555551";
 const row = (over: Partial<AgentAuditView>): AgentAuditView => ({ id: 1, at: "2026-11-18T12:00:00.000Z", threadId: "thr_a", projectId: "prj_1", tool: "remote_terminal_read", profileId: P1, sessionKey: "g.1", detailMode: "none", detail: null, outcome: "ok", count: 1, ...over });
 
-function api(over: Partial<AgentApi> & { grants?: AgentGrantView[]; rows?: AgentAuditView[] } = {}): AgentApi {
+function api(over: Partial<AgentApi> & { grants?: AgentGrantView[]; rows?: AgentAuditView[]; sessionRows?: AgentSessionView[] } = {}): AgentApi {
   let grants = over.grants ?? [];
   return {
     list: over.list ?? vi.fn(async () => grants),
@@ -21,6 +21,11 @@ function api(over: Partial<AgentApi> & { grants?: AgentGrantView[]; rows?: Agent
       return { revoked: n };
     }),
     audit: over.audit ?? vi.fn(async () => over.rows ?? []),
+    sessions: over.sessions ?? vi.fn(async () => over.sessionRows ?? []),
+    takeover: over.takeover ?? vi.fn(async () => ({ tookOver: true })),
+    answer: over.answer ?? vi.fn(async () => ({ answered: true as const })),
+    decideCertificate: over.decideCertificate ?? vi.fn(async () => {}),
+    disconnect: over.disconnect ?? vi.fn(async () => {}),
   };
 }
 const names = new Map([[P1, "build box"]]);
@@ -119,5 +124,71 @@ describe("AgentPanel", () => {
     cleanup();
     mount(api({ list: vi.fn(async () => { throw new Error("helper_unavailable: x"); }) }));
     expect((await screen.findByRole("alert")).textContent).not.toBe("");
+  });
+});
+
+
+describe("AgentPanel: sessions agents opened or drive (stage 4b-1)", () => {
+  const GEN = "a".repeat(32);
+  const base: AgentSessionView = {
+    generation: GEN, sessionId: 4, kind: "ssh", connectionId: P1, state: "running", openedByThread: "thr_a", controlledBy: "human",
+    leaseThreadId: null, leaseExpiresAt: null, questions: [], certificate: null,
+  };
+
+  it("says there are none when no agent opened or holds a session", async () => {
+    mount(api());
+    expect((await screen.findByLabelText("Agent sessions")).textContent).toBe("");
+    expect(screen.getByText(/No agent has opened or is driving a session/)).toBeTruthy();
+  });
+
+  it("lists a session with its connection name, who opened it and who drives it; Take control calls the RPC with its handle", async () => {
+    const a = api({ sessionRows: [{ ...base, controlledBy: "agent", leaseThreadId: "thr_a", leaseExpiresAt: 1_700_000_000_000 }] });
+    mount(a);
+    const list = await screen.findByLabelText("Agent sessions");
+    expect(list.textContent).toContain("build box");
+    expect(list.textContent).toContain("opened by agent thread thr_a");
+    expect(list.textContent).toContain("driven by an agent");
+    fireEvent.click(screen.getByRole("button", { name: "Take control of build box" }));
+    await waitFor(() => expect(a.takeover).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }));
+  });
+
+  it("there is no Take control when the human already drives, and Disconnect closes the session", async () => {
+    const a = api({ sessionRows: [base] });
+    mount(a);
+    await screen.findByLabelText("Agent sessions");
+    expect(screen.queryByRole("button", { name: "Take control of build box" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect build box" }));
+    await waitFor(() => expect(a.disconnect).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }));
+  });
+
+  it("a host-key question waits for the owner: the text is shown and the answer goes back with the prompt id", async () => {
+    const a = api({ sessionRows: [{ ...base, state: "connecting", questions: [{ kind: "host_key", promptId: 7, text: "Are you sure you want to continue connecting (yes/no)?" }] }] });
+    mount(a);
+    expect((await screen.findByTestId("ssh-prompt-text")).textContent).toContain("Are you sure you want to continue connecting");
+    fireEvent.change(screen.getByLabelText("Type yes to continue"), { target: { value: "yes" } });
+    fireEvent.keyDown(screen.getByLabelText("Type yes to continue"), { key: "Enter" });
+    await waitFor(() => expect(a.answer).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }, 7, "yes"));
+  });
+
+  it("a login question (one-time code) is typed here, masked, and sent once", async () => {
+    const a = api({ sessionRows: [{ ...base, questions: [{ kind: "login_prompt", promptId: 9, text: "One-time code:" }] }] });
+    mount(a);
+    const field = (await screen.findByLabelText("Answer")) as HTMLInputElement;
+    expect(field.type).toBe("password");
+    fireEvent.change(field, { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(a.answer).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }, 9, "123456"));
+  });
+
+  it("a certificate question shows the certificate and the decision names the PRESENTED fingerprint", async () => {
+    const fp = Array.from({ length: 32 }, () => "AB").join(":");
+    const a = api({
+      sessionRows: [{ ...base, kind: "rdp", state: "connecting", certificate: { host: "rdp.test", port: 3389, fingerprint: fp, subject: "CN=x", issuer: "CN=y", notBefore: "2026-01-01T00:00:00Z", notAfter: "2036-01-01T00:00:00Z", reason: "untrusted_root", firstUse: true } }],
+    });
+    mount(a);
+    await screen.findByRole("alertdialog");
+    expect(screen.getByRole("alertdialog").textContent).toContain(fp);
+    fireEvent.click(screen.getByRole("button", { name: /Reject/ }));
+    await waitFor(() => expect(a.decideCertificate).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }, fp, "reject"));
   });
 });

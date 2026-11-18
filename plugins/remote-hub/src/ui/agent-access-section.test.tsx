@@ -13,6 +13,11 @@ function api(initial: Array<{ level: "observe" | "input" | "exec"; recordCommand
     set: vi.fn(async (profileId, level, recordCommands) => ({ profileId, level, recordCommands: level === "exec" && recordCommands })),
     revokeAll: vi.fn(async () => ({ revoked: 0 })),
     audit: vi.fn(async () => []),
+    sessions: vi.fn(async () => []),
+    takeover: vi.fn(async () => ({ tookOver: false })),
+    answer: vi.fn(async () => ({ answered: true as const })),
+    decideCertificate: vi.fn(async () => {}),
+    disconnect: vi.fn(async () => {}),
   };
 }
 

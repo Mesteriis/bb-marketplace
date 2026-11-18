@@ -25,7 +25,9 @@ export type RdpCanvasEvent =
   | { type: "desktop"; frameId: number; width: number; height: number }
   | { type: "closed"; exitCode: number | null; signal: number | null; reason: string }
   | { type: "error"; code: string }
-  | { type: "notice"; text: string };
+  | { type: "notice"; text: string }
+  | { type: "control"; owner: "human" | "agent"; expiresAt: number | null }
+  | { type: "input_blocked" };
 
 export interface RdpCanvasHandle {
   sendCtrlAltDel(): void;
@@ -241,6 +243,12 @@ export function RdpCanvas(props: RdpCanvasProps) {
           }
           break;
         }
+        case "control":
+          if (msg.owner === "human" || msg.owner === "agent") emit({ type: "control", owner: msg.owner, expiresAt: typeof msg.expiresAt === "number" ? msg.expiresAt : null });
+          break;
+        case "input_blocked":
+          emit({ type: "input_blocked" });
+          break;
         case "error":
           emit({ type: "error", code: String(msg.code) });
           break;

@@ -113,3 +113,28 @@ describe("the UI -> RPC bridge sends strict JSON only (L1)", () => {
     ]);
   });
 });
+
+describe("the bridge's agent-control calls (stage 4b-1)", () => {
+  it("takeover, answer (also a cancel), certificate decision and disconnect go out as strict JSON with the handle's fields", async () => {
+    const { call, calls } = strictRpc();
+    const bridge = createConnectBridge(call, "ws://x");
+    await bridge.agents.sessions();
+    await bridge.agents.takeover(HANDLE);
+    await bridge.agents.answer(HANDLE, 7, "yes");
+    await bridge.agents.answer(HANDLE, 8, null);
+    await bridge.agents.decideCertificate(HANDLE, "AA:BB", "reject");
+    await bridge.agents.disconnect(HANDLE);
+    await bridge.ssh.onTakeover!(HANDLE);
+    await bridge.rdp.onTakeover!(HANDLE);
+    expect(calls).toEqual([
+      { method: "agent_sessions", input: {} },
+      { method: "agent_control_takeover", input: HANDLE },
+      { method: "agent_prompt_answer", input: { ...HANDLE, promptId: 7, answer: "yes" } },
+      { method: "agent_prompt_answer", input: { ...HANDLE, promptId: 8, answer: null } },
+      { method: "rdp_cert_decision", input: { ...HANDLE, fingerprint: "AA:BB", accept: "reject" } },
+      { method: "session_close", input: HANDLE },
+      { method: "agent_control_takeover", input: HANDLE },
+      { method: "agent_control_takeover", input: HANDLE },
+    ]);
+  });
+});

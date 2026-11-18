@@ -452,3 +452,46 @@ describe("SshPage host-key confirmation needs a deliberate yes (S9)", () => {
     expect(screen.getByTestId("ssh-credential-notice").textContent).toContain("not answered in time");
   });
 });
+
+describe("SshPage: who drives the session (stage 4b-1)", () => {
+  async function running(onTakeover?: (h: SessionHandle) => Promise<void>) {
+    const handle: SessionHandle = { generation: "a".repeat(32), sessionId: 1 };
+    const onSshOpen = vi.fn(async () => handle);
+    const onAttach = vi.fn(async () => ({ token: "b".repeat(32), wsUrl: "ws://x" }));
+    render(<SshPage onSshOpen={onSshOpen} onAttach={onAttach} onClose={vi.fn(async () => {})} {...(onTakeover === undefined ? {} : { onTakeover })} />);
+    fireEvent.change(screen.getByPlaceholderText("host"), { target: { value: "example.com" } });
+    fireEvent.click(screen.getByText("Connect"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const socket = FakeWebSocket.instances[0]!;
+    const say = (msg: unknown) => act(() => void socket.onmessage?.({ data: JSON.stringify(msg) }));
+    return { handle, say };
+  }
+
+  it("shows 'driven by you' with no notice until an agent takes the session", async () => {
+    const { say } = await running();
+    expect(screen.getByTestId("control-owner").textContent).toBe("driven by you");
+    expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+    await say({ type: "control", owner: "agent", expiresAt: Date.now() + 60_000 });
+    expect(screen.getByTestId("control-owner").textContent).toContain("driven by an agent");
+    expect(screen.getByText(/An agent is driving this session/)).toBeTruthy();
+  });
+
+  it("a blocked key becomes an alert, and Take control calls the owner RPC with this session's handle", async () => {
+    const onTakeover = vi.fn(async () => {});
+    const { say, handle } = await running(onTakeover);
+    await say({ type: "control", owner: "agent", expiresAt: Date.now() + 60_000 });
+    await say({ type: "input_blocked" });
+    expect(screen.getByRole("alert").textContent).toContain("Your input was not sent");
+    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onTakeover).toHaveBeenCalledWith(handle);
+    await say({ type: "control", owner: "human", expiresAt: null });
+    expect(screen.getByTestId("control-owner").textContent).toBe("driven by you");
+    expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+  });
+});

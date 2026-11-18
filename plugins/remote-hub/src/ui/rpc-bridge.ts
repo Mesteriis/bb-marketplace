@@ -21,8 +21,8 @@ export interface ConnectBridge {
   credentials: CredentialsApi;
   imports: ImportApi;
   agents: AgentApi;
-  ssh: Pick<SshPageProps, "onSshOpen" | "onAttach" | "onClose">;
-  rdp: Pick<RdpPageProps, "onRdpOpen" | "onAttach" | "onClose" | "onDecision" | "onScreenshot">;
+  ssh: Pick<SshPageProps, "onSshOpen" | "onAttach" | "onClose" | "onTakeover">;
+  rdp: Pick<RdpPageProps, "onRdpOpen" | "onAttach" | "onClose" | "onDecision" | "onScreenshot" | "onTakeover">;
 }
 
 export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge {
@@ -69,12 +69,24 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
       set: (profileId, level, recordCommands) => send("agent_access_set", { profileId, level, recordCommands }),
       revokeAll: () => send("agent_access_revoke_all", {}),
       audit: (limit) => send("agent_audit_list", { limit }),
+      sessions: () => send("agent_sessions", {}),
+      takeover: (handle) => send("agent_control_takeover", handle),
+      answer: (handle, promptId, answer) => send("agent_prompt_answer", { generation: handle.generation, sessionId: handle.sessionId, promptId, answer }),
+      decideCertificate: async (handle, fingerprint, accept) => {
+        await send("rdp_cert_decision", { generation: handle.generation, sessionId: handle.sessionId, fingerprint, accept });
+      },
+      disconnect: async (handle) => {
+        await close(handle);
+      },
     },
     ssh: {
       onSshOpen: (target: SshTarget, profileId?: string, credentialRef?: string) => send<SessionHandle>("ssh_open", { target, profileId, credentialRef }),
       onAttach,
       onClose: async (handle) => {
         await close(handle);
+      },
+      onTakeover: async (handle) => {
+        await send("agent_control_takeover", handle);
       },
     },
     rdp: {
@@ -86,6 +98,9 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
         await send("rdp_cert_decision", { generation: handle.generation, sessionId: handle.sessionId, fingerprint, accept });
       },
       onScreenshot: (handle) => send<RdpScreenshotResult>("rdp_screenshot", handle),
+      onTakeover: async (handle) => {
+        await send("agent_control_takeover", handle);
+      },
     },
   };
 }

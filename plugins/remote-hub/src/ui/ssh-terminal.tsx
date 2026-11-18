@@ -6,6 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, type MutableRefObject } from "react";
 import type { SshAskpassEvent } from "../core/ssh-askpass-protocol.ts";
+import type { ControlMessage } from "./control-banner.tsx";
 
 export type SshTerminalState = "connecting" | "running" | "detached" | "closed" | "error";
 
@@ -21,6 +22,8 @@ export interface SshTerminalProps {
   onStateChange?: (state: SshTerminalState, exit?: SshExitInfo) => void;
   /** Prompts of OpenSSH's askpass and what happened to a saved secret. */
   onAskpass?: (event: SshAskpassEvent) => void;
+  /** Who drives the session (an agent may hold it), and that the user's input was dropped because of it. */
+  onControl?: (message: ControlMessage) => void;
   /** Filled with a function that sends a control message on the open socket. */
   controlRef?: MutableRefObject<((msg: unknown) => void) | null>;
 }
@@ -82,7 +85,7 @@ export function SshTerminal(props: SshTerminalProps) {
     socket.onmessage = (event) => {
       if (disposed) return;
       if (typeof event.data === "string") {
-        let msg: { type?: string; exitCode?: number | null; signal?: number | null; reason?: string; promptId?: number; text?: string; kind?: string; code?: string };
+        let msg: { owner?: string; expiresAt?: number | null; type?: string; exitCode?: number | null; signal?: number | null; reason?: string; promptId?: number; text?: string; kind?: string; code?: string };
         try {
           msg = JSON.parse(event.data);
         } catch {
@@ -106,6 +109,10 @@ export function SshTerminal(props: SshTerminalProps) {
           props.onAskpass?.({ type: "credential_rejected" });
         } else if (msg.type === "credential_failed") {
           props.onAskpass?.({ type: "credential_failed", code: msg.code ?? "unknown" });
+        } else if (msg.type === "control" && (msg.owner === "human" || msg.owner === "agent")) {
+          props.onControl?.({ type: "control", owner: msg.owner, expiresAt: typeof msg.expiresAt === "number" ? msg.expiresAt : null });
+        } else if (msg.type === "input_blocked") {
+          props.onControl?.({ type: "input_blocked" });
         } else if (msg.type === "error") {
           // An answer to a prompt that is already gone is not a broken session.
           if (msg.code !== "prompt_gone") props.onStateChange?.("error");

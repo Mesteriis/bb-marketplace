@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionHandle, SshTarget } from "../core/rpc.ts";
 import { errorCodeText } from "../core/rdp-texts.ts";
 import type { SshAskpassEvent } from "../core/ssh-askpass-protocol.ts";
+import { ControlBadge, ControlNotice, HUMAN_CONTROL, nextControl, type ControlMessage, type ControlView } from "./control-banner.tsx";
 import { SshPromptDialog, type SshPromptInfo } from "./ssh-prompt.tsx";
 import { SshTerminal, type SshExitInfo, type SshTerminalState } from "./ssh-terminal.tsx";
 
@@ -26,6 +27,8 @@ export interface SshPageProps {
   launch?: SshLaunch;
   onAttach: (handle: SessionHandle) => Promise<SshAttach>;
   onClose: (handle: SessionHandle) => Promise<void>;
+  /** The owner takes the session back from an agent at once. */
+  onTakeover?: (handle: SessionHandle) => Promise<void>;
 }
 
 type PageState = "idle" | "connecting" | "running" | "detached" | "closed" | "error";
@@ -52,6 +55,9 @@ export function SshPage(props: SshPageProps) {
   const [prompts, setPrompts] = useState<SshPromptInfo[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const control = useRef<((msg: unknown) => void) | null>(null);
+  // Who drives the shown session: the human, until an agent takes it (stage 4b-1).
+  const [owner, setOwner] = useState<ControlView>(HUMAN_CONTROL);
+  const onControl = useCallback((message: ControlMessage) => setOwner((cur) => nextControl(cur, message)), []);
   // One guard for every way to open (Quick connect and the catalogue): the
   // latest request wins. An open that finishes after a newer one started is
   // closed at once, and a session replaced by a newer one is closed too, so
@@ -97,6 +103,7 @@ export function SshPage(props: SshPageProps) {
       setNotice(null);
       setPrompts([]);
       setExit(null);
+      setOwner(HUMAN_CONTROL);
       setPending(t);
       let handle: SessionHandle;
       try {
@@ -205,6 +212,7 @@ export function SshPage(props: SshPageProps) {
         <span data-testid="ssh-state">
           state: <strong>{state}</strong>
         </span>
+        {attach !== null && state !== "closed" && <ControlBadge control={owner} />}
         {state === "closed" && exit !== null && (
           <span data-testid="ssh-exit">
             {exit.exitCode !== null
@@ -215,6 +223,9 @@ export function SshPage(props: SshPageProps) {
           </span>
         )}
       </div>
+      {attach !== null && state !== "closed" && handle !== null && (
+        <ControlNotice control={owner} onTakeover={async () => (props.onTakeover === undefined ? Promise.reject(new Error("not_found: taking control is not available")) : props.onTakeover(handle))} />
+      )}
       {error !== null && <p className="rh-error">{error}</p>}
       {notice !== null && (
         <p role="alert" className="rh-error" data-testid="ssh-credential-notice">
@@ -224,7 +235,7 @@ export function SshPage(props: SshPageProps) {
       {prompts.length > 0 && state !== "closed" && <SshPromptDialog prompt={prompts[0]} onAnswer={answerPrompt} />}
       {attach !== null && (
         <div className="rh-terminal-wrap">
-          <SshTerminal wsUrl={attach.wsUrl} token={attach.token} onStateChange={onTerminalState} onAskpass={onAskpass} controlRef={control} />
+          <SshTerminal wsUrl={attach.wsUrl} token={attach.token} onStateChange={onTerminalState} onAskpass={onAskpass} onControl={onControl} controlRef={control} />
         </div>
       )}
     </div>

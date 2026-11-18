@@ -564,3 +564,23 @@ describe("RdpPage: the header buttons", () => {
     expect(screen.getByRole("alert").textContent).toBe("the desktop is not ready yet");
   });
 });
+
+describe("RdpPage: who drives the session (stage 4b-1)", () => {
+  it("shows the owner, the paused-input notice, an alert after a blocked input, and Take control calls the owner RPC with this session's handle", async () => {
+    const onTakeover = vi.fn(async () => {});
+    const p = props({ onTakeover } as never);
+    const { say } = await connect(p);
+    expect(screen.getByTestId("control-owner").textContent).toBe("driven by you");
+    await say({ type: "control", owner: "agent", expiresAt: Date.now() + 60_000 });
+    expect(screen.getByTestId("control-owner").textContent).toContain("driven by an agent");
+    expect(screen.getByText(/An agent is driving this session/)).toBeTruthy();
+    await say({ type: "input_blocked" });
+    expect(screen.getAllByRole("alert").some((a) => a.textContent?.includes("Your input was not sent"))).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+    await flush();
+    expect(onTakeover).toHaveBeenCalledWith(HANDLE);
+    await say({ type: "control", owner: "human", expiresAt: null });
+    expect(screen.getByTestId("control-owner").textContent).toBe("driven by you");
+    expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+  });
+});

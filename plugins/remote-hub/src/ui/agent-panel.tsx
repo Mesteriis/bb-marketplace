@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AgentLevel } from "../core/agent-access.ts";
 import { errorTextFromMessage } from "../core/rdp-texts.ts";
+import type { RdpCertPromptInfo, RdpDecision, SessionHandle } from "../core/rpc.ts";
+import { RdpCertDialog } from "./rdp-cert-dialog.tsx";
+import { SshPromptDialog } from "./ssh-prompt.tsx";
 
 export interface AgentGrantView {
   profileId: string;
@@ -24,11 +27,33 @@ export interface AgentAuditView {
   count: number;
 }
 
+/** A session an agent opened or holds, and what waits for the owner on it (stage 4b-1). */
+export interface AgentSessionView {
+  generation: string;
+  sessionId: number;
+  kind: "echo" | "ssh" | "rdp";
+  connectionId: string | null;
+  state: "connecting" | "running" | "closed";
+  openedByThread: string | null;
+  controlledBy: "human" | "agent";
+  leaseThreadId: string | null;
+  leaseExpiresAt: number | null;
+  questions: Array<{ kind: "host_key" | "login_prompt"; promptId: number; text: string }>;
+  certificate: RdpCertPromptInfo | null;
+}
+
 export interface AgentApi {
   list: () => Promise<AgentGrantView[]>;
   set: (profileId: string, level: AgentLevel, recordCommands: boolean) => Promise<{ profileId: string; level: AgentLevel; recordCommands: boolean }>;
   revokeAll: () => Promise<{ revoked: number }>;
   audit: (limit: number) => Promise<AgentAuditView[]>;
+  sessions: () => Promise<AgentSessionView[]>;
+  /** The owner takes a session back from an agent at once. */
+  takeover: (handle: SessionHandle) => Promise<{ tookOver: boolean }>;
+  /** The owner's answer to a host-key or login question (null = refuse). */
+  answer: (handle: SessionHandle, promptId: number, answer: string | null) => Promise<{ answered: true }>;
+  decideCertificate: (handle: SessionHandle, fingerprint: string, accept: RdpDecision) => Promise<void>;
+  disconnect: (handle: SessionHandle) => Promise<void>;
 }
 
 export const LEVEL_TEXT: Record<AgentLevel, string> = {
@@ -58,6 +83,7 @@ const detailText = (r: AgentAuditView): string =>
 
 export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
   const [grants, setGrants] = useState<AgentGrantView[] | null>(null);
+  const [agentSessions, setAgentSessions] = useState<AgentSessionView[] | null>(null);
   const [rows, setRows] = useState<AgentAuditView[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -67,6 +93,7 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
     try {
       setGrants(await api.list());
       setRows(await api.audit(500));
+      setAgentSessions(await api.sessions());
       setProblem(null);
     } catch (e) {
       setProblem(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
@@ -74,7 +101,12 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
   }, [api]);
   useEffect(() => {
     void load();
+    // Questions and leases change on their own; keep the list current while the screen is open.
+    const timer = setInterval(() => void load(), 3000);
+    return () => clearInterval(timer);
   }, [load]);
+  const fail = (e: unknown) => setProblem(errorTextFromMessage(e instanceof Error ? e.message : String(e)));
+  const act = (run: () => Promise<unknown>) => void run().then(load).catch(fail);
 
   const isChange = (r: AgentAuditView) => r.tool.startsWith("access.");
   const changes = (rows ?? []).filter(isChange).slice(0, 20);
@@ -109,6 +141,45 @@ export function AgentPanel({ api, profileNames, onClose }: AgentPanelProps) {
             </div>
           </li>
         ))}
+      </ul>
+
+      <h3>Sessions agents opened or drive</h3>
+      <p className="rh-hint">A new host key, a changed key, a certificate or a login question on a session an agent opened is yours to answer here. An agent only learns that it is waiting for you.</p>
+      {agentSessions !== null && agentSessions.length === 0 && <p className="rh-hint">No agent has opened or is driving a session.</p>}
+      <ul aria-label="Agent sessions">
+        {(agentSessions ?? []).map((s) => {
+          const handle = { generation: s.generation, sessionId: s.sessionId };
+          const label = s.connectionId === null ? "a session" : name(s.connectionId);
+          return (
+            <li key={`${s.generation}.${s.sessionId}`} className="rh-profile">
+              <div className="rh-profile-main">
+                <strong>{label}</strong> <span className="rh-badge">{s.state}</span>
+                <span className="rh-profile-endpoint">
+                  {s.kind}
+                  {s.openedByThread !== null ? ` · opened by agent thread ${s.openedByThread}` : ""}
+                  {" · "}
+                  {s.controlledBy === "agent" ? `driven by an agent (thread ${s.leaseThreadId ?? "?"}${s.leaseExpiresAt !== null ? ", until " + new Date(s.leaseExpiresAt).toLocaleTimeString() : ""})` : "driven by you"}
+                </span>
+              </div>
+              <div className="rh-profile-actions">
+                {s.controlledBy === "agent" && (
+                  <button type="button" aria-label={"Take control of " + label} onClick={() => act(() => api.takeover(handle))}>
+                    Take control
+                  </button>
+                )}
+                {s.state !== "closed" && (
+                  <button type="button" aria-label={"Disconnect " + label} onClick={() => act(() => api.disconnect(handle))}>
+                    Disconnect
+                  </button>
+                )}
+              </div>
+              {s.questions[0] !== undefined && (
+                <SshPromptDialog prompt={{ promptId: s.questions[0].promptId, text: s.questions[0].text, kind: s.questions[0].kind === "host_key" ? "confirm" : "secret" }} onAnswer={(promptId, answer) => act(() => api.answer(handle, promptId, answer))} />
+              )}
+              {s.certificate !== null && <RdpCertDialog prompt={s.certificate} onDecide={(fingerprint, accept) => act(() => api.decideCertificate(handle, fingerprint, accept))} />}
+            </li>
+          );
+        })}
       </ul>
 
       <h3>Connections agents may use</h3>
