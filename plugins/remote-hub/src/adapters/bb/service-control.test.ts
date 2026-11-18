@@ -275,6 +275,17 @@ describe("Z1: which sessions an agent may drive", () => {
     expect(service.agentControl(h)).toBe("ready");
   });
 
+  it("an answered question alone does not make a session ready: the saved credential must have been used", async () => {
+    const { helper, service } = setup();
+    const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24, undefined, ASK);
+    helper.askpass(h.sessionId, { type: "prompt", promptId: 1, text: "Are you sure you want to continue connecting (yes/no)?", kind: "confirm" });
+    await service.sshPromptAnswer(h, 1, "yes").catch(() => undefined);
+    expect(service.ownerQuestions(h)).toEqual([]);
+    expect(service.agentControl(h)).toBe("pending");
+    helper.askpass(h.sessionId, { type: "credential_used" });
+    expect(service.agentControl(h)).toBe("ready");
+  });
+
   it("the credential being used is not shown to the page as a notice", async () => {
     const { helper, service } = setup();
     const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24, undefined, ASK);
