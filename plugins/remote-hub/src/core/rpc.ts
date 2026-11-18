@@ -155,5 +155,7 @@ export type SshTarget = z.infer<typeof sshTargetSchema>;
 export type SessionInfo = z.infer<typeof sessionInfoSchema>;
 export type RdpTarget = z.infer<typeof rdpTargetSchema>;
 export type RdpInfo = z.infer<typeof rdpInfoSchema>;
+export type RdpCertPromptInfo = z.infer<typeof rdpCertPromptInfoSchema>;
+export type RdpDecision = "once" | "session_trust" | "reject";
 export { RDP_CLOSED_REASONS };
 export type RpcSchemas = typeof rpcSchemas;
