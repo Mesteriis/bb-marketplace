@@ -90,8 +90,33 @@ export const text = (t: string): ToolContent => ({ type: "text", text: t });
 export const json = (value: unknown): ToolContent => text(JSON.stringify(value, null, 2));
 export const errorResult = (code: string, message: string): ToolResult => ({ content: [text(`error ${code}: ${message}`)], isError: true });
 
-function resultBytes(r: ToolResult): number {
-  return r.content.reduce((n, p) => n + (p.type === "text" ? p.text.length : p.data.length), 0);
+const utf8 = new TextEncoder();
+/** What a result puts on the wire: UTF-8 bytes of text, and the base64 length of an image (already encoded). */
+export function encodedBytes(r: ToolResult): number {
+  return r.content.reduce((n, p) => n + (p.type === "text" ? utf8.encode(p.text).length : p.data.length), 0);
+}
+
+/** No single response is larger than this, which is below the per-thread budget. */
+export const MAX_RESPONSE_BYTES = 1024 * 1024;
+/** A list answer (connections, sessions) is cut to fit this and says so. */
+export const LIST_MAX_BYTES = 64 * 1024;
+/** What a screenshot reserves from the budget before it is taken, and how many may be taken at once. */
+export const SCREENSHOT_RESERVE_BYTES = 1024 * 1024;
+export const SCREENSHOT_MAX_CONCURRENT = 2;
+const DEFAULT_RESERVE_BYTES = 4096;
+
+/** The leading part of `items` whose JSON fits `LIST_MAX_BYTES`, with the total and whether anything was left out. */
+export function fitList<T>(items: T[]): { items: T[]; total: number; truncated: boolean } {
+  const kept: T[] = [];
+  let size = 256;
+  for (const item of items) {
+    const body = JSON.stringify(item, null, 2);
+    // the item sits two levels deep in the answer: every line of it gains indentation
+    size += utf8.encode(body).length + (body.split("\n").length + 1) * 4 + 8;
+    if (size > LIST_MAX_BYTES) break;
+    kept.push(item);
+  }
+  return { items: kept, total: items.length, truncated: kept.length < items.length };
 }
 
 export const connectionIdSchema = z.string().uuid();
@@ -129,10 +154,11 @@ export function createGate(deps: AgentToolDeps) {
   async function guarded(
     tool: string,
     ctx: AgentCallContext,
-    ids: { profileId?: string | null; sessionKey?: string | null; detailMode?: AuditDetailMode; detail?: string | null },
+    options: { profileId?: string | null; sessionKey?: string | null; detailMode?: AuditDetailMode; detail?: string | null; /** The most the call may return: held against the budget until it finishes. */ reserve?: number },
     handler: () => Promise<ToolResult>,
   ): Promise<ToolResult> {
-    const admitted = budget.admit(ctx.threadId);
+    const { reserve = DEFAULT_RESERVE_BYTES, ...ids } = options;
+    const admitted = budget.admit(ctx.threadId, reserve);
     if (!admitted.ok) {
       audit.rateLimited({ threadId: ctx.threadId, projectId: ctx.projectId, tool, ...ids });
       const seconds = Math.max(1, Math.ceil(admitted.retryAfterMs / 1000));
@@ -143,16 +169,18 @@ export function createGate(deps: AgentToolDeps) {
     let result: ToolResult;
     try {
       result = await handler();
-      ticket.finish(result.isError === true ? "error" : "ok");
+      if (encodedBytes(result) > MAX_RESPONSE_BYTES) result = errorResult("response_too_large", "the answer would be larger than one response may be");
+      ticket.finish(result.isError === true ? (result.content.some((c) => c.type === "text" && c.text.startsWith("error response_too_large")) ? "response_too_large" : "error") : "ok");
     } catch (error) {
       if (error instanceof ToolError) {
         ticket.finish(error.code);
-        return errorResult(error.code, error.message);
+        result = errorResult(error.code, error.message);
+      } else {
+        ticket.finish("failed");
+        result = errorResult("tool_failed", "the tool could not complete");
       }
-      ticket.finish("failed");
-      return errorResult("tool_failed", "the tool could not complete");
     }
-    budget.charge(ctx.threadId, resultBytes(result));
+    budget.charge(ctx.threadId, encodedBytes(result), reserve);
     return result;
   }
 
@@ -180,6 +208,11 @@ export function createGate(deps: AgentToolDeps) {
   return { guarded, denied, noSession, observableSession, sessionRow };
 }
 
+function fitListKey<T>(key: string, items: T[]): Record<string, unknown> {
+  const fit = fitList(items);
+  return fit.truncated ? { [key]: fit.items, total: fit.total, truncated: true } : { [key]: fit.items };
+}
+
 export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
   const { access, ports } = deps;
   const { guarded, denied, noSession, observableSession, sessionRow } = createGate(deps);
@@ -196,7 +229,7 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
             .list()
             .map((p) => ({ p, grant: access.check(p.id, "observe") }))
             .flatMap(({ p, grant }) => (grant.ok ? [viewOf(p, grant.grant.level)] : []));
-          return { content: [json({ connections: rows })] };
+          return { content: [json({ ...fitListKey("connections", rows) })] };
         }),
     }),
     def({
@@ -222,7 +255,7 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
             .list()
             .filter((s) => s.profileId !== undefined && access.check(s.profileId, "observe").ok)
             .map(sessionRow);
-          return { content: [json({ sessions: rows })] };
+          return { content: [json({ ...fitListKey("sessions", rows) })] };
         }),
     }),
     def({
@@ -243,7 +276,7 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
         "Pass the returned nextOffset as sinceOffset to read on; at most 16384 bytes per call.",
       parameters: z.object({ sessionId: sessionIdSchema, sinceOffset: z.number().int().min(0).optional(), maxBytes: z.number().int().min(1).max(TERMINAL_READ_MAX).optional() }).strict(),
       execute: (params, ctx) =>
-        guarded("remote_terminal_read", ctx, { sessionKey: params.sessionId }, async () => {
+        guarded("remote_terminal_read", ctx, { sessionKey: params.sessionId, reserve: (params.maxBytes ?? TERMINAL_READ_DEFAULT) + 2048 }, async () => {
           const session = observableSession(params.sessionId);
           if (session.kind === "rdp") throw new ToolError("not_a_terminal", "this is a desktop session: use remote_rdp_screenshot");
           const read = ports.sessions.read(params.sessionId, params.sinceOffset ?? null, params.maxBytes ?? TERMINAL_READ_DEFAULT);
@@ -260,11 +293,18 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
         "It is shrunk when large; the result says the scale so a position in the image can be mapped to the desktop.",
       parameters: z.object({ sessionId: sessionIdSchema, maxDimension: z.number().int().min(160).max(SCREENSHOT_MAX_DIM).optional() }).strict(),
       execute: (params, ctx) =>
-        guarded("remote_rdp_screenshot", ctx, { sessionKey: params.sessionId }, async () => {
+        guarded("remote_rdp_screenshot", ctx, { sessionKey: params.sessionId, reserve: SCREENSHOT_RESERVE_BYTES }, async () => {
           const session = observableSession(params.sessionId);
           if (session.kind !== "rdp") throw new ToolError("not_a_desktop", "this is a terminal session: use remote_terminal_read");
           if (session.rdp?.state !== "desktop_ready") throw new ToolError("desktop_not_ready", "the desktop is not shown yet (state " + (session.rdp?.state ?? "unknown") + ")");
-          const shot = await ports.sessions.screenshot(params.sessionId);
+          const release = deps.budget.acquire("screenshot", SCREENSHOT_MAX_CONCURRENT);
+          if (release === null) throw new ToolError("busy", "other screenshots are being taken; try again in a moment");
+          let shot: Awaited<ReturnType<typeof ports.sessions.screenshot>>;
+          try {
+            shot = await ports.sessions.screenshot(params.sessionId);
+          } finally {
+            release();
+          }
           // The capture took time: the owner may have revoked access meanwhile, and then nothing of it is returned.
           observableSession(params.sessionId);
           const fitted = ports.fitScreenshot(shot.png, { maxDim: params.maxDimension ?? SCREENSHOT_DEFAULT_DIM, maxBytes: SCREENSHOT_MAX_BYTES });

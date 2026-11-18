@@ -21,8 +21,9 @@ const profile = (id: string, over: Partial<Profile> = {}): Profile =>
     username: "ops", domain: null, authType: "password", identityFile: null, credentialRef: SECRET_REF, rdpWidth: null, rdpHeight: null, ...over,
   }) as Profile;
 
-function setup(opts: { sessions?: AgentSessionView[]; budget?: ConstructorParameters<typeof ToolBudget>[0]; shotWait?: Promise<void> } = {}) {
+function setup(opts: { sessions?: AgentSessionView[]; budget?: ConstructorParameters<typeof ToolBudget>[0]; shotWait?: Promise<void>; extraProfiles?: number } = {}) {
   const profiles = [profile(P_OPEN), profile(P_SECOND, { protocol: "rdp", authType: "password", username: "u", domain: "CORP", port: 3389, rdpWidth: 800, rdpHeight: 600 }), profile(P_CLOSED, { authType: "key", identityFile: SECRET_PATH })];
+  for (let i = 0; i < (opts.extraProfiles ?? 0); i++) profiles.push(profile(`22222222-2222-4333-8444-${String(i).padStart(12, "0")}`, { name: "bulk-" + i }));
   const grants = new Map<string, AgentGrant>();
   const access = new AgentAccessBook({
     store: { all: () => [...grants.values()], get: (id) => grants.get(id) ?? null, put: (g) => void grants.set(g.profileId, g), remove: (id) => grants.delete(id), clear: () => { const n = grants.size; grants.clear(); return n; } },
@@ -66,7 +67,7 @@ function setup(opts: { sessions?: AgentSessionView[]; budget?: ConstructorParame
     const t = tool(name);
     return t.execute(t.parameters.parse(input), ctx);
   };
-  return { access, audit, rows, grants, tools, tool, call, calls, budget };
+  return { access, audit, rows, grants, tools, tool, call, calls, budget, profiles };
 }
 const textOf = (r: ToolResult) => r.content.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n");
 
@@ -222,10 +223,11 @@ describe("audit and budget", () => {
   });
 
   it("output counts against the byte budget", async () => {
-    const { call, access } = setup({ budget: { now: () => 1_000_000, bytesPerWindow: 50 } });
+    const { call, access } = setup({ budget: { now: () => 1_000_000, bytesPerWindow: 2300 } });
     access.set(P_OPEN, "observe", false);
-    expect((await call("remote_terminal_read", { sessionId: `${GEN}.1` })).isError).toBeUndefined(); // more than 50 chars with the frame
-    expect(textOf(await call("remote_terminal_read", { sessionId: `${GEN}.1` }))).toContain("rate_limited");
+    // reserve = maxBytes + 2048 = 2148 fits; what really came back (the framed text, a few hundred bytes) is then charged
+    expect((await call("remote_terminal_read", { sessionId: `${GEN}.1`, maxBytes: 100 })).isError).toBeUndefined();
+    expect(textOf(await call("remote_terminal_read", { sessionId: `${GEN}.1`, maxBytes: 100 }))).toContain("rate_limited");
   });
 });
 
@@ -282,5 +284,56 @@ describe("Y4: the grant is checked again after an awaited capture", () => {
     const pending = call("remote_rdp_screenshot", { sessionId: `${GEN}.2` });
     release();
     expect((await pending).content.some((p) => p.type === "image")).toBe(true);
+  });
+});
+
+describe("Y5: reservation, encoded size, response caps and a screenshot slot cap", () => {
+  it("counts encoded bytes: UTF-8 for text, the base64 length for an image", async () => {
+    const { encodedBytes } = await import("./agent-tools.ts");
+    expect(encodedBytes({ content: [{ type: "text", text: "é€😀" }, { type: "image", data: "AAAA", mimeType: "image/png" }] })).toBe(2 + 3 + 4 + 4);
+  });
+
+  it("parallel terminal reads cannot all pass a check made before any of them ran", async () => {
+    const { tool, access } = setup({ budget: { now: () => 1_000_000, bytesPerWindow: 20_000 } });
+    access.set(P_OPEN, "observe", false);
+    const read = () => tool("remote_terminal_read").execute({ sessionId: `${GEN}.1`, maxBytes: 16384 }, CTX);
+    const results = await Promise.all([read(), read(), read()]);
+    expect(results.filter((r) => textOf(r).includes("rate_limited")).length).toBe(2);
+  });
+
+  it("a list of connections is cut at a size below the budget and says it was cut", async () => {
+    const { call, access, profiles } = setup({ extraProfiles: 600 });
+    for (const p of profiles) access.set(p.id, "observe", false);
+    const r = await call("remote_connections_list", {});
+    const body = JSON.parse(textOf(r)) as { connections: unknown[]; truncated: boolean; total: number };
+    expect(body.total).toBe(603);
+    expect(body.truncated).toBe(true);
+    expect(body.connections.length).toBeLessThan(603);
+    expect(new TextEncoder().encode(textOf(r)).length).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it("a sessions list is cut the same way", async () => {
+    const many: AgentSessionView[] = Array.from({ length: 800 }, (_, i) => ({ key: `${GEN}.${i + 1}`, kind: "ssh", state: "running", profileId: P_OPEN, exitCode: null, reason: null }));
+    const { call, access } = setup({ sessions: many });
+    access.set(P_OPEN, "observe", false);
+    const body = JSON.parse(textOf(await call("remote_sessions_list", {}))) as { sessions: unknown[]; truncated: boolean; total: number };
+    expect(body.truncated).toBe(true);
+    expect(body.total).toBe(800);
+    expect(body.sessions.length).toBeLessThan(800);
+  });
+
+  it("at most two screenshots are taken at once; the third is refused as busy and the slot is freed afterwards", async () => {
+    let release!: () => void;
+    const shotWait = new Promise<void>((r) => (release = r));
+    const { call, access } = setup({ shotWait, budget: { now: () => 1_000_000, callsPerWindow: 100, bytesPerWindow: 50 * 1024 * 1024, globalBytesPerWindow: 100 * 1024 * 1024 } });
+    access.set(P_SECOND, "observe", false);
+    const shot = (thread: string) => call("remote_rdp_screenshot", { sessionId: `${GEN}.2` }, { threadId: thread, projectId: "p" });
+    const first = [shot("t1"), shot("t2")];
+    const third = await shot("t3");
+    expect(third.isError).toBe(true);
+    expect(textOf(third)).toContain("busy");
+    release();
+    await Promise.all(first);
+    expect((await shot("t4")).content.some((p) => p.type === "image")).toBe(true);
   });
 });
