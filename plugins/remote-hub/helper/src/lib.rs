@@ -2,6 +2,7 @@
 //! integration tests import the framing and message types from here.
 pub mod askpass;
 pub mod binding;
+pub mod exec;
 pub mod ids;
 pub mod peer;
 pub mod ipc;

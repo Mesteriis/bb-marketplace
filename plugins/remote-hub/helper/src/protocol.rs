@@ -47,6 +47,48 @@ pub enum Request {
         #[serde(default)]
         askpass: Option<AskpassSpec>,
     },
+    /// Runs ONE remote command with ssh and NO pty: stdin is closed, stdout and stderr are kept apart and bounded (stage 4b-2).
+    /// The argv is the same strict ssh shape as `session.open_ssh` with `-T` and the command as the last word.
+    #[serde(rename = "exec.run")]
+    ExecRun {
+        id: u64,
+        program: String,
+        argv: Vec<String>,
+        env: HashMap<String, String>,
+        /// A saved credential answered from the Keychain; any other prompt is refused, never shown.
+        #[serde(default)]
+        askpass: Option<AskpassSpec>,
+        #[serde(rename = "timeoutMs")]
+        timeout_ms: u64,
+        /// Bytes kept per stream (the head); more is counted and dropped.
+        #[serde(rename = "maxBytes")]
+        max_bytes: usize,
+    },
+    /// What a run has produced from the given offsets (at most `max` bytes per stream).
+    #[serde(rename = "exec.read")]
+    ExecRead {
+        id: u64,
+        #[serde(rename = "execId")]
+        exec_id: u32,
+        #[serde(rename = "stdoutFrom")]
+        stdout_from: u64,
+        #[serde(rename = "stderrFrom")]
+        stderr_from: u64,
+        max: usize,
+    },
+    #[serde(rename = "exec.cancel")]
+    ExecCancel {
+        id: u64,
+        #[serde(rename = "execId")]
+        exec_id: u32,
+    },
+    /// Drops a finished run's buffers.
+    #[serde(rename = "exec.forget")]
+    ExecForget {
+        id: u64,
+        #[serde(rename = "execId")]
+        exec_id: u32,
+    },
     /// The user's answer to an `ssh.prompt` (`answer` null = cancelled). Never stored.
     #[serde(rename = "ssh.prompt_answer")]
     SshPromptAnswer {
@@ -172,6 +214,18 @@ pub enum Request {
     },
 }
 
+/// A slice of one stream of an exec run: bytes `start..end` of what was kept, as base64.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExecChunk {
+    pub start: u64,
+    pub end: u64,
+    pub data: String,
+    /// Bytes the stream produced in all, kept or dropped.
+    pub total: u64,
+    /// Some bytes were dropped because the stream was over its bound.
+    pub truncated: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Response {
@@ -226,6 +280,43 @@ pub enum Response {
         signal: Option<i32>,
         reason: String,
     },
+    #[serde(rename = "exec.started")]
+    ExecStarted {
+        id: u64,
+        #[serde(rename = "execId")]
+        exec_id: u32,
+    },
+    #[serde(rename = "exec.state")]
+    ExecState {
+        id: u64,
+        #[serde(rename = "execId")]
+        exec_id: u32,
+        running: bool,
+        #[serde(rename = "exitCode")]
+        exit_code: Option<i32>,
+        signal: Option<i32>,
+        /// exited, timeout, cancelled, output_flood; null while running.
+        reason: Option<String>,
+        /// A question ssh asked that was refused: host_key, login_prompt (no text).
+        refused: Option<String>,
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
+        stdout: ExecChunk,
+        stderr: ExecChunk,
+    },
+    /// A run ended (unsolicited), so the page need not poll.
+    #[serde(rename = "exec.finished")]
+    ExecFinished {
+        #[serde(rename = "execId")]
+        exec_id: u32,
+        #[serde(rename = "exitCode")]
+        exit_code: Option<i32>,
+        signal: Option<i32>,
+        reason: String,
+        refused: Option<String>,
+    },
+    #[serde(rename = "exec.forgotten")]
+    ExecForgotten { id: u64 },
     #[serde(rename = "error")]
     Error {
         id: Option<u64>,

@@ -137,6 +137,10 @@ fn request_id(req: &Request) -> Option<u64> {
         Request::Ping { id }
         | Request::OpenEcho { id, .. }
         | Request::OpenSsh { id, .. }
+        | Request::ExecRun { id, .. }
+        | Request::ExecRead { id, .. }
+        | Request::ExecCancel { id, .. }
+        | Request::ExecForget { id, .. }
         | Request::SshPromptAnswer { id, .. }
         | Request::OpenRdp { id, .. }
         | Request::CredentialSave { id, .. }
@@ -498,6 +502,8 @@ fn handle(
             }))
         }
         Request::Ping { id } => Ok(protocol::encode_response(&Response::Pong { id })),
+        // WIP (stage 4b-2): wired in the next commit.
+        Request::ExecRun { id, .. } | Request::ExecRead { id, .. } | Request::ExecCancel { id, .. } | Request::ExecForget { id, .. } => Ok(protocol::encode_response(&Response::Error { id: Some(id), code: "exec_unavailable".to_string(), message: "not wired yet".to_string() })),
         Request::OpenEcho { id, cols, rows } => match manager.open_echo(cols, rows) {
             Ok(session_id) => {
                 let pid = manager.child_pid(session_id).unwrap_or(0);
