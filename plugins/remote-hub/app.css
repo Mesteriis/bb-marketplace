@@ -77,10 +77,20 @@
   width: 100%;
 }
 
-/* Connect page: SSH | RDP switch over the two session pages. */
+/* Connect page: the profile catalogue beside Quick connect / the editor. */
+.rh-shell {
+  display: flex;
+  height: 100%;
+  background: var(--canvas, #0d1117);
+  color: var(--ink, #c9d1d9);
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+
 .rh-connect {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
   height: 100%;
   background: var(--canvas, #0d1117);
   color: var(--ink, #c9d1d9);
@@ -235,5 +245,178 @@
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
+  gap: 8px;
+}
+
+.rh-connect-sessions {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.rh-connect-sessions[hidden] {
+  display: none;
+}
+
+.rh-quick {
+  align-self: center;
+  margin-right: 8px;
+  font-size: 12px;
+  color: var(--muted-foreground, #8b949e);
+}
+
+/* Profile catalogue. */
+.rh-catalogue {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border, #30363d);
+  box-sizing: border-box;
+  font-size: 13px;
+}
+
+.rh-catalogue input,
+.rh-editor input,
+.rh-editor select {
+  background: var(--surface-recessed-solid, #161b22);
+  color: var(--ink, #c9d1d9);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font: inherit;
+}
+
+.rh-catalogue button,
+.rh-editor button {
+  background: transparent;
+  color: var(--ink, #c9d1d9);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.rh-catalogue button[aria-pressed="true"],
+.rh-catalogue .rh-new,
+.rh-editor button[type="submit"] {
+  background: var(--foreground, #c9d1d9);
+  color: var(--canvas, #0d1117);
+}
+
+.rh-catalogue-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rh-catalogue-tools .rh-kind {
+  padding: 0;
+  flex-wrap: wrap;
+}
+
+.rh-group h3 {
+  margin: 8px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rh-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #30363d);
+  border-left-width: 3px;
+  border-radius: 4px;
+}
+
+.rh-profile-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rh-profile-endpoint,
+.rh-status,
+.rh-hint {
+  color: var(--muted-foreground, #8b949e);
+  font-size: 12px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rh-badge {
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 3px;
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-profile-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/* Profile editor. */
+.rh-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  overflow-y: auto;
+  max-width: 520px;
+}
+
+.rh-editor fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  padding: 8px 12px 12px;
+}
+
+.rh-editor legend {
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--muted-foreground, #8b949e);
+}
+
+.rh-editor label.rh-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.rh-editor-actions {
+  display: flex;
   gap: 8px;
 }

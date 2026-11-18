@@ -4,12 +4,13 @@
 // @get-bb/plugin-sdk/app are provided by the BB app at load time, so this
 // file must be loaded by BB, not imported directly.
 import "./app.css";
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
 import type { SessionHandle } from "./src/core/rpc.ts";
 import { RemoteHubPage } from "./src/ui/remote-hub-page.tsx";
 import { ConnectPage } from "./src/ui/connect-page.tsx";
+import type { ProfilesApi } from "./src/ui/use-profiles.ts";
 import type { SshTarget } from "./src/core/rpc.ts";
 
 function RemoteHubTab() {
@@ -45,16 +46,28 @@ function ConnectTab() {
     await rpc.call("session_close", handle);
   };
   const onRdpClose = async (handle: SessionHandle) => rpc.call("session_close", handle);
+  const profiles = useMemo<ProfilesApi>(
+    () => ({
+      list: () => rpc.call("profile_list"),
+      save: (input) => rpc.call("profile_save", input),
+      remove: (id) => rpc.call("profile_delete", { id }),
+      duplicate: (id) => rpc.call("profile_duplicate", { id }),
+      sessions: () => rpc.call("session_list"),
+    }),
+    [rpc],
+  );
 
   return (
     <ConnectPage
+      profiles={profiles}
       ssh={{
-        onSshOpen: async (target: SshTarget) => rpc.call("ssh_open", { target }),
+        onSshOpen: async (target: SshTarget, profileId?: string) => rpc.call("ssh_open", { target, ...(profileId !== undefined ? { profileId } : {}) }),
         onAttach,
         onClose,
       }}
       rdp={{
-        onRdpOpen: async (target, size) => rpc.call("rdp_open", { target, width: size.width, height: size.height }),
+        onRdpOpen: async (target, size, profileId) =>
+          rpc.call("rdp_open", { target, width: size.width, height: size.height, ...(profileId !== undefined ? { profileId } : {}) }),
         onAttach,
         onClose: onRdpClose,
         onDecision: async (handle, fingerprint, accept) => {

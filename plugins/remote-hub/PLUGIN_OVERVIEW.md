@@ -18,14 +18,23 @@ both through a Rust helper, plus the echo console from stage 1.
   reject it. A different certificate on a host you trusted is shown as changed
   and is never accepted automatically. Sign-in uses NLA/CredSSP when the server
   offers it.
+- Saved profiles: a catalogue beside Quick connect (nothing saved) with search,
+  an SSH/RDP filter, groups, tags, favourites and a status derived from the live
+  sessions; an editor for name, host, port, user, domain, authentication type,
+  key-file path and RDP desktop size. Connect opens a session from a profile
+  (SSH at once; RDP fills the form and waits for the password). A profile holds
+  no password or key material, and it records only when it was last opened and
+  the codes of recent failed opens.
 - The helper owns every session; detaching a view never ends it, and
   disconnecting never logs the remote user off. Session end is reported with its
   reason.
 
 ## Honest limits
 
-No saved profiles, no stored credentials or trusted certificates (trust lasts for
-the BB run), no agent tools and no CLI yet. No clipboard, no remote resize, no
+Passwords and key passphrases are not stored (you type them each time), certificate
+trust lasts for the BB run, and there is no import of SSH config, no keychain use,
+no agent tools and no CLI yet. "Last opened" means the open call succeeded, not that
+the server accepted a login. No clipboard, no remote resize, no
 Kerberos. NLA against a real Windows host and strict TLS were checked by hand;
 the plugin has not otherwise been exercised inside a live BB server. The helper
 binary is not committed under bin/; build it with npm run build:helper (Rust

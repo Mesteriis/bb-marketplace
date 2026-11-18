@@ -129,3 +129,24 @@ export const profileSchema = z
 export type ProfileFields = z.infer<typeof profileFieldsSchema>;
 export type ProfileInput = z.infer<typeof profileInputSchema>;
 export type Profile = z.infer<typeof profileSchema>;
+
+/** The editable fields of a stored profile (what the editor starts from). */
+export function profileFieldsOf(p: Profile): ProfileFields {
+  return {
+    name: p.name,
+    protocol: p.protocol,
+    group: p.group,
+    tags: p.tags,
+    favorite: p.favorite,
+    color: p.color,
+    host: p.host,
+    port: p.port,
+    username: p.username,
+    domain: p.domain,
+    authType: p.authType,
+    identityFile: p.identityFile,
+    credentialRef: p.credentialRef,
+    rdpWidth: p.rdpWidth,
+    rdpHeight: p.rdpHeight,
+  };
+}

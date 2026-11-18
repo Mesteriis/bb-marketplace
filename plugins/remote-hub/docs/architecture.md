@@ -268,3 +268,18 @@ switch on the connect page picks between the two.
   context, `experimental_retainWorker` (:19713). Verified in declarations;
   NOT verified as a transport for this product — a split server/host needs its
   own authenticated transport and is explicitly out of scope for this stage.
+
+## Stage 3a — saved profiles
+
+Profiles are metadata only (`src/core/profile.ts`): the schemas are strict, so a
+secret-shaped field is refused, and the only link to a secret is `credentialRef`
+(`rh-cred:v1:<executionHostId>:<uuid>`, validated and checked against the
+profile's execution host; stage 3b resolves it). `ProfileBook`
+(`src/core/profile-book.ts`) creates, updates, duplicates and deletes over a
+`ProfileStore` port; `src/adapters/bb/profile-sqlite.ts` implements it on
+`bb.storage.database()` with explicit columns (migration 0 = the `profiles`
+table; append-only). An open from a profile passes `profileId` to `ssh_open` /
+`rdp_open`; `ProfileBook.track` records the open time or the failure CODE (never
+the message), and `session_list` shows the profile of each session, from which
+the catalogue derives its status. The UI is `ProfileCatalogue`, `ProfileEditor`
+and `useProfiles` around the existing session pages; Quick connect stays.
