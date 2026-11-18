@@ -177,11 +177,54 @@ impl CredentialRefusal {
     }
 }
 
-/// How long a keychain child may take. A locked keychain answers at once (prompts are off).
-const KEYCHAIN_CHILD_TIMEOUT_MS: libc::c_int = 5_000;
+/// How long a keychain child may take, in total (write, read and exit). A locked keychain
+/// answers at once (prompts are off).
+const KEYCHAIN_CHILD_TIMEOUT_MS: u64 = 5_000;
+
+fn keychain_child_timeout() -> std::time::Duration {
+    #[cfg(feature = "test-hooks")]
+    if let Some(ms) = std::env::var("REMOTE_HUB_KEYCHAIN_CHILD_TIMEOUT_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+        return std::time::Duration::from_millis(ms);
+    }
+    std::time::Duration::from_millis(KEYCHAIN_CHILD_TIMEOUT_MS)
+}
+
+/// Waits until `fd` is readable (or hung up) or the deadline passes. A signal (SIGCHLD from any
+/// other child of this helper) interrupts poll: that is not a timeout, so the wait resumes with
+/// the time that is left.
+fn wait_readable(fd: RawFd, deadline: std::time::Instant) -> bool {
+    loop {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        let remaining_ms = (deadline - now).as_millis().min(i32::MAX as u128) as libc::c_int;
+        let mut pfd = libc::pollfd { fd, events: libc::POLLIN | libc::POLLHUP, revents: 0 };
+        let r = unsafe { libc::poll(&mut pfd, 1, remaining_ms.max(1)) };
+        if r > 0 {
+            return true;
+        }
+        if r < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        if r == 0 {
+            // poll reported a timeout; the loop re-checks the deadline.
+            continue;
+        }
+        return false;
+    }
+}
+
+/// Kills and reaps a keychain child. Every failure path ends here, so none is left behind.
+fn end_keychain_child(mut child: std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
 
 /// Runs one Keychain operation in a `--keychain-op` child (the helper itself must stay
-/// single-threaded; see keychain.rs). The secret goes over the child's stdin pipe.
+/// single-threaded; see keychain.rs). The secret goes over the child's stdin pipe. One deadline
+/// covers writing, reading and the child's exit; the child is killed and reaped on every
+/// failure, and its exit status must be success.
 fn keychain_child(
     current_exe: &str,
     op: &str,
@@ -195,8 +238,13 @@ fn keychain_child(
         return Err(CredentialRefusal::BadRef);
     }
     let unavailable = || CredentialRefusal::Keychain("keychain_unavailable".to_string());
+    // Never a PATH lookup: the child is this very binary, by an absolute path.
+    if !std::path::Path::new(current_exe).is_absolute() {
+        return Err(unavailable());
+    }
     let request = crate::keychain::OpRequest { op: op.to_string(), reference: reference.to_string(), secret: secret.cloned() };
     let text = serde_json::to_string(&request).map_err(|_| unavailable())?;
+    let deadline = std::time::Instant::now() + keychain_child_timeout();
     let mut child = Command::new(current_exe)
         .arg("--keychain-op")
         .stdin(Stdio::piped())
@@ -204,28 +252,58 @@ fn keychain_child(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| unavailable())?;
-    if let Some(mut stdin) = child.stdin.take() {
-        if stdin.write_all(text.as_bytes()).is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
+    let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        end_keychain_child(child);
+        return Err(unavailable());
+    };
+    // Neither pipe may block the helper: both are non-blocking and waited on with the deadline.
+    set_nonblocking(stdin.as_raw_fd());
+    set_nonblocking(stdout.as_raw_fd());
+    if stdin.write_all(text.as_bytes()).is_err() {
+        end_keychain_child(child);
+        return Err(unavailable());
+    }
+    drop(stdin); // EOF: the child reads one request
+    let mut body: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        if !wait_readable(stdout.as_raw_fd(), deadline) {
+            end_keychain_child(child);
             return Err(unavailable());
         }
+        match stdout.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                body.extend_from_slice(&chunk[..n]);
+                if body.len() > 64 * 1024 {
+                    end_keychain_child(child);
+                    return Err(unavailable());
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                end_keychain_child(child);
+                return Err(unavailable());
+            }
+        }
     }
-    let mut stdout = child.stdout.take().ok_or_else(unavailable)?;
-    let mut pfd = libc::pollfd { fd: stdout.as_raw_fd(), events: libc::POLLIN | libc::POLLHUP, revents: 0 };
-    let ready = unsafe { libc::poll(&mut pfd, 1, KEYCHAIN_CHILD_TIMEOUT_MS) };
-    if ready <= 0 {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(unavailable());
+    // EOF on stdout: the child is exiting. Its status is part of the answer.
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return Err(unavailable());
+                }
+                break;
+            }
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(2)),
+            _ => {
+                end_keychain_child(child);
+                return Err(unavailable());
+            }
+        }
     }
-    let mut body = String::new();
-    let read = stdout.by_ref().take(64 * 1024).read_to_string(&mut body);
-    let _ = child.wait();
-    if read.is_err() {
-        return Err(unavailable());
-    }
-    serde_json::from_str::<crate::keychain::OpReply>(&body).map_err(|_| unavailable())
+    serde_json::from_slice::<crate::keychain::OpReply>(&body).map_err(|_| unavailable())
 }
 
 fn keychain_ok(reply: crate::keychain::OpReply) -> Result<crate::keychain::OpReply, CredentialRefusal> {
@@ -1298,6 +1376,19 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A keychain operation never resolves the helper by PATH: without an absolute path the
+    /// operation fails closed (no process is started at all).
+    #[test]
+    fn a_keychain_child_needs_an_absolute_executable_path() {
+        let reference = "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a";
+        for exe in ["remote-hub-helper", "", "./remote-hub-helper", "bin/remote-hub-helper"] {
+            match keychain_child(exe, "status", reference, None) {
+                Err(CredentialRefusal::Keychain(code)) => assert_eq!(code, "keychain_unavailable", "{exe:?}"),
+                _ => panic!("{exe:?} must be refused"),
+            }
+        }
+    }
     use crate::rdp::protocol::EngineEvent;
 
     #[test]

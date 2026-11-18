@@ -331,6 +331,10 @@ pub fn run_op() -> i32 {
     if std::io::stdin().take(64 * 1024).read_to_string(&mut input).is_err() {
         return 2;
     }
+    #[cfg(feature = "test-hooks")]
+    if let Ok(mode) = std::env::var("REMOTE_HUB_KEYCHAIN_OP_FAKE") {
+        return fake_op(&mode);
+    }
     let Ok(request) = serde_json::from_str::<OpRequest>(&input) else { return 2 };
     let reply = execute(&Keychain::from_env(), &request);
     let Ok(text) = serde_json::to_string(&reply) else { return 2 };
@@ -339,4 +343,41 @@ pub fn run_op() -> i32 {
         return 2;
     }
     0
+}
+
+/// Test-hooks only: a keychain child that misbehaves, to test the helper's supervision of it.
+/// It never touches a keychain.
+///   stall    - answers nothing, for a minute
+///   onebyte  - writes one byte, then stalls (a reader waiting for EOF would hang)
+///   exit3    - writes a valid answer and exits with status 3
+///   slow     - answers {"present":true} after 1.5 s (long enough for a signal to arrive meanwhile)
+#[cfg(feature = "test-hooks")]
+fn fake_op(mode: &str) -> i32 {
+    use std::io::Write;
+    let say = |text: &str| {
+        let mut out = std::io::stdout();
+        let _ = out.write_all(text.as_bytes());
+        let _ = out.flush();
+    };
+    match mode {
+        "stall" => {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            0
+        }
+        "onebyte" => {
+            say("{");
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            0
+        }
+        "exit3" => {
+            say("{\"present\":true}");
+            3
+        }
+        "slow" => {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            say("{\"present\":true}");
+            0
+        }
+        _ => 2,
+    }
 }

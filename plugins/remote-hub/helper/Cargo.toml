@@ -29,6 +29,11 @@ name = "production"
 path = "tests/production.rs"
 
 [[test]]
+name = "keychain_child"
+path = "tests/keychain_child.rs"
+required-features = ["test-hooks"]
+
+[[test]]
 name = "credential_process"
 path = "tests/credential_process.rs"
 required-features = ["test-hooks"]
