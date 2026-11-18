@@ -156,3 +156,41 @@ describe("listeners", () => {
     expect(leases.owner(S1).kind).toBe("human");
   });
 });
+
+describe("onChange: whoever shows the owner is told after every change of it", () => {
+  it("fires for acquire, renew, release, takeover, expiry (on sweep) and forget, with the session key", () => {
+    const { leases, advance } = setup();
+    const seen: string[] = [];
+    leases.onChange((key) => seen.push(key));
+    const a = leases.acquire(S1, "thr_a", 60);
+    if (!a.ok) throw new Error("acquire");
+    leases.renew(S1, "thr_a", a.leaseId, 60);
+    leases.release(S1, "thr_a", a.leaseId);
+    leases.acquire(S1, "thr_a", 60);
+    leases.takeover(S1);
+    leases.acquire(S2, "thr_a", 5);
+    advance(6_000);
+    leases.sweep();
+    expect(seen).toEqual([S1, S1, S1, S1, S1, S2, S2]);
+  });
+
+  it("does not fire for a refused acquire, a takeover with nothing to take, or a failing check", () => {
+    const { leases } = setup();
+    leases.acquire(S1, "thr_a", 60);
+    const seen: string[] = [];
+    leases.onChange((key) => seen.push(key));
+    leases.acquire(S1, "thr_b", 60);
+    leases.takeover(S2);
+    leases.check(S1, "thr_b", "x");
+    expect(seen).toEqual([]);
+  });
+
+  it("a throwing listener is ignored", () => {
+    const { leases } = setup();
+    leases.onChange(() => {
+      throw new Error("boom");
+    });
+    expect(leases.acquire(S1, "thr_a", 60)).toMatchObject({ ok: true });
+  });
+});
+

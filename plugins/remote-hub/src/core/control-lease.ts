@@ -43,11 +43,27 @@ export interface ControlLeasesDeps {
 export class ControlLeases {
   private readonly sessions = new Map<string, Entry>();
   private readonly listeners: Array<(end: LeaseEnd) => void> = [];
+  private readonly changeListeners: Array<(sessionKey: string) => void> = [];
   constructor(private readonly deps: ControlLeasesDeps) {}
 
   /** Called after a lease ended, whatever the reason: held keys must be released and queued input dropped. */
   onEnd(cb: (end: LeaseEnd) => void): void {
     this.listeners.push(cb);
+  }
+
+  /** Called after the owner of a session or its lease time changed (acquire, renew, end): what shows the owner refreshes. */
+  onChange(cb: (sessionKey: string) => void): void {
+    this.changeListeners.push(cb);
+  }
+
+  private changed(sessionKey: string): void {
+    for (const cb of this.changeListeners) {
+      try {
+        cb(sessionKey);
+      } catch {
+        // a display's failure must not undo the change
+      }
+    }
   }
 
   owner(sessionKey: string): Owner {
@@ -62,6 +78,7 @@ export class ControlLeases {
     if (entry.lease !== null) return { ok: false, code: entry.lease.threadId === threadId ? "already_held_by_you" : "held_by_another_thread" };
     entry.generation += 1;
     entry.lease = { threadId, leaseId: this.deps.newId(), expiresAt: this.deps.now() + this.ttl(seconds) };
+    this.changed(sessionKey);
     return { ok: true, leaseId: entry.lease.leaseId, expiresAt: entry.lease.expiresAt, generation: entry.generation };
   }
 
@@ -69,6 +86,7 @@ export class ControlLeases {
     const entry = this.live(sessionKey);
     if (entry.lease === null || entry.lease.threadId !== threadId || entry.lease.leaseId !== leaseId) return { ok: false, code: "not_the_owner" };
     entry.lease.expiresAt = this.deps.now() + this.ttl(seconds);
+    this.changed(sessionKey);
     return { ok: true, leaseId, expiresAt: entry.lease.expiresAt, generation: entry.generation };
   }
 
@@ -172,5 +190,6 @@ export class ControlLeases {
         // a listener's failure must not keep the owner changed back
       }
     }
+    this.changed(sessionKey);
   }
 }
