@@ -3,6 +3,7 @@
 // Compiled by bb plugin build into dist/app.js + dist/app.css. React and
 // @get-bb/plugin-sdk/app are provided by the BB app at load time, so this
 // file must be loaded by BB, not imported directly.
+import "./app.css";
 import { useCallback } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";

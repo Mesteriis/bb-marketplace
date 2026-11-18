@@ -39,7 +39,7 @@
     ]
   },
   "scripts": {
-    "build": "bb plugin build",
+    "build": "bb plugin build && node scripts/check-dist-css.mjs",
     "build:helper": "cargo build --release --locked --target aarch64-apple-darwin --manifest-path helper/Cargo.toml && mkdir -p bin && cp helper/target/aarch64-apple-darwin/release/remote-hub-helper bin/remote-hub-helper && chmod +x bin/remote-hub-helper",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
