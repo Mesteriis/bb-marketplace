@@ -78,7 +78,7 @@ mod tests {
     }
 
     /// Policy check: `libc::fork()` appears only at the two product fork sites
-    /// (the PTY and RDP spawners, which assert a single thread) and never in
+    /// (the PTY, RDP and PVE spawners, which assert a single thread) and never in
     /// test code, because a test binary is multi-threaded.
     #[test]
     fn fork_appears_only_at_the_guarded_product_sites() {
@@ -101,8 +101,8 @@ mod tests {
         sites.sort();
         // This file's own mention is in a string literal inside test code.
         sites.retain(|(f, _)| !f.ends_with("threads.rs"));
-        let names: Vec<String> = sites.iter().map(|(f, _)| f.rsplit('/').next().unwrap().to_string()).collect();
-        assert_eq!(names, vec!["manager.rs", "sessions.rs"], "unexpected fork() sites: {sites:?}");
+        let names: Vec<String> = sites.iter().map(|(f, _)| f.rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/")).collect();
+        assert_eq!(names, vec!["pve/manager.rs", "rdp/manager.rs", "src/sessions.rs"], "unexpected fork() sites: {sites:?}");
         assert!(sites.iter().all(|(_, in_tests)| !in_tests), "a test forks without exec: {sites:?}");
     }
 

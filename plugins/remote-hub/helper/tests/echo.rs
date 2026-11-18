@@ -338,10 +338,10 @@ fn version_mismatch_answers_error_and_exits() {
     assert!(status.is_some(), "helper did not exit after version mismatch");
 }
 
-/// D4: a peer on the previous protocol (before RDP options) is refused at the handshake, in both directions.
+/// D4: a peer on the previous protocol (before Proxmox VE consoles) is refused at the handshake, in both directions.
 #[test]
 fn an_older_protocol_is_refused_at_the_handshake() {
-    assert_eq!(PROTOCOL_VERSION, 2);
+    assert_eq!(PROTOCOL_VERSION, 3);
     let mut helper = start();
     helper.send(&Request::Hello { protocol: PROTOCOL_VERSION - 1 });
     match helper.read_response() {

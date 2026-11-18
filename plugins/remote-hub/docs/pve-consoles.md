@@ -122,3 +122,44 @@ The UI wraps our stream socket in such an object; the helper relays raw RFB byte
 2. Ticket renewal: does `POST /access/ticket` with the old ticket as `password` work on this version? (we re-login with the stored password instead; no behaviour depends on it.)
 3. Ping interval and idle timeout on the shell socket.
 4. 8.x differences in the privilege list and in the token rule.
+
+## 7. Implementation (stages 0 and 1)
+
+Where things live:
+
+| Piece | Path |
+|---|---|
+| Engine process (`--pve-engine`, fd 3, tokio current-thread) | `helper/src/pve/engine.rs` |
+| REST client (hyper http1, one connection per request, strict TLS) and the websocket connect | `helper/src/pve/api.rs` |
+| TLS trust: system roots, one supplied CA, or one pinned leaf; the presented fingerprint is recorded | `helper/src/pve/tls.rs` |
+| Terminal framing (`user:ticket\n`, `OK`, `0:len:`, `1:cols:rows:`, `2`) | `helper/src/pve/term.rs` |
+| Engine IPC types (`PveCommand`, `PveEvent`, frames) | `helper/src/pve/protocol.rs` |
+| Helper-side manager (spawn, reap, kill after 3 s grace) | `helper/src/pve/manager.rs` |
+| Wire requests to engine `Open`; engine frames to wire responses | `helper/src/pve/glue.rs` |
+| Fake PVE server for tests | `helper/tests/common/pve_fake.rs` |
+
+Wire (protocol 3): `session.open_pve`, `pve.targets` (requests); `session.opened` with `kind: "pve"`, `pve.state`, `pve.error`,
+`pve.targets_result`, `pve.failed`, console bytes as ordinary stream frames and `session.closed` (answers). The secret is either
+`password` (use once) or `credentialRef` (the helper resolves it from the Keychain and checks that it was saved for exactly this
+`pve` host, port and user or token id: `Bind::is_pve_endpoint`); it travels only in the one `Open` frame on the socketpair to the engine, never in
+argv or environment (the engine's environment is empty).
+
+Behaviour decided here:
+
+- **No retry after a refusal.** A 401 on login, an expired ticket or a refused ticket line each produce one `login_failed`; the
+  fake PVE counts logins and tests assert exactly one.
+- **No secret before trust.** A login is sent only after the TLS handshake passed; with system trust or a CA the fixture
+  certificate is refused (`tls_untrusted`, with the fingerprint to confirm); with a pin a different certificate is `cert_changed`.
+  There is no insecure mode in the Rust type or in the TS schema.
+- **Discovery distinguishes empty from forbidden.** An empty guest list is checked against `GET /access/permissions`: no
+  `VM.Audit`/`VM.Console` anywhere is `no_permission`, otherwise the list is simply empty.
+- **API token**: discovery works with it; guest consoles are treated as ticket-only (the fake PVE answers 401 to a token on
+  `termproxy`, as stated in §1 pending the live run).
+- **Close**: `session.close` asks the engine to close the websocket and answers when the engine ended; an engine that does not end in
+  3 s is killed. Helper exit kills every engine. A helper that dies makes the engine see EOF and end.
+- **Flow control**: console bytes are bounded by the helper's outbox room (the engine socket backs up and, through TCP, the console);
+  `session.credit` for a PVE console is acknowledged and unused. Keep-alive ping every 30 s (1..=120 configurable per open).
+- Waits are bounded: TCP/TLS connect 10 s, request 20 s, websocket handshake 10 s, `OK` 12 s.
+
+Tests: `helper/tests/pve_engine.rs` (21, engine in-process against the fake PVE), `helper/tests/pve_process.rs` (8, through the real helper binary,
+including a temporary keychain), unit tests beside each module, `src/core/pve-protocol.test.ts`. None of this touches a real PVE.

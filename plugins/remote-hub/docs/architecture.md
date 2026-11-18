@@ -33,7 +33,7 @@ declarations in `node_modules/@get-bb/plugin-sdk/bundled-types/`.
   (helper/src/sessions.rs), independent of the React mount: the UI can detach
   without ending a session.
 - **The helper process is single-threaded, by design and as an invariant.** It
-  forks PTY children (`sessions.rs`) and RDP engine children (`rdp/manager.rs`)
+  forks PTY children (`sessions.rs`), RDP engine children (`rdp/manager.rs`) and PVE engine children (`pve/manager.rs`)
   and does a handful of async-signal-safe calls between `fork` and `execve`
   (fd close list, argv and envp prebuilt before the fork). That is only sound
   while no other thread exists: a forked child inherits locks and libc
