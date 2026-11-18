@@ -3,6 +3,8 @@
 // a profile, error mapping). server.ts only composes and registers them.
 import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
 import { CredentialError, type CredentialBook } from "../../core/credential.ts";
+import { ImportError, type ImportBook, type ImportSource } from "../../core/import-book.ts";
+import type { Profile } from "../../core/profile.ts";
 import { ProfileError, type ProfileBook } from "../../core/profile-book.ts";
 import type { RpcSchemas } from "../../core/rpc.ts";
 import type { SshTarget as SshOpenTarget } from "../../core/ssh-args.ts";
@@ -26,6 +28,7 @@ export function credentialRefusal(error: CredentialError): experimental_PluginRp
     credential_missing: "not_found",
     profile_not_found: "not_found",
     credential_exists: "conflict",
+    profile_needs_config: "invalid",
   };
   return new experimental_PluginRpcRefusal({ code: codeOf[error.code] ?? "invalid", message: error.code + ": " + error.message });
 }
@@ -35,14 +38,28 @@ export interface RpcHandlerDeps {
   service: RemoteHubService;
   profiles: ProfileBook;
   credentials: CredentialBook;
+  imports: ImportBook;
 }
 
-export function createRpcHandlers({ service, profiles, credentials }: RpcHandlerDeps): RpcHandlers {
+export function createRpcHandlers({ service, profiles, credentials, imports }: RpcHandlerDeps): RpcHandlers {
   const withProfile = async <T>(run: () => T | Promise<T>): Promise<T> => {
     try {
       return await run();
     } catch (error) {
       if (error instanceof ProfileError) throw new experimental_PluginRpcRefusal({ code: "not_found", message: error.message });
+      if (error instanceof CredentialError) throw credentialRefusal(error);
+      throw error;
+    }
+  };
+
+  const withImport = async <T>(run: () => T | Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof ImportError) {
+        const code = error.code === "source_unknown" ? "not_found" : error.code === "source_disabled" ? "forbidden" : "invalid";
+        throw new experimental_PluginRpcRefusal({ code, message: error.code + ": " + error.message });
+      }
       if (error instanceof CredentialError) throw credentialRefusal(error);
       throw error;
     }
@@ -117,8 +134,20 @@ export function createRpcHandlers({ service, profiles, credentials }: RpcHandler
       const profileId = profiles.attribute(input.profileId, endpoint);
       return profiles.track(profileId, () => withHelper(() => service.rdpOpen(input.target, input.width, input.height, profileId)));
     },
-    profile_list: () => profiles.list(),
-    profile_save: (input) => withProfile(async () => (await credentials.saveProfile(input)).profile),
+    profile_list: () => imports.decorate(profiles.list()),
+    profile_save: (input) => withProfile(async () => imports.decorate([(await credentials.saveProfile(input)).profile])[0] as Profile),
+    import_suggestions: () => imports.suggestions(),
+    import_source_list: () => imports.sources(),
+    import_source_add: (input) => withImport(() => imports.addSource(input)),
+    import_source_set: (input) =>
+      withImport(() => {
+        if (input.enabled !== undefined) imports.setEnabled(input.id, input.enabled);
+        if (input.useSshG !== undefined) imports.setSshG(input.id, input.useSshG);
+        return imports.sources().find((s) => s.id === input.id) as ImportSource;
+      }),
+    import_source_remove: (input) => withImport(() => ({ removed: imports.removeSource(input.id) })),
+    import_scan: (input) => withImport(() => imports.scan(input.id)),
+    import_apply: (input) => withImport(() => imports.apply(input.id, input.keys)),
     profile_delete: (input) => withProfile(() => credentials.deleteProfile(input.id, input.deleteCredential ?? false)),
     credential_list: () => credentials.list(),
     credential_save: (input) => withProfile(() => credentials.save(input)),

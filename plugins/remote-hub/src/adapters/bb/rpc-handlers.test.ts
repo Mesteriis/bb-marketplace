@@ -3,6 +3,7 @@ import { CredentialBook, CredentialError, type CredentialMeta, type CredentialMe
 import { ProfileBook, type ProfileStore } from "../../core/profile-book.ts";
 import type { Profile, ProfileFields } from "../../core/profile.ts";
 import { HelperRequestError } from "./helper-process.ts";
+import { emptyReader, memoryImportBook } from "./import-test-support.ts";
 import { createRpcHandlers } from "./rpc-handlers.ts";
 import type { RemoteHubService } from "./service.ts";
 
@@ -64,7 +65,7 @@ function setup() {
     rdpOpen: vi.fn(async () => HANDLE),
     sshOpen: vi.fn(async () => HANDLE),
   };
-  const handlers = createRpcHandlers({ service: service as unknown as RemoteHubService, profiles, credentials });
+  const handlers = createRpcHandlers({ service: service as unknown as RemoteHubService, profiles, credentials, imports: memoryImportBook(profiles, credentials) });
   return { profiles, credentials, vault, service, handlers };
 }
 
@@ -216,5 +217,45 @@ describe("ssh_open and a saved credential", () => {
     const call = service.sshOpen.mock.calls[0] as unknown as unknown[];
     expect((call[0] as { authMethod?: string }).authMethod).toBeUndefined();
     expect(call[4]).toBeUndefined();
+  });
+});
+
+describe("import RPCs (real handlers, an in-memory book over a fixture reader)", () => {
+  const files: Record<string, string> = { "/fixture/config": "Host build\n  HostName build.example.test\n  User ci\nHost jump\n  ProxyJump bastion\n" };
+  const reader = { ...emptyReader, readText: (p: string) => files[p] ?? null };
+  function withImports() {
+    const s = setup();
+    const imports = memoryImportBook(s.profiles, s.credentials, reader);
+    const handlers = createRpcHandlers({ service: s.service as unknown as RemoteHubService, profiles: s.profiles, credentials: s.credentials, imports });
+    return { ...s, handlers };
+  }
+
+  it("a source starts off; scanning it is forbidden; switching it on allows scan and apply; profile_list then says where profiles came from", async () => {
+    const { handlers } = withImports();
+    const source = await handlers.import_source_add({ kind: "ssh-config", path: "/fixture/config", label: "fixture" });
+    expect(source).toMatchObject({ enabled: false, useSshG: false });
+    await expect(handlers.import_scan({ id: source.id })).rejects.toMatchObject({ code: "forbidden", message: expect.stringContaining("source_disabled") });
+    await handlers.import_source_set({ id: source.id, enabled: true });
+    const scan = await handlers.import_scan({ id: source.id });
+    expect(scan).toMatchObject({ kind: "ssh-config", items: [expect.objectContaining({ key: "build", action: "create" }), expect.objectContaining({ key: "jump", resolved: false })] });
+    expect(await handlers.import_apply({ id: source.id })).toMatchObject({ created: 2 });
+    const jump = (await handlers.profile_list(null as never)).find((p) => p.name === "jump");
+    expect(jump).toMatchObject({ origin: "imported", provenance: { sourceKind: "ssh-config", resolved: false, flags: ["proxy"] } });
+    expect(await handlers.import_apply({ id: source.id })).toMatchObject({ created: 0, unchanged: 2 });
+  });
+
+  it("a bad path, an unknown source and ssh -G on a disabled source are refused with codes", async () => {
+    const { handlers } = withImports();
+    await expect(handlers.import_source_add({ kind: "ssh-config", path: "relative", label: "" })).rejects.toMatchObject({ code: "invalid" });
+    await expect(handlers.import_scan({ id: "nope" })).rejects.toMatchObject({ code: "not_found" });
+    const source = await handlers.import_source_add({ kind: "ssh-config", path: "/fixture/config", label: "" });
+    await expect(handlers.import_source_set({ id: source.id, useSshG: true })).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("suggestions are strings only: nothing is registered or read until the user adds a source", async () => {
+    const { handlers } = withImports();
+    const list = await handlers.import_suggestions(null as never);
+    expect(list.map((s) => s.kind)).toEqual(["ssh-config", "keys-dir", "hosts", "agent"]);
+    expect(await handlers.import_source_list(null as never)).toEqual([]);
   });
 });

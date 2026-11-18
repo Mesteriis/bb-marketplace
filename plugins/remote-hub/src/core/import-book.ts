@@ -130,6 +130,17 @@ export class ImportBook {
     return this.deps.store.sources();
   }
 
+  /** Where such sources usually are. Only strings: nothing is read, and none is registered until the user adds it. */
+  suggestions(): Array<{ kind: SourceKind; path: string | null; label: string }> {
+    const home = this.deps.reader.home().replace(/\/$/, "");
+    return [
+      { kind: "ssh-config", path: `${home}/.ssh/config`, label: "SSH config" },
+      { kind: "keys-dir", path: `${home}/.ssh`, label: "SSH keys (public files)" },
+      { kind: "hosts", path: "/etc/hosts", label: "Hosts file" },
+      { kind: "agent", path: null, label: "SSH agent" },
+    ];
+  }
+
   /** Registers a source. It is OFF: reading it needs a separate, deliberate switch. */
   addSource(input: { kind: SourceKind; path: string | null; label: string }): ImportSource {
     if (input.kind === "agent") {

@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HelperProcess } from "../../src/adapters/bb/helper-process.ts";
+import { memoryImportBook } from "../../src/adapters/bb/import-test-support.ts";
 import { createRpcHandlers } from "../../src/adapters/bb/rpc-handlers.ts";
 import { createRemoteHubService, type RemoteHubService } from "../../src/adapters/bb/service.ts";
 import { registerStreamSocket } from "../../src/adapters/bb/stream-socket.ts";
@@ -244,7 +245,7 @@ describe.skipIf(!dockerOk)("SSH askpass: saved secrets, one attempt, user prompt
       env: process.env as Record<string, string | undefined>,
     });
     book = new CredentialBook({ store: meta, vault: service.credentialVault, profiles, now: () => new Date(), newId: () => randomUUID() });
-    rpc = createRpcHandlers({ service, profiles, credentials: book });
+    rpc = createRpcHandlers({ service, profiles, credentials: book, imports: memoryImportBook(profiles, book) });
     let captured: ((ctx: { url: URL }) => SocketHandlers) | null = null;
     registerStreamSocket({ http: { experimental_websocket: (_p: string, h: typeof captured) => (captured = h) } } as never, { service });
     connectSocket = (url) => captured!({ url: new URL(url) });

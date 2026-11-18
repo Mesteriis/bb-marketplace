@@ -3,6 +3,51 @@
 import { z } from "zod";
 import { credentialBindSchema } from "./credential.ts";
 import { profileInputSchema, profileSchema } from "./profile.ts";
+
+const sourceKindSchema = z.enum(["ssh-config", "hosts", "keys-dir", "agent"]);
+export const importSourceSchema = z.object({
+  id: z.string(),
+  kind: sourceKindSchema,
+  path: z.string().nullable(),
+  label: z.string(),
+  enabled: z.boolean(),
+  useSshG: z.boolean(),
+});
+const scanItemSchema = z.object({
+  key: z.string(),
+  name: z.string(),
+  action: z.enum(["create", "update", "unchanged", "conflict", "deleted-locally", "skip"]),
+  resolved: z.boolean(),
+  flags: z.array(z.string()),
+  host: z.string(),
+  port: z.number().int().nullable(),
+  username: z.string().nullable(),
+  identityFile: z.string().nullable(),
+  skip: z.string().nullable(),
+});
+export const scanResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("ssh-config"), items: z.array(scanItemSchema), stale: z.array(z.string()), issues: z.array(z.string()) }),
+  z.object({ kind: z.literal("hosts"), items: z.array(scanItemSchema), stale: z.array(z.string()), issues: z.array(z.string()) }),
+  z.object({
+    kind: z.literal("keys-dir"),
+    keys: z.array(z.object({ publicPath: z.string(), privatePath: z.string().nullable(), type: z.string(), comment: z.string(), fingerprint: z.string() })),
+    issues: z.array(z.string()),
+  }),
+  z.object({
+    kind: z.literal("agent"),
+    keys: z.array(z.object({ type: z.string(), bits: z.number().int(), fingerprint: z.string(), comment: z.string() })),
+    issues: z.array(z.string()),
+  }),
+]);
+export const importOutcomeSchema = z.object({
+  created: z.number().int(),
+  updated: z.number().int(),
+  unchanged: z.number().int(),
+  conflicts: z.array(z.string()),
+  deletedLocally: z.array(z.string()),
+  skipped: z.array(z.string()),
+  markedStale: z.number().int(),
+});
 import { sessionInputDataSchema } from "./protocol.ts";
 import { MAX_DESKTOP_HEIGHT, MAX_DESKTOP_WIDTH, RDP_CLOSED_REASONS } from "./rdp-protocol.ts";
 import { assertHostToken } from "./ssh-args.ts";
@@ -195,6 +240,25 @@ export const rpcSchemas = {
   credential_status: {
     input: z.object({ ref: z.string().max(96) }).strict(),
     output: z.object({ state: z.enum(["present", "missing", "locked", "denied", "unavailable"]) }),
+  },
+  import_suggestions: {
+    input: z.null(),
+    output: z.array(z.object({ kind: sourceKindSchema, path: z.string().nullable(), label: z.string() })),
+  },
+  import_source_list: { input: z.null(), output: z.array(importSourceSchema) },
+  import_source_add: {
+    input: z.object({ kind: sourceKindSchema, path: z.string().max(1024).nullable(), label: z.string().max(100) }).strict(),
+    output: importSourceSchema,
+  },
+  import_source_set: {
+    input: z.object({ id: z.string().max(64), enabled: z.boolean().optional(), useSshG: z.boolean().optional() }).strict(),
+    output: importSourceSchema,
+  },
+  import_source_remove: { input: z.object({ id: z.string().max(64) }).strict(), output: z.object({ removed: z.boolean() }) },
+  import_scan: { input: z.object({ id: z.string().max(64) }).strict(), output: scanResultSchema },
+  import_apply: {
+    input: z.object({ id: z.string().max(64), keys: z.array(z.string().max(256)).max(500).optional() }).strict(),
+    output: importOutcomeSchema,
   },
   profile_duplicate: {
     input: z.object({ id: z.string().uuid() }),
