@@ -45,6 +45,16 @@ describe("RDP control messages as the helper writes them", () => {
     expect(decoded('{"type":"rdp.screenshot_chunk","id":4,"sessionId":3,"index":0,"count":59,"data":"AAAA"}')).toMatchObject({ index: 0, count: 59 });
   });
 
+  it("accepts the session.opened an RDP open produces (0 x 0 grid, pid, kind rdp)", () => {
+    expect(decoded('{"type":"session.opened","id":2,"sessionId":5,"cols":0,"rows":0,"pid":4242,"kind":"rdp"}')).toMatchObject({
+      type: "session.opened",
+      sessionId: 5,
+      cols: 0,
+      rows: 0,
+      kind: "rdp",
+    });
+  });
+
   it("refuses a screenshot answer with an impossible chunk count or an oversized desktop", () => {
     const bad = (json: string) => decodeFrame(controlFrameOf(json)).status;
     expect(bad('{"type":"rdp.screenshot","id":4,"sessionId":3,"frameId":2,"width":8,"height":8,"timestamp":5,"png":"","chunks":1}')).toBe("error");

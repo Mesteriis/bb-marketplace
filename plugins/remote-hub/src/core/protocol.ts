@@ -137,8 +137,9 @@ export const sessionOpenedSchema = z.object({
   type: z.literal("session.opened"),
   id: idSchema,
   sessionId: sessionIdSchema,
-  cols: sizeSchema,
-  rows: sizeSchema,
+  // An RDP session has no character grid: the helper reports 0 x 0.
+  cols: z.number().int().min(0).max(65535),
+  rows: z.number().int().min(0).max(65535),
   kind: z.string().min(1),
 });
 export const sessionInputAckSchema = z.object({

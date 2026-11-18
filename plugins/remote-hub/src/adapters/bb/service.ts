@@ -5,7 +5,7 @@
 import { AttachTokens, ATTACH_TOKEN_TTL_MS, type Clock } from "../../core/attach.ts";
 import { createCreditState, type CreditState } from "../../core/credit.ts";
 import { buildSshSpawn, type SshTarget } from "../../core/ssh-args.ts";
-import { HelperProcess, HelperStatus, HelperRuntimeError, HelperRequestError, type RdpHelperEvent } from "./helper-process.ts";
+import { HelperProcess, type HelperStatus, HelperRuntimeError, HelperRequestError, type RdpHelperEvent } from "./helper-process.ts";
 import type { RdpInfo, RdpTarget, SessionHandle } from "../../core/rpc.ts";
 import { parseUpdateChunk, RDP_STATES, type RdpInputEvent } from "../../core/rdp-protocol.ts";
 import { createRdpTrustStore, fingerprintEqual, type RdpTrustStore } from "../../core/rdp-trust.ts";
