@@ -20,6 +20,8 @@ export interface SessionInfo {
   kind: "echo" | "ssh" | "rdp";
   target?: SshTarget;
   rdp?: RdpInfo;
+  /** The saved profile this session was opened from. */
+  profileId?: string;
   state: SessionState;
   exitCode: number | null;
   signal: number | null;
@@ -56,9 +58,9 @@ export interface RemoteHubService {
   echoOpen(cols: number, rows: number): Promise<SessionHandle>;
   echoInput(handle: SessionHandle, data: string): Promise<{ output: string; truncated: boolean }>;
   echoClose(handle: SessionHandle): Promise<{ closed: boolean }>;
-  sshOpen(target: SshTarget, cols: number, rows: number): Promise<SessionHandle>;
+  sshOpen(target: SshTarget, cols: number, rows: number, profileId?: string): Promise<SessionHandle>;
   sshOpenTest(cols: number, rows: number): Promise<SessionHandle>;
-  rdpOpen(target: RdpTarget, width: number, height: number): Promise<SessionHandle>;
+  rdpOpen(target: RdpTarget, width: number, height: number, profileId?: string): Promise<SessionHandle>;
   rdpCertDecision(handle: SessionHandle, fingerprint: string, accept: "once" | "session_trust" | "reject"): Promise<void>;
   rdpScreenshot(handle: SessionHandle): Promise<ScreenshotResult>;
   rdpAttach(handle: SessionHandle, viewId: string, sink: RdpViewSink): RdpAttachment;
@@ -459,7 +461,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
       applyEarlyClosed(keyOf(handle));
       return handle;
     }),
-    sshOpen: tracked(async (target, cols, rows) => {
+    sshOpen: tracked(async (target, cols, rows, profileId) => {
       const hp = await start();
       const spec = buildSshSpawn(target, deps.env ?? process.env);
       const handle = await hp.openSsh(spec, cols, rows);
@@ -472,11 +474,12 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         exitCode: null,
         signal: null,
         reason: null,
+        ...(profileId === undefined ? {} : { profileId }),
       });
       applyEarlyClosed(keyOf(handle));
       return handle;
     }),
-    rdpOpen: tracked(async (target, width, height) => {
+    rdpOpen: tracked(async (target, width, height, profileId) => {
       const hp = await start();
       const handle = await hp.openRdp({
         host: target.host,
@@ -498,6 +501,7 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         exitCode: null,
         signal: null,
         reason: null,
+        ...(profileId === undefined ? {} : { profileId }),
         rdp: {
           target: { host: target.host, port: target.port, username: target.username, domain: target.domain ?? null },
           state: "connecting",

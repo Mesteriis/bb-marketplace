@@ -1,6 +1,7 @@
 // The BB RPC contract for the Remote Hub page, as plain zod schemas.
 // server.ts wraps these with the SDK's defineRpcContract.
 import { z } from "zod";
+import { profileInputSchema, profileSchema } from "./profile.ts";
 import { sessionInputDataSchema } from "./protocol.ts";
 import { MAX_DESKTOP_HEIGHT, MAX_DESKTOP_WIDTH, RDP_CLOSED_REASONS } from "./rdp-protocol.ts";
 import { assertHostToken } from "./ssh-args.ts";
@@ -108,7 +109,13 @@ export const rpcSchemas = {
     output: z.object({ closed: z.boolean() }),
   },
   ssh_open: {
-    input: z.object({ target: sshTargetSchema, cols: sizeSchema.default(80), rows: sizeSchema.default(24) }),
+    input: z.object({
+      target: sshTargetSchema,
+      cols: sizeSchema.default(80),
+      rows: sizeSchema.default(24),
+      /** The saved profile this open belongs to; the session carries it and the profile records the outcome. */
+      profileId: z.string().uuid().optional(),
+    }),
     output: sessionHandleSchema,
   },
   rdp_open: {
@@ -116,6 +123,7 @@ export const rpcSchemas = {
       target: rdpTargetSchema,
       width: z.number().int().min(1).max(MAX_DESKTOP_WIDTH).default(1280),
       height: z.number().int().min(1).max(MAX_DESKTOP_HEIGHT).default(800),
+      profileId: z.string().uuid().optional(),
     }),
     output: sessionHandleSchema,
   },
@@ -136,6 +144,22 @@ export const rpcSchemas = {
       /** Base64 of the PNG. */
       png: z.string(),
     }),
+  },
+  profile_list: {
+    input: z.null(),
+    output: z.array(profileSchema),
+  },
+  profile_save: {
+    input: profileInputSchema,
+    output: profileSchema,
+  },
+  profile_delete: {
+    input: z.object({ id: z.string().uuid() }),
+    output: z.object({ deleted: z.boolean() }),
+  },
+  profile_duplicate: {
+    input: z.object({ id: z.string().uuid() }),
+    output: profileSchema,
   },
   session_list: {
     input: z.null(),

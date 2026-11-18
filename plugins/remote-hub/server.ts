@@ -4,13 +4,16 @@
 // service, exposes a schema-validated RPC contract to the app, and tears the
 // helper down on dispose. All wire schemas live in src/core/rpc.ts and
 // src/core/protocol.ts.
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, experimental_PluginRpcRefusal, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { HELPER_BIN_NAME, HelperProcess, HelperRequestError, HelperRuntimeError, HelperStartError } from "./src/adapters/bb/helper-process.ts";
+import { PROFILE_MIGRATIONS, createSqliteProfileStore } from "./src/adapters/bb/profile-sqlite.ts";
 import { createRemoteHubService } from "./src/adapters/bb/service.ts";
 import { registerStreamSocket } from "./src/adapters/bb/stream-socket.ts";
+import { ProfileBook, ProfileError } from "./src/core/profile-book.ts";
 import { rpcSchemas } from "./src/core/rpc.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
@@ -32,6 +35,22 @@ export default function plugin(bb: BbPluginApi): void {
   const service = createRemoteHubService({
     startHelper: () => HelperProcess.start(pluginRootDir()),
   });
+
+  const db = bb.storage.database();
+  bb.storage.migrate(db, PROFILE_MIGRATIONS);
+  const profiles = new ProfileBook({
+    store: createSqliteProfileStore(db),
+    now: () => new Date(),
+    newId: () => randomUUID(),
+  });
+  const withProfile = <T>(run: () => T): T => {
+    try {
+      return run();
+    } catch (error) {
+      if (error instanceof ProfileError) throw new experimental_PluginRpcRefusal({ code: "not_found", message: error.message });
+      throw error;
+    }
+  };
 
   const withHelper = async <T>(run: () => T | Promise<T>): Promise<T> => {
     try {
@@ -55,8 +74,14 @@ export default function plugin(bb: BbPluginApi): void {
       ),
     echo_close: (input) =>
       withHelper(() => service.echoClose({ generation: input.generation, sessionId: input.sessionId })),
-    ssh_open: (input) => withHelper(() => service.sshOpen(input.target, input.cols, input.rows)),
-    rdp_open: (input) => withHelper(() => service.rdpOpen(input.target, input.width, input.height)),
+    ssh_open: (input) =>
+      profiles.track(input.profileId, () => withHelper(() => service.sshOpen(input.target, input.cols, input.rows, input.profileId))),
+    rdp_open: (input) =>
+      profiles.track(input.profileId, () => withHelper(() => service.rdpOpen(input.target, input.width, input.height, input.profileId))),
+    profile_list: () => profiles.list(),
+    profile_save: (input) => withProfile(() => profiles.save(input)),
+    profile_delete: (input) => ({ deleted: profiles.remove(input.id) }),
+    profile_duplicate: (input) => withProfile(() => profiles.duplicate(input.id)),
     rdp_cert_decision: (input) =>
       withHelper(async () => {
         await service.rdpCertDecision({ generation: input.generation, sessionId: input.sessionId }, input.fingerprint, input.accept);

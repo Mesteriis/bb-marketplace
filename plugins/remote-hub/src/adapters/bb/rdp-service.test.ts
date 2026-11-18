@@ -228,6 +228,19 @@ describe("RDP service: states and the desktop", () => {
     expect(service.rdpInfo(handle)?.trace).toEqual(["connecting"]);
   });
 
+  it("a session opened from a profile carries its id in session_list, SSH and RDP alike; others have none", async () => {
+    const { service } = setup();
+    const id = "11111111-2222-4333-8444-555555555555";
+    const rdp = await service.rdpOpen(TARGET, 800, 600, id);
+    const ssh = await service.sshOpen({ host: "example.com", extraOptions: [] }, 80, 24, id);
+    const plain = await service.rdpOpen(TARGET, 800, 600);
+    const byId = new Map(service.sessionList().map((s) => [s.sessionId, s]));
+    expect(byId.get(rdp.sessionId)?.profileId).toBe(id);
+    expect(byId.get(ssh.sessionId)?.profileId).toBe(id);
+    expect(byId.get(plain.sessionId)?.profileId).toBeUndefined();
+    expect(JSON.stringify(service.sessionList())).not.toContain(SECRET);
+  });
+
   it("session_list shows kind rdp with the endpoint and no password", async () => {
     const { service } = setup();
     const handle = await service.rdpOpen({ ...TARGET, domain: "CORP" }, 8, 4);
