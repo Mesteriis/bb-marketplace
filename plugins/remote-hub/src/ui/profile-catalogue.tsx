@@ -103,7 +103,7 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
                     {p.credentialRef !== null && <span className="rh-status">saved password</span>}
                     {p.provenance != null && (
                       <span className="rh-status" data-testid="profile-provenance">
-                        {"imported from " + (p.provenance.sourceKind === "ssh-config" ? "ssh config" : "hosts file")}
+                        {"source: " + (p.provenance.sourceKind === "ssh-config" ? "ssh config" : "hosts file")}
                         {p.provenance.stale ? " · no longer in the source" : ""}
                         {p.provenance.editedLocally ? " · edited here" : ""}
                         {!p.provenance.resolved ? " · uses your ssh config, no saved password" : ""}

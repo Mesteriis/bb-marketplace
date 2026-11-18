@@ -191,3 +191,16 @@ describe("ProfileCatalogue and saved passwords (stage 3b-1)", () => {
     expect(screen.queryByRole("button", { name: "Credentials" })).toBeNull();
   });
 });
+
+describe("ProfileCatalogue provenance", () => {
+  it("says where an imported profile came from, and that an unresolved one cannot use a saved password", () => {
+    const base = {
+      id: "11111111-2222-4333-8444-555555555551", executionHostId: "local", origin: "imported", createdAt: "x", updatedAt: "x", lastOpenedAt: null, recentErrors: [],
+      name: "jump", protocol: "ssh", group: null, tags: [], favorite: false, color: null, host: "jump", port: null, username: null, domain: null,
+      authType: "agent", identityFile: null, credentialRef: null, rdpWidth: null, rdpHeight: null,
+      provenance: { sourceId: "s", sourceKind: "ssh-config", sourceKey: "jump", resolved: false, stale: true, flags: ["proxy"], editedLocally: true },
+    } as never;
+    render(<ProfileCatalogue profiles={[base]} error={null} sessions={[]} onConnect={() => {}} onEdit={() => {}} onNew={() => {}} onDuplicate={() => {}} onDelete={() => {}} onRetry={() => {}} />);
+    expect(screen.getByTestId("profile-provenance").textContent).toBe("source: ssh config · no longer in the source · edited here · uses your ssh config, no saved password");
+  });
+});
