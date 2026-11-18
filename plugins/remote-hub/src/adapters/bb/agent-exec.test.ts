@@ -82,16 +82,20 @@ describe("agent exec ports", () => {
     expect((t.seen as Array<{ phase: string; text: string }>).find((e) => e.phase === "output")!.text).toBe("aredb\n");
   });
 
-  it("tells the tools when a run ended, whether the helper said so or the poll saw it, and stops polling then", async () => {
+  it("tells the tools when a run ended as soon as the helper says so, but the live view still gets the last output and the end", async () => {
     const t = setup();
     const ended: string[] = [];
     t.ports.onFinished((k) => ended.push(k));
+    t.setReads([snap({ running: false, exitCode: 0, reason: "exited", stdout: chunk("last words\n") })]);
     await t.ports.start({ sessionKey: SESSION, profileId: P, command: "id", timeoutMs: 1000 });
     t.finished[0]!({ handle: { generation: GEN, execId: 9 }, exitCode: 0, signal: null, reason: "exited", refused: null });
     expect(ended).toEqual([`${GEN}.9`]);
+    await vi.waitFor(() => expect(t.seen.some((e) => (e as { phase?: string }).phase === "finished")).toBe(true));
+    expect((t.seen as Array<{ phase: string; text: string }>).filter((e) => e.phase === "output").map((e) => e.text)).toEqual(["last words\n"]);
+    // Once it has shown the end it stops looking.
     const calls = t.service.execRead.mock.calls.length;
     await new Promise((r) => setTimeout(r, 40));
-    expect(t.service.execRead.mock.calls.length).toBeLessThanOrEqual(calls + 1);
+    expect(t.service.execRead.mock.calls.length).toBe(calls);
   });
 
   it("read, cancel and forget address the run by its key", async () => {

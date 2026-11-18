@@ -36,10 +36,13 @@ const keyOf = (h: ExecHandle): string => `${h.generation}.${h.execId}`;
 export function agentExecPorts({ service, profiles, credentials, feed, pollMs = 300 }: AgentExecPortDeps): AgentExecPorts {
   const finishedListeners = new Set<(runKey: string) => void>();
   const polls = new Map<string, ReturnType<typeof setInterval>>();
-  const announceFinished = (runKey: string): void => {
+  const stopPoll = (runKey: string): void => {
     const timer = polls.get(runKey);
     if (timer !== undefined) clearInterval(timer);
     polls.delete(runKey);
+  };
+  /** Tells the tools a run is over. The live poll is left running: it still has to show the last output and the end. */
+  const announceFinished = (runKey: string): void => {
     for (const cb of [...finishedListeners]) {
       try {
         cb(runKey);
@@ -76,10 +79,12 @@ export function agentExecPorts({ service, profiles, credentials, feed, pollMs = 
           }
           if (!snap.running) {
             feed?.emit(sessionKey, { kind: "exec", commandId: runKey, phase: "finished", text: "", exitCode: snap.exitCode, ...(snap.reason === null ? {} : { reason: snap.reason }) });
+            stopPoll(runKey);
             announceFinished(runKey);
           }
         } catch {
           // the run is gone or the helper restarted: nothing more to show
+          stopPoll(runKey);
           announceFinished(runKey);
         } finally {
           busy = false;

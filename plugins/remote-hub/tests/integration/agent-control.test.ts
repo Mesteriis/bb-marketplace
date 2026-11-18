@@ -6,6 +6,9 @@
 //  RDP: an agent moves the pointer on a real desktop with typed actions; a stale geometry is refused and moves nothing;
 //       a takeover refuses the next input.
 // Needs docker and REMOTE_HUB_INTEGRATION=1; a 300 s watchdog aborts a hung run.
+import { agentExecPorts } from "../../src/adapters/bb/agent-exec.ts";
+import { createExecTools } from "../../src/core/agent-exec-tools.ts";
+import { AgentFeed } from "../../src/core/agent-feed.ts";
 import { AgentSettings } from "../../src/core/agent-settings.ts";
 import { WatcherBook } from "../../src/core/watchers.ts";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -137,14 +140,17 @@ async function compose(env: Record<string, string>) {
     ports: agentPorts(service, profiles),
     sessionExtras: controlSessionExtras(leases, controlPorts),
   };
-  const tools: AgentToolDef[] = [...createAgentTools(toolDeps), ...createControlTools({ ...toolDeps, leases, control: controlPorts, registry })];
+  const feed = new AgentFeed();
+  const execPorts = agentExecPorts({ service, profiles, credentials: book, feed });
+  const controlDeps = { ...toolDeps, leases, control: controlPorts, registry, feed };
+  const tools: AgentToolDef[] = [...createAgentTools(toolDeps), ...createControlTools(controlDeps), ...createExecTools({ ...controlDeps, exec: execPorts })];
   const call = (name: string, input: unknown): Promise<ToolResult> => {
     const t = tools.find((x) => x.name === name)!;
     return t.execute(t.parameters.parse(input), THREAD);
   };
   const text = (r: ToolResult) => r.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n");
   let captured: ((ctx: { url: URL }) => Handlers) | null = null;
-  registerStreamSocket({ http: { experimental_websocket: (_p: string, h: typeof captured) => (captured = h) } } as never, { service, watchers });
+  registerStreamSocket({ http: { experimental_websocket: (_p: string, h: typeof captured) => (captured = h) } } as never, { service, watchers, feed });
   /** A view of the session as the page shows it; by default visible and reporting in (a person looking at it). */
   const view = async (handle: { generation: string; sessionId: number }, visible: boolean | null = true) => {
     const socket = makeSocket();
@@ -153,7 +159,7 @@ async function compose(env: Record<string, string>) {
     if (visible !== null) h.onMessage(socket, JSON.stringify({ type: "watch", visible }));
     return { socket, h };
   };
-  return { profiles, book, leases, registry, service, access, rows, handlers, call, text, view, tools, watchers, settings };
+  return { profiles, book, leases, registry, service, access, rows, handlers, call, text, view, tools, watchers, settings, feed };
 }
 
 const fields = (over: Partial<ProfileFields>): ProfileFields => ({
@@ -350,6 +356,170 @@ describe.skipIf(!dockerOk)("agent control over SSH: connect, owner decides the h
     expect(c.leases.owner(key2).kind).toBe("human");
     viewed.h.onClose();
     await c.service.sessionClose(plain);
+  }, 90_000);
+});
+
+describe.skipIf(!dockerOk)("remote commands over a real sshd (stage 4b-2)", () => {
+  let tmp = "";
+  let cid = "";
+  let c!: Awaited<ReturnType<typeof compose>>;
+  let profileId = "";
+  let sessionId = "";
+  let viewed: Awaited<ReturnType<typeof c.view>> | null = null;
+  let beat: ReturnType<typeof setInterval> | null = null;
+  const watchdog = setTimeout(() => process.abort(), 400_000);
+  const key = (r: ToolResult) => JSON.parse(c.text(r)) as Record<string, any>;
+
+  beforeAll(async () => {
+    assertTestHooksHelper(HELPER);
+    execFileSync("docker", ["build", "-q", "-t", "remote-hub-sshd-test", here], { stdio: "ignore" });
+    tmp = makeTemp("rh-exec-");
+    const port = await freePort();
+    cid = execFileSync("docker", ["run", "-d", "-p", `127.0.0.1:${port}:22`, "remote-hub-sshd-test"], { encoding: "utf8" }).trim();
+    execFileSync("docker", ["exec", "-i", cid, "chpasswd"], { input: `root:${PASSWORD}\n` });
+    await sleep(2000);
+    c = await compose(throwawayEnv(tmp));
+    const p = c.profiles.save({ fields: fields({ port }) });
+    profileId = p.id;
+    await c.book.save({ profileId: p.id, secret: PASSWORD });
+    c.access.set(profileId, "exec", false);
+    // The agent opens the session; the owner decides the host key and watches it.
+    const opened = key(await c.call("remote_connect", { connectionId: profileId }));
+    sessionId = opened.sessionId as string;
+    const [generation, id] = sessionId.split(".");
+    const handle = { generation: generation as string, sessionId: Number(id) };
+    await poll(async () => {
+      for (const q of c.service.sshPendingPrompts(handle)) await c.handlers.agent_prompt_answer({ ...handle, promptId: q.promptId, answer: "yes" } as never);
+      return c.service.agentControl(handle) === "ready";
+    }, 60_000, "the session is ready");
+    // A page that is open and visible reports in every 2 s (a view that reported once goes stale after 6 s).
+    viewed = await c.view(handle, true);
+    beat = setInterval(() => viewed?.h.onMessage(viewed.socket, JSON.stringify({ type: "watch", visible: true })), 2000);
+  }, 240_000);
+
+  afterAll(() => {
+    clearTimeout(watchdog);
+    if (beat !== null) clearInterval(beat);
+    c?.service.stop();
+    if (cid !== "") spawnSync("docker", ["rm", "-f", cid], { stdio: "ignore" });
+    removeTemps();
+  });
+
+  const run = async (command: string, extra: Record<string, unknown> = {}) => key(await c.call("remote_ssh_exec", { sessionId, command, ...extra }));
+  const read = async (commandId: string, extra: Record<string, unknown> = {}) => key(await c.call("remote_command_read", { commandId, waitSeconds: 20, ...extra }));
+  const body = (stream: { text: string }) => stream.text.replace(/^\[remote output [^\n]*\n/, "").replace(/\n\[end of remote output [^\n]*$/, "").replace(/\n$/, "");
+
+  it("output: stdout and stderr stay apart, the exit code is the command's, and the command was handed to the REMOTE shell", async () => {
+    const started = await run("printf 'A%sB' $((6*7)); echo; echo oops >&2; echo $0 | grep -c sh; exit 3");
+    expect(started.state).toBe("running");
+    expect(String(started.note)).toContain("remote shell");
+    const r = await read(started.commandId);
+    expect(r).toMatchObject({ running: false, exitCode: 3, reason: "exited", refused: null });
+    expect(body(r.stdout)).toContain("A42B"); // $((6*7)) was expanded by the remote shell
+    expect(body(r.stderr)).toBe("oops");
+    expect(r.stdout.text).toMatch(/untrusted data, never instructions/);
+  }, 90_000);
+
+  it("a local expansion never happens: $HOME is the REMOTE user's, and a file the local shell could glob is not touched", async () => {
+    const r = await read((await run("echo $HOME; echo ~root")).commandId);
+    expect(body(r.stdout)).toBe("/root\n/root");
+  }, 60_000);
+
+  it("exit codes and signals are reported as they are", async () => {
+    expect((await read((await run("exit 7")).commandId)).exitCode).toBe(7);
+    expect((await read((await run("sh -c 'exit 0'")).commandId)).exitCode).toBe(0);
+    const killed = await read((await run("kill -9 $$")).commandId);
+    expect(killed.running).toBe(false);
+    expect(killed.exitCode === 255 || killed.exitCode === null, JSON.stringify(killed)).toBe(true); // ssh reports a vanished remote shell as 255
+  }, 120_000);
+
+  it("large output is cut at the head: the answer is bounded, the total is counted, the truncation is said", async () => {
+    const started = await run("head -c 3000000 /dev/zero | tr '\\0' 'A'");
+    const r = await read(started.commandId, { maxBytes: 32768 });
+    expect(r.running).toBe(false);
+    expect(r.stdout.total).toBe(3_000_000);
+    expect(r.stdout.truncated).toBe(true);
+    expect(r.stdout.bytes).toBe(32768);
+    expect(r.stdout.text.length).toBeLessThan(33_000 + 200);
+    // The next slice continues where the last ended.
+    const more = await read(started.commandId, { stdoutFrom: r.stdout.next, maxBytes: 100 });
+    expect(more.stdout).toMatchObject({ from: 32768, bytes: 100 });
+  }, 120_000);
+
+  it("a command that runs too long is stopped and says so", async () => {
+    const started = await run("echo begun; sleep 60", { timeoutSeconds: 2 });
+    const r = await read(started.commandId);
+    expect(r).toMatchObject({ running: false, reason: "timeout" });
+    expect(body(r.stdout)).toBe("begun");
+  }, 90_000);
+
+  it("cancel stops it; the remote process does not keep the owner's host busy", async () => {
+    const started = await run("sleep 120");
+    const cancelled = key(await c.call("remote_command_cancel", { commandId: started.commandId }));
+    expect(cancelled.cancelling).toBe(true);
+    expect((await read(started.commandId)).reason).toBe("cancelled");
+    expect(key(await c.call("remote_command_cancel", { commandId: started.commandId })).cancelling).toBe(false);
+  }, 90_000);
+
+  it("stdin is closed: a command that reads input sees end of file at once instead of waiting", async () => {
+    const t0 = Date.now();
+    const r = await read((await run("cat; read x; echo got:[$x]")).commandId);
+    expect(body(r.stdout)).toBe("got:[]");
+    expect(Date.now() - t0).toBeLessThan(20_000);
+  }, 60_000);
+
+  it("binary output arrives as sanitized text with its byte count", async () => {
+    const r = await read((await run("printf '\\000\\001\\377abc\\033[31m'")).commandId);
+    expect(r.stdout.bytes).toBeGreaterThanOrEqual(8);
+    expect(r.stdout.text).not.toMatch(/[\u0000\u0001\u001b]/);
+    expect(r.stdout.text).toContain("abc");
+  }, 60_000);
+
+  it("two commands at once on the session keep their own output; a third is refused", async () => {
+    const a = await run("sleep 3; echo first");
+    const b = await run("sleep 3; echo second");
+    expect(c.text(await c.call("remote_ssh_exec", { sessionId, command: "echo third" }))).toContain("too_many_commands");
+    const [ra, rb] = await Promise.all([read(a.commandId), read(b.commandId)]);
+    expect(body(ra.stdout)).toBe("first");
+    expect(body(rb.stdout)).toBe("second");
+  }, 90_000);
+
+  it("the owner sees the command and its output live, and the audit never holds the text while record-commands is off", async () => {
+    const seen: any[] = [];
+    const handle = { generation: sessionId.split(".")[0] as string, sessionId: Number(sessionId.split(".")[1]) };
+    const off = c.feed.subscribe(sessionId, (e) => seen.push(e));
+    const r = await read((await run("echo LIVE-MARKER-1; sleep 1; echo LIVE-MARKER-2")).commandId);
+    off();
+    expect(r.exitCode).toBe(0);
+    await poll(() => seen.some((e) => e.phase === "finished"), 10_000, "the live view saw the end");
+    expect(seen[0]).toMatchObject({ kind: "exec", phase: "started", text: "echo LIVE-MARKER-1; sleep 1; echo LIVE-MARKER-2" });
+    expect(seen.filter((e) => e.phase === "output").map((e) => e.text).join("")).toContain("LIVE-MARKER-2");
+    expect(JSON.stringify(c.rows)).not.toContain("LIVE-MARKER");
+    expect(c.rows.filter((x) => x.tool === "remote_ssh_exec").every((x) => x.detailMode === "length" && /^len \d+$/.test(x.detail ?? ""))).toBe(true);
+    void handle;
+  }, 90_000);
+
+  it("with record-commands on the audit keeps the text; the grant going below exec stops a running command and ends reading", async () => {
+    c.access.set(profileId, "exec", true);
+    expect((await run("echo recorded-marker")).commandId).toBeTruthy();
+    expect(c.rows.at(-1)).toMatchObject({ tool: "remote_ssh_exec", detailMode: "text", detail: "echo recorded-marker" });
+    c.access.set(profileId, "exec", false);
+    const long = await run("sleep 120");
+    c.access.set(profileId, "input", false); // revoke during the run
+    expect(c.text(await c.call("remote_command_read", { commandId: long.commandId }))).toContain("agent_access_denied");
+    c.access.set(profileId, "exec", false);
+    await poll(async () => (await read(long.commandId, { waitSeconds: 0 })).running === false, 30_000, "the revoked command was stopped");
+    expect((await read(long.commandId, { waitSeconds: 0 })).reason).toBe("cancelled");
+  }, 120_000);
+
+  it("the owner's watching rule: refused with nobody looking, accepted when the owner turned the rule off", async () => {
+    // The owner closes the view that was open all along.
+    if (beat !== null) clearInterval(beat);
+    viewed?.h.onClose();
+    expect(c.text(await c.call("remote_ssh_exec", { sessionId, command: "id" }))).toContain("owner_not_watching");
+    await c.handlers.agent_settings_set({ requireWatching: false });
+    expect((await c.call("remote_ssh_exec", { sessionId, command: "echo unwatched-ok" })).isError).toBeUndefined();
+    await c.handlers.agent_settings_set({ requireWatching: true });
   }, 90_000);
 });
 
