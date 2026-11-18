@@ -188,6 +188,11 @@ describe.skipIf(!dockerOk)("a saved credential and a typed password leak into no
     // 2. The saved credential: the page names the reference; the helper resolves it from the Keychain.
     book.authorizeEndpoint(ref, { protocol: "rdp", host: "127.0.0.1", port, user: "rdptest", domain: null });
     const saved = await service.rdpOpen({ host: "127.0.0.1", port, username: "rdptest", credentialRef: ref }, 800, 600, profile.id);
+    // The first use of an unpinned saved password always puts the certificate to the user (it pins the password to it),
+    // even though this run already trusted the same certificate.
+    const firstUse = await poll(() => service.rdpInfo(saved)?.prompt, 30_000, "first-use certificate prompt");
+    expect(firstUse.firstUse).toBe(true);
+    await service.rdpCertDecision(saved, firstUse.fingerprint, "once");
     await poll(() => service.rdpInfo(saved)?.state === "desktop_ready", 30_000, "desktop_ready (saved credential)");
 
     // 3. A credential refused for another endpoint produces an error text, which is also searched.
