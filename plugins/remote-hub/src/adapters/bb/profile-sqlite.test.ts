@@ -130,7 +130,8 @@ describe("upgrading a database made by the schema before the needs_config backfi
     // The list as the previous release ran it (bb.storage.migrate numbers statements by position).
     const previous = [...PROFILE_MIGRATIONS, ...CREDENTIAL_MIGRATIONS, ...IMPORT_MIGRATIONS, ...PROFILE_LATER_MIGRATIONS, ...RDP_TRUST_MIGRATIONS];
     expect(ALL_MIGRATIONS.slice(0, previous.length)).toEqual(previous);
-    expect(ALL_MIGRATIONS.slice(previous.length)).toEqual(NEEDS_CONFIG_BACKFILL);
+    const { AGENT_MIGRATIONS } = await import("./agent-sqlite.ts");
+    expect(ALL_MIGRATIONS.slice(previous.length)).toEqual([...NEEDS_CONFIG_BACKFILL, ...AGENT_MIGRATIONS]);
     const db = new Database(":memory:");
     for (const statement of previous) db.exec(statement);
     const profile = (id: string, name: string) =>
