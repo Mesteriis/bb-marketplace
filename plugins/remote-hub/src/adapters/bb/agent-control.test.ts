@@ -91,11 +91,11 @@ describe("the control ports", () => {
 
   it("writes go to the service as the agent's own paths, by handle", async () => {
     const { p, service } = ports();
-    await p.terminalWrite(`${GEN}.3`, new TextEncoder().encode("ls"));
-    await p.rdpWrite(`${GEN}.4`, [{ kind: "ctrl_alt_del" }]);
-    expect(service.agentTerminalInput).toHaveBeenCalledWith({ generation: GEN, sessionId: 3 }, new TextEncoder().encode("ls"));
-    expect(service.agentRdpInput).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }, [{ kind: "ctrl_alt_del" }]);
-    await expect(p.terminalWrite("garbage", new Uint8Array())).rejects.toBeDefined();
+    await p.terminalWrite(`${GEN}.3`, new TextEncoder().encode("ls"), "agent:L");
+    await p.rdpWrite(`${GEN}.4`, [{ kind: "ctrl_alt_del" }], "agent:L");
+    expect(service.agentTerminalInput).toHaveBeenCalledWith({ generation: GEN, sessionId: 3 }, new TextEncoder().encode("ls"), "agent:L");
+    expect(service.agentRdpInput).toHaveBeenCalledWith({ generation: GEN, sessionId: 4 }, [{ kind: "ctrl_alt_del" }], "agent:L");
+    await expect(p.terminalWrite("garbage", new Uint8Array(), "agent:L")).rejects.toBeDefined();
   });
 
   it("disconnect closes the session and waitingForOwner reports kinds only", async () => {

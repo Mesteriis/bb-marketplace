@@ -16,7 +16,11 @@ class FakeHelper {
   currentGeneration = GEN;
   next = 1;
   typed: Array<{ sessionId: number; text: string }> = [];
-  rdpInputs: Array<{ sessionId: number; events: unknown[] }> = [];
+  agentTyped: Array<{ sessionId: number; text: string; owner: string }> = [];
+  rdpInputs: Array<{ sessionId: number; events: unknown[]; owner?: string }> = [];
+  owners: string[] = [];
+  /** When set, session.set_owner answers only when this is called (a handoff that takes a while). */
+  holdOwner: (() => void)[] | null = null;
   private eventCb: Array<(sid: number, e: RdpHelperEvent) => void> = [];
   private askpassCb: Array<(sid: number, e: unknown) => void> = [];
   async openSsh(): Promise<SessionHandle> {
@@ -28,8 +32,16 @@ class FakeHelper {
   writeInput(sessionId: number, data: Uint8Array): void {
     this.typed.push({ sessionId, text: new TextDecoder().decode(data) });
   }
-  async rdpInput(handle: SessionHandle, events: unknown[]): Promise<void> {
-    this.rdpInputs.push({ sessionId: handle.sessionId, events });
+  async rdpInput(handle: SessionHandle, events: unknown[], owner?: string): Promise<void> {
+    this.rdpInputs.push({ sessionId: handle.sessionId, events, ...(owner === undefined ? {} : { owner }) });
+  }
+  async sessionSetOwner(_handle: SessionHandle, owner: string): Promise<{ dropped: number; released: number }> {
+    this.owners.push(owner);
+    if (this.holdOwner !== null) await new Promise<void>((resolve) => this.holdOwner!.push(resolve));
+    return { dropped: 0, released: 0 };
+  }
+  async sessionInputFrom(handle: SessionHandle, data: string, owner: string): Promise<void> {
+    this.agentTyped.push({ sessionId: handle.sessionId, text: data, owner });
   }
   async credit(): Promise<void> {}
   async rdpRefresh(): Promise<void> {}
@@ -97,6 +109,11 @@ function setup() {
   };
   const control: ControlGate = {
     humanMayDrive: (h) => leases.owner(KEY(h)).kind === "human",
+    ownerTag: (h) => {
+      const o = leases.owner(KEY(h));
+      return o.kind === "human" ? "human" : `agent:${o.leaseId}`;
+    },
+    onChange: (cb) => leases.onChange((key) => cb({ generation: key.split(".")[0] as string, sessionId: Number(key.split(".")[1]) })),
     state: view,
     subscribe: (h, cb) => {
       const listener = (key: string) => key === KEY(h) && cb(view(h));
@@ -137,8 +154,9 @@ describe("a terminal session while an agent holds the lease", () => {
     await flush();
     expect(helper.typed).toEqual([]);
     expect(texts(socket).filter((m) => m.type === "input_blocked")).toEqual([{ type: "input_blocked" }]);
-    await service.agentTerminalInput(handle, new TextEncoder().encode("echo hi\r"));
-    expect(helper.typed).toEqual([{ sessionId: handle.sessionId, text: "echo hi\r" }]);
+    await service.agentTerminalInput(handle, new TextEncoder().encode("echo hi\r"), "agent:lease-1");
+    expect(helper.typed).toEqual([]);
+    expect(helper.agentTyped).toEqual([{ sessionId: handle.sessionId, text: "echo hi\r", owner: "agent:lease-1" }]);
   });
 
   it("a view that attaches while the human drives hears nothing; it is told when that changes, and at attach when an agent holds the session", async () => {
@@ -188,8 +206,8 @@ describe("a desktop session while an agent holds the lease", () => {
     await flush();
     expect(helper.rdpInputs).toEqual([]);
     expect(texts(socket).filter((m) => m.type === "input_blocked")).toEqual([{ type: "input_blocked" }]);
-    await service.agentRdpInput(handle, [{ kind: "ctrl_alt_del" }]);
-    expect(helper.rdpInputs).toEqual([{ sessionId: handle.sessionId, events: [{ kind: "ctrl_alt_del" }] }]);
+    await service.agentRdpInput(handle, [{ kind: "ctrl_alt_del" }], "agent:lease-1");
+    expect(helper.rdpInputs).toEqual([{ sessionId: handle.sessionId, events: [{ kind: "ctrl_alt_del" }], owner: "agent:lease-1" }]);
   });
 
   it("the view hears about every change of the owner", async () => {
@@ -203,7 +221,7 @@ describe("a desktop session while an agent holds the lease", () => {
   it("agent input is refused before the desktop is ready, like a human's", async () => {
     const { service } = setup();
     const handle = await service.rdpOpen({ host: "rdp.test", port: 3389, username: "u", password: "pw" }, 8, 4);
-    await expect(service.agentRdpInput(handle, [{ kind: "ctrl_alt_del" }])).rejects.toMatchObject({ code: "not_ready" });
+    await expect(service.agentRdpInput(handle, [{ kind: "ctrl_alt_del" }], "agent:lease-1")).rejects.toMatchObject({ code: "not_ready" });
   });
 });
 
@@ -282,6 +300,80 @@ describe("Z1: which sessions an agent may drive", () => {
     const r = await service.rdpOpen({ host: "rdp.test", port: 3389, username: "u", password: "pw" }, 8, 4);
     expect(service.agentControl(r)).toBe("ready");
     expect(service.agentControl({ generation: r.generation, sessionId: 999 })).toBe("never");
+  });
+});
+
+describe("Z2: a change of driver is a barrier the helper acknowledges, and stale work is refused at dispatch", () => {
+  const settle = () => new Promise<void>((r) => setTimeout(r, 0));
+
+  it("the helper is told every change of driver (acquire, takeover), and not a renewal", async () => {
+    const { helper, service, leases } = setup();
+    const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24);
+    leases.acquire(KEY(h), "thr_a", 60);
+    await settle();
+    const a = leases.owner(KEY(h));
+    if (a.kind === "agent") leases.renew(KEY(h), "thr_a", a.leaseId, 60);
+    await settle();
+    leases.takeover(KEY(h));
+    await settle();
+    expect(helper.owners).toEqual(["agent:lease-1", "human"]);
+  });
+
+  it("the human's keys wait for the handoff to be acknowledged, then are dropped if an agent is the driver", async () => {
+    const { helper, service, leases, attach } = setup();
+    const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24);
+    const { socket, handlers } = await attach(h);
+    helper.holdOwner = [];
+    leases.acquire(KEY(h), "thr_a", 60);
+    await settle();
+    handlers.onMessage(socket, new TextEncoder().encode("late"));
+    await settle();
+    expect(helper.typed, "nothing may be dispatched before the barrier is acknowledged").toEqual([]);
+    for (const release of helper.holdOwner) release();
+    helper.holdOwner = null;
+    await flush();
+    expect(helper.typed, "an agent drives now: the human's keys are dropped at dispatch").toEqual([]);
+  });
+
+  it("the human's keys that were waiting for a takeover go through once the human is the driver", async () => {
+    const { helper, service, leases, attach } = setup();
+    const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24);
+    leases.acquire(KEY(h), "thr_a", 60);
+    await settle();
+    const { socket, handlers } = await attach(h);
+    helper.holdOwner = [];
+    leases.takeover(KEY(h));
+    await settle();
+    handlers.onMessage(socket, new TextEncoder().encode("mine"));
+    await settle();
+    expect(helper.typed).toEqual([]);
+    for (const release of helper.holdOwner) release();
+    helper.holdOwner = null;
+    await flush();
+    expect(helper.typed).toEqual([{ sessionId: h.sessionId, text: "mine" }]);
+  });
+
+  it("an agent write for a lease that is no longer the driver is refused with lease_lost and never reaches the helper", async () => {
+    const { helper, service, leases } = setup();
+    const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24);
+    leases.acquire(KEY(h), "thr_a", 60);
+    leases.takeover(KEY(h));
+    await expect(service.agentTerminalInput(h, new TextEncoder().encode("x"), "agent:lease-1")).rejects.toMatchObject({ code: "lease_lost" });
+    expect(helper.agentTyped).toEqual([]);
+  });
+
+  it("the next driver's write waits for the barrier of its own acquisition", async () => {
+    const { helper, service, leases } = setup();
+    const h = await service.sshOpen({ host: "h", extraOptions: [] }, 80, 24);
+    helper.holdOwner = [];
+    leases.acquire(KEY(h), "thr_a", 60);
+    const pending = service.agentTerminalInput(h, new TextEncoder().encode("go"), "agent:lease-1");
+    await settle();
+    expect(helper.agentTyped).toEqual([]);
+    for (const release of helper.holdOwner) release();
+    helper.holdOwner = null;
+    await pending;
+    expect(helper.agentTyped).toHaveLength(1);
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HeldInput, SerialQueue, rdpActionsSchema, toRdpEvents, shortHash } from "./agent-input.ts";
+import { SerialQueue, rdpActionsSchema, toRdpEvents, shortHash } from "./agent-input.ts";
 
 const GEOM = { width: 800, height: 600 };
 
@@ -55,29 +55,6 @@ describe("typed RDP actions", () => {
     expect(toRdpEvents([{ type: "click", button: "left", x: 800, y: 0 }], GEOM)).toEqual({ ok: false, code: "out_of_bounds", index: 0 });
     expect(toRdpEvents([{ type: "mouse_move", x: 0, y: 0 }, { type: "mouse_move", x: 799, y: 600 }], GEOM)).toEqual({ ok: false, code: "out_of_bounds", index: 1 });
     expect(toRdpEvents([{ type: "mouse_move", x: 799, y: 599 }], GEOM)).toMatchObject({ ok: true });
-  });
-});
-
-describe("HeldInput", () => {
-  it("remembers keys and buttons that are down, forgets them when they go up, and says what to release", () => {
-    const held = new HeldInput();
-    held.apply([
-      { kind: "key", scancode: 0x1d, extended: false, down: true },
-      { kind: "key", scancode: 0x2e, extended: false, down: true },
-      { kind: "key", scancode: 0x2e, extended: false, down: false },
-      { kind: "mouse_button", button: "left", down: true, x: 7, y: 8, geom_width: 800, geom_height: 600 },
-    ]);
-    expect(held.releaseEvents()).toEqual([
-      { kind: "key", scancode: 0x1d, extended: false, down: false },
-      { kind: "mouse_button", button: "left", down: false, x: 7, y: 8, geom_width: 800, geom_height: 600 },
-    ]);
-    expect(held.releaseEvents()).toEqual([]); // released once
-  });
-
-  it("an extended key and the plain key with the same scancode are different keys", () => {
-    const held = new HeldInput();
-    held.apply([{ kind: "key", scancode: 0x1d, extended: true, down: true }, { kind: "key", scancode: 0x1d, extended: false, down: true }, { kind: "key", scancode: 0x1d, extended: false, down: false }]);
-    expect(held.releaseEvents()).toEqual([{ kind: "key", scancode: 0x1d, extended: true, down: false }]);
   });
 });
 

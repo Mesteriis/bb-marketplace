@@ -105,6 +105,9 @@ pub enum Request {
         #[serde(rename = "sessionId")]
         session_id: u32,
         data: String,
+        /// Who is sending (stage 4b-1, Z2): "human" when absent.
+        #[serde(default)]
+        owner: Option<String>,
     },
     #[serde(rename = "session.resize")]
     SessionResize {
@@ -189,6 +192,19 @@ pub enum Request {
         #[serde(rename = "sessionId")]
         session_id: u32,
         events: Vec<crate::rdp::protocol::InputEvent>,
+        /// Who is sending (stage 4b-1, Z2): "human" when absent. Input from anyone but the session's current owner is refused.
+        #[serde(default)]
+        owner: Option<String>,
+    },
+    /// The session has a new driver (a lease started or ended). Whatever the previous driver still had waiting in the
+    /// helper is dropped, what it left pressed is released against the CURRENT desktop, and only then is this acknowledged:
+    /// the barrier before the next driver's input is admitted.
+    #[serde(rename = "session.set_owner")]
+    SessionSetOwner {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        owner: String,
     },
     #[serde(rename = "rdp.screenshot")]
     RdpScreenshot {
@@ -279,6 +295,16 @@ pub enum Response {
         exit_code: Option<i32>,
         signal: Option<i32>,
         reason: String,
+    },
+    #[serde(rename = "session.owner_set")]
+    SessionOwnerSet {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        /// Bytes (terminal) or events (desktop) the previous driver had queued that were dropped.
+        dropped: u64,
+        /// Keys and buttons the previous driver left down that were released (desktop).
+        released: u64,
     },
     #[serde(rename = "exec.started")]
     ExecStarted {

@@ -862,9 +862,29 @@ export class HelperProcess {
     this.expectAck(await this.request({ type: "rdp.cert_decision", sessionId: handle.sessionId, fingerprint, accept } as RequestMessage));
   }
 
-  async rdpInput(handle: SessionHandle, events: RdpInputEvent[]): Promise<void> {
+  async rdpInput(handle: SessionHandle, events: RdpInputEvent[], owner?: string): Promise<void> {
     this.assertGeneration(handle);
-    this.expectAck(await this.request({ type: "rdp.input", sessionId: handle.sessionId, events } as RequestMessage));
+    this.expectAck(await this.request({ type: "rdp.input", sessionId: handle.sessionId, events, ...(owner === undefined ? {} : { owner }) } as RequestMessage));
+  }
+
+  /**
+   * A new driver for a session (terminal or desktop). The answer comes only after the helper has dropped what the previous
+   * driver still had queued and released what it left down: the barrier before the next driver's input.
+   */
+  async sessionSetOwner(handle: SessionHandle, owner: string): Promise<{ dropped: number; released: number }> {
+    this.assertGeneration(handle);
+    const resp = await this.request({ type: "session.set_owner", sessionId: handle.sessionId, owner } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "session.owner_set") throw new HelperRequestError("protocol_error", "unexpected answer to session.set_owner");
+    return { dropped: resp.dropped, released: resp.released };
+  }
+
+  /** Terminal text typed by the current driver (an agent: its owner tag). The helper refuses it if that driver was replaced. */
+  async sessionInputFrom(handle: SessionHandle, data: string, owner: string): Promise<void> {
+    this.assertGeneration(handle);
+    const resp = await this.request({ type: "session.input", sessionId: handle.sessionId, data, owner } as RequestMessage);
+    if (resp.type === "error") throw new HelperRequestError(resp.code, resp.message);
+    if (resp.type !== "session.input_ack") throw new HelperRequestError("protocol_error", "unexpected answer to session.input");
   }
 
   async rdpUpdateAck(handle: SessionHandle, frameId: number): Promise<void> {

@@ -155,6 +155,7 @@ fn request_id(req: &Request) -> Option<u64> {
         | Request::RdpUpdateAck { id, .. }
         | Request::RdpRefresh { id, .. }
         | Request::SessionInput { id, .. }
+        | Request::SessionSetOwner { id, .. }
         | Request::SessionResize { id, .. }
         | Request::SessionCredit { id, .. }
         | Request::SessionClose { id, .. } => Some(*id),
@@ -669,16 +670,34 @@ fn handle(
                 }
             }
         }
+        Request::SessionSetOwner { id, session_id, owner } => {
+            if manager.contains(session_id) {
+                return Ok(match manager.set_owner(session_id, &owner) {
+                    Ok(dropped) => protocol::encode_response(&Response::SessionOwnerSet { id, session_id, dropped: dropped as u64, released: 0 }),
+                    Err(_) => rdp_error(id, "session_not_found", format!("no session {session_id}")),
+                });
+            }
+            Ok(match rdp.set_owner(session_id, &owner) {
+                Ok((dropped, released)) => protocol::encode_response(&Response::SessionOwnerSet { id, session_id, dropped, released }),
+                Err(e) => rdp_enqueue_error(id, session_id, e),
+            })
+        }
         Request::SessionInput {
             id,
             session_id,
             data,
-        } => match manager.enqueue_input(session_id, data.as_bytes()) {
+            owner,
+        } => match manager.enqueue_input_from(session_id, owner.as_deref().unwrap_or("human"), data.as_bytes()) {
             Ok(()) => Ok(protocol::encode_response(&Response::SessionInputAck { id, session_id })),
             Err(SessionError::InputOverflow) => Ok(protocol::encode_response(&Response::Error {
                 id: Some(id),
                 code: "input_overflow".to_string(),
                 message: "session input exceeds the bounded pending-input window".to_string(),
+            })),
+            Err(SessionError::StaleOwner) => Ok(protocol::encode_response(&Response::Error {
+                id: Some(id),
+                code: "stale_owner".to_string(),
+                message: "the input is from someone who no longer drives this session".to_string(),
             })),
             Err(_) => Ok(protocol::encode_response(&Response::Error {
                 id: Some(id),
@@ -861,11 +880,14 @@ fn handle(
             }
             rdp_command(rdp, id, session_id, &EngineCommand::CertDecision { fingerprint, accept })
         }
-        Request::RdpInput { id, session_id, events } => {
+        Request::RdpInput { id, session_id, events, owner } => {
             if let Some(refusal) = rdp_not_ready(rdp, id, session_id) {
                 return Ok(refusal);
             }
-            rdp_command(rdp, id, session_id, &EngineCommand::Input { events })
+            Ok(match rdp.enqueue_input(session_id, owner.as_deref().unwrap_or("human"), events) {
+                Ok(()) => protocol::encode_response(&Response::RdpAck { id, session_id }),
+                Err(e) => rdp_enqueue_error(id, session_id, e),
+            })
         }
         Request::RdpUpdateAck { id, session_id, frame_id } => {
             if let Some(refusal) = rdp_not_ready(rdp, id, session_id) {
@@ -933,6 +955,7 @@ fn rdp_enqueue_error(id: u64, session_id: u32, e: EnqueueError) -> Vec<u8> {
     match e {
         EnqueueError::UnknownSession => rdp_error(id, "session_not_found", format!("no rdp session {session_id}")),
         EnqueueError::Dead => rdp_error(id, "session_closed", "the rdp engine has ended".to_string()),
+        EnqueueError::StaleOwner => rdp_error(id, "stale_owner", "the input is from someone who no longer drives this session".to_string()),
         EnqueueError::Full => {
             rdp_error(id, "rdp_input_overflow", "too much pending input for this session; retry".to_string())
         }
@@ -1582,7 +1605,7 @@ pub fn run(echo_argv: Option<Vec<String>>) -> i32 {
                 }
                 Ok(Some(IncomingFrame::Stream { session_id, data })) => {
                     // Binary terminal input; overflow is dropped (backpressure).
-                    let _ = guard.manager.enqueue_input(session_id, &data);
+                    let _ = guard.manager.enqueue_input_from(session_id, "human", &data);
                 }
                 Ok(None) => break,
                 Err(FrameError::Invalid(message)) => {

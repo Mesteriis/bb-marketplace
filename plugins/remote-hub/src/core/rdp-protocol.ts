@@ -97,6 +97,8 @@ export const rdpInputRequestSchema = z.object({
   id: idSchema,
   sessionId: sessionIdSchema,
   events: z.array(rdpInputEventSchema).max(MAX_RDP_INPUT_EVENTS),
+  /** Who is sending (Z2); "human" when absent. */
+  owner: z.string().min(1).max(100).optional(),
 });
 // strict: the answer to this request carries the same tag, and a malformed
 // answer must not be accepted as a request with extra fields stripped.

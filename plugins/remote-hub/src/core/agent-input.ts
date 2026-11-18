@@ -69,35 +69,6 @@ export function toRdpEvents(actions: RdpAction[], geometry: { width: number; hei
   return { ok: true, events };
 }
 
-/** The keys and mouse buttons an agent's input left pressed, so they can be released when it loses the session. */
-export class HeldInput {
-  private readonly keys = new Map<string, { scancode: number; extended: boolean }>();
-  private readonly buttons = new Map<string, { x: number; y: number; geom_width: number; geom_height: number }>();
-
-  apply(events: RdpInputEvent[]): void {
-    for (const e of events) {
-      if (e.kind === "key") {
-        const id = `${e.extended ? "e" : "p"}${e.scancode}`;
-        if (e.down) this.keys.set(id, { scancode: e.scancode, extended: e.extended });
-        else this.keys.delete(id);
-      } else if (e.kind === "mouse_button") {
-        if (e.down) this.buttons.set(e.button, { x: e.x, y: e.y, geom_width: e.geom_width, geom_height: e.geom_height });
-        else this.buttons.delete(e.button);
-      }
-    }
-  }
-
-  /** What to send to let go of everything still held; clears the memory. */
-  releaseEvents(): RdpInputEvent[] {
-    const out: RdpInputEvent[] = [];
-    for (const k of this.keys.values()) out.push({ kind: "key", scancode: k.scancode, extended: k.extended, down: false });
-    for (const [name, pos] of this.buttons) out.push({ kind: "mouse_button", button: name as "left" | "right" | "middle", down: false, ...pos });
-    this.keys.clear();
-    this.buttons.clear();
-    return out;
-  }
-}
-
 /** Per-session serial execution; an operation whose owner is gone when its turn comes is dropped, not run. */
 export class SerialQueue {
   private readonly tails = new Map<string, Promise<unknown>>();

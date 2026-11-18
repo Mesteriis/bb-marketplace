@@ -117,6 +117,10 @@ impl Helper {
                 | Response::SessionInputAck { id, .. }
                 | Response::SessionResized { id, .. }
                 | Response::SessionCreditAck { id, .. }
+                | Response::SessionOwnerSet { id, .. }
+                | Response::ExecStarted { id, .. }
+                | Response::ExecState { id, .. }
+                | Response::ExecForgotten { id }
                 | Response::RdpAck { id, .. }
                 | Response::CredentialOk { id }
                 | Response::CredentialStatus { id, .. }
@@ -181,7 +185,7 @@ impl Helper {
 
     /// Echo `text` through an echo session and wait for it to come back.
     pub fn echo_round_trip(&mut self, sid: u32, text: &str) {
-        self.send(&Request::SessionInput { id: 9, session_id: sid, data: text.to_string() });
+        self.send(&Request::SessionInput { id: 9, session_id: sid, data: text.to_string(), owner: None });
         let mut got = String::new();
         self.read_until(Duration::from_secs(5), |k, p| {
             if k == FRAME_KIND_STREAM && u32::from_le_bytes(p[0..4].try_into().unwrap()) == sid {

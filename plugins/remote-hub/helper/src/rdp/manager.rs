@@ -24,6 +24,10 @@ use crate::ids::SessionIds;
 /// Pending helper → engine bytes beyond which input is refused (the client
 /// retries); small control commands are always accepted.
 pub const WRITE_INPUT_SOFT_CAP: usize = 256 * 1024;
+/// Input moves from the per-sender queue into the engine's write buffer only while that buffer is below this.
+pub const INPUT_FLUSH_SOFT: usize = 8 * 1024;
+/// Input batches that may wait in the per-sender queue.
+pub const PENDING_INPUT_MAX: usize = 1024;
 /// Screenshot requests that may be outstanding per session.
 pub const MAX_PENDING_SCREENSHOTS: usize = 4;
 /// At most this many engine frames are taken per session per loop turn.
@@ -104,6 +108,14 @@ pub struct RdpSession {
     fd: RawFd,
     read_buf: Vec<u8>,
     write_buf: VecDeque<u8>,
+    /// Input waiting to go to the engine, by sender (stage 4b-1, Z2). It moves into `write_buf` only while that holds
+    /// less than `INPUT_FLUSH_SOFT`, so a driver that is replaced leaves at most a few kilobytes already on their way.
+    pending_input: VecDeque<(String, Vec<protocol::InputEvent>)>,
+    /// Who may send input; keys and buttons applied (moved to the engine) and still down, and the desktop's size now.
+    owner: String,
+    held_keys: Vec<(u8, bool)>,
+    held_buttons: Vec<(String, u32, u32)>,
+    fb: Option<(u32, u32)>,
     state: String,
     desktop_ready: bool,
     close_reason: Option<String>,
@@ -138,6 +150,8 @@ pub enum EnqueueError {
     Full,
     /// Too many screenshot requests are already outstanding.
     TooManyScreenshots,
+    /// The sender is not the session's current driver.
+    StaleOwner,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -347,7 +361,7 @@ impl RdpManager {
     }
 
     pub fn wants_write(&self, id: u32) -> bool {
-        self.sessions.get(&id).map(|s| s.fd >= 0 && (!s.write_buf.is_empty() || s.pending_ack.is_some())).unwrap_or(false)
+        self.sessions.get(&id).map(|s| s.fd >= 0 && (!s.write_buf.is_empty() || s.pending_ack.is_some() || !s.pending_input.is_empty())).unwrap_or(false)
     }
 
     /// True when a complete engine frame is already buffered, so the loop must
@@ -496,6 +510,11 @@ impl RdpManager {
                 fd,
                 read_buf: Vec::new(),
                 write_buf: VecDeque::new(),
+                pending_input: VecDeque::new(),
+                owner: "human".to_string(),
+                held_keys: Vec::new(),
+                held_buttons: Vec::new(),
+                fb: None,
                 state: "connecting".to_string(),
                 desktop_ready: false,
                 close_reason: None,
@@ -507,6 +526,76 @@ impl RdpManager {
                 reported_closed: false,
             },
         );
+    }
+
+    /// Moves waiting input into the engine's write buffer while it is nearly empty, noting which keys and buttons that
+    /// leaves down (applied, as far as this process can tell).
+    fn flush_input(s: &mut RdpSession) {
+        while s.write_buf.len() < INPUT_FLUSH_SOFT {
+            let Some((_, events)) = s.pending_input.pop_front() else { return };
+            for e in &events {
+                match e {
+                    protocol::InputEvent::Key { scancode, extended, down } => {
+                        s.held_keys.retain(|k| *k != (*scancode, *extended));
+                        if *down {
+                            s.held_keys.push((*scancode, *extended));
+                        }
+                    }
+                    protocol::InputEvent::MouseButton { button, down, x, y, .. } => {
+                        s.held_buttons.retain(|b| b.0 != *button);
+                        if *down {
+                            s.held_buttons.push((button.clone(), *x, *y));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            s.write_buf.extend(protocol::encode_control(&EngineCommand::Input { events }));
+        }
+    }
+
+    /// Input from `owner`: refused unless that is the session's current driver, queued per sender otherwise.
+    pub fn enqueue_input(&mut self, id: u32, owner: &str, events: Vec<protocol::InputEvent>) -> Result<(), EnqueueError> {
+        let s = self.sessions.get_mut(&id).ok_or(EnqueueError::UnknownSession)?;
+        if s.fd < 0 {
+            return Err(EnqueueError::Dead);
+        }
+        if s.owner != owner {
+            return Err(EnqueueError::StaleOwner);
+        }
+        if s.pending_input.len() >= PENDING_INPUT_MAX || s.write_buf.len() > WRITE_INPUT_SOFT_CAP {
+            return Err(EnqueueError::Full);
+        }
+        s.pending_input.push_back((owner.to_string(), events));
+        Self::flush_input(s);
+        Ok(())
+    }
+
+    /// A new driver. What the previous one had waiting is dropped; what it left pressed is released against the desktop as
+    /// it is NOW (a resize between the press and now moves the position inside it) and queued ahead of anything new.
+    /// Returns (events dropped, keys and buttons released). The caller answers only after this returns: the barrier.
+    pub fn set_owner(&mut self, id: u32, owner: &str) -> Result<(u64, u64), EnqueueError> {
+        let s = self.sessions.get_mut(&id).ok_or(EnqueueError::UnknownSession)?;
+        if s.owner == owner {
+            return Ok((0, 0));
+        }
+        let dropped: u64 = s.pending_input.drain(..).map(|(_, events)| events.len() as u64).sum();
+        let mut release: Vec<protocol::InputEvent> = Vec::new();
+        for (scancode, extended) in s.held_keys.drain(..) {
+            release.push(protocol::InputEvent::Key { scancode, extended, down: false });
+        }
+        let held_buttons: Vec<(String, u32, u32)> = s.held_buttons.drain(..).collect();
+        if let Some((w, h)) = s.fb {
+            for (button, x, y) in held_buttons {
+                release.push(protocol::InputEvent::MouseButton { button, down: false, x: x.min(w.saturating_sub(1)), y: y.min(h.saturating_sub(1)), geom_width: w, geom_height: h });
+            }
+        }
+        let released = release.len() as u64;
+        if !release.is_empty() && s.fd >= 0 {
+            s.write_buf.extend(protocol::encode_control(&EngineCommand::Input { events: release }));
+        }
+        s.owner = owner.to_string();
+        Ok((dropped, released))
     }
 
     pub fn enqueue_command(&mut self, id: u32, cmd: &EngineCommand) -> Result<(), EnqueueError> {
@@ -710,6 +799,7 @@ impl RdpManager {
                         }
                         Some(RdpFrame::Event(EngineEvent::Desktop { frame_id, width, height, timestamp })) => {
                             s.desktop_ready = true;
+                            s.fb = Some((width, height));
                             out.push(RdpFrame::Event(EngineEvent::Desktop { frame_id, width, height, timestamp }));
                         }
                         Some(RdpFrame::Event(EngineEvent::CertPrompt {
@@ -781,6 +871,7 @@ impl RdpManager {
 
     pub fn write_pending(&mut self, id: u32) {
         let Some(s) = self.sessions.get_mut(&id) else { return };
+        Self::flush_input(s);
         // The coalesced acknowledgement goes out behind everything queued.
         if s.write_buf.is_empty() {
             if let Some(frame_id) = s.pending_ack.take() {
@@ -1214,6 +1305,112 @@ mod tests {
         assert!(mgr.has_buffered_frame(id));
         let second = mgr.process_readable(id, usize::MAX);
         assert_eq!(second.len(), 2);
+        unsafe { libc::close(b) };
+    }
+
+    // ---- stage 4b-1 repairs Z2 and Z3: who drives, and what a driver leaves behind ----
+
+    fn read_available(fd: RawFd) -> String {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 4096];
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+        loop {
+            let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if n <= 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n as usize]);
+        }
+        String::from_utf8_lossy(&out).to_string()
+    }
+
+    fn key(scancode: u8, down: bool) -> protocol::InputEvent {
+        protocol::InputEvent::Key { scancode, extended: false, down }
+    }
+    fn press(button: &str, x: u32, y: u32, w: u32, h: u32) -> protocol::InputEvent {
+        protocol::InputEvent::MouseButton { button: button.into(), down: true, x, y, geom_width: w, geom_height: h }
+    }
+    fn desktop(mgr: &mut RdpManager, id: u32, b: RawFd, w: u32, h: u32) {
+        write_all(b, &encode_control(&EngineEvent::Desktop { frame_id: 1, width: w, height: h, timestamp: 1 }));
+        let _ = mgr.process_readable(id, usize::MAX);
+    }
+
+    #[test]
+    fn input_from_anyone_but_the_current_owner_is_refused() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        assert_eq!(mgr.enqueue_input(id, "agent:L1", vec![key(0x1e, true)]), Err(EnqueueError::StaleOwner));
+        assert_eq!(mgr.enqueue_input(id, "human", vec![key(0x1e, true)]), Ok(()));
+        mgr.set_owner(id, "agent:L1").unwrap();
+        assert_eq!(mgr.enqueue_input(id, "human", vec![key(0x1e, false)]), Err(EnqueueError::StaleOwner));
+        assert_eq!(mgr.enqueue_input(id, "agent:L1", vec![key(0x30, true)]), Ok(()));
+        assert_eq!(mgr.enqueue_input(id, "agent:L0", vec![key(0x30, false)]), Err(EnqueueError::StaleOwner), "an older lease is not the owner");
+        unsafe { libc::close(b) };
+    }
+
+    #[test]
+    fn a_driver_that_is_replaced_loses_what_was_still_waiting_and_the_barrier_says_how_much() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        mgr.set_owner(id, "agent:L1").unwrap();
+        // An engine that is not reading: fill the write buffer so later batches wait in the per-sender queue.
+        mgr.sessions.get_mut(&id).unwrap().write_buf.extend(vec![0u8; INPUT_FLUSH_SOFT]);
+        for sc in 0x10..0x15u8 {
+            mgr.enqueue_input(id, "agent:L1", vec![key(sc, true), key(sc, false)]).unwrap();
+        }
+        assert_eq!(mgr.sessions[&id].pending_input.len(), 5);
+        let (dropped, _) = mgr.set_owner(id, "human").unwrap();
+        assert_eq!(dropped, 10, "five batches of two events were waiting");
+        assert_eq!(mgr.sessions[&id].pending_input.len(), 0);
+        mgr.sessions.get_mut(&id).unwrap().write_buf.clear();
+        // The human's own input goes through afterwards.
+        mgr.enqueue_input(id, "human", vec![key(0x2c, true)]).unwrap();
+        mgr.write_pending(id);
+        let sent = read_available(b);
+        assert!(sent.contains("\"scancode\":44"), "{sent}");
+        assert!(!sent.contains("\"scancode\":16"), "a dropped event reached the engine: {sent}");
+        unsafe { libc::close(b) };
+    }
+
+    #[test]
+    fn keys_and_buttons_the_driver_left_down_are_released_against_the_current_desktop_before_anything_new() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        desktop(&mut mgr, id, b, 800, 600);
+        mgr.set_owner(id, "agent:L1").unwrap();
+        mgr.enqueue_input(id, "agent:L1", vec![key(0x2a, true), press("left", 700, 500, 800, 600)]).unwrap();
+        mgr.write_pending(id);
+        let _ = read_available(b);
+        // The desktop shrinks between the press and the takeover.
+        desktop(&mut mgr, id, b, 400, 300);
+        let (_, released) = mgr.set_owner(id, "human").unwrap();
+        assert_eq!(released, 2);
+        mgr.write_pending(id);
+        let sent = read_available(b);
+        assert!(sent.contains("\"scancode\":42") && sent.contains("\"down\":false"), "{sent}");
+        assert!(sent.contains("\"button\":\"left\"") && sent.contains("\"geom_width\":400") && sent.contains("\"x\":399") && sent.contains("\"y\":299"), "the release must use the CURRENT geometry and stay inside it: {sent}");
+        // Nothing is released twice.
+        let (_, again) = mgr.set_owner(id, "agent:L2").unwrap();
+        assert_eq!(again, 0);
+        unsafe { libc::close(b) };
+    }
+
+    #[test]
+    fn a_key_the_driver_pressed_and_released_is_not_held() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        desktop(&mut mgr, id, b, 100, 100);
+        mgr.enqueue_input(id, "human", vec![key(0x1e, true), key(0x1e, false)]).unwrap();
+        mgr.write_pending(id);
+        let _ = read_available(b);
+        assert_eq!(mgr.set_owner(id, "agent:L1").unwrap(), (0, 0));
         unsafe { libc::close(b) };
     }
 

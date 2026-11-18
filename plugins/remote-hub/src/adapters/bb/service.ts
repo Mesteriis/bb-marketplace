@@ -43,6 +43,10 @@ export interface ControlView {
 /** Decides whether the human's input is forwarded (stage 4b-1): not while an agent holds the session's lease. */
 export interface ControlGate {
   humanMayDrive(handle: SessionHandle): boolean;
+  /** "human", or `agent:<leaseId>`: the tag the helper holds for the session's driver. */
+  ownerTag(handle: SessionHandle): string;
+  /** Called after the driver of any session changed. */
+  onChange(cb: (handle: SessionHandle) => void): void;
   state(handle: SessionHandle): ControlView;
   /** Called after the owner of this session changes. */
   subscribe(handle: SessionHandle, cb: (view: ControlView) => void): () => void;
@@ -124,10 +128,10 @@ export interface RemoteHubService {
   ): () => void;
   /** The human's keys. False when they were dropped because an agent holds the session. */
   sessionTerminalInput(handle: SessionHandle, data: Uint8Array): Promise<boolean>;
-  /** An agent holding the lease types (the control tools check the lease before calling this). */
-  agentTerminalInput(handle: SessionHandle, data: Uint8Array): Promise<void>;
+  /** An agent holding the lease types; `owner` is its lease tag. Refused (lease_lost) once that lease is not the driver. */
+  agentTerminalInput(handle: SessionHandle, data: Uint8Array, owner: string): Promise<void>;
   /** An agent holding the lease sends desktop input. */
-  agentRdpInput(handle: SessionHandle, events: RdpInputEvent[]): Promise<void>;
+  agentRdpInput(handle: SessionHandle, events: RdpInputEvent[], owner: string): Promise<void>;
   controlState(handle: SessionHandle): ControlView;
   subscribeControl(handle: SessionHandle, cb: (view: ControlView) => void): () => void;
   /** May an agent drive this session (Z1)? See AgentSessionView.control. */
@@ -166,6 +170,14 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
   const askpassStates = new Map<string, AskpassState>();
   // SSH sessions opened through the saved-secret path (askpass forced): the only terminals where no question can appear.
   const brokered = new Set<string>();
+  // The driver of a session (Z2). Every change is sent to the helper, which drops what the previous driver had queued and
+  // releases what it left down; the answer is the barrier, and every write waits for it and then checks who drives NOW.
+  const handoffs = new Map<string, Promise<unknown>>();
+  const lastOwner = new Map<string, string>();
+  const handoff = async (key: string): Promise<void> => {
+    await handoffs.get(key);
+  };
+  const lostLease = () => new HelperRequestError("lease_lost", "this input belongs to a lease that is no longer the session's driver");
   const askpassState = (key: string): AskpassState => {
     let state = askpassStates.get(key);
     if (state === undefined) {
@@ -517,6 +529,28 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     }
   };
 
+  if (deps.control !== undefined) {
+    const gate = deps.control;
+    gate.onChange((handle) => {
+      const key = keyOf(handle);
+      const tag = gate.ownerTag(handle);
+      if ((lastOwner.get(key) ?? "human") === tag) return; // a renewal, not a change of driver
+      lastOwner.set(key, tag);
+      if (helper === null) return;
+      const next = (handoffs.get(key) ?? Promise.resolve()).then(async () => {
+        try {
+          await (await start()).sessionSetOwner(handle, tag);
+        } catch {
+          // the session ended, or the helper went: nothing is left to hand over
+        }
+      });
+      handoffs.set(key, next);
+      void next.finally(() => {
+        if (handoffs.get(key) === next) handoffs.delete(key);
+      });
+    });
+  }
+
   return {
     async helperStatus() {
       const process = await start();
@@ -672,6 +706,9 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
         },
         async input(events) {
           if (info.rdp?.state !== "desktop_ready") throw new HelperRequestError("not_ready", "the desktop is not ready yet");
+          if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
+          await handoff(key);
+          // Ownership is checked again at dispatch, after the barrier: a takeover or a lease may have come meanwhile.
           if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
           const hp = await start();
           await hp.rdpInput(handle, events);
@@ -857,20 +894,36 @@ export function createRemoteHubService(deps: RemoteHubServiceDeps): RemoteHubSer
     async sessionTerminalInput(handle, data) {
       requireGeneration(handle);
       if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
+      await handoff(keyOf(handle));
+      if (deps.control !== undefined && !deps.control.humanMayDrive(handle)) return false;
       const process = await start();
       process.writeInput(handle.sessionId, data);
       return true;
     },
-    async agentTerminalInput(handle, data) {
+    async agentTerminalInput(handle, data, owner) {
       requireGeneration(handle);
+      await handoff(keyOf(handle));
+      if (deps.control === undefined || deps.control.ownerTag(handle) !== owner) throw lostLease();
       const process = await start();
-      process.writeInput(handle.sessionId, data);
+      try {
+        await process.sessionInputFrom(handle, new TextDecoder().decode(data), owner);
+      } catch (error) {
+        if (error instanceof HelperRequestError && error.code === "stale_owner") throw lostLease();
+        throw error;
+      }
     },
-    async agentRdpInput(handle, events) {
+    async agentRdpInput(handle, events, owner) {
       requireGeneration(handle);
       if (rdpRecord(keyOf(handle))?.rdp?.state !== "desktop_ready") throw new HelperRequestError("not_ready", "the desktop is not ready yet");
+      await handoff(keyOf(handle));
+      if (deps.control === undefined || deps.control.ownerTag(handle) !== owner) throw lostLease();
       const hp = await start();
-      await hp.rdpInput(handle, events);
+      try {
+        await hp.rdpInput(handle, events, owner);
+      } catch (error) {
+        if (error instanceof HelperRequestError && error.code === "stale_owner") throw lostLease();
+        throw error;
+      }
     },
     controlState(handle) {
       return deps.control?.state(handle) ?? { owner: "human", expiresAt: null };

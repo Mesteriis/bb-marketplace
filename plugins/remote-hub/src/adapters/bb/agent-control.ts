@@ -3,7 +3,7 @@
 // handle, opens a saved connection the way the page does, and keeps leases from outliving their sessions.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { ToolError } from "../../core/agent-tools.ts";
-import type { AgentControlPorts, AgentSessionRegistry } from "../../core/agent-control-tools.ts";
+import { ownerTag, type AgentControlPorts, type AgentSessionRegistry } from "../../core/agent-control-tools.ts";
 import { profileToSshTarget } from "../../core/catalogue.ts";
 import type { ControlLeases } from "../../core/control-lease.ts";
 import type { Profile } from "../../core/profile.ts";
@@ -32,8 +32,18 @@ export function createControlGate(leases: ControlLeases): ControlGate {
     const view = views(handleOf(key));
     for (const cb of [...set]) cb(view);
   });
+  const owners: Array<(handle: { generation: string; sessionId: number }) => void> = [];
+  leases.onChange((key) => {
+    const handle = handleOf(key);
+    for (const cb of owners) cb(handle);
+  });
   return {
     humanMayDrive: (h) => leases.owner(keyOf(h)).kind === "human",
+    ownerTag: (h) => {
+      const owner = leases.owner(keyOf(h));
+      return owner.kind === "human" ? "human" : ownerTag(owner.leaseId);
+    },
+    onChange: (cb) => void owners.push(cb),
     state: views,
     subscribe: (h, cb) => {
       const key = keyOf(h);
@@ -51,6 +61,16 @@ export function createControlGate(leases: ControlLeases): ControlGate {
   };
 }
 
+/** A write for a lease that is no longer the session's driver is the tool error lease_lost, not a failure. */
+async function lostLeaseAsToolError(write: () => Promise<void>): Promise<void> {
+  try {
+    await write();
+  } catch (error) {
+    if (error instanceof Error && (error as { code?: string }).code === "lease_lost") throw new ToolError("lease_lost", "the owner took the session back, or the lease ended, before this input was sent; nothing was sent");
+    throw error;
+  }
+}
+
 export interface AgentControlPortDeps {
   service: RemoteHubService;
   profiles: { get(id: string): Profile | null };
@@ -60,8 +80,8 @@ export interface AgentControlPortDeps {
 
 export function agentControlPorts({ service, profiles, handlers }: AgentControlPortDeps): AgentControlPorts {
   return {
-    terminalWrite: async (key, data) => service.agentTerminalInput(handleOf(key), data),
-    rdpWrite: async (key, events) => service.agentRdpInput(handleOf(key), events),
+    terminalWrite: async (key, data, owner) => lostLeaseAsToolError(() => service.agentTerminalInput(handleOf(key), data, owner)),
+    rdpWrite: async (key, events, owner) => lostLeaseAsToolError(() => service.agentRdpInput(handleOf(key), events, owner)),
     async connect(profileId) {
       const p = profiles.get(profileId);
       if (p === null || p.credentialRef === null) throw new ToolError("connection_incomplete", "this connection cannot be opened by an agent");

@@ -105,6 +105,22 @@ export const sessionInputRequestSchema = z.object({
   id: idSchema,
   sessionId: sessionIdSchema,
   data: sessionInputDataSchema,
+  /** Who is sending (Z2): the owner tag the helper holds for the session; "human" when absent. */
+  owner: z.string().min(1).max(100).optional(),
+});
+/** A new driver: the helper drops what the previous one had queued, releases what it left down, then acknowledges. */
+export const sessionSetOwnerRequestSchema = z.object({
+  type: z.literal("session.set_owner"),
+  id: idSchema,
+  sessionId: sessionIdSchema,
+  owner: z.string().min(1).max(100),
+});
+export const sessionOwnerSetSchema = z.object({
+  type: z.literal("session.owner_set"),
+  id: idSchema,
+  sessionId: sessionIdSchema,
+  dropped: z.number().int().min(0),
+  released: z.number().int().min(0),
 });
 export const sessionResizeRequestSchema = z.object({
   type: z.literal("session.resize"),
@@ -188,6 +204,7 @@ export const requestSchema = z.discriminatedUnion("type", [
   openEchoRequestSchema,
   openSshRequestSchema,
   sessionInputRequestSchema,
+  sessionSetOwnerRequestSchema,
   sessionResizeRequestSchema,
   sessionCreditRequestSchema,
   sessionCloseRequestSchema,
@@ -204,6 +221,7 @@ export const responseSchema = z.discriminatedUnion("type", [
   sessionInputAckSchema,
   sessionResizedSchema,
   sessionCreditAckSchema,
+  sessionOwnerSetSchema,
   sessionClosedSchema,
   errorEnvelopeSchema,
   ...rdpResponseSchemas,
@@ -218,6 +236,7 @@ export const controlMessageSchema = z.union([
     openEchoRequestSchema,
     openSshRequestSchema,
     sessionInputRequestSchema,
+    sessionSetOwnerRequestSchema,
     sessionResizeRequestSchema,
     sessionCreditRequestSchema,
     sessionCloseRequestSchema,
@@ -227,6 +246,7 @@ export const controlMessageSchema = z.union([
     sessionInputAckSchema,
     sessionResizedSchema,
     sessionCreditAckSchema,
+    sessionOwnerSetSchema,
     sessionClosedSchema,
     errorEnvelopeSchema,
     ...credentialRequestSchemas,

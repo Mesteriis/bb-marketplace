@@ -437,7 +437,7 @@ fn g10_a_flooding_engine_does_not_starve_an_echo_session() {
     let rx = h.frames_in_background(rdp);
     let _ = next_update(&rx); // the engine is flooding
     let t = std::time::Instant::now();
-    h.send(&Request::SessionInput { id: 60, session_id: echo, data: "flood-ping".to_string() });
+    h.send(&Request::SessionInput { id: 60, session_id: echo, data: "flood-ping".to_string(), owner: None });
     let mut got = String::new();
     while t.elapsed() < Duration::from_secs(5) {
         let Ok((kind, payload)) = rx.frames.recv_timeout(Duration::from_millis(50)) else { continue };

@@ -9,15 +9,19 @@
 //    host-key or certificate question goes to the owner (the agent only learns that the owner is being asked).
 // The audit keeps the length and a short hash of an input, never the input itself.
 import { z } from "zod";
-import { HeldInput, SerialQueue, rdpActionsSchema, shortHash, toRdpEvents, type RdpAction } from "./agent-input.ts";
+import { SerialQueue, rdpActionsSchema, shortHash, toRdpEvents, type RdpAction } from "./agent-input.ts";
 import { CANNOT, ToolError, connectionIdSchema, createGate, def, errorResult, json, sessionIdSchema, type AgentCallContext, type AgentSessionView, type AgentToolDef, type AgentToolDeps } from "./agent-tools.ts";
 import { LEASE_DEFAULT_SECONDS, LEASE_MAX_SECONDS, LEASE_MIN_SECONDS, type ControlLeases, type LeaseEnd } from "./control-lease.ts";
 import type { RdpInputEvent } from "./rdp-protocol.ts";
 
 /** What the adapter does for the control tools. */
 export interface AgentControlPorts {
-  terminalWrite(sessionKey: string, data: Uint8Array): Promise<void>;
-  rdpWrite(sessionKey: string, events: RdpInputEvent[]): Promise<void>;
+  /**
+   * `owner` is the lease the input belongs to (`agent:<leaseId>`). The adapter hands it to the helper, which refuses it once
+   * that lease is no longer the session's driver (Z2): work already downstream is dropped there, not only in this process.
+   */
+  terminalWrite(sessionKey: string, data: Uint8Array, owner: string): Promise<void>;
+  rdpWrite(sessionKey: string, events: RdpInputEvent[], owner: string): Promise<void>;
   /** Opens a saved connection with its saved credential. Never asks the agent for a secret. */
   connect(profileId: string): Promise<{ sessionKey: string }>;
   disconnect(sessionKey: string): Promise<void>;
@@ -98,6 +102,8 @@ type TerminalAction = z.infer<typeof terminalActionSchema>;
 const leaseIdSchema = z.string().min(1).max(64);
 const observedSchema = z.object({ frameId: z.number().int().min(0), width: z.number().int().min(1), height: z.number().int().min(1) }).strict();
 const textEncoder = new TextEncoder();
+/** The owner tag the helper holds for a session while this lease drives it. */
+export const ownerTag = (leaseId: string): string => `agent:${leaseId}`;
 
 function terminalBytes(actions: TerminalAction[]): Uint8Array {
   return textEncoder.encode(actions.map((a) => (a.type === "text" ? a.text : KEY_BYTES[a.key])).join(""));
@@ -120,7 +126,6 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
   const { access, leases, control, ports } = deps;
   const { guarded, noSession } = createGate(deps);
   const queue = new SerialQueue();
-  const held = new Map<string, HeldInput>();
   /** Which thread opened which session (memory only): a thread may disconnect what it opened, and no more than four at a time. */
   const openedBy = deps.registry ?? new AgentSessionRegistry();
 
@@ -147,14 +152,8 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
     return check.generation;
   }
 
-  // When a lease ends: whatever the agent left pressed is released (after the write in flight, never before), and the
-  // ops still waiting find their lease gone and drop themselves.
-  leases.onEnd((end: LeaseEnd) => {
-    const input = held.get(end.sessionKey);
-    const events = input === undefined ? [] : input.releaseEvents();
-    held.delete(end.sessionKey);
-    if (events.length > 0) void queue.run(end.sessionKey, () => true, () => control.rdpWrite(end.sessionKey, events)).catch(() => undefined);
-  });
+  // What an agent left pressed, and what it still had queued, is released and dropped by the HELPER when the driver changes
+  // (session.set_owner), against the desktop as it is then; this process only drops the work still waiting in its own queue.
   // A grant lowered below `input` ends the leases that depended on it.
   access.onChange(() => {
     leases.endWhere((key) => {
@@ -268,7 +267,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
         return guarded("remote_terminal_input", ctx, { sessionKey: params.sessionId, profileId: profileOf(params.sessionId), detailMode: "hash", detail }, async () => {
           const { session, profileId } = controllable(params.sessionId);
           if (session.kind === "rdp") throw new ToolError("not_a_terminal", "this is a desktop session: use remote_rdp_input");
-          await driven(params.sessionId, ctx, params.leaseId, profileId, () => control.terminalWrite(params.sessionId, bytes));
+          await driven(params.sessionId, ctx, params.leaseId, profileId, () => control.terminalWrite(params.sessionId, bytes, ownerTag(params.leaseId)));
           return { content: [json({ sessionId: params.sessionId, sentBytes: bytes.length })] };
         });
       },
@@ -297,15 +296,7 @@ export function createControlTools(deps: AgentControlDeps): AgentToolDef[] {
           }
           const events = toRdpEvents(actions, desktop);
           if (!events.ok) throw new ToolError("out_of_bounds", `action ${events.index + 1} is outside the ${desktop.width}x${desktop.height} desktop`);
-          await driven(params.sessionId, ctx, params.leaseId, profileId, async () => {
-            let input = held.get(params.sessionId);
-            if (input === undefined) {
-              input = new HeldInput();
-              held.set(params.sessionId, input);
-            }
-            input.apply(events.events);
-            await control.rdpWrite(params.sessionId, events.events);
-          });
+          await driven(params.sessionId, ctx, params.leaseId, profileId, () => control.rdpWrite(params.sessionId, events.events, ownerTag(params.leaseId)));
           return { content: [json({ sessionId: params.sessionId, sentEvents: events.events.length })] };
         });
       },

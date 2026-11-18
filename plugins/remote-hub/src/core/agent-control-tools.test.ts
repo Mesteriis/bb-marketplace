@@ -54,8 +54,8 @@ function setup(opts: Setup = {}) {
     { key: SSH_KEY, kind: "ssh", state: "running", profileId: P_SSH, exitCode: null, reason: null, control: "ready" },
     { key: RDP_KEY, kind: "rdp", state: "running", profileId: P_RDP, exitCode: null, reason: null, control: "ready", rdp: { state: "desktop_ready", desktop: { frameId: 7, width: 800, height: 600 } } },
   ];
-  const wrote: Array<{ key: string; data: string }> = [];
-  const rdpSent: Array<{ key: string; events: RdpInputEvent[] }> = [];
+  const wrote: Array<{ key: string; data: string; owner: string }> = [];
+  const rdpSent: Array<{ key: string; events: RdpInputEvent[]; owner: string }> = [];
   const gates: { terminal: Array<() => void>; rdp: Array<() => void> } = { terminal: [], rdp: [] };
   let hold = false;
   const opened: string[] = [];
@@ -70,13 +70,13 @@ function setup(opts: Setup = {}) {
       fitScreenshot: () => { throw new Error("n/a"); },
     },
     control: {
-      terminalWrite: async (key, data) => {
+      terminalWrite: async (key, data, owner) => {
         if (hold) await new Promise<void>((r) => gates.terminal.push(r));
-        wrote.push({ key, data: new TextDecoder().decode(data) });
+        wrote.push({ key, data: new TextDecoder().decode(data), owner });
       },
-      rdpWrite: async (key, events) => {
+      rdpWrite: async (key, events, owner) => {
         if (hold) await new Promise<void>((r) => gates.rdp.push(r));
-        rdpSent.push({ key, events });
+        rdpSent.push({ key, events, owner });
       },
       connect: async (profileId) => {
         const p = profiles.find((x) => x.id === profileId)!;
@@ -209,7 +209,7 @@ describe("remote_terminal_input", () => {
     const t = await leased();
     const r = await t.call("remote_terminal_input", { sessionId: SSH_KEY, leaseId: "lease-1", actions: [{ type: "text", text: "echo é" }, { type: "key", key: "Enter" }, { type: "key", key: "Ctrl-C" }, { type: "key", key: "Up" }] });
     expect(r.isError).toBeUndefined();
-    expect(t.wrote).toEqual([{ key: SSH_KEY, data: "echo é\r\u0003\u001b[A" }]);
+    expect(t.wrote).toEqual([{ key: SSH_KEY, data: "echo é\r\u0003\u001b[A", owner: "agent:lease-1" }]);
   });
 
   it("text cannot carry control characters (no escape sequences, no hidden Enter); keys are a closed list", () => {
@@ -348,9 +348,14 @@ describe("remote_rdp_input", () => {
     expect(JSON.stringify(t.rows)).not.toContain("p4ssw0rd-typed");
   });
 
-  it("when the lease ends keys and buttons the agent left down are released; a takeover also drops what was queued", async () => {
+  it("desktop input carries the lease it belongs to, so the helper can refuse it once that lease is not the driver", async () => {
     const t = await leased();
-    await send(t, [{ type: "key", code: "ShiftLeft", down: true }, { type: "mouse_button", button: "left", down: true, x: 5, y: 5 }]);
+    await send(t, [{ type: "key", code: "KeyA" }]);
+    expect(t.rdpSent.map((s) => s.owner)).toEqual(["agent:lease-1"]);
+  });
+
+  it("a takeover while a desktop write is in flight drops the queued one here (and the helper drops what it already holds)", async () => {
+    const t = await leased();
     t.holdWrites();
     const n0 = t.rows.length;
     const inFlight = send(t, [{ type: "key", code: "KeyA" }]);
@@ -361,21 +366,7 @@ describe("remote_rdp_input", () => {
     t.releaseWrites();
     await inFlight;
     expect(t.textOf(await queued)).toContain("lease_lost");
-    await until(() => t.rdpSent.flatMap((s) => s.events).some((e) => e.kind === "mouse_button" && !e.down));
-    const all = t.rdpSent.flatMap((s) => s.events);
-    const last = all.slice(-2);
-    expect(last.map((e) => (e.kind === "key" ? ["key", e.down] : e.kind === "mouse_button" ? ["button", e.down] : [e.kind]))).toEqual(expect.arrayContaining([["key", false], ["button", false]]));
-    expect(all.some((e) => e.kind === "key" && e.scancode === 0x30)).toBe(false); // KeyB never went out
-  });
-
-  it("an expired lease releases held input too (sweep)", async () => {
-    const t = await leased();
-    await send(t, [{ type: "key", code: "ControlLeft", down: true }]);
-    t.advance(121_000);
-    t.leases.sweep();
-    await until(() => t.rdpSent.length >= 2);
-    const last = t.rdpSent.at(-1)!.events;
-    expect(last).toEqual([expect.objectContaining({ kind: "key", down: false })]);
+    expect(t.rdpSent.flatMap((s) => s.events).some((e) => e.kind === "key" && e.scancode === 0x30)).toBe(false); // KeyB never went out
   });
 });
 

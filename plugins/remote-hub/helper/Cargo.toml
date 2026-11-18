@@ -34,6 +34,11 @@ path = "tests/askpass_process.rs"
 required-features = ["test-hooks"]
 
 [[test]]
+name = "owner_process"
+path = "tests/owner_process.rs"
+required-features = ["test-hooks"]
+
+[[test]]
 name = "keychain_child"
 path = "tests/keychain_child.rs"
 required-features = ["test-hooks"]

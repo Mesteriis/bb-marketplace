@@ -61,6 +61,8 @@ pub struct Session {
     pub seq: u32,
     pub pending_out: Vec<u8>,
     pub pending_in: Vec<u8>,
+    /// Who may type into this session (stage 4b-1, Z2); pending_in only ever holds this owner's bytes.
+    pub owner: String,
     pub child_exited: bool,
     pub pty_done: bool,
     /// Bytes the client has granted this session for output in flight.
@@ -115,6 +117,8 @@ pub enum SessionError {
     Sys { step: &'static str, errno: i32 },
     Unknown,
     InputOverflow,
+    /// Input from someone who is not the session's current driver (Z2).
+    StaleOwner,
     /// All 2^32 - 1 session ids have been issued.
     IdsExhausted,
 }
@@ -125,6 +129,7 @@ impl std::fmt::Display for SessionError {
             SessionError::Sys { step, errno } => write!(f, "{step} failed: {}", errno_text(*errno)),
             SessionError::Unknown => write!(f, "no such session"),
             SessionError::InputOverflow => write!(f, "session input overflows the pending-input window"),
+            SessionError::StaleOwner => write!(f, "the input is from someone who no longer drives this session"),
             SessionError::IdsExhausted => write!(f, "session ids are exhausted"),
         }
     }
@@ -761,6 +766,7 @@ impl SessionManager {
                 seq: 0,
                 pending_out: Vec::new(),
                 pending_in: Vec::new(),
+                owner: "human".to_string(),
                 child_exited: false,
                 pty_done: false,
                 credit: if kind == "echo" { u64::MAX } else { 0 },
@@ -777,6 +783,28 @@ impl SessionManager {
 
     pub fn child_pid(&self, id: u32) -> Option<libc::pid_t> {
         self.sessions.get(&id).map(|s| s.child)
+    }
+
+    /// A new driver: what the previous one still had waiting for the PTY is dropped (the count is returned) and only the
+    /// new owner's input is accepted from now on. The caller acknowledges AFTER this returns: that is the barrier.
+    pub fn set_owner(&mut self, id: u32, owner: &str) -> Result<usize, SessionError> {
+        let session = self.sessions.get_mut(&id).ok_or(SessionError::Unknown)?;
+        let dropped = if session.owner != owner { std::mem::take(&mut session.pending_in).len() } else { 0 };
+        session.owner = owner.to_string();
+        Ok(dropped)
+    }
+
+    pub fn contains(&self, id: u32) -> bool {
+        self.sessions.contains_key(&id)
+    }
+
+    /// `owner` is who sent it; anyone but the current owner is refused (`StaleOwner`).
+    pub fn enqueue_input_from(&mut self, id: u32, owner: &str, data: &[u8]) -> Result<(), SessionError> {
+        let session = self.sessions.get(&id).ok_or(SessionError::Unknown)?;
+        if session.owner != owner {
+            return Err(SessionError::StaleOwner);
+        }
+        self.enqueue_input(id, data)
     }
 
     pub fn enqueue_input(&mut self, id: u32, data: &[u8]) -> Result<(), SessionError> {
@@ -1167,6 +1195,7 @@ mod hangup_tests {
                 seq: 0,
                 pending_out: output.to_vec(),
                 pending_in: input.to_vec(),
+                owner: "human".to_string(),
                 child_exited: false,
                 pty_done: false,
                 credit: u64::MAX,
