@@ -94,7 +94,8 @@ export function ConnectPage(props: ConnectPageProps) {
   };
 
   return (
-    <div className="rh-shell">
+    <div className="rh-root">
+      <div className="rh-shell">
       {api !== undefined && (
         <ProfileCatalogue
           profiles={data.profiles}
@@ -135,6 +136,7 @@ export function ConnectPage(props: ConnectPageProps) {
             <RdpPage {...rdp} />
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

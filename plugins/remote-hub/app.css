@@ -78,9 +78,17 @@
 }
 
 /* Connect page: the profile catalogue beside Quick connect / the editor. */
+/* The container the layout reacts to: the panel's width, not the window's. */
+.rh-root {
+  container-type: inline-size;
+  height: 100%;
+}
+
+/* One page font size for everything in the shell, so no button or field is larger than its neighbours. */
 .rh-shell {
   display: flex;
   height: 100%;
+  font-size: 13px;
   background: var(--canvas, #0d1117);
   color: var(--ink, #c9d1d9);
   font-family: var(--font-sans, system-ui, sans-serif);
@@ -276,7 +284,6 @@
   overflow-y: auto;
   border-right: 1px solid var(--border, #30363d);
   box-sizing: border-box;
-  font-size: 13px;
 }
 
 .rh-catalogue input,
@@ -384,10 +391,21 @@
   gap: 12px;
   padding: 12px;
   overflow-y: auto;
+  width: 100%;
   max-width: 520px;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.rh-editor input:not([type="checkbox"]),
+.rh-editor select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .rh-editor fieldset {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -419,4 +437,22 @@
 .rh-editor-actions {
   display: flex;
   gap: 8px;
+}
+
+/* Narrow panel: the catalogue stacks above the work area instead of squeezing it. */
+@container (max-width: 760px) {
+  .rh-shell {
+    flex-direction: column;
+  }
+
+  .rh-catalogue {
+    flex: 0 0 auto;
+    max-height: 40%;
+    border-right: 0;
+    border-bottom: 1px solid var(--border, #30363d);
+  }
+
+  .rh-connect {
+    min-height: 0;
+  }
 }
