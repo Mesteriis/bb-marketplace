@@ -10,6 +10,24 @@
 // The Rust mirror lives in helper/src/protocol.rs and must stay in sync with
 // these constants and message names.
 import { z } from "zod";
+import {
+  openRdpRequestSchema,
+  rdpAckSchema,
+  rdpCertDecisionRequestSchema,
+  rdpCertPromptSchema,
+  rdpCertificateSchema,
+  rdpDesktopSchema,
+  rdpInputRejectedSchema,
+  rdpInputRequestSchema,
+  rdpRefreshRequestSchema,
+  rdpRequestSchemas,
+  rdpResponseSchemas,
+  rdpScreenshotChunkSchema,
+  rdpScreenshotRequestSchema,
+  rdpScreenshotSchema,
+  rdpStateSchema,
+  rdpUpdateAckRequestSchema,
+} from "./rdp-protocol.ts";
 
 export const PROTOCOL_VERSION = 1;
 /** Largest body (everything after the 4-byte length prefix) the codec accepts. */
@@ -164,6 +182,7 @@ export const requestSchema = z.discriminatedUnion("type", [
   sessionResizeRequestSchema,
   sessionCreditRequestSchema,
   sessionCloseRequestSchema,
+  ...rdpRequestSchemas,
 ]);
 
 export const responseSchema = z.discriminatedUnion("type", [
@@ -175,25 +194,44 @@ export const responseSchema = z.discriminatedUnion("type", [
   sessionCreditAckSchema,
   sessionClosedSchema,
   errorEnvelopeSchema,
+  ...rdpResponseSchemas,
 ]);
 
-export const controlMessageSchema = z.discriminatedUnion("type", [
-  helloRequestSchema,
-  pingRequestSchema,
-  openEchoRequestSchema,
-  openSshRequestSchema,
-  sessionInputRequestSchema,
-  sessionResizeRequestSchema,
-  sessionCreditRequestSchema,
-  sessionCloseRequestSchema,
-  helloAckSchema,
-  pongSchema,
-  sessionOpenedSchema,
-  sessionInputAckSchema,
-  sessionResizedSchema,
-  sessionCreditAckSchema,
-  sessionClosedSchema,
-  errorEnvelopeSchema,
+// `rdp.screenshot` is both a request ({id, sessionId}) and the answer to it, so a
+// discriminated union cannot hold both; the two shapes sit beside it in a union.
+export const controlMessageSchema = z.union([
+  z.discriminatedUnion("type", [
+    helloRequestSchema,
+    pingRequestSchema,
+    openEchoRequestSchema,
+    openSshRequestSchema,
+    sessionInputRequestSchema,
+    sessionResizeRequestSchema,
+    sessionCreditRequestSchema,
+    sessionCloseRequestSchema,
+    helloAckSchema,
+    pongSchema,
+    sessionOpenedSchema,
+    sessionInputAckSchema,
+    sessionResizedSchema,
+    sessionCreditAckSchema,
+    sessionClosedSchema,
+    errorEnvelopeSchema,
+    openRdpRequestSchema,
+    rdpCertDecisionRequestSchema,
+    rdpInputRequestSchema,
+    rdpUpdateAckRequestSchema,
+    rdpRefreshRequestSchema,
+    rdpAckSchema,
+    rdpStateSchema,
+    rdpCertPromptSchema,
+    rdpCertificateSchema,
+    rdpInputRejectedSchema,
+    rdpDesktopSchema,
+    rdpScreenshotChunkSchema,
+  ]),
+  rdpScreenshotSchema,
+  rdpScreenshotRequestSchema,
 ]);
 
 export const streamFrameHeaderSchema = z.object({
