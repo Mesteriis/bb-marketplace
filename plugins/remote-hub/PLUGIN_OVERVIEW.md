@@ -49,8 +49,8 @@ Passwords saved before bindings existed must be saved again. The helper is unsig
 host, port, user and domain and, after its first accepted use, to that server
 certificate (trust on first sight): the helper sends it to no other (save it
 again to start over).
-One-time-code logins are always typed by you. Agents cannot type, connect or run commands yet (stage 4b); no CLI. macOS may ask you to approve the helper's Keychain access first. "Last opened" means the open succeeded, not that the server accepted a login.
-No clipboard, no remote resize, no Kerberos. NLA against a real Windows host and strict TLS were checked by hand; the plugin was not run in a live BB server. The helper binary is not in bin/: npm run build:helper (Rust, aarch64-apple-darwin).
+One-time codes are always typed by you. Agents cannot type, connect or run commands yet; no CLI. macOS may ask you to approve the helper's Keychain access first. "Last opened" means the open succeeded, not that the server accepted a login.
+No clipboard, remote resize or Kerberos. NLA against a real Windows host and strict TLS were checked by hand; the plugin was not run in a live BB server. The helper binary is not in bin/: npm run build:helper (Rust, aarch64-apple-darwin).
 
 ## Source
 
