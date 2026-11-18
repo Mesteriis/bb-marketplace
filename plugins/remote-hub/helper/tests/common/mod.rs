@@ -120,6 +120,8 @@ impl Helper {
                 | Response::RdpAck { id, .. }
                 | Response::CredentialOk { id }
                 | Response::CredentialStatus { id, .. }
+                | Response::KnownHostsLines { id, .. }
+                | Response::KnownHostsDone { id, .. }
                 | Response::RdpScreenshot { id, .. } => Some(*id),
                 Response::SessionClosed { id, .. } | Response::Error { id, .. } => *id,
                 _ => None,

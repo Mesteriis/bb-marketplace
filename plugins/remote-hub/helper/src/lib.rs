@@ -6,6 +6,7 @@ pub mod ids;
 pub mod peer;
 pub mod ipc;
 pub mod keychain;
+pub mod known_hosts;
 pub mod protocol;
 pub mod secret;
 pub mod sessions;

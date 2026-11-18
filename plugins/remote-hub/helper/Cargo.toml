@@ -95,3 +95,8 @@ tokio-rustls = { version = "=0.26.6", default-features = false, features = ["rin
 # Test-only: builds an ActiveStage over quiet streams (already in the tree as a
 # transitive dependency of ironrdp-session).
 ironrdp-svc = "=0.10.0"
+
+[[test]]
+name = "known_hosts_process"
+path = "tests/known_hosts_process.rs"
+required-features = ["test-hooks"]

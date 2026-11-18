@@ -142,6 +142,9 @@ fn request_id(req: &Request) -> Option<u64> {
         | Request::CredentialSave { id, .. }
         | Request::CredentialDelete { id, .. }
         | Request::CredentialStatus { id, .. }
+        | Request::KnownHostsList { id }
+        | Request::KnownHostsAdd { id, .. }
+        | Request::KnownHostsRemove { id, .. }
         | Request::RdpCertDecision { id, .. }
         | Request::RdpInput { id, .. }
         | Request::RdpScreenshot { id, .. }
@@ -413,6 +416,14 @@ fn required_bind(facts: &crate::ssh_args::SshFacts) -> crate::binding::Bind {
     }
 }
 
+fn known_hosts_error(id: u64, error: crate::known_hosts::KnownHostsError) -> Response {
+    let (code, message) = match error {
+        crate::known_hosts::KnownHostsError::Unsafe => ("known_hosts_refused", "the known hosts file or the lines are not acceptable"),
+        crate::known_hosts::KnownHostsError::Io => ("known_hosts_unavailable", "the known hosts file could not be read or written"),
+    };
+    Response::Error { id: Some(id), code: code.to_string(), message: message.to_string() }
+}
+
 /// Validate and build a SpawnSpec from a client-provided session.open_ssh.
 fn build_spawn_spec(
     program: String,
@@ -508,7 +519,7 @@ fn handle(
             cols,
             rows,
             program,
-            argv,
+            mut argv,
             env,
             cwd,
             askpass,
@@ -554,6 +565,17 @@ fn handle(
                     return Ok(protocol::encode_response(&CredentialRefusal::Mismatch.into_response(id)));
                 }
                 askpass_plan = Some((required, facts.expected_prompt()));
+                // The host-key file is the helper's own overlay, chosen here and never by the request: an unknown
+                // server raises the confirm prompt, and what the user accepts is kept there.
+                if program == "/usr/bin/ssh" && !argv.iter().any(|a| a.starts_with("UserKnownHostsFile=")) {
+                    match crate::known_hosts::ensure() {
+                        Ok(path) => {
+                            let at = argv.len().saturating_sub(2); // before the "--" that precedes the destination
+                            argv.splice(at..at, ["-o".to_string(), format!("UserKnownHostsFile={}", path.display())]);
+                        }
+                        Err(e) => return Ok(protocol::encode_response(&known_hosts_error(id, e))),
+                    }
+                }
             }
             let spec = build_spawn_spec(program, argv, env, cwd);
             match spec {
@@ -719,6 +741,18 @@ fn handle(
                 .and_then(keychain_ok)
                 .map_or_else(|r| r.into_response(id), |reply| Response::CredentialStatus { id, present: reply.present.unwrap_or(false) }),
         )),
+        Request::KnownHostsList { id } => Ok(protocol::encode_response(&match crate::known_hosts::read_lines() {
+            Ok(lines) => Response::KnownHostsLines { id, lines },
+            Err(e) => known_hosts_error(id, e),
+        })),
+        Request::KnownHostsAdd { id, lines } => Ok(protocol::encode_response(&match crate::known_hosts::add_lines(&lines) {
+            Ok(count) => Response::KnownHostsDone { id, count: count as u32 },
+            Err(e) => known_hosts_error(id, e),
+        })),
+        Request::KnownHostsRemove { id, host } => Ok(protocol::encode_response(&match crate::known_hosts::remove_host(&host) {
+            Ok(count) => Response::KnownHostsDone { id, count: count as u32 },
+            Err(e) => known_hosts_error(id, e),
+        })),
         Request::SshPromptAnswer { id, session_id, prompt_id, answer } => {
             if manager.askpass_answer(session_id, prompt_id, answer) {
                 Ok(protocol::encode_response(&Response::SshPromptAck { id }))

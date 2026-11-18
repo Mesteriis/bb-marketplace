@@ -126,6 +126,13 @@ pub enum Request {
         #[serde(rename = "ref")]
         reference: String,
     },
+    /// The helper-owned known_hosts overlay: its lines (no path crosses the wire).
+    #[serde(rename = "known_hosts.list")]
+    KnownHostsList { id: u64 },
+    #[serde(rename = "known_hosts.add")]
+    KnownHostsAdd { id: u64, lines: Vec<String> },
+    #[serde(rename = "known_hosts.remove")]
+    KnownHostsRemove { id: u64, host: String },
     #[serde(rename = "rdp.cert_decision")]
     RdpCertDecision {
         id: u64,
@@ -227,6 +234,11 @@ pub enum Response {
     },
     #[serde(rename = "credential.ok")]
     CredentialOk { id: u64 },
+    #[serde(rename = "known_hosts.lines")]
+    KnownHostsLines { id: u64, lines: Vec<String> },
+    /// How many lines an add or a remove changed.
+    #[serde(rename = "known_hosts.done")]
+    KnownHostsDone { id: u64, count: u32 },
     /// OpenSSH asked something the helper must not answer itself (a host key confirmation, an
     /// informational message): the user decides. `kind` is "confirm" or "none".
     #[serde(rename = "ssh.prompt")]
