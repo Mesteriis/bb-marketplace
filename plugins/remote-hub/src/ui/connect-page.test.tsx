@@ -328,3 +328,71 @@ describe("ConnectPage: saving a password in the Keychain (stage 3b-1)", () => {
     expect(screen.queryByRole("button", { name: "Credentials" })).toBeNull();
   });
 });
+
+describe("ConnectPage with Proxmox", () => {
+  const PID = "99999999-9999-4999-8999-999999999999";
+  const PVE_PROFILE = stored({ id: PID, name: "lab pve", protocol: "pve", authType: "password", username: "remotehub@pve", host: "pve.test" });
+
+  function withPve(initial: Profile[]) {
+    const pve = {
+      targets: vi.fn(async (_input?: unknown): Promise<{ connections: unknown[] }> => ({ connections: [] })),
+      pinTrust: vi.fn(),
+      linkGuest: vi.fn(),
+      onboardPlan: vi.fn(),
+      onboardApply: vi.fn(),
+      onboardConnect: vi.fn(),
+    };
+    const rows = [...initial];
+    const api = {
+      list: vi.fn(async () => rows),
+      save: vi.fn(),
+      remove: vi.fn(),
+      duplicate: vi.fn(),
+      sessions: vi.fn(async () => []),
+    } as unknown as ProfilesApi;
+    const ssh = { onSshOpen: vi.fn(async () => ({ generation: "a".repeat(32), sessionId: 1 })), onAttach: vi.fn(async () => Promise.reject(new Error("none"))), onClose: vi.fn(async () => {}) };
+    const rdp = { onRdpOpen: vi.fn(), onAttach: vi.fn(), onClose: vi.fn(), onDecision: vi.fn(), onScreenshot: vi.fn() };
+    const view = render(<ConnectPage ssh={ssh as never} rdp={rdp as never} profiles={api} pve={pve as never} />);
+    return { pve, ssh, view };
+  }
+
+  it("a Proxmox connection's Guests button lists its guests instead of opening an SSH or RDP session", async () => {
+    const { pve, ssh, view } = withPve([PVE_PROFILE, SSH_PROFILE]);
+    fireEvent.click(await screen.findByRole("button", { name: "Show guests of lab pve" }));
+    await waitFor(() => expect(pve.targets).toHaveBeenCalledWith({ profileIds: [PID], refresh: false }));
+    expect(screen.getByLabelText("Proxmox guests")).toBeTruthy();
+    expect(ssh.onSshOpen).not.toHaveBeenCalled();
+    expect((view.container.querySelector(".rh-connect-sessions") as HTMLElement).hidden).toBe(true);
+  });
+
+  it("Add Proxmox opens the onboarding screen, and Cancel returns to Quick connect", async () => {
+    const { view } = withPve([]);
+    fireEvent.click(await screen.findByRole("button", { name: "Add Proxmox" }));
+    expect(screen.getByLabelText("Add Proxmox")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByLabelText("Add Proxmox")).toBeNull();
+    expect((view.container.querySelector(".rh-connect-sessions") as HTMLElement).hidden).toBe(false);
+  });
+
+  it("without a Proxmox api there is no Add Proxmox button", async () => {
+    withProfiles([SSH_PROFILE]);
+    await screen.findByText("Build box");
+    expect(screen.queryByRole("button", { name: "Add Proxmox" })).toBeNull();
+  });
+
+  it("a guest's linked SSH profile opens through the normal SSH path", async () => {
+    const { pve, ssh } = withPve([PVE_PROFILE, SSH_PROFILE]);
+    pve.targets.mockResolvedValue({
+      connections: [
+        {
+          profileId: PID, profileName: "lab pve", outcome: "ok", message: null, fingerprint: null, version: "9.0.3", nodes: [], fetchedAt: "x", stale: null,
+          guests: [{ key: `${PID}/101`, profileId: PID, vmid: 101, name: "web", kind: "lxc", node: "pve1", status: "running", template: false, console: { available: true, reason: null }, linkedProfileId: SID }],
+        },
+      ],
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Show guests of lab pve" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect to web through Build box" }));
+    await waitFor(() => expect(ssh.onSshOpen).toHaveBeenCalledTimes(1));
+    expect((ssh.onSshOpen.mock.calls[0] as unknown[])[1]).toBe(SID);
+  });
+});

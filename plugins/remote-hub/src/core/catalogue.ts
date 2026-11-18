@@ -5,7 +5,7 @@ import type { SessionInfo, SshTarget } from "./rpc.ts";
 
 export interface CatalogueFilter {
   query: string;
-  protocol: "all" | "ssh" | "rdp";
+  protocol: "all" | "ssh" | "rdp" | "pve";
   favoritesOnly: boolean;
 }
 

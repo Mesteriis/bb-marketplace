@@ -6,6 +6,7 @@ import { AgentAccessSection } from "./agent-access-section.tsx";
 import type { AgentApi } from "./agent-panel.tsx";
 import { useState } from "react";
 import { profileFieldsSchema, type ProfileFields } from "../core/profile.ts";
+import type { PveProfileTrust } from "../core/pve-trust.ts";
 
 /** What to do with the saved password when the profile is saved. The secret exists only in this value. */
 export type SecretAction = { type: "keep" } | { type: "save"; secret: string } | { type: "remove" };
@@ -36,6 +37,7 @@ const BLANK: ProfileFields = {
   rdpWidth: null,
   rdpHeight: null,
   rdpOptions: null,
+  pveTrust: null,
 };
 
 /** The six experience switches and what each one is called to the owner. */
@@ -90,11 +92,15 @@ export function ProfileEditor(props: ProfileEditorProps) {
   // A password typed here lives only until Save is pressed; it is cleared at once.
   const [secret, setSecret] = useState("");
   const [removeSaved, setRemoveSaved] = useState(false);
+  // Proxmox only: how the API certificate is trusted. The editor can forget a confirmed certificate; confirming one happens
+  // in the guest list, where the certificate the server presented is shown.
+  const [pveTrust, setPveTrust] = useState<PveProfileTrust | null>(start.pveTrust ?? null);
   const [issues, setIssues] = useState<Array<{ field: string; message: string }>>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const rdp = protocol === "rdp";
+  const pve = protocol === "pve";
   const hasSaved = props.initial?.credentialRef != null;
   // The saved password is tied to its endpoint: moving the endpoint drops it (the server does that).
   const endpointMoved =
@@ -105,15 +111,15 @@ export function ProfileEditor(props: ProfileEditorProps) {
       (orNull(username) ?? null) !== props.initial.username ||
       (orNull(domain) ?? null) !== props.initial.domain ||
       (!rdp && authType === "key" && (orNull(identityFile) ?? null) !== props.initial.identityFile));
-  const effectiveAuth = rdp ? "password" : authType;
+  const effectiveAuth = rdp ? "password" : pve ? (authType === "token" ? "token" : "password") : authType;
   // What a saved secret is for: a password, or the passphrase of the key file named above.
   const secretKind: "password" | "passphrase" | null =
-    effectiveAuth === "password" ? "password" : effectiveAuth === "key" && orNull(identityFile) !== null ? "passphrase" : null;
-  const noun = secretKind === "passphrase" ? "passphrase" : "password";
+    effectiveAuth === "password" || effectiveAuth === "token" ? "password" : effectiveAuth === "key" && orNull(identityFile) !== null ? "passphrase" : null;
+  const noun = secretKind === "passphrase" ? "passphrase" : effectiveAuth === "token" ? "API token secret" : "password";
 
   const choose = (next: ProfileFields["protocol"]) => {
     setProtocol(next);
-    if (next === "rdp") setAuthType("password");
+    if (next === "rdp" || next === "pve") setAuthType("password");
   };
 
   const save = async () => {
@@ -132,11 +138,12 @@ export function ProfileEditor(props: ProfileEditorProps) {
       username: orNull(username),
       domain: rdp ? orNull(domain) : null,
       authType: effectiveAuth,
-      identityFile: !rdp && effectiveAuth === "key" ? orNull(identityFile) : null,
+      identityFile: !rdp && !pve && effectiveAuth === "key" ? orNull(identityFile) : null,
       credentialRef: start.credentialRef,
       rdpWidth: rdp ? numberOrNull(width) : null,
       rdpHeight: rdp ? numberOrNull(height) : null,
       rdpOptions: rdp ? rdpOpts : null,
+      ...(pve ? { pveTrust } : {}),
     };
     const parsed = profileFieldsSchema.safeParse(candidate);
     if (!parsed.success) {
@@ -181,6 +188,7 @@ export function ProfileEditor(props: ProfileEditorProps) {
           <select value={protocol} onChange={(e) => choose(e.target.value as ProfileFields["protocol"])}>
             <option value="ssh">SSH</option>
             <option value="rdp">RDP</option>
+            <option value="pve">Proxmox VE</option>
           </select>
         </label>
         <label>
@@ -189,10 +197,10 @@ export function ProfileEditor(props: ProfileEditorProps) {
         </label>
         <label>
           Port
-          <input value={port} onChange={(e) => setPort(e.target.value)} placeholder={rdp ? "3389" : "22"} />
+          <input value={port} onChange={(e) => setPort(e.target.value)} placeholder={rdp ? "3389" : pve ? "8006" : "22"} />
         </label>
         <label>
-          User
+          {pve ? (effectiveAuth === "token" ? "API token id (user@realm!name)" : "User (name@realm)") : "User"}
           <input value={username} onChange={(e) => setUsername(e.target.value)} />
         </label>
         {rdp && (
@@ -222,6 +230,11 @@ export function ProfileEditor(props: ProfileEditorProps) {
           <select value={effectiveAuth} onChange={(e) => setAuthType(e.target.value as ProfileFields["authType"])}>
             {rdp ? (
               <option value="password">Password</option>
+            ) : pve ? (
+              <>
+                <option value="password">User and password (ticket)</option>
+                <option value="token">API token</option>
+              </>
             ) : (
               <>
                 <option value="agent">SSH agent / default keys</option>
@@ -323,6 +336,24 @@ export function ProfileEditor(props: ProfileEditorProps) {
               </label>
             ))}
           </details>
+        </fieldset>
+      )}
+
+      {pve && (
+        <fieldset aria-label="Certificate">
+          <legend>Certificate</legend>
+          <p className="rh-hint" data-testid="pve-trust-text">
+            {pveTrust === null || pveTrust.mode === "system"
+              ? "The server certificate must be trusted by this Mac. If it is not, the guest list shows its fingerprint and asks you to confirm it."
+              : pveTrust.mode === "pin"
+                ? "Only the certificate you confirmed is trusted: " + pveTrust.fingerprint
+                : "Only the certificate authority you supplied is trusted."}
+          </p>
+          {pveTrust !== null && pveTrust.mode !== "system" && (
+            <button type="button" onClick={() => setPveTrust(null)}>
+              Forget it and use this Mac's trusted certificates
+            </button>
+          )}
         </fieldset>
       )}
 

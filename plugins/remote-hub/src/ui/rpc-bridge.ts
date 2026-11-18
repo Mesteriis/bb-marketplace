@@ -12,6 +12,7 @@ import type { CredentialItem, CredentialsApi, CredentialStateName } from "./use-
 import type { ProfilesApi } from "./use-profiles.ts";
 import type { AgentApi } from "./agent-panel.tsx";
 import type { ImportApi } from "./import-panel.tsx";
+import type { PveApi } from "./pve-api.ts";
 
 /** What useRpc().call looks like to this module; the page's own typing stays in app.tsx. */
 export type RpcCall = (method: string, input?: unknown) => Promise<unknown>;
@@ -21,6 +22,7 @@ export interface ConnectBridge {
   credentials: CredentialsApi;
   imports: ImportApi;
   agents: AgentApi;
+  pve: PveApi;
   ssh: Pick<SshPageProps, "onSshOpen" | "onAttach" | "onClose" | "onTakeover">;
   rdp: Pick<RdpPageProps, "onRdpOpen" | "onAttach" | "onClose" | "onDecision" | "onScreenshot" | "onTakeover">;
 }
@@ -81,6 +83,14 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
       disconnect: async (handle) => {
         await close(handle);
       },
+    },
+    pve: {
+      targets: (input) => send("pve_targets", input),
+      pinTrust: (profileId, fingerprint) => send("pve_trust_pin", { profileId, fingerprint }),
+      linkGuest: (profileId, vmid, linkProfileId) => send("pve_guest_link_set", { profileId, vmid, linkProfileId }),
+      onboardPlan: (input) => send("pve_onboard_plan", input),
+      onboardApply: (input) => send("pve_onboard_apply", input),
+      onboardConnect: (input) => send("pve_onboard_connect", input),
     },
     ssh: {
       onSshOpen: (target: SshTarget, profileId?: string, credentialRef?: string) => send<SessionHandle>("ssh_open", { target, profileId, credentialRef }),

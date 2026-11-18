@@ -161,5 +161,23 @@ Behaviour decided here:
   `session.credit` for a PVE console is acknowledged and unused. Keep-alive ping every 30 s (1..=120 configurable per open).
 - Waits are bounded: TCP/TLS connect 10 s, request 20 s, websocket handshake 10 s, `OK` 12 s.
 
-Tests: `helper/tests/pve_engine.rs` (21, engine in-process against the fake PVE), `helper/tests/pve_process.rs` (8, through the real helper binary,
+### Stage 1: profile, discovery, onboarding
+
+- **Profile**: protocol `pve` in `src/core/profile.ts` (host and port are the API endpoint, default 8006; `username` is `name@realm`
+  or, for `authType: "token"`, `name@realm!token`; `pveTrust` is `system` | `ca` | `pin`, null meaning the system roots). Migration
+  `PROFILE_PVE_MIGRATIONS` appends the `pve_trust` column at the end of the ordered list; guest links live in `pve_guest_links`. The saved
+  secret is an ordinary credential bound to `{protocol: "pve", host, port, user}`. Export of profiles carries no secret (there is none in a profile).
+- **Discovery** (`src/core/pve-targets.ts`, RPC `pve_targets`): one view per connection with `outcome` ∈ ok, empty, no_permission, login_failed,
+  unreachable, tls_untrusted, cert_changed, tfa_required, no_credential, error. One failing connection never hides the others (each is asked on its own
+  and a throw becomes `error` for that connection). The last good list is served stale (with `ageSeconds`) only after `unreachable` or `error`,
+  never after a login, permission or certificate refusal. A guest's identity is `<profile id>/<vmid>`; the node is a location and is re-read on
+  every refresh (the engine's `cluster/resources` answer), so a moved guest shows its new node and equal VMIDs of two connections never meet.
+  Cached lists live in memory (a restart drops them).
+- **Onboarding** (RPCs `pve_onboard_plan`, `pve_onboard_apply`, `pve_onboard_connect`): see §3 and `docs/security.md`.
+- **Console availability** per guest is computed from its state (a stopped guest or a template has none, with the reason); the buttons are disabled in this
+  build because console sessions are stage 2. There are no power controls anywhere.
+- **Agent tool** `remote_pve_targets` (observe level) in `src/core/agent-pve-tools.ts`.
+- **Link to SSH/RDP**: the owner picks a saved SSH or RDP profile per guest (`pve_guest_link_set`); nothing is guessed from an address or the guest agent.
+
+Tests: `helper/tests/pve_engine.rs` (28, engine in-process against the fake PVE), `helper/tests/pve_process.rs` (10, through the real helper binary,
 including a temporary keychain), unit tests beside each module, `src/core/pve-protocol.test.ts`. None of this touches a real PVE.

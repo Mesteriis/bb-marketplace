@@ -808,7 +808,7 @@
     {
       "id": "makosh-remote-hub",
       "displayName": "Remote Hub [Experimental]",
-      "description": "Experimental SSH/RDP manager: SSH in xterm and RDP on a canvas (strict TLS, NLA, input, screenshots) through a Rust helper.",
+      "description": "Experimental SSH/RDP manager with Proxmox VE guest discovery (strict TLS, Keychain secrets) through a Rust helper.",
       "icon": {
         "url": "./plugins/remote-hub/assets/icon.svg"
       },

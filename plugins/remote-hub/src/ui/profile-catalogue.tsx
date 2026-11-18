@@ -14,6 +14,8 @@ export interface ProfileCatalogueProps {
   onConnect: (profile: Profile) => void;
   onEdit: (profile: Profile) => void;
   onNew: () => void;
+  /** Opens the Add Proxmox screen; the button shows only when this is given. */
+  onAddPve?: () => void;
   onDuplicate: (profile: Profile) => void;
   /** `deleteCredential`: also delete the profile's saved password (only offered when no other profile uses it). */
   onDelete: (profile: Profile, deleteCredential: boolean) => void;
@@ -53,7 +55,7 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
       <div className="rh-catalogue-tools">
         <input aria-label="Search profiles" placeholder="Search" value={query} onChange={(e) => setQuery(e.target.value)} />
         <div className="rh-kind" role="toolbar" aria-label="protocol filter">
-          {(["all", "ssh", "rdp"] as const).map((value) => (
+          {(["all", "ssh", "rdp", "pve"] as const).map((value) => (
             <button key={value} type="button" aria-pressed={protocol === value} onClick={() => setProtocol(value)}>
               {value === "all" ? "All" : value.toUpperCase()}
             </button>
@@ -65,6 +67,11 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
         <button type="button" className="rh-new" onClick={props.onNew}>
           New profile
         </button>
+        {props.onAddPve !== undefined && (
+          <button type="button" onClick={props.onAddPve}>
+            Add Proxmox
+          </button>
+        )}
         {props.onShowCredentials !== undefined && (
           <button type="button" onClick={props.onShowCredentials}>
             Credentials
@@ -127,7 +134,7 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
                         )}
                       </>
                     )}
-                    {p.credentialRef !== null && <span className="rh-status">saved password</span>}
+                    {p.credentialRef !== null && <span className="rh-status">{p.authType === "token" ? "saved API token" : "saved password"}</span>}
                     {p.provenance == null && p.needsConfig === true && (
                       <span className="rh-status" data-testid="profile-needs-config">
                         uses your ssh config, no saved password until you set a new host, port and user
@@ -144,8 +151,8 @@ export function ProfileCatalogue(props: ProfileCatalogueProps) {
                     {lastError !== undefined && <span className="rh-error">last open failed: {lastError.code}</span>}
                   </div>
                   <div className="rh-profile-actions">
-                    <button type="button" aria-label={"Connect " + p.name} onClick={() => props.onConnect(p)}>
-                      Connect
+                    <button type="button" aria-label={(p.protocol === "pve" ? "Show guests of " : "Connect ") + p.name} onClick={() => props.onConnect(p)}>
+                      {p.protocol === "pve" ? "Guests" : "Connect"}
                     </button>
                     <button type="button" aria-label={"Edit " + p.name} onClick={() => props.onEdit(p)}>
                       Edit

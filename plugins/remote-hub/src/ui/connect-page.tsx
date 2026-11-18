@@ -16,6 +16,9 @@ import { useCredentials, type CredentialsApi } from "./use-credentials.ts";
 import { RdpPage, type RdpPageProps, type RdpPrefill } from "./rdp-page.tsx";
 import { SshPage, type SshLaunch, type SshPageProps } from "./ssh-page.tsx";
 import { useProfiles, type ProfilesApi } from "./use-profiles.ts";
+import type { PveApi } from "./pve-api.ts";
+import { PveOnboarding } from "./pve-onboarding.tsx";
+import { PveTargets } from "./pve-targets.tsx";
 
 export type ConnectKind = "ssh" | "rdp";
 
@@ -33,6 +36,8 @@ export interface ConnectPageProps {
   agents?: AgentApi;
   /** Live views of sessions agents opened (stage 4c); without it the catalogue has no Watch button. */
   live?: LiveSessionApi;
+  /** Proxmox VE: adding a connection and listing its guests; without it there is no Proxmox screen. */
+  pve?: PveApi;
 }
 
 export function ConnectPage(props: ConnectPageProps) {
@@ -45,6 +50,9 @@ export function ConnectPage(props: ConnectPageProps) {
   const [showImport, setShowImport] = useState(false);
   const [showAgents, setShowAgents] = useState(false);
   const [watched, setWatched] = useState<string | null>(null);
+  // Proxmox: the guest list of one saved connection (or of all of them), and the Add Proxmox screen.
+  const [pveList, setPveList] = useState<{ profileIds: string[] | null; key: number } | null>(null);
+  const [addingPve, setAddingPve] = useState(false);
   const nonce = useRef(0);
   const api = props.profiles;
   const data = useProfiles(api);
@@ -56,6 +64,12 @@ export function ConnectPage(props: ConnectPageProps) {
     setEditing(null);
     setNotice(null);
     nonce.current += 1;
+    if (p.protocol === "pve") {
+      setAddingPve(false);
+      setPveList({ profileIds: [p.id], key: nonce.current });
+      return;
+    }
+    setPveList(null);
     if (p.protocol === "ssh") {
       setKind("ssh");
       setSshLaunch({ nonce: nonce.current, profileId: p.id, target: profileToSshTarget(p), ...(p.credentialRef !== null ? { credentialRef: p.credentialRef } : {}) });
@@ -144,6 +158,7 @@ export function ConnectPage(props: ConnectPageProps) {
           onConnect={connectProfile}
           onEdit={(profile) => setEditing({ profile, key: ++nonce.current })}
           onNew={() => setEditing({ profile: null, key: ++nonce.current })}
+          {...(props.pve !== undefined ? { onAddPve: () => { setEditing(null); setPveList(null); setAddingPve(true); } } : {})}
           onDuplicate={(p) => void action(() => api.duplicate(p.id))}
           onDelete={(p, deleteCredential) =>
             void action(async () => {
@@ -194,6 +209,30 @@ export function ConnectPage(props: ConnectPageProps) {
         {showAgents && props.agents !== undefined && (
           <AgentPanel api={props.agents} profileNames={new Map((data.profiles ?? []).map((p) => [p.id, p.name]))} onClose={() => setShowAgents(false)} />
         )}
+        {addingPve && props.pve !== undefined && (
+          <PveOnboarding
+            api={props.pve}
+            onDone={() => {
+              setAddingPve(false);
+              void reload();
+              setPveList({ profileIds: null, key: ++nonce.current });
+            }}
+            onCancel={() => setAddingPve(false)}
+          />
+        )}
+        {pveList !== null && !addingPve && props.pve !== undefined && !showCredentials && !showImport && !showAgents && editing === null && (
+          <PveTargets
+            key={pveList.key}
+            api={props.pve}
+            profileIds={pveList.profileIds}
+            linkable={(data.profiles ?? []).filter((p) => p.protocol === "ssh" || p.protocol === "rdp")}
+            onConnectProfile={(id) => {
+              const target = (data.profiles ?? []).find((p) => p.id === id);
+              if (target !== undefined) connectProfile(target);
+            }}
+            onClose={() => setPveList(null)}
+          />
+        )}
         {editing !== null && !showCredentials && !showImport && !showAgents && (
           <ProfileEditor
             key={editing.key}
@@ -203,7 +242,7 @@ export function ConnectPage(props: ConnectPageProps) {
             onCancel={() => setEditing(null)}
           />
         )}
-        <div hidden={editing !== null || showCredentials || showImport || showAgents} className="rh-connect-sessions">
+        <div hidden={editing !== null || showCredentials || showImport || showAgents || addingPve || pveList !== null} className="rh-connect-sessions">
           <div className="rh-kind" role="group" aria-label="connection kind">
             {api !== undefined && <span className="rh-quick">Quick connect</span>}
             <button type="button" aria-pressed={kind === "ssh"} onClick={() => setKind("ssh")}>

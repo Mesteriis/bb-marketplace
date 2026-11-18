@@ -227,3 +227,28 @@ describe("ProfileCatalogue provenance", () => {
     expect(screen.getByTestId("profile-needs-config").textContent).toBe("uses your ssh config, no saved password until you set a new host, port and user");
   });
 });
+
+
+describe("Proxmox connections in the catalogue", () => {
+  const PVE = profile({ id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", name: "lab pve", protocol: "pve", authType: "token", username: "remotehub@pve!rh", host: "pve.test", credentialRef: "rh-cred:v1:local:0b8e6f4a-5c2d-4e1b-9a37-1f2e3d4c5b6a" });
+
+  it("has a PVE filter that keeps only Proxmox connections, and labels the open button by what it does", () => {
+    mount({ profiles: [...PROFILES, PVE] });
+    fireEvent.click(screen.getByRole("button", { name: "PVE" }));
+    expect(screen.getAllByTestId("profile-name").map((n) => n.textContent)).toEqual(["lab pve"]);
+    expect(screen.getByRole("button", { name: "Show guests of lab pve" }).textContent).toBe("Guests");
+    expect(screen.queryByRole("button", { name: /^Connect / })).toBeNull();
+  });
+
+  it("calls the saved credential an API token when it is one", () => {
+    mount({ profiles: [PVE] });
+    expect(screen.getByText("saved API token")).toBeTruthy();
+  });
+
+  it("shows Add Proxmox only when it can be used", () => {
+    const onAddPve = vi.fn();
+    mount({ onAddPve });
+    fireEvent.click(screen.getByRole("button", { name: "Add Proxmox" }));
+    expect(onAddPve).toHaveBeenCalled();
+  });
+});

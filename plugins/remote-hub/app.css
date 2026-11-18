@@ -942,3 +942,57 @@
 .rh-command-err {
   color: #f85149;
 }
+
+/* Proxmox VE: guest cards, certificate confirmation, the onboarding screen */
+.rh-pve,
+.rh-pve-onboarding {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rh-pve-tools {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.rh-pve-tools input {
+  flex: 1;
+  min-width: 0;
+}
+
+.rh-pve-connection ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rh-guest {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+}
+
+.rh-guest-id {
+  color: var(--muted-foreground, #8b949e);
+  font-size: 12px;
+}
+
+.rh-guest-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.rh-cert code,
+.rh-pve-onboarding code {
+  overflow-wrap: anywhere;
+}

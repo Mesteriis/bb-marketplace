@@ -106,6 +106,26 @@
 - **Limits.** A command runs as the saved user with that user's rights: exec is the power to act as that user. The
   helper's own bounds do not limit what the remote command does on the server.
 
+## Proxmox VE (stages 0 and 1)
+
+- The PVE engine (`--pve-engine`) is a separate process like the RDP engine: empty environment, the helper's stdio and stderr
+  closed, one socketpair. The secret (a typed password used once, or a Keychain item the helper resolves itself) travels only in
+  its `Open` frame; the helper checks that a saved secret was saved for exactly this `pve` host, port and user or token id.
+- TLS is strict in every mode: the system roots, one CA the owner supplied, or one pinned leaf certificate. There is no
+  setting that skips verification. No login is sent before the handshake passed. A refusal carries the presented SHA-256
+  fingerprint; the owner confirms it on the page, and the server accepts a pin only for the fingerprint it last saw in a
+  refusal for that connection (`pve_trust_pin`). A pinned certificate that changes is `cert_changed`, never silently accepted.
+- A refused login, an expired ticket or a refused console ticket is one `login_failed`; nothing retries it (the server delays a
+  refused login by 3 seconds and an account can be locked by repeats).
+- Onboarding mode 1 is the only place the plugin changes anything on Proxmox, and only through the owner's RPC after a reviewed
+  plan: it creates the role `RemoteHubConsole` (Sys.Audit, Sys.Console, VM.Audit, VM.Console), the user `remotehub@pve` and one
+  ACL entry, idempotently. The administrator's login is a use-once password (a saved credential is refused for it), never stored
+  or logged. The generated password is made in the engine, saved to the Keychain by the helper, and only for a binding that
+  names this endpoint and `remotehub@pve`; the client is told what happened, never the secret. It is audited (`pve.onboard_plan`,
+  `pve.onboard_apply`, `pve.pin`) without secrets. There is no agent tool for it.
+- `remote_pve_targets` is an observe-level read: it lists guests of connections the owner allowed, with outcomes. It cannot open
+  a console, change a guest or call the API otherwise. Guest names come from the server: untrusted data.
+
 ## Threat model and every stated limit, in one list
 
 Assets: the saved credentials (Keychain), the sessions and what is on them, the owner's decisions (host keys,

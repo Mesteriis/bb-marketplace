@@ -260,3 +260,48 @@ describe("ProfileEditor: the saved password (stage 3b-1, RDP)", () => {
     expect(screen.getByText(/saved password will be forgotten/)).toBeTruthy();
   });
 });
+
+describe("a Proxmox profile in the editor", () => {
+  const PVE_START = {
+    name: "lab", protocol: "pve", group: null, tags: [], favorite: false, color: null, host: "pve.test", port: null, username: "remotehub@pve", domain: null,
+    authType: "password", identityFile: null, credentialRef: null, rdpWidth: null, rdpHeight: null, rdpOptions: null,
+    pveTrust: { mode: "pin", fingerprint: "B6:88:41:D8:62:DD:80:8C:E2:A8:39:E1:26:D1:66:00:9D:51:54:09:DD:16:E2:A7:CB:DF:0D:3B:E1:1D:43:2E" },
+  } as const;
+
+  it("shows the Proxmox port, user labels and the confirmed certificate, and saves it unchanged", async () => {
+    const onSave = vi.fn(async () => {});
+    render(<ProfileEditor initial={PVE_START as never} onSave={onSave} onCancel={vi.fn()} />);
+    expect(screen.getByLabelText("Port").getAttribute("placeholder")).toBe("8006");
+    expect(screen.getByLabelText("User (name@realm)")).toBeTruthy();
+    expect(screen.getByTestId("pve-trust-text").textContent).toContain("B6:88:41:D8");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const [fields] = onSave.mock.calls[0] as unknown as [Record<string, unknown>];
+    expect(fields).toMatchObject({ protocol: "pve", host: "pve.test", username: "remotehub@pve", authType: "password", pveTrust: PVE_START.pveTrust, identityFile: null, domain: null });
+  });
+
+  it("forgetting the confirmed certificate saves the profile with system trust", async () => {
+    const onSave = vi.fn(async () => {});
+    render(<ProfileEditor initial={PVE_START as never} onSave={onSave} onCancel={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /Forget it/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect((onSave.mock.calls[0] as unknown as [{ pveTrust: unknown }])[0].pveTrust).toBeNull();
+  });
+
+  it("an API token profile asks for the token id and refuses a plain user", async () => {
+    const onSave = vi.fn(async () => {});
+    render(<ProfileEditor initial={{ ...PVE_START, authType: "token", username: "remotehub@pve", pveTrust: null } as never} onSave={onSave} onCancel={vi.fn()} />);
+    expect(screen.getByLabelText("API token id (user@realm!name)")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect((await screen.findAllByRole("alert"))[0]?.textContent).toContain("token id");
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("choosing Proxmox for a new profile switches to password sign-in", () => {
+    render(<ProfileEditor initial={null} onSave={vi.fn(async () => {})} onCancel={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Protocol"), { target: { value: "pve" } });
+    expect((screen.getByLabelText("Authentication type") as HTMLSelectElement).value).toBe("password");
+    expect(screen.getByLabelText("Port").getAttribute("placeholder")).toBe("8006");
+  });
+});
