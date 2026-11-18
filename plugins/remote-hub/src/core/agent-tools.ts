@@ -265,6 +265,8 @@ export function createAgentTools(deps: AgentToolDeps): AgentToolDef[] {
           if (session.kind !== "rdp") throw new ToolError("not_a_desktop", "this is a terminal session: use remote_terminal_read");
           if (session.rdp?.state !== "desktop_ready") throw new ToolError("desktop_not_ready", "the desktop is not shown yet (state " + (session.rdp?.state ?? "unknown") + ")");
           const shot = await ports.sessions.screenshot(params.sessionId);
+          // The capture took time: the owner may have revoked access meanwhile, and then nothing of it is returned.
+          observableSession(params.sessionId);
           const fitted = ports.fitScreenshot(shot.png, { maxDim: params.maxDimension ?? SCREENSHOT_DEFAULT_DIM, maxBytes: SCREENSHOT_MAX_BYTES });
           const meta = {
             sessionId: params.sessionId,

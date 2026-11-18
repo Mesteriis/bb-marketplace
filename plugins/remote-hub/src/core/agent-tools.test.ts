@@ -21,7 +21,7 @@ const profile = (id: string, over: Partial<Profile> = {}): Profile =>
     username: "ops", domain: null, authType: "password", identityFile: null, credentialRef: SECRET_REF, rdpWidth: null, rdpHeight: null, ...over,
   }) as Profile;
 
-function setup(opts: { sessions?: AgentSessionView[]; budget?: ConstructorParameters<typeof ToolBudget>[0] } = {}) {
+function setup(opts: { sessions?: AgentSessionView[]; budget?: ConstructorParameters<typeof ToolBudget>[0]; shotWait?: Promise<void> } = {}) {
   const profiles = [profile(P_OPEN), profile(P_SECOND, { protocol: "rdp", authType: "password", username: "u", domain: "CORP", port: 3389, rdpWidth: 800, rdpHeight: 600 }), profile(P_CLOSED, { authType: "key", identityFile: SECRET_PATH })];
   const grants = new Map<string, AgentGrant>();
   const access = new AgentAccessBook({
@@ -56,7 +56,7 @@ function setup(opts: { sessions?: AgentSessionView[]; budget?: ConstructorParame
       sessions: {
         list: () => sessions,
         read: (key, from, max) => (key === `${GEN}.1` ? (calls.push("read"), from === null ? scrollback.tail(max) : scrollback.read(from, max)) : key === `${GEN}.3` ? scrollback.tail(max) : null),
-        screenshot: async () => (calls.push("shot"), { png: "UE5H", frameId: 7, width: 800, height: 600, timestamp: 123 }),
+        screenshot: async () => (calls.push("shot"), await opts.shotWait, { png: "UE5H", frameId: 7, width: 800, height: 600, timestamp: 123 }),
       },
       fitScreenshot: (png) => ({ png, width: 400, height: 300, sourceWidth: 800, sourceHeight: 600, scale: 0.5, downscaled: true }),
     },
@@ -254,5 +254,33 @@ describe("Y1: tool descriptions do not promise that session content is free of s
     expect(CANNOT).toContain("a saved password");
     expect(CANNOT).toContain("everything the session shows");
     expect(CANNOT).not.toContain("Cannot read or write passwords, passphrases or keys");
+  });
+});
+
+describe("Y4: the grant is checked again after an awaited capture", () => {
+  it("a screenshot taken while the owner revokes access is dropped, not returned", async () => {
+    let release!: () => void;
+    const shotWait = new Promise<void>((r) => (release = r));
+    const { call, access, rows } = setup({ shotWait });
+    access.set(P_SECOND, "observe", false);
+    const pending = call("remote_rdp_screenshot", { sessionId: `${GEN}.2` });
+    await Promise.resolve();
+    access.set(P_SECOND, "none", false);
+    release();
+    const r = await pending;
+    expect(r.isError).toBe(true);
+    expect(r.content.some((p) => p.type === "image")).toBe(false);
+    expect(textOf(r)).toContain("session_not_found");
+    expect(rows.at(-1)!.outcome).toBe("session_not_found");
+  });
+
+  it("with the grant kept the same call still returns the picture", async () => {
+    let release!: () => void;
+    const shotWait = new Promise<void>((r) => (release = r));
+    const { call, access } = setup({ shotWait });
+    access.set(P_SECOND, "observe", false);
+    const pending = call("remote_rdp_screenshot", { sessionId: `${GEN}.2` });
+    release();
+    expect((await pending).content.some((p) => p.type === "image")).toBe(true);
   });
 });
