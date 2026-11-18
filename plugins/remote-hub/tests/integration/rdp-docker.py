@@ -368,9 +368,9 @@ def cases(tmp, cid, port, user, password):
     assert closed6 is not None and closed6.get("reason") == "cert_changed", closed6
     assert h6.states() == ["connecting", "tls"], h6.states()
     no_password_in(h6, password, "session 6")
-    print("case 6b deferred to 2b-2: a trusted certificate replaced on a trusted host:port yields a "
-          "prompt with reason cert_changed. Trust is stored by the TS service (src/core/rdp-trust.ts), "
-          "which is wired in 2b-2; the helper/engine only reports the fingerprint.", flush=True)
+    print("case 6b and case 8 run through the real service in tests/integration/rdp-service.test.ts: a trusted "
+          "certificate replaced on a trusted host:port yields a prompt with reason cert_changed (trust lives in "
+          "src/core/rdp-trust.ts), and two views of one session are multiplexed by src/core/rdp-views.ts.", flush=True)
     h6.terminate()
 
     mark("6a")
