@@ -1,3 +1,4 @@
+import { framebufferToElement } from "./rdp-geometry.ts";
 import { describe, expect, it } from "vitest";
 import { clientToFramebuffer } from "./rdp-geometry.ts";
 
@@ -72,5 +73,25 @@ describe("rdp-geometry clientToFramebuffer", () => {
     expect(clientToFramebuffer(1010, 250, rect, 1, "fit", fb)).toBeNull();
     expect(clientToFramebuffer(500, 19, rect, 1, "fit", fb)).toBeNull();
     expect(clientToFramebuffer(500, 521, rect, 1, "fit", fb)).toBeNull();
+  });
+});
+
+describe("framebufferToElement", () => {
+  it("1:1 puts a point at its device-pixel position, in CSS pixels", () => {
+    expect(framebufferToElement(100, 40, { width: 1000, height: 800 }, 2, "actual", { width: 1600, height: 900 })).toEqual({ left: 50, top: 20 });
+  });
+  it("fit centres the scaled desktop: a 2:1 desktop in a square box has bars above and below", () => {
+    // 800x400 in a 400x400 box: scale 0.5, drawn 400x200, top bar 100
+    expect(framebufferToElement(0, 0, { width: 400, height: 400 }, 1, "fit", { width: 800, height: 400 })).toEqual({ left: 0, top: 100 });
+    expect(framebufferToElement(800, 400, { width: 400, height: 400 }, 1, "fit", { width: 800, height: 400 })).toEqual({ left: 400, top: 300 });
+  });
+  it("is the inverse of clientToFramebuffer inside the picture", () => {
+    const rect = { left: 10, top: 20, width: 500, height: 300 };
+    const fb = { width: 1000, height: 400 };
+    const at = framebufferToElement(500, 200, rect, 1, "fit", fb)!;
+    expect(clientToFramebuffer(rect.left + at.left, rect.top + at.top, rect, 1, "fit", fb)).toEqual({ x: 500, y: 200 });
+  });
+  it("refuses an empty box or desktop", () => {
+    expect(framebufferToElement(1, 1, { width: 0, height: 10 }, 1, "fit", { width: 10, height: 10 })).toBeNull();
   });
 });

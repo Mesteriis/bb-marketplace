@@ -167,8 +167,49 @@
   background: var(--surface-recessed-solid, #161b22);
 }
 
+.rh-rdp-stage {
+  position: relative;
+  display: block;
+  width: max-content;
+}
+
+.rh-rdp-stage-fit {
+  width: 100%;
+  height: 100%;
+}
+
 .rh-rdp-canvas {
   display: block;
+}
+
+/* Where an agent's pointer is on the desktop: a ring with a label, never in the way of the owner's own pointer. */
+.rh-agent-pointer {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border: 2px solid var(--accent, #d29922);
+  border-radius: 50%;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45);
+  transition: left 120ms linear, top 120ms linear;
+}
+
+.rh-agent-pointer-click {
+  background: color-mix(in srgb, var(--accent, #d29922) 45%, transparent);
+}
+
+.rh-agent-pointer-label {
+  position: absolute;
+  left: 20px;
+  top: -4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 16px;
+  background: var(--accent, #d29922);
+  color: #0d1117;
+  white-space: nowrap;
 }
 
 .rh-rdp-canvas:focus-visible {

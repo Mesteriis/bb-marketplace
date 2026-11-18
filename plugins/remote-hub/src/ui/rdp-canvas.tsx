@@ -10,8 +10,9 @@
 //   prevents the default of) every key while focused.
 // - An input the engine drops as stale_geometry shows a notice and asks for a
 //   fresh frame.
-import { useEffect, useImperativeHandle, useRef, type Ref } from "react";
-import { clientToFramebuffer, type FitMode } from "../core/rdp-geometry.ts";
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
+import { startWatchBeat } from "./watch-beat.ts";
+import { clientToFramebuffer, framebufferToElement, type FitMode } from "../core/rdp-geometry.ts";
 import { HeldKeys, keyEvents, mouseButtonEvent, mouseMoveEvent, mouseWheelEvent } from "../core/rdp-input-map.ts";
 import { parseUpdateChunk } from "../core/rdp-protocol.ts";
 import type { RdpCertPromptInfo } from "../core/rpc.ts";
@@ -60,6 +61,7 @@ export function RdpCanvas(props: RdpCanvasProps) {
   fitRef.current = props.fit;
   const onEventRef = useRef(props.onEvent);
   onEventRef.current = props.onEvent;
+  const [pointer, setPointer] = useState<{ left: number; top: number; click: string | null; at: number } | null>(null);
   const sendRef = useRef<{ input: (events: RdpViewInputEvent[]) => void; refresh: () => void }>({
     input: () => {},
     refresh: () => {},
@@ -193,7 +195,13 @@ export function RdpCanvas(props: RdpCanvasProps) {
     };
 
     emit({ type: "socket", state: "connecting" });
-    socket.onopen = () => emit({ type: "socket", state: "open" });
+    let stopBeat: (() => void) | null = null;
+    let pointerTimer: ReturnType<typeof setTimeout> | null = null;
+    socket.onopen = () => {
+      emit({ type: "socket", state: "open" });
+      // This view is being looked at: tell the service, so an agent may act on the desktop.
+      stopBeat = startWatchBeat(sendJson);
+    };
     socket.onmessage = (event: { data: unknown }) => {
       if (disposed) return;
       if (typeof event.data !== "string") {
@@ -249,6 +257,20 @@ export function RdpCanvas(props: RdpCanvasProps) {
         case "input_blocked":
           emit({ type: "input_blocked" });
           break;
+        case "agent": {
+          // What an agent just did: its pointer, drawn where it is on the desktop, fading after a few seconds.
+          const ev = msg.event as { kind?: string; x?: number; y?: number; width?: number; height?: number; click?: string } | undefined;
+          if (ev?.kind === "pointer" && typeof ev.x === "number" && typeof ev.y === "number" && ev.width === fb.width && ev.height === fb.height) {
+            const box = canvas.getBoundingClientRect();
+            const at = framebufferToElement(ev.x, ev.y, { width: box.width, height: box.height }, window.devicePixelRatio || 1, fitRef.current, fb);
+            if (at !== null) {
+              setPointer({ ...at, click: typeof ev.click === "string" ? ev.click : null, at: Date.now() });
+              if (pointerTimer !== null) clearTimeout(pointerTimer);
+              pointerTimer = setTimeout(() => setPointer(null), 4000);
+            }
+          }
+          break;
+        }
         case "error":
           emit({ type: "error", code: String(msg.code) });
           break;
@@ -355,6 +377,8 @@ export function RdpCanvas(props: RdpCanvasProps) {
 
     return () => {
       disposed = true;
+      if (stopBeat !== null) stopBeat();
+      if (pointerTimer !== null) clearTimeout(pointerTimer);
       for (const [name, handler] of handlers) canvas.removeEventListener(name, handler);
       window.removeEventListener("mouseup", onWindowMouseUp);
       if (socket.readyState === WebSocket.OPEN) {
@@ -370,12 +394,19 @@ export function RdpCanvas(props: RdpCanvasProps) {
   }, [props.wsUrl, props.token]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      className={props.fit === "fit" ? "rh-rdp-canvas rh-rdp-fit" : "rh-rdp-canvas rh-rdp-actual"}
-      tabIndex={0}
-      role="application"
-      aria-label={props.label}
-    />
+    <div className={props.fit === "fit" ? "rh-rdp-stage rh-rdp-stage-fit" : "rh-rdp-stage"}>
+      <canvas
+        ref={canvasRef}
+        className={props.fit === "fit" ? "rh-rdp-canvas rh-rdp-fit" : "rh-rdp-canvas rh-rdp-actual"}
+        tabIndex={0}
+        role="application"
+        aria-label={props.label}
+      />
+      {pointer !== null ? (
+        <div className={pointer.click !== null ? "rh-agent-pointer rh-agent-pointer-click" : "rh-agent-pointer"} data-testid="agent-pointer" style={{ left: pointer.left, top: pointer.top }}>
+          <span className="rh-agent-pointer-label">agent</span>
+        </div>
+      ) : null}
+    </div>
   );
 }

@@ -84,6 +84,14 @@ async function connectAndRun() {
   return { onSshOpen, onAttach, onClose };
 }
 
+describe("SshPage terminal says it is being looked at", () => {
+  it("sends a visible heartbeat on the session socket as soon as it is open", async () => {
+    await connectAndRun();
+    const socket = FakeWebSocket.instances[0]!;
+    expect(socket.sent.filter((d) => typeof d === "string").map((d) => JSON.parse(d as string))).toContainEqual({ type: "watch", visible: true });
+  });
+});
+
 describe("SshPage opened from a saved profile", () => {
   const PID = "11111111-2222-4333-8444-555555555555";
   const launch = (nonce: number) => ({

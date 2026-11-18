@@ -58,3 +58,11 @@ export function clientToFramebuffer(
   if (fx < 0 || fy < 0 || fx >= fb.width || fy >= fb.height) return null;
   return { x: fx, y: fy };
 }
+
+/** The inverse of `clientToFramebuffer`: where (in CSS pixels, from the element's top-left) a framebuffer point is drawn. */
+export function framebufferToElement(x: number, y: number, rect: Size, dpr: number, mode: FitMode, fb: Size): { left: number; top: number } | null {
+  if (fb.width <= 0 || fb.height <= 0 || rect.width <= 0 || rect.height <= 0 || dpr <= 0) return null;
+  if (mode === "actual") return { left: x / dpr, top: y / dpr };
+  const scale = Math.min(rect.width / fb.width, rect.height / fb.height);
+  return { left: (rect.width - fb.width * scale) / 2 + x * scale, top: (rect.height - fb.height * scale) / 2 + y * scale };
+}

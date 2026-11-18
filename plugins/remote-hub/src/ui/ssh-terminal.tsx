@@ -7,6 +7,8 @@ import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, type MutableRefObject } from "react";
 import type { SshAskpassEvent } from "../core/ssh-askpass-protocol.ts";
 import type { ControlMessage } from "./control-banner.tsx";
+import type { FeedEvent } from "../core/agent-feed.ts";
+import { startWatchBeat } from "./watch-beat.ts";
 
 export type SshTerminalState = "connecting" | "running" | "detached" | "closed" | "error";
 
@@ -24,6 +26,8 @@ export interface SshTerminalProps {
   onAskpass?: (event: SshAskpassEvent) => void;
   /** Who drives the session (an agent may hold it), and that the user's input was dropped because of it. */
   onControl?: (message: ControlMessage) => void;
+  /** What an agent just did on this session (a command it ran, ...), for the view to show. */
+  onAgent?: (event: FeedEvent) => void;
   /** Filled with a function that sends a control message on the open socket. */
   controlRef?: MutableRefObject<((msg: unknown) => void) | null>;
 }
@@ -69,9 +73,12 @@ export function SshTerminal(props: SshTerminalProps) {
     if (props.controlRef !== undefined) props.controlRef.current = sendControl;
     props.onStateChange?.("connecting");
 
+    let stopBeat: (() => void) | null = null;
     socket.onopen = () => {
       if (disposed) return;
       props.onStateChange?.("running");
+      // This view is being looked at: tell the service, so an agent may type into the session.
+      stopBeat = startWatchBeat(sendControl);
       terminal.onData((data) => {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(new TextEncoder().encode(data));
@@ -113,6 +120,8 @@ export function SshTerminal(props: SshTerminalProps) {
           props.onControl?.({ type: "control", owner: msg.owner, expiresAt: typeof msg.expiresAt === "number" ? msg.expiresAt : null });
         } else if (msg.type === "input_blocked") {
           props.onControl?.({ type: "input_blocked" });
+        } else if (msg.type === "agent" && typeof (msg as { event?: unknown }).event === "object") {
+          props.onAgent?.((msg as unknown as { event: FeedEvent }).event);
         } else if (msg.type === "error") {
           // An answer to a prompt that is already gone is not a broken session.
           if (msg.code !== "prompt_gone") props.onStateChange?.("error");
@@ -159,6 +168,7 @@ export function SshTerminal(props: SshTerminalProps) {
 
     return () => {
       disposed = true;
+      if (stopBeat !== null) stopBeat();
       observer.disconnect();
       if (props.controlRef !== undefined && props.controlRef.current === sendControl) props.controlRef.current = null;
       if (socket.readyState === WebSocket.OPEN) sendControl({ type: "detach" });
