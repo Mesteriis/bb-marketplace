@@ -579,6 +579,7 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, rid: u32, f
                     height,
                     timestamp,
                     png,
+                    chunks: None,
                 }));
             }
             RdpFrame::Event(EngineEvent::ScreenshotError { code }) => {
@@ -599,8 +600,35 @@ fn relay_rdp_frames(rdp: &mut RdpManager, outbox: &mut VecDeque<u8>, rid: u32, f
             RdpFrame::Event(EngineEvent::Error { code, message }) => {
                 outbox.extend(protocol::encode_response(&Response::Error { id: None, code, message }));
             }
+            RdpFrame::Event(EngineEvent::ScreenshotStart { .. } | EngineEvent::ScreenshotChunk { .. }) => {
+                // The manager turns these into RdpFrame::ScreenshotStart/Chunk.
+            }
             RdpFrame::Event(EngineEvent::Closed { .. }) => {
                 // Reported once via RdpManager::take_all_closed().
+            }
+            RdpFrame::ScreenshotStart { id, frame_id, width, height, timestamp, chunks } => {
+                // No request id: nobody asked, drop it (its chunks are dropped too).
+                if let Some(id) = id {
+                    outbox.extend(protocol::encode_response(&Response::RdpScreenshot {
+                        id,
+                        session_id: rid,
+                        frame_id,
+                        width,
+                        height,
+                        timestamp,
+                        png: String::new(),
+                        chunks: Some(chunks),
+                    }));
+                }
+            }
+            RdpFrame::ScreenshotChunk { id, index, count, data } => {
+                outbox.extend(protocol::encode_response(&Response::RdpScreenshotChunk {
+                    id,
+                    session_id: rid,
+                    index,
+                    count,
+                    data,
+                }));
             }
             RdpFrame::Update { header, rgba } => relay_rdp_update(outbox, rid, header, &rgba),
         }

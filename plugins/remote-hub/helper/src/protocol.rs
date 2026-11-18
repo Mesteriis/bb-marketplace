@@ -242,6 +242,20 @@ pub enum Response {
         height: u32,
         timestamp: u64,
         png: String,
+        /// Present when the PNG is too large for one frame: `png` is empty and
+        /// this many `rdp.screenshot_chunk` frames follow (indices 0..chunks-1),
+        /// each carrying a slice of the base64 text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chunks: Option<u32>,
+    },
+    #[serde(rename = "rdp.screenshot_chunk")]
+    RdpScreenshotChunk {
+        id: u64,
+        #[serde(rename = "sessionId")]
+        session_id: u32,
+        index: u32,
+        count: u32,
+        data: String,
     },
 }
 
@@ -334,6 +348,7 @@ mod frame_limit_tests {
             height: 1,
             timestamp: 0,
             png: "A".repeat(MAX_FRAME_BODY_BYTES),
+            chunks: None,
         };
         let frame = encode_response(&big);
         assert!(frame.len() <= 4 + MAX_FRAME_BODY_BYTES, "{} bytes", frame.len());

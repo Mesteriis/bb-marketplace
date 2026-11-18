@@ -323,14 +323,19 @@ out of scope).
 
 `rdp_screenshot {handle}` encodes the SAME RGBA8 framebuffer the views get with
 the `png` crate (pinned 0.18) and returns `{frameId, width, height, timestamp,
-png}`. Refused before `desktop_ready` (`not_ready`). The PNG travels as base64
-inside one control frame, which must stay under the 4 MiB wire limit: a
-screenshot whose base64 exceeds 3.5 MiB is refused with `screenshot_too_large`
-(a 1920×1080 desktop with photographic content is ≈ 3 MiB; 3840×2160 with
-detailed content exceeds the cap). Streaming a larger PNG as chunks needs a
-client-protocol addition and is deferred to 2b-2. `encode_response` replaces any
-response over the wire limit with `response_too_large`, so the client never
-sees a frame it would have to treat as fatal.
+png}`. Refused before `desktop_ready` (`not_ready`). A PNG whose base64 fits 3.5 MiB travels as base64 inside one control frame
+(`rdp.screenshot`). A larger one (stage 2b-2) is chunked: the engine sends
+`ScreenshotStart {chunks}` and `ScreenshotChunk {index, data}` events, the helper
+answers the request with `rdp.screenshot {png: "", chunks: N}` followed by N
+`rdp.screenshot_chunk {id, sessionId, index, count, data}` frames, each a slice of
+at most 786 432 base64 characters (every frame under 1.1 MiB). The helper checks
+the engine's stream (one chunked answer at a time, 2..=64 chunks, indices in
+order, whole base64 quanta, size cap) and fails THAT session with `protocol_error`
+on any violation; chunks of an answer nobody asked for are dropped. 64 chunks is
+48 MiB of base64, more than the largest possible PNG of a 3840x2160 desktop
+(~33 MiB, ~44 MiB of base64), so `screenshot_too_large` is now only a defensive
+bound. `encode_response` still replaces any response over the wire limit with
+`response_too_large`.
 
 ## 8. Status (stage 2b-1, after the repair round)
 
@@ -369,7 +374,7 @@ Not covered, with reasons:
 Still to do (later sub-stages): the TS service/RPC/socket wiring and fake-engine
 tests (2b-2) and the canvas UI (2b-3). The TS side must accept the helper
 messages added in the repair round: `rdp.certificate`, `rdp.input_rejected`,
-`rdp.update_ack` (request), the cert-prompt `reason` code + `detail`, the
+`rdp.update_ack` and `rdp.refresh` (requests), `rdp.screenshot_chunk` (and the `chunks` field of `rdp.screenshot`), the cert-prompt `reason` code + `detail`, the
 `server_disconnected` closed reason and the errors `not_ready`,
 `fingerprint_mismatch`, `no_pending_prompt`, `rdp_input_overflow`,
 `screenshot_busy`, `screenshot_too_large`, `rdp_invalid_geometry`, `response_too_large`,

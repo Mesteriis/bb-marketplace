@@ -316,6 +316,81 @@ fn r1_refresh_makes_the_next_update_the_whole_desktop() {
     h.shutdown();
 }
 
+fn base64_decode(text: &str) -> Vec<u8> {
+    let val = |c: u8| -> u32 {
+        match c {
+            b'A'..=b'Z' => (c - b'A') as u32,
+            b'a'..=b'z' => (c - b'a') as u32 + 26,
+            b'0'..=b'9' => (c - b'0') as u32 + 52,
+            b'+' => 62,
+            b'/' => 63,
+            other => panic!("not base64: {other}"),
+        }
+    };
+    let bytes = text.as_bytes();
+    assert_eq!(bytes.len() % 4, 0);
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for quad in bytes.chunks(4) {
+        let pad = quad.iter().rev().take_while(|c| **c == b'=').count();
+        let n = quad[..4 - pad].iter().fold(0u32, |acc, c| (acc << 6) | val(*c)) << (6 * pad as u32);
+        out.push((n >> 16) as u8);
+        if pad < 2 {
+            out.push((n >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(n as u8);
+        }
+    }
+    out
+}
+
+/// R2: a screenshot too large for one frame is sent as `rdp.screenshot`
+/// (empty `png`, `chunks: N`) followed by N `rdp.screenshot_chunk` frames; each
+/// frame is under 1.1 MiB, the indices are 0..N-1 in order, and the base64
+/// reassembles to a PNG of the 1920x1080 desktop.
+#[test]
+fn r2_a_large_screenshot_arrives_as_ordered_chunks() {
+    let mut h = start(&[(FAKE, "noise")]);
+    let (rdp, _) = h.open_rdp_sized(closed_port(), 1920, 1080);
+    let rx = h.frames_in_background(rdp);
+    let _first = next_update(&rx); // the desktop has painted
+    h.send(&Request::RdpScreenshot { id: 70, session_id: rdp });
+    let mut chunks_expected = 0u32;
+    let mut b64 = String::new();
+    let mut next_index = 0u32;
+    loop {
+        let (kind, payload) = rx.frames.recv_timeout(Duration::from_secs(60)).expect("hang guard: screenshot frame");
+        assert!(payload.len() < 1_153_434, "a screenshot frame exceeded 1.1 MiB: {}", payload.len());
+        if kind != remote_hub_helper::protocol::FRAME_KIND_CONTROL {
+            continue;
+        }
+        match remote_hub_helper::protocol::decode_response(&payload) {
+            Ok(Response::RdpScreenshot { id: 70, png, chunks, width, height, .. }) => {
+                assert!(png.is_empty(), "a chunked header carries no png");
+                assert_eq!((width, height), (1920, 1080));
+                chunks_expected = chunks.expect("a large screenshot must announce its chunks");
+                assert!(chunks_expected >= 2);
+            }
+            Ok(Response::RdpScreenshotChunk { id: 70, index, count, data, .. }) => {
+                assert_eq!(index, next_index, "chunks must arrive in order");
+                assert_eq!(count, chunks_expected);
+                b64.push_str(&data);
+                next_index += 1;
+                if next_index == count {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let png = base64_decode(&b64);
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    // IHDR: width and height, big-endian, at bytes 16..24.
+    assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), 1920);
+    assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), 1080);
+    h.shutdown();
+}
+
 /// G10: a client that never reads stdout while a (buggy) engine floods 1920x1080
 /// updates without pacing cannot grow the helper: RSS growth < 32 MiB over 3 s.
 #[test]

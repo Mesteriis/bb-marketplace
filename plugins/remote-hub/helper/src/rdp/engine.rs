@@ -389,7 +389,25 @@ fn send_screenshot(desk: &Desk, out: &Out) -> std::io::Result<()> {
     }
     let png = base64_encode(&png);
     if png.len() > protocol::MAX_SCREENSHOT_BASE64 {
-        return out.send(&EngineEvent::ScreenshotError { code: "screenshot_too_large".to_string() });
+        let chunks = png.len().div_ceil(protocol::SCREENSHOT_CHUNK_BASE64);
+        if chunks > protocol::MAX_SCREENSHOT_CHUNKS as usize {
+            return out.send(&EngineEvent::ScreenshotError { code: "screenshot_too_large".to_string() });
+        }
+        out.send(&EngineEvent::ScreenshotStart {
+            frame_id: fb.frame_id(),
+            width: fb.width(),
+            height: fb.height(),
+            timestamp: fb.last_update_ms(),
+            chunks: chunks as u32,
+        })?;
+        for (index, part) in png.as_bytes().chunks(protocol::SCREENSHOT_CHUNK_BASE64).enumerate() {
+            // base64 is ASCII, so any byte boundary is a char boundary.
+            out.send(&EngineEvent::ScreenshotChunk {
+                index: index as u32,
+                data: String::from_utf8_lossy(part).into_owned(),
+            })?;
+        }
+        return Ok(());
     }
     out.send(&EngineEvent::Screenshot {
         frame_id: fb.frame_id(),
@@ -544,15 +562,35 @@ mod tests {
         out
     }
 
-    /// H3: a 3840x2160 noisy desktop (an ~33 MiB PNG) is refused with a stable
-    /// code instead of producing a frame the client would treat as fatal.
+    /// R2: a 3840x2160 noisy desktop (an ~33 MiB PNG, ~44 MiB of base64) no
+    /// longer fits one frame and is no longer refused: it is sent as a header
+    /// plus ordered chunks, no frame larger than the wire limit, no more than
+    /// MAX_SCREENSHOT_CHUNKS of them (so `screenshot_too_large` cannot be
+    /// reached at the largest desktop), and the chunks reassemble to the PNG.
     #[test]
-    fn an_oversized_screenshot_is_refused_and_no_frame_exceeds_the_wire_limit() {
-        let frames = frames_sent(&noisy_desk(3840, 2160));
-        assert_eq!(frames.len(), 1);
-        assert!(frames[0].len() <= 4_194_304, "frame of {} bytes", frames[0].len());
-        let event: EngineEvent = serde_json::from_slice(&frames[0][5..]).unwrap();
-        assert_eq!(event, EngineEvent::ScreenshotError { code: "screenshot_too_large".to_string() });
+    fn a_huge_screenshot_is_sent_as_ordered_chunks_that_reassemble() {
+        let desk = noisy_desk(3840, 2160);
+        let frames = frames_sent(&desk);
+        assert!(frames.len() >= 3 && frames.len() <= 1 + protocol::MAX_SCREENSHOT_CHUNKS as usize, "{} frames", frames.len());
+        assert!(frames.iter().all(|f| f.len() < 1_153_434), "a frame exceeded 1.1 MiB");
+        let EngineEvent::ScreenshotStart { width, height, chunks, .. } = serde_json::from_slice(&frames[0][5..]).unwrap() else {
+            panic!("the first frame must be the chunked header")
+        };
+        assert_eq!((width, height), (3840, 2160));
+        assert_eq!(chunks as usize, frames.len() - 1);
+        let mut b64 = String::new();
+        for (i, f) in frames[1..].iter().enumerate() {
+            let EngineEvent::ScreenshotChunk { index, data } = serde_json::from_slice(&f[5..]).unwrap() else {
+                panic!("frame {i} is not a chunk")
+            };
+            assert_eq!(index as usize, i);
+            b64.push_str(&data);
+        }
+        let decoded = base64_decode(&b64);
+        let mut reader = png::Decoder::new(std::io::Cursor::new(decoded)).read_info().unwrap();
+        let mut buf = vec![0u8; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        assert_eq!(&buf[..info.buffer_size()], desk.fb.pixels());
     }
 
     /// H3: a screenshot that fits is one frame under the limit and its PNG

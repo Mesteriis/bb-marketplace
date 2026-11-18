@@ -14,6 +14,13 @@ pub const RDP_MAX_CONTROL_BODY: usize = crate::protocol::MAX_FRAME_BODY_BYTES;
 /// is refused with `screenshot_too_large`; with the JSON around it the
 /// response stays under the 4 MiB wire limit.
 pub const MAX_SCREENSHOT_BASE64: usize = 3_670_016;
+/// A larger PNG is sent as chunks of at most this many base64 characters
+/// (a multiple of 4, so every chunk is whole base64 quanta; the frame around it
+/// stays under 1 MiB).
+pub const SCREENSHOT_CHUNK_BASE64: usize = 786_432;
+/// Most chunks of one screenshot: 64 x 768 KiB = 48 MiB of base64, a 36 MiB
+/// PNG. Above it the screenshot is refused with `screenshot_too_large`.
+pub const MAX_SCREENSHOT_CHUNKS: u32 = 64;
 /// Largest helper → engine frame body: commands are small and the client's own
 /// frame limit is 4 MiB.
 pub const RDP_MAX_COMMAND_BODY: usize = 4 * 1024 * 1024;
@@ -131,6 +138,10 @@ pub enum EngineEvent {
     Desktop { frame_id: u64, width: u32, height: u32, timestamp: u64 },
     Closed { reason: String },
     Screenshot { frame_id: u64, width: u32, height: u32, timestamp: u64, png: String },
+    /// The header of a chunked screenshot (a PNG whose base64 does not fit one
+    /// frame): `chunks` ScreenshotChunk events follow, indices 0..chunks-1.
+    ScreenshotStart { frame_id: u64, width: u32, height: u32, timestamp: u64, chunks: u32 },
+    ScreenshotChunk { index: u32, data: String },
     /// A screenshot request that could not be served (e.g. not_ready).
     ScreenshotError { code: String },
     /// Input events that were refused; the rest of the batch was applied.

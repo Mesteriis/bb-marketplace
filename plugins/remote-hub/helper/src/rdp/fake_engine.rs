@@ -7,6 +7,9 @@
 //!   pump, exactly like the real engine. Every 25th paint it reports
 //!   `state = "paint=<n>"` (n = paints so far) so a test can wait for "the
 //!   desktop has repainted N more times" as an event instead of sleeping.
+//! * `noise` — as `ack`, but the first full frame is incompressible pseudo-random
+//!   pixels (a fixed xorshift sequence), so a PNG screenshot of it is far above
+//!   one frame and exercises the chunked screenshot path.
 //! * `flood-signal:<path>` — as `flood`, and it creates the file `<path>` once its
 //!   writes to the helper have been BLOCKED for 3 consecutive 200 ms waits (the
 //!   socket stayed full: the helper stopped reading because its bounded buffers
@@ -42,7 +45,8 @@ pub fn run_fake_engine(mode: &str) -> i32 {
     let Ok(rt) = tokio::runtime::Builder::new_multi_thread().enable_all().build() else { return 2 };
     let signal = mode.strip_prefix("flood-signal:").map(std::path::PathBuf::from);
     let flood = mode == "flood" || signal.is_some();
-    match rt.block_on(run(flood, signal, width, height, out, inbox)) {
+    let noise = mode == "noise";
+    match rt.block_on(run(flood, noise, signal, width, height, out, inbox)) {
         Ok(()) => 0,
         Err(_) => 2,
     }
@@ -57,6 +61,7 @@ fn socket_blocked_for_200ms() -> bool {
 
 async fn run(
     flood: bool,
+    noise: bool,
     signal: Option<std::path::PathBuf>,
     width: u32,
     height: u32,
@@ -110,8 +115,18 @@ async fn run(
                     out.state(&format!("paint={tick}"))?;
                 }
                 let rect = if flood || tick == 1 {
-                    for px in pixels.chunks_exact_mut(4) {
-                        px.copy_from_slice(&[shade, shade ^ 0x55, 7, 255]);
+                    if noise {
+                        let mut state: u32 = 0x9E37_79B9;
+                        for px in pixels.chunks_exact_mut(4) {
+                            state ^= state << 13;
+                            state ^= state >> 17;
+                            state ^= state << 5;
+                            px.copy_from_slice(&[state as u8, (state >> 8) as u8, (state >> 16) as u8, 255]);
+                        }
+                    } else {
+                        for px in pixels.chunks_exact_mut(4) {
+                            px.copy_from_slice(&[shade, shade ^ 0x55, 7, 255]);
+                        }
                     }
                     Rect { x: 0, y: 0, w: width, h: height }
                 } else {

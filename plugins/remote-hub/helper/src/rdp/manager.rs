@@ -108,6 +108,8 @@ pub struct RdpSession {
     desktop_ready: bool,
     close_reason: Option<String>,
     screenshot_ids: VecDeque<u64>,
+    /// A chunked screenshot in progress: (request id or None, next chunk index, total).
+    shot: Option<(Option<u64>, u32, u32)>,
     /// The newest unsent update acknowledgement; older ones are superseded.
     pending_ack: Option<u64>,
     pending_prompt: Option<String>,
@@ -120,6 +122,10 @@ pub struct RdpSession {
 #[derive(Debug)]
 pub enum RdpFrame {
     Event(EngineEvent),
+    /// A chunked screenshot begins; `id` is the request it answers (None when
+    /// nobody asked: the answer and its chunks are dropped).
+    ScreenshotStart { id: Option<u64>, frame_id: u64, width: u32, height: u32, timestamp: u64, chunks: u32 },
+    ScreenshotChunk { id: u64, index: u32, count: u32, data: String },
     Update { header: UpdateHeader, rgba: Vec<u8> },
 }
 
@@ -468,6 +474,7 @@ impl RdpManager {
                 desktop_ready: false,
                 close_reason: None,
                 screenshot_ids: VecDeque::new(),
+                shot: None,
                 pending_ack: None,
                 pending_prompt: None,
                 ended_at: None,
@@ -682,6 +689,32 @@ impl RdpManager {
                             out.push(RdpFrame::Event(EngineEvent::CertPrompt {
                                 host, port, fingerprint, subject, issuer, not_before, not_after, reason, detail,
                             }));
+                        }
+                        Some(RdpFrame::Event(EngineEvent::ScreenshotStart { frame_id, width, height, timestamp, chunks })) => {
+                            // The engine is untrusted: one chunked answer at a time,
+                            // a sane chunk count.
+                            if s.shot.is_some() || !(2..=protocol::MAX_SCREENSHOT_CHUNKS).contains(&chunks) {
+                                Self::fail_protocol(s);
+                            } else {
+                                let id = s.screenshot_ids.pop_front();
+                                s.shot = Some((id, 0, chunks));
+                                out.push(RdpFrame::ScreenshotStart { id, frame_id, width, height, timestamp, chunks });
+                            }
+                        }
+                        Some(RdpFrame::Event(EngineEvent::ScreenshotChunk { index, data })) => {
+                            match s.shot {
+                                Some((id, next, total))
+                                    if index == next
+                                        && data.len() <= protocol::SCREENSHOT_CHUNK_BASE64
+                                        && data.len() % 4 == 0 =>
+                                {
+                                    s.shot = if next + 1 == total { None } else { Some((id, next + 1, total)) };
+                                    if let Some(id) = id {
+                                        out.push(RdpFrame::ScreenshotChunk { id, index, count: total, data });
+                                    }
+                                }
+                                _ => Self::fail_protocol(s),
+                            }
                         }
                         Some(f) => out.push(f),
                         None => {
@@ -1267,6 +1300,80 @@ mod tests {
         assert!(mgr.process_readable(id, usize::MAX).is_empty());
         assert_eq!(mgr.sessions[&id].close_reason.as_deref(), Some("protocol_error"));
         unsafe { libc::close(b) };
+    }
+
+    fn shot_start(chunks: u32) -> Vec<u8> {
+        encode_control(&EngineEvent::ScreenshotStart { frame_id: 3, width: 4, height: 2, timestamp: 9, chunks })
+    }
+
+    fn shot_chunk(index: u32, len: usize) -> Vec<u8> {
+        encode_control(&EngineEvent::ScreenshotChunk { index, data: "A".repeat(len) })
+    }
+
+    fn feed(mgr: &mut RdpManager, id: u32, frames: &[Vec<u8>]) -> Vec<RdpFrame> {
+        for f in frames {
+            mgr.sessions.get_mut(&id).unwrap().read_buf.extend(f.iter().copied());
+        }
+        mgr.process_readable(id, usize::MAX)
+    }
+
+    #[test]
+    fn a_chunked_screenshot_is_answered_with_the_oldest_request_id_and_ordered_chunks() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        mgr.push_screenshot(id, 41);
+        mgr.push_screenshot(id, 42);
+        let frames = feed(&mut mgr, id, &[shot_start(3), shot_chunk(0, 8), shot_chunk(1, 8), shot_chunk(2, 4)]);
+        assert_eq!(frames.len(), 4, "{frames:?}");
+        assert!(matches!(&frames[0], RdpFrame::ScreenshotStart { id: Some(41), chunks: 3, frame_id: 3, width: 4, height: 2, timestamp: 9 }));
+        for (i, want_len) in [(1usize, 8usize), (2, 8), (3, 4)] {
+            match &frames[i] {
+                RdpFrame::ScreenshotChunk { id: 41, index, count: 3, data } => {
+                    assert_eq!(*index as usize, i - 1);
+                    assert_eq!(data.len(), want_len);
+                }
+                other => panic!("frame {i}: {other:?}"),
+            }
+        }
+        assert_eq!(mgr.sessions[&id].close_reason, None);
+        assert_eq!(mgr.pop_screenshot(id), Some(42), "the second request is still waiting");
+        unsafe { libc::close(b) };
+    }
+
+    #[test]
+    fn a_screenshot_nobody_asked_for_and_its_chunks_are_dropped_without_error() {
+        let (a, b) = socketpair();
+        let mut mgr = RdpManager::new();
+        let id = mgr.adopt(None, a);
+        let frames = feed(&mut mgr, id, &[shot_start(2), shot_chunk(0, 4), shot_chunk(1, 4)]);
+        assert!(matches!(frames.as_slice(), [RdpFrame::ScreenshotStart { id: None, .. }]), "{frames:?}");
+        assert_eq!(mgr.sessions[&id].close_reason, None);
+        unsafe { libc::close(b) };
+    }
+
+    #[test]
+    fn a_misordered_or_oversized_chunk_stream_fails_that_session() {
+        let cases: Vec<(&str, Vec<Vec<u8>>)> = vec![
+            ("chunk without a start", vec![shot_chunk(0, 4)]),
+            ("index skips ahead", vec![shot_start(3), shot_chunk(1, 4)]),
+            ("index repeats", vec![shot_start(3), shot_chunk(0, 4), shot_chunk(0, 4)]),
+            ("chunk over the cap", vec![shot_start(2), shot_chunk(0, protocol::SCREENSHOT_CHUNK_BASE64 + 4)]),
+            ("chunk not whole base64", vec![shot_start(2), shot_chunk(0, 5)]),
+            ("a single-chunk start", vec![shot_start(1)]),
+            ("too many chunks", vec![shot_start(protocol::MAX_SCREENSHOT_CHUNKS + 1)]),
+            ("a second start while one runs", vec![shot_start(2), shot_start(2)]),
+        ];
+        for (name, frames) in cases {
+            let (a, b) = socketpair();
+            let mut mgr = RdpManager::new();
+            let id = mgr.adopt(None, a);
+            mgr.push_screenshot(id, 1);
+            mgr.push_screenshot(id, 2);
+            let _ = feed(&mut mgr, id, &frames);
+            assert_eq!(mgr.sessions[&id].close_reason.as_deref(), Some("protocol_error"), "{name}");
+            unsafe { libc::close(b) };
+        }
     }
 
     #[test]
