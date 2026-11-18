@@ -34,7 +34,8 @@ impl Temp {
     fn new(tag: &str) -> Temp {
         watchdog();
         let dir = std::env::temp_dir().join(format!("rh-kc-{}-{tag}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // Exclusively ours: created here (it must not exist), 0700.
+        std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir).unwrap();
         let path = dir.join("test.keychain-db");
         create_at(&path, "throwaway-kc-password").expect("create the temporary keychain");
         Temp { dir, path }
@@ -155,4 +156,66 @@ fn the_keychain_child_executes_requests_and_answers_with_codes() {
     assert_eq!(execute(&kc, &req("get", None)).error.as_deref(), Some("credential_missing"));
     assert_eq!(execute(&kc, &req("save", None)).error.as_deref(), Some("keychain_unavailable")); // save without a secret
     assert_eq!(execute(&kc, &req("frobnicate", None)).error.as_deref(), Some("keychain_unavailable"));
+}
+
+// ---- R2 / R3: what the module refuses, and what a failed delete reports -------------------------
+
+#[test]
+fn a_symlink_to_a_valid_keychain_is_refused_before_any_security_call() {
+    let t = Temp::new("sym");
+    let link = t.dir.join("link.keychain-db");
+    std::os::unix::fs::symlink(&t.path, &link).unwrap();
+    let kc = Keychain::at_path(&link);
+    assert_eq!(kc.set("a", &Secret::new("x")).unwrap_err(), KeychainError::Unavailable);
+    assert_eq!(kc.get("a").unwrap_err(), KeychainError::Unavailable);
+    assert_eq!(kc.delete("a").unwrap_err(), KeychainError::Unavailable);
+}
+
+#[test]
+fn a_keychain_in_a_directory_others_can_open_is_refused() {
+    let t = Temp::new("mode");
+    std::fs::set_permissions(&t.dir, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    assert_eq!(t.keychain().set("a", &Secret::new("x")).unwrap_err(), KeychainError::Unavailable);
+    std::fs::set_permissions(&t.dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    t.keychain().set("a", &Secret::new("x")).unwrap(); // and works again once the directory is closed
+}
+
+#[test]
+fn a_keychain_file_that_vanished_fails_closed() {
+    let t = Temp::new("gone");
+    let kc = t.keychain();
+    kc.set("a", &Secret::new("x")).unwrap();
+    std::fs::remove_file(&t.path).unwrap();
+    assert_eq!(kc.set("a", &Secret::new("y")).unwrap_err(), KeychainError::Unavailable);
+    assert_eq!(kc.get("a").unwrap_err(), KeychainError::Unavailable);
+}
+
+#[test]
+fn create_at_is_exclusive_and_needs_a_private_directory() {
+    watchdog();
+    let t = Temp::new("excl");
+    assert_eq!(create_at(&t.path, "again").unwrap_err(), KeychainError::Unavailable, "an existing keychain is never adopted");
+    let open_dir = std::env::temp_dir().join(format!("rh-kc-{}-open", std::process::id()));
+    std::fs::create_dir(&open_dir).unwrap();
+    std::fs::set_permissions(&open_dir, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    assert_eq!(create_at(&open_dir.join("x.keychain-db"), "pw").unwrap_err(), KeychainError::Unavailable);
+    assert!(!open_dir.join("x.keychain-db").exists());
+    let _ = std::fs::remove_dir_all(&open_dir);
+}
+
+/// R2: the crate's item delete discards the status. A delete the OS refuses must be an error.
+#[test]
+fn a_delete_the_os_refuses_is_reported_not_swallowed() {
+    let t = Temp::new("rodel");
+    let kc = t.keychain();
+    kc.set("a", &Secret::new("x")).unwrap();
+    std::fs::set_permissions(&t.path, std::os::unix::fs::PermissionsExt::from_mode(0o400)).unwrap();
+    let result = kc.delete("a");
+    std::fs::set_permissions(&t.path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    // Either the OS refused (an error is reported) or it really deleted: it must never claim success
+    // while the item is still there.
+    match result {
+        Ok(()) => assert_eq!(kc.exists("a"), Ok(false), "delete said Ok but the item is still there"),
+        Err(_) => assert_eq!(kc.exists("a"), Ok(true), "delete failed but the item is gone"),
+    }
 }

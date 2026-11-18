@@ -145,15 +145,47 @@ impl Keychain {
     }
 }
 
-/// Creates a keychain FILE at `path` (test-hooks only). It is not added to the
-/// user's search list.
+/// Validates a keychain path BEFORE any Security call: the file must be a regular file (not a
+/// symlink) owned by us, in a directory that is a real directory (not a symlink) owned by us and
+/// closed to everyone else (0700). Test-hooks only: production never names a keychain by path.
+#[cfg(all(feature = "test-hooks", unix))]
+fn validate_keychain_path(path: &std::path::Path) -> Result<(), KeychainError> {
+    use std::os::unix::fs::MetadataExt;
+    let euid = unsafe { libc::geteuid() };
+    validate_keychain_dir(path.parent().ok_or(KeychainError::Unavailable)?)?;
+    let file = std::fs::symlink_metadata(path).map_err(|_| KeychainError::Unavailable)?;
+    if !file.file_type().is_file() || file.uid() != euid {
+        return Err(KeychainError::Unavailable);
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "test-hooks", unix))]
+fn validate_keychain_dir(dir: &std::path::Path) -> Result<(), KeychainError> {
+    use std::os::unix::fs::MetadataExt;
+    let euid = unsafe { libc::geteuid() };
+    let meta = std::fs::symlink_metadata(dir).map_err(|_| KeychainError::Unavailable)?;
+    if !meta.file_type().is_dir() || meta.uid() != euid || meta.mode() & 0o077 != 0 {
+        return Err(KeychainError::Unavailable);
+    }
+    Ok(())
+}
+
+/// Creates a keychain FILE at `path` (test-hooks only). It is not added to the user's search
+/// list. The directory must be one the caller owns exclusively (0700, not a symlink), the file
+/// must not exist yet, and user interaction is switched off BEFORE anything is created.
 #[cfg(all(feature = "test-hooks", target_os = "macos"))]
 pub fn create_at(path: &std::path::Path, password: &str) -> Result<(), KeychainError> {
+    validate_keychain_dir(path.parent().ok_or(KeychainError::Unavailable)?)?;
+    if std::fs::symlink_metadata(path).is_ok() {
+        return Err(KeychainError::Unavailable); // exclusive: never adopt or follow an existing entry
+    }
+    imp::prepare()?;
     security_framework::os::macos::keychain::CreateOptions::new()
         .password(password)
         .create(path)
-        .map(|_| ())
-        .map_err(|e| classify(e.code()))
+        .map_err(|e| classify(e.code()))?;
+    validate_keychain_path(path)
 }
 
 #[cfg(all(feature = "test-hooks", not(target_os = "macos")))]
@@ -174,15 +206,41 @@ mod imp {
             Target::Unconfigured => Err(KeychainError::Unavailable),
             #[cfg(feature = "test-hooks")]
             Target::Path(path) => {
-                // SecKeychainOpen returns a reference even for a file that is not there, and a
-                // write through it lands in the user's DEFAULT keychain. A named keychain that
-                // does not exist is therefore an error, never a fallback.
-                if !path.is_file() {
-                    return Err(KeychainError::Unavailable);
-                }
-                SecKeychain::open(path).map_err(|e| classify(e.code()))
+                // Validated BEFORE any Security call (see validate_keychain_path), then verified
+                // AFTER the open: SecKeychainOpen hands back a reference even for a file that is
+                // not there or was swapped, and a write through such a reference lands in the
+                // user's DEFAULT keychain. So the reference must report exactly the intended file
+                // and a healthy status, or the operation fails closed.
+                super::validate_keychain_path(path)?;
+                let keychain = SecKeychain::open(path).map_err(|e| classify(e.code()))?;
+                verify_opened(&keychain, path)?;
+                Ok(keychain)
             }
         }
+    }
+
+    #[cfg(feature = "test-hooks")]
+    fn verify_opened(keychain: &SecKeychain, expected: &std::path::Path) -> Result<(), KeychainError> {
+        use core_foundation::base::TCFType;
+        let raw = keychain.as_concrete_TypeRef() as *mut std::ffi::c_void;
+        let mut buf = [0 as std::ffi::c_char; 1024];
+        let mut len = buf.len() as u32;
+        if unsafe { SecKeychainGetPath(raw, &mut len, buf.as_mut_ptr()) } != 0 {
+            return Err(KeychainError::Unavailable);
+        }
+        let bytes: Vec<u8> = buf[..len as usize].iter().map(|c| *c as u8).collect();
+        let reported = std::fs::canonicalize(std::path::PathBuf::from(std::ffi::OsString::from(String::from_utf8_lossy(&bytes).to_string())));
+        let wanted = std::fs::canonicalize(expected);
+        match (reported, wanted) {
+            (Ok(a), Ok(b)) if a == b => {}
+            _ => return Err(KeychainError::Unavailable),
+        }
+        let mut status: u32 = 0;
+        if unsafe { SecKeychainGetStatus(raw, &mut status) } != 0 {
+            return Err(KeychainError::Unavailable);
+        }
+        // The file must still be the validated one right before the caller writes.
+        super::validate_keychain_path(expected)
     }
 
     /// No dialog may ever open: with interaction off, a locked keychain or an
@@ -196,6 +254,11 @@ mod imp {
     /// call, and the guard is leaked: it is never switched back on. Every
     /// operation goes through `quiet()`, which is what makes the switch happen
     /// before that call.
+    #[cfg(feature = "test-hooks")]
+    pub fn prepare() -> Result<(), KeychainError> {
+        quiet()
+    }
+
     fn quiet() -> Result<(), KeychainError> {
         static OFF: std::sync::OnceLock<Result<(), KeychainError>> = std::sync::OnceLock::new();
         *OFF.get_or_init(|| match SecKeychain::disable_user_interaction() {
@@ -213,11 +276,13 @@ mod imp {
     }
 
     pub fn set(target: &Target, account: &str, secret: &[u8]) -> Result<(), KeychainError> {
+        validate_first(target)?;
         quiet()?;
         open(target)?.set_generic_password(SERVICE, account, secret).map_err(|e| classify(e.code()))
     }
 
     pub fn get(target: &Target, account: &str) -> Result<Vec<u8>, KeychainError> {
+        validate_first(target)?;
         quiet()?;
         let keychain = open(target)?;
         let (password, _item) = keychain.find_generic_password(SERVICE, account).map_err(|e| classify(e.code()))?;
@@ -225,11 +290,39 @@ mod imp {
     }
 
     pub fn delete(target: &Target, account: &str) -> Result<(), KeychainError> {
+        use core_foundation::base::TCFType;
+        validate_first(target)?;
         quiet()?;
         let keychain = open(target)?;
         let (_password, item) = keychain.find_generic_password(SERVICE, account).map_err(|e| classify(e.code()))?;
-        item.delete();
+        // The crate's `SecKeychainItem::delete` discards the status, so a failed delete would
+        // look like a success. The status is read here and mapped.
+        let status = unsafe { SecKeychainItemDelete(item.as_concrete_TypeRef() as *mut std::ffi::c_void) };
+        if status != 0 {
+            return Err(classify(status));
+        }
         Ok(())
+    }
+
+    /// Checked before ANY Security call, including the one that switches prompts off.
+    fn validate_first(target: &Target) -> Result<(), KeychainError> {
+        match target {
+            #[cfg(feature = "test-hooks")]
+            Target::Path(path) => super::validate_keychain_path(path),
+            #[cfg(feature = "test-hooks")]
+            Target::Unconfigured => Err(KeychainError::Unavailable),
+            #[cfg(not(feature = "test-hooks"))]
+            Target::Default => Ok(()),
+        }
+    }
+
+    #[link(name = "Security", kind = "framework")]
+    extern "C" {
+        fn SecKeychainItemDelete(item: *mut std::ffi::c_void) -> i32;
+        #[cfg(feature = "test-hooks")]
+        fn SecKeychainGetPath(keychain: *mut std::ffi::c_void, length: *mut u32, path: *mut std::ffi::c_char) -> i32;
+        #[cfg(feature = "test-hooks")]
+        fn SecKeychainGetStatus(keychain: *mut std::ffi::c_void, status: *mut u32) -> i32;
     }
 }
 

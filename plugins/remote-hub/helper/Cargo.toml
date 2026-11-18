@@ -39,6 +39,11 @@ path = "tests/credential_process.rs"
 required-features = ["test-hooks"]
 
 [[test]]
+name = "keychain_spike"
+path = "tests/keychain_spike.rs"
+required-features = ["test-hooks"]
+
+[[test]]
 name = "keychain"
 path = "tests/keychain.rs"
 required-features = ["test-hooks"]
@@ -73,6 +78,9 @@ png = "=0.18.1"
 # MIT OR Apache-2.0. Generic passwords only, in the keychain the caller names.
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "=3.7.0"
+# Only for the TCFType trait (raw references for two Security calls the crate does not expose);
+# already in the tree through security-framework. MIT OR Apache-2.0.
+core-foundation = "=0.10.1"
 
 [dev-dependencies]
 # Test-only: a fake RDP server that presents the fixture certificates, and a

@@ -1964,6 +1964,7 @@ dependencies = [
 name = "remote-hub-helper"
 version = "0.1.0"
 dependencies = [
+ "core-foundation",
  "ironrdp-connector",
  "ironrdp-core",
  "ironrdp-graphics",

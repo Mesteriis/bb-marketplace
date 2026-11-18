@@ -4,7 +4,7 @@
 //!
 //! The only `security` command used is the READ-ONLY `list-keychains` and
 //! `default-keychain` query, to prove they are unchanged afterwards.
-#![cfg(target_os = "macos")]
+#![cfg(all(target_os = "macos", feature = "test-hooks"))]
 
 use security_framework::os::macos::keychain::{CreateOptions, SecKeychain};
 use std::process::Command;

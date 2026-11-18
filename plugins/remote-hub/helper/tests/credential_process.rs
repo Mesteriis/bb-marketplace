@@ -40,7 +40,7 @@ impl Fixture {
     fn new(tag: &str) -> Fixture {
         watchdog();
         let dir = std::env::temp_dir().join(format!("rh-cred-{}-{tag}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir).unwrap();
         let path = dir.join("kc.keychain-db");
         create_at(&path, "throwaway-kc-password").expect("temporary keychain");
         let helper = start(&[(FAKE, "credential"), ("REMOTE_HUB_KEYCHAIN_PATH", path.to_str().unwrap())]);
