@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { LayoutNode } from '../core/model';
+import type { LayoutNode, NavigationBadge } from '../core/model';
 export function NavigationRail({ nodes, labels, onActivate, onHome, icon, activeId, badges = {}, disabledIds = [], homeIcon, homeActive = false }: {
     homeIcon?: React.ReactNode;
     homeActive?: boolean;
@@ -9,7 +9,7 @@ export function NavigationRail({ nodes, labels, onActivate, onHome, icon, active
     onHome: () => void;
     icon?: (n: LayoutNode) => React.ReactNode;
     activeId?: string | null;
-    badges?: Record<string, string>;
+    badges?: Record<string, NavigationBadge>;
     disabledIds?: string[];
 }) {
     const [path, setPath] = useState<string[]>([]), root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement | null>(null);
@@ -33,7 +33,9 @@ export function NavigationRail({ nodes, labels, onActivate, onHome, icon, active
     useEffect(() => { if (path.length && !group)
         setPath([]); }, [nodes, group, path.length]);
     function contains(n: LayoutNode): boolean { return n.kind === 'item' ? n.itemId === activeId : n.kind === 'group' && n.children.some(contains); }
-    function button(n: LayoutNode, rail: boolean) { return n.kind === 'separator' ? <hr key={n.id}/> : <button type="button" key={n.id} data-node-id={n.id} disabled={n.kind === 'item' && disabledIds.includes(n.itemId)} title={n.kind === 'group' ? n.name : labels[n.itemId]} aria-label={(n.kind === 'group' ? n.name : labels[n.itemId]) + (hasBadge(n) ? ', есть уведомления' : '')} aria-current={contains(n) ? 'page' : undefined} onClick={e => { if (n.kind === 'group') {
+    function badgeLabel(n:LayoutNode):string { return n.kind==='item' ? badges[n.itemId]?.label ?? '' : hasBadge(n) ? 'есть уведомления' : ''; }
+    function badgeValue(n:LayoutNode,rail:boolean):string {if(n.kind!=='item')return '●';const badge=badges[n.itemId];if(badge?.count!==undefined&&Number.isFinite(badge.count)&&badge.count>0){const cap=rail?9:99;return badge.count>cap?cap+'+':String(Math.floor(badge.count));}return !rail&&badge?.text?badge.text.slice(0,8):'●';}
+    function button(n: LayoutNode, rail: boolean) { return n.kind === 'separator' ? <hr key={n.id}/> : <button type="button" key={n.id} data-node-id={n.id} disabled={n.kind === 'item' && disabledIds.includes(n.itemId)} title={(n.kind === 'group' ? n.name : labels[n.itemId]) + (hasBadge(n) ? ', '+badgeLabel(n) : '')} aria-label={(n.kind === 'group' ? n.name : labels[n.itemId]) + (hasBadge(n) ? ', '+badgeLabel(n) : '')} aria-current={contains(n) ? 'page' : undefined} onClick={e => { if (n.kind === 'group') {
         if (rail) {
             trigger.current = e.currentTarget;
             setPath(path[0] === n.id ? [] : [n.id]);
@@ -44,7 +46,7 @@ export function NavigationRail({ nodes, labels, onActivate, onHome, icon, active
     else {
         onActivate(n.itemId, e.ctrlKey || e.metaKey);
         setPath([]);
-    } }}>{icon?.(n) ?? (n.kind === 'group' ? '▦' : '◇')}{!rail && <span>{n.kind === 'group' ? n.name : labels[n.itemId] ?? n.itemId}</span>}{hasBadge(n) && <span className="nav-badge" aria-label="Есть уведомления">{n.kind === 'item' ? badges[n.itemId] : '●'}</span>}{!rail && n.kind === 'group' && ' ›'}</button>; }
+    } }}>{icon?.(n) ?? (n.kind === 'group' ? '▦' : '◇')}{!rail && <span>{n.kind === 'group' ? n.name : labels[n.itemId] ?? n.itemId}</span>}{hasBadge(n) && <span className={"nav-badge"+(badgeValue(n,rail)==='●'?' nav-badge-dot':'')} aria-hidden="true" aria-label="Есть уведомления">{badgeValue(n,rail)}</span>}{!rail && n.kind === 'group' && ' ›'}</button>; }
     return <div className="nav-root" ref={root} onKeyDown={e => { if (e.key === 'Escape') {
         e.stopPropagation();
         if (path.length > 1)
